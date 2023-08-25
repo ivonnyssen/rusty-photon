@@ -46,18 +46,17 @@ impl Api {
         ClientID: Query<Option<u32>>,
         ClientTransactionID: Query<Option<u32>>,
     ) -> Result<GetBrightnessResponse> {
+        let device_number = device_number.unwrap_or(0);
         let client_id = ClientID.unwrap_or(1);
         let client_transaction_id = ClientTransactionID.unwrap_or(1234);
         println!(
             "{} : {} : {}",
-            device_number.unwrap(),
-            client_id,
-            client_transaction_id
+            device_number, client_id, client_transaction_id
         );
 
         Ok(GetBrightnessResponse::CoverCalibrator(Json(
             CoverCalibrator {
-                device_number: device_number.unwrap(),
+                device_number,
                 max_brightness: 255,
                 brightness: 128,
             },
