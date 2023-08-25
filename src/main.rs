@@ -43,12 +43,12 @@ impl Api {
     async fn get_brightness(
         &self,
         device_number: Path<Option<u32>>,
-        ClientID: Query<Option<u32>>,
-        ClientTransactionID: Query<Option<u32>>,
+        client_id: Query<Option<u32>>,
+        client_transaction_id: Query<Option<u32>>,
     ) -> Result<GetBrightnessResponse> {
         let device_number = device_number.unwrap_or(0);
-        let client_id = ClientID.unwrap_or(1);
-        let client_transaction_id = ClientTransactionID.unwrap_or(1234);
+        let client_id = client_id.unwrap_or(1);
+        let client_transaction_id = client_transaction_id.unwrap_or(1234);
         println!(
             "{} : {} : {}",
             device_number, client_id, client_transaction_id
