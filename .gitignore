@@ -1,1 +1,3 @@
 /target
+/fitsio
+Cargo.lock

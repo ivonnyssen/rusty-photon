@@ -1,16 +1,10 @@
-[package]
-name = "rusty_photon"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+
+members = [
+    "fitsio",
+]
+
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-eyre = { version = "0.6.8"}
-eframe = { version = "0.22.0"}
-futures = { version = "0.3.28"}
-tracing = { version = "0.1.37"}
-tracing-subscriber = { version = "0.3.17"}
-bayer = { version = "0.1.5"}
-ascom-alpaca = { version = "1.0.0-beta.1", features = ["client", "camera"] }
