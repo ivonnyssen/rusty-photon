@@ -1,3 +1,5 @@
 /target
 /fitsio
+/server
+/ui
 Cargo.lock

@@ -565,6 +565,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "server"
+version = "0.1.0"
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -721,6 +725,10 @@ dependencies = [
  "tracing-core",
  "tracing-log",
 ]
+
+[[package]]
+name = "ui"
+version = "0.1.0"
 
 [[package]]
 name = "unarray"
