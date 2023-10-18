@@ -1,4 +1,5 @@
 /target
 /fitsio
-libqhyccd-sys
+/libqhyccd-sys
+/qhyccd_alpaca
 Cargo.lock
