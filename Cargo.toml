@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    "fitsio", "server", "ui"
+    "fitsio", "server", "ui", "libqhyccd-sys", "qhyccd_alpaca"
 ]
 
 resolver = "2"

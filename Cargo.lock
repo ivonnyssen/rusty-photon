@@ -777,6 +777,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7012b1bbb0719e1097c47611d3898568c546d597c2e74d66f6087edd5233ff4"
 
 [[package]]
+name = "libqhyccd-sys"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1267,6 +1277,10 @@ dependencies = [
  "tempfile",
  "unarray",
 ]
+
+[[package]]
+name = "qhyccd_alpaca"
+version = "0.1.0"
 
 [[package]]
 name = "quick-error"
