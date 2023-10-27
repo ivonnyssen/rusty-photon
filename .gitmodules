@@ -1,0 +1,3 @@
+[submodule "libqhyccd/libqhyccd-sys"]
+	path = libqhyccd/libqhyccd-sys
+	url = https://github.com/ivonnyssen/libqhyccd-sys
