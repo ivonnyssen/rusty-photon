@@ -75,7 +75,7 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     // create a client
-    let client = match Client::new("http://localhost:32323") {
+    let client = match Client::new("http://localhost:8000") {
         Ok(client) => client,
         Err(e) => {
             error!("Error: {}", e);
