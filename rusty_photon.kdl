@@ -18,7 +18,7 @@ layout {
       children
     }
   }
-  tab name="qhyccd-alpaca" cwd="~/repos/qhyccd-alpaca/" focus=true {
+  tab name="qhyccd-alpaca" cwd="~/repos/qhyccd-alpaca-rs/" focus=true {
     nvim {
       pane { 
         borderless true
