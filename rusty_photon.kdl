@@ -18,7 +18,16 @@ layout {
       children
     }
   }
-  tab name="qhyccd-alpaca" cwd="~/repos/qhyccd-alpaca/" focus=true {
+  tab name="rusty-photon" cwd="~/repos/rusty-photon/" focus=true {
+    nvim {
+      pane { 
+        borderless true
+        command "bacon"
+        args "--job" "test"
+      }
+    }
+  }
+  tab name="qhyccd-alpaca" cwd="~/repos/qhyccd-alpaca/" {
     nvim {
       pane { 
         borderless true
