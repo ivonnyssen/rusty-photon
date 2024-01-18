@@ -1,5 +1,2 @@
-/target
-/fitsio
-/libqhyccd-sys
-/libqhyccd
-/qhyccd_alpaca
+target
+cargo.lock
