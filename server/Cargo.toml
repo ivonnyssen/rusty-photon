@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fitsio = { version = "0.21.2", features = ["fitsio-src"] }
 axum = { version = "0.7.4", features = ["macros"] }
 tokio = { version = "1.35.1", features = ["full"] }
 thiserror = "1.0.56"
@@ -19,4 +20,3 @@ futures = "0.3.30"
 eyre = "0.6.11"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-fitsio = "0.21.2"

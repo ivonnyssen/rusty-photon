@@ -1,5 +1,5 @@
 use ascom_alpaca::api::{
-    Camera, CoverCalibrator, Dome, FilterWheel, Focuser, ImageArray, ObservingConditions, Rotator,
+    Camera, CoverCalibrator, Dome, FilterWheel, Focuser, ObservingConditions, Rotator,
     SafetyMonitor, Switch, Telescope, TypedDevice,
 };
 use ascom_alpaca::Client;
@@ -14,10 +14,9 @@ use tracing_subscriber::FmtSubscriber;
 
 use std::collections::HashSet;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tracing::{debug, error, trace, Level};
+use tracing::{error, trace, Level};
 
 #[derive(Debug)]
 struct AppState {
@@ -174,12 +173,9 @@ async fn main() {
         .route("/telescopes/:id", get(get_telescope_by_id))
         .with_state(Arc::new(state));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    tracing::debug!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    tracing::debug!("listening on {:?}", listener);
+    axum::serve(listener, app).await.unwrap();
 }
 
 async fn root(State(state): State<Arc<AppState>>) -> String {
@@ -249,6 +245,26 @@ async fn run_sequence(
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         trace!("image ready");
+        let image = camera
+            .image_array()
+            .await
+            .expect("failed to get image array");
+        trace!("image array");
+        use fitsio::images::{ImageDescription, ImageType};
+        use fitsio::FitsFile;
+        let filename = "test.fits";
+        let mut fptr = match FitsFile::create(filename).open() {
+            Ok(fptr) => fptr,
+            Err(e) => panic!("Failed to create file: {}", e),
+        };
+        let image_description = ImageDescription {
+            data_type: ImageType::UnsignedShort,
+            dimensions: &[image.dim().0, image.dim().1],
+        };
+        let _hdu = match fptr.create_image("EXTNAME".to_string(), &image_description) {
+            Ok(hdu) => hdu,
+            Err(e) => panic!("Failed to create image: {}", e),
+        };
     });
     (StatusCode::OK, Json("Done")).into_response()
 }
