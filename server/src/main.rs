@@ -18,6 +18,9 @@ use std::sync::Arc;
 
 use tracing::{error, trace, Level};
 
+mod action;
+mod target;
+
 #[derive(Debug)]
 struct AppState {
     cameras: HashSet<Arc<dyn Camera>>,
@@ -202,6 +205,7 @@ async fn get_camera_by_id(
         None => (StatusCode::NOT_FOUND, String::from("Camera not found")).into_response(),
     }
 }
+
 #[debug_handler]
 async fn run_sequence(
     Path(id): Path<String>,
