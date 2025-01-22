@@ -1,5 +1,30 @@
+# Rust
 /target
 /fitsio
 /libqhyccd-sys
 /libqhyccd
 /qhyccd_alpaca
+
+# Rust - Cargo
+**/*.rs.bk
+Cargo.lock
+
+# Build output
+**/dist/
+**/build/
+
+# Dependencies
+**/node_modules/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+debug.log
