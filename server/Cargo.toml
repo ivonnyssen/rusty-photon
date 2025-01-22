@@ -6,9 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = {version="0.6.20", features = ["macros"]}
+axum = {version="0.8.1", features = ["macros"]}
 tokio = { version = "1.15.0", features = ["full"] }
-thiserror = "1.0.30"
+thiserror = "2.0.11"
 anyhow = "1.0.44"
 serde = { version = "1.0.188", features = ["derive"] }
 ascom-alpaca = {version ="1.0.0-beta.1",features = ["client", "all-devices"]}
@@ -16,3 +16,17 @@ futures = "0.3.28"
 eyre = "0.6.8"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+
+#to keep minimal versions happy
+time = "0.3.35"
+
+#security patches
+mio = "1.0.3"
+idna = "1.0.0"
+h2 = "0.4.7"
+
+[dev-dependencies]
+#security patches
+mio = "1.0.3"
+idna = "1.0.0"
+h2 = "0.4.7"

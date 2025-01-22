@@ -1,10 +1,9 @@
 [workspace]
 
 members = [
-    "fitsio", "server", "ui", "libqhyccd-sys", "qhyccd_alpaca"
+    "server", "ui"
 ]
 
 resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
