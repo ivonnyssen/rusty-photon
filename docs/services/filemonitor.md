@@ -8,7 +8,7 @@ The filemonitor service implements an ASCOM Alpaca compatible SafetyMonitor devi
 
 ## Implementation Framework
 
-The service uses the `ascom-alpaca` crate [<https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca>) which provides:
+The service uses the `ascom-alpaca` crate [https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca) which provides:
 
 - `SafetyMonitor` trait with required `async fn is_safe(&self) -> ASCOMResult<bool>` method
 - `Device` trait for common ASCOM functionality (device name, unique ID, etc.)
