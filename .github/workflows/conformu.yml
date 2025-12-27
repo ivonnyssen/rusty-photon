@@ -69,7 +69,10 @@ jobs:
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
-        curl -L -o conformu-setup.exe "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU.${{ steps.conformu-version.outputs.release }}.Setup.exe"
+        # Remove 'v' prefix from version for filename
+        VERSION="${{ steps.conformu-version.outputs.release }}"
+        VERSION_NO_V="${VERSION#v}"
+        curl -L -o conformu-setup.exe "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU.${VERSION_NO_V}.Setup.exe"
         # Extract using 7zip (available on GitHub runners)
         7z x conformu-setup.exe -o./extracted
         # Find the ConformU.exe in the extracted files
