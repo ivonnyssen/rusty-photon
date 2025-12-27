@@ -97,6 +97,8 @@ jobs:
         echo '#!/bin/bash' > conformu
         echo "exec \"$HOME/tools/conformu/$APP_NAME/Contents/MacOS/ConformU\" \"\$@\"" >> conformu
         chmod +x conformu
+        # Also create a direct symlink for the ascom-alpaca crate to find
+        ln -sf "$HOME/tools/conformu/$APP_NAME/Contents/MacOS/ConformU" /usr/local/bin/conformu || true
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
     - name: Build project
