@@ -131,6 +131,8 @@ An example monitored file `RoofStatusFile.txt` might contain:
 ???2025-12-15 01:20:13AM Roof Status: CLOSED
 ```
 
+This would cause the safety monitor to evaluate to `false` (unsafe), as the roof is closed and the telescope might be in danger of colliding with the roof.
+
 ## Cross-Platform Support
 
 The filemonitor service is designed to run natively on multiple platforms:
