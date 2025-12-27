@@ -7,10 +7,13 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 fn get_random_port() -> u16 {
     use std::net::TcpListener;
-    
+
     // Bind to port 0 to get a random available port
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
-    let port = listener.local_addr().expect("Failed to get local addr").port();
+    let port = listener
+        .local_addr()
+        .expect("Failed to get local addr")
+        .port();
     drop(listener); // Release the port
     port
 }
@@ -22,7 +25,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info"))
+                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
         )
         .with_test_writer()
         .try_init();
@@ -67,7 +70,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start filemonitor service
     let mut child = Command::new("cargo")
-        .args(&["run", "--", "-c", config_path.to_str().unwrap()])
+        .args(["run", "--", "-c", config_path.to_str().unwrap()])
         .spawn()?;
 
     // Wait for service to be ready with health check
@@ -77,17 +80,20 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..30 {
         sleep(Duration::from_secs(1)).await;
 
-        if let Ok(response) = timeout(
+        if let Ok(Ok(resp)) = timeout(
             Duration::from_secs(2),
-            client.get(&format!("http://localhost:{}/management/v1/description", port)).send(),
+            client
+                .get(format!(
+                    "http://localhost:{}/management/v1/description",
+                    port
+                ))
+                .send(),
         )
         .await
         {
-            if let Ok(resp) = response {
-                if resp.status().is_success() {
-                    ready = true;
-                    break;
-                }
+            if resp.status().is_success() {
+                ready = true;
+                break;
             }
         }
     }
@@ -101,10 +107,11 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("::group::ConformU Compliance Test Results");
     println!("Running ASCOM Alpaca compliance tests...");
-    
+
     // Run ConformU tests and capture result
-    let result = run_conformu_tests::<dyn SafetyMonitor>(&format!("http://localhost:{}", port), 0).await;
-    
+    let result =
+        run_conformu_tests::<dyn SafetyMonitor>(&format!("http://localhost:{}", port), 0).await;
+
     match &result {
         Ok(_) => {
             println!("✅ ConformU compliance tests PASSED");
@@ -115,7 +122,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             println!("Error: {}", e);
         }
     }
-    
+
     println!("::endgroup::");
 
     // Cleanup - ensure process is properly terminated
