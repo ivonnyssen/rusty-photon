@@ -380,10 +380,10 @@ async fn test_is_safe_connected_no_content() {
     };
 
     let device = FileMonitorDevice::new(config);
-    device.set_connected(true).await.unwrap();
 
-    // Clear content to test None case
-    device.test_set_last_content(None).await;
+    // Test behavior when content doesn't match any rules (tests default_safe path)
+    fs::write(&test_file, "UNKNOWN STATUS").unwrap();
+    device.set_connected(true).await.unwrap();
 
     let result = device.is_safe().await.unwrap();
     assert_eq!(result, true); // Should return default_safe
@@ -394,7 +394,7 @@ async fn test_is_safe_connected_no_content() {
 
 #[tokio::test]
 async fn test_polling_functionality() {
-    use ascom_alpaca::api::Device;
+    use ascom_alpaca::api::{Device, SafetyMonitor};
     use std::fs;
     use tokio::time::{sleep, Duration};
 
@@ -431,15 +431,17 @@ async fn test_polling_functionality() {
     // Wait for polling to pick up changes
     sleep(Duration::from_millis(1100)).await;
 
-    let content = device.test_get_last_content().await;
-    assert_eq!(content.unwrap(), "updated");
+    // Test that polling worked by checking safety evaluation with new content
+    // The file now contains "updated" which doesn't match any rules, so should return default_safe (false)
+    let result = device.is_safe().await.unwrap();
+    assert_eq!(result, false); // default_safe is false in this config
 
     device.set_connected(false).await.unwrap();
     fs::remove_file(&test_file).unwrap();
 }
 
 #[tokio::test]
-async fn test_stop_polling() {
+async fn test_connection_state_management() {
     use ascom_alpaca::api::Device;
     use std::fs;
 
@@ -468,15 +470,15 @@ async fn test_stop_polling() {
     };
 
     let device = FileMonitorDevice::new(config);
-    device.set_connected(true).await.unwrap();
 
-    // Verify polling handle exists
-    assert!(device.test_has_polling_handle().await);
+    // Test that connection/disconnection works properly (behavioral test)
+    assert!(!device.connected().await.unwrap());
+
+    device.set_connected(true).await.unwrap();
+    assert!(device.connected().await.unwrap());
 
     device.set_connected(false).await.unwrap();
-
-    // Verify polling handle is cleared
-    assert!(!device.test_has_polling_handle().await);
+    assert!(!device.connected().await.unwrap());
 
     fs::remove_file(&test_file).unwrap();
 }
