@@ -37,7 +37,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "case_sensitive": false
         },
         "server": {
-            "port": 11112,
+            "port": 11113,
             "device_number": 0
         }
     });
@@ -61,7 +61,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Ok(response) = timeout(
             Duration::from_secs(2),
-            client.get("http://localhost:11112/management/v1/description").send(),
+            client.get("http://localhost:11113/management/v1/description").send(),
         )
         .await
         {
@@ -80,8 +80,23 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Service failed to start within 30 seconds".into());
     }
 
-    // Run ConformU tests
-    let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:11112", 0).await;
+    println!("::group::ConformU Compliance Test Results");
+    
+    // Run ConformU tests and capture result
+    let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:11113", 0).await;
+    
+    match &result {
+        Ok(_) => {
+            println!("✅ ConformU compliance tests PASSED");
+            println!("All ASCOM Alpaca compliance requirements met");
+        }
+        Err(e) => {
+            println!("❌ ConformU compliance tests FAILED");
+            println!("Error: {}", e);
+        }
+    }
+    
+    println!("::endgroup::");
 
     // Cleanup
     child.kill().await.ok();
