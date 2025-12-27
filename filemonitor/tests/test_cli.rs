@@ -5,6 +5,13 @@ use std::process::Command;
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_help() {
+    // Skip under sanitizers due to proc-macro compilation issues
+    if std::env::var("RUSTFLAGS")
+        .unwrap_or_default()
+        .contains("sanitizer")
+    {
+        return;
+    }
     let output = Command::new("cargo")
         .args(["run", "--bin", "filemonitor", "--", "--help"])
         .current_dir("../")
@@ -38,6 +45,13 @@ fn test_cli_help() {
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_invalid_config() {
+    // Skip under sanitizers due to proc-macro compilation issues
+    if std::env::var("RUSTFLAGS")
+        .unwrap_or_default()
+        .contains("sanitizer")
+    {
+        return;
+    }
     let output = Command::new("cargo")
         .args([
             "run",
@@ -69,6 +83,13 @@ fn test_cli_invalid_config() {
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_valid_config_with_log_level() {
+    // Skip under sanitizers due to proc-macro compilation issues
+    if std::env::var("RUSTFLAGS")
+        .unwrap_or_default()
+        .contains("sanitizer")
+    {
+        return;
+    }
     // Create a temporary config file
     let config_content = r#"{
         "device": {
@@ -136,6 +157,13 @@ fn test_cli_valid_config_with_log_level() {
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_different_log_levels() {
+    // Skip under sanitizers due to proc-macro compilation issues
+    if std::env::var("RUSTFLAGS")
+        .unwrap_or_default()
+        .contains("sanitizer")
+    {
+        return;
+    }
     let config_content = r#"{
         "device": {
             "name": "Log Test Monitor",
