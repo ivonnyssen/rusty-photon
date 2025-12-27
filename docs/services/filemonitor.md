@@ -76,7 +76,7 @@ The service parses the monitored file according to the configured rules, yieldin
 - `true` - Safe condition
 - `false` - Unsafe condition or any errors/unresolvable conflicts
 
-The `is_safe()` method contains the core file monitoring and parsing logic, called by ASCOM clients. It first checks if the device is connected and returns an ASCOM NOT_CONNECTED error if disconnected, ensuring proper protocol compliance.
+The `is_safe()` method contains the core file monitoring and parsing logic, called by ASCOM clients. When the device is not connected, it returns `false` to indicate an unsafe condition, ensuring ASCOM conformance compliance.
 
 ### Connection Management
 
@@ -90,7 +90,7 @@ The `set_connected()` method controls the monitoring behavior:
 
 - **When set to `false`**:
   - Stops the background polling task
-  - `is_safe()` returns NOT_CONNECTED error when called
+  - `is_safe()` returns `false` when called (indicating unsafe condition)
 
 The polling runs in a background task that periodically reads the file and updates the cached content. This ensures `is_safe()` calls are fast and don't block on file I/O.
 
@@ -111,7 +111,7 @@ graph TD
     
     subgraph "is_safe() Flow"
         I[is_safe() called] --> J{Connected?}
-        J -->|No| K[Return NOT_CONNECTED Error]
+        J -->|No| K[Return false (unsafe)]
         J -->|Yes| L{Cached Content?}
         L -->|Yes| M[Evaluate Safety Rules]
         L -->|No| N[Return Default Safe Value]
