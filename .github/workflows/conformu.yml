@@ -50,6 +50,7 @@ jobs:
       uses: pozetroninc/github-action-get-latest-release@master
       with:
         repository: ASCOMInitiative/ConformU
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Install ConformU (Linux)
       if: runner.os == 'Linux'
