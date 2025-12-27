@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup tracing with specified log level
     tracing_subscriber::fmt()
-        .with_max_level(args.log_level.clone())
+        .with_max_level(args.log_level)
         .init();
 
     debug!(
