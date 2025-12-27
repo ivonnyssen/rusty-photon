@@ -1,7 +1,7 @@
 use clap::Parser;
-use filemonitor::{load_config, start_server, LogLevel};
+use filemonitor::{load_config, start_server};
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::{debug, info, Level};
 
 #[derive(Parser)]
 #[command(name = "filemonitor")]
@@ -12,8 +12,8 @@ struct Args {
     config: PathBuf,
 
     /// Log level
-    #[arg(short, long, default_value = "info")]
-    log_level: LogLevel,
+    #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
+    log_level: Level,
 }
 
 #[tokio::main]
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup tracing with specified log level
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::from(args.log_level.clone()))
+        .with_max_level(args.log_level.clone())
         .init();
 
     debug!(
