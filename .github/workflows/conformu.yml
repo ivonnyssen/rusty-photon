@@ -58,29 +58,8 @@ jobs:
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
-        wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/conformu.linux-x64.tar.gz
-        tar -xf conformu.linux-x64.tar.gz
-        chmod +x conformu
-        echo "$HOME/tools/conformu" >> $GITHUB_PATH
-    
-    - name: Install ConformU (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        $conformuDir = "$env:USERPROFILE\tools\conformu"
-        New-Item -ItemType Directory -Force -Path $conformuDir
-        cd $conformuDir
-        $version = "${{ steps.conformu-version.outputs.version }}"
-        Invoke-WebRequest -Uri "https://github.com/ASCOMInitiative/ConformU/releases/download/$version/conformu.win-x64.zip" -OutFile "conformu.win-x64.zip"
-        Expand-Archive -Path "conformu.win-x64.zip" -DestinationPath "."
-        echo $conformuDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-    
-    - name: Install ConformU (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        mkdir -p ~/tools/conformu
-        cd ~/tools/conformu
-        wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/conformu.osx-x64.tar.gz
-        tar -xf conformu.osx-x64.tar.gz
+        wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/conformu.linux-x64.tar.xz
+        tar -xf conformu.linux-x64.tar.xz
         chmod +x conformu
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
