@@ -61,7 +61,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Ok(response) = timeout(
             Duration::from_secs(2),
-            client.get("http://localhost:11112/management/v1/description"),
+            client.get("http://localhost:11112/management/v1/description").send(),
         )
         .await
         {
