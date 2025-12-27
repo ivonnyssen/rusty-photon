@@ -5,6 +5,16 @@ use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 use tracing_subscriber::{fmt, EnvFilter};
 
+fn get_random_port() -> u16 {
+    use std::net::TcpListener;
+    
+    // Bind to port 0 to get a random available port
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
+    let port = listener.local_addr().expect("Failed to get local addr").port();
+    drop(listener); // Release the port
+    port
+}
+
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,6 +33,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = test_dir.join("config.json");
     let status_file = test_dir.join("status.txt");
+    let port = get_random_port();
 
     let config = serde_json::json!({
         "device": {
@@ -46,7 +57,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "case_sensitive": false
         },
         "server": {
-            "port": 18888,
+            "port": port,
             "device_number": 0
         }
     });
@@ -68,7 +79,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Ok(response) = timeout(
             Duration::from_secs(2),
-            client.get("http://localhost:18888/management/v1/description").send(),
+            client.get(&format!("http://localhost:{}/management/v1/description", port)).send(),
         )
         .await
         {
@@ -82,7 +93,8 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !ready {
-        child.kill().await.ok();
+        let _ = child.kill().await;
+        let _ = child.wait().await;
         std::fs::remove_dir_all(&test_dir).ok();
         return Err("Service failed to start within 30 seconds".into());
     }
@@ -91,7 +103,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running ASCOM Alpaca compliance tests...");
     
     // Run ConformU tests and capture result
-    let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:18888", 0).await;
+    let result = run_conformu_tests::<dyn SafetyMonitor>(&format!("http://localhost:{}", port), 0).await;
     
     match &result {
         Ok(_) => {
@@ -106,8 +118,9 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("::endgroup::");
 
-    // Cleanup
-    child.kill().await.ok();
+    // Cleanup - ensure process is properly terminated
+    let _ = child.kill().await;
+    let _ = child.wait().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
