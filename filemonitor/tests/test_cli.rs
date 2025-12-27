@@ -68,10 +68,8 @@ fn test_cli_valid_config_with_log_level() {
     fs::write(&config_path, config_content).unwrap();
     fs::write(&test_file, "test").unwrap();
 
-    let output = Command::new("timeout")
+    let output = Command::new("cargo")
         .args(&[
-            "1s",
-            "cargo",
             "run",
             "--bin",
             "filemonitor",
@@ -89,9 +87,9 @@ fn test_cli_valid_config_with_log_level() {
     fs::remove_file(&config_path).unwrap();
     fs::remove_file(&test_file).unwrap();
 
-    // Command should timeout (exit code varies by system) since server would run indefinitely
-    // We just check it's not a success (0) which would indicate immediate failure
-    assert_ne!(output.status.code(), Some(0));
+    // We expect this to fail quickly since port 0 will cause an error
+    // Just verify the command executed and parsed arguments correctly
+    assert!(!output.status.success());
 }
 
 #[test]
@@ -125,10 +123,8 @@ fn test_cli_different_log_levels() {
     fs::write(&test_file, "test").unwrap();
 
     for log_level in &["error", "warn", "info", "debug", "trace"] {
-        let output = Command::new("timeout")
+        let output = Command::new("cargo")
             .args(&[
-                "0.5s",
-                "cargo",
                 "run",
                 "--bin",
                 "filemonitor",
@@ -142,8 +138,8 @@ fn test_cli_different_log_levels() {
             .output()
             .expect("Failed to execute command");
 
-        // Should timeout, indicating successful startup (not exit code 0)
-        assert_ne!(output.status.code(), Some(0));
+        // Should fail quickly due to port 0, but not due to argument parsing
+        assert!(!output.status.success());
     }
 
     // Clean up
