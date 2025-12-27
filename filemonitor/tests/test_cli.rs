@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
+#[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_help() {
     let output = Command::new("cargo")
         .args(&["run", "--bin", "filemonitor", "--", "--help"])
@@ -18,6 +19,7 @@ fn test_cli_help() {
 }
 
 #[test]
+#[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_invalid_config() {
     let output = Command::new("cargo")
         .args(&[
@@ -36,6 +38,7 @@ fn test_cli_invalid_config() {
 }
 
 #[test]
+#[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_valid_config_with_log_level() {
     // Create a temporary config file
     let config_content = r#"{
@@ -92,6 +95,7 @@ fn test_cli_valid_config_with_log_level() {
 }
 
 #[test]
+#[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_different_log_levels() {
     let config_content = r#"{
         "device": {
