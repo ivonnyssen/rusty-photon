@@ -4,10 +4,20 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing to capture ConformU detailed output
+    let _ = fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info"))
+        )
+        .with_test_writer()
+        .try_init();
+
     // Create test config
     let test_dir = std::env::temp_dir().join("conformu_test");
     std::fs::create_dir_all(&test_dir)?;
@@ -81,6 +91,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("::group::ConformU Compliance Test Results");
+    println!("Running ASCOM Alpaca compliance tests...");
     
     // Run ConformU tests and capture result
     let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:11113", 0).await;
