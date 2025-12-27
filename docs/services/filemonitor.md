@@ -108,13 +108,13 @@ graph TD
     H --> E
     H --> G
     
-    subgraph Flow ["is_safe() Flow"]
-        I["is_safe() called"] --> J{Connected?}
-        J -->|No| K["Return false (unsafe)"]
+    subgraph Flow ["is_safe Flow"]
+        I[is_safe called] --> J{Connected?}
+        J -->|No| K[Return false unsafe]
         J -->|Yes| L{Cached Content?}
-        L -->|Yes| M["Evaluate Safety Rules"]
-        L -->|No| N["Return false (unsafe)"]
-        M --> O["Return Safe/Unsafe"]
+        L -->|Yes| M[Evaluate Safety Rules]
+        L -->|No| N[Return false unsafe]
+        M --> O[Return Safe/Unsafe]
     end
 ```
 
