@@ -73,6 +73,21 @@ impl FileMonitorDevice {
         }
     }
 
+    pub async fn test_get_last_content(&self) -> Option<String> {
+        let content = self.last_content.lock().await;
+        content.clone()
+    }
+
+    pub async fn test_set_last_content(&self, content: Option<String>) {
+        let mut last_content = self.last_content.lock().await;
+        *last_content = content;
+    }
+
+    pub async fn test_has_polling_handle(&self) -> bool {
+        let handle = self.polling_handle.lock().await;
+        handle.is_some()
+    }
+
     pub fn evaluate_safety(&self, content: &str) -> bool {
         for rule in &self.config.parsing.rules {
             let matches = match rule.rule_type {

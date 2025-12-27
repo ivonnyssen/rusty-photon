@@ -298,3 +298,235 @@ async fn test_is_safe_when_disconnected() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), false);
 }
+
+#[tokio::test]
+async fn test_device_trait_methods() {
+    use ascom_alpaca::api::Device;
+
+    let config_path = PathBuf::from("tests/config.json");
+    let config = load_config(&config_path).unwrap();
+    let device = FileMonitorDevice::new(config.clone());
+
+    assert_eq!(device.static_name(), &config.device.name);
+    assert_eq!(device.unique_id(), &config.device.unique_id);
+
+    let description = device.description().await.unwrap();
+    assert_eq!(description, config.device.description);
+
+    let driver_info = device.driver_info().await.unwrap();
+    assert_eq!(driver_info, config.device.description);
+
+    let driver_version = device.driver_version().await.unwrap();
+    assert_eq!(driver_version, "0.1.0");
+}
+
+#[tokio::test]
+async fn test_set_connected_file_read_error() {
+    use ascom_alpaca::api::Device;
+
+    let config = Config {
+        device: DeviceConfig {
+            name: "Test".to_string(),
+            unique_id: "test-001".to_string(),
+            description: "Test device".to_string(),
+        },
+        file: FileConfig {
+            path: PathBuf::from("/nonexistent/path/file.txt"),
+            polling_interval_seconds: 1,
+        },
+        parsing: ParsingConfig {
+            rules: vec![],
+            default_safe: false,
+            case_sensitive: false,
+        },
+        server: ServerConfig {
+            port: 11111,
+            device_number: 0,
+        },
+    };
+
+    let device = FileMonitorDevice::new(config);
+    let result = device.set_connected(true).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_is_safe_connected_no_content() {
+    use ascom_alpaca::api::{Device, SafetyMonitor};
+    use std::fs;
+
+    let test_file = PathBuf::from("test_temp_file.txt");
+    fs::write(&test_file, "test content").unwrap();
+
+    let config = Config {
+        device: DeviceConfig {
+            name: "Test".to_string(),
+            unique_id: "test-001".to_string(),
+            description: "Test device".to_string(),
+        },
+        file: FileConfig {
+            path: test_file.clone(),
+            polling_interval_seconds: 1,
+        },
+        parsing: ParsingConfig {
+            rules: vec![],
+            default_safe: true,
+            case_sensitive: false,
+        },
+        server: ServerConfig {
+            port: 11111,
+            device_number: 0,
+        },
+    };
+
+    let device = FileMonitorDevice::new(config);
+    device.set_connected(true).await.unwrap();
+
+    // Clear content to test None case
+    device.test_set_last_content(None).await;
+
+    let result = device.is_safe().await.unwrap();
+    assert_eq!(result, true); // Should return default_safe
+
+    device.set_connected(false).await.unwrap();
+    fs::remove_file(&test_file).unwrap();
+}
+
+#[tokio::test]
+async fn test_polling_functionality() {
+    use ascom_alpaca::api::Device;
+    use std::fs;
+    use tokio::time::{sleep, Duration};
+
+    let test_file = PathBuf::from("test_polling_file.txt");
+    fs::write(&test_file, "initial").unwrap();
+
+    let config = Config {
+        device: DeviceConfig {
+            name: "Test".to_string(),
+            unique_id: "test-001".to_string(),
+            description: "Test device".to_string(),
+        },
+        file: FileConfig {
+            path: test_file.clone(),
+            polling_interval_seconds: 1,
+        },
+        parsing: ParsingConfig {
+            rules: vec![],
+            default_safe: false,
+            case_sensitive: false,
+        },
+        server: ServerConfig {
+            port: 11111,
+            device_number: 0,
+        },
+    };
+
+    let device = FileMonitorDevice::new(config);
+    device.set_connected(true).await.unwrap();
+
+    // Update file content
+    fs::write(&test_file, "updated").unwrap();
+
+    // Wait for polling to pick up changes
+    sleep(Duration::from_millis(1100)).await;
+
+    let content = device.test_get_last_content().await;
+    assert_eq!(content.unwrap(), "updated");
+
+    device.set_connected(false).await.unwrap();
+    fs::remove_file(&test_file).unwrap();
+}
+
+#[tokio::test]
+async fn test_stop_polling() {
+    use ascom_alpaca::api::Device;
+    use std::fs;
+
+    let test_file = PathBuf::from("test_stop_polling.txt");
+    fs::write(&test_file, "test").unwrap();
+
+    let config = Config {
+        device: DeviceConfig {
+            name: "Test".to_string(),
+            unique_id: "test-001".to_string(),
+            description: "Test device".to_string(),
+        },
+        file: FileConfig {
+            path: test_file.clone(),
+            polling_interval_seconds: 1,
+        },
+        parsing: ParsingConfig {
+            rules: vec![],
+            default_safe: false,
+            case_sensitive: false,
+        },
+        server: ServerConfig {
+            port: 11111,
+            device_number: 0,
+        },
+    };
+
+    let device = FileMonitorDevice::new(config);
+    device.set_connected(true).await.unwrap();
+
+    // Verify polling handle exists
+    assert!(device.test_has_polling_handle().await);
+
+    device.set_connected(false).await.unwrap();
+
+    // Verify polling handle is cleared
+    assert!(!device.test_has_polling_handle().await);
+
+    fs::remove_file(&test_file).unwrap();
+}
+
+#[test]
+fn test_load_config_file_not_found() {
+    let config_path = PathBuf::from("nonexistent_config.json");
+    let result = load_config(&config_path);
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_start_server_creation() {
+    use filemonitor::start_server;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    let config = Config {
+        device: DeviceConfig {
+            name: "Test Server".to_string(),
+            unique_id: "test-server-001".to_string(),
+            description: "Test server device".to_string(),
+        },
+        file: FileConfig {
+            path: PathBuf::from("test_server_file.txt"),
+            polling_interval_seconds: 1,
+        },
+        parsing: ParsingConfig {
+            rules: vec![],
+            default_safe: false,
+            case_sensitive: false,
+        },
+        server: ServerConfig {
+            port: 0, // Use port 0 to let OS assign available port
+            device_number: 0,
+        },
+    };
+
+    // Create test file
+    std::fs::write(&config.file.path, "test").unwrap();
+
+    // Test that server creation doesn't panic (we can't easily test full startup without blocking)
+    let server_future = start_server(config.clone());
+
+    // Use timeout to prevent test from hanging
+    let result = timeout(Duration::from_millis(100), server_future).await;
+
+    // Clean up
+    std::fs::remove_file(&config.file.path).unwrap();
+
+    // We expect timeout since server.start() would block indefinitely
+    assert!(result.is_err());
+}
