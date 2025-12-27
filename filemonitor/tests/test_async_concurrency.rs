@@ -24,7 +24,6 @@ fn create_test_config() -> Config {
                 pattern: "SAFE".to_string(),
                 safe: true,
             }],
-            default_safe: false,
             case_sensitive: true,
         },
         server: ServerConfig {

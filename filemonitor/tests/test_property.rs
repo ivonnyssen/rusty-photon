@@ -33,7 +33,6 @@ fn create_test_config() -> Config {
                     safe: false,
                 },
             ],
-            default_safe: false,
             case_sensitive: true,
         },
         server: ServerConfig {
@@ -95,7 +94,6 @@ proptest! {
                     pattern: pattern.clone(),
                     safe: true,
                 }],
-                default_safe: false,
                 case_sensitive: true,
             },
             server: ServerConfig {

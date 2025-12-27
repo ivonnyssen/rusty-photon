@@ -28,7 +28,6 @@ fn test_config_parsing_rules() {
     assert!(config.parsing.rules[0].safe);
     assert_eq!(config.parsing.rules[1].pattern, "OPEN");
     assert!(!config.parsing.rules[1].safe);
-    assert!(!config.parsing.default_safe);
     assert!(!config.parsing.case_sensitive);
 }
 
@@ -110,7 +109,6 @@ fn test_evaluate_safety_contains_rules() {
                     safe: false,
                 },
             ],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -153,7 +151,6 @@ fn test_evaluate_safety_case_sensitive() {
                 pattern: "CLOSED".to_string(),
                 safe: true,
             }],
-            default_safe: false,
             case_sensitive: true,
         },
         server: ServerConfig {
@@ -197,7 +194,6 @@ fn test_evaluate_safety_regex_rules() {
                     safe: false,
                 },
             ],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -243,7 +239,6 @@ fn test_evaluate_safety_first_match_wins() {
                     safe: false,
                 },
             ],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -276,7 +271,6 @@ fn test_evaluate_safety_invalid_regex() {
                 pattern: "[invalid regex(".to_string(),
                 safe: true,
             }],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -345,7 +339,6 @@ async fn test_set_connected_file_read_error() {
         },
         parsing: ParsingConfig {
             rules: vec![],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -380,7 +373,6 @@ async fn test_is_safe_connected_no_content() {
         },
         parsing: ParsingConfig {
             rules: vec![],
-            default_safe: true,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -391,12 +383,12 @@ async fn test_is_safe_connected_no_content() {
 
     let device = FileMonitorDevice::new(config);
 
-    // Test behavior when content doesn't match any rules (tests default_safe path)
+    // Test behavior when content doesn't match any rules (should default to unsafe)
     fs::write(&test_file, "UNKNOWN STATUS").unwrap();
     device.set_connected(true).await.unwrap();
 
     let result = device.is_safe().await.unwrap();
-    assert_eq!(result, true); // Should return default_safe
+    assert_eq!(result, false); // Should return false (unsafe) when no rules match
 
     device.set_connected(false).await.unwrap();
     fs::remove_file(&test_file).unwrap();
@@ -424,7 +416,6 @@ async fn test_polling_functionality() {
         },
         parsing: ParsingConfig {
             rules: vec![],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -443,9 +434,9 @@ async fn test_polling_functionality() {
     sleep(Duration::from_millis(1100)).await;
 
     // Test that polling worked by checking safety evaluation with new content
-    // The file now contains "updated" which doesn't match any rules, so should return default_safe (false)
+    // The file now contains "updated" which doesn't match any rules, so should return false (unsafe)
     let result = device.is_safe().await.unwrap();
-    assert_eq!(result, false); // default_safe is false in this config
+    assert_eq!(result, false); // Should return false when no rules match
 
     device.set_connected(false).await.unwrap();
     fs::remove_file(&test_file).unwrap();
@@ -472,7 +463,6 @@ async fn test_connection_state_management() {
         },
         parsing: ParsingConfig {
             rules: vec![],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {
@@ -522,7 +512,6 @@ async fn test_start_server_creation() {
         },
         parsing: ParsingConfig {
             rules: vec![],
-            default_safe: false,
             case_sensitive: false,
         },
         server: ServerConfig {

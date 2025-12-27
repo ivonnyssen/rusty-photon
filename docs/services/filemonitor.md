@@ -50,7 +50,6 @@ The service uses a JSON configuration file with the following format:
         "safe": true
       }
     ],
-    "default_safe": false,
     "case_sensitive": false
   },
   "server": {
@@ -67,7 +66,7 @@ Configuration sections:
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
 - **server**: ASCOM Alpaca server configuration (port, device number)
 
-The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, it uses the `default_safe` value.
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons.
 
 ## Operation
 
@@ -114,7 +113,7 @@ graph TD
         J -->|No| K[Return false (unsafe)]
         J -->|Yes| L{Cached Content?}
         L -->|Yes| M[Evaluate Safety Rules]
-        L -->|No| N[Return Default Safe Value]
+        L -->|No| N[Return false (unsafe)]
         M --> O[Return Safe/Unsafe]
     end
 ```
