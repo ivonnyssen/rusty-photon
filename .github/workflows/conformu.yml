@@ -67,38 +67,20 @@ jobs:
       if: runner.os == 'Windows'
       shell: powershell
       run: |
-        $VERSION = "${{ steps.conformu-version.outputs.release }}"
-        $VERSION_NO_V = $VERSION -replace '^v', ''
+        # Get the actual installer filename from GitHub API
+        $RELEASE_INFO = Invoke-RestMethod -Uri "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest"
+        $INSTALLER_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*.Setup.exe" }
         
-        # Try different possible filenames
-        $URLS = @(
-          "https://github.com/ASCOMInitiative/ConformU/releases/download/$VERSION/ConformU.$VERSION_NO_V.Setup.exe",
-          "https://github.com/ASCOMInitiative/ConformU/releases/download/$VERSION/ConformU.Setup.exe",
-          "https://github.com/ASCOMInitiative/ConformU/releases/download/$VERSION/ConformU-Setup.exe"
-        )
+        if (-not $INSTALLER_ASSET) {
+          throw "Could not find Windows installer in release assets"
+        }
         
         $INSTALL_DIR = "$env:USERPROFILE\tools\conformu"
         New-Item -ItemType Directory -Force -Path $INSTALL_DIR
         Set-Location $INSTALL_DIR
         
-        $SUCCESS = $false
-        foreach ($URL in $URLS) {
-          try {
-            Write-Host "Trying URL: $URL"
-            Invoke-WebRequest -Uri $URL -OutFile "conformu-setup.exe" -ErrorAction Stop
-            if ((Get-Item "conformu-setup.exe").Length -gt 1000) {
-              Write-Host "Downloaded successfully from: $URL"
-              $SUCCESS = $true
-              break
-            }
-          } catch {
-            Write-Host "Failed: $URL"
-          }
-        }
-        
-        if (-not $SUCCESS) {
-          throw "Could not download ConformU installer"
-        }
+        Write-Host "Downloading: $($INSTALLER_ASSET.name)"
+        Invoke-WebRequest -Uri $INSTALLER_ASSET.browser_download_url -OutFile "conformu-setup.exe"
         
         # Install silently
         Start-Process -FilePath ".\conformu-setup.exe" -ArgumentList "/S" -Wait
