@@ -166,6 +166,7 @@ fn test_evaluate_safety_case_sensitive() {
 }
 
 #[test]
+#[cfg(not(miri))] // Skip under miri - regex compilation is too slow
 fn test_evaluate_safety_regex_rules() {
     let config = Config {
         device: DeviceConfig {
