@@ -3,9 +3,12 @@ use filemonitor::{
     Config, DeviceConfig, FileConfig, FileMonitorDevice, ParsingConfig, ParsingRule, RuleType,
     ServerConfig,
 };
+#[cfg(not(miri))]
 use proptest::prelude::*;
+#[cfg(not(miri))]
 use std::path::PathBuf;
 
+#[cfg(not(miri))]
 fn create_test_config() -> Config {
     Config {
         device: DeviceConfig {
@@ -40,6 +43,7 @@ fn create_test_config() -> Config {
     }
 }
 
+#[cfg(not(miri))]
 proptest! {
     #[test]
     fn test_safety_evaluation_consistency(content in ".*") {

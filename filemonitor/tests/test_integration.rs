@@ -6,6 +6,7 @@ use filemonitor::{
 use std::path::PathBuf;
 
 #[test]
+#[cfg(not(miri))]
 fn test_load_config() {
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
@@ -18,6 +19,7 @@ fn test_load_config() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_config_parsing_rules() {
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
@@ -31,6 +33,7 @@ fn test_config_parsing_rules() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_device_creation() {
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
@@ -41,6 +44,7 @@ fn test_device_creation() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_device_connected_with_existing_file() {
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
@@ -57,6 +61,7 @@ async fn test_device_connected_with_existing_file() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_device_not_connected_with_missing_file() {
     let config_path = PathBuf::from("tests/config.json");
     let mut config = load_config(&config_path).unwrap();
@@ -71,6 +76,7 @@ async fn test_device_not_connected_with_missing_file() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_load_invalid_json_config() {
     let config_path = PathBuf::from("tests/invalid_config.json");
     let result = load_config(&config_path);
@@ -286,6 +292,7 @@ fn test_evaluate_safety_invalid_regex() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_is_safe_when_disconnected() {
     use ascom_alpaca::api::SafetyMonitor;
 
@@ -300,6 +307,7 @@ async fn test_is_safe_when_disconnected() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_device_trait_methods() {
     use ascom_alpaca::api::Device;
 
@@ -321,6 +329,7 @@ async fn test_device_trait_methods() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_connected_file_read_error() {
     use ascom_alpaca::api::Device;
 
@@ -351,6 +360,7 @@ async fn test_set_connected_file_read_error() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_is_safe_connected_no_content() {
     use ascom_alpaca::api::{Device, SafetyMonitor};
     use std::fs;
@@ -393,6 +403,7 @@ async fn test_is_safe_connected_no_content() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_polling_functionality() {
     use ascom_alpaca::api::{Device, SafetyMonitor};
     use std::fs;
@@ -441,6 +452,7 @@ async fn test_polling_functionality() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_connection_state_management() {
     use ascom_alpaca::api::Device;
     use std::fs;
@@ -484,6 +496,7 @@ async fn test_connection_state_management() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_load_config_file_not_found() {
     let config_path = PathBuf::from("nonexistent_config.json");
     let result = load_config(&config_path);
@@ -491,6 +504,7 @@ fn test_load_config_file_not_found() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_start_server_creation() {
     use filemonitor::start_server;
     use std::time::Duration;

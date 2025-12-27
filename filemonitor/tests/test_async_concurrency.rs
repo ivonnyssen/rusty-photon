@@ -35,6 +35,7 @@ fn create_test_config() -> Config {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_concurrent_connection_state_changes() {
     let config = create_test_config();
     let device = Arc::new(FileMonitorDevice::new(config));
@@ -95,6 +96,7 @@ async fn test_concurrent_safety_checks() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_stress_concurrent_operations() {
     let config = create_test_config();
     let device = Arc::new(FileMonitorDevice::new(config));
