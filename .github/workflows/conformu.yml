@@ -1,10 +1,16 @@
 name: ConformU
 
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [ main, feature/conformu-integration ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   conformu:
@@ -16,6 +22,8 @@ jobs:
     
     steps:
     - uses: actions/checkout@v6
+      with:
+        submodules: true
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
