@@ -3,7 +3,7 @@ use ascom_alpaca::test::run_conformu_tests;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
@@ -52,8 +52,33 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(Stdio::null())
         .spawn()?;
 
-    // Wait for service to start
-    sleep(Duration::from_secs(3)).await;
+    // Wait for service to be ready with health check
+    let client = reqwest::Client::new();
+    let mut ready = false;
+
+    for _ in 0..30 {
+        sleep(Duration::from_secs(1)).await;
+
+        if let Ok(response) = timeout(
+            Duration::from_secs(2),
+            client.get("http://localhost:11112/management/v1/description"),
+        )
+        .await
+        {
+            if let Ok(resp) = response {
+                if resp.status().is_success() {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !ready {
+        child.kill().await.ok();
+        std::fs::remove_dir_all(&test_dir).ok();
+        return Err("Service failed to start within 30 seconds".into());
+    }
 
     // Run ConformU tests
     let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:11112", 0).await;
