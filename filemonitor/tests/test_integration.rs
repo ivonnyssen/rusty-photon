@@ -24,9 +24,9 @@ fn test_config_parsing_rules() {
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
 
-    assert_eq!(config.parsing.rules[0].pattern, "CLOSED");
+    assert_eq!(config.parsing.rules[0].pattern, "OPEN");
     assert!(config.parsing.rules[0].safe);
-    assert_eq!(config.parsing.rules[1].pattern, "OPEN");
+    assert_eq!(config.parsing.rules[1].pattern, "CLOSED");
     assert!(!config.parsing.rules[1].safe);
     assert!(!config.parsing.case_sensitive);
 }
@@ -100,12 +100,12 @@ fn test_evaluate_safety_contains_rules() {
             rules: vec![
                 ParsingRule {
                     rule_type: RuleType::Contains,
-                    pattern: "CLOSED".to_string(),
+                    pattern: "OPEN".to_string(),
                     safe: true,
                 },
                 ParsingRule {
                     rule_type: RuleType::Contains,
-                    pattern: "OPEN".to_string(),
+                    pattern: "CLOSED".to_string(),
                     safe: false,
                 },
             ],
@@ -120,14 +120,14 @@ fn test_evaluate_safety_contains_rules() {
     let device = FileMonitorDevice::new(config);
 
     // Test safe condition
-    assert!(device.evaluate_safety("Roof Status: CLOSED"));
+    assert!(device.evaluate_safety("Roof Status: OPEN"));
 
     // Test unsafe condition
-    assert!(!device.evaluate_safety("Roof Status: OPEN"));
+    assert!(!device.evaluate_safety("Roof Status: CLOSED"));
 
     // Test case insensitive matching
-    assert!(device.evaluate_safety("roof status: closed"));
-    assert!(!device.evaluate_safety("roof status: open"));
+    assert!(device.evaluate_safety("roof status: open"));
+    assert!(!device.evaluate_safety("roof status: closed"));
 
     // Test no match returns default
     assert!(!device.evaluate_safety("Unknown status"));
@@ -148,7 +148,7 @@ fn test_evaluate_safety_case_sensitive() {
         parsing: ParsingConfig {
             rules: vec![ParsingRule {
                 rule_type: RuleType::Contains,
-                pattern: "CLOSED".to_string(),
+                pattern: "OPEN".to_string(),
                 safe: true,
             }],
             case_sensitive: true,
@@ -162,10 +162,10 @@ fn test_evaluate_safety_case_sensitive() {
     let device = FileMonitorDevice::new(config);
 
     // Test exact case match
-    assert!(device.evaluate_safety("Status: CLOSED"));
+    assert!(device.evaluate_safety("Status: OPEN"));
 
     // Test case mismatch doesn't match when case sensitive
-    assert!(!device.evaluate_safety("Status: closed"));
+    assert!(!device.evaluate_safety("Status: open"));
 }
 
 #[test]

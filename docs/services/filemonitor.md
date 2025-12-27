@@ -36,12 +36,12 @@ The service uses a JSON configuration file with the following format:
     "rules": [
       {
         "type": "contains",
-        "pattern": "CLOSED",
+        "pattern": "OPEN",
         "safe": true
       },
       {
         "type": "contains", 
-        "pattern": "OPEN",
+        "pattern": "CLOSED",
         "safe": false
       },
       {
@@ -128,7 +128,7 @@ graph TD;
 An example monitored file `RoofStatusFile.txt` might contain:
 
 ```
-???2025-12-15 01:20:13AM Roof Status: CLOSED
+2025-12-15 01:20:13AM Roof Status: OPEN
 ```
 
 ## Cross-Platform Support
