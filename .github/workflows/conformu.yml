@@ -17,7 +17,7 @@ jobs:
       cancel-in-progress: true
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     
     steps:
     - uses: actions/checkout@v6
@@ -47,6 +47,7 @@ jobs:
     
     - name: Get latest ConformU version
       id: conformu-version
+      shell: bash
       run: |
         LATEST_VERSION=$(curl -s https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
@@ -59,6 +60,38 @@ jobs:
         cd ~/tools/conformu
         wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/conformu.linux-x64.tar.xz
         tar -xf conformu.linux-x64.tar.xz
+        chmod +x conformu
+        echo "$HOME/tools/conformu" >> $GITHUB_PATH
+    
+    - name: Install ConformU (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        mkdir -p ~/tools/conformu
+        cd ~/tools/conformu
+        curl -L -o conformu-setup.exe "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/ConformU.${{ steps.conformu-version.outputs.version }}.Setup.exe"
+        # Extract using 7zip (available on GitHub runners)
+        7z x conformu-setup.exe -o./extracted
+        # Find the ConformU.exe in the extracted files
+        find ./extracted -name "ConformU.exe" -exec cp {} ./conformu.exe \;
+        chmod +x conformu.exe
+        echo "$HOME/tools/conformu" >> $GITHUB_PATH
+    
+    - name: Install ConformU (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        mkdir -p ~/tools/conformu
+        cd ~/tools/conformu
+        curl -L -o conformu-installer.dmg "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/ConformU-Installer.dmg"
+        # Mount the DMG
+        hdiutil attach conformu-installer.dmg -mountpoint ./dmg-mount
+        # Copy the app bundle
+        cp -R "./dmg-mount/Conform Universal.app" ./
+        # Unmount the DMG
+        hdiutil detach ./dmg-mount
+        # Create a wrapper script to run the app
+        echo '#!/bin/bash' > conformu
+        echo 'exec "$HOME/tools/conformu/Conform Universal.app/Contents/MacOS/ConformU" "$@"' >> conformu
         chmod +x conformu
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
