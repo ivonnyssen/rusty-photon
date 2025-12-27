@@ -8,7 +8,7 @@ repository.workspace = true
 description = "File monitoring service for Rusty Photon"
 
 [dependencies]
-ascom-alpaca = { workspace = true }
+ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", features = ["server", "safety_monitor"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
