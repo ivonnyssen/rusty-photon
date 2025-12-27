@@ -12,3 +12,16 @@ ASCOM Alpaca SafetyMonitor that monitors file content for observatory safety sta
 
 See [docs/services/filemonitor.md](docs/services/filemonitor.md) for detailed documentation.
 
+## Testing
+
+### ConformU Integration
+ASCOM Alpaca compliance testing is integrated into the test suite using ConformU:
+
+```bash
+# Install ConformU (first time only)
+./test-conformance.sh --install-conformu
+
+# Run ConformU compliance tests
+cargo test --test conformu_integration -- --ignored
+```
+

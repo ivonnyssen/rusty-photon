@@ -8,7 +8,7 @@ repository.workspace = true
 description = "File monitoring service for Rusty Photon"
 
 [dependencies]
-ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", version = "1.0.0-beta.6", features = ["server", "safety_monitor"] }
+ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", version = "1.0.0-beta.6", features = ["server", "safety_monitor", "test"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,3 +21,5 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }
+reqwest = "0.12"
+tracing-subscriber = { workspace = true }

@@ -1,3 +1,0 @@
-[submodule "deps/ascom-alpaca"]
-	path = deps/ascom-alpaca
-	url = https://github.com/ivonnyssen/ascom-alpaca-rs.git
