@@ -1,6 +1,5 @@
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
@@ -47,7 +46,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "case_sensitive": false
         },
         "server": {
-            "port": 11113,
+            "port": 18888,
             "device_number": 0
         }
     });
@@ -58,8 +57,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Start filemonitor service
     let mut child = Command::new("cargo")
         .args(&["run", "--", "-c", config_path.to_str().unwrap()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()?;
 
     // Wait for service to be ready with health check
@@ -71,7 +68,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Ok(response) = timeout(
             Duration::from_secs(2),
-            client.get("http://localhost:11113/management/v1/description").send(),
+            client.get("http://localhost:18888/management/v1/description").send(),
         )
         .await
         {
@@ -94,7 +91,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running ASCOM Alpaca compliance tests...");
     
     // Run ConformU tests and capture result
-    let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:11113", 0).await;
+    let result = run_conformu_tests::<dyn SafetyMonitor>("http://localhost:18888", 0).await;
     
     match &result {
         Ok(_) => {
