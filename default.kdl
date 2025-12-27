@@ -1,0 +1,27 @@
+layout {
+    pane size=1 borderless=true {
+        plugin location="tab-bar"
+    }
+    pane split_direction="vertical" {
+        pane size="20%" {
+            pane { 
+                command "bacon" 
+                args "-jcheck-all"
+            }
+            pane { 
+                command "bacon" 
+                args "-jnextest"
+            }
+            pane
+        }
+        pane size="40%" {
+            command "nvim"
+        }
+        pane size="40%" {
+            command "kiro-cli"
+        }
+    }
+    pane size=1 borderless=true {
+        plugin location="status-bar"
+    }
+}

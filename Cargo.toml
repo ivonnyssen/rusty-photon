@@ -1,0 +1,24 @@
+[workspace]
+members = ["filemonitor"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ivonnyssen/rusty_photon"
+description = "Rusty Photon - An astrophotography application"
+
+[workspace.dependencies]
+ascom-alpaca = { version = "1.0.0-beta.6", features = ["server", "safety_monitor"] }
+tokio = { version = "1.48.0", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+clap = { version = "4.5.53", features = ["derive"] }
+regex = "1.12.2"
+async-trait = "0.1.89"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tokio-test = "0.4"
+proptest = "1.5"

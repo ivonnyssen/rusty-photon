@@ -1,0 +1,186 @@
+# Filemonitor Service Design
+
+## Overview
+
+The filemonitor service implements an ASCOM Alpaca compatible SafetyMonitor device. It monitors a clear text file and determines safety status based on configurable parsing rules.
+
+**Cross-Platform Support:** The service runs natively on Linux, macOS, and Windows with no platform-specific dependencies.
+
+## Implementation Framework
+
+The service uses the `ascom-alpaca` crate [<https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca>) which provides:
+
+- `SafetyMonitor` trait with required `async fn is_safe(&self) -> ASCOMResult<bool>` method
+- `Device` trait for common ASCOM functionality (device name, unique ID, etc.)
+- `Server` struct for ASCOM Alpaca protocol handling
+- Auto-discovery mechanism for network clients
+- Built on async/await with tokio runtime
+- Cross-platform compatibility (Linux, macOS, Windows)
+
+## Configuration
+
+The service uses a JSON configuration file with the following format:
+
+```json
+{
+  "device": {
+    "name": "File Safety Monitor",
+    "unique_id": "filemonitor-001",
+    "description": "ASCOM Alpaca SafetyMonitor that monitors file content"
+  },
+  "file": {
+    "path": "/path/to/RoofStatusFile.txt",
+    "polling_interval_seconds": 60
+  },
+  "parsing": {
+    "rules": [
+      {
+        "type": "contains",
+        "pattern": "CLOSED",
+        "safe": true
+      },
+      {
+        "type": "contains", 
+        "pattern": "OPEN",
+        "safe": false
+      },
+      {
+        "type": "regex",
+        "pattern": "Status:\\s*(SAFE|OK)",
+        "safe": true
+      }
+    ],
+    "default_safe": false,
+    "case_sensitive": false
+  },
+  "server": {
+    "port": 11111,
+    "device_number": 0
+  }
+}
+```
+
+Configuration sections:
+
+- **device**: ASCOM device metadata (name, unique ID, description)
+- **file**: Path to monitor and polling interval in seconds
+- **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
+- **server**: ASCOM Alpaca server configuration (port, device number)
+
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, it uses the `default_safe` value.
+
+## Operation
+
+The service parses the monitored file according to the configured rules, yielding either:
+
+- `true` - Safe condition
+- `false` - Unsafe condition or any errors/unresolvable conflicts
+
+The `is_safe()` method contains the core file monitoring and parsing logic, called by ASCOM clients. It first checks if the device is connected and returns an ASCOM NOT_CONNECTED error if disconnected, ensuring proper protocol compliance.
+
+### Connection Management
+
+The `set_connected()` method controls the monitoring behavior:
+
+- **When set to `true`**:
+  - Immediately reloads the monitored file to get current content
+  - Initiates background polling according to the configured `polling_interval_seconds`
+  - Caches file content for use by `is_safe()` calls
+  - Returns error if file cannot be read
+
+- **When set to `false`**:
+  - Stops the background polling task
+  - `is_safe()` returns NOT_CONNECTED error when called
+
+The polling runs in a background task that periodically reads the file and updates the cached content. This ensures `is_safe()` calls are fast and don't block on file I/O.
+
+## Architecture
+
+```mermaid
+graph TD
+    A[ASCOM Client] --> B[ASCOM Alpaca Server]
+    B --> C[FileMonitorDevice]
+    C --> D[File Parser]
+    D --> E[Monitored File]
+    
+    C --> F[Connection State]
+    C --> G[Cached Content]
+    C --> H[Background Polling Task]
+    H --> E
+    H --> G
+    
+    subgraph "is_safe() Flow"
+        I[is_safe() called] --> J{Connected?}
+        J -->|No| K[Return NOT_CONNECTED Error]
+        J -->|Yes| L{Cached Content?}
+        L -->|Yes| M[Evaluate Safety Rules]
+        L -->|No| N[Return Default Safe Value]
+        M --> O[Return Safe/Unsafe]
+    end
+```
+
+## Implementation Components
+
+1. **FileMonitorDevice**: Struct implementing `Device` and `SafetyMonitor` traits
+2. **Configuration**: JSON-based config for file path, parsing rules, and device metadata
+3. **File Parser**: Logic to read and parse monitored file according to rules
+4. **ASCOM Server**: Uses `ascom-alpaca::Server` to expose device over network
+
+## Example
+
+An example monitored file `RoofStatusFile.txt` might contain:
+
+```
+???2025-12-15 01:20:13AM Roof Status: CLOSED
+```
+
+## Cross-Platform Support
+
+The filemonitor service is designed to run natively on multiple platforms:
+
+### Supported Platforms
+- **Linux** (x86_64, ARM64) - Primary development platform
+- **macOS** (Intel, Apple Silicon) - Full compatibility
+- **Windows** (x86_64, ARM64) - Full compatibility
+
+### Platform-Specific Considerations
+
+#### File Paths
+The service uses Rust's `PathBuf` for cross-platform path handling:
+- **Linux/macOS**: `/home/user/observatory/RoofStatusFile.txt`
+- **Windows**: `C:\Observatory\RoofStatusFile.txt` or `\\server\share\RoofStatusFile.txt`
+
+#### Network Binding
+- All platforms bind to `0.0.0.0` (IPv4) by default
+- IPv6 dual-stack support available on all platforms
+- Windows Firewall may require configuration for network access
+
+#### File Monitoring
+- Uses standard file I/O operations (`std::fs::read_to_string`)
+- Polling-based approach works consistently across all platforms
+- No platform-specific file watching dependencies
+
+### Installation
+
+#### Linux
+```bash
+cargo build --release
+./target/release/filemonitor -c config.json
+```
+
+#### macOS
+```bash
+cargo build --release
+./target/release/filemonitor -c config.json
+```
+
+#### Windows
+```cmd
+cargo build --release
+.\target\release\filemonitor.exe -c config.json
+```
+
+### Service Integration
+- **Linux**: systemd service files
+- **macOS**: launchd plist files  
+- **Windows**: Windows Service or Task Scheduler

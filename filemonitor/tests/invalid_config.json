@@ -1,0 +1,10 @@
+{
+  "device": {
+    "name": "Test Monitor",
+    "unique_id": "test-001"
+    // Missing comma and closing brace
+  "file": {
+    "path": "tests/status.txt"
+  }
+  // Invalid JSON structure
+}

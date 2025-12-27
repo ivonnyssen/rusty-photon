@@ -1,0 +1,36 @@
+{
+  "device": {
+    "name": "File Safety Monitor",
+    "unique_id": "filemonitor-001",
+    "description": "ASCOM Alpaca SafetyMonitor that monitors file content"
+  },
+  "file": {
+    "path": "C:\\Observatory\\RoofStatusFile.txt",
+    "polling_interval_seconds": 60
+  },
+  "parsing": {
+    "rules": [
+      {
+        "type": "contains",
+        "pattern": "CLOSED",
+        "safe": true
+      },
+      {
+        "type": "contains", 
+        "pattern": "OPEN",
+        "safe": false
+      },
+      {
+        "type": "regex",
+        "pattern": "Status:\\s*(SAFE|OK)",
+        "safe": true
+      }
+    ],
+    "default_safe": false,
+    "case_sensitive": false
+  },
+  "server": {
+    "port": 11111,
+    "device_number": 0
+  }
+}
