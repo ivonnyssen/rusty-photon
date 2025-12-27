@@ -128,7 +128,7 @@ graph TD;
 An example monitored file `RoofStatusFile.txt` might contain:
 
 ```
-2025-12-15 01:20:13AM Roof Status: OPEN
+???2025-12-15 01:20:13AM Roof Status: CLOSED
 ```
 
 ## Cross-Platform Support
