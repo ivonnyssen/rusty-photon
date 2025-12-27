@@ -1,28 +1,7 @@
-use clap::{Parser, ValueEnum};
-use filemonitor::{load_config, start_server};
+use clap::Parser;
+use filemonitor::{load_config, start_server, LogLevel};
 use std::path::PathBuf;
 use tracing::{debug, info};
-
-#[derive(Debug, Clone, ValueEnum)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Error => tracing::Level::ERROR,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Trace => tracing::Level::TRACE,
-        }
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "filemonitor")]
@@ -58,32 +37,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_server(config).await?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_log_level_conversion() {
-        assert_eq!(tracing::Level::from(LogLevel::Error), tracing::Level::ERROR);
-        assert_eq!(tracing::Level::from(LogLevel::Warn), tracing::Level::WARN);
-        assert_eq!(tracing::Level::from(LogLevel::Info), tracing::Level::INFO);
-        assert_eq!(tracing::Level::from(LogLevel::Debug), tracing::Level::DEBUG);
-        assert_eq!(tracing::Level::from(LogLevel::Trace), tracing::Level::TRACE);
-    }
-
-    #[test]
-    fn test_log_level_clone() {
-        let level = LogLevel::Info;
-        let cloned = level.clone();
-        assert_eq!(tracing::Level::from(level), tracing::Level::from(cloned));
-    }
-
-    #[test]
-    fn test_log_level_debug() {
-        let level = LogLevel::Debug;
-        let debug_str = format!("{:?}", level);
-        assert_eq!(debug_str, "Debug");
-    }
 }
