@@ -180,6 +180,7 @@ cargo build --release
 ```
 
 ### Service Integration
+Service integration files are not yet implemented. Future versions will include:
 - **Linux**: systemd service files
 - **macOS**: launchd plist files  
 - **Windows**: Windows Service or Task Scheduler
