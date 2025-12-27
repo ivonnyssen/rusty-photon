@@ -15,13 +15,20 @@ fn test_cli_help() {
     // Check stderr for sanitizer-related issues and skip assertion if found
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer") || stderr.contains("ASAN") || stderr.contains("LeakSanitizer") {
+        if stderr.contains("sanitizer")
+            || stderr.contains("ASAN")
+            || stderr.contains("LeakSanitizer")
+        {
             eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
             return;
         }
     }
 
-    assert!(output.status.success(), "Command failed with stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Command failed with stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ASCOM Alpaca SafetyMonitor"));
     assert!(stdout.contains("--config"));
@@ -47,7 +54,10 @@ fn test_cli_invalid_config() {
     // In sanitizer environments, check for sanitizer-related failures
     if output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer") || stderr.contains("ASAN") || stderr.contains("LeakSanitizer") {
+        if stderr.contains("sanitizer")
+            || stderr.contains("ASAN")
+            || stderr.contains("LeakSanitizer")
+        {
             eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
             return;
         }
@@ -109,7 +119,10 @@ fn test_cli_valid_config_with_log_level() {
     // In sanitizer environments, check for sanitizer-related failures
     if output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer") || stderr.contains("ASAN") || stderr.contains("LeakSanitizer") {
+        if stderr.contains("sanitizer")
+            || stderr.contains("ASAN")
+            || stderr.contains("LeakSanitizer")
+        {
             eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
             return;
         }
@@ -169,7 +182,10 @@ fn test_cli_different_log_levels() {
         // In sanitizer environments, check for sanitizer-related failures
         if output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("sanitizer") || stderr.contains("ASAN") || stderr.contains("LeakSanitizer") {
+            if stderr.contains("sanitizer")
+                || stderr.contains("ASAN")
+                || stderr.contains("LeakSanitizer")
+            {
                 eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
                 break;
             }
