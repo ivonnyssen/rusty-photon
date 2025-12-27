@@ -1,4 +1,4 @@
-# rusty_photon
+# rusty_photon [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 Cross-platform ASCOM Alpaca services for astronomy applications.
 
