@@ -96,26 +96,24 @@ The polling runs in a background task that periodically reads the file and updat
 ## Architecture
 
 ```mermaid
-graph TD
-    A[ASCOM Client] --> B[ASCOM Alpaca Server]
-    B --> C[FileMonitorDevice]
-    C --> D[File Parser]
-    D --> E[Monitored File]
+graph TD;
+    A[ASCOM Client] --> B[ASCOM Alpaca Server];
+    B --> C[FileMonitorDevice];
+    C --> D[File Parser];
+    D --> E[Monitored File];
     
-    C --> F[Connection State]
-    C --> G[Cached Content]
-    C --> H[Background Polling Task]
-    H --> E
-    H --> G
+    C --> F[Connection State];
+    C --> G[Cached Content];
+    C --> H[Background Polling Task];
+    H --> E;
+    H --> G;
     
-    subgraph Flow ["is_safe Flow"]
-        I[is_safe called] --> J{Connected?}
-        J -->|No| K[Return false unsafe]
-        J -->|Yes| L{Cached Content?}
-        L -->|Yes| M[Evaluate Safety Rules]
-        L -->|No| N[Return false unsafe]
-        M --> O[Return Safe/Unsafe]
-    end
+    I[is_safe called] --> J{Connected?};
+    J -->|No| K[Return false unsafe];
+    J -->|Yes| L{Cached Content?};
+    L -->|Yes| M[Evaluate Safety Rules];
+    L -->|No| N[Return false unsafe];
+    M --> O[Return Safe/Unsafe];
 ```
 
 ## Implementation Components
