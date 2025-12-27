@@ -47,18 +47,16 @@ jobs:
     
     - name: Get latest ConformU version
       id: conformu-version
-      shell: bash
-      run: |
-        LATEST_VERSION=$(curl -s https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-        echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-        echo "Latest ConformU version: $LATEST_VERSION"
+      uses: pozetroninc/github-action-get-latest-release@master
+      with:
+        repository: ASCOMInitiative/ConformU
     
     - name: Install ConformU (Linux)
       if: runner.os == 'Linux'
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
-        wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/conformu.linux-x64.tar.xz
+        wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
         tar -xf conformu.linux-x64.tar.xz
         chmod +x conformu
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
@@ -69,7 +67,7 @@ jobs:
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
-        curl -L -o conformu-setup.exe "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/ConformU.${{ steps.conformu-version.outputs.version }}.Setup.exe"
+        curl -L -o conformu-setup.exe "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU.${{ steps.conformu-version.outputs.release }}.Setup.exe"
         # Extract using 7zip (available on GitHub runners)
         7z x conformu-setup.exe -o./extracted
         # Find the ConformU.exe in the extracted files
@@ -82,7 +80,7 @@ jobs:
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
-        curl -L -o conformu-installer.dmg "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.version }}/ConformU-Installer.dmg"
+        curl -L -o conformu-installer.dmg "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU-Installer.dmg"
         # Mount the DMG
         hdiutil attach conformu-installer.dmg -mountpoint ./dmg-mount
         # Copy the app bundle
