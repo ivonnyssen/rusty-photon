@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[cfg(not(miri))] // Skip property tests under miri as they're too slow
 mod tests {
     use crate::*;
     use proptest::prelude::*;
