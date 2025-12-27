@@ -287,14 +287,13 @@ fn test_evaluate_safety_invalid_regex() {
 #[tokio::test]
 async fn test_is_safe_when_disconnected() {
     use ascom_alpaca::api::SafetyMonitor;
-    use ascom_alpaca::ASCOMErrorCode;
 
     let config_path = PathBuf::from("tests/config.json");
     let config = load_config(&config_path).unwrap();
     let device = FileMonitorDevice::new(config);
 
-    // Device starts disconnected, is_safe should return NOT_CONNECTED error
+    // Device starts disconnected, is_safe should return false
     let result = device.is_safe().await;
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().code, ASCOMErrorCode::NOT_CONNECTED);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), false);
 }

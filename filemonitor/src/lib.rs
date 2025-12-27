@@ -212,10 +212,7 @@ impl Device for FileMonitorDevice {
 impl SafetyMonitor for FileMonitorDevice {
     async fn is_safe(&self) -> ASCOMResult<bool> {
         if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Device is not connected".to_string(),
-            ));
+            return Ok(false);
         }
 
         let last_content = self.last_content.lock().await;
