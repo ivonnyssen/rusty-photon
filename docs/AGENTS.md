@@ -6,7 +6,7 @@
 
 3. You MUST use `cargo run` when you start any service for testing.
 
-4. You MUST ALWAYS run `cargo build --all --quiet --color never`, `cargo nexttest --all --quiet --color never` and `cargo fmt` to build the package before committing your work and fix all errors and warnings from the change you've made.
+4. You MUST ALWAYS run `cargo build --all --quiet --color never`, `cargo test --all --quiet --color never` and `cargo fmt` to build the package before committing your work and fix all errors and warnings from the change you've made.
 
 5. You MUST NEVER commit to the main branch of the git repository/ ALL work MUST happen on a feature branch.
 

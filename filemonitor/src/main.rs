@@ -1,28 +1,7 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use filemonitor::{load_config, start_server};
 use std::path::PathBuf;
-use tracing::{debug, info};
-
-#[derive(Debug, Clone, ValueEnum)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Error => tracing::Level::ERROR,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Trace => tracing::Level::TRACE,
-        }
-    }
-}
+use tracing::{debug, info, Level};
 
 #[derive(Parser)]
 #[command(name = "filemonitor")]
@@ -33,8 +12,8 @@ struct Args {
     config: PathBuf,
 
     /// Log level
-    #[arg(short, long, default_value = "info")]
-    log_level: LogLevel,
+    #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
+    log_level: Level,
 }
 
 #[tokio::main]
@@ -43,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup tracing with specified log level
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::from(args.log_level.clone()))
+        .with_max_level(args.log_level)
         .init();
 
     debug!(

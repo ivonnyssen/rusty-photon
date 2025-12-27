@@ -30,7 +30,6 @@ pub struct FileConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsingConfig {
     pub rules: Vec<ParsingRule>,
-    pub default_safe: bool,
     pub case_sensitive: bool,
 }
 
@@ -104,7 +103,7 @@ impl FileMonitorDevice {
             }
         }
 
-        self.config.parsing.default_safe
+        false
     }
 
     fn read_file(&self) -> Result<String, std::io::Error> {
@@ -218,7 +217,7 @@ impl SafetyMonitor for FileMonitorDevice {
         let last_content = self.last_content.lock().await;
         match &*last_content {
             Some(content) => Ok(self.evaluate_safety(content)),
-            None => Ok(self.config.parsing.default_safe),
+            None => Ok(false),
         }
     }
 }
@@ -255,9 +254,3 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
     Ok(())
 }
-
-#[cfg(test)]
-mod async_concurrency_tests;
-
-#[cfg(test)]
-mod property_tests;

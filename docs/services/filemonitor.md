@@ -8,7 +8,7 @@ The filemonitor service implements an ASCOM Alpaca compatible SafetyMonitor devi
 
 ## Implementation Framework
 
-The service uses the `ascom-alpaca` crate [<https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca>) which provides:
+The service uses the `ascom-alpaca` crate [https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca) which provides:
 
 - `SafetyMonitor` trait with required `async fn is_safe(&self) -> ASCOMResult<bool>` method
 - `Device` trait for common ASCOM functionality (device name, unique ID, etc.)
@@ -36,12 +36,12 @@ The service uses a JSON configuration file with the following format:
     "rules": [
       {
         "type": "contains",
-        "pattern": "CLOSED",
+        "pattern": "OPEN",
         "safe": true
       },
       {
         "type": "contains", 
-        "pattern": "OPEN",
+        "pattern": "CLOSED",
         "safe": false
       },
       {
@@ -50,7 +50,6 @@ The service uses a JSON configuration file with the following format:
         "safe": true
       }
     ],
-    "default_safe": false,
     "case_sensitive": false
   },
   "server": {
@@ -67,7 +66,7 @@ Configuration sections:
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
 - **server**: ASCOM Alpaca server configuration (port, device number)
 
-The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, it uses the `default_safe` value.
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons.
 
 ## Operation
 
@@ -97,26 +96,24 @@ The polling runs in a background task that periodically reads the file and updat
 ## Architecture
 
 ```mermaid
-graph TD
-    A[ASCOM Client] --> B[ASCOM Alpaca Server]
-    B --> C[FileMonitorDevice]
-    C --> D[File Parser]
-    D --> E[Monitored File]
+graph TD;
+    A[ASCOM Client] --> B[ASCOM Alpaca Server];
+    B --> C[FileMonitorDevice];
+    C --> D[File Parser];
+    D --> E[Monitored File];
     
-    C --> F[Connection State]
-    C --> G[Cached Content]
-    C --> H[Background Polling Task]
-    H --> E
-    H --> G
+    C --> F[Connection State];
+    C --> G[Cached Content];
+    C --> H[Background Polling Task];
+    H --> E;
+    H --> G;
     
-    subgraph "is_safe() Flow"
-        I[is_safe() called] --> J{Connected?}
-        J -->|No| K[Return false (unsafe)]
-        J -->|Yes| L{Cached Content?}
-        L -->|Yes| M[Evaluate Safety Rules]
-        L -->|No| N[Return Default Safe Value]
-        M --> O[Return Safe/Unsafe]
-    end
+    I[is_safe called] --> J{Connected?};
+    J -->|No| K[Return false unsafe];
+    J -->|Yes| L{Cached Content?};
+    L -->|Yes| M[Evaluate Safety Rules];
+    L -->|No| N[Return false unsafe];
+    M --> O[Return Safe/Unsafe];
 ```
 
 ## Implementation Components
@@ -133,6 +130,8 @@ An example monitored file `RoofStatusFile.txt` might contain:
 ```
 ???2025-12-15 01:20:13AM Roof Status: CLOSED
 ```
+
+This would cause the safety monitor to evaluate to `false` (unsafe), as the roof is closed and the telescope might be in danger of colliding with the roof.
 
 ## Cross-Platform Support
 
@@ -181,6 +180,7 @@ cargo build --release
 ```
 
 ### Service Integration
+Service integration files are not yet implemented. Future versions will include:
 - **Linux**: systemd service files
 - **macOS**: launchd plist files  
 - **Windows**: Windows Service or Task Scheduler

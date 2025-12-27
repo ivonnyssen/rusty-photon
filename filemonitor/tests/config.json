@@ -12,12 +12,12 @@
     "rules": [
       {
         "type": "contains",
-        "pattern": "CLOSED",
+        "pattern": "OPEN",
         "safe": true
       },
       {
         "type": "contains", 
-        "pattern": "OPEN",
+        "pattern": "CLOSED",
         "safe": false
       },
       {
@@ -26,7 +26,6 @@
         "safe": true
       }
     ],
-    "default_safe": false,
     "case_sensitive": false
   },
   "server": {
