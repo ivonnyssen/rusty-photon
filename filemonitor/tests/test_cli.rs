@@ -6,7 +6,7 @@ use std::process::Command;
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_help() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "filemonitor", "--", "--help"])
+        .args(["run", "--bin", "filemonitor", "--", "--help"])
         .current_dir("../")
         .output()
         .expect("Failed to execute command");
@@ -39,7 +39,7 @@ fn test_cli_help() {
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_invalid_config() {
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "filemonitor",
@@ -98,7 +98,7 @@ fn test_cli_valid_config_with_log_level() {
     fs::write(&test_file, "test").unwrap();
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "filemonitor",
@@ -165,7 +165,7 @@ fn test_cli_different_log_levels() {
 
     for log_level in &["error", "warn", "info", "debug", "trace"] {
         let output = Command::new("cargo")
-            .args(&[
+            .args([
                 "run",
                 "--bin",
                 "filemonitor",

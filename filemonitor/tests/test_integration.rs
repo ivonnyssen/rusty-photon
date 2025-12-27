@@ -297,7 +297,7 @@ async fn test_is_safe_when_disconnected() {
     // Device starts disconnected, is_safe should return false
     let result = device.is_safe().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), false);
+    assert!(!result.unwrap());
 }
 
 #[tokio::test]
@@ -388,7 +388,7 @@ async fn test_is_safe_connected_no_content() {
     device.set_connected(true).await.unwrap();
 
     let result = device.is_safe().await.unwrap();
-    assert_eq!(result, false); // Should return false (unsafe) when no rules match
+    assert!(!result); // Should return false (unsafe) when no rules match
 
     device.set_connected(false).await.unwrap();
     fs::remove_file(&test_file).unwrap();
@@ -436,7 +436,7 @@ async fn test_polling_functionality() {
     // Test that polling worked by checking safety evaluation with new content
     // The file now contains "updated" which doesn't match any rules, so should return false (unsafe)
     let result = device.is_safe().await.unwrap();
-    assert_eq!(result, false); // Should return false when no rules match
+    assert!(!result); // Should return false when no rules match
 
     device.set_connected(false).await.unwrap();
     fs::remove_file(&test_file).unwrap();
