@@ -83,13 +83,17 @@ jobs:
         curl -L -o conformu-installer.dmg "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU-Installer.dmg"
         # Mount the DMG
         hdiutil attach conformu-installer.dmg -mountpoint ./dmg-mount
-        # Copy the app bundle
-        cp -R "./dmg-mount/Conform Universal.app" ./
+        # List contents to see what's available
+        ls -la ./dmg-mount/
+        # Find and copy the app bundle (handle different possible names)
+        find ./dmg-mount -name "*.app" -exec cp -R {} ./ \;
         # Unmount the DMG
         hdiutil detach ./dmg-mount
-        # Create a wrapper script to run the app
+        # Find the actual app and create wrapper script
+        APP_PATH=$(find . -name "*.app" -type d | head -1)
+        APP_NAME=$(basename "$APP_PATH")
         echo '#!/bin/bash' > conformu
-        echo 'exec "$HOME/tools/conformu/Conform Universal.app/Contents/MacOS/ConformU" "$@"' >> conformu
+        echo "exec \"$HOME/tools/conformu/$APP_NAME/Contents/MacOS/ConformU\" \"\$@\"" >> conformu
         chmod +x conformu
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
