@@ -86,23 +86,47 @@ jobs:
         # Use curl instead of Invoke-WebRequest for better reliability
         curl.exe -L -o "conformu-setup.exe" "$($INSTALLER_ASSET.browser_download_url)" --max-time 300
         
-        # Install silently
-        Start-Process -FilePath ".\conformu-setup.exe" -ArgumentList "/S" -Wait
+        # Try silent install first
+        Write-Host "Attempting silent installation..."
+        $process = Start-Process -FilePath ".\conformu-setup.exe" -ArgumentList "/S" -Wait -PassThru
+        Write-Host "Installer exit code: $($process.ExitCode)"
         
-        # Find installed ConformU.exe
+        # Find installed ConformU.exe in common locations
         $CONFORMU_PATHS = @(
           "$env:ProgramFiles\ConformU\ConformU.exe",
           "$env:ProgramFiles(x86)\ConformU\ConformU.exe",
-          "$env:LOCALAPPDATA\ConformU\ConformU.exe"
+          "$env:LOCALAPPDATA\ConformU\ConformU.exe",
+          "$env:APPDATA\ConformU\ConformU.exe"
         )
         
+        $FOUND = $false
         foreach ($PATH in $CONFORMU_PATHS) {
           if (Test-Path $PATH) {
             Copy-Item $PATH "$INSTALL_DIR\conformu.exe"
             Write-Host "Found ConformU at: $PATH"
+            $FOUND = $true
             break
           }
         }
+        
+        # If not found, try interactive install and search more broadly
+        if (-not $FOUND) {
+          Write-Host "Silent install may have failed, searching for ConformU..."
+          $CONFORMU_FILES = Get-ChildItem -Path "C:\" -Name "ConformU.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($CONFORMU_FILES) {
+            $CONFORMU_PATH = "C:\$CONFORMU_FILES"
+            Copy-Item $CONFORMU_PATH "$INSTALL_DIR\conformu.exe"
+            Write-Host "Found ConformU at: $CONFORMU_PATH"
+            $FOUND = $true
+          }
+        }
+        
+        if (-not $FOUND) {
+          throw "ConformU installation failed - executable not found"
+        }
+        
+        # Verify the executable works
+        & "$INSTALL_DIR\conformu.exe" --version
         
         # Add to PATH
         echo "$INSTALL_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
