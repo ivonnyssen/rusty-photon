@@ -53,124 +53,13 @@ jobs:
         repository: ASCOMInitiative/ConformU
         token: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Install ConformU (Linux)
-      if: runner.os == 'Linux'
+    - name: Install ConformU (All platforms)
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
         wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
         tar -xf conformu.linux-x64.tar.xz
         chmod +x conformu
-        echo "$HOME/tools/conformu" >> $GITHUB_PATH
-    
-    - name: Install ConformU (Windows)
-      if: runner.os == 'Windows'
-      shell: powershell
-      run: |
-        # Disable progress bar to prevent hanging
-        $ProgressPreference = 'SilentlyContinue'
-        
-        # Get release info
-        $RELEASE_INFO = Invoke-RestMethod -Uri "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest" -TimeoutSec 30
-        
-        # Try to find a portable/zip version first
-        $PORTABLE_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*windows*.zip" -or $_.name -like "*win*.zip" }
-        $INSTALLER_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*.Setup.exe" }
-        
-        $INSTALL_DIR = "$env:USERPROFILE\tools\conformu"
-        New-Item -ItemType Directory -Force -Path $INSTALL_DIR
-        Set-Location $INSTALL_DIR
-        
-        if ($PORTABLE_ASSET) {
-          Write-Host "Using portable version: $($PORTABLE_ASSET.name)"
-          curl.exe -L -o "conformu-portable.zip" "$($PORTABLE_ASSET.browser_download_url)" --max-time 300
-          Expand-Archive -Path "conformu-portable.zip" -DestinationPath "." -Force
-          
-          # Find the executable in the extracted files
-          $CONFORMU_EXE = Get-ChildItem -Path "." -Name "ConformU.exe" -Recurse | Select-Object -First 1
-          if ($CONFORMU_EXE) {
-            $CONFORMU_PATH = Join-Path (Get-Location) $CONFORMU_EXE
-            Copy-Item $CONFORMU_PATH "$INSTALL_DIR\conformu.exe"
-            Write-Host "Found ConformU at: $CONFORMU_PATH"
-          } else {
-            throw "ConformU.exe not found in portable archive"
-          }
-        } elseif ($INSTALLER_ASSET) {
-          Write-Host "Using installer: $($INSTALLER_ASSET.name)"
-          curl.exe -L -o "conformu-setup.exe" "$($INSTALLER_ASSET.browser_download_url)" --max-time 300
-          
-          # Try silent install with timeout
-          Write-Host "Attempting silent installation..."
-          $setupPath = Resolve-Path ".\conformu-setup.exe"
-          
-          $job = Start-Job -ScriptBlock {
-            param($fullPath)
-            Start-Process -FilePath $fullPath -ArgumentList "/S" -Wait -PassThru
-          } -ArgumentList $setupPath.Path
-          
-          # Wait up to 2 minutes for installation
-          if (Wait-Job $job -Timeout 120) {
-            $result = Receive-Job $job
-            Write-Host "Installer exit code: $($result.ExitCode)"
-          } else {
-            Write-Host "Installation timed out, stopping job"
-            Stop-Job $job
-          }
-          Remove-Job $job -Force
-          
-          # Search for installed ConformU
-          $CONFORMU_PATHS = @(
-            "$env:ProgramFiles\ConformU\ConformU.exe",
-            "$env:ProgramFiles(x86)\ConformU\ConformU.exe",
-            "$env:LOCALAPPDATA\ConformU\ConformU.exe",
-            "$env:APPDATA\ConformU\ConformU.exe"
-          )
-          
-          $FOUND = $false
-          foreach ($PATH in $CONFORMU_PATHS) {
-            if (Test-Path $PATH) {
-              Copy-Item $PATH "$INSTALL_DIR\conformu.exe"
-              Write-Host "Found ConformU at: $PATH"
-              $FOUND = $true
-              break
-            }
-          }
-          
-          if (-not $FOUND) {
-            throw "ConformU installation failed - executable not found"
-          }
-        } else {
-          throw "No suitable ConformU asset found"
-        }
-        
-        # Verify the executable works
-        & "$INSTALL_DIR\conformu.exe" --version
-        
-        # Add to PATH
-        echo "$INSTALL_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-    
-    - name: Install ConformU (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        mkdir -p ~/tools/conformu
-        cd ~/tools/conformu
-        curl -L -o conformu-installer.dmg "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU-Installer.dmg"
-        # Mount the DMG
-        hdiutil attach conformu-installer.dmg -mountpoint ./dmg-mount
-        # List contents to see what's available
-        ls -la ./dmg-mount/
-        # Find and copy the app bundle (handle different possible names)
-        find ./dmg-mount -name "*.app" -exec cp -R {} ./ \;
-        # Unmount the DMG
-        hdiutil detach ./dmg-mount
-        # Find the actual app and create wrapper script
-        APP_PATH=$(find . -name "*.app" -type d | head -1)
-        APP_NAME=$(basename "$APP_PATH")
-        echo '#!/bin/bash' > conformu
-        echo "exec \"$HOME/tools/conformu/$APP_NAME/Contents/MacOS/ConformU\" \"\$@\"" >> conformu
-        chmod +x conformu
-        # Also create a direct symlink for the ascom-alpaca crate to find
-        ln -sf "$HOME/tools/conformu/$APP_NAME/Contents/MacOS/ConformU" /usr/local/bin/conformu || true
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
     - name: Build project
