@@ -101,10 +101,12 @@ jobs:
           
           # Try silent install with timeout
           Write-Host "Attempting silent installation..."
+          $setupPath = Resolve-Path ".\conformu-setup.exe"
+          
           $job = Start-Job -ScriptBlock {
-            param($setupPath)
-            Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait -PassThru
-          } -ArgumentList ".\conformu-setup.exe"
+            param($fullPath)
+            Start-Process -FilePath $fullPath -ArgumentList "/S" -Wait -PassThru
+          } -ArgumentList $setupPath.Path
           
           # Wait up to 2 minutes for installation
           if (Wait-Job $job -Timeout 120) {
