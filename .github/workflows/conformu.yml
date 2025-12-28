@@ -70,59 +70,75 @@ jobs:
         # Disable progress bar to prevent hanging
         $ProgressPreference = 'SilentlyContinue'
         
-        # Get the actual installer filename from GitHub API with timeout
+        # Get release info
         $RELEASE_INFO = Invoke-RestMethod -Uri "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest" -TimeoutSec 30
-        $INSTALLER_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*.Setup.exe" }
         
-        if (-not $INSTALLER_ASSET) {
-          throw "Could not find Windows installer in release assets"
-        }
+        # Try to find a portable/zip version first
+        $PORTABLE_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*windows*.zip" -or $_.name -like "*win*.zip" }
+        $INSTALLER_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*.Setup.exe" }
         
         $INSTALL_DIR = "$env:USERPROFILE\tools\conformu"
         New-Item -ItemType Directory -Force -Path $INSTALL_DIR
         Set-Location $INSTALL_DIR
         
-        Write-Host "Downloading: $($INSTALLER_ASSET.name)"
-        # Use curl instead of Invoke-WebRequest for better reliability
-        curl.exe -L -o "conformu-setup.exe" "$($INSTALLER_ASSET.browser_download_url)" --max-time 300
-        
-        # Try silent install first
-        Write-Host "Attempting silent installation..."
-        $process = Start-Process -FilePath ".\conformu-setup.exe" -ArgumentList "/S" -Wait -PassThru
-        Write-Host "Installer exit code: $($process.ExitCode)"
-        
-        # Find installed ConformU.exe in common locations
-        $CONFORMU_PATHS = @(
-          "$env:ProgramFiles\ConformU\ConformU.exe",
-          "$env:ProgramFiles(x86)\ConformU\ConformU.exe",
-          "$env:LOCALAPPDATA\ConformU\ConformU.exe",
-          "$env:APPDATA\ConformU\ConformU.exe"
-        )
-        
-        $FOUND = $false
-        foreach ($PATH in $CONFORMU_PATHS) {
-          if (Test-Path $PATH) {
-            Copy-Item $PATH "$INSTALL_DIR\conformu.exe"
-            Write-Host "Found ConformU at: $PATH"
-            $FOUND = $true
-            break
-          }
-        }
-        
-        # If not found, try interactive install and search more broadly
-        if (-not $FOUND) {
-          Write-Host "Silent install may have failed, searching for ConformU..."
-          $CONFORMU_FILES = Get-ChildItem -Path "C:\" -Name "ConformU.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($CONFORMU_FILES) {
-            $CONFORMU_PATH = "C:\$CONFORMU_FILES"
+        if ($PORTABLE_ASSET) {
+          Write-Host "Using portable version: $($PORTABLE_ASSET.name)"
+          curl.exe -L -o "conformu-portable.zip" "$($PORTABLE_ASSET.browser_download_url)" --max-time 300
+          Expand-Archive -Path "conformu-portable.zip" -DestinationPath "." -Force
+          
+          # Find the executable in the extracted files
+          $CONFORMU_EXE = Get-ChildItem -Path "." -Name "ConformU.exe" -Recurse | Select-Object -First 1
+          if ($CONFORMU_EXE) {
+            $CONFORMU_PATH = Join-Path (Get-Location) $CONFORMU_EXE
             Copy-Item $CONFORMU_PATH "$INSTALL_DIR\conformu.exe"
             Write-Host "Found ConformU at: $CONFORMU_PATH"
-            $FOUND = $true
+          } else {
+            throw "ConformU.exe not found in portable archive"
           }
-        }
-        
-        if (-not $FOUND) {
-          throw "ConformU installation failed - executable not found"
+        } elseif ($INSTALLER_ASSET) {
+          Write-Host "Using installer: $($INSTALLER_ASSET.name)"
+          curl.exe -L -o "conformu-setup.exe" "$($INSTALLER_ASSET.browser_download_url)" --max-time 300
+          
+          # Try silent install with timeout
+          Write-Host "Attempting silent installation..."
+          $job = Start-Job -ScriptBlock {
+            param($setupPath)
+            Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait -PassThru
+          } -ArgumentList ".\conformu-setup.exe"
+          
+          # Wait up to 2 minutes for installation
+          if (Wait-Job $job -Timeout 120) {
+            $result = Receive-Job $job
+            Write-Host "Installer exit code: $($result.ExitCode)"
+          } else {
+            Write-Host "Installation timed out, stopping job"
+            Stop-Job $job
+          }
+          Remove-Job $job -Force
+          
+          # Search for installed ConformU
+          $CONFORMU_PATHS = @(
+            "$env:ProgramFiles\ConformU\ConformU.exe",
+            "$env:ProgramFiles(x86)\ConformU\ConformU.exe",
+            "$env:LOCALAPPDATA\ConformU\ConformU.exe",
+            "$env:APPDATA\ConformU\ConformU.exe"
+          )
+          
+          $FOUND = $false
+          foreach ($PATH in $CONFORMU_PATHS) {
+            if (Test-Path $PATH) {
+              Copy-Item $PATH "$INSTALL_DIR\conformu.exe"
+              Write-Host "Found ConformU at: $PATH"
+              $FOUND = $true
+              break
+            }
+          }
+          
+          if (-not $FOUND) {
+            throw "ConformU installation failed - executable not found"
+          }
+        } else {
+          throw "No suitable ConformU asset found"
         }
         
         # Verify the executable works
