@@ -67,8 +67,11 @@ jobs:
       if: runner.os == 'Windows'
       shell: powershell
       run: |
-        # Get the actual installer filename from GitHub API
-        $RELEASE_INFO = Invoke-RestMethod -Uri "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest"
+        # Disable progress bar to prevent hanging
+        $ProgressPreference = 'SilentlyContinue'
+        
+        # Get the actual installer filename from GitHub API with timeout
+        $RELEASE_INFO = Invoke-RestMethod -Uri "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/latest" -TimeoutSec 30
         $INSTALLER_ASSET = $RELEASE_INFO.assets | Where-Object { $_.name -like "*.Setup.exe" }
         
         if (-not $INSTALLER_ASSET) {
@@ -80,7 +83,8 @@ jobs:
         Set-Location $INSTALL_DIR
         
         Write-Host "Downloading: $($INSTALLER_ASSET.name)"
-        Invoke-WebRequest -Uri $INSTALLER_ASSET.browser_download_url -OutFile "conformu-setup.exe"
+        # Use curl instead of Invoke-WebRequest for better reliability
+        curl.exe -L -o "conformu-setup.exe" "$($INSTALLER_ASSET.browser_download_url)" --max-time 300
         
         # Install silently
         Start-Process -FilePath ".\conformu-setup.exe" -ArgumentList "/S" -Wait
