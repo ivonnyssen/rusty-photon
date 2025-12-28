@@ -53,13 +53,35 @@ jobs:
         repository: ASCOMInitiative/ConformU
         token: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Install ConformU (All platforms)
+    - name: Install ConformU (Linux - native)
+      if: runner.os == 'Linux'
       run: |
         mkdir -p ~/tools/conformu
         cd ~/tools/conformu
         wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
         tar -xf conformu.linux-x64.tar.xz
         chmod +x conformu
+        echo "$HOME/tools/conformu" >> $GITHUB_PATH
+    
+    - name: Install ConformU (Windows/macOS - Docker)
+      if: runner.os != 'Linux'
+      run: |
+        # Create a wrapper script that runs ConformU in Docker
+        mkdir -p ~/tools/conformu
+        cat > ~/tools/conformu/conformu << 'EOF'
+        #!/bin/bash
+        # Download ConformU if not cached
+        if [ ! -f ~/tools/conformu/conformu-linux ]; then
+          wget -q -O ~/tools/conformu/conformu.linux-x64.tar.xz https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
+          cd ~/tools/conformu
+          tar -xf conformu.linux-x64.tar.xz
+          mv conformu conformu-linux
+        fi
+        
+        # Run ConformU in Docker with network host mode
+        docker run --rm --network host -v ~/tools/conformu:/app -w /app ubuntu:22.04 ./conformu-linux "$@"
+        EOF
+        chmod +x ~/tools/conformu/conformu
         echo "$HOME/tools/conformu" >> $GITHUB_PATH
     
     - name: Build project
