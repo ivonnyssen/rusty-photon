@@ -77,6 +77,33 @@ jobs:
           }
         shell: powershell
 
+      - name: Install ConformU (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Get the macOS DMG file from GitHub API
+          release="${{ steps.conformu-version.outputs.release }}"
+          api_url="https://api.github.com/repos/ASCOMInitiative/ConformU/releases/tags/$release"
+
+          # Get the DMG download URL
+          dmg_url=$(curl -s "$api_url" | jq -r '.assets[] | select(.name == "ConformU-Installer.dmg") | .browser_download_url')
+
+          if [ -z "$dmg_url" ]; then
+            echo "ConformU-Installer.dmg not found in release $release"
+            exit 1
+          fi
+
+          # Download and mount the DMG
+          echo "Downloading ConformU-Installer.dmg"
+          curl -L -o ConformU-Installer.dmg "$dmg_url"
+
+          # Mount DMG and copy app to Applications
+          hdiutil attach ConformU-Installer.dmg
+          cp -R "/Volumes/ConformU Installer/ConformU.app" /Applications/
+          hdiutil detach "/Volumes/ConformU Installer"
+
+          # Add to PATH
+          echo "/Applications/ConformU.app/Contents/MacOS" >> $GITHUB_PATH
+
       - name: Build project
         run: cargo build --all --release
 
