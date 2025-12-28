@@ -65,6 +65,7 @@ jobs:
     
     - name: Install ConformU (Windows/macOS - Docker)
       if: runner.os != 'Linux'
+      shell: bash
       run: |
         # Create a wrapper script that runs ConformU in Docker
         mkdir -p ~/tools/conformu
