@@ -99,7 +99,7 @@ jobs:
           # Mount DMG and copy app to Applications
           hdiutil attach ConformU-Installer.dmg
           cp -R "/Volumes/ConformU-Installer/ConformU.app" /Applications/
-          hdiutil detach "/Volumes/ConformU Installer"
+          hdiutil detach "/Volumes/ConformU-Installer"
 
           # Add to PATH
           echo "/Applications/ConformU.app/Contents/MacOS" >> $GITHUB_PATH
