@@ -48,10 +48,22 @@ jobs:
       - name: Install ConformU (Windows)
         if: runner.os == 'Windows'
         run: |
+          # Get the actual Windows installer filename from GitHub API
+          $release = "${{ steps.conformu-version.outputs.release }}"
+          $apiUrl = "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/tags/$release"
+          $releaseInfo = Invoke-RestMethod -Uri $apiUrl
+          $windowsAsset = $releaseInfo.assets | Where-Object { $_.name -like "ConformU.*.Setup.exe" }
+
+          if (-not $windowsAsset) {
+            throw "Windows installer not found in release $release"
+          }
+
           # Download the installer
-          $url = "https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/ConformU.${{ steps.conformu-version.outputs.release }}.Setup.exe"
-          $installer = "ConformU.Setup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          $url = $windowsAsset.browser_download_url
+          $installer = $windowsAsset.name
+
+          Write-Host "Downloading $installer from $url"
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
 
           # Install silently (NSIS installer)
           Start-Process -FilePath ".\$installer" -ArgumentList "/SP /VERYSILENT" -Wait -NoNewWindow
