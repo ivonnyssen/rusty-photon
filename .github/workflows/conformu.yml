@@ -102,7 +102,7 @@ jobs:
           hdiutil detach "/Volumes/ConformU-Installer"
 
           # Add to PATH
-          echo "/Applications/ConformU.app/Contents/MacOS" >> $GITHUB_PATH
+          echo "/Applications/ConformU.app/Contents/Resources" >> $GITHUB_PATH
 
       - name: Verify ConformU installation (macOS)
         if: runner.os == 'macOS'
