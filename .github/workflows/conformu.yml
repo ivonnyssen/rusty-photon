@@ -22,8 +22,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,13 +49,13 @@ jobs:
         run: |
           mkdir -p ~/tools/conformu
           cd ~/tools/conformu
-          
+
           if [ ! -f "conformu.linux-x64.tar.xz" ]; then
             wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
           else
             echo "Using cached conformu.linux-x64.tar.xz"
           fi
-          
+
           tar -xf conformu.linux-x64.tar.xz
           chmod +x conformu
           echo "$HOME/tools/conformu" >> $GITHUB_PATH
