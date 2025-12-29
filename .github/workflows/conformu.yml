@@ -104,7 +104,8 @@ jobs:
           # Get the actual macOS installer filename from GitHub API (same as Windows)
           $release = "${{ steps.conformu-version.outputs.release }}"
           $apiUrl = "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/tags/$release"
-          $releaseInfo = Invoke-RestMethod -Uri $apiUrl
+          $headers = @{ Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}" }
+          $releaseInfo = Invoke-RestMethod -Uri $apiUrl -Headers $headers
           $macosAsset = $releaseInfo.assets | Where-Object { $_.name -eq "ConformU-Installer.dmg" }
 
           if (-not $macosAsset) {
