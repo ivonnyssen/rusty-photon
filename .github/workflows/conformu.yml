@@ -104,6 +104,14 @@ jobs:
           # Add to PATH
           echo "/Applications/ConformU.app/Contents/MacOS" >> $GITHUB_PATH
 
+      - name: Verify ConformU installation (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "Checking ConformU installation..."
+          ls -la /Applications/ConformU.app/Contents/MacOS/
+          /Applications/ConformU.app/Contents/MacOS/ConformU --version || echo "Version check failed"
+          which conformu || echo "conformu not in PATH"
+
       - name: Build project
         run: cargo build --all --release
 
