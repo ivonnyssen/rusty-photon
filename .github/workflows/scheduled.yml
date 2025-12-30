@@ -8,7 +8,7 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    - cron:  '7 7 * * *'
+    - cron: "7 7 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -20,8 +20,6 @@ jobs:
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: cargo generate-lockfile
@@ -43,8 +41,6 @@ jobs:
     # steps, so we repeat it.
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta

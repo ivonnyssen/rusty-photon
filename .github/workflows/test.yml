@@ -27,8 +27,6 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -59,8 +57,6 @@ jobs:
       # - run: vcpkg install openssl:x64-windows-static-md
       #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
@@ -94,8 +90,6 @@ jobs:
     name: ubuntu / stable / coverage
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
