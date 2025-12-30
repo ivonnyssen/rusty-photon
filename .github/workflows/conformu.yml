@@ -33,112 +33,17 @@ jobs:
           repository: ASCOMInitiative/ConformU
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cache ConformU installers
-        uses: actions/cache@v5
+      - name: Install ConformU
+        id: conformu
+        uses: ivonnyssen/conformu-install@main
+
+      - uses: actions/cache@v5
         with:
+          key: ${{ steps.conformu.outputs.cache-key }}
           path: |
             conformu.linux-x64.tar.xz
             ConformU.*.Setup.exe
             ConformU-Installer.dmg
-          key: conformu-installers-${{ steps.conformu-version.outputs.release }}
-          restore-keys: |
-            conformu-installers-
-
-      - name: Install ConformU (Linux - native)
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p ~/tools/conformu
-          cd ~/tools/conformu
-
-          if [ ! -f "conformu.linux-x64.tar.xz" ]; then
-            wget -q https://github.com/ASCOMInitiative/ConformU/releases/download/${{ steps.conformu-version.outputs.release }}/conformu.linux-x64.tar.xz
-          else
-            echo "Using cached conformu.linux-x64.tar.xz"
-          fi
-
-          tar -xf conformu.linux-x64.tar.xz
-          chmod +x conformu
-          echo "$HOME/tools/conformu" >> $GITHUB_PATH
-
-      - name: Install ConformU (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # Get the actual Windows installer filename from GitHub API
-          $release = "${{ steps.conformu-version.outputs.release }}"
-          $apiUrl = "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/tags/$release"
-          $releaseInfo = Invoke-RestMethod -Uri $apiUrl
-          $windowsAsset = $releaseInfo.assets | Where-Object { $_.name -like "ConformU.*.Setup.exe" }
-
-          if (-not $windowsAsset) {
-            throw "Windows installer not found in release $release"
-          }
-
-          # Download the installer
-          $url = $windowsAsset.browser_download_url
-          $installer = $windowsAsset.name
-
-          if (-not (Test-Path $installer)) {
-            Write-Host "Downloading $installer from $url"
-            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
-          } else {
-            Write-Host "Using cached $installer"
-          }
-
-          # Install silently (NSIS installer)
-          Write-Host "Starting installer - $installer /SP /VERYSILENT"
-          Start-Process -FilePath ".\$installer" -ArgumentList "/SP /VERYSILENT" -Wait -NoNewWindow
-
-          # Add to PATH if needed
-          Write-Host "adding to path"
-          $conformuPath = "${env:ProgramFiles}\ASCOM\ConformU"
-          if (Test-Path $conformuPath) {
-            echo "$conformuPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-        shell: powershell
-
-      - name: Install ConformU (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          # Get the actual macOS installer filename from GitHub API (same as Windows)
-          $release = "${{ steps.conformu-version.outputs.release }}"
-          $apiUrl = "https://api.github.com/repos/ASCOMInitiative/ConformU/releases/tags/$release"
-          $headers = @{ Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}" }
-          $releaseInfo = Invoke-RestMethod -Uri $apiUrl -Headers $headers
-          $macosAsset = $releaseInfo.assets | Where-Object { $_.name -eq "ConformU-Installer.dmg" }
-
-          if (-not $macosAsset) {
-            throw "ConformU-Installer.dmg not found in release $release"
-          }
-
-          # Download the installer
-          $url = $macosAsset.browser_download_url
-          $installer = $macosAsset.name
-
-          if (-not (Test-Path $installer)) {
-            Write-Host "Downloading $installer from $url"
-            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
-          } else {
-            Write-Host "Using cached $installer"
-          }
-
-          # Mount DMG and copy app to Applications
-          Write-Host "Installing ConformU.app"
-          hdiutil attach $installer
-          cp -R "/Volumes/ConformU-Installer/ConformU.app" /Applications/
-          hdiutil detach "/Volumes/ConformU-Installer"
-
-          # Add to PATH
-          Write-Host "Adding to PATH"
-          echo "/Applications/ConformU.app/Contents/Resources" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: pwsh
-
-      - name: Verify ConformU installation (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          echo "Checking ConformU installation..."
-          ls -la /Applications/ConformU.app/Contents/MacOS/
-          /Applications/ConformU.app/Contents/Resources/conformu --version || echo "Version check failed"
-          which conformu || echo "conformu not in PATH"
 
       - name: Build project
         run: cargo build --all --release
