@@ -26,16 +26,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Get latest ConformU version
-        id: conformu-version
-        uses: pozetroninc/github-action-get-latest-release@master
-        with:
-          repository: ASCOMInitiative/ConformU
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install ConformU
         id: conformu
-        uses: ivonnyssen/conformu-install@main
+        uses: ivonnyssen/conformu-install@v1
 
       - name: Build project
         run: cargo build --all --release
