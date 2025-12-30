@@ -28,7 +28,7 @@ jobs:
 
       - name: Install ConformU
         id: conformu
-        uses: ivonnyssen/conformu-install@v1
+        uses: ivonnyssen/conformu-install@v1.0.0
 
       - name: Build project
         run: cargo build --all --release
