@@ -182,5 +182,21 @@ cargo build --release
 ### Service Integration
 Service integration files are not yet implemented. Future versions will include:
 - **Linux**: systemd service files
-- **macOS**: launchd plist files  
+- **macOS**: launchd plist files
 - **Windows**: Windows Service or Task Scheduler
+
+### Monorepo Structure
+
+The filemonitor service is located in `services/filemonitor/` within the rusty-photon monorepo.
+
+#### Building
+```bash
+# From repository root
+cargo build --release -p filemonitor
+```
+
+#### Running
+```bash
+# From repository root
+./target/release/filemonitor -c config.json
+```

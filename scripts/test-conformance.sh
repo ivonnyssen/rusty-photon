@@ -133,9 +133,9 @@ EOFCONFIG
     cd "$TEST_DIR"
     
     if [[ "$VERBOSE" == true ]]; then
-        timeout 300 "$SCRIPT_DIR/target/release/filemonitor" -c config.json &
+        timeout 300 "$SCRIPT_DIR/../target/release/filemonitor" -c config.json &
     else
-        timeout 300 "$SCRIPT_DIR/target/release/filemonitor" -c config.json > "$TEST_DIR/filemonitor.log" 2>&1 &
+        timeout 300 "$SCRIPT_DIR/../target/release/filemonitor" -c config.json > "$TEST_DIR/filemonitor.log" 2>&1 &
     fi
     
     FILEMONITOR_PID=$!
