@@ -4,6 +4,17 @@ Cross-platform ASCOM Alpaca services for astronomy applications.
 
 ## Services
 
+## Project Structure
+
+This is a monorepo containing multiple ASCOM Alpaca services:
+
+- **services/**: Individual ASCOM Alpaca device implementations
+  - **filemonitor/**: SafetyMonitor that monitors file content
+- **scripts/**: CI and testing scripts
+- **docs/services/**: Per-service design documentation
+
+Each service is a separate Rust crate managed by the workspace.
+
 ### Filemonitor
 ASCOM Alpaca SafetyMonitor that monitors file content for observatory safety status.
 
@@ -19,7 +30,7 @@ ASCOM Alpaca compliance testing is integrated into the test suite using ConformU
 
 ```bash
 # Install ConformU (first time only)
-./test-conformance.sh --install-conformu
+./scripts/test-conformance.sh --install-conformu
 
 # Run ConformU compliance tests
 cargo test --test conformu_integration -- --ignored

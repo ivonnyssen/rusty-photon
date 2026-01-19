@@ -1,5 +1,5 @@
 [workspace]
-members = ["filemonitor"]
+members = ["services/filemonitor"]
 resolver = "2"
 
 [workspace.package]

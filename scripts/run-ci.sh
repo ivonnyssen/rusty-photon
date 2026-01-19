@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 show_help() {
     echo "Usage: $0 [OPTIONS] [JOB_NAME]"
@@ -126,7 +126,7 @@ EOFCONFIG
     # Start filemonitor service
     echo "Starting filemonitor service..."
     cd "$TEST_DIR"
-    timeout 300 "$SCRIPT_DIR/target/release/filemonitor" -c config.json > "$TEST_DIR/filemonitor.log" 2>&1 &
+    timeout 300 "$SCRIPT_DIR/../target/release/filemonitor" -c config.json > "$TEST_DIR/filemonitor.log" 2>&1 &
     FILEMONITOR_PID=$!
     
     # Wait for service to start
