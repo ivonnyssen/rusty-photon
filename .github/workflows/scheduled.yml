@@ -20,6 +20,8 @@ jobs:
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v5
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: cargo generate-lockfile
@@ -41,6 +43,8 @@ jobs:
     # steps, so we repeat it.
     steps:
       - uses: actions/checkout@v5
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
