@@ -21,3 +21,4 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio-test = "0.4"
 proptest = "1.5"
+fitsio = "0.21"

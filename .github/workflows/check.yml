@@ -45,6 +45,8 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -62,6 +64,8 @@ jobs:
     name: ubuntu / stable / features
     steps:
       - uses: actions/checkout@v5
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
@@ -81,6 +85,8 @@ jobs:
     name: ubuntu / ${{ matrix.msrv }}
     steps:
       - uses: actions/checkout@v5
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ${{ matrix.msrv }}
         uses: dtolnay/rust-toolchain@master
         with:
