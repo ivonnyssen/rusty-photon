@@ -1,8 +1,8 @@
-# PHD2 Guider ASCOM Alpaca Driver Design
+# PHD2 Guider Service Design
 
 ## Overview
 
-The PHD2 guider service implements an ASCOM Alpaca compatible Telescope device that acts as a bridge between ASCOM clients and Open PHD Guiding 2 (PHD2). It translates ASCOM Telescope guiding commands (specifically PulseGuide) into PHD2 JSON RPC API calls.
+The PHD2 guider service provides a Rust client library and service for interacting with Open PHD Guiding 2 (PHD2). It enables programmatic control of PHD2 including starting/stopping the application, managing equipment profiles, and controlling guiding operations.
 
 **Cross-Platform Support:** The service runs natively on Linux, macOS, and Windows, matching PHD2's platform support.
 
@@ -10,23 +10,23 @@ The PHD2 guider service implements an ASCOM Alpaca compatible Telescope device t
 
 ```mermaid
 graph TD;
-    A[ASCOM Client] --> B[ASCOM Alpaca Server];
-    B --> C[PHD2GuiderDevice];
-    C --> D[PHD2 JSON RPC Client];
-    D --> E[PHD2 Application TCP:4400];
+    A[Rusty Photon Services] --> B[PHD2 Client Library];
+    B --> C[JSON RPC Client];
+    C --> D[PHD2 Application TCP:4400];
 
-    C --> F[Connection State];
-    C --> G[Pulse Guide Queue];
-    C --> H[Event Monitor];
-    H --> E;
-    H --> I[AppState Cache];
+    B --> E[Process Manager];
+    E --> F[PHD2 Process];
 
-    J[PulseGuide Called] --> K{PHD2 Connected?};
-    K -->|No| L[Return NotConnected Error];
-    K -->|Yes| M{PHD2 Guiding?};
-    M -->|No| N[Return InvalidOperation Error];
-    M -->|Yes| O[Send guide_pulse RPC];
-    O --> P[Track IsPulseGuiding];
+    B --> G[Event Monitor];
+    G --> D;
+    G --> H[State Cache];
+
+    I[User Request] --> J{PHD2 Running?};
+    J -->|No| K[Start PHD2 Process];
+    K --> L[Wait for TCP Ready];
+    L --> M[Connect & Configure];
+    J -->|Yes| M;
+    M --> N[Execute Command];
 ```
 
 ## PHD2 API Overview
@@ -44,324 +44,459 @@ PHD2 provides two network interfaces:
 - Event notifications and method invocation
 - Multiple simultaneous client connections supported
 
-## Implementation Framework
+## Complete PHD2 JSON RPC API Reference
 
-The service will use:
+### Guiding Control
 
-1. **`ascom-alpaca` crate** [https://crates.io/crates/ascom-alpaca](https://crates.io/crates/ascom-alpaca)
-   - `Telescope` trait for ASCOM Telescope interface
-   - `Device` trait for common ASCOM functionality
-   - `Server` struct for ASCOM Alpaca protocol handling
-   - Built on async/await with tokio runtime
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `guide` | `settle: {pixels, time, timeout}`, `recalibrate: bool`, `roi: [x,y,w,h]` | Start guiding with settling parameters; optional recalibration and region of interest |
+| `dither` | `amount: float`, `raOnly: bool`, `settle: object` | Shift lock position by specified pixels for dithering between exposures |
+| `loop` | none | Start capturing exposures, or if guiding, stop guiding but continue capturing |
+| `stop_capture` | none | Stop all capture and guiding operations |
 
-2. **JSON RPC Client** for PHD2 communication
-   - Connect to TCP port 4400
-   - Send method calls (JSON RPC 2.0 format)
-   - Receive event notifications
-   - Handle async responses
+### Pause Control
 
-## ASCOM Alpaca Telescope Methods Required
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_paused` | none | Check if guiding is currently paused |
+| `set_paused` | `paused: bool`, `full: string` | Pause or resume guiding; "full" pauses looping entirely |
 
-### Core Guiding Methods
+### Equipment Connection
 
-#### PulseGuide
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `set_connected` | `connected: bool` | Connect or disconnect all equipment in current profile |
+| `get_connected` | none | Check if equipment is connected |
+| `get_current_equipment` | none | Retrieve list of selected devices in active profile |
+
+### Profile Management
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_profile` | none | Return current profile ID and name |
+| `get_profiles` | none | List all available equipment profiles |
+| `set_profile` | `id: int` | Switch active profile; equipment must be disconnected first |
+
+### Calibration
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_calibrated` | none | Check if mount is calibrated |
+| `get_calibration_data` | `which: string` | Obtain calibration parameters and angles ("Mount" or "AO") |
+| `clear_calibration` | `which: string` | Reset calibration data for "mount", "ao", or "both" |
+| `flip_calibration` | none | Invert existing calibration for meridian flip without recalibrating |
+
+### Camera Operations
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `capture_single_frame` | `exposure: int`, `subframe: [x,y,w,h]` | Acquire one frame with optional exposure (ms) and subframe |
+| `set_exposure` | `exposure: int` | Set exposure duration in milliseconds |
+| `get_exposure` | none | Get current exposure time in milliseconds |
+| `get_exposure_durations` | none | List all valid exposure duration options |
+| `get_camera_frame_size` | none | Return camera image dimensions (width, height) |
+| `get_use_subframes` | none | Check if subframing is enabled |
+
+### Camera Cooling
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_ccd_temperature` | none | Read current sensor temperature |
+| `get_cooler_status` | none | Get cooler temperature and power percentage |
+| `set_cooler_state` | `enabled: bool`, `temperature: float` | Enable/disable cooling and set target temperature |
+
+### Guide Star & Lock Position
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `find_star` | `roi: [x,y,w,h]` | Auto-select a guide star, optionally within specified region |
+| `get_lock_position` | none | Get current lock position coordinates (x, y) |
+| `set_lock_position` | `x: float`, `y: float`, `exact: bool` | Set lock position; exact=false allows PHD2 to find nearby star |
+| `get_lock_shift_enabled` | none | Check if lock position shift is enabled |
+| `set_lock_shift_enabled` | `enabled: bool` | Enable or disable lock position shifting |
+| `get_lock_shift_params` | none | Get shift rate and axis configuration |
+| `set_lock_shift_params` | `rate: [ra,dec]`, `units: string`, `axes: string` | Configure shift parameters |
+
+### Guide Algorithm Parameters
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_algo_param_names` | `axis: string` | List algorithm parameter names for "ra" or "dec" axis |
+| `get_algo_param` | `axis: string`, `name: string` | Read individual algorithm parameter value |
+| `set_algo_param` | `axis: string`, `name: string`, `value: float` | Modify individual algorithm parameter value |
+
+### Guide Output Control
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_guide_output_enabled` | none | Check if guide corrections are being sent to mount |
+| `set_guide_output_enabled` | `enabled: bool` | Enable or disable sending guide corrections |
+| `guide_pulse` | `amount: int`, `direction: string`, `which: string` | Send manual pulse; direction: N/S/E/W, which: "mount" or "ao" |
+| `get_dec_guide_mode` | none | Get declination guide mode (Off/Auto/North/South) |
+| `set_dec_guide_mode` | `mode: string` | Set declination guide mode |
+
+### State & Status
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_app_state` | none | Get current app state: Stopped, Selected, Calibrating, Guiding, LostLock, Paused, Looping |
+| `get_pixel_scale` | none | Get image scale in arc-seconds per pixel |
+| `get_search_region` | none | Get star search radius in pixels |
+
+### Image Operations
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_star_image` | `size: int` | Get current guide star image data as base64-encoded FITS |
+| `save_image` | none | Save current frame to FITS file in PHD2's default location |
+
+### Timing Configuration
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `get_variable_delay_settings` | none | Get delay configuration between exposures |
+| `set_variable_delay_settings` | `enabled: bool`, `shortDelay: int`, `longDelay: int` | Configure exposure delays |
+
+### Application Control
+
+| Method | Parameters | Description |
+|--------|------------|-------------|
+| `shutdown` | none | Close PHD2 application |
+
+## PHD2 Event Notifications
+
+PHD2 sends asynchronous event notifications over the same TCP connection:
+
+| Event | Description |
+|-------|-------------|
+| `Version` | Sent on connect; contains PHD2 version and protocol version |
+| `AppState` | Application state changed (Stopped, Guiding, etc.) |
+| `GuideStep` | Sent after each guide correction with detailed statistics |
+| `GuidingDithered` | Dither operation completed |
+| `SettleDone` | Settling after guide/dither completed |
+| `StarSelected` | Guide star was selected |
+| `StarLost` | Guide star was lost |
+| `LockPositionSet` | Lock position was established |
+| `LockPositionShiftLimitReached` | Lock shift hit its limit |
+| `Calibrating` | Calibration in progress |
+| `CalibrationComplete` | Calibration finished |
+| `CalibrationFailed` | Calibration failed |
+| `CalibrationDataFlipped` | Calibration was flipped |
+| `LoopingExposures` | Looping exposures started |
+| `LoopingExposuresStopped` | Looping stopped |
+| `Paused` | Guiding was paused |
+| `Resumed` | Guiding was resumed |
+| `GuideParamChange` | Guide algorithm parameter changed |
+| `ConfigurationChange` | Configuration was modified |
+| `Alert` | Alert message for user |
+
+## Service API Design
+
+The service exposes a high-level Rust API:
+
+### Connection Management
+
 ```rust
-async fn pulse_guide(&self, direction: GuideDirection, duration: u32) -> ASCOMResult<()>
-```
-- **Parameters:**
-  - `direction`: North, South, East, West (GuideDirection enum)
-  - `duration`: Milliseconds (u32)
-- **Behavior:**
-  - Must be asynchronous (non-blocking)
-  - Maps to PHD2 `guide_pulse` JSON RPC method
-  - Updates `IsPulseGuiding` property
-- **Exceptions:**
-  - `PropertyNotImplementedException`: If `CanPulseGuide` is false
-  - `InvalidValueException`: Invalid direction or duration
-  - `InvalidOperationException`: PHD2 not guiding or operation conflicts
-  - `NotConnectedException`: PHD2 not connected
+/// Connect to a running PHD2 instance
+async fn connect(&mut self, host: &str, port: u16) -> Result<()>;
 
-#### IsPulseGuiding
+/// Disconnect from PHD2
+async fn disconnect(&mut self) -> Result<()>;
+
+/// Check if connected to PHD2
+fn is_connected(&self) -> bool;
+```
+
+### Process Management
+
 ```rust
-async fn is_pulse_guiding(&self) -> ASCOMResult<bool>
-```
-- Returns `true` if a PulseGuide operation is in progress
-- Must track completion of async pulse guide operations
-- Requires monitoring PHD2's response to guide_pulse commands
+/// Start PHD2 application
+async fn start_phd2(&mut self, executable_path: Option<&Path>) -> Result<()>;
 
-#### CanPulseGuide
+/// Stop PHD2 application gracefully
+async fn stop_phd2(&mut self) -> Result<()>;
+
+/// Check if PHD2 process is running
+fn is_phd2_running(&self) -> bool;
+```
+
+### Profile Management
+
 ```rust
-async fn can_pulse_guide(&self) -> ASCOMResult<bool>
+/// Get list of available equipment profiles
+async fn get_profiles(&self) -> Result<Vec<Profile>>;
+
+/// Get current active profile
+async fn get_current_profile(&self) -> Result<Profile>;
+
+/// Set active profile (equipment must be disconnected)
+async fn set_profile(&mut self, profile_id: i32) -> Result<()>;
 ```
-- Returns `true` if PHD2 is available and connected
-- Should verify PHD2 server is reachable
 
-### Guide Rate Properties
+### Equipment Control
 
-#### GuideRateRightAscension
 ```rust
-async fn guide_rate_right_ascension(&self) -> ASCOMResult<f64>
-async fn set_guide_rate_right_ascension(&self, rate: f64) -> ASCOMResult<()>
-```
-- Maps to PHD2's `get_algo_param` / `set_algo_param` for RA axis
-- May be tied to GuideRateDeclination depending on PHD2 configuration
+/// Connect all equipment in current profile
+async fn connect_equipment(&mut self) -> Result<()>;
 
-#### GuideRateDeclination
+/// Disconnect all equipment
+async fn disconnect_equipment(&mut self) -> Result<()>;
+
+/// Check if equipment is connected
+async fn is_equipment_connected(&self) -> Result<bool>;
+
+/// Get current equipment configuration
+async fn get_current_equipment(&self) -> Result<Equipment>;
+```
+
+### Guiding Control
+
 ```rust
-async fn guide_rate_declination(&self) -> ASCOMResult<f64>
-async fn set_guide_rate_declination(&self, rate: f64) -> ASCOMResult<()>
-```
-- Maps to PHD2's `get_algo_param` / `set_algo_param` for Dec axis
+/// Start guiding with settling parameters
+async fn start_guiding(&mut self, settle: SettleParams, recalibrate: bool) -> Result<()>;
 
-#### CanSetGuideRates
+/// Stop guiding (continues looping)
+async fn stop_guiding(&mut self) -> Result<()>;
+
+/// Stop all capture and guiding
+async fn stop_capture(&mut self) -> Result<()>;
+
+/// Pause guiding
+async fn pause(&mut self, full: bool) -> Result<()>;
+
+/// Resume guiding
+async fn resume(&mut self) -> Result<()>;
+
+/// Check if guiding is paused
+async fn is_paused(&self) -> Result<bool>;
+
+/// Get current application state
+async fn get_state(&self) -> Result<AppState>;
+
+/// Dither the guide position
+async fn dither(&mut self, amount: f64, ra_only: bool, settle: SettleParams) -> Result<()>;
+```
+
+### Star Selection
+
 ```rust
-async fn can_set_guide_rates(&self) -> ASCOMResult<bool>
+/// Auto-select a guide star
+async fn find_star(&mut self, roi: Option<Rect>) -> Result<()>;
+
+/// Get current lock position
+async fn get_lock_position(&self) -> Result<(f64, f64)>;
+
+/// Set lock position
+async fn set_lock_position(&mut self, x: f64, y: f64, exact: bool) -> Result<()>;
 ```
-- Returns whether guide rates can be modified via PHD2
 
-### Device Management
+### Calibration
 
-#### Connected
 ```rust
-async fn connected(&self) -> ASCOMResult<bool>
-async fn set_connected(&self, connected: bool) -> ASCOMResult<()>
-```
-- **When set to `true`:**
-  - Establishes TCP connection to PHD2 on port 4400
-  - Verifies PHD2 is running and responsive
-  - Subscribes to PHD2 event stream
-  - Caches initial PHD2 state (Version, AppState events)
-- **When set to `false`:**
-  - Closes TCP connection to PHD2
-  - Clears cached state
+/// Check if calibrated
+async fn is_calibrated(&self) -> Result<bool>;
 
-## PHD2 JSON RPC API Mapping
+/// Get calibration data
+async fn get_calibration_data(&self, which: CalibrationTarget) -> Result<CalibrationData>;
 
-### Connection Sequence
+/// Clear calibration
+async fn clear_calibration(&mut self, which: CalibrationTarget) -> Result<()>;
 
-1. **Client connects to PHD2 (TCP port 4400)**
-   - PHD2 sends initial events:
-     - `Version`: Protocol version and PHD version
-     - `LockPositionSet` / `StarSelected` (if applicable)
-     - `CalibrationComplete` (if calibrated)
-     - `AppState`: Current operational state
-
-2. **Monitor AppState events**
-   - Track PHD2 state: `Stopped`, `Selected`, `Calibrating`, `Guiding`, `LostLock`, `Paused`, `Looping`
-
-### Key JSON RPC Methods to Implement
-
-| ASCOM Method | PHD2 RPC Method | Notes |
-|--------------|-----------------|-------|
-| `PulseGuide` | `guide_pulse` | Send RA/Dec pulse commands |
-| `Connected` (get) | `get_app_state` | Check PHD2 availability |
-| `GuideRate*` (get) | `get_algo_param` | Query guide algorithm parameters |
-| `GuideRate*` (set) | `set_algo_param` | Modify guide algorithm parameters |
-| N/A | Event stream | Monitor `AppState`, `GuideStep`, `StarLost` events |
-
-### guide_pulse Method Details
-
-```json
-{
-  "method": "guide_pulse",
-  "params": {
-    "amount": 1000,
-    "direction": "N",
-    "which": "mount"
-  },
-  "id": 42
-}
+/// Flip calibration for meridian flip
+async fn flip_calibration(&mut self) -> Result<()>;
 ```
 
-**Parameters:**
-- `amount`: Duration in milliseconds
-- `direction`: "N", "S", "E", "W"
-- `which`: "mount" (for mount guiding) or "ao" (for adaptive optics)
+### Event Subscription
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": 0,
-  "id": 42
-}
+```rust
+/// Subscribe to PHD2 events
+fn subscribe(&self) -> broadcast::Receiver<Phd2Event>;
 ```
-
-### Important PHD2 Methods for Status
-
-| Method | Purpose |
-|--------|---------|
-| `get_app_state` | Current PHD2 state (Stopped, Guiding, etc.) |
-| `get_connected` | Equipment connection status |
-| `get_calibrated` | Whether PHD2 is calibrated |
-| `loop` | Start/stop exposure loop |
-| `stop_capture` | Stop all capturing and guiding |
 
 ## Configuration
 
 ```json
 {
-  "device": {
-    "name": "PHD2 Guider Bridge",
-    "unique_id": "phd2-guider-001",
-    "description": "ASCOM Alpaca Telescope driver for PHD2 guiding"
-  },
   "phd2": {
     "host": "localhost",
     "port": 4400,
+    "executable_path": null,
     "connection_timeout_seconds": 10,
-    "command_timeout_seconds": 30
+    "command_timeout_seconds": 30,
+    "auto_start": false,
+    "auto_connect_equipment": false
   },
-  "server": {
-    "port": 11112,
-    "device_number": 0
-  },
-  "telescope": {
-    "can_set_guide_rates": true,
-    "default_guide_rate_ra": 0.5,
-    "default_guide_rate_dec": 0.5
+  "settling": {
+    "pixels": 0.5,
+    "time": 10,
+    "timeout": 60
   }
 }
 ```
 
 Configuration sections:
 
-- **device**: ASCOM device metadata
-- **phd2**: PHD2 connection settings (host, port, timeouts)
-- **server**: ASCOM Alpaca server configuration
-- **telescope**: Telescope-specific capabilities and defaults
+- **phd2**: PHD2 connection and process settings
+  - `host`: PHD2 host address (default: localhost)
+  - `port`: JSON RPC port (default: 4400)
+  - `executable_path`: Path to PHD2 executable (null for system default)
+  - `connection_timeout_seconds`: TCP connection timeout
+  - `command_timeout_seconds`: RPC command timeout
+  - `auto_start`: Automatically start PHD2 if not running
+  - `auto_connect_equipment`: Automatically connect equipment after PHD2 starts
+- **settling**: Default settling parameters for guiding operations
 
-## PHD2 Startup and Shutdown
+## PHD2 Process Management
 
 ### Starting PHD2
 
-**Manual Start (Recommended for Initial Implementation):**
-- User manually starts PHD2 application
-- User connects equipment in PHD2
-- User configures guide camera and mount in PHD2
-- Driver connects to already-running PHD2 instance
+**Platform-specific executable locations:**
+- **Linux**: `phd2` (in PATH) or `/usr/bin/phd2`
+- **macOS**: `/Applications/PHD2.app/Contents/MacOS/PHD2`
+- **Windows**: `C:\Program Files (x86)\PHDGuiding2\phd2.exe`
 
-**Automated Start (Future Enhancement):**
-- Driver could launch PHD2 as subprocess
-- Command line options: `phd2` (no special flags needed)
-- Use `set_connected` RPC to connect equipment
-- Use `set_profile` RPC to select equipment profile
-- More complex; requires process management
+**Startup sequence:**
+1. Check if PHD2 is already running (attempt TCP connect)
+2. If not running, spawn PHD2 process
+3. Wait for TCP port 4400 to become available (with timeout)
+4. Connect and receive initial Version event
+5. Optionally set profile and connect equipment
 
 ### Stopping PHD2
 
-**Clean Shutdown:**
-1. Driver calls `stop_capture` RPC to stop guiding
-2. Driver disconnects TCP connection
-3. User manually closes PHD2 (or driver sends shutdown signal in future)
-
-**Important Notes:**
-- PHD2 should be running **before** ASCOM client connects to driver
-- Driver should gracefully handle PHD2 restarts/crashes
-- Driver should reconnect if PHD2 becomes unavailable
+**Clean shutdown sequence:**
+1. Stop any active guiding (`stop_capture`)
+2. Disconnect equipment (`set_connected(false)`)
+3. Send `shutdown` RPC command
+4. Wait for process to exit (with timeout)
+5. Force kill if graceful shutdown fails
 
 ## Implementation Phases
 
-### Phase 1: Core Connection and Status (MVP)
+### Phase 1: Core Connection and JSON RPC Client (MVP)
 - [ ] Implement TCP connection to PHD2 port 4400
-- [ ] Parse JSON RPC 2.0 messages
-- [ ] Handle PHD2 event stream (Version, AppState)
-- [ ] Implement `Connected` property
-- [ ] Implement `CanPulseGuide` property (returns true if connected)
+- [ ] Implement JSON RPC 2.0 request/response handling
+- [ ] Parse PHD2 event stream (Version, AppState)
+- [ ] Implement connection management (`connect`, `disconnect`)
+- [ ] Implement `get_app_state` method
 - [ ] Basic error handling for connection failures
+- [ ] Unit tests for JSON RPC message parsing
 
-### Phase 2: Pulse Guiding
-- [ ] Implement `PulseGuide` method
-- [ ] Map ASCOM directions to PHD2 directions (N/S/E/W)
-- [ ] Implement `IsPulseGuiding` property
-- [ ] Track async pulse guide completion
-- [ ] Handle overlapping pulse guide operations
-- [ ] Proper exception handling (InvalidOperation, NotConnected, etc.)
+### Phase 2: Guiding Control
+- [ ] Implement `guide` (start guiding)
+- [ ] Implement `stop_capture`
+- [ ] Implement `loop`
+- [ ] Implement `set_paused` / `get_paused`
+- [ ] Implement settling parameter handling
+- [ ] Handle GuideStep and SettleDone events
+- [ ] Unit tests for guiding state machine
 
-### Phase 3: Guide Rates
-- [ ] Implement `GuideRateRightAscension` get/set
-- [ ] Implement `GuideRateDeclination` get/set
-- [ ] Map to PHD2 `get_algo_param` / `set_algo_param`
-- [ ] Implement `CanSetGuideRates` property
-- [ ] Query PHD2 for supported algorithm parameters
+### Phase 3: Equipment and Profile Management
+- [ ] Implement `get_profiles` / `set_profile`
+- [ ] Implement `set_connected` / `get_connected`
+- [ ] Implement `get_current_equipment`
+- [ ] Unit tests for profile switching
 
-### Phase 4: Advanced Features (Future)
-- [ ] Monitor `GuideStep` events for telemetry
-- [ ] Handle `StarLost` events gracefully
-- [ ] Implement dithering support (if needed)
-- [ ] Auto-reconnect on PHD2 restart
-- [ ] Process management (start/stop PHD2)
-- [ ] Equipment profile selection
+### Phase 4: Process Management
+- [ ] Implement PHD2 process spawning (cross-platform)
+- [ ] Implement process health monitoring
+- [ ] Implement graceful shutdown with `shutdown` RPC
+- [ ] Implement auto-reconnect on PHD2 restart
+- [ ] Integration tests with PHD2 process
 
-### Phase 5: Testing and Validation
-- [ ] Unit tests for JSON RPC client
-- [ ] Integration tests with PHD2
-- [ ] ASCOM Conformance testing
+### Phase 5: Star Selection and Calibration
+- [ ] Implement `find_star`
+- [ ] Implement lock position get/set
+- [ ] Implement calibration status and data retrieval
+- [ ] Implement `clear_calibration` / `flip_calibration`
+- [ ] Handle calibration events
+
+### Phase 6: Advanced Features
+- [ ] Implement dithering support
+- [ ] Implement guide algorithm parameter get/set
+- [ ] Implement camera exposure control
+- [ ] Implement camera cooling control
+- [ ] Event subscription and broadcasting
+
+### Phase 7: Testing and Validation
+- [ ] Comprehensive unit tests
+- [ ] Integration tests with PHD2 simulator
+- [ ] Integration tests with real PHD2 instance
 - [ ] Cross-platform testing (Linux, Windows, macOS)
+- [ ] Documentation and examples
 
 ## Dependencies
 
 ```toml
 [dependencies]
-ascom-alpaca = "0.1"  # ASCOM Alpaca framework
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tracing = "0.1"  # Logging
-anyhow = "1"  # Error handling
+tracing = "0.1"
+anyhow = "1"
+thiserror = "1"
 ```
 
 ## Testing Strategy
 
 ### Unit Tests
-- JSON RPC message parsing
-- Direction mapping (ASCOM → PHD2)
-- State machine logic
+- JSON RPC 2.0 message serialization/deserialization
+- Event parsing for all event types
+- State machine transitions
+- Error handling
 
 ### Integration Tests
-- Connect to PHD2 simulator or real PHD2 instance
-- Send pulse guide commands
-- Verify IsPulseGuiding property behavior
-- Test error conditions (PHD2 not running, not guiding, etc.)
+- Connect to PHD2 and verify version event
+- Start/stop guiding cycle
+- Profile switching
+- Equipment connect/disconnect
+- Process start/stop
 
 ### Manual Testing
-- Use ASCOM Alpaca clients (N.I.N.A., APT, etc.)
 - Test with real guiding session
-- Verify pulse guide corrections appear in PHD2 graph
+- Verify dithering works with imaging software
+- Test auto-reconnect after PHD2 crash
 
-## Open Questions
+## Error Handling
 
-1. **Should the driver automatically start guiding in PHD2?**
-   - Option A: Require user to manually start guiding in PHD2 first (simpler)
-   - Option B: Driver calls `guide` RPC method when client connects (more complex)
-   - **Recommendation:** Option A for MVP, Option B for future enhancement
+The service uses typed errors:
 
-2. **How to handle PHD2 not in "Guiding" state?**
-   - Return `InvalidOperationException` from `PulseGuide`
-   - Log warning and document requirement in driver description
-   - **Recommendation:** Return proper error and document clearly
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum Phd2Error {
+    #[error("Not connected to PHD2")]
+    NotConnected,
 
-3. **Should guide rates be per-axis or synchronized?**
-   - Check PHD2 algorithm capabilities
-   - Some algorithms may tie RA and Dec rates together
-   - **Recommendation:** Query PHD2 capabilities and adapt
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
 
-4. **Do we need to implement other Telescope interface methods?**
-   - ASCOM Telescope interface has ~50+ properties/methods
-   - Most can return `PropertyNotImplementedException`
-   - Only implement guiding-related subset
-   - **Recommendation:** Minimal implementation focused on guiding only
+    #[error("PHD2 not running")]
+    Phd2NotRunning,
 
-5. **How to handle simultaneous pulse guide requests?**
-   - ASCOM spec allows simultaneous RA and Dec pulses
-   - PHD2 may or may not support this
-   - **Recommendation:** Queue operations or return `InvalidOperationException` if unsupported
+    #[error("Equipment not connected")]
+    EquipmentNotConnected,
+
+    #[error("Not calibrated")]
+    NotCalibrated,
+
+    #[error("Invalid state for operation: {0}")]
+    InvalidState(String),
+
+    #[error("RPC error: {code} - {message}")]
+    RpcError { code: i32, message: String },
+
+    #[error("Timeout: {0}")]
+    Timeout(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+```
 
 ## References
 
 - [Open PHD Guiding](https://openphdguiding.org/)
 - [PHD2 Event Monitoring Documentation](https://github.com/OpenPHDGuiding/phd2/wiki/EventMonitoring)
 - [PHD2 Socket Server Interface](https://github.com/OpenPHDGuiding/phd2/wiki/SocketServerInterface)
-- [ASCOM Telescope Interface](https://ascom-standards.org/Help/Developer/html/M_ASCOM_DriverAccess_Telescope_PulseGuide.htm)
-- [ASCOM Alpaca API](https://ascom-standards.org/api/)
-- [ascom-alpaca Rust crate](https://crates.io/crates/ascom-alpaca)
+- [PHD2 Source Code](https://github.com/OpenPHDGuiding/phd2)

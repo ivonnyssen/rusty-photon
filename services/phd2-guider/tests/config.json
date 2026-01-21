@@ -1,0 +1,15 @@
+{
+  "phd2": {
+    "host": "localhost",
+    "port": 4400,
+    "connection_timeout_seconds": 10,
+    "command_timeout_seconds": 30,
+    "auto_start": false,
+    "auto_connect_equipment": false
+  },
+  "settling": {
+    "pixels": 0.5,
+    "time": 10,
+    "timeout": 60
+  }
+}

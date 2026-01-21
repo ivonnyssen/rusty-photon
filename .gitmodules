@@ -1,0 +1,3 @@
+[submodule "external/phd2"]
+	path = external/phd2
+	url = https://github.com/OpenPHDGuiding/phd2.git
