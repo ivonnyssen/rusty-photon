@@ -48,4 +48,4 @@ pub use error::{Phd2Error, Result};
 pub use events::{AppState, GuideStepStats, Phd2Event};
 pub use process::{get_default_phd2_path, Phd2ProcessManager};
 pub use rpc::{RpcErrorObject, RpcRequest, RpcResponse};
-pub use types::{Equipment, EquipmentDevice, Profile, Rect};
+pub use types::{CalibrationData, CalibrationTarget, Equipment, EquipmentDevice, Profile, Rect};

@@ -13,7 +13,7 @@ use crate::config::{Phd2Config, ReconnectConfig, SettleParams};
 use crate::error::{Phd2Error, Result};
 use crate::events::{AppState, Phd2Event};
 use crate::rpc::{RpcRequest, RpcResponse};
-use crate::types::{Equipment, Profile, Rect};
+use crate::types::{CalibrationData, CalibrationTarget, Equipment, Profile, Rect};
 
 /// Pending RPC request waiting for response
 struct PendingRequest {
@@ -917,6 +917,148 @@ impl Phd2Client {
         self.send_request("dither", Some(params)).await?;
         Ok(())
     }
+
+    // ========================================================================
+    // Star Selection Methods
+    // ========================================================================
+
+    /// Auto-select a guide star
+    ///
+    /// PHD2 will search for a suitable guide star. If a region of interest (ROI)
+    /// is provided, the search will be limited to that region.
+    ///
+    /// # Arguments
+    /// * `roi` - Optional region of interest for star selection
+    pub async fn find_star(&self, roi: Option<Rect>) -> Result<()> {
+        debug!(
+            "Finding star{}",
+            roi.map_or(String::new(), |r| format!(
+                " in ROI [{},{},{},{}]",
+                r.x, r.y, r.width, r.height
+            ))
+        );
+
+        let params = roi.map(|r| serde_json::json!([r.x, r.y, r.width, r.height]));
+
+        self.send_request("find_star", params).await?;
+        Ok(())
+    }
+
+    /// Get the current lock position (guide star coordinates)
+    ///
+    /// Returns the x,y coordinates of the current lock position.
+    /// Returns an error if no star is currently selected.
+    pub async fn get_lock_position(&self) -> Result<(f64, f64)> {
+        debug!("Getting lock position");
+        let result = self.send_request("get_lock_position", None).await?;
+
+        // PHD2 returns null when no star is selected
+        if result.is_null() {
+            return Err(Phd2Error::InvalidState(
+                "No star selected - lock position not available".to_string(),
+            ));
+        }
+
+        // PHD2 returns [x, y]
+        let arr = result.as_array().ok_or_else(|| {
+            Phd2Error::InvalidState("Expected array for lock position".to_string())
+        })?;
+
+        if arr.len() != 2 {
+            return Err(Phd2Error::InvalidState(format!(
+                "Expected 2 elements for lock position, got {}",
+                arr.len()
+            )));
+        }
+
+        let x = arr[0].as_f64().ok_or_else(|| {
+            Phd2Error::InvalidState("Expected number for x coordinate".to_string())
+        })?;
+        let y = arr[1].as_f64().ok_or_else(|| {
+            Phd2Error::InvalidState("Expected number for y coordinate".to_string())
+        })?;
+
+        Ok((x, y))
+    }
+
+    /// Set the lock position (guide star coordinates)
+    ///
+    /// # Arguments
+    /// * `x` - X coordinate for the lock position
+    /// * `y` - Y coordinate for the lock position
+    /// * `exact` - If true, use the exact position. If false, PHD2 will search
+    ///   for a nearby star to use as the guide star.
+    pub async fn set_lock_position(&self, x: f64, y: f64, exact: bool) -> Result<()> {
+        debug!("Setting lock position to ({}, {}), exact={}", x, y, exact);
+
+        let params = serde_json::json!({
+            "X": x,
+            "Y": y,
+            "EXACT": exact
+        });
+
+        self.send_request("set_lock_position", Some(params)).await?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // Calibration Methods
+    // ========================================================================
+
+    /// Check if the mount is calibrated
+    pub async fn is_calibrated(&self) -> Result<bool> {
+        debug!("Checking calibration status");
+        let result = self.send_request("get_calibrated", None).await?;
+        result.as_bool().ok_or_else(|| {
+            Phd2Error::InvalidState("Expected boolean for calibrated state".to_string())
+        })
+    }
+
+    /// Get calibration data for the specified target
+    ///
+    /// # Arguments
+    /// * `which` - Which calibration data to retrieve (Mount or AO)
+    ///
+    /// Note: `CalibrationTarget::Both` is not valid for this method and will
+    /// default to returning Mount calibration data.
+    pub async fn get_calibration_data(&self, which: CalibrationTarget) -> Result<CalibrationData> {
+        debug!("Getting calibration data for {}", which);
+
+        let params = serde_json::json!({
+            "which": which.to_get_api_string()
+        });
+
+        let result = self
+            .send_request("get_calibration_data", Some(params))
+            .await?;
+        let data: CalibrationData = serde_json::from_value(result)?;
+        Ok(data)
+    }
+
+    /// Clear calibration data
+    ///
+    /// # Arguments
+    /// * `which` - Which calibration to clear (Mount, AO, or Both)
+    pub async fn clear_calibration(&self, which: CalibrationTarget) -> Result<()> {
+        debug!("Clearing calibration for {}", which);
+
+        let params = serde_json::json!({
+            "which": which.to_clear_api_string()
+        });
+
+        self.send_request("clear_calibration", Some(params)).await?;
+        Ok(())
+    }
+
+    /// Flip calibration for meridian flip
+    ///
+    /// Inverts the existing calibration data without requiring a full recalibration.
+    /// Should be called after performing a meridian flip on the mount.
+    pub async fn flip_calibration(&self) -> Result<()> {
+        debug!("Flipping calibration");
+        self.send_request("flip_calibration", None).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1071,5 +1213,157 @@ mod tests {
         assert!(!client.is_connected().await);
         assert!(!client.is_reconnecting().await);
         assert!(client.get_phd2_version().await.is_none());
+    }
+
+    // ========================================================================
+    // Star Selection Method Tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_star_request_params_no_roi() {
+        let params: Option<serde_json::Value> = None;
+        assert!(params.is_none());
+    }
+
+    #[test]
+    fn test_find_star_request_params_with_roi() {
+        let roi = Rect::new(100, 200, 300, 400);
+        let params = serde_json::json!([roi.x, roi.y, roi.width, roi.height]);
+
+        let arr = params.as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0].as_i64().unwrap(), 100);
+        assert_eq!(arr[1].as_i64().unwrap(), 200);
+        assert_eq!(arr[2].as_i64().unwrap(), 300);
+        assert_eq!(arr[3].as_i64().unwrap(), 400);
+    }
+
+    #[test]
+    fn test_get_lock_position_response_parsing() {
+        let response = serde_json::json!([256.5, 512.3]);
+        let arr = response.as_array().unwrap();
+        let x = arr[0].as_f64().unwrap();
+        let y = arr[1].as_f64().unwrap();
+
+        assert_eq!(x, 256.5);
+        assert_eq!(y, 512.3);
+    }
+
+    #[test]
+    fn test_get_lock_position_null_response() {
+        let response = serde_json::json!(null);
+        assert!(response.is_null());
+    }
+
+    #[test]
+    fn test_set_lock_position_request_params() {
+        let params = serde_json::json!({
+            "X": 256.5,
+            "Y": 512.3,
+            "EXACT": true
+        });
+
+        assert_eq!(params["X"].as_f64().unwrap(), 256.5);
+        assert_eq!(params["Y"].as_f64().unwrap(), 512.3);
+        assert!(params["EXACT"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_set_lock_position_request_params_not_exact() {
+        let params = serde_json::json!({
+            "X": 100.0,
+            "Y": 200.0,
+            "EXACT": false
+        });
+
+        assert_eq!(params["X"].as_f64().unwrap(), 100.0);
+        assert_eq!(params["Y"].as_f64().unwrap(), 200.0);
+        assert!(!params["EXACT"].as_bool().unwrap());
+    }
+
+    // ========================================================================
+    // Calibration Method Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_calibration_data_request_params_mount() {
+        let params = serde_json::json!({
+            "which": CalibrationTarget::Mount.to_get_api_string()
+        });
+        assert_eq!(params["which"].as_str().unwrap(), "Mount");
+    }
+
+    #[test]
+    fn test_get_calibration_data_request_params_ao() {
+        let params = serde_json::json!({
+            "which": CalibrationTarget::AO.to_get_api_string()
+        });
+        assert_eq!(params["which"].as_str().unwrap(), "AO");
+    }
+
+    #[test]
+    fn test_clear_calibration_request_params_mount() {
+        let params = serde_json::json!({
+            "which": CalibrationTarget::Mount.to_clear_api_string()
+        });
+        assert_eq!(params["which"].as_str().unwrap(), "mount");
+    }
+
+    #[test]
+    fn test_clear_calibration_request_params_ao() {
+        let params = serde_json::json!({
+            "which": CalibrationTarget::AO.to_clear_api_string()
+        });
+        assert_eq!(params["which"].as_str().unwrap(), "ao");
+    }
+
+    #[test]
+    fn test_clear_calibration_request_params_both() {
+        let params = serde_json::json!({
+            "which": CalibrationTarget::Both.to_clear_api_string()
+        });
+        assert_eq!(params["which"].as_str().unwrap(), "both");
+    }
+
+    #[test]
+    fn test_get_calibration_data_response_parsing() {
+        let response = serde_json::json!({
+            "calibrated": true,
+            "xAngle": 45.5,
+            "xRate": 15.2,
+            "xParity": "+",
+            "yAngle": 135.5,
+            "yRate": 14.8,
+            "yParity": "-",
+            "declination": 30.0
+        });
+
+        let data: CalibrationData = serde_json::from_value(response).unwrap();
+        assert!(data.calibrated);
+        assert_eq!(data.x_angle, 45.5);
+        assert_eq!(data.x_rate, 15.2);
+        assert_eq!(data.x_parity, "+");
+        assert_eq!(data.y_angle, 135.5);
+        assert_eq!(data.y_rate, 14.8);
+        assert_eq!(data.y_parity, "-");
+        assert_eq!(data.declination, Some(30.0));
+    }
+
+    #[test]
+    fn test_get_calibration_data_response_not_calibrated() {
+        let response = serde_json::json!({
+            "calibrated": false,
+            "xAngle": 0.0,
+            "xRate": 0.0,
+            "xParity": "+",
+            "yAngle": 0.0,
+            "yRate": 0.0,
+            "yParity": "+"
+        });
+
+        let data: CalibrationData = serde_json::from_value(response).unwrap();
+        assert!(!data.calibrated);
+        assert_eq!(data.x_rate, 0.0);
+        assert!(data.declination.is_none());
     }
 }

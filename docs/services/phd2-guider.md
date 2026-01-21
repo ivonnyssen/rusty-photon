@@ -490,12 +490,12 @@ Auto-reconnect can be controlled at runtime:
 - [x] Implement auto-reconnect on PHD2 restart
 - [x] Integration tests with PHD2 process
 
-### Phase 5: Star Selection and Calibration
-- [ ] Implement `find_star`
-- [ ] Implement lock position get/set
-- [ ] Implement calibration status and data retrieval
-- [ ] Implement `clear_calibration` / `flip_calibration`
-- [ ] Handle calibration events
+### Phase 5: Star Selection and Calibration ✅
+- [x] Implement `find_star`
+- [x] Implement lock position get/set
+- [x] Implement calibration status and data retrieval
+- [x] Implement `clear_calibration` / `flip_calibration`
+- [ ] Handle calibration events (deferred to Phase 6)
 
 ### Phase 6: Advanced Features
 - [ ] Implement dithering support
