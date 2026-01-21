@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event};
+use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event, Rect, SettleParams};
 use std::path::PathBuf;
 use tracing::{debug, info, Level};
 
@@ -43,6 +43,74 @@ enum Commands {
 
     /// List available profiles
     Profiles,
+
+    /// Start guiding
+    Guide {
+        /// Recalibrate before guiding
+        #[arg(long)]
+        recalibrate: bool,
+
+        /// Settling pixels threshold (default: 0.5)
+        #[arg(long)]
+        settle_pixels: Option<f64>,
+
+        /// Settling time in seconds (default: 10)
+        #[arg(long)]
+        settle_time: Option<u32>,
+
+        /// Settling timeout in seconds (default: 60)
+        #[arg(long)]
+        settle_timeout: Option<u32>,
+
+        /// Region of interest: x,y,width,height (e.g., "100,100,200,200")
+        #[arg(long)]
+        roi: Option<String>,
+    },
+
+    /// Stop guiding (continues looping)
+    StopGuiding,
+
+    /// Stop all capture and guiding
+    StopCapture,
+
+    /// Start looping exposures
+    Loop,
+
+    /// Pause guiding
+    Pause {
+        /// Full pause (stop looping entirely)
+        #[arg(long)]
+        full: bool,
+    },
+
+    /// Resume guiding after pause
+    Resume,
+
+    /// Check if guiding is paused
+    IsPaused,
+
+    /// Dither the guide position
+    Dither {
+        /// Dither amount in pixels
+        #[arg(default_value = "5.0")]
+        amount: f64,
+
+        /// Only dither in RA axis
+        #[arg(long)]
+        ra_only: bool,
+
+        /// Settling pixels threshold (default: 0.5)
+        #[arg(long)]
+        settle_pixels: Option<f64>,
+
+        /// Settling time in seconds (default: 10)
+        #[arg(long)]
+        settle_time: Option<u32>,
+
+        /// Settling timeout in seconds (default: 60)
+        #[arg(long)]
+        settle_timeout: Option<u32>,
+    },
 }
 
 #[tokio::main]
@@ -88,6 +156,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Profiles => {
             run_profiles(&client).await?;
+        }
+        Commands::Guide {
+            recalibrate,
+            settle_pixels,
+            settle_time,
+            settle_timeout,
+            roi,
+        } => {
+            run_guide(
+                &client,
+                recalibrate,
+                settle_pixels,
+                settle_time,
+                settle_timeout,
+                roi,
+            )
+            .await?;
+        }
+        Commands::StopGuiding => {
+            run_stop_guiding(&client).await?;
+        }
+        Commands::StopCapture => {
+            run_stop_capture(&client).await?;
+        }
+        Commands::Loop => {
+            run_loop(&client).await?;
+        }
+        Commands::Pause { full } => {
+            run_pause(&client, full).await?;
+        }
+        Commands::Resume => {
+            run_resume(&client).await?;
+        }
+        Commands::IsPaused => {
+            run_is_paused(&client).await?;
+        }
+        Commands::Dither {
+            amount,
+            ra_only,
+            settle_pixels,
+            settle_time,
+            settle_timeout,
+        } => {
+            run_dither(
+                &client,
+                amount,
+                ra_only,
+                settle_pixels,
+                settle_time,
+                settle_timeout,
+            )
+            .await?;
         }
     }
 
@@ -266,6 +386,157 @@ async fn run_profiles(client: &Phd2Client) -> Result<(), Box<dyn std::error::Err
 
     let current = client.get_current_profile().await?;
     info!("Current profile: {} (id: {})", current.name, current.id);
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+// ============================================================================
+// Guiding Control Commands
+// ============================================================================
+
+fn parse_roi(roi_str: &str) -> Result<Rect, Box<dyn std::error::Error>> {
+    let parts: Vec<&str> = roi_str.split(',').collect();
+    if parts.len() != 4 {
+        return Err("ROI must be in format: x,y,width,height".into());
+    }
+    Ok(Rect::new(
+        parts[0].trim().parse()?,
+        parts[1].trim().parse()?,
+        parts[2].trim().parse()?,
+        parts[3].trim().parse()?,
+    ))
+}
+
+async fn run_guide(
+    client: &Phd2Client,
+    recalibrate: bool,
+    settle_pixels: Option<f64>,
+    settle_time: Option<u32>,
+    settle_timeout: Option<u32>,
+    roi: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    let settle = SettleParams {
+        pixels: settle_pixels.unwrap_or(0.5),
+        time: settle_time.unwrap_or(10),
+        timeout: settle_timeout.unwrap_or(60),
+    };
+
+    let roi_rect = match roi {
+        Some(s) => Some(parse_roi(&s)?),
+        None => None,
+    };
+
+    info!(
+        "Starting guiding (recalibrate={}, settle: pixels={}, time={}, timeout={})",
+        recalibrate, settle.pixels, settle.time, settle.timeout
+    );
+
+    client.start_guiding(&settle, recalibrate, roi_rect).await?;
+    info!("Guide command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_stop_guiding(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    info!("Stopping guiding (continuing loop)...");
+    client.stop_guiding().await?;
+    info!("Stop guiding command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_stop_capture(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    info!("Stopping capture...");
+    client.stop_capture().await?;
+    info!("Stop capture command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_loop(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    info!("Starting loop...");
+    client.start_loop().await?;
+    info!("Loop command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_pause(client: &Phd2Client, full: bool) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    info!("Pausing guiding (full={})...", full);
+    client.pause(full).await?;
+    info!("Pause command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_resume(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    info!("Resuming guiding...");
+    client.resume().await?;
+    info!("Resume command sent successfully");
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_is_paused(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    let paused = client.is_paused().await?;
+    info!("Guiding is paused: {}", paused);
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+async fn run_dither(
+    client: &Phd2Client,
+    amount: f64,
+    ra_only: bool,
+    settle_pixels: Option<f64>,
+    settle_time: Option<u32>,
+    settle_timeout: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to PHD2...");
+    client.connect().await?;
+
+    let settle = SettleParams {
+        pixels: settle_pixels.unwrap_or(0.5),
+        time: settle_time.unwrap_or(10),
+        timeout: settle_timeout.unwrap_or(60),
+    };
+
+    info!(
+        "Dithering (amount={}, ra_only={}, settle: pixels={}, time={}, timeout={})",
+        amount, ra_only, settle.pixels, settle.time, settle.timeout
+    );
+
+    client.dither(amount, ra_only, &settle).await?;
+    info!("Dither command sent successfully");
 
     client.disconnect().await?;
     Ok(())

@@ -29,6 +29,34 @@ graph TD;
     M --> N[Execute Command];
 ```
 
+## Module Structure
+
+The library is organized into focused modules for maintainability:
+
+```
+services/phd2-guider/src/
+├── lib.rs          # Crate root with re-exports
+├── error.rs        # Phd2Error enum and Result type alias
+├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
+├── events.rs       # AppState, GuideStepStats, Phd2Event
+├── config.rs       # Config, Phd2Config, SettleParams, load_config
+├── types.rs        # Rect, Profile (shared types)
+├── client.rs       # Phd2Client with all RPC methods
+└── process.rs      # Phd2ProcessManager, get_default_phd2_path
+```
+
+| Module | Description | Key Types |
+|--------|-------------|-----------|
+| `error` | Error handling | `Phd2Error`, `Result<T>` |
+| `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse` |
+| `events` | PHD2 events and state | `Phd2Event`, `AppState`, `GuideStepStats` |
+| `config` | Configuration | `Config`, `Phd2Config`, `SettleParams` |
+| `types` | Common types | `Rect`, `Profile` |
+| `client` | PHD2 client | `Phd2Client` |
+| `process` | Process management | `Phd2ProcessManager` |
+
+All commonly used types are re-exported at the crate root for convenience.
+
 ## PHD2 API Overview
 
 PHD2 provides two network interfaces:
@@ -374,36 +402,37 @@ Configuration sections:
 
 ## Implementation Phases
 
-### Phase 1: Core Connection and JSON RPC Client (MVP)
-- [ ] Implement TCP connection to PHD2 port 4400
-- [ ] Implement JSON RPC 2.0 request/response handling
-- [ ] Parse PHD2 event stream (Version, AppState)
-- [ ] Implement connection management (`connect`, `disconnect`)
-- [ ] Implement `get_app_state` method
-- [ ] Basic error handling for connection failures
-- [ ] Unit tests for JSON RPC message parsing
+### Phase 1: Core Connection and JSON RPC Client (MVP) ✅
+- [x] Implement TCP connection to PHD2 port 4400
+- [x] Implement JSON RPC 2.0 request/response handling
+- [x] Parse PHD2 event stream (Version, AppState)
+- [x] Implement connection management (`connect`, `disconnect`)
+- [x] Implement `get_app_state` method
+- [x] Basic error handling for connection failures
+- [x] Unit tests for JSON RPC message parsing
 
-### Phase 2: Guiding Control
-- [ ] Implement `guide` (start guiding)
-- [ ] Implement `stop_capture`
-- [ ] Implement `loop`
-- [ ] Implement `set_paused` / `get_paused`
-- [ ] Implement settling parameter handling
-- [ ] Handle GuideStep and SettleDone events
-- [ ] Unit tests for guiding state machine
+### Phase 2: Guiding Control ✅
+- [x] Implement `guide` (start guiding)
+- [x] Implement `stop_capture`
+- [x] Implement `loop`
+- [x] Implement `set_paused` / `get_paused`
+- [x] Implement settling parameter handling
+- [x] Handle GuideStep and SettleDone events
+- [x] Unit tests for guiding state machine
+- [x] Implement `dither`
 
-### Phase 3: Equipment and Profile Management
-- [ ] Implement `get_profiles` / `set_profile`
-- [ ] Implement `set_connected` / `get_connected`
+### Phase 3: Equipment and Profile Management (Partial)
+- [x] Implement `get_profiles` / `set_profile`
+- [x] Implement `set_connected` / `get_connected`
 - [ ] Implement `get_current_equipment`
-- [ ] Unit tests for profile switching
+- [x] Unit tests for profile switching
 
-### Phase 4: Process Management
-- [ ] Implement PHD2 process spawning (cross-platform)
-- [ ] Implement process health monitoring
-- [ ] Implement graceful shutdown with `shutdown` RPC
+### Phase 4: Process Management (Partial)
+- [x] Implement PHD2 process spawning (cross-platform)
+- [x] Implement process health monitoring
+- [x] Implement graceful shutdown with `shutdown` RPC
 - [ ] Implement auto-reconnect on PHD2 restart
-- [ ] Integration tests with PHD2 process
+- [x] Integration tests with PHD2 process
 
 ### Phase 5: Star Selection and Calibration
 - [ ] Implement `find_star`
@@ -419,10 +448,10 @@ Configuration sections:
 - [ ] Implement camera cooling control
 - [ ] Event subscription and broadcasting
 
-### Phase 7: Testing and Validation
-- [ ] Comprehensive unit tests
+### Phase 7: Testing and Validation (Partial)
+- [x] Comprehensive unit tests
 - [ ] Integration tests with PHD2 simulator
-- [ ] Integration tests with real PHD2 instance
+- [x] Integration tests with real PHD2 instance
 - [ ] Cross-platform testing (Linux, Windows, macOS)
 - [ ] Documentation and examples
 
