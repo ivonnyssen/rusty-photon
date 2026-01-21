@@ -11,7 +11,7 @@
 //! - [`events`] - PHD2 event types and application state
 //! - [`process`] - PHD2 process management
 //! - [`rpc`] - JSON RPC 2.0 types
-//! - [`types`] - Common types (Rect, Profile)
+//! - [`types`] - Common types (Rect, Profile, Equipment)
 //!
 //! ## Example
 //!
@@ -43,9 +43,9 @@ pub mod types;
 
 // Re-export commonly used types at the crate root for convenience
 pub use client::Phd2Client;
-pub use config::{load_config, Config, Phd2Config, SettleParams};
+pub use config::{load_config, Config, Phd2Config, ReconnectConfig, SettleParams};
 pub use error::{Phd2Error, Result};
 pub use events::{AppState, GuideStepStats, Phd2Event};
 pub use process::{get_default_phd2_path, Phd2ProcessManager};
 pub use rpc::{RpcErrorObject, RpcRequest, RpcResponse};
-pub use types::{Profile, Rect};
+pub use types::{Equipment, EquipmentDevice, Profile, Rect};

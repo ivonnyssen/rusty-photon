@@ -47,6 +47,9 @@ pub enum Phd2Error {
 
     #[error("Process already running")]
     ProcessAlreadyRunning,
+
+    #[error("Reconnection failed: {0}")]
+    ReconnectFailed(String),
 }
 
 /// Result type alias for PHD2 operations

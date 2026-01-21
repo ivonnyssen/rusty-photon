@@ -28,6 +28,40 @@ pub struct Phd2Config {
     pub auto_start: bool,
     #[serde(default)]
     pub auto_connect_equipment: bool,
+    #[serde(default)]
+    pub reconnect: ReconnectConfig,
+}
+
+/// Configuration for automatic reconnection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconnectConfig {
+    /// Enable automatic reconnection when connection is lost
+    #[serde(default = "default_reconnect_enabled")]
+    pub enabled: bool,
+    /// Interval between reconnection attempts in seconds
+    #[serde(default = "default_reconnect_interval")]
+    pub interval_seconds: u64,
+    /// Maximum number of reconnection attempts (None for unlimited)
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_reconnect_enabled(),
+            interval_seconds: default_reconnect_interval(),
+            max_retries: None,
+        }
+    }
+}
+
+fn default_reconnect_enabled() -> bool {
+    true
+}
+
+fn default_reconnect_interval() -> u64 {
+    5
 }
 
 impl Default for Phd2Config {
@@ -40,6 +74,7 @@ impl Default for Phd2Config {
             command_timeout_seconds: default_command_timeout(),
             auto_start: false,
             auto_connect_equipment: false,
+            reconnect: ReconnectConfig::default(),
         }
     }
 }
@@ -121,6 +156,30 @@ mod tests {
         assert_eq!(config.command_timeout_seconds, 30);
         assert!(!config.auto_start);
         assert!(!config.auto_connect_equipment);
+        assert!(config.reconnect.enabled);
+        assert_eq!(config.reconnect.interval_seconds, 5);
+        assert!(config.reconnect.max_retries.is_none());
+    }
+
+    #[test]
+    fn test_reconnect_config_default() {
+        let config = ReconnectConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.interval_seconds, 5);
+        assert!(config.max_retries.is_none());
+    }
+
+    #[test]
+    fn test_reconnect_config_serialization() {
+        let config = ReconnectConfig {
+            enabled: true,
+            interval_seconds: 10,
+            max_retries: Some(5),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["interval_seconds"], 10);
+        assert_eq!(json["max_retries"], 5);
     }
 
     #[test]

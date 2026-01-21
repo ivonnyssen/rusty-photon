@@ -25,6 +25,7 @@ fn create_test_config() -> Phd2Config {
         command_timeout_seconds: 30,
         auto_start: false,
         auto_connect_equipment: false,
+        ..Default::default()
     }
 }
 

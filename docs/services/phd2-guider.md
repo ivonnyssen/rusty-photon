@@ -342,6 +342,22 @@ async fn flip_calibration(&mut self) -> Result<()>;
 fn subscribe(&self) -> broadcast::Receiver<Phd2Event>;
 ```
 
+### Auto-Reconnect Control
+
+```rust
+/// Check if auto-reconnect is enabled
+fn is_auto_reconnect_enabled(&self) -> bool;
+
+/// Enable or disable auto-reconnect
+fn set_auto_reconnect_enabled(&self, enabled: bool);
+
+/// Check if currently reconnecting
+async fn is_reconnecting(&self) -> bool;
+
+/// Stop ongoing reconnection attempts
+async fn stop_reconnection(&self);
+```
+
 ## Configuration
 
 ```json
@@ -353,7 +369,12 @@ fn subscribe(&self) -> broadcast::Receiver<Phd2Event>;
     "connection_timeout_seconds": 10,
     "command_timeout_seconds": 30,
     "auto_start": false,
-    "auto_connect_equipment": false
+    "auto_connect_equipment": false,
+    "reconnect": {
+      "enabled": true,
+      "interval_seconds": 5,
+      "max_retries": null
+    }
   },
   "settling": {
     "pixels": 0.5,
@@ -373,6 +394,10 @@ Configuration sections:
   - `command_timeout_seconds`: RPC command timeout
   - `auto_start`: Automatically start PHD2 if not running
   - `auto_connect_equipment`: Automatically connect equipment after PHD2 starts
+  - `reconnect`: Auto-reconnect settings
+    - `enabled`: Enable automatic reconnection (default: true)
+    - `interval_seconds`: Delay between reconnection attempts (default: 5)
+    - `max_retries`: Maximum reconnection attempts, null for unlimited (default: null)
 - **settling**: Default settling parameters for guiding operations
 
 ## PHD2 Process Management
@@ -400,6 +425,37 @@ Configuration sections:
 4. Wait for process to exit (with timeout)
 5. Force kill if graceful shutdown fails
 
+## Auto-Reconnect
+
+The client automatically attempts to reconnect when the connection to PHD2 is lost (e.g., PHD2 crashes or is restarted). This behavior is enabled by default but can be configured or controlled at runtime.
+
+### Connection Events
+
+The following events are broadcast when connection state changes:
+
+| Event | Description |
+|-------|-------------|
+| `ConnectionLost` | Connection was lost (includes reason) |
+| `Reconnecting` | Attempting to reconnect (includes attempt number) |
+| `Reconnected` | Successfully reconnected |
+| `ReconnectFailed` | Reconnection failed (max retries or cancelled) |
+
+### Reconnection Behavior
+
+1. When the TCP connection is lost, `ConnectionLost` event is broadcast
+2. If auto-reconnect is enabled, reconnection attempts begin immediately
+3. Each attempt broadcasts a `Reconnecting` event
+4. Between attempts, waits for the configured interval
+5. On success, `Reconnected` event is broadcast and normal operation resumes
+6. On failure (max retries or disabled), `ReconnectFailed` event is broadcast
+
+### Runtime Control
+
+Auto-reconnect can be controlled at runtime:
+- `set_auto_reconnect_enabled(false)` - Disables auto-reconnect; stops any ongoing reconnection
+- `stop_reconnection()` - Stops current reconnection attempt without disabling future reconnects
+- `disconnect()` - Cleanly disconnects and stops any reconnection attempts
+
 ## Implementation Phases
 
 ### Phase 1: Core Connection and JSON RPC Client (MVP) ✅
@@ -421,17 +477,17 @@ Configuration sections:
 - [x] Unit tests for guiding state machine
 - [x] Implement `dither`
 
-### Phase 3: Equipment and Profile Management (Partial)
+### Phase 3: Equipment and Profile Management ✅
 - [x] Implement `get_profiles` / `set_profile`
 - [x] Implement `set_connected` / `get_connected`
-- [ ] Implement `get_current_equipment`
+- [x] Implement `get_current_equipment`
 - [x] Unit tests for profile switching
 
-### Phase 4: Process Management (Partial)
+### Phase 4: Process Management ✅
 - [x] Implement PHD2 process spawning (cross-platform)
 - [x] Implement process health monitoring
 - [x] Implement graceful shutdown with `shutdown` RPC
-- [ ] Implement auto-reconnect on PHD2 restart
+- [x] Implement auto-reconnect on PHD2 restart
 - [x] Integration tests with PHD2 process
 
 ### Phase 5: Star Selection and Calibration

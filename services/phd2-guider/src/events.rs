@@ -257,6 +257,36 @@ pub enum Phd2Event {
 
     /// Guiding stopped
     GuidingStopped,
+
+    // ========================================================================
+    // Connection state events (internal, not from PHD2)
+    // ========================================================================
+    /// Connection to PHD2 was lost
+    #[serde(skip)]
+    ConnectionLost {
+        /// Reason for the connection loss
+        reason: String,
+    },
+
+    /// Attempting to reconnect to PHD2
+    #[serde(skip)]
+    Reconnecting {
+        /// Current reconnection attempt number
+        attempt: u32,
+        /// Maximum attempts (None for unlimited)
+        max_attempts: Option<u32>,
+    },
+
+    /// Successfully reconnected to PHD2
+    #[serde(skip)]
+    Reconnected,
+
+    /// Reconnection failed after all attempts
+    #[serde(skip)]
+    ReconnectFailed {
+        /// Reason for final failure
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -430,5 +460,55 @@ mod tests {
         let json = r#"{"Event":"LoopingExposuresStopped"}"#;
         let event: Phd2Event = serde_json::from_str(json).unwrap();
         assert!(matches!(event, Phd2Event::LoopingExposuresStopped));
+    }
+
+    #[test]
+    fn test_connection_lost_event() {
+        let event = Phd2Event::ConnectionLost {
+            reason: "Connection closed by remote".to_string(),
+        };
+        match event {
+            Phd2Event::ConnectionLost { reason } => {
+                assert_eq!(reason, "Connection closed by remote");
+            }
+            _ => panic!("Expected ConnectionLost event"),
+        }
+    }
+
+    #[test]
+    fn test_reconnecting_event() {
+        let event = Phd2Event::Reconnecting {
+            attempt: 3,
+            max_attempts: Some(5),
+        };
+        match event {
+            Phd2Event::Reconnecting {
+                attempt,
+                max_attempts,
+            } => {
+                assert_eq!(attempt, 3);
+                assert_eq!(max_attempts, Some(5));
+            }
+            _ => panic!("Expected Reconnecting event"),
+        }
+    }
+
+    #[test]
+    fn test_reconnected_event() {
+        let event = Phd2Event::Reconnected;
+        assert!(matches!(event, Phd2Event::Reconnected));
+    }
+
+    #[test]
+    fn test_reconnect_failed_event() {
+        let event = Phd2Event::ReconnectFailed {
+            reason: "Max retries exceeded".to_string(),
+        };
+        match event {
+            Phd2Event::ReconnectFailed { reason } => {
+                assert_eq!(reason, "Max retries exceeded");
+            }
+            _ => panic!("Expected ReconnectFailed event"),
+        }
     }
 }

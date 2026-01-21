@@ -30,6 +30,35 @@ pub struct Profile {
     pub name: String,
 }
 
+/// Information about a single piece of equipment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EquipmentDevice {
+    /// Name of the device
+    pub name: String,
+    /// Whether the device is currently connected
+    pub connected: bool,
+}
+
+/// Current equipment configuration from PHD2
+///
+/// Contains information about all equipment devices in the current profile.
+/// Fields are optional because not all equipment types may be configured.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Equipment {
+    /// Guide camera
+    pub camera: Option<EquipmentDevice>,
+    /// Primary mount
+    pub mount: Option<EquipmentDevice>,
+    /// Auxiliary mount (for dual mount setups)
+    #[serde(rename = "aux_mount")]
+    pub aux_mount: Option<EquipmentDevice>,
+    /// Adaptive optics device
+    #[serde(rename = "AO")]
+    pub ao: Option<EquipmentDevice>,
+    /// Rotator device
+    pub rotator: Option<EquipmentDevice>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +88,59 @@ mod tests {
         let profile: Profile = serde_json::from_str(json).unwrap();
         assert_eq!(profile.id, 1);
         assert_eq!(profile.name, "Default Equipment");
+    }
+
+    #[test]
+    fn test_equipment_device_parsing() {
+        let json = r#"{"name":"ZWO ASI120MM","connected":true}"#;
+        let device: EquipmentDevice = serde_json::from_str(json).unwrap();
+        assert_eq!(device.name, "ZWO ASI120MM");
+        assert!(device.connected);
+    }
+
+    #[test]
+    fn test_equipment_full_parsing() {
+        let json = r#"{
+            "camera": {"name": "ZWO ASI120MM", "connected": true},
+            "mount": {"name": "ASCOM Telescope Driver", "connected": true},
+            "aux_mount": null,
+            "AO": null,
+            "rotator": null
+        }"#;
+        let equipment: Equipment = serde_json::from_str(json).unwrap();
+
+        let camera = equipment.camera.unwrap();
+        assert_eq!(camera.name, "ZWO ASI120MM");
+        assert!(camera.connected);
+
+        let mount = equipment.mount.unwrap();
+        assert_eq!(mount.name, "ASCOM Telescope Driver");
+        assert!(mount.connected);
+
+        assert!(equipment.aux_mount.is_none());
+        assert!(equipment.ao.is_none());
+        assert!(equipment.rotator.is_none());
+    }
+
+    #[test]
+    fn test_equipment_with_ao_parsing() {
+        let json = r#"{
+            "camera": {"name": "Guide Camera", "connected": true},
+            "mount": {"name": "Mount", "connected": true},
+            "aux_mount": null,
+            "AO": {"name": "StarlightXpress AO", "connected": true},
+            "rotator": null
+        }"#;
+        let equipment: Equipment = serde_json::from_str(json).unwrap();
+
+        assert!(equipment.camera.is_some());
+        assert!(equipment.mount.is_some());
+        assert!(equipment.aux_mount.is_none());
+
+        let ao = equipment.ao.unwrap();
+        assert_eq!(ao.name, "StarlightXpress AO");
+        assert!(ao.connected);
+
+        assert!(equipment.rotator.is_none());
     }
 }
