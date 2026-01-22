@@ -36,26 +36,28 @@ The library is organized into focused modules for maintainability:
 ```
 services/phd2-guider/src/
 ├── lib.rs          # Crate root with re-exports
-├── error.rs        # Phd2Error enum and Result type alias
-├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
-├── events.rs       # AppState, GuideStepStats, Phd2Event
-├── config.rs       # Config, Phd2Config, SettleParams, load_config
-├── types.rs        # Rect, Profile (shared types)
 ├── client.rs       # Phd2Client with all RPC methods
-└── process.rs      # Phd2ProcessManager, get_default_phd2_path
+├── config.rs       # Config, Phd2Config, SettleParams, load_config
+├── connection.rs   # Internal connection management and auto-reconnect
+├── error.rs        # Phd2Error enum and Result type alias
+├── events.rs       # AppState, GuideStepStats, Phd2Event
+├── process.rs      # Phd2ProcessManager, get_default_phd2_path
+├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
+└── types.rs        # Rect, Profile, Equipment (shared types)
 ```
 
 | Module | Description | Key Types |
 |--------|-------------|-----------|
-| `error` | Error handling | `Phd2Error`, `Result<T>` |
-| `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse` |
-| `events` | PHD2 events and state | `Phd2Event`, `AppState`, `GuideStepStats` |
+| `client` | PHD2 client with RPC methods | `Phd2Client` |
 | `config` | Configuration | `Config`, `Phd2Config`, `SettleParams` |
-| `types` | Common types | `Rect`, `Profile` |
-| `client` | PHD2 client | `Phd2Client` |
+| `connection` | Connection management (internal) | `SharedConnectionState`, `ConnectionConfig` |
+| `error` | Error handling | `Phd2Error`, `Result<T>` |
+| `events` | PHD2 events and state | `Phd2Event`, `AppState`, `GuideStepStats` |
 | `process` | Process management | `Phd2ProcessManager` |
+| `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse` |
+| `types` | Common types | `Rect`, `Profile`, `Equipment`, `CalibrationData` |
 
-All commonly used types are re-exported at the crate root for convenience.
+All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
 
 ## PHD2 API Overview
 
@@ -495,14 +497,14 @@ Auto-reconnect can be controlled at runtime:
 - [x] Implement lock position get/set
 - [x] Implement calibration status and data retrieval
 - [x] Implement `clear_calibration` / `flip_calibration`
-- [ ] Handle calibration events (deferred to Phase 6)
 
 ### Phase 6: Advanced Features
-- [ ] Implement dithering support
+- [x] Implement dithering support
+- [x] Event subscription and broadcasting
 - [ ] Implement guide algorithm parameter get/set
-- [ ] Implement camera exposure control
+- [x] Implement camera exposure control
 - [ ] Implement camera cooling control
-- [ ] Event subscription and broadcasting
+- [x] Handle calibration events
 
 ### Phase 7: Testing and Validation (Partial)
 - [x] Comprehensive unit tests

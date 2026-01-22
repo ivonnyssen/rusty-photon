@@ -7,6 +7,7 @@
 //!
 //! - [`client`] - PHD2 client for RPC communication
 //! - [`config`] - Configuration types and loading
+//! - `connection` - Internal connection management (not public)
 //! - [`error`] - Error types and Result alias
 //! - [`events`] - PHD2 event types and application state
 //! - [`process`] - PHD2 process management
@@ -35,6 +36,7 @@
 
 pub mod client;
 pub mod config;
+pub(crate) mod connection;
 pub mod error;
 pub mod events;
 pub mod process;
