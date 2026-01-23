@@ -41,6 +41,7 @@ services/phd2-guider/src/
 ├── connection.rs   # Internal connection management and auto-reconnect
 ├── error.rs        # Phd2Error enum and Result type alias
 ├── events.rs       # AppState, GuideStepStats, Phd2Event
+├── fits.rs         # FITS file utilities for saving images
 ├── process.rs      # Phd2ProcessManager, get_default_phd2_path
 ├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
 └── types.rs        # Rect, Profile, Equipment (shared types)
@@ -49,13 +50,14 @@ services/phd2-guider/src/
 | Module | Description | Key Types |
 |--------|-------------|-----------|
 | `client` | PHD2 client with RPC methods | `Phd2Client` |
-| `config` | Configuration | `Config`, `Phd2Config`, `SettleParams` |
+| `config` | Configuration | `Config`, `Phd2Config`, `SettleParams`, `ReconnectConfig` |
 | `connection` | Connection management (internal) | `SharedConnectionState`, `ConnectionConfig` |
 | `error` | Error handling | `Phd2Error`, `Result<T>` |
 | `events` | PHD2 events and state | `Phd2Event`, `AppState`, `GuideStepStats` |
-| `process` | Process management | `Phd2ProcessManager` |
-| `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse` |
-| `types` | Common types | `Rect`, `Profile`, `Equipment`, `CalibrationData` |
+| `fits` | FITS file utilities | `decode_base64_u16`, `write_grayscale_u16_fits` |
+| `process` | Process management | `Phd2ProcessManager`, `get_default_phd2_path` |
+| `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse`, `RpcErrorObject` |
+| `types` | Common types | `Rect`, `Profile`, `Equipment`, `EquipmentDevice`, `CalibrationData`, `CalibrationTarget`, `GuideAxis`, `CoolerStatus`, `StarImage` |
 
 All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
 
@@ -78,121 +80,121 @@ PHD2 provides two network interfaces:
 
 ### Guiding Control
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `guide` | `settle: {pixels, time, timeout}`, `recalibrate: bool`, `roi: [x,y,w,h]` | Start guiding with settling parameters; optional recalibration and region of interest |
-| `dither` | `amount: float`, `raOnly: bool`, `settle: object` | Shift lock position by specified pixels for dithering between exposures |
-| `loop` | none | Start capturing exposures, or if guiding, stop guiding but continue capturing |
-| `stop_capture` | none | Stop all capture and guiding operations |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `guide` | `settle: {pixels, time, timeout}`, `recalibrate: bool`, `roi: [x,y,w,h]` | Start guiding with settling parameters; optional recalibration and region of interest | ✅ |
+| `dither` | `amount: float`, `raOnly: bool`, `settle: object` | Shift lock position by specified pixels for dithering between exposures | ✅ |
+| `loop` | none | Start capturing exposures, or if guiding, stop guiding but continue capturing | ✅ |
+| `stop_capture` | none | Stop all capture and guiding operations | ✅ |
 
 ### Pause Control
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_paused` | none | Check if guiding is currently paused |
-| `set_paused` | `paused: bool`, `full: string` | Pause or resume guiding; "full" pauses looping entirely |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_paused` | none | Check if guiding is currently paused | ✅ |
+| `set_paused` | `paused: bool`, `full: string` | Pause or resume guiding; "full" pauses looping entirely | ✅ |
 
 ### Equipment Connection
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `set_connected` | `connected: bool` | Connect or disconnect all equipment in current profile |
-| `get_connected` | none | Check if equipment is connected |
-| `get_current_equipment` | none | Retrieve list of selected devices in active profile |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `set_connected` | `connected: bool` | Connect or disconnect all equipment in current profile | ✅ |
+| `get_connected` | none | Check if equipment is connected | ✅ |
+| `get_current_equipment` | none | Retrieve list of selected devices in active profile | ✅ |
 
 ### Profile Management
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_profile` | none | Return current profile ID and name |
-| `get_profiles` | none | List all available equipment profiles |
-| `set_profile` | `id: int` | Switch active profile; equipment must be disconnected first |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_profile` | none | Return current profile ID and name | ✅ |
+| `get_profiles` | none | List all available equipment profiles | ✅ |
+| `set_profile` | `id: int` | Switch active profile; equipment must be disconnected first | ✅ |
 
 ### Calibration
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_calibrated` | none | Check if mount is calibrated |
-| `get_calibration_data` | `which: string` | Obtain calibration parameters and angles ("Mount" or "AO") |
-| `clear_calibration` | `which: string` | Reset calibration data for "mount", "ao", or "both" |
-| `flip_calibration` | none | Invert existing calibration for meridian flip without recalibrating |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_calibrated` | none | Check if mount is calibrated | ✅ |
+| `get_calibration_data` | `which: string` | Obtain calibration parameters and angles ("Mount" or "AO") | ✅ |
+| `clear_calibration` | `which: string` | Reset calibration data for "mount", "ao", or "both" | ✅ |
+| `flip_calibration` | none | Invert existing calibration for meridian flip without recalibrating | ✅ |
 
 ### Camera Operations
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `capture_single_frame` | `exposure: int`, `subframe: [x,y,w,h]` | Acquire one frame with optional exposure (ms) and subframe |
-| `set_exposure` | `exposure: int` | Set exposure duration in milliseconds |
-| `get_exposure` | none | Get current exposure time in milliseconds |
-| `get_exposure_durations` | none | List all valid exposure duration options |
-| `get_camera_frame_size` | none | Return camera image dimensions (width, height) |
-| `get_use_subframes` | none | Check if subframing is enabled |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `capture_single_frame` | `exposure: int`, `subframe: [x,y,w,h]` | Acquire one frame with optional exposure (ms) and subframe | ✅ |
+| `set_exposure` | `exposure: int` | Set exposure duration in milliseconds | ✅ |
+| `get_exposure` | none | Get current exposure time in milliseconds | ✅ |
+| `get_exposure_durations` | none | List all valid exposure duration options | ✅ |
+| `get_camera_frame_size` | none | Return camera image dimensions (width, height) | ✅ |
+| `get_use_subframes` | none | Check if subframing is enabled | ✅ |
 
 ### Camera Cooling
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_ccd_temperature` | none | Read current sensor temperature |
-| `get_cooler_status` | none | Get cooler temperature and power percentage |
-| `set_cooler_state` | `enabled: bool`, `temperature: float` | Enable/disable cooling and set target temperature |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_ccd_temperature` | none | Read current sensor temperature | ✅ |
+| `get_cooler_status` | none | Get cooler temperature and power percentage | ✅ |
+| `set_cooler_state` | `enabled: bool`, `temperature: float` | Enable/disable cooling and set target temperature | ✅ |
 
 ### Guide Star & Lock Position
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `find_star` | `roi: [x,y,w,h]` | Auto-select a guide star, optionally within specified region |
-| `get_lock_position` | none | Get current lock position coordinates (x, y) |
-| `set_lock_position` | `x: float`, `y: float`, `exact: bool` | Set lock position; exact=false allows PHD2 to find nearby star |
-| `get_lock_shift_enabled` | none | Check if lock position shift is enabled |
-| `set_lock_shift_enabled` | `enabled: bool` | Enable or disable lock position shifting |
-| `get_lock_shift_params` | none | Get shift rate and axis configuration |
-| `set_lock_shift_params` | `rate: [ra,dec]`, `units: string`, `axes: string` | Configure shift parameters |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `find_star` | `roi: [x,y,w,h]` | Auto-select a guide star, optionally within specified region | ✅ |
+| `get_lock_position` | none | Get current lock position coordinates (x, y) | ✅ |
+| `set_lock_position` | `x: float`, `y: float`, `exact: bool` | Set lock position; exact=false allows PHD2 to find nearby star | ✅ |
+| `get_lock_shift_enabled` | none | Check if lock position shift is enabled | ❌ |
+| `set_lock_shift_enabled` | `enabled: bool` | Enable or disable lock position shifting | ❌ |
+| `get_lock_shift_params` | none | Get shift rate and axis configuration | ❌ |
+| `set_lock_shift_params` | `rate: [ra,dec]`, `units: string`, `axes: string` | Configure shift parameters | ❌ |
 
 ### Guide Algorithm Parameters
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_algo_param_names` | `axis: string` | List algorithm parameter names for "ra" or "dec" axis |
-| `get_algo_param` | `axis: string`, `name: string` | Read individual algorithm parameter value |
-| `set_algo_param` | `axis: string`, `name: string`, `value: float` | Modify individual algorithm parameter value |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_algo_param_names` | `axis: string` | List algorithm parameter names for "ra" or "dec" axis | ✅ |
+| `get_algo_param` | `axis: string`, `name: string` | Read individual algorithm parameter value | ✅ |
+| `set_algo_param` | `axis: string`, `name: string`, `value: float` | Modify individual algorithm parameter value | ✅ |
 
 ### Guide Output Control
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_guide_output_enabled` | none | Check if guide corrections are being sent to mount |
-| `set_guide_output_enabled` | `enabled: bool` | Enable or disable sending guide corrections |
-| `guide_pulse` | `amount: int`, `direction: string`, `which: string` | Send manual pulse; direction: N/S/E/W, which: "mount" or "ao" |
-| `get_dec_guide_mode` | none | Get declination guide mode (Off/Auto/North/South) |
-| `set_dec_guide_mode` | `mode: string` | Set declination guide mode |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_guide_output_enabled` | none | Check if guide corrections are being sent to mount | ❌ |
+| `set_guide_output_enabled` | `enabled: bool` | Enable or disable sending guide corrections | ❌ |
+| `guide_pulse` | `amount: int`, `direction: string`, `which: string` | Send manual pulse; direction: N/S/E/W, which: "mount" or "ao" | ❌ |
+| `get_dec_guide_mode` | none | Get declination guide mode (Off/Auto/North/South) | ❌ |
+| `set_dec_guide_mode` | `mode: string` | Set declination guide mode | ❌ |
 
 ### State & Status
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_app_state` | none | Get current app state: Stopped, Selected, Calibrating, Guiding, LostLock, Paused, Looping |
-| `get_pixel_scale` | none | Get image scale in arc-seconds per pixel |
-| `get_search_region` | none | Get star search radius in pixels |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_app_state` | none | Get current app state: Stopped, Selected, Calibrating, Guiding, LostLock, Paused, Looping | ✅ |
+| `get_pixel_scale` | none | Get image scale in arc-seconds per pixel | ❌ |
+| `get_search_region` | none | Get star search radius in pixels | ❌ |
 
 ### Image Operations
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_star_image` | `size: int` | Get current guide star image data as base64-encoded FITS |
-| `save_image` | none | Save current frame to FITS file in PHD2's default location |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_star_image` | `size: int` | Get current guide star image data as base64-encoded FITS | ✅ |
+| `save_image` | none | Save current frame to FITS file in PHD2's default location | ✅ |
 
 ### Timing Configuration
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `get_variable_delay_settings` | none | Get delay configuration between exposures |
-| `set_variable_delay_settings` | `enabled: bool`, `shortDelay: int`, `longDelay: int` | Configure exposure delays |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `get_variable_delay_settings` | none | Get delay configuration between exposures | ❌ |
+| `set_variable_delay_settings` | `enabled: bool`, `shortDelay: int`, `longDelay: int` | Configure exposure delays | ❌ |
 
 ### Application Control
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `shutdown` | none | Close PHD2 application |
+| Method | Parameters | Description | Status |
+|--------|------------|-------------|--------|
+| `shutdown` | none | Close PHD2 application | ✅ |
 
 ## PHD2 Event Notifications
 
@@ -228,27 +230,34 @@ The service exposes a high-level Rust API:
 ### Connection Management
 
 ```rust
-/// Connect to a running PHD2 instance
-async fn connect(&mut self, host: &str, port: u16) -> Result<()>;
+/// Connect to a running PHD2 instance (uses host/port from config)
+async fn connect(&self) -> Result<()>;
 
 /// Disconnect from PHD2
-async fn disconnect(&mut self) -> Result<()>;
+async fn disconnect(&self) -> Result<()>;
 
 /// Check if connected to PHD2
-fn is_connected(&self) -> bool;
+async fn is_connected(&self) -> bool;
+
+/// Get the PHD2 version (available after connection)
+async fn get_phd2_version(&self) -> Option<String>;
 ```
 
 ### Process Management
 
 ```rust
-/// Start PHD2 application
-async fn start_phd2(&mut self, executable_path: Option<&Path>) -> Result<()>;
+/// Start PHD2 application (uses executable_path from config or default)
+async fn start_phd2(&self) -> Result<()>;
 
 /// Stop PHD2 application gracefully
-async fn stop_phd2(&mut self) -> Result<()>;
+/// If client is provided, attempts graceful RPC shutdown first
+async fn stop_phd2(&self, client: Option<&Phd2Client>) -> Result<()>;
 
-/// Check if PHD2 process is running
-fn is_phd2_running(&self) -> bool;
+/// Check if PHD2 process is running (by attempting TCP connect)
+async fn is_phd2_running(&self) -> bool;
+
+/// Check if we are managing a PHD2 process
+async fn has_managed_process(&self) -> bool;
 ```
 
 ### Profile Management
@@ -261,17 +270,17 @@ async fn get_profiles(&self) -> Result<Vec<Profile>>;
 async fn get_current_profile(&self) -> Result<Profile>;
 
 /// Set active profile (equipment must be disconnected)
-async fn set_profile(&mut self, profile_id: i32) -> Result<()>;
+async fn set_profile(&self, profile_id: i32) -> Result<()>;
 ```
 
 ### Equipment Control
 
 ```rust
 /// Connect all equipment in current profile
-async fn connect_equipment(&mut self) -> Result<()>;
+async fn connect_equipment(&self) -> Result<()>;
 
 /// Disconnect all equipment
-async fn disconnect_equipment(&mut self) -> Result<()>;
+async fn disconnect_equipment(&self) -> Result<()>;
 
 /// Check if equipment is connected
 async fn is_equipment_connected(&self) -> Result<bool>;
@@ -284,41 +293,50 @@ async fn get_current_equipment(&self) -> Result<Equipment>;
 
 ```rust
 /// Start guiding with settling parameters
-async fn start_guiding(&mut self, settle: SettleParams, recalibrate: bool) -> Result<()>;
+/// roi: Optional region of interest for star selection
+async fn start_guiding(&self, settle: &SettleParams, recalibrate: bool, roi: Option<Rect>) -> Result<()>;
 
 /// Stop guiding (continues looping)
-async fn stop_guiding(&mut self) -> Result<()>;
+async fn stop_guiding(&self) -> Result<()>;
 
 /// Stop all capture and guiding
-async fn stop_capture(&mut self) -> Result<()>;
+async fn stop_capture(&self) -> Result<()>;
+
+/// Start looping exposures without guiding
+async fn start_loop(&self) -> Result<()>;
 
 /// Pause guiding
-async fn pause(&mut self, full: bool) -> Result<()>;
+/// full: If true, pause looping entirely. If false, continue looping but don't send corrections.
+async fn pause(&self, full: bool) -> Result<()>;
 
 /// Resume guiding
-async fn resume(&mut self) -> Result<()>;
+async fn resume(&self) -> Result<()>;
 
 /// Check if guiding is paused
 async fn is_paused(&self) -> Result<bool>;
 
 /// Get current application state
-async fn get_state(&self) -> Result<AppState>;
+async fn get_app_state(&self) -> Result<AppState>;
+
+/// Get cached application state (from events, no RPC call)
+async fn get_cached_app_state(&self) -> Option<AppState>;
 
 /// Dither the guide position
-async fn dither(&mut self, amount: f64, ra_only: bool, settle: SettleParams) -> Result<()>;
+async fn dither(&self, amount: f64, ra_only: bool, settle: &SettleParams) -> Result<()>;
 ```
 
 ### Star Selection
 
 ```rust
 /// Auto-select a guide star
-async fn find_star(&mut self, roi: Option<Rect>) -> Result<()>;
+async fn find_star(&self, roi: Option<Rect>) -> Result<()>;
 
 /// Get current lock position
 async fn get_lock_position(&self) -> Result<(f64, f64)>;
 
 /// Set lock position
-async fn set_lock_position(&mut self, x: f64, y: f64, exact: bool) -> Result<()>;
+/// exact: If true, use exact position. If false, PHD2 will search for a nearby star.
+async fn set_lock_position(&self, x: f64, y: f64, exact: bool) -> Result<()>;
 ```
 
 ### Calibration
@@ -328,13 +346,114 @@ async fn set_lock_position(&mut self, x: f64, y: f64, exact: bool) -> Result<()>
 async fn is_calibrated(&self) -> Result<bool>;
 
 /// Get calibration data
+/// which: Mount or AO (Both is not valid for get, defaults to Mount)
 async fn get_calibration_data(&self, which: CalibrationTarget) -> Result<CalibrationData>;
 
 /// Clear calibration
-async fn clear_calibration(&mut self, which: CalibrationTarget) -> Result<()>;
+/// which: Mount, AO, or Both
+async fn clear_calibration(&self, which: CalibrationTarget) -> Result<()>;
 
 /// Flip calibration for meridian flip
-async fn flip_calibration(&mut self) -> Result<()>;
+async fn flip_calibration(&self) -> Result<()>;
+```
+
+### Camera Exposure
+
+```rust
+/// Get the current exposure duration in milliseconds
+async fn get_exposure(&self) -> Result<u32>;
+
+/// Set the exposure duration in milliseconds
+async fn set_exposure(&self, exposure_ms: u32) -> Result<()>;
+
+/// Get the list of valid exposure durations in milliseconds
+async fn get_exposure_durations(&self) -> Result<Vec<u32>>;
+
+/// Get the camera frame size (width, height) in pixels
+async fn get_camera_frame_size(&self) -> Result<(u32, u32)>;
+
+/// Check if subframe mode is enabled
+async fn get_use_subframes(&self) -> Result<bool>;
+
+/// Capture a single frame
+async fn capture_single_frame(&self, exposure_ms: Option<u32>, subframe: Option<Rect>) -> Result<()>;
+```
+
+### Camera Cooling
+
+```rust
+/// Get the current CCD sensor temperature in degrees Celsius
+async fn get_ccd_temperature(&self) -> Result<f64>;
+
+/// Get the cooler status including temperature and power
+async fn get_cooler_status(&self) -> Result<CoolerStatus>;
+
+/// Set the cooler state
+/// temperature: Required when enabling the cooler
+async fn set_cooler_state(&self, enabled: bool, temperature: Option<f64>) -> Result<()>;
+```
+
+### Guide Algorithm Parameters
+
+```rust
+/// Get the list of algorithm parameter names for the specified axis
+async fn get_algo_param_names(&self, axis: GuideAxis) -> Result<Vec<String>>;
+
+/// Get the value of a guide algorithm parameter
+async fn get_algo_param(&self, axis: GuideAxis, name: &str) -> Result<f64>;
+
+/// Set the value of a guide algorithm parameter
+async fn set_algo_param(&self, axis: GuideAxis, name: &str, value: f64) -> Result<()>;
+```
+
+### Image Operations
+
+```rust
+/// Get the current guide star image
+/// size: Size of the image in pixels (width and height will be 2*size+1)
+async fn get_star_image(&self, size: u32) -> Result<StarImage>;
+
+/// Save the current camera frame to a file
+/// Returns the path to the saved file
+async fn save_image(&self) -> Result<String>;
+```
+
+### FITS Utilities
+
+```rust
+/// Decode base64-encoded image data to u16 pixel values
+fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>>;
+
+/// Write a 16-bit grayscale image to a FITS file
+async fn write_grayscale_u16_fits(
+    path: impl AsRef<Path>,
+    pixels: &[u16],
+    width: u32,
+    height: u32,
+    headers: Option<&[(&str, &str)]>,
+) -> Result<()>;
+```
+
+**Example usage:**
+```rust
+use phd2_guider::{Phd2Client, decode_base64_u16, write_grayscale_u16_fits};
+
+let image = client.get_star_image(15).await?;
+let pixels = decode_base64_u16(&image.pixels)?;
+write_grayscale_u16_fits(
+    "guide_star.fits",
+    &pixels,
+    image.width,
+    image.height,
+    Some(&[("FRAME", &image.frame.to_string()), ("ORIGIN", "PHD2")]),
+).await?;
+```
+
+### Application Control
+
+```rust
+/// Shutdown PHD2 application
+async fn shutdown_phd2(&self) -> Result<()>;
 ```
 
 ### Event Subscription
@@ -498,12 +617,12 @@ Auto-reconnect can be controlled at runtime:
 - [x] Implement calibration status and data retrieval
 - [x] Implement `clear_calibration` / `flip_calibration`
 
-### Phase 6: Advanced Features
+### Phase 6: Advanced Features ✅
 - [x] Implement dithering support
 - [x] Event subscription and broadcasting
-- [ ] Implement guide algorithm parameter get/set
+- [x] Implement guide algorithm parameter get/set
 - [x] Implement camera exposure control
-- [ ] Implement camera cooling control
+- [x] Implement camera cooling control
 - [x] Handle calibration events
 
 ### Phase 7: Testing and Validation (Partial)
@@ -521,8 +640,9 @@ tokio = { version = "1", features = ["full", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-anyhow = "1"
-thiserror = "1"
+thiserror = "2"
+base64 = "0.22"
+fitsio = "0.21"
 ```
 
 ## Testing Strategy
@@ -578,6 +698,27 @@ pub enum Phd2Error {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Failed to send message: {0}")]
+    SendError(String),
+
+    #[error("Failed to receive response")]
+    ReceiveError,
+
+    #[error("Failed to start PHD2 process: {0}")]
+    ProcessStartFailed(String),
+
+    #[error("PHD2 executable not found: {0}")]
+    ExecutableNotFound(String),
+
+    #[error("Process already running")]
+    ProcessAlreadyRunning,
+
+    #[error("Reconnection failed: {0}")]
+    ReconnectFailed(String),
 }
 ```
 

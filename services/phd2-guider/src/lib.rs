@@ -10,6 +10,7 @@
 //! - `connection` - Internal connection management (not public)
 //! - [`error`] - Error types and Result alias
 //! - [`events`] - PHD2 event types and application state
+//! - [`fits`] - FITS file utilities for saving images
 //! - [`process`] - PHD2 process management
 //! - [`rpc`] - JSON RPC 2.0 types
 //! - [`types`] - Common types (Rect, Profile, Equipment)
@@ -39,6 +40,7 @@ pub mod config;
 pub(crate) mod connection;
 pub mod error;
 pub mod events;
+pub mod fits;
 pub mod process;
 pub mod rpc;
 pub mod types;
@@ -48,6 +50,10 @@ pub use client::Phd2Client;
 pub use config::{load_config, Config, Phd2Config, ReconnectConfig, SettleParams};
 pub use error::{Phd2Error, Result};
 pub use events::{AppState, GuideStepStats, Phd2Event};
+pub use fits::{decode_base64_u16, write_grayscale_u16_fits};
 pub use process::{get_default_phd2_path, Phd2ProcessManager};
 pub use rpc::{RpcErrorObject, RpcRequest, RpcResponse};
-pub use types::{CalibrationData, CalibrationTarget, Equipment, EquipmentDevice, Profile, Rect};
+pub use types::{
+    CalibrationData, CalibrationTarget, CoolerStatus, Equipment, EquipmentDevice, GuideAxis,
+    Profile, Rect, StarImage,
+};
