@@ -1,6 +1,9 @@
 //! Unit tests for PHD2 types
 
-use phd2_guider::{CalibrationData, CalibrationTarget, Equipment, EquipmentDevice, Profile, Rect};
+use phd2_guider::{
+    CalibrationData, CalibrationTarget, CoolerStatus, Equipment, EquipmentDevice, GuideAxis,
+    Profile, Rect, StarImage,
+};
 
 #[test]
 fn test_rect_creation() {
@@ -161,4 +164,100 @@ fn test_calibration_data_not_calibrated() {
     assert!(!data.calibrated);
     assert_eq!(data.x_angle, 0.0);
     assert_eq!(data.x_rate, 0.0);
+}
+
+// ============================================================================
+// GuideAxis Tests
+// ============================================================================
+
+#[test]
+fn test_guide_axis_to_api_string() {
+    assert_eq!(GuideAxis::Ra.to_api_string(), "ra");
+    assert_eq!(GuideAxis::Dec.to_api_string(), "dec");
+}
+
+#[test]
+fn test_guide_axis_display() {
+    assert_eq!(format!("{}", GuideAxis::Ra), "RA");
+    assert_eq!(format!("{}", GuideAxis::Dec), "Dec");
+}
+
+#[test]
+fn test_guide_axis_equality() {
+    assert_eq!(GuideAxis::Ra, GuideAxis::Ra);
+    assert_eq!(GuideAxis::Dec, GuideAxis::Dec);
+    assert_ne!(GuideAxis::Ra, GuideAxis::Dec);
+}
+
+// ============================================================================
+// CoolerStatus Tests
+// ============================================================================
+
+#[test]
+fn test_cooler_status_parsing_full() {
+    let json = r#"{
+        "temperature": -10.5,
+        "coolerOn": true,
+        "setpoint": -10.0,
+        "power": 45.5
+    }"#;
+    let status: CoolerStatus = serde_json::from_str(json).unwrap();
+
+    assert_eq!(status.temperature, -10.5);
+    assert!(status.cooler_on);
+    assert_eq!(status.setpoint, Some(-10.0));
+    assert_eq!(status.power, Some(45.5));
+}
+
+#[test]
+fn test_cooler_status_parsing_cooler_off() {
+    let json = r#"{
+        "temperature": 25.0,
+        "coolerOn": false
+    }"#;
+    let status: CoolerStatus = serde_json::from_str(json).unwrap();
+
+    assert_eq!(status.temperature, 25.0);
+    assert!(!status.cooler_on);
+    assert!(status.setpoint.is_none());
+    assert!(status.power.is_none());
+}
+
+// ============================================================================
+// StarImage Tests
+// ============================================================================
+
+#[test]
+fn test_star_image_parsing_full() {
+    let json = r#"{
+        "frame": 42,
+        "width": 32,
+        "height": 32,
+        "star_pos": [16.5, 15.3],
+        "pixels": "AAAA"
+    }"#;
+    let image: StarImage = serde_json::from_str(json).unwrap();
+
+    assert_eq!(image.frame, 42);
+    assert_eq!(image.width, 32);
+    assert_eq!(image.height, 32);
+    assert_eq!(image.star_pos, Some(vec![16.5, 15.3]));
+    assert_eq!(image.pixels, "AAAA");
+}
+
+#[test]
+fn test_star_image_parsing_no_star_pos() {
+    let json = r#"{
+        "frame": 1,
+        "width": 64,
+        "height": 64,
+        "pixels": "AAABBBCCC"
+    }"#;
+    let image: StarImage = serde_json::from_str(json).unwrap();
+
+    assert_eq!(image.frame, 1);
+    assert_eq!(image.width, 64);
+    assert_eq!(image.height, 64);
+    assert!(image.star_pos.is_none());
+    assert_eq!(image.pixels, "AAABBBCCC");
 }
