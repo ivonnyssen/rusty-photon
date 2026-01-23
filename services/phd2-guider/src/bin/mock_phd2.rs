@@ -183,9 +183,6 @@ fn handle_request(request: &str, shutdown: &Arc<AtomicBool>, ignore_shutdown: bo
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
-    // In shutdown_fails mode, ignore shutdown commands
-    let ignore_shutdown = ignore_shutdown;
-
     // Mock responses for different methods
     let result = match method {
         "get_app_state" => serde_json::json!("Stopped"),
