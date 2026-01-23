@@ -64,6 +64,7 @@ async fn test_write_grayscale_u16_fits_dimension_mismatch() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call fitsio FFI functions
 async fn test_write_grayscale_u16_fits_success() {
     let pixels = vec![1u16, 2, 3, 4];
     let temp_file = std::env::temp_dir().join("test_fits_write.fits");
@@ -82,6 +83,7 @@ async fn test_write_grayscale_u16_fits_success() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call fitsio FFI functions
 async fn test_write_grayscale_u16_fits_with_headers() {
     let pixels = vec![100u16, 200, 300, 400, 500, 600, 700, 800, 900];
     let temp_file = std::env::temp_dir().join("test_fits_headers.fits");
@@ -101,6 +103,7 @@ async fn test_write_grayscale_u16_fits_with_headers() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call fitsio FFI functions
 async fn test_write_grayscale_u16_fits_single_pixel() {
     let pixels = vec![42u16];
     let temp_file = std::env::temp_dir().join("test_fits_single.fits");
@@ -115,6 +118,7 @@ async fn test_write_grayscale_u16_fits_single_pixel() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call fitsio FFI functions
 async fn test_write_grayscale_u16_fits_larger_image() {
     // 32x32 image
     let pixels: Vec<u16> = (0..1024).map(|i| i as u16).collect();
