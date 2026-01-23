@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version = "1.86.0"
 description = "File monitoring service for Rusty Photon"
 
 [dependencies]

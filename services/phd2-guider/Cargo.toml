@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version = "1.80.1"
 description = "PHD2 guider client library and service for Rusty Photon"
 
 [dependencies]
