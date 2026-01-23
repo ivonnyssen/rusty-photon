@@ -1444,3 +1444,151 @@ async fn test_process_manager_no_executable_no_default() {
         assert!(result.is_err(), "Should fail when no executable found");
     }
 }
+
+// ============================================================================
+// Error Path Tests (using mock_phd2 modes)
+// ============================================================================
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_exit_immediately() {
+    let port = 44205; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+    spawn_env.insert("MOCK_PHD2_MODE".to_string(), "exit_immediately".to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Start should fail because the process exits immediately
+    let result = manager.start_phd2().await;
+    assert!(
+        result.is_err(),
+        "Should fail when process exits immediately"
+    );
+
+    // Verify the error message mentions premature exit
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_msg.contains("exited prematurely") || err_msg.contains("ProcessStartFailed"),
+        "Error should indicate premature exit: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_connection_timeout() {
+    let port = 44206; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+    spawn_env.insert("MOCK_PHD2_MODE".to_string(), "no_listen".to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 2, // Short timeout for faster test
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Start should fail due to timeout (process doesn't listen)
+    let result = manager.start_phd2().await;
+    assert!(result.is_err(), "Should fail when connection times out");
+
+    // Verify the error is a timeout
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_msg.contains("Timeout") || err_msg.contains("did not become ready"),
+        "Error should indicate timeout: {}",
+        err_msg
+    );
+
+    // Clean up - force kill the no_listen process
+    manager.stop_phd2(None).await.ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_graceful_shutdown_fails_fallback_to_kill() {
+    let port = 44207; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+    spawn_env.insert("MOCK_PHD2_MODE".to_string(), "shutdown_fails".to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 10,
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config.clone());
+
+    // Start the mock PHD2
+    let start_result = manager.start_phd2().await;
+    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+
+    // Verify it's running
+    assert!(manager.is_phd2_running().await, "Mock should be running");
+
+    // Connect a client
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+
+    // Wait for version event
+    let mut version = None;
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        version = client.get_phd2_version().await;
+        if version.is_some() {
+            break;
+        }
+    }
+    assert!(version.is_some(), "Should have version");
+
+    // Stop with client - graceful shutdown will "succeed" (return Ok) but
+    // process won't actually exit, so we should fall back to force kill
+    let stop_result = manager.stop_phd2(Some(&client)).await;
+    assert!(stop_result.is_ok(), "Should stop: {:?}", stop_result);
+
+    // Verify not running
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running after stop"
+    );
+}

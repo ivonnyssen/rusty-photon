@@ -6,8 +6,16 @@
 //! Usage:
 //!   mock_phd2 [--port PORT]
 //!
-//! The port can also be set via the MOCK_PHD2_PORT environment variable.
-//! Command line argument takes precedence over environment variable.
+//! Environment variables:
+//!   MOCK_PHD2_PORT - Port to listen on (default: 4400)
+//!   MOCK_PHD2_MODE - Operating mode for testing different scenarios:
+//!     - "normal" (default): Standard mock server behavior
+//!     - "exit_immediately": Exit with code 42 without starting server
+//!     - "no_listen": Sleep without binding to port (tests connection timeout)
+//!     - "slow_start": Wait 5 seconds before binding (tests startup timing)
+//!     - "shutdown_fails": Ignore shutdown commands (tests fallback to force kill)
+//!
+//! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
 
 use std::io::{BufRead, BufReader, Write};
@@ -16,6 +24,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn main() {
+    // Get operating mode from environment
+    let mode = std::env::var("MOCK_PHD2_MODE").unwrap_or_else(|_| "normal".to_string());
+
+    // Handle special modes that don't start the server
+    match mode.as_str() {
+        "exit_immediately" => {
+            eprintln!("Mock PHD2: exit_immediately mode - exiting with code 42");
+            std::process::exit(42);
+        }
+        "no_listen" => {
+            eprintln!("Mock PHD2: no_listen mode - sleeping without binding port");
+            // Sleep for a while to allow timeout tests
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            std::process::exit(0);
+        }
+        "slow_start" => {
+            eprintln!("Mock PHD2: slow_start mode - waiting 5 seconds before starting");
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            // Continue to normal startup
+        }
+        "normal" | "shutdown_fails" => {
+            // Continue to normal startup
+        }
+        _ => {
+            eprintln!("Mock PHD2: unknown mode '{}', using normal", mode);
+        }
+    }
+
     // Port priority: command line arg > environment variable > default (4400)
     let port = std::env::args()
         .nth(2)
@@ -27,7 +63,7 @@ fn main() {
         })
         .unwrap_or(4400u16);
 
-    eprintln!("Mock PHD2 starting on port {}", port);
+    eprintln!("Mock PHD2 starting on port {} (mode: {})", port, mode);
 
     let listener = match TcpListener::bind(format!("127.0.0.1:{}", port)) {
         Ok(l) => l,
@@ -46,13 +82,17 @@ fn main() {
 
     eprintln!("Mock PHD2 listening on port {}", port);
 
+    // Store mode for use in request handler
+    let ignore_shutdown = mode == "shutdown_fails";
+
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, addr)) => {
                 eprintln!("Connection from {}", addr);
                 let shutdown_clone = shutdown.clone();
+                let ignore_shutdown_clone = ignore_shutdown;
                 std::thread::spawn(move || {
-                    handle_client(stream, shutdown_clone);
+                    handle_client(stream, shutdown_clone, ignore_shutdown_clone);
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -68,7 +108,7 @@ fn main() {
     eprintln!("Mock PHD2 shutting down");
 }
 
-fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>) {
+fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdown: bool) {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(1)))
         .ok();
@@ -99,7 +139,7 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>) {
 
                 eprintln!("Received: {}", request);
 
-                let response = handle_request(&request, &shutdown);
+                let response = handle_request(&request, &shutdown, ignore_shutdown);
                 eprintln!("Sending: {}", response);
 
                 if writeln!(stream, "{}", response).is_err() {
@@ -130,7 +170,7 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>) {
     eprintln!("Client disconnected");
 }
 
-fn handle_request(request: &str, shutdown: &Arc<AtomicBool>) -> String {
+fn handle_request(request: &str, shutdown: &Arc<AtomicBool>, ignore_shutdown: bool) -> String {
     // Parse JSON-RPC request
     let req: serde_json::Value = match serde_json::from_str(request) {
         Ok(v) => v,
@@ -142,6 +182,9 @@ fn handle_request(request: &str, shutdown: &Arc<AtomicBool>) -> String {
 
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+    // In shutdown_fails mode, ignore shutdown commands
+    let ignore_shutdown = ignore_shutdown;
 
     // Mock responses for different methods
     let result = match method {
@@ -205,9 +248,15 @@ fn handle_request(request: &str, shutdown: &Arc<AtomicBool>) -> String {
         "save_image" => serde_json::json!("/tmp/mock_image.fits"),
         "capture_single_frame" => serde_json::json!(0),
         "shutdown" => {
-            eprintln!("Shutdown requested");
-            shutdown.store(true, Ordering::Relaxed);
-            serde_json::json!(0)
+            if ignore_shutdown {
+                eprintln!("Shutdown requested but ignored (shutdown_fails mode)");
+                // Return success but don't actually shut down
+                serde_json::json!(0)
+            } else {
+                eprintln!("Shutdown requested");
+                shutdown.store(true, Ordering::Relaxed);
+                serde_json::json!(0)
+            }
         }
         _ => {
             return format!(
