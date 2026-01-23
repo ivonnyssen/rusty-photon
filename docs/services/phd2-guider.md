@@ -683,13 +683,34 @@ fitsio = "0.21"
 
 ## Testing Strategy
 
-### Unit Tests
+### Test Files
+
+```
+services/phd2-guider/tests/
+├── test_main_integration.rs   # CLI integration tests (38 tests)
+├── test_integration.rs        # Library integration tests with mock server
+├── test_mock_server.rs        # Mock server protocol tests
+├── test_client_mock.rs        # Mockall-based client unit tests (62 tests)
+├── test_connection_mock.rs    # Mockall-based connection tests (18 tests)
+└── test_process_mock.rs       # Mockall-based process tests (14 tests)
+```
+
+### Unit Tests (Mockall-based)
 - JSON RPC 2.0 message serialization/deserialization
 - Event parsing for all event types
-- State machine transitions
-- Error handling
+- All client RPC methods with mock I/O
+- Connection state management
+- Process spawning and management
+- Run under miri for memory safety verification
 
-### Integration Tests
+### CLI Integration Tests
+- All CLI subcommands (status, guide, dither, etc.)
+- Command-line argument parsing
+- Config file loading
+- Error handling (connection failures, invalid arguments)
+- Uses mock_phd2 server on random ports for parallel execution
+
+### Library Integration Tests
 - Connect to PHD2 and verify version event
 - Start/stop guiding cycle
 - Profile switching
