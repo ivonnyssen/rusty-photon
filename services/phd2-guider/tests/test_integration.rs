@@ -12,10 +12,19 @@ use phd2_guider::{
     ReconnectConfig, SettleParams,
 };
 #[cfg_attr(miri, allow(unused_imports))]
+use std::net::TcpListener;
+#[cfg_attr(miri, allow(unused_imports))]
 use std::path::PathBuf;
 #[cfg_attr(miri, allow(unused_imports))]
 use std::process::{Child, Command};
 use std::time::Duration;
+
+/// Get an available TCP port by binding to port 0
+#[cfg(not(miri))]
+fn get_available_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port 0");
+    listener.local_addr().unwrap().port()
+}
 
 /// Helper to check if PHD2 is available on the system
 fn is_phd2_available() -> bool {
@@ -67,7 +76,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 #[test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 fn test_get_default_phd2_path() {
     // This test just verifies the function doesn't panic
     let path = get_default_phd2_path();
@@ -114,7 +123,7 @@ fn test_load_config_file_not_found() {
 // ============================================================================
 
 #[test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning in get_default_phd2_path
+#[cfg(not(miri))]
 fn test_client_creation() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -123,7 +132,7 @@ fn test_client_creation() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning in get_default_phd2_path
+#[cfg(not(miri))]
 fn test_process_manager_creation() {
     let config = create_test_config();
     let manager = Phd2ProcessManager::new(config);
@@ -396,7 +405,7 @@ async fn test_start_phd2_already_running() {
 // ============================================================================
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support tokio networking
+#[cfg(not(miri))]
 async fn test_connect_to_nonexistent_server() {
     let config = Phd2Config {
         host: "localhost".to_string(),
@@ -415,7 +424,7 @@ async fn test_connect_to_nonexistent_server() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support tokio networking
+#[cfg(not(miri))]
 async fn test_send_request_when_not_connected() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -426,7 +435,7 @@ async fn test_send_request_when_not_connected() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_executable_not_found() {
     // Use a port unlikely to be in use to ensure we actually try to start the executable
     let config = Phd2Config {
@@ -566,9 +575,9 @@ fn start_mock_phd2(_port: u16) -> Option<Child> {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_connection() {
-    let port = 44100; // Use a different port to avoid conflicts
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!(
@@ -612,9 +621,9 @@ async fn test_mock_phd2_connection() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_get_app_state() {
-    let port = 44101;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -644,9 +653,9 @@ async fn test_mock_phd2_get_app_state() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_get_profiles() {
-    let port = 44102;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -678,9 +687,9 @@ async fn test_mock_phd2_get_profiles() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_get_equipment() {
-    let port = 44103;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -712,9 +721,9 @@ async fn test_mock_phd2_get_equipment() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_exposure_methods() {
-    let port = 44104;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -753,9 +762,9 @@ async fn test_mock_phd2_exposure_methods() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_calibration_methods() {
-    let port = 44105;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -804,9 +813,9 @@ async fn test_mock_phd2_calibration_methods() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_guiding_control() {
-    let port = 44106;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -864,9 +873,9 @@ async fn test_mock_phd2_guiding_control() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_star_operations() {
-    let port = 44107;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -907,9 +916,9 @@ async fn test_mock_phd2_star_operations() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_cooling() {
-    let port = 44108;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -943,9 +952,9 @@ async fn test_mock_phd2_cooling() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_star_image() {
-    let port = 44109;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -978,9 +987,9 @@ async fn test_mock_phd2_star_image() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_event_subscription() {
-    let port = 44110;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -1022,9 +1031,9 @@ async fn test_mock_phd2_event_subscription() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_mock_phd2_reconnect_on_disconnect() {
-    let port = 44111;
+    let port = get_available_port();
 
     let Some(mut child) = start_mock_phd2(port) else {
         eprintln!("Mock PHD2 binary not found");
@@ -1082,9 +1091,9 @@ async fn test_mock_phd2_reconnect_on_disconnect() {
 // which is passed via spawn_env in Phd2Config.
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_start_stop_mock() {
-    let port = 44200; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1176,9 +1185,9 @@ async fn test_process_manager_start_stop_mock() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_start_already_running() {
-    let port = 44121;
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1225,9 +1234,9 @@ async fn test_process_manager_start_already_running() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_force_kill() {
-    let port = 44201; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1279,9 +1288,9 @@ async fn test_process_manager_force_kill() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_shutdown_via_rpc() {
-    let port = 44202; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1338,9 +1347,9 @@ async fn test_process_manager_shutdown_via_rpc() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_stop_without_client() {
-    let port = 44203; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1388,9 +1397,9 @@ async fn test_process_manager_stop_without_client() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_start_when_external_running() {
-    let port = 44204; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1426,7 +1435,7 @@ async fn test_process_manager_start_when_external_running() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_manager_no_executable_no_default() {
     // Create config without executable_path - will try to find default
     // On CI, there's no real PHD2 installed, so this should fail
@@ -1450,9 +1459,9 @@ async fn test_process_manager_no_executable_no_default() {
 // ============================================================================
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_exit_immediately() {
-    let port = 44205; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1492,9 +1501,9 @@ async fn test_process_exit_immediately() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_process_connection_timeout() {
-    let port = 44206; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1534,9 +1543,9 @@ async fn test_process_connection_timeout() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+#[cfg(not(miri))]
 async fn test_graceful_shutdown_fails_fallback_to_kill() {
-    let port = 44207; // Use unique port for this test
+    let port = get_available_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
