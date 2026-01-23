@@ -30,6 +30,9 @@ pub struct Phd2Config {
     pub auto_connect_equipment: bool,
     #[serde(default)]
     pub reconnect: ReconnectConfig,
+    /// Environment variables to set when spawning the PHD2 process
+    #[serde(default)]
+    pub spawn_env: std::collections::HashMap<String, String>,
 }
 
 /// Configuration for automatic reconnection
@@ -75,6 +78,7 @@ impl Default for Phd2Config {
             auto_start: false,
             auto_connect_equipment: false,
             reconnect: ReconnectConfig::default(),
+            spawn_env: std::collections::HashMap::new(),
         }
     }
 }

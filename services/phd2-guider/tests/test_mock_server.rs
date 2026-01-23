@@ -995,3 +995,218 @@ async fn test_invalid_response_format() {
 
     client.disconnect().await.unwrap();
 }
+
+// ============================================================================
+// Additional Method Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_connect_equipment() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.connect_equipment().await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_disconnect_equipment() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.disconnect_equipment().await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_set_profile() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.set_profile(1).await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_start_loop() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.start_loop().await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_stop_capture() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.stop_capture().await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_is_paused() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":true,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.is_paused().await;
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_get_use_subframes() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":true,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.get_use_subframes().await;
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_shutdown_phd2() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client.shutdown_phd2().await;
+    assert!(result.is_ok());
+
+    // Don't call disconnect since the server should shut down
+}
+
+#[tokio::test]
+async fn test_get_cached_app_state_initial() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    // Just enough to connect (version event doesn't set app state)
+    server.run_with_responses(vec![]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Cached state should be None initially (no AppState events received)
+    let cached = client.get_cached_app_state().await;
+    // May or may not be set depending on events - just exercise the code path
+    let _ = cached;
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_is_reconnecting() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Should not be reconnecting when connected
+    let reconnecting = client.is_reconnecting().await;
+    assert!(!reconnecting);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_stop_reconnection() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Should be safe to call even when not reconnecting
+    client.stop_reconnection().await;
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_find_star_with_roi() {
+    let server = MockPhd2Server::new();
+    let port = server.port();
+
+    server.run_with_responses(vec![r#"{"jsonrpc":"2.0","result":0,"id":1}"#.to_string()]);
+
+    let client = Phd2Client::new(create_test_config(port));
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let roi = Rect::new(100, 100, 200, 200);
+    let result = client.find_star(Some(roi)).await;
+    assert!(result.is_ok());
+
+    client.disconnect().await.unwrap();
+}

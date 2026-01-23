@@ -3,12 +3,18 @@
 //! These tests require PHD2 to be installed on the system.
 //! Tests that require PHD2 are marked with #[ignore] by default.
 //! Run them with: cargo test --test test_integration -- --ignored
+//!
+//! Some tests use the mock_phd2 binary and can run without PHD2 installed.
 
 #[cfg_attr(miri, allow(unused_imports))]
 use phd2_guider::{
     get_default_phd2_path, load_config, Phd2Client, Phd2Config, Phd2Event, Phd2ProcessManager,
+    ReconnectConfig, SettleParams,
 };
+#[cfg_attr(miri, allow(unused_imports))]
 use std::path::PathBuf;
+#[cfg_attr(miri, allow(unused_imports))]
+use std::process::{Child, Command};
 use std::time::Duration;
 
 /// Helper to check if PHD2 is available on the system
@@ -422,7 +428,9 @@ async fn test_send_request_when_not_connected() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
 async fn test_process_manager_executable_not_found() {
+    // Use a port unlikely to be in use to ensure we actually try to start the executable
     let config = Phd2Config {
+        port: 59997,
         executable_path: Some(PathBuf::from("/nonexistent/path/to/phd2")),
         ..Default::default()
     };
@@ -492,4 +500,821 @@ async fn test_full_workflow() {
     if !was_already_running {
         manager.stop_phd2(None).await.unwrap();
     }
+}
+
+// ============================================================================
+// Mock PHD2 Tests (don't require real PHD2)
+// ============================================================================
+
+/// Helper to find the mock_phd2 binary
+#[cfg(not(miri))]
+fn find_mock_phd2_binary() -> Option<PathBuf> {
+    // Try debug build first
+    let debug_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/mock_phd2");
+
+    if debug_path.exists() {
+        return Some(debug_path);
+    }
+
+    // Try release build
+    let release_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/release/mock_phd2");
+
+    if release_path.exists() {
+        return Some(release_path);
+    }
+
+    None
+}
+
+/// Start the mock PHD2 server on a specific port
+#[cfg(not(miri))]
+fn start_mock_phd2(port: u16) -> Option<Child> {
+    let binary = find_mock_phd2_binary()?;
+
+    let child = Command::new(binary)
+        .arg("--port")
+        .arg(port.to_string())
+        .spawn()
+        .ok()?;
+
+    // Give the server time to start
+    std::thread::sleep(Duration::from_millis(200));
+
+    Some(child)
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_connection() {
+    let port = 44100; // Use a different port to avoid conflicts
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!(
+            "Mock PHD2 binary not found. Run 'cargo build -p phd2-guider --bin mock_phd2' first"
+        );
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+
+    // Connect to mock server
+    let result = client.connect().await;
+    assert!(result.is_ok(), "Should connect to mock PHD2: {:?}", result);
+
+    // Wait for version event
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Verify we got the version
+    let version = client.get_phd2_version().await;
+    assert!(version.is_some(), "Should have received version");
+    let version = version.unwrap();
+    assert!(
+        version.contains("mock"),
+        "Version should indicate mock server"
+    );
+
+    // Disconnect
+    client.disconnect().await.unwrap();
+
+    // Kill the mock server
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_get_app_state() {
+    let port = 44101;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+
+    // Wait for connection to stabilize
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let state = client.get_app_state().await;
+    assert!(state.is_ok(), "Should get app state: {:?}", state);
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_get_profiles() {
+    let port = 44102;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let profiles = client.get_profiles().await;
+    assert!(profiles.is_ok(), "Should get profiles: {:?}", profiles);
+
+    let profiles = profiles.unwrap();
+    assert!(!profiles.is_empty(), "Should have at least one profile");
+    assert_eq!(profiles[0].name, "Mock Profile");
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_get_equipment() {
+    let port = 44103;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let equipment = client.get_current_equipment().await;
+    assert!(equipment.is_ok(), "Should get equipment: {:?}", equipment);
+
+    let equipment = equipment.unwrap();
+    assert!(equipment.camera.is_some(), "Should have camera info");
+    assert!(equipment.mount.is_some(), "Should have mount info");
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_exposure_methods() {
+    let port = 44104;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Get exposure
+    let exposure = client.get_exposure().await;
+    assert!(exposure.is_ok(), "Should get exposure: {:?}", exposure);
+    assert_eq!(exposure.unwrap(), 1000);
+
+    // Get exposure durations
+    let durations = client.get_exposure_durations().await;
+    assert!(durations.is_ok(), "Should get durations: {:?}", durations);
+    assert!(!durations.unwrap().is_empty());
+
+    // Set exposure
+    let set_result = client.set_exposure(2000).await;
+    assert!(set_result.is_ok(), "Should set exposure: {:?}", set_result);
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_calibration_methods() {
+    let port = 44105;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Get calibration status
+    let calibrated = client.is_calibrated().await;
+    assert!(
+        calibrated.is_ok(),
+        "Should get calibration status: {:?}",
+        calibrated
+    );
+
+    // Get calibration data
+    let data = client
+        .get_calibration_data(phd2_guider::CalibrationTarget::Mount)
+        .await;
+    assert!(data.is_ok(), "Should get calibration data: {:?}", data);
+
+    // Clear calibration
+    let clear_result = client
+        .clear_calibration(phd2_guider::CalibrationTarget::Mount)
+        .await;
+    assert!(
+        clear_result.is_ok(),
+        "Should clear calibration: {:?}",
+        clear_result
+    );
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_guiding_control() {
+    let port = 44106;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Start looping
+    let loop_result = client.start_loop().await;
+    assert!(
+        loop_result.is_ok(),
+        "Should start looping: {:?}",
+        loop_result
+    );
+
+    // Start guiding
+    let settle = SettleParams::default();
+    let guide_result = client.start_guiding(&settle, false, None).await;
+    assert!(
+        guide_result.is_ok(),
+        "Should start guiding: {:?}",
+        guide_result
+    );
+
+    // Pause guiding
+    let pause_result = client.pause(true).await;
+    assert!(
+        pause_result.is_ok(),
+        "Should pause guiding: {:?}",
+        pause_result
+    );
+
+    // Stop capture
+    let stop_result = client.stop_capture().await;
+    assert!(
+        stop_result.is_ok(),
+        "Should stop capture: {:?}",
+        stop_result
+    );
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_star_operations() {
+    let port = 44107;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Auto-select star
+    let find_result = client.find_star(None).await;
+    assert!(
+        find_result.is_ok(),
+        "Should auto-select star: {:?}",
+        find_result
+    );
+
+    // Set lock position
+    let lock_result = client.set_lock_position(320.0, 240.0, true).await;
+    assert!(
+        lock_result.is_ok(),
+        "Should set lock position: {:?}",
+        lock_result
+    );
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_cooling() {
+    let port = 44108;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Get CCD temperature
+    let temp = client.get_ccd_temperature().await;
+    assert!(temp.is_ok(), "Should get temperature: {:?}", temp);
+    assert!((temp.unwrap() - 20.0).abs() < 1.0);
+
+    // Get cooler status
+    let status = client.get_cooler_status().await;
+    assert!(status.is_ok(), "Should get cooler status: {:?}", status);
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_star_image() {
+    let port = 44109;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Get star image
+    let image = client.get_star_image(32).await;
+    assert!(image.is_ok(), "Should get star image: {:?}", image);
+
+    let image = image.unwrap();
+    assert_eq!(image.width, 32);
+    assert_eq!(image.height, 32);
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_event_subscription() {
+    let port = 44110;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    let mut receiver = client.subscribe();
+
+    client.connect().await.unwrap();
+
+    // We should receive a Version event
+    let event = tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await;
+    assert!(event.is_ok(), "Should receive event within timeout");
+
+    let event = event.unwrap();
+    assert!(event.is_ok(), "Channel should be open");
+
+    match event.unwrap() {
+        Phd2Event::Version { phd_version, .. } => {
+            assert!(phd_version.contains("mock"), "Should be mock version");
+        }
+        other => {
+            panic!("Expected Version event, got {:?}", other);
+        }
+    }
+
+    client.disconnect().await.ok();
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_mock_phd2_reconnect_on_disconnect() {
+    let port = 44111;
+
+    let Some(mut child) = start_mock_phd2(port) else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        reconnect: ReconnectConfig {
+            enabled: true,
+            interval_seconds: 1,
+            max_retries: Some(3),
+        },
+        ..Default::default()
+    };
+
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(client.is_connected().await, "Should be connected initially");
+
+    // Kill the mock server to simulate disconnect
+    child.kill().ok();
+    child.wait().ok();
+
+    // Wait a bit for disconnect detection
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Start a new mock server
+    let mut child2 = start_mock_phd2(port).expect("Should start new mock server");
+
+    // Wait for reconnection
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Check if reconnected
+    let _is_connected = client.is_connected().await;
+    // Note: The auto-reconnect might or might not succeed depending on timing
+    // This test mainly verifies that the reconnect logic doesn't panic
+
+    client.disconnect().await.ok();
+    child2.kill().ok();
+    child2.wait().ok();
+}
+
+// ============================================================================
+// Process Manager Tests with Mock PHD2
+// ============================================================================
+//
+// These tests use the mock_phd2 binary via Phd2ProcessManager.
+// The mock binary reads port from MOCK_PHD2_PORT environment variable,
+// which is passed via spawn_env in Phd2Config.
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_start_stop_mock() {
+    let port = 44200; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // First make sure nothing is running on that port
+    let addr = format!("127.0.0.1:{}", port);
+    if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+        eprintln!("Port {} is in use, skipping test", port);
+        return;
+    }
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 10,
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config.clone());
+
+    // Verify not running initially
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running initially"
+    );
+    assert!(
+        !manager.has_managed_process().await,
+        "Should not have managed process initially"
+    );
+
+    // Start the mock PHD2
+    let result = manager.start_phd2().await;
+    assert!(result.is_ok(), "Should start mock PHD2: {:?}", result);
+
+    // Verify it's running
+    assert!(
+        manager.is_phd2_running().await,
+        "Mock should be running after start"
+    );
+    assert!(
+        manager.has_managed_process().await,
+        "Should have managed process after start"
+    );
+
+    // Connect a client
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify connection works
+    let version = client.get_phd2_version().await;
+    assert!(version.is_some(), "Should have version");
+    assert!(version.unwrap().contains("mock"), "Should be mock version");
+
+    // Stop via process manager (graceful shutdown)
+    let stop_result = manager.stop_phd2(Some(&client)).await;
+    assert!(
+        stop_result.is_ok(),
+        "Should stop mock PHD2: {:?}",
+        stop_result
+    );
+
+    // Wait for shutdown
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify not running
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running after stop"
+    );
+    assert!(
+        !manager.has_managed_process().await,
+        "Should not have managed process after stop"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_start_already_running() {
+    let port = 44121;
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // Start mock manually first
+    let mut child = start_mock_phd2(port).expect("Should start mock");
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Manager should detect already running
+    assert!(
+        manager.is_phd2_running().await,
+        "Should detect running mock"
+    );
+
+    // Start should succeed (returns Ok when already running)
+    let result = manager.start_phd2().await;
+    assert!(
+        result.is_ok(),
+        "Should succeed when already running: {:?}",
+        result
+    );
+
+    // Manager should NOT have a managed process (since it was already running)
+    assert!(
+        !manager.has_managed_process().await,
+        "Should not manage externally started process"
+    );
+
+    // Cleanup
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_force_kill() {
+    let port = 44201; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // First make sure nothing is running on that port
+    let addr = format!("127.0.0.1:{}", port);
+    if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+        eprintln!("Port {} is in use, skipping test", port);
+        return;
+    }
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 10,
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Start the mock PHD2
+    let start_result = manager.start_phd2().await;
+    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+
+    // Force stop without client (no graceful shutdown)
+    let stop_result = manager.stop_phd2(None).await;
+    assert!(
+        stop_result.is_ok(),
+        "Should force stop mock PHD2: {:?}",
+        stop_result
+    );
+
+    // Wait for process to die
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify not running
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running after force stop"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_shutdown_via_rpc() {
+    let port = 44202; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // First make sure nothing is running on that port
+    let addr = format!("127.0.0.1:{}", port);
+    if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+        eprintln!("Port {} is in use, skipping test", port);
+        return;
+    }
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 10,
+        command_timeout_seconds: 5,
+        spawn_env: spawn_env.clone(),
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config.clone());
+
+    // Start the mock PHD2
+    let start_result = manager.start_phd2().await;
+    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+
+    // Connect a client
+    let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Try to shutdown via client directly (tests the shutdown_phd2 RPC call)
+    let shutdown_result = client.shutdown_phd2().await;
+    assert!(
+        shutdown_result.is_ok(),
+        "Should send shutdown command: {:?}",
+        shutdown_result
+    );
+
+    // Wait for process to die
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Verify not running (mock server handles shutdown command)
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running after shutdown RPC"
+    );
 }

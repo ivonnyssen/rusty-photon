@@ -180,18 +180,24 @@ impl Phd2ProcessManager {
         let executable = self.get_executable_path()?;
         debug!("Starting PHD2 from: {}", executable.display());
 
-        let child = Command::new(&executable)
-            .stdin(Stdio::null())
+        let mut cmd = Command::new(&executable);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                Phd2Error::ProcessStartFailed(format!(
-                    "Failed to start {}: {}",
-                    executable.display(),
-                    e
-                ))
-            })?;
+            .stderr(Stdio::null());
+
+        // Set any configured environment variables
+        for (key, value) in &self.config.spawn_env {
+            debug!("Setting environment variable: {}={}", key, value);
+            cmd.env(key, value);
+        }
+
+        let child = cmd.spawn().map_err(|e| {
+            Phd2Error::ProcessStartFailed(format!(
+                "Failed to start {}: {}",
+                executable.display(),
+                e
+            ))
+        })?;
 
         debug!("PHD2 process started with PID: {:?}", child.id());
 
