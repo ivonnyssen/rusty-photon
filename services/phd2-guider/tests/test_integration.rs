@@ -536,6 +536,12 @@ fn find_mock_phd2_binary() -> Option<PathBuf> {
     None
 }
 
+/// Stub for miri - always returns None
+#[cfg(miri)]
+fn find_mock_phd2_binary() -> Option<PathBuf> {
+    None
+}
+
 /// Start the mock PHD2 server on a specific port
 #[cfg(not(miri))]
 fn start_mock_phd2(port: u16) -> Option<Child> {
@@ -551,6 +557,12 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
     std::thread::sleep(Duration::from_millis(200));
 
     Some(child)
+}
+
+/// Stub for miri - always returns None
+#[cfg(miri)]
+fn start_mock_phd2(_port: u16) -> Option<Child> {
+    None
 }
 
 #[tokio::test]
