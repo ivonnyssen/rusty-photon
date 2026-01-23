@@ -1,9 +1,8 @@
 //! PHD2 client for communicating with PHD2 via JSON RPC
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tracing::debug;
 
@@ -13,6 +12,7 @@ use crate::connection::{
 };
 use crate::error::{Phd2Error, Result};
 use crate::events::{AppState, Phd2Event};
+use crate::io::{ConnectionFactory, TcpConnectionFactory};
 use crate::rpc::RpcRequest;
 use crate::types::{
     CalibrationData, CalibrationTarget, CoolerStatus, Equipment, GuideAxis, Profile, Rect,
@@ -25,17 +25,34 @@ pub struct Phd2Client {
     request_id: AtomicU64,
     shared: SharedConnectionState,
     reconnect_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    connection_factory: Arc<dyn ConnectionFactory>,
 }
 
 impl Phd2Client {
     /// Create a new PHD2 client with the given configuration
+    ///
+    /// Uses the default TCP connection factory for production use.
     pub fn new(config: Phd2Config) -> Self {
+        Self::with_connection_factory(config, Arc::new(TcpConnectionFactory::new()))
+    }
+
+    /// Create a new PHD2 client with a custom connection factory
+    ///
+    /// This is useful for testing with mock connections.
+    pub fn with_connection_factory(
+        config: Phd2Config,
+        connection_factory: Arc<dyn ConnectionFactory>,
+    ) -> Self {
         let auto_reconnect_enabled = config.reconnect.enabled;
         Self {
             config,
             request_id: AtomicU64::new(1),
-            shared: SharedConnectionState::new(auto_reconnect_enabled),
+            shared: SharedConnectionState::with_factory(
+                auto_reconnect_enabled,
+                connection_factory.clone(),
+            ),
             reconnect_handle: tokio::sync::Mutex::new(None),
+            connection_factory,
         }
     }
 
@@ -63,25 +80,20 @@ impl Phd2Client {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         debug!("Connecting to PHD2 at {}", addr);
 
-        let connect_future = TcpStream::connect(&addr);
         let timeout_duration =
             std::time::Duration::from_secs(self.config.connection_timeout_seconds);
 
-        let stream = tokio::time::timeout(timeout_duration, connect_future)
-            .await
-            .map_err(|_| Phd2Error::Timeout(format!("Connection to {} timed out", addr)))?
-            .map_err(|e| {
-                Phd2Error::ConnectionFailed(format!("Failed to connect to {}: {}", addr, e))
-            })?;
+        let connection_pair = self
+            .connection_factory
+            .connect(&addr, timeout_duration)
+            .await?;
 
-        debug!("TCP connection established to PHD2");
-
-        let (reader, writer) = tokio::io::split(stream);
+        debug!("Connection established to PHD2");
 
         // Store the writer
         {
             let mut writer_guard = self.shared.writer.lock().await;
-            *writer_guard = Some(writer);
+            *writer_guard = Some(connection_pair.writer);
         }
 
         // Update connection state
@@ -92,8 +104,11 @@ impl Phd2Client {
         }
 
         // Start the reader task
-        let reader_handle =
-            spawn_reader_task(reader, self.get_connection_config(), self.shared.clone());
+        let reader_handle = spawn_reader_task(
+            connection_pair.reader,
+            self.get_connection_config(),
+            self.shared.clone(),
+        );
         {
             let mut handle_guard = self.shared.reader_handle.lock().await;
             *handle_guard = Some(reader_handle);
@@ -228,18 +243,11 @@ impl Phd2Client {
             pending.insert(id, PendingRequest { sender });
         }
 
-        // Send the request
+        // Send the request using the MessageWriter trait
         {
             let mut writer_guard = self.shared.writer.lock().await;
             if let Some(writer) = writer_guard.as_mut() {
-                writer
-                    .write_all(format!("{}\r\n", request_json).as_bytes())
-                    .await
-                    .map_err(|e| Phd2Error::SendError(e.to_string()))?;
-                writer
-                    .flush()
-                    .await
-                    .map_err(|e| Phd2Error::SendError(e.to_string()))?;
+                writer.write_message(&request_json).await?;
             } else {
                 return Err(Phd2Error::NotConnected);
             }

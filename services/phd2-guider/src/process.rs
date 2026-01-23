@@ -1,17 +1,17 @@
 //! PHD2 process management for starting and stopping PHD2
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 
-use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::client::Phd2Client;
 use crate::config::Phd2Config;
 use crate::error::{Phd2Error, Result};
+use crate::io::{
+    ConnectionFactory, ProcessHandle, ProcessSpawner, TcpConnectionFactory, TokioProcessSpawner,
+};
 
 /// Get the default PHD2 executable path for the current platform
 ///
@@ -127,22 +127,44 @@ fn get_local_phd2_build_path() -> Option<PathBuf> {
 /// PHD2 process manager for starting and stopping PHD2
 pub struct Phd2ProcessManager {
     config: Phd2Config,
-    process: Arc<Mutex<Option<Child>>>,
+    process: Arc<Mutex<Option<Box<dyn ProcessHandle>>>>,
+    process_spawner: Arc<dyn ProcessSpawner>,
+    connection_factory: Arc<dyn ConnectionFactory>,
 }
 
 impl Phd2ProcessManager {
     /// Create a new process manager with the given configuration
+    ///
+    /// Uses the default tokio process spawner and TCP connection factory
+    /// for production use.
     pub fn new(config: Phd2Config) -> Self {
+        Self::with_spawner(
+            config,
+            Arc::new(TokioProcessSpawner::new()),
+            Arc::new(TcpConnectionFactory::new()),
+        )
+    }
+
+    /// Create a new process manager with custom spawner and connection factory
+    ///
+    /// This is useful for testing with mock process spawners and connection factories.
+    pub fn with_spawner(
+        config: Phd2Config,
+        process_spawner: Arc<dyn ProcessSpawner>,
+        connection_factory: Arc<dyn ConnectionFactory>,
+    ) -> Self {
         Self {
             config,
             process: Arc::new(Mutex::new(None)),
+            process_spawner,
+            connection_factory,
         }
     }
 
     /// Check if PHD2 is already running (by attempting to connect)
     pub async fn is_phd2_running(&self) -> bool {
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        TcpStream::connect(&addr).await.is_ok()
+        self.connection_factory.can_connect(&addr).await
     }
 
     /// Get the PHD2 executable path (from config or default)
@@ -180,24 +202,11 @@ impl Phd2ProcessManager {
         let executable = self.get_executable_path()?;
         debug!("Starting PHD2 from: {}", executable.display());
 
-        let mut cmd = Command::new(&executable);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        // Set any configured environment variables
-        for (key, value) in &self.config.spawn_env {
-            debug!("Setting environment variable: {}={}", key, value);
-            cmd.env(key, value);
-        }
-
-        let child = cmd.spawn().map_err(|e| {
-            Phd2Error::ProcessStartFailed(format!(
-                "Failed to start {}: {}",
-                executable.display(),
-                e
-            ))
-        })?;
+        // Use the process spawner trait to spawn the process
+        let child = self
+            .process_spawner
+            .spawn(&executable, &self.config.spawn_env)
+            .await?;
 
         debug!("PHD2 process started with PID: {:?}", child.id());
 
@@ -224,7 +233,7 @@ impl Phd2ProcessManager {
         debug!("Waiting for PHD2 to be ready at {}...", addr);
 
         while start.elapsed() < timeout {
-            if TcpStream::connect(&addr).await.is_ok() {
+            if self.connection_factory.can_connect(&addr).await {
                 return Ok(());
             }
 
@@ -232,7 +241,7 @@ impl Phd2ProcessManager {
             {
                 let mut process = self.process.lock().await;
                 if let Some(ref mut child) = *process {
-                    match child.try_wait() {
+                    match child.try_wait().await {
                         Ok(Some(status)) => {
                             return Err(Phd2Error::ProcessStartFailed(format!(
                                 "PHD2 process exited prematurely with status: {}",
@@ -299,7 +308,7 @@ impl Phd2ProcessManager {
             {
                 let mut process = self.process.lock().await;
                 if let Some(ref mut child) = *process {
-                    match child.try_wait() {
+                    match child.try_wait().await {
                         Ok(Some(_)) => {
                             *process = None;
                             return Ok(());

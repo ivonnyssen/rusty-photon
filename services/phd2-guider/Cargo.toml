@@ -18,6 +18,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
 fitsio = { workspace = true }
+async-trait = { workspace = true }
 
 [[bin]]
 name = "mock_phd2"
@@ -26,3 +27,4 @@ path = "src/bin/mock_phd2.rs"
 [dev-dependencies]
 tokio-test = { workspace = true }
 base64 = { workspace = true }
+mockall = { workspace = true }

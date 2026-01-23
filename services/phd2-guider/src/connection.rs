@@ -7,14 +7,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::config::ReconnectConfig;
 use crate::error::Phd2Error;
 use crate::events::{AppState, Phd2Event};
+#[cfg(test)]
+use crate::io::TcpConnectionFactory;
+use crate::io::{ConnectionFactory, LineReader, MessageWriter};
 use crate::rpc::RpcResponse;
 
 /// Pending RPC request waiting for response
@@ -38,17 +39,30 @@ pub(crate) struct ConnectionState {
 #[derive(Clone)]
 pub(crate) struct SharedConnectionState {
     pub state: Arc<RwLock<ConnectionState>>,
-    pub writer: Arc<Mutex<Option<tokio::io::WriteHalf<TcpStream>>>>,
+    pub writer: Arc<Mutex<Option<Box<dyn MessageWriter>>>>,
     pub pending_requests: Arc<Mutex<HashMap<u64, PendingRequest>>>,
     pub event_sender: broadcast::Sender<Phd2Event>,
     pub reader_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub auto_reconnect_enabled: Arc<AtomicBool>,
     pub stop_reconnect: Arc<Notify>,
+    pub connection_factory: Arc<dyn ConnectionFactory>,
 }
 
 impl SharedConnectionState {
-    /// Create a new shared connection state
+    /// Create a new shared connection state with a TCP connection factory (test only)
+    #[cfg(test)]
     pub fn new(auto_reconnect_enabled: bool) -> Self {
+        Self::with_factory(
+            auto_reconnect_enabled,
+            Arc::new(TcpConnectionFactory::new()),
+        )
+    }
+
+    /// Create a new shared connection state with a custom connection factory
+    pub fn with_factory(
+        auto_reconnect_enabled: bool,
+        connection_factory: Arc<dyn ConnectionFactory>,
+    ) -> Self {
         let (event_sender, _) = broadcast::channel(100);
         Self {
             state: Arc::new(RwLock::new(ConnectionState::default())),
@@ -58,6 +72,7 @@ impl SharedConnectionState {
             reader_handle: Arc::new(Mutex::new(None)),
             auto_reconnect_enabled: Arc::new(AtomicBool::new(auto_reconnect_enabled)),
             stop_reconnect: Arc::new(Notify::new()),
+            connection_factory,
         }
     }
 
@@ -179,20 +194,20 @@ pub(crate) fn spawn_reconnect_task(
                 }
             }
 
-            // Attempt connection
-            debug!("Attempting TCP connection to {}", addr);
-            let connect_result =
-                tokio::time::timeout(timeout_duration, TcpStream::connect(&addr)).await;
-
-            match connect_result {
-                Ok(Ok(stream)) => {
-                    debug!("TCP connection established to PHD2");
-                    let (reader, new_writer) = tokio::io::split(stream);
+            // Attempt connection using the connection factory
+            debug!("Attempting connection to {}", addr);
+            match shared
+                .connection_factory
+                .connect(&addr, timeout_duration)
+                .await
+            {
+                Ok(connection_pair) => {
+                    debug!("Connection established to PHD2");
 
                     // Store the writer
                     {
                         let mut writer_guard = shared.writer.lock().await;
-                        *writer_guard = Some(new_writer);
+                        *writer_guard = Some(connection_pair.writer);
                     }
 
                     // Update connection state
@@ -204,7 +219,7 @@ pub(crate) fn spawn_reconnect_task(
 
                     // Start a new reader task
                     let new_reader_handle =
-                        spawn_reader_task(reader, config.clone(), shared.clone());
+                        spawn_reader_task(connection_pair.reader, config.clone(), shared.clone());
 
                     // Store the new reader handle
                     {
@@ -217,11 +232,8 @@ pub(crate) fn spawn_reconnect_task(
                     let _ = shared.event_sender.send(Phd2Event::Reconnected);
                     return;
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     debug!("Connection attempt {} failed: {}", attempt, e);
-                }
-                Err(_) => {
-                    debug!("Connection attempt {} timed out", attempt);
                 }
             }
         }
@@ -236,35 +248,31 @@ pub(crate) fn spawn_reconnect_task(
 
 /// Spawn a reader task that reads messages from PHD2
 pub(crate) fn spawn_reader_task(
-    reader: tokio::io::ReadHalf<TcpStream>,
+    mut reader: Box<dyn LineReader>,
     config: ConnectionConfig,
     shared: SharedConnectionState,
 ) -> tokio::task::JoinHandle<()> {
     let reconnect_handle = Arc::new(Mutex::new(None));
 
     tokio::spawn(async move {
-        let mut buf_reader = BufReader::new(reader);
-        let mut line = String::new();
         let disconnect_reason;
 
         loop {
-            line.clear();
-            match buf_reader.read_line(&mut line).await {
-                Ok(0) => {
+            match reader.read_line().await {
+                Ok(None) => {
                     debug!("PHD2 connection closed");
                     disconnect_reason = "Connection closed by remote".to_string();
                     break;
                 }
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
+                Ok(Some(line)) => {
+                    if line.is_empty() {
                         continue;
                     }
 
-                    debug!("Received from PHD2: {}", trimmed);
+                    debug!("Received from PHD2: {}", line);
 
                     // Try to parse as a response first (has "id" field)
-                    if let Ok(response) = serde_json::from_str::<RpcResponse>(trimmed) {
+                    if let Ok(response) = serde_json::from_str::<RpcResponse>(&line) {
                         let mut pending = shared.pending_requests.lock().await;
                         if let Some(request) = pending.remove(&response.id) {
                             let result = if let Some(error) = response.error {
@@ -277,7 +285,7 @@ pub(crate) fn spawn_reader_task(
                             };
                             let _ = request.sender.send(result);
                         }
-                    } else if let Ok(event) = serde_json::from_str::<Phd2Event>(trimmed) {
+                    } else if let Ok(event) = serde_json::from_str::<Phd2Event>(&line) {
                         // Handle specific events to update internal state
                         match &event {
                             Phd2Event::Version { phd_version, .. } => {
@@ -298,7 +306,7 @@ pub(crate) fn spawn_reader_task(
                         // Broadcast event to subscribers
                         let _ = shared.event_sender.send(event);
                     } else {
-                        debug!("Failed to parse PHD2 message: {}", trimmed);
+                        debug!("Failed to parse PHD2 message: {}", line);
                     }
                 }
                 Err(e) => {

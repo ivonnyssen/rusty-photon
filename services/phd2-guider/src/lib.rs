@@ -41,6 +41,7 @@ pub(crate) mod connection;
 pub mod error;
 pub mod events;
 pub mod fits;
+pub mod io;
 pub mod process;
 pub mod rpc;
 pub mod types;
@@ -51,6 +52,10 @@ pub use config::{load_config, Config, Phd2Config, ReconnectConfig, SettleParams}
 pub use error::{Phd2Error, Result};
 pub use events::{AppState, GuideStepStats, Phd2Event};
 pub use fits::{decode_base64_u16, write_grayscale_u16_fits};
+pub use io::{
+    ConnectionFactory, ConnectionPair, LineReader, MessageWriter, ProcessHandle, ProcessSpawner,
+    TcpConnectionFactory, TcpLineReader, TcpMessageWriter, TokioProcessHandle, TokioProcessSpawner,
+};
 pub use process::{get_default_phd2_path, Phd2ProcessManager};
 pub use rpc::{RpcErrorObject, RpcRequest, RpcResponse};
 pub use types::{

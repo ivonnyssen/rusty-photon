@@ -42,6 +42,7 @@ services/phd2-guider/src/
 ├── error.rs        # Phd2Error enum and Result type alias
 ├── events.rs       # AppState, GuideStepStats, Phd2Event
 ├── fits.rs         # FITS file utilities for saving images
+├── io.rs           # I/O traits and implementations for testability
 ├── process.rs      # Phd2ProcessManager, get_default_phd2_path
 ├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
 └── types.rs        # Rect, Profile, Equipment (shared types)
@@ -55,11 +56,46 @@ services/phd2-guider/src/
 | `error` | Error handling | `Phd2Error`, `Result<T>` |
 | `events` | PHD2 events and state | `Phd2Event`, `AppState`, `GuideStepStats` |
 | `fits` | FITS file utilities | `decode_base64_u16`, `write_grayscale_u16_fits` |
+| `io` | I/O traits for testability | `LineReader`, `MessageWriter`, `ConnectionFactory`, `ProcessSpawner`, `ProcessHandle` |
 | `process` | Process management | `Phd2ProcessManager`, `get_default_phd2_path` |
 | `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse`, `RpcErrorObject` |
 | `types` | Common types | `Rect`, `Profile`, `Equipment`, `EquipmentDevice`, `CalibrationData`, `CalibrationTarget`, `GuideAxis`, `CoolerStatus`, `StarImage` |
 
 All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
+
+## I/O Trait Abstractions
+
+The library uses trait abstractions for I/O operations, enabling comprehensive testing without requiring actual network or process operations. This allows tests to run under miri for memory safety verification.
+
+### Traits
+
+| Trait | Purpose | Default Implementation |
+|-------|---------|----------------------|
+| `LineReader` | Reading lines from a connection | `TcpLineReader` |
+| `MessageWriter` | Writing messages to a connection | `TcpMessageWriter` |
+| `ConnectionFactory` | Creating connections | `TcpConnectionFactory` |
+| `ProcessSpawner` | Spawning processes | `TokioProcessSpawner` |
+| `ProcessHandle` | Managing spawned processes | `TokioProcessHandle` |
+
+### Test-Friendly Constructors
+
+Both `Phd2Client` and `Phd2ProcessManager` provide constructors that accept custom implementations of these traits:
+
+```rust
+// Production use (default TCP/process implementations)
+let client = Phd2Client::new(config);
+let manager = Phd2ProcessManager::new(config);
+
+// Testing with mock implementations
+let client = Phd2Client::with_connection_factory(config, mock_factory);
+let manager = Phd2ProcessManager::with_spawner(config, mock_spawner, mock_factory);
+```
+
+This design enables:
+- Unit tests that run quickly without network I/O
+- Tests that can run under miri for memory safety verification
+- Deterministic test behavior without timing dependencies
+- Testing error handling and edge cases that are hard to reproduce with real network connections
 
 ## PHD2 API Overview
 
