@@ -1336,3 +1336,111 @@ async fn test_process_manager_shutdown_via_rpc() {
         "Mock should not be running after shutdown RPC"
     );
 }
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_stop_without_client() {
+    let port = 44203; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // First make sure nothing is running on that port
+    let addr = format!("127.0.0.1:{}", port);
+    if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+        eprintln!("Port {} is in use, skipping test", port);
+        return;
+    }
+
+    let mut spawn_env = std::collections::HashMap::new();
+    spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 10,
+        command_timeout_seconds: 5,
+        spawn_env,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Start the mock PHD2
+    let start_result = manager.start_phd2().await;
+    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+
+    // Verify it's running
+    assert!(manager.is_phd2_running().await, "Mock should be running");
+
+    // Stop without client (tests force kill path)
+    let stop_result = manager.stop_phd2(None).await;
+    assert!(stop_result.is_ok(), "Should stop: {:?}", stop_result);
+
+    // Verify not running
+    assert!(
+        !manager.is_phd2_running().await,
+        "Mock should not be running after stop"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_start_when_external_running() {
+    let port = 44204; // Use unique port for this test
+
+    let Some(binary_path) = find_mock_phd2_binary() else {
+        eprintln!("Mock PHD2 binary not found");
+        return;
+    };
+
+    // Start mock manually first (simulating externally running PHD2)
+    let mut child = start_mock_phd2(port).expect("Should start mock");
+
+    let config = Phd2Config {
+        host: "localhost".to_string(),
+        port,
+        executable_path: Some(binary_path),
+        connection_timeout_seconds: 5,
+        command_timeout_seconds: 5,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Manager should detect already running and return Ok early
+    let result = manager.start_phd2().await;
+    assert!(result.is_ok(), "Should return Ok when already running");
+
+    // Manager should not have a managed process (it was started externally)
+    assert!(
+        !manager.has_managed_process().await,
+        "Should not have managed process when external"
+    );
+
+    // Clean up manually started process
+    child.kill().expect("Should kill mock");
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
+async fn test_process_manager_no_executable_no_default() {
+    // Create config without executable_path - will try to find default
+    // On CI, there's no real PHD2 installed, so this should fail
+    let config = Phd2Config {
+        port: 59996, // Unlikely to be in use
+        executable_path: None,
+        ..Default::default()
+    };
+
+    let manager = Phd2ProcessManager::new(config);
+
+    // Only run this test if there's no PHD2 in default locations
+    if get_default_phd2_path().is_none() {
+        let result = manager.start_phd2().await;
+        assert!(result.is_err(), "Should fail when no executable found");
+    }
+}
