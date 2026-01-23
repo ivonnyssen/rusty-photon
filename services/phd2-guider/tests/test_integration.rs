@@ -1140,10 +1140,16 @@ async fn test_process_manager_start_stop_mock() {
     // Connect a client
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify connection works
-    let version = client.get_phd2_version().await;
+    // Wait for version event with retry (macOS CI can be slow)
+    let mut version = None;
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        version = client.get_phd2_version().await;
+        if version.is_some() {
+            break;
+        }
+    }
     assert!(version.is_some(), "Should have version");
     assert!(version.unwrap().contains("mock"), "Should be mock version");
 
