@@ -15,7 +15,6 @@ coverage:
 ignore:
   - "tests"
   - "**/bin/mock_*.rs"
-  - "**/main.rs"
 
 # Make comments less noisy
 comment:
