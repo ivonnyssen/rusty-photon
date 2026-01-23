@@ -4,6 +4,7 @@
 //! Tests that require PHD2 are marked with #[ignore] by default.
 //! Run them with: cargo test --test test_integration -- --ignored
 
+#[cfg_attr(miri, allow(unused_imports))]
 use phd2_guider::{
     get_default_phd2_path, load_config, Phd2Client, Phd2Config, Phd2Event, Phd2ProcessManager,
 };
@@ -60,6 +61,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 #[test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
 fn test_get_default_phd2_path() {
     // This test just verifies the function doesn't panic
     let path = get_default_phd2_path();
