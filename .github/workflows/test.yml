@@ -71,7 +71,7 @@ jobs:
         # Exclude phd2-guider on Windows (cfitsio not available)
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
-            cargo test --locked --all-features --all-targets --exclude phd2-guider
+            cargo test --locked --all-features --all-targets --workspace --exclude phd2-guider
           else
             cargo test --locked --all-features --all-targets
           fi

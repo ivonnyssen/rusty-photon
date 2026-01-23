@@ -388,6 +388,7 @@ async fn test_start_phd2_already_running() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support tokio networking
 async fn test_connect_to_nonexistent_server() {
     let config = Phd2Config {
         host: "localhost".to_string(),
@@ -406,6 +407,7 @@ async fn test_connect_to_nonexistent_server() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support tokio networking
 async fn test_send_request_when_not_connected() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -416,6 +418,7 @@ async fn test_send_request_when_not_connected() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning
 async fn test_process_manager_executable_not_found() {
     let config = Phd2Config {
         executable_path: Some(PathBuf::from("/nonexistent/path/to/phd2")),

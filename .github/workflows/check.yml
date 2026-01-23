@@ -85,6 +85,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install cfitsio
+        if: matrix.service == 'phd2-guider'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
