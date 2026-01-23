@@ -109,6 +109,7 @@ fn create_test_config(port: u16) -> Phd2Config {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_connect_and_receive_version() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -131,6 +132,7 @@ async fn test_connect_and_receive_version() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_disconnect_clears_state() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -153,6 +155,7 @@ async fn test_disconnect_clears_state() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_app_state() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -175,6 +178,7 @@ async fn test_get_app_state() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_app_state_stopped() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -201,6 +205,7 @@ async fn test_get_app_state_stopped() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_is_equipment_connected() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -223,6 +228,7 @@ async fn test_is_equipment_connected() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_profiles() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -252,6 +258,7 @@ async fn test_get_profiles() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_current_profile() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -278,6 +285,7 @@ async fn test_get_current_profile() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_current_equipment() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -308,6 +316,7 @@ async fn test_get_current_equipment() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_start_guiding() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -331,6 +340,7 @@ async fn test_start_guiding() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_start_guiding_with_roi() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -357,6 +367,7 @@ async fn test_start_guiding_with_roi() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_stop_guiding() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -379,6 +390,7 @@ async fn test_stop_guiding() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_pause_and_resume() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -402,6 +414,7 @@ async fn test_pause_and_resume() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_dither() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -429,6 +442,7 @@ async fn test_dither() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_find_star() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -451,6 +465,7 @@ async fn test_find_star() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_lock_position() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -474,6 +489,7 @@ async fn test_get_lock_position() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_lock_position_no_star() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -496,6 +512,7 @@ async fn test_get_lock_position_no_star() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_set_lock_position() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -522,6 +539,7 @@ async fn test_set_lock_position() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_is_calibrated() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -544,6 +562,7 @@ async fn test_is_calibrated() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_calibration_data() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -573,6 +592,7 @@ async fn test_get_calibration_data() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_clear_calibration() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -597,6 +617,7 @@ async fn test_clear_calibration() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_flip_calibration() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -623,6 +644,7 @@ async fn test_flip_calibration() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_exposure() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -645,6 +667,7 @@ async fn test_get_exposure() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_set_exposure() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -667,6 +690,7 @@ async fn test_set_exposure() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_exposure_durations() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -693,6 +717,7 @@ async fn test_get_exposure_durations() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_camera_frame_size() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -716,6 +741,7 @@ async fn test_get_camera_frame_size() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_capture_single_frame() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -742,6 +768,7 @@ async fn test_capture_single_frame() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_algo_param_names() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -768,6 +795,7 @@ async fn test_get_algo_param_names() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_algo_param() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -793,6 +821,7 @@ async fn test_get_algo_param() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_set_algo_param() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -819,6 +848,7 @@ async fn test_set_algo_param() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_ccd_temperature() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -841,6 +871,7 @@ async fn test_get_ccd_temperature() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_cooler_status() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -867,6 +898,7 @@ async fn test_get_cooler_status() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_set_cooler_state() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -893,6 +925,7 @@ async fn test_set_cooler_state() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_star_image() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -920,6 +953,7 @@ async fn test_get_star_image() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_save_image() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -949,6 +983,7 @@ async fn test_save_image() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_rpc_error_response() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -974,6 +1009,7 @@ async fn test_rpc_error_response() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_invalid_response_format() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1001,6 +1037,7 @@ async fn test_invalid_response_format() {
 // ============================================================================
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_connect_equipment() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1018,6 +1055,7 @@ async fn test_connect_equipment() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_disconnect_equipment() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1035,6 +1073,7 @@ async fn test_disconnect_equipment() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_set_profile() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1052,6 +1091,7 @@ async fn test_set_profile() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_start_loop() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1069,6 +1109,7 @@ async fn test_start_loop() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_stop_capture() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1086,6 +1127,7 @@ async fn test_stop_capture() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_is_paused() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1104,6 +1146,7 @@ async fn test_is_paused() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_use_subframes() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1122,6 +1165,7 @@ async fn test_get_use_subframes() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_shutdown_phd2() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1139,6 +1183,7 @@ async fn test_shutdown_phd2() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_get_cached_app_state_initial() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1159,6 +1204,7 @@ async fn test_get_cached_app_state_initial() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_is_reconnecting() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1177,6 +1223,7 @@ async fn test_is_reconnecting() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_stop_reconnection() {
     let server = MockPhd2Server::new();
     let port = server.port();
@@ -1194,6 +1241,7 @@ async fn test_stop_reconnection() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_find_star_with_roi() {
     let server = MockPhd2Server::new();
     let port = server.port();
