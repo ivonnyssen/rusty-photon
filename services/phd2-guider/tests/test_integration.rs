@@ -106,6 +106,7 @@ fn test_load_config_file_not_found() {
 // ============================================================================
 
 #[test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning in get_default_phd2_path
 fn test_client_creation() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -114,6 +115,7 @@ fn test_client_creation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)] // Miri doesn't support process spawning in get_default_phd2_path
 fn test_process_manager_creation() {
     let config = create_test_config();
     let manager = Phd2ProcessManager::new(config);
