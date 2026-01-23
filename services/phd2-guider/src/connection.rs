@@ -23,23 +23,12 @@ pub(crate) struct PendingRequest {
 }
 
 /// Internal client connection state
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ConnectionState {
     pub connected: bool,
     pub phd2_version: Option<String>,
     pub app_state: Option<AppState>,
     pub reconnecting: bool,
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        Self {
-            connected: false,
-            phd2_version: None,
-            app_state: None,
-            reconnecting: false,
-        }
-    }
 }
 
 /// Shared state for connection management
