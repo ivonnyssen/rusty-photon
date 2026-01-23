@@ -30,8 +30,20 @@ jobs:
         id: conformu
         uses: ivonnyssen/conformu-install@v1
 
-      - name: Build project
-        run: cargo build --all --release
+      - name: Find ALPACA services
+        id: find-alpaca
+        shell: bash
+        run: |
+          # Find all packages that depend on ascom-alpaca
+          ALPACA_PACKAGES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+            jq -r '.packages[] | select(.dependencies[]? | .name == "ascom-alpaca") | "-p " + .name' | \
+            tr '\n' ' ' | xargs)
+          echo "packages=$ALPACA_PACKAGES" >> $GITHUB_OUTPUT
+          echo "Found ALPACA services: $ALPACA_PACKAGES"
+
+      - name: Build ALPACA services
+        shell: bash
+        run: cargo build ${{ steps.find-alpaca.outputs.packages }} --release
 
       - name: Run ConformU tests
         timeout-minutes: 10

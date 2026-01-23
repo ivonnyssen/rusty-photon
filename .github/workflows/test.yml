@@ -68,7 +68,14 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        # Exclude phd2-guider on Windows (cfitsio not available)
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cargo test --locked --all-features --all-targets --workspace --exclude phd2-guider
+          else
+            cargo test --locked --all-features --all-targets
+          fi
+        shell: bash
   coverage:
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io

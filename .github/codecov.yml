@@ -11,9 +11,10 @@ coverage:
         # Avoid false negatives
         threshold: 1%
 
-# Test files aren't important for coverage
+# Test files and mock binaries aren't important for coverage
 ignore:
   - "tests"
+  - "**/bin/mock_*.rs"
 
 # Make comments less noisy
 comment:
