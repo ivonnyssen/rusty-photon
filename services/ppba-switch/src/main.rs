@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::Level;
 
+#[cfg(not(feature = "mock"))]
 use ppba_switch::{load_config, start_server, Config};
+#[cfg(feature = "mock")]
+use ppba_switch::{load_config, start_server_with_factory, Config, MockSerialPortFactory};
 
 #[derive(Parser)]
 #[command(name = "ppba-switch")]
@@ -75,11 +78,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing::info!("Starting PPBA Switch driver");
+    #[cfg(feature = "mock")]
+    tracing::info!("Running in MOCK MODE - no real hardware");
+    #[cfg(not(feature = "mock"))]
     tracing::info!("Serial port: {}", config.serial.port);
     tracing::info!("Baud rate: {}", config.serial.baud_rate);
     tracing::info!("Server port: {}", config.server.port);
 
-    start_server(config).await?;
+    #[cfg(feature = "mock")]
+    {
+        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        start_server_with_factory(config, factory).await?;
+    }
+
+    #[cfg(not(feature = "mock"))]
+    {
+        start_server(config).await?;
+    }
 
     Ok(())
 }

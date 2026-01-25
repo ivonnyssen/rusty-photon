@@ -34,6 +34,8 @@ pub mod config;
 pub mod device;
 pub mod error;
 pub mod io;
+#[cfg(feature = "mock")]
+pub mod mock;
 pub mod protocol;
 pub mod serial;
 pub mod switches;
@@ -41,9 +43,14 @@ pub mod switches;
 pub use config::{load_config, Config, DeviceConfig, SerialConfig, ServerConfig};
 pub use device::PpbaSwitchDevice;
 pub use error::{PpbaError, Result};
+pub use io::SerialPortFactory;
 pub use switches::{get_switch_info, SwitchId, SwitchInfo, MAX_SWITCH};
 
+#[cfg(feature = "mock")]
+pub use mock::MockSerialPortFactory;
+
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
@@ -52,7 +59,23 @@ use tracing::info;
 /// Start the ASCOM Alpaca server with the PPBA Switch device
 pub async fn start_server(config: Config) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let device = PpbaSwitchDevice::new(config.clone());
+    start_server_with_device(config, device).await
+}
 
+/// Start the ASCOM Alpaca server with a custom serial port factory
+pub async fn start_server_with_factory(
+    config: Config,
+    factory: Arc<dyn SerialPortFactory>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let device = PpbaSwitchDevice::with_serial_factory(config.clone(), factory);
+    start_server_with_device(config, device).await
+}
+
+/// Start the ASCOM Alpaca server with the given device
+async fn start_server_with_device(
+    config: Config,
+    device: PpbaSwitchDevice,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new(CargoServerInfo!());
     server.listen_addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     server.devices.register(device);
