@@ -45,6 +45,10 @@ jobs:
         shell: bash
         run: cargo build ${{ steps.find-alpaca.outputs.packages }} --release
 
-      - name: Run ConformU tests
+      - name: Run ConformU tests - filemonitor
         timeout-minutes: 10
-        run: cargo test --test conformu_integration -- --ignored
+        run: cargo test -p filemonitor --test conformu_integration -- --ignored
+
+      - name: Run ConformU tests - ppba-switch
+        timeout-minutes: 10
+        run: cargo test -p ppba-switch --features mock --test conformu_integration -- --ignored
