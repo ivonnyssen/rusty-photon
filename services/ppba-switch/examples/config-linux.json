@@ -1,0 +1,17 @@
+{
+  "device": {
+    "name": "Pegasus PPBA",
+    "unique_id": "ppba-switch-001",
+    "description": "Pegasus Astro Pocket Powerbox Advance Gen2"
+  },
+  "serial": {
+    "port": "/dev/ttyUSB0",
+    "baud_rate": 9600,
+    "polling_interval_seconds": 5,
+    "timeout_seconds": 2
+  },
+  "server": {
+    "port": 11112,
+    "device_number": 0
+  }
+}

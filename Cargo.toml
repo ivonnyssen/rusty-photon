@@ -1,5 +1,5 @@
 [workspace]
-members = ["services/filemonitor", "services/phd2-guider"]
+members = ["services/filemonitor", "services/phd2-guider", "services/ppba-switch"]
 resolver = "2"
 
 [workspace.package]
