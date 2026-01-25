@@ -26,6 +26,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # tag=v5.0.1
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install ConformU
         id: conformu
         uses: ivonnyssen/conformu-install@v1
@@ -43,7 +53,9 @@ jobs:
 
       - name: Build ALPACA services
         shell: bash
-        run: cargo build ${{ steps.find-alpaca.outputs.packages }} --release
+        run: |
+          cargo build -p filemonitor --release
+          cargo build -p ppba-switch --features mock --release
 
       - name: Run ConformU tests - filemonitor
         timeout-minutes: 10
