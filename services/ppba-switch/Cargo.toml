@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.86.0"
+rust-version = "1.88.0"
 description = "ASCOM Alpaca Switch driver for Pegasus Astro Pocket Powerbox Advance Gen2"
 
 [dependencies]
