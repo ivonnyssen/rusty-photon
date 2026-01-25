@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub device: DeviceConfig,
     pub serial: SerialConfig,
@@ -77,16 +77,6 @@ impl Default for ServerConfig {
         Self {
             port: 11112,
             device_number: 0,
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            device: DeviceConfig::default(),
-            serial: SerialConfig::default(),
-            server: ServerConfig::default(),
         }
     }
 }
