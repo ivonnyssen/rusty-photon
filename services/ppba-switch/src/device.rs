@@ -433,7 +433,7 @@ impl PpbaSwitchDevice {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
             }
             PpbaError::SwitchNotWritable(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_OPERATION, err.to_string())
+                ASCOMError::new(ASCOMErrorCode::NOT_IMPLEMENTED, err.to_string())
             }
             PpbaError::InvalidValue(_) => {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
@@ -618,7 +618,28 @@ impl Switch for PpbaSwitchDevice {
         Ok(info.step)
     }
 
-    async fn state_change_complete(&self, _id: usize) -> ASCOMResult<bool> {
+    async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
+        // Validate switch ID
+        let id = id as u16;
+        if id >= MAX_SWITCH {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Invalid switch ID: {}", id),
+            ));
+        }
+        // We don't support async operations
+        Ok(false)
+    }
+
+    async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
+        // Validate switch ID
+        let id = id as u16;
+        if id >= MAX_SWITCH {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Invalid switch ID: {}", id),
+            ));
+        }
         // We don't support async operations, so state changes are always complete
         Ok(true)
     }
