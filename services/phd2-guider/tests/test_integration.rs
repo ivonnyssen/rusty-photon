@@ -587,7 +587,7 @@ async fn test_mock_phd2_connection() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -631,7 +631,7 @@ async fn test_mock_phd2_get_app_state() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -663,7 +663,7 @@ async fn test_mock_phd2_get_profiles() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -697,7 +697,7 @@ async fn test_mock_phd2_get_equipment() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -731,7 +731,7 @@ async fn test_mock_phd2_exposure_methods() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -772,7 +772,7 @@ async fn test_mock_phd2_calibration_methods() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -823,7 +823,7 @@ async fn test_mock_phd2_guiding_control() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -883,7 +883,7 @@ async fn test_mock_phd2_star_operations() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -926,7 +926,7 @@ async fn test_mock_phd2_cooling() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -962,7 +962,7 @@ async fn test_mock_phd2_star_image() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -997,7 +997,7 @@ async fn test_mock_phd2_event_subscription() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -1041,7 +1041,7 @@ async fn test_mock_phd2_reconnect_on_disconnect() {
     };
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         connection_timeout_seconds: 5,
         command_timeout_seconds: 5,
@@ -1111,7 +1111,7 @@ async fn test_process_manager_start_stop_mock() {
     spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 10,
@@ -1198,7 +1198,7 @@ async fn test_process_manager_start_already_running() {
     let mut child = start_mock_phd2(port).expect("Should start mock");
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 5,
@@ -1254,7 +1254,7 @@ async fn test_process_manager_force_kill() {
     spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 10,
@@ -1308,7 +1308,7 @@ async fn test_process_manager_shutdown_via_rpc() {
     spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 10,
@@ -1367,7 +1367,7 @@ async fn test_process_manager_stop_without_client() {
     spawn_env.insert("MOCK_PHD2_PORT".to_string(), port.to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 10,
@@ -1410,7 +1410,7 @@ async fn test_process_manager_start_when_external_running() {
     let mut child = start_mock_phd2(port).expect("Should start mock");
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 5,
@@ -1473,7 +1473,7 @@ async fn test_process_exit_immediately() {
     spawn_env.insert("MOCK_PHD2_MODE".to_string(), "exit_immediately".to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 5,
@@ -1515,7 +1515,7 @@ async fn test_process_connection_timeout() {
     spawn_env.insert("MOCK_PHD2_MODE".to_string(), "no_listen".to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 2, // Short timeout for faster test
@@ -1557,7 +1557,7 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
     spawn_env.insert("MOCK_PHD2_MODE".to_string(), "shutdown_fails".to_string());
 
     let config = Phd2Config {
-        host: "localhost".to_string(),
+        host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
         connection_timeout_seconds: 10,
