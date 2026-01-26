@@ -50,6 +50,7 @@ pub use switches::{get_switch_info, SwitchId, SwitchInfo, MAX_SWITCH};
 pub use mock::MockSerialPortFactory;
 
 use std::net::SocketAddr;
+#[cfg(feature = "mock")]
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
@@ -63,6 +64,7 @@ pub async fn start_server(config: Config) -> std::result::Result<(), Box<dyn std
 }
 
 /// Start the ASCOM Alpaca server with a custom serial port factory
+#[cfg(feature = "mock")]
 pub async fn start_server_with_factory(
     config: Config,
     factory: Arc<dyn SerialPortFactory>,
