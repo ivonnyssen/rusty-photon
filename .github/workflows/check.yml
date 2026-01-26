@@ -80,18 +80,46 @@ jobs:
       # --feature-powerset runs for every combination of features
       - name: cargo hack
         run: cargo hack --feature-powerset check
+  discover-msrv:
+    # Discover all packages with rust-version (MSRV) specified
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.find.outputs.services }}
+      has_services: ${{ steps.find.outputs.has_services }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Find services with MSRV
+        id: find
+        run: |
+          # Find all packages with rust-version specified
+          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+            jq -c '[.packages[] | select(.rust_version) | .name]')
+
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+
+          COUNT=$(echo "$SERVICES" | jq 'length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_services=true" >> $GITHUB_OUTPUT
+            echo "Found $COUNT services with MSRV:"
+            echo "$SERVICES" | jq -r '.[]'
+          else
+            echo "has_services=false" >> $GITHUB_OUTPUT
+            echo "No services with MSRV found"
+          fi
+
   msrv:
     # check that we can build each service using its declared minimum rust version
+    needs: discover-msrv
+    if: needs.discover-msrv.outputs.has_services == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service: [filemonitor, phd2-guider]
+        service: ${{ fromJson(needs.discover-msrv.outputs.services) }}
     name: ubuntu / msrv / ${{ matrix.service }}
     steps:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
-        if: matrix.service == 'phd2-guider'
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: libcfitsio-dev
