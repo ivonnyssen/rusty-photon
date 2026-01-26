@@ -45,8 +45,11 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install cfitsio (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -64,8 +67,11 @@ jobs:
     name: ubuntu / stable / features
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install cfitsio (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
@@ -84,9 +90,12 @@ jobs:
     name: ubuntu / msrv / ${{ matrix.service }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio
+      - name: Install cfitsio (cached)
         if: matrix.service == 'phd2-guider'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:
