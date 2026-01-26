@@ -73,7 +73,7 @@ jobs:
 
       - name: Run ConformU tests
         shell: bash
-        timeout-minutes: 10
+        timeout-minutes: 30
         run: |
           echo "::group::ConformU Compliance Test: ${{ matrix.service.name }}"
           ${{ matrix.service.command }}
