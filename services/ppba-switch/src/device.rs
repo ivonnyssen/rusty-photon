@@ -643,4 +643,49 @@ impl Switch for PpbaSwitchDevice {
         // We don't support async operations, so state changes are always complete
         Ok(true)
     }
+
+    async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
+        // Validate switch ID first
+        let id_u16 = id as u16;
+        if id_u16 >= MAX_SWITCH {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Invalid switch ID: {}", id_u16),
+            ));
+        }
+
+        // We don't support async operations, so there's nothing to cancel.
+        // Per ASCOM spec, this should return OK if there's no operation in progress.
+        Ok(())
+    }
+
+    async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
+        // Validate switch ID first
+        let id_u16 = id as u16;
+        if id_u16 >= MAX_SWITCH {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Invalid switch ID: {}", id_u16),
+            ));
+        }
+
+        // Per ASCOM spec: SetAsync should work even if CanAsync returns false,
+        // it just completes immediately. We delegate to the synchronous method.
+        self.set_switch(id, state).await
+    }
+
+    async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
+        // Validate switch ID first
+        let id_u16 = id as u16;
+        if id_u16 >= MAX_SWITCH {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Invalid switch ID: {}", id_u16),
+            ));
+        }
+
+        // Per ASCOM spec: SetAsyncValue should work even if CanAsync returns false,
+        // it just completes immediately. We delegate to the synchronous method.
+        self.set_switch_value(id, value).await
+    }
 }

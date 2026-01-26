@@ -13,7 +13,7 @@ default = []
 mock = []  # Enables mock hardware for testing without real serial port
 
 [dependencies]
-ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "return-invalid_value-for-integers-out-of-range", features = ["server", "switch", "test"] }
+ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "add-cancel-async", features = ["server", "switch", "test"] }
 tokio = { workspace = true }
 tokio-serial = "5.4"
 serde = { workspace = true }
