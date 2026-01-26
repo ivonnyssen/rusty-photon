@@ -891,3 +891,89 @@ async fn test_set_switch_value_out_of_range_fails() {
     let result = device.set_switch_value(2, -10.0).await;
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Polling tests (require mock feature)
+// ============================================================================
+
+#[cfg(feature = "mock")]
+/// Create a mock factory with responses for connection and subsequent polling
+fn create_mock_factory_with_poll_responses() -> MockSerialPortFactory {
+    MockSerialPortFactory::new(vec![
+        // Initial connection
+        "PPBA_OK".to_string(),                                     // Ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // Initial status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // Initial power stats
+        // First poll - values change
+        "PPBA:13.0:4.0:22.0:55:12.0:0:1:200:100:0:1:5".to_string(), // Updated status
+        "PS:3.0:15.0:180.0:7200000".to_string(),                    // Updated power stats
+    ])
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_trigger_poll_updates_status() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    let factory = Arc::new(create_mock_factory_with_poll_responses());
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Verify initial values
+    assert_eq!(device.get_switch_value(10).await.unwrap(), 12.5); // Input voltage
+    assert_eq!(device.get_switch_value(12).await.unwrap(), 25.0); // Temperature
+    assert_eq!(device.get_switch_value(0).await.unwrap(), 1.0); // Quad 12V on
+
+    // Trigger poll to get updated values
+    device.trigger_poll().await.unwrap();
+
+    // Verify updated values from poll
+    assert_eq!(device.get_switch_value(10).await.unwrap(), 13.0); // Input voltage changed
+    assert_eq!(device.get_switch_value(12).await.unwrap(), 22.0); // Temperature changed
+    assert_eq!(device.get_switch_value(0).await.unwrap(), 0.0); // Quad 12V now off
+    assert_eq!(device.get_switch_value(1).await.unwrap(), 1.0); // Adjustable now on
+    assert_eq!(device.get_switch_value(2).await.unwrap(), 200.0); // Dew A changed
+    assert_eq!(device.get_switch_value(3).await.unwrap(), 100.0); // Dew B changed
+    assert_eq!(device.get_switch_value(15).await.unwrap(), 1.0); // Power warning now on
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_trigger_poll_updates_power_stats() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    let factory = Arc::new(create_mock_factory_with_poll_responses());
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Verify initial power stats
+    assert_eq!(device.get_switch_value(6).await.unwrap(), 2.5); // Average current
+    assert_eq!(device.get_switch_value(7).await.unwrap(), 10.5); // Amp hours
+    assert_eq!(device.get_switch_value(8).await.unwrap(), 126.0); // Watt hours
+    assert_eq!(device.get_switch_value(9).await.unwrap(), 1.0); // Uptime (1 hour)
+
+    // Trigger poll to get updated values
+    device.trigger_poll().await.unwrap();
+
+    // Verify updated power stats from poll
+    assert_eq!(device.get_switch_value(6).await.unwrap(), 3.0); // Average current changed
+    assert_eq!(device.get_switch_value(7).await.unwrap(), 15.0); // Amp hours changed
+    assert_eq!(device.get_switch_value(8).await.unwrap(), 180.0); // Watt hours changed
+    assert_eq!(device.get_switch_value(9).await.unwrap(), 2.0); // Uptime (2 hours)
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_trigger_poll_fails_when_disconnected() {
+    let config = Config::default();
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    // Don't connect - trigger_poll should fail
+    let result = device.trigger_poll().await;
+    assert!(result.is_err());
+}

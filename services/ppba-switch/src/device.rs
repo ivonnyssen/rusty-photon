@@ -423,6 +423,16 @@ impl PpbaSwitchDevice {
         Ok(())
     }
 
+    /// Trigger a manual poll of status and power statistics
+    ///
+    /// This is primarily used for testing to verify polling behavior
+    /// without waiting for the background polling interval.
+    #[cfg(feature = "mock")]
+    pub async fn trigger_poll(&self) -> Result<()> {
+        self.refresh_status().await?;
+        self.refresh_power_stats().await
+    }
+
     /// Convert internal error to ASCOM error
     fn to_ascom_error(err: PpbaError) -> ASCOMError {
         match err {
