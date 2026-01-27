@@ -177,8 +177,11 @@ ppba-switch/
 │   ├── serial.rs        # tokio-serial implementations
 │   └── switches.rs      # Switch definitions
 ├── tests/
-│   ├── test_protocol.rs # Protocol parsing tests
-│   └── test_switches.rs # Switch definition tests
+│   ├── test_protocol.rs      # Protocol parsing tests
+│   ├── test_switches.rs      # Switch definition tests
+│   ├── test_config.rs        # Configuration tests
+│   ├── test_device_mock.rs   # Device tests with mock serial
+│   └── conformu_integration.rs # ASCOM ConformU compliance tests
 └── examples/
     ├── config-linux.json
     ├── config-macos.json
@@ -200,15 +203,20 @@ ppba-switch/
 ## Testing
 
 ```bash
-# Run all tests
-cargo test -p ppba-switch
+# Run all tests (includes mock-based tests)
+cargo test -p ppba-switch --all-features
 
 # Run with verbose output
-cargo test -p ppba-switch -- --nocapture
+cargo test -p ppba-switch --all-features -- --nocapture
 
 # Run specific test module
-cargo test -p ppba-switch test_protocol
+cargo test -p ppba-switch --all-features test_protocol
+
+# Run ConformU compliance test (requires ConformU installed)
+cargo test -p ppba-switch --features mock --test conformu_integration -- --ignored --nocapture
 ```
+
+Note: The `--all-features` flag enables the `mock` feature which is required for device tests that use mock serial ports.
 
 ## Dependencies
 
