@@ -4,7 +4,7 @@
 //! Switches are numbered from 0 to MAX_SWITCH - 1.
 
 /// Total number of switches exposed by the PPBA device
-pub const MAX_SWITCH: u16 = 16;
+pub const MAX_SWITCH: usize = 16;
 
 /// Switch identifiers for the PPBA device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,8 +49,8 @@ pub enum SwitchId {
 }
 
 impl SwitchId {
-    /// Try to convert a u16 to a SwitchId
-    pub fn from_id(id: u16) -> Option<Self> {
+    /// Try to convert a usize to a SwitchId
+    pub fn from_id(id: usize) -> Option<Self> {
         match id {
             0 => Some(Self::Quad12V),
             1 => Some(Self::AdjustableOutput),
@@ -73,15 +73,15 @@ impl SwitchId {
     }
 
     /// Get the numeric ID for this switch
-    pub fn id(&self) -> u16 {
-        *self as u16
+    pub fn id(&self) -> usize {
+        *self as usize
     }
 }
 
 /// Information about a switch
 #[derive(Debug, Clone)]
 pub struct SwitchInfo {
-    pub id: u16,
+    pub id: usize,
     pub name: &'static str,
     pub description: &'static str,
     pub can_write: bool,
@@ -91,7 +91,7 @@ pub struct SwitchInfo {
 }
 
 /// Get switch information for a given switch ID
-pub fn get_switch_info(id: u16) -> Option<SwitchInfo> {
+pub fn get_switch_info(id: usize) -> Option<SwitchInfo> {
     let switch_id = SwitchId::from_id(id)?;
     Some(match switch_id {
         // Controllable switches

@@ -25,10 +25,10 @@ pub enum PpbaError {
     ParseError(String),
 
     #[error("Invalid switch ID: {0}")]
-    InvalidSwitchId(u16),
+    InvalidSwitchId(usize),
 
     #[error("Switch not writable: {0}")]
-    SwitchNotWritable(u16),
+    SwitchNotWritable(usize),
 
     #[error("Invalid value: {0}")]
     InvalidValue(String),

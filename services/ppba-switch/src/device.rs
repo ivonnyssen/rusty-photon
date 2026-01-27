@@ -306,7 +306,7 @@ impl PpbaSwitchDevice {
     }
 
     /// Get the current switch value for a given switch ID
-    async fn get_switch_value_internal(&self, id: u16) -> Result<f64> {
+    async fn get_switch_value_internal(&self, id: usize) -> Result<f64> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
         let cached = self.cached_state.read().await;
 
@@ -381,7 +381,7 @@ impl PpbaSwitchDevice {
     }
 
     /// Set a switch value
-    async fn set_switch_value_internal(&self, id: u16, value: f64) -> Result<()> {
+    async fn set_switch_value_internal(&self, id: usize, value: f64) -> Result<()> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
         let info = get_switch_info(id).ok_or(PpbaError::InvalidSwitchId(id))?;
 
@@ -503,11 +503,10 @@ impl Device for PpbaSwitchDevice {
 #[async_trait]
 impl Switch for PpbaSwitchDevice {
     async fn max_switch(&self) -> ASCOMResult<usize> {
-        Ok(MAX_SWITCH as usize)
+        Ok(MAX_SWITCH)
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
-        let id = id as u16;
         let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.can_write)
@@ -522,12 +521,12 @@ impl Switch for PpbaSwitchDevice {
         }
 
         let value = self
-            .get_switch_value_internal(id as u16)
+            .get_switch_value_internal(id)
             .await
             .map_err(Self::to_ascom_error)?;
 
         // Per ASCOM spec: False at minimum value, True above minimum
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(value > info.min_value)
     }
@@ -540,7 +539,7 @@ impl Switch for PpbaSwitchDevice {
             ));
         }
 
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
 
         // Per ASCOM spec: True sets to max, False sets to min
@@ -550,19 +549,19 @@ impl Switch for PpbaSwitchDevice {
             info.min_value
         };
 
-        self.set_switch_value_internal(id as u16, value)
+        self.set_switch_value_internal(id, value)
             .await
             .map_err(Self::to_ascom_error)
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.description.to_string())
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.name.to_string())
     }
@@ -582,7 +581,7 @@ impl Switch for PpbaSwitchDevice {
             ));
         }
 
-        self.get_switch_value_internal(id as u16)
+        self.get_switch_value_internal(id)
             .await
             .map_err(Self::to_ascom_error)
     }
@@ -595,32 +594,31 @@ impl Switch for PpbaSwitchDevice {
             ));
         }
 
-        self.set_switch_value_internal(id as u16, value)
+        self.set_switch_value_internal(id, value)
             .await
             .map_err(Self::to_ascom_error)
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.min_value)
     }
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.max_value)
     }
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id as u16)
+        let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(info.step)
     }
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         // Validate switch ID
-        let id = id as u16;
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
@@ -633,7 +631,6 @@ impl Switch for PpbaSwitchDevice {
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
         // Validate switch ID
-        let id = id as u16;
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
@@ -646,11 +643,10 @@ impl Switch for PpbaSwitchDevice {
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
         // Validate switch ID first
-        let id_u16 = id as u16;
-        if id_u16 >= MAX_SWITCH {
+        if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id_u16),
+                format!("Invalid switch ID: {}", id),
             ));
         }
 
@@ -661,11 +657,10 @@ impl Switch for PpbaSwitchDevice {
 
     async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
         // Validate switch ID first
-        let id_u16 = id as u16;
-        if id_u16 >= MAX_SWITCH {
+        if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id_u16),
+                format!("Invalid switch ID: {}", id),
             ));
         }
 
@@ -676,11 +671,10 @@ impl Switch for PpbaSwitchDevice {
 
     async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
         // Validate switch ID first
-        let id_u16 = id as u16;
-        if id_u16 >= MAX_SWITCH {
+        if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id_u16),
+                format!("Invalid switch ID: {}", id),
             ));
         }
 

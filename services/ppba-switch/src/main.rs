@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        let factory = std::sync::Arc::new(MockSerialPortFactory);
         start_server_with_factory(config, factory).await?;
     }
 

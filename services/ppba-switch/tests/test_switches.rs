@@ -19,7 +19,7 @@ fn all_switch_ids_are_valid() {
 fn switch_id_beyond_max_is_invalid() {
     assert!(SwitchId::from_id(16).is_none());
     assert!(SwitchId::from_id(100).is_none());
-    assert!(SwitchId::from_id(u16::MAX).is_none());
+    assert!(SwitchId::from_id(usize::MAX).is_none());
 }
 
 #[test]
