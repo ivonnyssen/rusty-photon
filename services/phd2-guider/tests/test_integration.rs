@@ -12,11 +12,11 @@ use phd2_guider::{
     ReconnectConfig, SettleParams,
 };
 #[cfg_attr(miri, allow(unused_imports))]
+use std::io::{BufRead, BufReader};
+#[cfg_attr(miri, allow(unused_imports))]
 use std::net::TcpListener;
 #[cfg_attr(miri, allow(unused_imports))]
 use std::path::PathBuf;
-#[cfg_attr(miri, allow(unused_imports))]
-use std::io::{BufRead, BufReader};
 #[cfg_attr(miri, allow(unused_imports))]
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
