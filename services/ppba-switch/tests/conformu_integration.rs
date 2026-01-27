@@ -44,9 +44,46 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let port = get_random_port();
 
     // Create ConformU settings with reduced delays for faster CI
+    // Note: ConformU requires a complete settings file - partial files are ignored
     let conformu_settings = serde_json::json!({
+        "SettingsCompatibilityVersion": 1,
+        "GoHomeOnDeviceSelected": true,
+        "ConnectionTimeout": 2,
+        "RunAs32Bit": false,
+        "RiskAcknowledged": false,
+        "DisplayMethodCalls": false,
+        "UpdateCheck": false,
+        "ApplicationPort": 0,
+        "ConnectDisconnectTimeout": 5,
+        "Debug": false,
+        "TraceDiscovery": false,
+        "TraceAlpacaCalls": false,
+        "TestProperties": true,
+        "TestMethods": true,
+        "TestPerformance": false,
+        "AlpacaDevice": {},
+        "AlpacaConfiguration": {},
+        "ComDevice": {},
+        "ComConfiguration": {},
+        "DeviceName": "No device selected",
+        "DeviceTechnology": "NotSelected",
+        "ReportGoodTimings": true,
+        "ReportBadTimings": true,
+        "TelescopeTests": {},
+        "TelescopeExtendedRateOffsetTests": true,
+        "TelescopeFirstUseTests": true,
+        "TestSideOfPierRead": false,
+        "TestSideOfPierWrite": false,
+        "CameraFirstUseTests": true,
+        "CameraTestImageArrayVariant": true,
+        // Switch-specific settings with reduced delays for faster CI
+        // Default: SwitchReadDelay=500, SwitchWriteDelay=3000
+        "SwitchEnableSet": false,
         "SwitchReadDelay": 50,
-        "SwitchWriteDelay": 100
+        "SwitchWriteDelay": 100,
+        "SwitchExtendedNumberTestRange": 100,
+        "SwitchAsyncTimeout": 10,
+        "SwitchTestOffsets": true
     });
     std::fs::write(
         &conformu_settings_path,
