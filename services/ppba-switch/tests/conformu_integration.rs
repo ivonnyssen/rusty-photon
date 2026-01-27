@@ -4,7 +4,7 @@
 //! against the driver running in mock mode.
 
 use ascom_alpaca::api::Switch;
-use ascom_alpaca::test::run_conformu_tests;
+use ascom_alpaca::test::conformu_tests;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
@@ -40,7 +40,18 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&test_dir)?;
 
     let config_path = test_dir.join("config.json");
+    let conformu_settings_path = test_dir.join("conformu-settings.json");
     let port = get_random_port();
+
+    // Create ConformU settings with reduced delays for faster CI
+    let conformu_settings = serde_json::json!({
+        "SwitchReadDelay": 50,
+        "SwitchWriteDelay": 100
+    });
+    std::fs::write(
+        &conformu_settings_path,
+        serde_json::to_string_pretty(&conformu_settings)?,
+    )?;
 
     let config = serde_json::json!({
         "device": {
@@ -111,8 +122,11 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("::group::ConformU Compliance Test Results");
     println!("Running ASCOM Alpaca Switch compliance tests...");
 
-    // Run ConformU tests and capture result
-    let result = run_conformu_tests::<dyn Switch>(&format!("http://localhost:{}", port), 0).await;
+    // Run ConformU tests with reduced delays for faster CI
+    let result = conformu_tests::<dyn Switch>(&format!("http://localhost:{}", port), 0)?
+        .settings_file(&conformu_settings_path)
+        .run()
+        .await;
 
     match &result {
         Ok(_) => {
