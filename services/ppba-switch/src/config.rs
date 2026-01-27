@@ -26,7 +26,7 @@ pub struct SerialConfig {
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     #[serde(default = "default_polling_interval")]
-    pub polling_interval_seconds: u64,
+    pub polling_interval_ms: u64,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
@@ -44,7 +44,7 @@ fn default_baud_rate() -> u32 {
 }
 
 fn default_polling_interval() -> u64 {
-    5
+    5000
 }
 
 fn default_timeout() -> u64 {
@@ -56,7 +56,7 @@ impl Default for SerialConfig {
         Self {
             port: "/dev/ttyUSB0".to_string(),
             baud_rate: default_baud_rate(),
-            polling_interval_seconds: default_polling_interval(),
+            polling_interval_ms: default_polling_interval(),
             timeout_seconds: default_timeout(),
         }
     }

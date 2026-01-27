@@ -195,7 +195,7 @@ impl PpbaSwitchDevice {
 
         let handle = tokio::spawn(async move {
             let mut poll_interval =
-                interval(Duration::from_secs(config.serial.polling_interval_seconds));
+                interval(Duration::from_millis(config.serial.polling_interval_ms));
 
             loop {
                 poll_interval.tick().await;
@@ -421,16 +421,6 @@ impl PpbaSwitchDevice {
         self.refresh_status().await?;
 
         Ok(())
-    }
-
-    /// Trigger a manual poll of status and power statistics
-    ///
-    /// This is primarily used for testing to verify polling behavior
-    /// without waiting for the background polling interval.
-    #[cfg(feature = "mock")]
-    pub async fn trigger_poll(&self) -> Result<()> {
-        self.refresh_status().await?;
-        self.refresh_power_stats().await
     }
 
     /// Convert internal error to ASCOM error

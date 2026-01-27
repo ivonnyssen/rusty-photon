@@ -7,7 +7,7 @@
   "serial": {
     "port": "/dev/tty.usbserial-10",
     "baud_rate": 9600,
-    "polling_interval_seconds": 5,
+    "polling_interval_ms": 5000,
     "timeout_seconds": 2
   },
   "server": {

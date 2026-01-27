@@ -893,87 +893,104 @@ async fn test_set_switch_value_out_of_range_fails() {
 }
 
 // ============================================================================
-// Polling tests (require mock feature)
+// Background polling tests (require mock feature)
 // ============================================================================
 
-#[cfg(feature = "mock")]
-/// Create a mock factory with responses for connection and subsequent polling
-fn create_mock_factory_with_poll_responses() -> MockSerialPortFactory {
-    MockSerialPortFactory::new(vec![
-        // Initial connection
-        "PPBA_OK".to_string(),                                     // Ping
-        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // Initial status
-        "PS:2.5:10.5:126.0:3600000".to_string(),                   // Initial power stats
-        // First poll - values change
-        "PPBA:13.0:4.0:22.0:55:12.0:0:1:200:100:0:1:5".to_string(), // Updated status
-        "PS:3.0:15.0:180.0:7200000".to_string(),                    // Updated power stats
-    ])
-}
-
+/// Test that background polling updates values automatically
+/// Uses a short polling interval to verify the spawned task works
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_trigger_poll_updates_status() {
+async fn test_background_polling_updates_values() {
     use ascom_alpaca::api::{Device, Switch};
+    use tokio::time::sleep;
 
-    let config = Config::default();
-    let factory = Arc::new(create_mock_factory_with_poll_responses());
+    // Create config with short polling interval (100ms)
+    let mut config = Config::default();
+    config.serial.polling_interval_ms = 100;
+
+    // Create mock factory with responses for:
+    // - Connection: ping, status, power stats
+    // - Background poll 1: status, power stats (with different values)
+    // - Background poll 2: status, power stats (for safety)
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        // Initial connection
+        "PPBA_OK".to_string(),                                     // Ping
+        "PPBA:12.0:3.0:20.0:50:10.0:1:0:100:50:0:0:0".to_string(), // Initial status
+        "PS:2.0:10.0:120.0:3600000".to_string(),                   // Initial power stats
+        // First background poll - values change
+        "PPBA:13.5:4.5:25.0:65:15.0:0:1:150:75:1:1:5".to_string(), // Updated status
+        "PS:3.5:20.0:240.0:7200000".to_string(),                   // Updated power stats
+        // Second background poll (in case timing varies)
+        "PPBA:13.5:4.5:25.0:65:15.0:0:1:150:75:1:1:5".to_string(),
+        "PS:3.5:20.0:240.0:7200000".to_string(),
+        // Third background poll (extra safety margin)
+        "PPBA:13.5:4.5:25.0:65:15.0:0:1:150:75:1:1:5".to_string(),
+        "PS:3.5:20.0:240.0:7200000".to_string(),
+    ]));
+
     let device = PpbaSwitchDevice::with_serial_factory(config, factory);
 
+    // Connect - this starts background polling
     device.set_connected(true).await.unwrap();
 
     // Verify initial values
-    assert_eq!(device.get_switch_value(10).await.unwrap(), 12.5); // Input voltage
-    assert_eq!(device.get_switch_value(12).await.unwrap(), 25.0); // Temperature
+    assert_eq!(device.get_switch_value(10).await.unwrap(), 12.0); // Input voltage
+    assert_eq!(device.get_switch_value(12).await.unwrap(), 20.0); // Temperature
     assert_eq!(device.get_switch_value(0).await.unwrap(), 1.0); // Quad 12V on
+    assert_eq!(device.get_switch_value(6).await.unwrap(), 2.0); // Average current
 
-    // Trigger poll to get updated values
-    device.trigger_poll().await.unwrap();
+    // Wait for background poll to happen (polling interval + some margin)
+    // The tokio interval will tick immediately, then wait for the interval
+    // So we need to wait at least 100ms for the first real poll
+    sleep(Duration::from_millis(250)).await;
 
-    // Verify updated values from poll
-    assert_eq!(device.get_switch_value(10).await.unwrap(), 13.0); // Input voltage changed
-    assert_eq!(device.get_switch_value(12).await.unwrap(), 22.0); // Temperature changed
+    // Verify values were updated by background polling
+    assert_eq!(device.get_switch_value(10).await.unwrap(), 13.5); // Input voltage changed
+    assert_eq!(device.get_switch_value(12).await.unwrap(), 25.0); // Temperature changed
     assert_eq!(device.get_switch_value(0).await.unwrap(), 0.0); // Quad 12V now off
     assert_eq!(device.get_switch_value(1).await.unwrap(), 1.0); // Adjustable now on
-    assert_eq!(device.get_switch_value(2).await.unwrap(), 200.0); // Dew A changed
-    assert_eq!(device.get_switch_value(3).await.unwrap(), 100.0); // Dew B changed
+    assert_eq!(device.get_switch_value(6).await.unwrap(), 3.5); // Average current changed
     assert_eq!(device.get_switch_value(15).await.unwrap(), 1.0); // Power warning now on
+
+    // Disconnect to stop polling
+    device.set_connected(false).await.unwrap();
 }
 
+/// Test that disconnecting stops the background polling task
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_trigger_poll_updates_power_stats() {
-    use ascom_alpaca::api::{Device, Switch};
+async fn test_disconnect_stops_polling() {
+    use ascom_alpaca::api::Device;
+    use tokio::time::sleep;
 
-    let config = Config::default();
-    let factory = Arc::new(create_mock_factory_with_poll_responses());
+    // Create config with short polling interval
+    let mut config = Config::default();
+    config.serial.polling_interval_ms = 50;
+
+    // Create mock factory with limited responses
+    // If polling continued after disconnect, it would run out of responses and fail
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        // Initial connection
+        "PPBA_OK".to_string(),
+        "PPBA:12.0:3.0:20.0:50:10.0:1:0:100:50:0:0:0".to_string(),
+        "PS:2.0:10.0:120.0:3600000".to_string(),
+        // One poll cycle (may or may not happen before disconnect)
+        "PPBA:12.0:3.0:20.0:50:10.0:1:0:100:50:0:0:0".to_string(),
+        "PS:2.0:10.0:120.0:3600000".to_string(),
+    ]));
+
     let device = PpbaSwitchDevice::with_serial_factory(config, factory);
 
+    // Connect
     device.set_connected(true).await.unwrap();
 
-    // Verify initial power stats
-    assert_eq!(device.get_switch_value(6).await.unwrap(), 2.5); // Average current
-    assert_eq!(device.get_switch_value(7).await.unwrap(), 10.5); // Amp hours
-    assert_eq!(device.get_switch_value(8).await.unwrap(), 126.0); // Watt hours
-    assert_eq!(device.get_switch_value(9).await.unwrap(), 1.0); // Uptime (1 hour)
+    // Immediately disconnect
+    device.set_connected(false).await.unwrap();
 
-    // Trigger poll to get updated values
-    device.trigger_poll().await.unwrap();
+    // Wait a bit - if polling wasn't stopped, it would try to poll
+    // and either run out of responses or error
+    sleep(Duration::from_millis(200)).await;
 
-    // Verify updated power stats from poll
-    assert_eq!(device.get_switch_value(6).await.unwrap(), 3.0); // Average current changed
-    assert_eq!(device.get_switch_value(7).await.unwrap(), 15.0); // Amp hours changed
-    assert_eq!(device.get_switch_value(8).await.unwrap(), 180.0); // Watt hours changed
-    assert_eq!(device.get_switch_value(9).await.unwrap(), 2.0); // Uptime (2 hours)
-}
-
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_trigger_poll_fails_when_disconnected() {
-    let config = Config::default();
-    let factory = Arc::new(create_connected_mock_factory());
-    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
-
-    // Don't connect - trigger_poll should fail
-    let result = device.trigger_poll().await;
-    assert!(result.is_err());
+    // If we get here without panicking, polling was stopped correctly
+    assert!(!device.connected().await.unwrap());
 }

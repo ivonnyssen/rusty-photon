@@ -15,7 +15,7 @@ fn default_config_has_expected_values() {
 
     assert_eq!(config.serial.port, "/dev/ttyUSB0");
     assert_eq!(config.serial.baud_rate, 9600);
-    assert_eq!(config.serial.polling_interval_seconds, 5);
+    assert_eq!(config.serial.polling_interval_ms, 5000);
     assert_eq!(config.serial.timeout_seconds, 2);
 
     assert_eq!(config.server.port, 11112);
@@ -37,7 +37,7 @@ fn serial_config_default() {
 
     assert_eq!(config.port, "/dev/ttyUSB0");
     assert_eq!(config.baud_rate, 9600);
-    assert_eq!(config.polling_interval_seconds, 5);
+    assert_eq!(config.polling_interval_ms, 5000);
     assert_eq!(config.timeout_seconds, 2);
 }
 
@@ -71,7 +71,7 @@ fn config_deserializes_from_json() {
         "serial": {
             "port": "/dev/ttyACM0",
             "baud_rate": 115200,
-            "polling_interval_seconds": 10,
+            "polling_interval_ms": 10000,
             "timeout_seconds": 5
         },
         "server": {
@@ -86,7 +86,7 @@ fn config_deserializes_from_json() {
     assert_eq!(config.device.unique_id, "test-001");
     assert_eq!(config.serial.port, "/dev/ttyACM0");
     assert_eq!(config.serial.baud_rate, 115200);
-    assert_eq!(config.serial.polling_interval_seconds, 10);
+    assert_eq!(config.serial.polling_interval_ms, 10000);
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.server.device_number, 1);
 }
@@ -114,7 +114,7 @@ fn config_deserializes_with_defaults() {
     assert_eq!(config.serial.port, "/dev/ttyUSB1");
     // These should have defaults
     assert_eq!(config.serial.baud_rate, 9600);
-    assert_eq!(config.serial.polling_interval_seconds, 5);
+    assert_eq!(config.serial.polling_interval_ms, 5000);
     assert_eq!(config.serial.timeout_seconds, 2);
     assert_eq!(config.server.device_number, 0);
 }
