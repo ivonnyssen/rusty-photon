@@ -218,6 +218,18 @@ cargo test -p ppba-switch --features mock --test conformu_integration -- --ignor
 
 Note: The `--all-features` flag enables the `mock` feature which is required for device tests that use mock serial ports.
 
+### ConformU Compliance Testing
+
+The driver includes ASCOM ConformU compliance tests that verify conformance to the ASCOM Switch interface specification. These tests run in CI via the `conformu.yml` workflow.
+
+**Performance optimization**: ConformU uses configurable delays between Switch read/write operations. The test uses a complete ConformU settings file with reduced delays:
+- `SwitchReadDelay`: 50ms (default: 500ms)
+- `SwitchWriteDelay`: 100ms (default: 3000ms)
+
+This reduces test time from ~8 minutes to ~35 seconds per platform.
+
+**Important**: ConformU requires a complete settings file with all required properties. Partial settings files (with only the Switch delays) are ignored and overwritten with defaults.
+
 ## Dependencies
 
 - `ascom-alpaca` - ASCOM Alpaca server and device traits
