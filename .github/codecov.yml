@@ -15,6 +15,7 @@ coverage:
 ignore:
   - "tests"
   - "**/bin/mock_*.rs"
+  - "services/ppba-switch/src/main.rs"
 
 # Make comments less noisy
 comment:
