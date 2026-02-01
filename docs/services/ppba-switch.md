@@ -38,6 +38,8 @@ The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated comm
 | 4 | USB Hub | Boolean | 0 | 1 | 1 | `PU:b` |
 | 5 | Auto-Dew | Boolean | 0 | 1 | 1 | `PD:b` |
 
+**Note:** See [Auto-Dew Behavior](#auto-dew-behavior) for important information about the interaction between auto-dew and manual dew heater control.
+
 ### Read-Only Switches - Power Statistics (CanWrite = false)
 
 | ID | Name | Type | Min | Max | Step | Source |
@@ -199,6 +201,37 @@ ppba-switch/
 4. **Synchronous Operations**: The MVP uses synchronous switch operations. Async switch methods are not implemented.
 
 5. **USB Hub Tracking**: USB hub state is tracked separately since it's not included in the `PA` status response.
+
+## Auto-Dew Behavior
+
+The PPBA has a built-in auto-dew feature (switch 5) that automatically calculates and applies optimal PWM values to the dew heaters based on ambient temperature and humidity readings.
+
+### Important: Auto-Dew Overrides Manual Control
+
+When auto-dew is enabled (switch 5 = 1), the PPBA continuously recalculates dew heater PWM values. **Any manual settings to dew heaters A or B (switches 2 and 3) will be overridden within seconds by the auto-dew algorithm.**
+
+This means:
+- Setting `P3:0` (dew heater A off) will be acknowledged by the device
+- But the next auto-dew cycle will restore the calculated PWM value
+- Reading the switch value back will show the auto-dew calculated value, not the manually set value
+
+### Manual Dew Heater Control
+
+To manually control dew heaters, you must first disable auto-dew:
+
+```bash
+# Disable auto-dew (switch 5)
+curl -X PUT http://localhost:11112/api/v1/switch/0/setswitch \
+  -d "Id=5&State=false"
+
+# Now manual dew heater control will work
+curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
+  -d "Id=2&Value=128"
+```
+
+### ConformU Testing
+
+When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass. The CI tests use mock hardware which doesn't have this behavior.
 
 ## Testing
 
