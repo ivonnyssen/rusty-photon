@@ -20,8 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install cfitsio (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |
@@ -56,8 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install cfitsio (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
       - run: |
           echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> "$GITHUB_ENV"
       - name: Install ${{ env.NIGHTLY }}

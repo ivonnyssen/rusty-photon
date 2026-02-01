@@ -9,16 +9,48 @@ on:
   pull_request:
 
 jobs:
+  discover:
+    name: Discover ConformU Services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.find.outputs.services }}
+      has_services: ${{ steps.find.outputs.has_services }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Find ConformU services
+        id: find
+        run: |
+          # Get all packages with conformu metadata and build JSON array
+          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+            jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
+
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+
+          # Check if we have any services
+          COUNT=$(echo "$SERVICES" | jq 'length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_services=true" >> $GITHUB_OUTPUT
+            echo "Found $COUNT ConformU services:"
+            echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
+          else
+            echo "has_services=false" >> $GITHUB_OUTPUT
+            echo "No ConformU services found"
+          fi
+
   conformu:
-    name: ConformU Tests
+    name: ${{ matrix.service.name }} (${{ matrix.os }})
+    needs: discover
+    if: needs.discover.outputs.has_services == 'true'
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ github.workflow }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
+      group: ${{ github.workflow }}-${{ matrix.service.name }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        service: ${{ fromJson(needs.discover.outputs.services) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -26,25 +58,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # tag=v5.0.1
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install ConformU
-        id: conformu
         uses: ivonnyssen/conformu-install@v1
 
-      - name: Find ALPACA services
-        id: find-alpaca
-        shell: bash
-        run: |
-          # Find all packages that depend on ascom-alpaca
-          ALPACA_PACKAGES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -r '.packages[] | select(.dependencies[]? | .name == "ascom-alpaca") | "-p " + .name' | \
-            tr '\n' ' ' | xargs)
-          echo "packages=$ALPACA_PACKAGES" >> $GITHUB_OUTPUT
-          echo "Found ALPACA services: $ALPACA_PACKAGES"
-
-      - name: Build ALPACA services
-        shell: bash
-        run: cargo build ${{ steps.find-alpaca.outputs.packages }} --release
-
       - name: Run ConformU tests
-        timeout-minutes: 10
-        run: cargo test --test conformu_integration -- --ignored
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          echo "::group::ConformU Compliance Test: ${{ matrix.service.name }}"
+          ${{ matrix.service.command }}
+          echo "::endgroup::"

@@ -7,7 +7,7 @@
 //!   mock_phd2 [--port PORT]
 //!
 //! Environment variables:
-//!   MOCK_PHD2_PORT - Port to listen on (default: 4400)
+//!   MOCK_PHD2_PORT - Port to listen on (0 = auto-assign, default: 4400)
 //!   MOCK_PHD2_MODE - Operating mode for testing different scenarios:
 //!     - "normal" (default): Standard mock server behavior
 //!     - "exit_immediately": Exit with code 42 without starting server
@@ -17,6 +17,10 @@
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
+//!
+//! When binding succeeds, the actual port is printed to stdout as:
+//!   MOCK_PHD2_PORT:12345
+//! This allows tests to discover the port when using auto-assign (port 0).
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -53,7 +57,8 @@ fn main() {
     }
 
     // Port priority: command line arg > environment variable > default (4400)
-    let port = std::env::args()
+    // Port 0 means auto-assign by OS
+    let requested_port = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
         .or_else(|| {
@@ -63,15 +68,29 @@ fn main() {
         })
         .unwrap_or(4400u16);
 
-    eprintln!("Mock PHD2 starting on port {} (mode: {})", port, mode);
+    eprintln!(
+        "Mock PHD2 starting on port {} (mode: {})",
+        if requested_port == 0 {
+            "auto".to_string()
+        } else {
+            requested_port.to_string()
+        },
+        mode
+    );
 
-    let listener = match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+    let listener = match TcpListener::bind(format!("127.0.0.1:{}", requested_port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("Failed to bind to port {}: {}", port, e);
+            eprintln!("Failed to bind to port {}: {}", requested_port, e);
             std::process::exit(1);
         }
     };
+
+    // Get the actual port (important when requested_port was 0)
+    let actual_port = listener
+        .local_addr()
+        .expect("Failed to get local address")
+        .port();
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -80,7 +99,10 @@ fn main() {
         .set_nonblocking(true)
         .expect("Cannot set non-blocking");
 
-    eprintln!("Mock PHD2 listening on port {}", port);
+    // Print actual port to stdout for test discovery (parseable format)
+    println!("MOCK_PHD2_PORT:{}", actual_port);
+
+    eprintln!("Mock PHD2 listening on port {}", actual_port);
 
     // Store mode for use in request handler
     let ignore_shutdown = mode == "shutdown_fails";
