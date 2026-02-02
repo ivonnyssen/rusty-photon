@@ -29,14 +29,14 @@ The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated comm
 
 ### Controllable Switches (CanWrite = true)
 
-| ID | Name | Type | Min | Max | Step | Command |
-|----|------|------|-----|-----|------|---------|
-| 0 | Quad 12V Output | Boolean | 0 | 1 | 1 | `P1:b` |
-| 1 | Adjustable Output | Boolean | 0 | 1 | 1 | `P2:b` |
-| 2 | Dew Heater A | PWM | 0 | 255 | 1 | `P3:nnn` |
-| 3 | Dew Heater B | PWM | 0 | 255 | 1 | `P4:nnn` |
-| 4 | USB Hub | Boolean | 0 | 1 | 1 | `PU:b` |
-| 5 | Auto-Dew | Boolean | 0 | 1 | 1 | `PD:b` |
+| ID | Name | Type | Min | Max | Step | Command | Notes |
+|----|------|------|-----|-----|------|---------|-------|
+| 0 | Quad 12V Output | Boolean | 0 | 1 | 1 | `P1:b` | |
+| 1 | Adjustable Output | Boolean | 0 | 1 | 1 | `P2:b` | |
+| 2 | Dew Heater A | PWM | 0 | 255 | 1 | `P3:nnn` | Read-only when auto-dew enabled |
+| 3 | Dew Heater B | PWM | 0 | 255 | 1 | `P4:nnn` | Read-only when auto-dew enabled |
+| 4 | USB Hub | Boolean | 0 | 1 | 1 | `PU:b` | |
+| 5 | Auto-Dew | Boolean | 0 | 1 | 1 | `PD:b` | |
 
 **Note:** See [Auto-Dew Behavior](#auto-dew-behavior) for important information about the interaction between auto-dew and manual dew heater control.
 
@@ -206,32 +206,84 @@ ppba-switch/
 
 The PPBA has a built-in auto-dew feature (switch 5) that automatically calculates and applies optimal PWM values to the dew heaters based on ambient temperature and humidity readings.
 
-### Important: Auto-Dew Overrides Manual Control
+### Dynamic Write Protection
 
-When auto-dew is enabled (switch 5 = 1), the PPBA continuously recalculates dew heater PWM values. **Any manual settings to dew heaters A or B (switches 2 and 3) will be overridden within seconds by the auto-dew algorithm.**
+This driver implements **dynamic write protection** for dew heater switches (2 & 3) based on the auto-dew state:
 
-This means:
-- Setting `P3:0` (dew heater A off) will be acknowledged by the device
-- But the next auto-dew cycle will restore the calculated PWM value
-- Reading the switch value back will show the auto-dew calculated value, not the manually set value
+**When auto-dew is ENABLED (switch 5 = ON):**
+- `CanWrite(2)` and `CanWrite(3)` return `false` (read-only)
+- Attempting to write to switches 2 or 3 returns an `INVALID_OPERATION` error
+- Error message: "Cannot write to switch X while auto-dew is enabled. Disable auto-dew (switch 5) first."
+
+**When auto-dew is DISABLED (switch 5 = OFF):**
+- `CanWrite(2)` and `CanWrite(3)` return `true` (writable)
+- Switches 2 & 3 can be written normally
+
+**When disconnected:**
+- `CanWrite()` for any switch returns a `NOT_CONNECTED` error (per ASCOM specification)
+
+### State Caching and Refresh Behavior
+
+The driver caches device state to minimize serial communication overhead:
+
+- **Background polling**: Device state is refreshed every `polling_interval_ms` (default: 5000ms)
+- **CanWrite() queries**: Use cached state (may be up to `polling_interval_ms` stale if auto-dew changed externally)
+- **SetSwitchValue() for dew heaters**: Refreshes state immediately before validation (always validates against current device state)
+- **After successful writes**: State is refreshed immediately to reflect the change
+- **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
+
+For tighter synchronization with external changes, reduce `polling_interval_ms` in the configuration. However, note that very short intervals (< 1000ms) increase serial communication overhead.
 
 ### Manual Dew Heater Control
 
-To manually control dew heaters, you must first disable auto-dew:
+To manually control dew heaters:
 
 ```bash
-# Disable auto-dew (switch 5)
+# 1. First, disable auto-dew (switch 5)
 curl -X PUT http://localhost:11112/api/v1/switch/0/setswitch \
   -d "Id=5&State=false"
 
-# Now manual dew heater control will work
+# 2. Now manual dew heater control will work
 curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
   -d "Id=2&Value=128"
 ```
 
+If you attempt to set a dew heater while auto-dew is enabled, you'll receive an error:
+
+```bash
+# This will fail with INVALID_OPERATION error:
+curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
+  -d "Id=2&Value=128"
+# Error: "Cannot write to switch 2 while auto-dew is enabled. Disable auto-dew (switch 5) first."
+```
+
+### Client Recommendations
+
+For robust client applications:
+
+1. **Always connect first**: `CanWrite()` requires an active connection
+2. **Check CanWrite() before writing**: Query `CanWrite(id)` to determine if a switch is currently writable
+3. **Handle write errors gracefully**: Catch `INVALID_OPERATION` errors when writing to dew heaters
+4. **Update UI on auto-dew changes**: If your UI allows controlling both auto-dew and manual heaters, update the dew heater controls' enabled/disabled state when auto-dew changes
+
+Example client flow:
+
+```python
+# Connect to device
+device.Connected = True
+
+# Check if dew heater A is writable
+if device.CanWrite(2):
+    # Write is allowed
+    device.SetSwitchValue(2, 128)
+else:
+    # Dew heater is read-only (auto-dew is probably ON)
+    print("Cannot write to dew heater while auto-dew is enabled")
+```
+
 ### ConformU Testing
 
-When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass. The CI tests use mock hardware which doesn't have this behavior.
+When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass.
 
 ## Testing
 

@@ -389,6 +389,21 @@ impl PpbaSwitchDevice {
             return Err(PpbaError::SwitchNotWritable(id));
         }
 
+        // Additional check for dew heaters: verify auto-dew is OFF
+        // Refresh state first to ensure we have current auto-dew status
+        // This prevents issues if auto-dew was changed externally
+        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
+            // Refresh status to get current auto-dew state from device
+            self.refresh_status().await?;
+
+            let cached = self.cached_state.read().await;
+            if let Some(status) = &cached.status {
+                if status.auto_dew {
+                    return Err(PpbaError::AutoDewEnabled(id));
+                }
+            }
+        }
+
         // Validate value range
         if value < info.min_value || value > info.max_value {
             return Err(PpbaError::InvalidValue(format!(
@@ -434,6 +449,9 @@ impl PpbaSwitchDevice {
             }
             PpbaError::SwitchNotWritable(_) => {
                 ASCOMError::new(ASCOMErrorCode::NOT_IMPLEMENTED, err.to_string())
+            }
+            PpbaError::AutoDewEnabled(_) => {
+                ASCOMError::new(ASCOMErrorCode::INVALID_OPERATION, err.to_string())
             }
             PpbaError::InvalidValue(_) => {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
@@ -507,8 +525,34 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
+        // ASCOM spec: CanWrite must throw NotConnectedException when disconnected
+        if !*self.connected.read().await {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::NOT_CONNECTED,
+                "Device not connected",
+            ));
+        }
+
+        let switch_id = SwitchId::from_id(id)
+            .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
+
         let info = get_switch_info(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
+
+        // For dew heaters, writability depends on auto-dew state
+        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
+            // Check auto-dew state from cache
+            let cached = self.cached_state.read().await;
+            if let Some(status) = &cached.status {
+                // Writable only when auto-dew is OFF
+                return Ok(!status.auto_dew);
+            } else {
+                // Fallback to static value if no cached state
+                return Ok(info.can_write);
+            }
+        }
+
+        // All other switches use static can_write
         Ok(info.can_write)
     }
 

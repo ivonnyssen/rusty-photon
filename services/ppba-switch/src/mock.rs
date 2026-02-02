@@ -52,7 +52,7 @@ impl Default for MockDeviceState {
             dew_a: 128,
             dew_b: 64,
             usb_hub: false,
-            auto_dew: true,
+            auto_dew: false, // Default to OFF for ConformU compliance testing
             voltage: 12.5,
             current: 3.2,
             temperature: 25.0,

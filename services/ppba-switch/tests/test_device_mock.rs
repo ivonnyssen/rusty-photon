@@ -90,7 +90,7 @@ impl SerialPortFactory for MockSerialPortFactory {
 fn create_connected_mock_factory() -> MockSerialPortFactory {
     MockSerialPortFactory::new(vec![
         "PPBA_OK".to_string(),                                     // Ping response
-        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // Status
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Status (auto-dew=0)
         "PS:2.5:10.5:126.0:3600000".to_string(),                   // Power stats
     ])
 }
@@ -204,13 +204,17 @@ async fn test_max_switch_returns_16() {
 
 #[tokio::test]
 async fn test_can_write_controllable_switches() {
-    use ascom_alpaca::api::Switch;
+    use ascom_alpaca::api::{Device, Switch};
 
     let config = Config::default();
     let factory = Arc::new(create_connected_mock_factory());
     let device = PpbaSwitchDevice::with_serial_factory(config, factory);
 
+    // Must be connected to query can_write
+    device.set_connected(true).await.unwrap();
+
     // Switches 0-5 should be writable
+    // In default mock, auto-dew is OFF, so all writable switches are writable
     for id in 0..6 {
         let can_write = device.can_write(id).await.unwrap();
         assert!(can_write, "Switch {} should be writable", id);
@@ -219,11 +223,14 @@ async fn test_can_write_controllable_switches() {
 
 #[tokio::test]
 async fn test_can_write_readonly_switches() {
-    use ascom_alpaca::api::Switch;
+    use ascom_alpaca::api::{Device, Switch};
 
     let config = Config::default();
     let factory = Arc::new(create_connected_mock_factory());
     let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    // Must be connected to query can_write
+    device.set_connected(true).await.unwrap();
 
     // Switches 6-15 should be read-only
     for id in 6..16 {
@@ -440,21 +447,23 @@ async fn test_invalid_switch_id_errors() {
 fn create_connected_mock_factory_with_set_responses() -> MockSerialPortFactory {
     MockSerialPortFactory::new(vec![
         "PPBA_OK".to_string(),                                     // Ping
-        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // Initial status
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Initial status (auto-dew=0)
         "PS:2.5:10.5:126.0:3600000".to_string(),                   // Initial power stats
         // Additional responses for set operations
         "P1:1".to_string(), // Set quad 12V response
-        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // Status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Status after set
         "P1:0".to_string(), // Set quad 12V off
-        "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:1:0:0".to_string(), // Status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(), // Status after set
         "P2:1".to_string(), // Set adjustable
-        "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:1:0:0".to_string(), // Status after set
-        "P3:200".to_string(), // Set dew A
-        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:1:0:0".to_string(), // Status after set
-        "P4:150".to_string(), // Set dew B
-        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:150:1:0:0".to_string(), // Status after set
-        "PU:1".to_string(), // Set USB hub
-        "PD:0".to_string(), // Set auto-dew off
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(), // Status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(), // Status refresh before dew A write
+        "P3:200".to_string(),                                      // Set dew A
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(), // Status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(), // Status refresh before dew B write
+        "P4:150".to_string(),                                      // Set dew B
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:150:0:0:0".to_string(), // Status after set
+        "PU:1".to_string(),                                        // Set USB hub
+        "PD:0".to_string(),                                        // Set auto-dew off
         "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:150:0:0:0".to_string(), // Status after set
     ])
 }
@@ -574,9 +583,9 @@ async fn test_get_switch_value_auto_dew_when_connected() {
 
     device.set_connected(true).await.unwrap();
 
-    // Auto-dew is switch 5, status has it as 1 (on)
+    // Auto-dew is switch 5, status has it as 0 (off) by default
     let value = device.get_switch_value(5).await.unwrap();
-    assert_eq!(value, 1.0);
+    assert_eq!(value, 0.0);
 }
 
 #[tokio::test]
@@ -993,4 +1002,168 @@ async fn test_disconnect_stops_polling() {
 
     // If we get here without panicking, polling was stopped correctly
     assert!(!device.connected().await.unwrap());
+}
+
+#[tokio::test]
+async fn test_can_write_dew_heaters_when_auto_dew_off() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    // Create mock with auto-dew OFF (0 in field 10)
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // auto-dew=0
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // When auto-dew is OFF, dew heaters should be writable
+    assert!(
+        device.can_write(2).await.unwrap(),
+        "Dew Heater A should be writable when auto-dew is OFF"
+    );
+    assert!(
+        device.can_write(3).await.unwrap(),
+        "Dew Heater B should be writable when auto-dew is OFF"
+    );
+}
+
+#[tokio::test]
+async fn test_can_write_dew_heaters_when_auto_dew_on() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    // Create mock with auto-dew ON (1 in field 10)
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto-dew=1
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // When auto-dew is ON, dew heaters should be read-only
+    assert!(
+        !device.can_write(2).await.unwrap(),
+        "Dew Heater A should be read-only when auto-dew is ON"
+    );
+    assert!(
+        !device.can_write(3).await.unwrap(),
+        "Dew Heater B should be read-only when auto-dew is ON"
+    );
+}
+
+#[tokio::test]
+async fn test_can_write_when_disconnected_returns_error() {
+    use ascom_alpaca::api::Switch;
+
+    let config = Config::default();
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    // Don't connect - test disconnected state
+    let result = device.can_write(2).await;
+    assert!(
+        result.is_err(),
+        "can_write should return error when disconnected"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        err.message.to_lowercase().contains("not connected"),
+        "Error should indicate not connected: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn test_set_dew_heater_fails_when_auto_dew_enabled() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    // Create mock with auto-dew ON
+    // Need extra status response for refresh_status() call before write validation
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto-dew=1 for connection
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto-dew=1 for refresh before write
+    ]));
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Attempt to set dew heater A value
+    let result = device.set_switch_value(2, 100.0).await;
+    assert!(
+        result.is_err(),
+        "Setting dew heater should fail when auto-dew is ON"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("auto-dew"),
+        "Error message should mention auto-dew: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn test_set_dew_heater_succeeds_when_auto_dew_disabled() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    // Create mock with auto-dew OFF and responses for set command
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // auto-dew=0 for connection
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // auto-dew=0 for refresh before write
+        "P3:100".to_string(), // Set dew heater A command response (switch 2 uses P3 command)
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:100:64:0:0:0".to_string(), // Status refresh after write
+    ]));
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Setting dew heater should succeed when auto-dew is OFF
+    let result = device.set_switch_value(2, 100.0).await;
+    assert!(
+        result.is_ok(),
+        "Setting dew heater should succeed when auto-dew is OFF"
+    );
+}
+
+#[tokio::test]
+async fn test_set_dew_heater_refreshes_state_before_validation() {
+    use ascom_alpaca::api::{Device, Switch};
+
+    let config = Config::default();
+    // Create mock that returns auto-dew ON when status is queried during write
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // auto-dew=0 during connection
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto-dew=1 when refreshed before write
+    ]));
+    let device = PpbaSwitchDevice::with_serial_factory(config, factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Attempt to set dew heater - should refresh state and detect auto-dew is ON
+    let result = device.set_switch_value(2, 100.0).await;
+    assert!(
+        result.is_err(),
+        "Setting dew heater should fail after refreshing state shows auto-dew ON"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("auto-dew"),
+        "Error message should mention auto-dew: {}",
+        err.message
+    );
 }
