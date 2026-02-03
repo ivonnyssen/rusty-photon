@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use ascom_alpaca::api::{Device, Switch};
+use async_trait::async_trait;
 use ppba_switch::error::PpbaError;
 use ppba_switch::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 use ppba_switch::{Config, PpbaSwitchDevice, Result};
@@ -374,7 +374,7 @@ async fn test_polling_continues_on_status_error() {
         "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
         "PS:2.5:10.5:126.0:3600000".to_string(),
         // First poll - status fails (index 3)
-        "ERROR".to_string(), // Will be marked as error
+        "ERROR".to_string(),                     // Will be marked as error
         "PS:3.0:11.0:130.0:3700000".to_string(), // Power stats succeeds
         // Second poll - both succeed to verify recovery
         "PPBA:13.0:3.5:26.0:62:16.0:1:0:130:65:0:0:0".to_string(),
