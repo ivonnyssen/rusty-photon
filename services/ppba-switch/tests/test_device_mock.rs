@@ -241,14 +241,29 @@ async fn test_can_write_readonly_switches() {
 
 #[tokio::test]
 async fn test_can_write_invalid_switch() {
-    use ascom_alpaca::api::Switch;
+    use ascom_alpaca::api::{Device, Switch};
 
     let config = Config::default();
     let factory = Arc::new(create_connected_mock_factory());
     let device = PpbaSwitchDevice::with_serial_factory(config, factory);
 
+    // Connect the device first to bypass NOT_CONNECTED check
+    device.set_connected(true).await.unwrap();
+
+    // Test with invalid switch ID (MAX_SWITCH is 16, so 16+ is invalid)
     let result = device.can_write(16).await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Should fail for switch ID 16");
+
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("Invalid switch ID"),
+        "Error should mention invalid switch ID, got: {}",
+        err.message
+    );
+
+    // Test with another invalid ID
+    let result = device.can_write(999).await;
+    assert!(result.is_err(), "Should fail for switch ID 999");
 }
 
 #[tokio::test]
