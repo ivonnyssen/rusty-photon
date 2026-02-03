@@ -227,7 +227,7 @@ This driver implements **dynamic write protection** for dew heater switches (2 &
 The driver caches device state to minimize serial communication overhead:
 
 - **Background polling**: Device state is refreshed every `polling_interval_ms` (default: 5000ms)
-- **CanWrite() queries**: Use cached state (may be up to `polling_interval_ms` stale if auto-dew changed externally)
+- **CanWrite() queries**: Use cached state (may be up to `polling_interval_ms` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
 - **SetSwitchValue() for dew heaters**: Refreshes state immediately before validation (always validates against current device state)
 - **After successful writes**: State is refreshed immediately to reflect the change
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
@@ -314,6 +314,44 @@ The driver includes ASCOM ConformU compliance tests that verify conformance to t
 This reduces test time from ~8 minutes to ~35 seconds per platform.
 
 **Important**: ConformU requires a complete settings file with all required properties. Partial settings files (with only the Switch delays) are ignored and overwritten with defaults.
+
+#### Running ConformU Against Real Hardware
+
+To run ConformU compliance tests against the actual PPBA hardware on `/dev/ttyUSB0`:
+
+**Step 1: Ensure auto-dew is disabled on the hardware**
+
+Auto-dew must be OFF before running ConformU, otherwise the dew heater write tests will fail (CanWrite will return false for switches 2 and 3).
+
+**Step 2: Start the ppba-switch service**
+
+```bash
+# Start the service with the real hardware configuration
+cargo run -p ppba-switch -- -c services/ppba-switch/config.json
+```
+
+The service will connect to the PPBA on `/dev/ttyUSB0` and start the Alpaca server on port 11112.
+
+**Step 3: Run ConformU**
+
+In a separate terminal, run ConformU with default hardware timing (recommended for real hardware):
+
+```bash
+# Run ConformU against the Switch device with default timing
+conformu conformance http://localhost:11112/api/v1/switch/0
+```
+
+**Note:** We use ConformU's default timing settings for real hardware tests (SwitchReadDelay: 500ms, SwitchWriteDelay: 3000ms). These conservative delays ensure reliable operation with actual hardware. The automated CI tests use reduced delays with mock hardware for faster execution.
+
+**Expected results:**
+- All tests should pass with 0 errors and 0 issues
+- Test duration: ~10 minutes with default timing
+- ConformU will test all 16 switches including read/write operations on controllable switches
+
+**Troubleshooting:**
+- If dew heater write tests fail with "Expected P3:XXX, got: P3:0" or "Expected P4:XXX, got: P4:0", auto-dew is enabled. Disable it before running ConformU.
+- If the service fails to start, ensure no other process is using port 11112 or `/dev/ttyUSB0`
+- If connection fails, verify the PPBA is powered on and connected via USB
 
 ## Dependencies
 

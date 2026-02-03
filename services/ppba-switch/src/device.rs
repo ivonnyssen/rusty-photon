@@ -539,7 +539,17 @@ impl Switch for PpbaSwitchDevice {
 
         // For dew heaters, writability depends on auto-dew state
         if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
-            // Check auto-dew state from cache
+            // Check if cache is populated, refresh if not
+            {
+                let cached = self.cached_state.read().await;
+                if cached.status.is_none() {
+                    // Cache not populated yet, refresh it
+                    drop(cached); // Release read lock before refreshing
+                    self.refresh_status().await.map_err(Self::to_ascom_error)?;
+                }
+            }
+
+            // Now check auto-dew state from cache
             let cached = self.cached_state.read().await;
             if let Some(status) = &cached.status {
                 // Writable only when auto-dew is OFF
