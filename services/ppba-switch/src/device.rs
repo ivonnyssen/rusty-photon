@@ -22,7 +22,7 @@ use crate::protocol::{
     validate_set_response, PpbaCommand, PpbaPowerStats, PpbaStatus,
 };
 use crate::serial::TokioSerialPortFactory;
-use crate::switches::{get_switch_info, SwitchId, MAX_SWITCH};
+use crate::switches::{SwitchId, MAX_SWITCH};
 
 /// Cached state from the PPBA device
 #[derive(Debug, Clone, Default)]
@@ -383,10 +383,25 @@ impl PpbaSwitchDevice {
     /// Set a switch value
     async fn set_switch_value_internal(&self, id: usize, value: f64) -> Result<()> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
-        let info = get_switch_info(id).ok_or(PpbaError::InvalidSwitchId(id))?;
+        let info = switch_id.info();
 
         if !info.can_write {
             return Err(PpbaError::SwitchNotWritable(id));
+        }
+
+        // Additional check for dew heaters: verify auto-dew is OFF
+        // Refresh state first to ensure we have current auto-dew status
+        // This prevents issues if auto-dew was changed externally
+        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
+            // Refresh status to get current auto-dew state from device
+            self.refresh_status().await?;
+
+            let cached = self.cached_state.read().await;
+            if let Some(status) = &cached.status {
+                if status.auto_dew {
+                    return Err(PpbaError::AutoDewEnabled(id));
+                }
+            }
         }
 
         // Validate value range
@@ -434,6 +449,9 @@ impl PpbaSwitchDevice {
             }
             PpbaError::SwitchNotWritable(_) => {
                 ASCOMError::new(ASCOMErrorCode::NOT_IMPLEMENTED, err.to_string())
+            }
+            PpbaError::AutoDewEnabled(_) => {
+                ASCOMError::new(ASCOMErrorCode::INVALID_OPERATION, err.to_string())
             }
             PpbaError::InvalidValue(_) => {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
@@ -507,9 +525,40 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
-        let info = get_switch_info(id)
+        // ASCOM spec: CanWrite must throw NotConnectedException when disconnected
+        if !*self.connected.read().await {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::NOT_CONNECTED,
+                "Device not connected",
+            ));
+        }
+
+        // Validate switch ID
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.can_write)
+
+        // For dew heaters, writability depends on auto-dew state
+        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
+            // Check if cache is populated, refresh if not
+            {
+                let cached = self.cached_state.read().await;
+                if cached.status.is_none() {
+                    // Cache not populated yet, refresh it
+                    drop(cached); // Release read lock before refreshing
+                    self.refresh_status().await.map_err(Self::to_ascom_error)?;
+                }
+            }
+
+            // Now check auto-dew state from cache
+            let cached = self.cached_state.read().await;
+            if let Some(status) = &cached.status {
+                // Writable only when auto-dew is OFF
+                return Ok(!status.auto_dew);
+            }
+        }
+
+        // All other switches use static can_write from their info
+        Ok(switch_id.info().can_write)
     }
 
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
@@ -526,9 +575,9 @@ impl Switch for PpbaSwitchDevice {
             .map_err(Self::to_ascom_error)?;
 
         // Per ASCOM spec: False at minimum value, True above minimum
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(value > info.min_value)
+        Ok(value > switch_id.info().min_value)
     }
 
     async fn set_switch(&self, id: usize, state: bool) -> ASCOMResult<()> {
@@ -539,8 +588,9 @@ impl Switch for PpbaSwitchDevice {
             ));
         }
 
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
+        let info = switch_id.info();
 
         // Per ASCOM spec: True sets to max, False sets to min
         let value = if state {
@@ -555,15 +605,15 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.description.to_string())
+        Ok(switch_id.info().description.to_string())
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.name.to_string())
+        Ok(switch_id.info().name.to_string())
     }
 
     async fn set_switch_name(&self, _id: usize, _name: String) -> ASCOMResult<()> {
@@ -600,21 +650,21 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.min_value)
+        Ok(switch_id.info().min_value)
     }
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.max_value)
+        Ok(switch_id.info().max_value)
     }
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
-        let info = get_switch_info(id)
+        let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(info.step)
+        Ok(switch_id.info().step)
     }
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {

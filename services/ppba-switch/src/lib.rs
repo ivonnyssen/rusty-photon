@@ -44,7 +44,7 @@ pub use config::{load_config, Config, DeviceConfig, SerialConfig, ServerConfig};
 pub use device::PpbaSwitchDevice;
 pub use error::{PpbaError, Result};
 pub use io::SerialPortFactory;
-pub use switches::{get_switch_info, SwitchId, SwitchInfo, MAX_SWITCH};
+pub use switches::{SwitchId, SwitchInfo, MAX_SWITCH};
 
 #[cfg(feature = "mock")]
 pub use mock::MockSerialPortFactory;

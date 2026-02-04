@@ -1,6 +1,6 @@
 //! Switch definition tests for PPBA Switch driver
 
-use ppba_switch::{get_switch_info, SwitchId, MAX_SWITCH};
+use ppba_switch::{SwitchId, MAX_SWITCH};
 
 #[test]
 fn max_switch_is_sixteen() {
@@ -33,7 +33,7 @@ fn switch_id_roundtrip() {
 #[test]
 fn all_switches_have_info() {
     for id in 0..MAX_SWITCH {
-        let info = get_switch_info(id);
+        let info = SwitchId::from_id(id).map(|s| s.info());
         assert!(info.is_some(), "Switch {} should have info", id);
     }
 }
@@ -41,7 +41,7 @@ fn all_switches_have_info() {
 #[test]
 fn switch_info_has_valid_ranges() {
     for id in 0..MAX_SWITCH {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert!(
             info.min_value <= info.max_value,
             "Switch {} min ({}) > max ({})",
@@ -58,7 +58,7 @@ fn controllable_switches_are_writable() {
     // Switches 0-5 should be controllable
     let writable_ids = [0, 1, 2, 3, 4, 5];
     for id in writable_ids {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert!(
             info.can_write,
             "Switch {} ({}) should be writable",
@@ -71,7 +71,7 @@ fn controllable_switches_are_writable() {
 fn sensor_switches_are_readonly() {
     // Switches 6-15 should be read-only
     for id in 6..16 {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert!(
             !info.can_write,
             "Switch {} ({}) should be read-only",
@@ -85,7 +85,7 @@ fn boolean_switches_have_correct_range() {
     // Boolean switches should have 0-1 range with step 1
     let boolean_ids = [0, 1, 4, 5, 15];
     for id in boolean_ids {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert_eq!(info.min_value, 0.0, "Boolean switch {} min should be 0", id);
         assert_eq!(info.max_value, 1.0, "Boolean switch {} max should be 1", id);
         assert_eq!(info.step, 1.0, "Boolean switch {} step should be 1", id);
@@ -97,7 +97,7 @@ fn pwm_switches_have_correct_range() {
     // Dew heater switches should have 0-255 range
     let pwm_ids = [2, 3];
     for id in pwm_ids {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert_eq!(info.min_value, 0.0, "PWM switch {} min should be 0", id);
         assert_eq!(info.max_value, 255.0, "PWM switch {} max should be 255", id);
         assert_eq!(info.step, 1.0, "PWM switch {} step should be 1", id);
@@ -107,7 +107,7 @@ fn pwm_switches_have_correct_range() {
 #[test]
 fn switch_names_are_not_empty() {
     for id in 0..MAX_SWITCH {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert!(
             !info.name.is_empty(),
             "Switch {} name should not be empty",
@@ -119,7 +119,7 @@ fn switch_names_are_not_empty() {
 #[test]
 fn switch_descriptions_are_not_empty() {
     for id in 0..MAX_SWITCH {
-        let info = get_switch_info(id).unwrap();
+        let info = SwitchId::from_id(id).unwrap().info();
         assert!(
             !info.description.is_empty(),
             "Switch {} description should not be empty",
@@ -130,20 +130,23 @@ fn switch_descriptions_are_not_empty() {
 
 #[test]
 fn specific_switch_names() {
-    assert_eq!(get_switch_info(0).unwrap().name, "Quad 12V Output");
-    assert_eq!(get_switch_info(1).unwrap().name, "Adjustable Output");
-    assert_eq!(get_switch_info(2).unwrap().name, "Dew Heater A");
-    assert_eq!(get_switch_info(3).unwrap().name, "Dew Heater B");
-    assert_eq!(get_switch_info(4).unwrap().name, "USB Hub");
-    assert_eq!(get_switch_info(5).unwrap().name, "Auto-Dew");
-    assert_eq!(get_switch_info(6).unwrap().name, "Average Current");
-    assert_eq!(get_switch_info(7).unwrap().name, "Amp Hours");
-    assert_eq!(get_switch_info(8).unwrap().name, "Watt Hours");
-    assert_eq!(get_switch_info(9).unwrap().name, "Uptime");
-    assert_eq!(get_switch_info(10).unwrap().name, "Input Voltage");
-    assert_eq!(get_switch_info(11).unwrap().name, "Total Current");
-    assert_eq!(get_switch_info(12).unwrap().name, "Temperature");
-    assert_eq!(get_switch_info(13).unwrap().name, "Humidity");
-    assert_eq!(get_switch_info(14).unwrap().name, "Dewpoint");
-    assert_eq!(get_switch_info(15).unwrap().name, "Power Warning");
+    assert_eq!(SwitchId::from_id(0).unwrap().info().name, "Quad 12V Output");
+    assert_eq!(
+        SwitchId::from_id(1).unwrap().info().name,
+        "Adjustable Output"
+    );
+    assert_eq!(SwitchId::from_id(2).unwrap().info().name, "Dew Heater A");
+    assert_eq!(SwitchId::from_id(3).unwrap().info().name, "Dew Heater B");
+    assert_eq!(SwitchId::from_id(4).unwrap().info().name, "USB Hub");
+    assert_eq!(SwitchId::from_id(5).unwrap().info().name, "Auto-Dew");
+    assert_eq!(SwitchId::from_id(6).unwrap().info().name, "Average Current");
+    assert_eq!(SwitchId::from_id(7).unwrap().info().name, "Amp Hours");
+    assert_eq!(SwitchId::from_id(8).unwrap().info().name, "Watt Hours");
+    assert_eq!(SwitchId::from_id(9).unwrap().info().name, "Uptime");
+    assert_eq!(SwitchId::from_id(10).unwrap().info().name, "Input Voltage");
+    assert_eq!(SwitchId::from_id(11).unwrap().info().name, "Total Current");
+    assert_eq!(SwitchId::from_id(12).unwrap().info().name, "Temperature");
+    assert_eq!(SwitchId::from_id(13).unwrap().info().name, "Humidity");
+    assert_eq!(SwitchId::from_id(14).unwrap().info().name, "Dewpoint");
+    assert_eq!(SwitchId::from_id(15).unwrap().info().name, "Power Warning");
 }

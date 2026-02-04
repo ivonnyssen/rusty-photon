@@ -30,6 +30,11 @@ pub enum PpbaError {
     #[error("Switch not writable: {0}")]
     SwitchNotWritable(usize),
 
+    #[error(
+        "Cannot write to switch {0} while auto-dew is enabled. Disable auto-dew (switch 5) first."
+    )]
+    AutoDewEnabled(usize),
+
     #[error("Invalid value: {0}")]
     InvalidValue(String),
 
