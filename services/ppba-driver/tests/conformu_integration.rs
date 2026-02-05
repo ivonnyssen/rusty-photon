@@ -110,12 +110,12 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // Start ppba-switch service with mock feature
+    // Start ppba-driver service with mock feature
     let mut child = Command::new("cargo")
         .args([
             "run",
             "-p",
-            "ppba-switch",
+            "ppba-driver",
             "--features",
             "mock",
             "--",

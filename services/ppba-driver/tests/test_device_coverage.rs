@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use ascom_alpaca::api::{Device, Switch};
 use async_trait::async_trait;
-use ppba_switch::error::PpbaError;
-use ppba_switch::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-use ppba_switch::{Config, PpbaSwitchDevice, Result};
+use ppba_driver::error::PpbaError;
+use ppba_driver::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
+use ppba_driver::{Config, PpbaSwitchDevice, Result};
 use tokio::sync::Mutex;
 
 // ============================================================================

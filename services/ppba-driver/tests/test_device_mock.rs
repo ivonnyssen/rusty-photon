@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ppba_switch::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-use ppba_switch::{Config, PpbaSwitchDevice, Result};
+use ppba_driver::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
+use ppba_driver::{Config, PpbaSwitchDevice, Result};
 use tokio::sync::Mutex;
 
 /// Mock serial reader that returns predefined responses

@@ -1,0 +1,26 @@
+{
+  "serial": {
+    "port": "/dev/ttyUSB0",
+    "baud_rate": 9600,
+    "polling_interval_ms": 5000,
+    "timeout_seconds": 2
+  },
+  "server": {
+    "port": 11112
+  },
+  "switch": {
+    "name": "Pegasus PPBA Switch",
+    "unique_id": "ppba-switch-001",
+    "description": "Pegasus Astro PPBA Gen2 Power Control",
+    "device_number": 0,
+    "enabled": true
+  },
+  "observingconditions": {
+    "name": "Pegasus PPBA Weather",
+    "unique_id": "ppba-observingconditions-001",
+    "description": "Pegasus Astro PPBA Environmental Sensors",
+    "device_number": 0,
+    "enabled": true,
+    "averaging_period_ms": 300000
+  }
+}

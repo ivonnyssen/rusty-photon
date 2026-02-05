@@ -1,13 +1,13 @@
 //! Configuration tests for PPBA Switch driver
 
-use ppba_switch::{Config, DeviceConfig, SerialConfig, ServerConfig};
+use ppba_driver::{Config, DeviceConfig, SerialConfig, ServerConfig};
 
 #[test]
 fn default_config_has_expected_values() {
     let config = Config::default();
 
     assert_eq!(config.device.name, "Pegasus PPBA");
-    assert_eq!(config.device.unique_id, "ppba-switch-001");
+    assert_eq!(config.device.unique_id, "ppba-driver-001");
     assert_eq!(
         config.device.description,
         "Pegasus Astro Pocket Powerbox Advance Gen2"
@@ -27,7 +27,7 @@ fn device_config_default() {
     let config = DeviceConfig::default();
 
     assert_eq!(config.name, "Pegasus PPBA");
-    assert_eq!(config.unique_id, "ppba-switch-001");
+    assert_eq!(config.unique_id, "ppba-driver-001");
     assert!(!config.description.is_empty());
 }
 
