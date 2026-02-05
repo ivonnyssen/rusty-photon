@@ -1,17 +1,16 @@
-//! Configuration tests for PPBA Switch driver
+//! Configuration tests for PPBA Driver
 
-use ppba_driver::{Config, DeviceConfig, SerialConfig, ServerConfig};
+use ppba_driver::{Config, ObservingConditionsConfig, SerialConfig, ServerConfig, SwitchConfig};
 
 #[test]
 fn default_config_has_expected_values() {
     let config = Config::default();
 
-    assert_eq!(config.device.name, "Pegasus PPBA");
-    assert_eq!(config.device.unique_id, "ppba-driver-001");
-    assert_eq!(
-        config.device.description,
-        "Pegasus Astro Pocket Powerbox Advance Gen2"
-    );
+    assert_eq!(config.switch.name, "Pegasus PPBA Switch");
+    assert!(config.switch.enabled);
+
+    assert_eq!(config.observingconditions.name, "Pegasus PPBA Weather");
+    assert!(config.observingconditions.enabled);
 
     assert_eq!(config.serial.port, "/dev/ttyUSB0");
     assert_eq!(config.serial.baud_rate, 9600);
@@ -19,16 +18,29 @@ fn default_config_has_expected_values() {
     assert_eq!(config.serial.timeout_seconds, 2);
 
     assert_eq!(config.server.port, 11112);
-    assert_eq!(config.server.device_number, 0);
 }
 
 #[test]
-fn device_config_default() {
-    let config = DeviceConfig::default();
+fn switch_config_default() {
+    let config = SwitchConfig::default();
 
-    assert_eq!(config.name, "Pegasus PPBA");
-    assert_eq!(config.unique_id, "ppba-driver-001");
+    assert_eq!(config.name, "Pegasus PPBA Switch");
+    assert_eq!(config.unique_id, "ppba-switch-001");
     assert!(!config.description.is_empty());
+    assert_eq!(config.device_number, 0);
+    assert!(config.enabled);
+}
+
+#[test]
+fn observingconditions_config_default() {
+    let config = ObservingConditionsConfig::default();
+
+    assert_eq!(config.name, "Pegasus PPBA Weather");
+    assert_eq!(config.unique_id, "ppba-observingconditions-001");
+    assert!(!config.description.is_empty());
+    assert_eq!(config.device_number, 0);
+    assert!(config.enabled);
+    assert_eq!(config.averaging_period_ms, 300_000); // 5 minutes
 }
 
 #[test]
@@ -46,7 +58,6 @@ fn server_config_default() {
     let config = ServerConfig::default();
 
     assert_eq!(config.port, 11112);
-    assert_eq!(config.device_number, 0);
 }
 
 #[test]
@@ -63,11 +74,6 @@ fn config_serializes_to_json() {
 #[test]
 fn config_deserializes_from_json() {
     let json = r#"{
-        "device": {
-            "name": "Test Device",
-            "unique_id": "test-001",
-            "description": "Test description"
-        },
         "serial": {
             "port": "/dev/ttyACM0",
             "baud_rate": 115200,
@@ -75,48 +81,78 @@ fn config_deserializes_from_json() {
             "timeout_seconds": 5
         },
         "server": {
-            "port": 8080,
-            "device_number": 1
+            "port": 8080
+        },
+        "switch": {
+            "name": "Test Switch",
+            "unique_id": "test-switch-001",
+            "description": "Test switch description",
+            "device_number": 1,
+            "enabled": true
+        },
+        "observingconditions": {
+            "name": "Test Weather",
+            "unique_id": "test-weather-001",
+            "description": "Test weather description",
+            "device_number": 2,
+            "enabled": false,
+            "averaging_period_ms": 120000
         }
     }"#;
 
     let config: Config = serde_json::from_str(json).unwrap();
 
-    assert_eq!(config.device.name, "Test Device");
-    assert_eq!(config.device.unique_id, "test-001");
+    assert_eq!(config.switch.name, "Test Switch");
+    assert_eq!(config.switch.unique_id, "test-switch-001");
+    assert_eq!(config.switch.device_number, 1);
+    assert!(config.switch.enabled);
+
+    assert_eq!(config.observingconditions.name, "Test Weather");
+    assert_eq!(config.observingconditions.device_number, 2);
+    assert!(!config.observingconditions.enabled);
+    assert_eq!(config.observingconditions.averaging_period_ms, 120000);
+
     assert_eq!(config.serial.port, "/dev/ttyACM0");
     assert_eq!(config.serial.baud_rate, 115200);
     assert_eq!(config.serial.polling_interval_ms, 10000);
     assert_eq!(config.server.port, 8080);
-    assert_eq!(config.server.device_number, 1);
 }
 
 #[test]
 fn config_deserializes_with_defaults() {
     // Minimal JSON with only required fields
     let json = r#"{
-        "device": {
-            "name": "Minimal",
-            "unique_id": "min-001",
-            "description": "Minimal config"
-        },
         "serial": {
             "port": "/dev/ttyUSB1"
         },
         "server": {
             "port": 9000
+        },
+        "switch": {
+            "name": "Minimal Switch",
+            "unique_id": "min-switch-001",
+            "description": "Minimal config"
+        },
+        "observingconditions": {
+            "name": "Minimal Weather",
+            "unique_id": "min-weather-001",
+            "description": "Minimal weather config"
         }
     }"#;
 
     let config: Config = serde_json::from_str(json).unwrap();
 
-    assert_eq!(config.device.name, "Minimal");
+    assert_eq!(config.switch.name, "Minimal Switch");
     assert_eq!(config.serial.port, "/dev/ttyUSB1");
     // These should have defaults
     assert_eq!(config.serial.baud_rate, 9600);
     assert_eq!(config.serial.polling_interval_ms, 5000);
     assert_eq!(config.serial.timeout_seconds, 2);
-    assert_eq!(config.server.device_number, 0);
+    assert_eq!(config.switch.device_number, 0);
+    assert!(config.switch.enabled);
+    assert_eq!(config.observingconditions.device_number, 0);
+    assert!(config.observingconditions.enabled);
+    assert_eq!(config.observingconditions.averaging_period_ms, 300_000);
 }
 
 #[test]
@@ -124,7 +160,7 @@ fn config_clone_works() {
     let config = Config::default();
     let cloned = config.clone();
 
-    assert_eq!(config.device.name, cloned.device.name);
+    assert_eq!(config.switch.name, cloned.switch.name);
     assert_eq!(config.serial.port, cloned.serial.port);
     assert_eq!(config.server.port, cloned.server.port);
 }
@@ -135,7 +171,8 @@ fn config_debug_works() {
     let debug_str = format!("{:?}", config);
 
     assert!(debug_str.contains("Config"));
-    assert!(debug_str.contains("DeviceConfig"));
+    assert!(debug_str.contains("SwitchConfig"));
+    assert!(debug_str.contains("ObservingConditionsConfig"));
     assert!(debug_str.contains("SerialConfig"));
     assert!(debug_str.contains("ServerConfig"));
 }

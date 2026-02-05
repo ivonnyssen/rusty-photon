@@ -392,6 +392,15 @@ impl SerialManager {
         cached.dewpoint_mean.set_window(period);
         debug!("Sensor averaging period updated to {:?}", period);
     }
+
+    /// Update USB hub state in cache
+    ///
+    /// USB hub state is not included in PA status response, so we track it separately
+    pub async fn set_usb_hub_state(&self, enabled: bool) {
+        let mut cached = self.cached_state.write().await;
+        cached.usb_hub_enabled = enabled;
+        debug!("USB hub state updated to {}", enabled);
+    }
 }
 
 impl std::fmt::Debug for SerialManager {

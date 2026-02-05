@@ -107,28 +107,50 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
         let cached = self.serial_manager.get_cached_state().await;
         let window = cached.temp_mean.window();
-        Ok(window.as_secs_f64())
+
+        // If window is 10 seconds, we're in instantaneous mode - return 0.0
+        if window == Duration::from_secs(10) {
+            return Ok(0.0);
+        }
+
+        // ASCOM spec requires hours, not seconds
+        Ok(window.as_secs_f64() / 3600.0)
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
-        // ASCOM provides seconds, validate: 0.01 seconds (10ms) to 3600 seconds (1 hour)
-        if !(0.01..=3600.0).contains(&period) {
+        // ASCOM spec requires hours. Must accept 0.0 for instantaneous readings.
+        // Per spec: "All drivers must accept 0.0 to specify that an instantaneous value is available"
+
+        // Reject negative values
+        if period < 0.0 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!(
-                    "Average period must be between 0.01 and 3600 seconds, got {}",
-                    period
-                ),
+                format!("Average period cannot be negative, got {}", period),
             ));
         }
 
-        // Convert seconds to Duration
-        let duration = Duration::from_secs_f64(period);
+        // Set a reasonable upper limit (24 hours)
+        if period > 24.0 {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Average period cannot exceed 24 hours, got {}", period),
+            ));
+        }
+
+        // Convert hours to Duration
+        // Special case: 0.0 means instantaneous (use small but reasonable averaging window)
+        let duration = if period == 0.0 {
+            // Use 10 seconds for instantaneous - enough to avoid aging out samples
+            // immediately while still being effectively instantaneous for astronomy
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs_f64(period * 3600.0) // Convert hours to seconds
+        };
 
         // Update mean calculators in SerialManager
         self.serial_manager.set_averaging_period(duration).await;
 
-        debug!("Average period set to {} seconds", period);
+        debug!("Average period set to {} hours", period);
         Ok(())
     }
 
@@ -182,9 +204,30 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         let state = self.serial_manager.get_cached_state().await;
 
         let duration = match sensor_name.to_lowercase().as_str() {
+            // Empty string means "latest update time" across all sensors
+            "" => {
+                // Return the most recent update time among all implemented sensors
+                let times = [
+                    state.temp_mean.time_since_last_update(),
+                    state.humidity_mean.time_since_last_update(),
+                    state.dewpoint_mean.time_since_last_update(),
+                ];
+                // Get the minimum time (most recent update)
+                times
+                    .iter()
+                    .filter_map(|&t| t)
+                    .min()
+                    .or(Some(Duration::ZERO))
+            }
             "temperature" => state.temp_mean.time_since_last_update(),
             "humidity" => state.humidity_mean.time_since_last_update(),
             "dewpoint" => state.dewpoint_mean.time_since_last_update(),
+            // Unimplemented sensors - return NOT_IMPLEMENTED error
+            "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
+            | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
+                return Err(ASCOMError::NOT_IMPLEMENTED);
+            }
+            // Truly unknown sensor name
             _ => {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_VALUE,
@@ -201,6 +244,17 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             "temperature" => Ok("PPBA internal temperature sensor".to_string()),
             "humidity" => Ok("PPBA internal humidity sensor".to_string()),
             "dewpoint" => Ok("Dewpoint calculated from temperature and humidity".to_string()),
+            // Empty string is an invalid sensor name
+            "" => Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "Sensor name cannot be empty".to_string(),
+            )),
+            // Unimplemented sensors - return NOT_IMPLEMENTED error
+            "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
+            | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
+                Err(ASCOMError::NOT_IMPLEMENTED)
+            }
+            // Truly unknown sensor name
             _ => Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Unknown sensor name: {}", sensor_name),

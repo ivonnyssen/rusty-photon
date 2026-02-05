@@ -107,7 +107,9 @@ impl MockState {
     /// Process a command and queue the appropriate response
     fn process_command(&mut self, command: &str) {
         let command = command.trim();
-        debug!("Mock processing command: {}", command);
+        debug!("Mock processing command: '{}' | Current state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
+               command, self.device_state.quad_12v, self.device_state.adjustable,
+               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
 
         let response = if command == "P#" {
             // Ping
@@ -162,7 +164,9 @@ impl MockState {
             "ERR".to_string()
         };
 
-        debug!("Mock queuing response: {}", response);
+        debug!("Mock queuing response: '{}' | New state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
+               response, self.device_state.quad_12v, self.device_state.adjustable,
+               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
         self.response_queue.push(response);
     }
 
@@ -192,12 +196,16 @@ impl MockSerialReader {
 impl SerialReader for MockSerialReader {
     async fn read_line(&mut self) -> Result<Option<String>> {
         let mut state = self.state.lock().await;
+        let queue_len = state.response_queue.len();
         if let Some(response) = state.next_response() {
-            debug!("Mock serial read: {}", response);
+            debug!(
+                "Mock serial read: '{}' (queue had {} items)",
+                response, queue_len
+            );
             Ok(Some(response))
         } else {
             // No response queued - this shouldn't happen in normal operation
-            debug!("Mock serial read: no response queued");
+            debug!("Mock serial read: NO RESPONSE QUEUED (queue empty)");
             Ok(None)
         }
     }
@@ -226,13 +234,27 @@ impl SerialWriter for MockSerialWriter {
 }
 
 /// Mock serial port factory for testing
-#[derive(Clone, Default)]
-pub struct MockSerialPortFactory;
+///
+/// Maintains persistent state across multiple open/close cycles to simulate
+/// real hardware behavior where device state persists even when disconnected.
+#[derive(Clone)]
+pub struct MockSerialPortFactory {
+    /// Persistent state shared across all connections
+    persistent_state: Arc<Mutex<MockState>>,
+}
+
+impl Default for MockSerialPortFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MockSerialPortFactory {
-    /// Create a new mock factory
+    /// Create a new mock factory with persistent state
     pub fn new() -> Self {
-        Self
+        Self {
+            persistent_state: Arc::new(Mutex::new(MockState::new())),
+        }
     }
 }
 
@@ -241,7 +263,8 @@ impl SerialPortFactory for MockSerialPortFactory {
     async fn open(&self, port: &str, baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
         debug!("Mock serial port opened: {} at {} baud", port, baud_rate);
 
-        let state = Arc::new(Mutex::new(MockState::new()));
+        // Use persistent state instead of creating a new one
+        let state = Arc::clone(&self.persistent_state);
 
         Ok(SerialPair {
             reader: Box::new(MockSerialReader::new(Arc::clone(&state))),

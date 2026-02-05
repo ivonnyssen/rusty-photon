@@ -155,7 +155,16 @@ impl PpbaSwitchDevice {
             SwitchId::AdjustableOutput => PpbaCommand::SetAdjustable(value >= 0.5),
             SwitchId::DewHeaterA => PpbaCommand::SetDewA(value.round() as u8),
             SwitchId::DewHeaterB => PpbaCommand::SetDewB(value.round() as u8),
-            SwitchId::UsbHub => PpbaCommand::SetUsbHub(value >= 0.5),
+            SwitchId::UsbHub => {
+                // USB hub state is not included in PA status response,
+                // so we need to track it manually
+                let enabled = value >= 0.5;
+                self.serial_manager
+                    .send_command(PpbaCommand::SetUsbHub(enabled))
+                    .await?;
+                self.serial_manager.set_usb_hub_state(enabled).await;
+                return Ok(());
+            }
             SwitchId::AutoDew => PpbaCommand::SetAutoDew(value >= 0.5),
             _ => return Err(PpbaError::SwitchNotWritable(id)),
         };
