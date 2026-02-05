@@ -133,10 +133,11 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         .spawn()?;
 
     // Wait for service to be ready with health check
+    // Increased timeout to 60 seconds to account for slower macOS compilation
     let client = reqwest::Client::new();
     let mut ready = false;
 
-    for _ in 0..30 {
+    for _ in 0..60 {
         sleep(Duration::from_secs(1)).await;
 
         if let Ok(Ok(resp)) = timeout(
@@ -161,7 +162,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         let _ = child.kill().await;
         let _ = child.wait().await;
         std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 30 seconds".into());
+        return Err("Service failed to start within 60 seconds".into());
     }
 
     println!("::group::ConformU Compliance Test Results");
@@ -299,10 +300,11 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
         .spawn()?;
 
     // Wait for service to be ready with health check
+    // Increased timeout to 60 seconds to account for slower macOS compilation
     let client = reqwest::Client::new();
     let mut ready = false;
 
-    for _ in 0..30 {
+    for _ in 0..60 {
         sleep(Duration::from_secs(1)).await;
 
         if let Ok(Ok(resp)) = timeout(
@@ -327,7 +329,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
         let _ = child.kill().await;
         let _ = child.wait().await;
         std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 30 seconds".into());
+        return Err("Service failed to start within 60 seconds".into());
     }
 
     println!("::group::ConformU ObservingConditions Compliance Test Results");
