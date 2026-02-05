@@ -5,22 +5,28 @@
 
 use ascom_alpaca::api::{ObservingConditions, Switch};
 use ascom_alpaca::test::conformu_tests;
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 use tracing_subscriber::{fmt, EnvFilter};
 
-fn get_random_port() -> u16 {
-    use std::net::TcpListener;
+/// Parse the bound port from service stdout
+/// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT"
+async fn parse_bound_port(stdout: tokio::process::ChildStdout) -> Option<u16> {
+    let mut reader = BufReader::new(stdout).lines();
 
-    // Bind to port 0 to get a random available port
-    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
-    let port = listener
-        .local_addr()
-        .expect("Failed to get local addr")
-        .port();
-    drop(listener); // Release the port
-    port
+    while let Ok(Some(line)) = reader.next_line().await {
+        if let Some(addr_str) = line.strip_prefix("Bound Alpaca server bound_addr=") {
+            if let Some(port_str) = addr_str.split(':').last() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return Some(port);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[tokio::test]
@@ -41,7 +47,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = test_dir.join("config.json");
     let conformu_settings_path = test_dir.join("conformu-settings.json");
-    let port = get_random_port();
 
     // Create ConformU settings with reduced delays for faster CI
     // Note: ConformU requires a complete settings file - partial files are ignored
@@ -98,7 +103,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "timeout_seconds": 2
         },
         "server": {
-            "port": port
+            "port": 0
         },
         "switch": {
             "enabled": true,
@@ -118,7 +123,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // Start ppba-driver service with mock feature
+    // Start ppba-driver service with mock feature, capturing stdout to parse bound port
     let mut child = Command::new("cargo")
         .args([
             "run",
@@ -130,14 +135,21 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "-c",
             config_path.to_str().unwrap(),
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
 
+    // Parse the bound port from stdout
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let port = parse_bound_port(stdout)
+        .await
+        .ok_or("Failed to parse bound port from service output")?;
+
     // Wait for service to be ready with health check
-    // Increased timeout to 60 seconds to account for slower macOS compilation
     let client = reqwest::Client::new();
     let mut ready = false;
 
-    for _ in 0..60 {
+    for _ in 0..30 {
         sleep(Duration::from_secs(1)).await;
 
         if let Ok(Ok(resp)) = timeout(
@@ -162,7 +174,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         let _ = child.kill().await;
         let _ = child.wait().await;
         std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 60 seconds".into());
+        return Err("Service failed to start within 30 seconds".into());
     }
 
     println!("::group::ConformU Compliance Test Results");
@@ -214,7 +226,6 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     let config_path = test_dir.join("config.json");
     let conformu_settings_path = test_dir.join("conformu-settings.json");
-    let port = get_random_port();
 
     // Create ConformU settings with reduced delays for faster CI
     let conformu_settings = serde_json::json!({
@@ -265,7 +276,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
             "timeout_seconds": 2
         },
         "server": {
-            "port": port
+            "port": 0
         },
         "switch": {
             "enabled": false,
@@ -285,7 +296,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // Start ppba-driver service with mock feature
+    // Start ppba-driver service with mock feature, capturing stdout to parse bound port
     let mut child = Command::new("cargo")
         .args([
             "run",
@@ -297,14 +308,21 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
             "-c",
             config_path.to_str().unwrap(),
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
 
+    // Parse the bound port from stdout
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let port = parse_bound_port(stdout)
+        .await
+        .ok_or("Failed to parse bound port from service output")?;
+
     // Wait for service to be ready with health check
-    // Increased timeout to 60 seconds to account for slower macOS compilation
     let client = reqwest::Client::new();
     let mut ready = false;
 
-    for _ in 0..60 {
+    for _ in 0..30 {
         sleep(Duration::from_secs(1)).await;
 
         if let Ok(Ok(resp)) = timeout(
@@ -329,7 +347,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
         let _ = child.kill().await;
         let _ = child.wait().await;
         std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 60 seconds".into());
+        return Err("Service failed to start within 30 seconds".into());
     }
 
     println!("::group::ConformU ObservingConditions Compliance Test Results");
