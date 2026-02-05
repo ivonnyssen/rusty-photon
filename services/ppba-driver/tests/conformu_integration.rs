@@ -6,11 +6,16 @@
 use ascom_alpaca::api::{ObservingConditions, Switch};
 use ascom_alpaca::test::conformu_tests;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 use tracing_subscriber::{fmt, EnvFilter};
+
+// Static mutex to ensure conformu tests run sequentially
+// Required because both tests bind the ASCOM Alpaca discovery service to a fixed address
+static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 /// Parse the bound port from service stdout
 /// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT"
@@ -32,6 +37,9 @@ async fn parse_bound_port(stdout: tokio::process::ChildStdout) -> Option<u16> {
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+    // Acquire lock to ensure tests run sequentially (discovery service conflict)
+    let _lock = CONFORMU_LOCK.lock().unwrap();
+
     // Initialize tracing to capture ConformU detailed output
     let _ = fmt()
         .with_env_filter(
@@ -211,6 +219,9 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn std::error::Error>> {
+    // Acquire lock to ensure tests run sequentially (discovery service conflict)
+    let _lock = CONFORMU_LOCK.lock().unwrap();
+
     // Initialize tracing to capture ConformU detailed output
     let _ = fmt()
         .with_env_filter(
