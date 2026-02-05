@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -74,17 +74,6 @@ fn default_true() -> bool {
 
 fn default_averaging_period() -> u64 {
     300_000 // 5 minutes in milliseconds
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            serial: SerialConfig::default(),
-            server: ServerConfig::default(),
-            switch: SwitchConfig::default(),
-            observingconditions: ObservingConditionsConfig::default(),
-        }
-    }
 }
 
 impl Default for SerialConfig {

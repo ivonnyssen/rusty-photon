@@ -23,7 +23,7 @@ use crate::protocol::{
 };
 
 /// Cached state from the PPBA device including sensor means
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CachedState {
     /// Last known device status (from PA command)
     pub status: Option<PpbaStatus>,
@@ -39,20 +39,6 @@ pub struct CachedState {
     pub humidity_mean: SensorMean,
     /// Dewpoint sensor mean
     pub dewpoint_mean: SensorMean,
-}
-
-impl Default for CachedState {
-    fn default() -> Self {
-        Self {
-            status: None,
-            power_stats: None,
-            usb_hub_enabled: false,
-            last_update: None,
-            temp_mean: SensorMean::default(),
-            humidity_mean: SensorMean::default(),
-            dewpoint_mean: SensorMean::default(),
-        }
-    }
 }
 
 /// Shared serial port manager
