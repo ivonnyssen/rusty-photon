@@ -48,7 +48,6 @@ pub async fn start_server(config: Config) -> std::result::Result<(), Box<dyn std
 }
 
 /// Start the ASCOM Alpaca server with a custom serial port factory
-#[cfg(feature = "mock")]
 pub async fn start_server_with_factory(
     config: Config,
     factory: Arc<dyn SerialPortFactory>,
@@ -56,13 +55,54 @@ pub async fn start_server_with_factory(
     start_server_internal(config, factory).await
 }
 
-/// Start the ASCOM Alpaca server with a custom serial port factory (non-mock)
-#[cfg(not(feature = "mock"))]
-pub async fn start_server_with_factory(
+/// Start the ASCOM Alpaca server with a custom serial port factory,
+/// sending the bound address through `bound_addr_tx` before starting.
+///
+/// This allows callers to use port 0 (OS-assigned) and discover the
+/// actual bound port without parsing stdout.
+#[cfg(feature = "mock")]
+pub async fn start_server_with_factory_notify(
     config: Config,
     factory: Arc<dyn SerialPortFactory>,
+    bound_addr_tx: tokio::sync::oneshot::Sender<SocketAddr>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    start_server_internal(config, factory).await
+    let mut server = Server::new(CargoServerInfo!());
+    server.listen_addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
+
+    let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
+
+    if config.switch.enabled {
+        let switch_device =
+            PpbaSwitchDevice::new(config.switch.clone(), Arc::clone(&serial_manager));
+        server.devices.register(switch_device);
+        info!(
+            "Registered Switch device: {} (device number {})",
+            config.switch.name, config.switch.device_number
+        );
+    }
+
+    if config.observingconditions.enabled {
+        let oc_device = PpbaObservingConditionsDevice::new(
+            config.observingconditions.clone(),
+            Arc::clone(&serial_manager),
+        );
+        server.devices.register(oc_device);
+        info!(
+            "Registered ObservingConditions device: {} (device number {})",
+            config.observingconditions.name, config.observingconditions.device_number
+        );
+    }
+
+    info!("Serial port: {}", config.serial.port);
+
+    let bound = server.bind().await?;
+    let addr = bound.listen_addr();
+    println!("Bound Alpaca server bound_addr={}", addr);
+    let _ = bound_addr_tx.send(addr);
+
+    bound.start().await?;
+
+    Ok(())
 }
 
 /// Internal server startup logic
