@@ -261,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_ping_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -272,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_status_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -283,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_power_stats_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_set_quad_12v() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -309,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_set_dew_heater() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -324,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_state_persists() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -357,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_usb_hub() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -372,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_auto_dew() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
