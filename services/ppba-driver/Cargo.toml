@@ -25,7 +25,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 
 [package.metadata.conformu]
-command = "services/ppba-driver/tests/run_conformu_tests.sh"
+command = "cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
