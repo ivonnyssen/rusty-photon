@@ -137,9 +137,25 @@ impl SerialManager {
     /// Decrements the connection reference count. If this is the last connection,
     /// closes the serial port and stops polling.
     pub async fn disconnect(&self) {
-        let count = self.connection_count.fetch_sub(1, Ordering::SeqCst);
+        // Atomically decrement only if count > 0 to prevent underflow
+        let prev_count =
+            match self
+                .connection_count
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    if count > 0 {
+                        Some(count - 1)
+                    } else {
+                        None
+                    }
+                }) {
+                Ok(prev) => prev,
+                Err(_) => {
+                    debug!("disconnect() called with connection count already at 0");
+                    return;
+                }
+            };
 
-        if count == 1 {
+        if prev_count == 1 {
             // Last device disconnecting - close the port
             debug!("Last device disconnecting, closing serial port");
 
@@ -158,7 +174,7 @@ impl SerialManager {
         } else {
             debug!(
                 "Device disconnecting (connection count: {})",
-                count.saturating_sub(1)
+                prev_count - 1
             );
         }
     }

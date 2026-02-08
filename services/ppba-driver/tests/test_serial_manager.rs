@@ -249,6 +249,26 @@ async fn test_connect_disconnect_full_lifecycle() {
     assert!(!manager.is_available());
 }
 
+#[tokio::test]
+async fn test_disconnect_when_already_zero_does_not_underflow() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let manager = create_manager(factory);
+
+    // Disconnect without ever connecting - count is already 0
+    manager.disconnect().await;
+
+    // Should still be at 0, not underflowed to u32::MAX
+    assert!(!manager.is_available());
+
+    // A subsequent connect should work normally (count goes 0 → 1)
+    let factory2 = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let manager2 = create_manager(factory2);
+    manager2.connect().await.unwrap();
+    assert!(manager2.is_available());
+    manager2.disconnect().await;
+    assert!(!manager2.is_available());
+}
+
 // ============================================================================
 // Command Sending Tests
 // ============================================================================
