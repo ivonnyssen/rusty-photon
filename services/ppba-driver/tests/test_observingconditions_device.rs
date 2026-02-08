@@ -1023,3 +1023,371 @@ async fn test_sensor_description_not_connected() {
         ),
     }
 }
+
+// =============================================================================
+// to_ascom_error Mapping Tests
+// =============================================================================
+
+/// Mock serial port factory that always fails on open
+struct FailingSerialPortFactory;
+
+#[async_trait]
+impl SerialPortFactory for FailingSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Err(ppba_driver::PpbaError::ConnectionFailed(
+            "mock port not found".to_string(),
+        ))
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn test_set_connected_connection_failed_maps_to_invalid_operation() {
+    // FailingSerialPortFactory returns ConnectionFailed which hits the wildcard branch
+    let factory: Arc<dyn SerialPortFactory> = Arc::new(FailingSerialPortFactory);
+    let device = create_test_device(factory);
+
+    let result = device.set_connected(true).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {
+            // ConnectionFailed -> wildcard -> invalid_operation
+        }
+        other => panic!(
+            "Expected INVALID_OPERATION error for connection failure, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_set_connected_bad_ping_maps_to_invalid_operation() {
+    // Bad ping response causes InvalidResponse which hits the wildcard branch
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "GARBAGE".to_string(), // Bad ping response
+    ]));
+    let device = create_test_device(factory);
+
+    let result = device.set_connected(true).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {
+            // InvalidResponse -> wildcard -> invalid_operation
+        }
+        other => panic!(
+            "Expected INVALID_OPERATION error for bad ping, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_set_connected_bad_status_maps_to_invalid_operation() {
+    // Good ping but bad status response
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(), // Valid ping
+        "GARBAGE".to_string(), // Bad status response
+    ]));
+    let device = create_test_device(factory);
+
+    let result = device.set_connected(true).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {
+            // ParseError/InvalidResponse -> wildcard -> invalid_operation
+        }
+        other => panic!(
+            "Expected INVALID_OPERATION error for bad status, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_refresh_bad_status_maps_to_invalid_operation() {
+    // Successful connect, then feed bad status on refresh
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),                                     // Ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Status (connect)
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // Power stats (connect)
+        "GARBAGE".to_string(),                                     // Bad status for refresh()
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Polling
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // Polling
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    let result = device.refresh().await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {
+            // ParseError/InvalidResponse -> wildcard -> invalid_operation
+        }
+        other => panic!(
+            "Expected INVALID_OPERATION error for bad refresh status, got {:?}",
+            other
+        ),
+    }
+}
+
+// =============================================================================
+// Connection Idempotency Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_set_connected_true_when_already_connected() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+    assert!(device.connected().await.unwrap());
+
+    // Calling set_connected(true) again should be a no-op
+    device.set_connected(true).await.unwrap();
+    assert!(device.connected().await.unwrap());
+}
+
+#[tokio::test]
+async fn test_set_connected_false_when_already_disconnected() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+
+    // Device starts disconnected
+    assert!(!device.connected().await.unwrap());
+
+    // Calling set_connected(false) should be a no-op
+    device.set_connected(false).await.unwrap();
+    assert!(!device.connected().await.unwrap());
+}
+
+// =============================================================================
+// Time Since Last Update - Per-Sensor Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_time_since_last_update_humidity() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let time = device
+        .time_since_last_update("humidity".to_string())
+        .await
+        .unwrap();
+    assert!(time < 1.0, "Expected recent humidity update, got {}", time);
+}
+
+#[tokio::test]
+async fn test_time_since_last_update_dewpoint() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let time = device
+        .time_since_last_update("dewpoint".to_string())
+        .await
+        .unwrap();
+    assert!(time < 1.0, "Expected recent dewpoint update, got {}", time);
+}
+
+#[tokio::test]
+async fn test_time_since_last_update_case_insensitive() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Should work with different cases
+    let time1 = device
+        .time_since_last_update("Temperature".to_string())
+        .await
+        .unwrap();
+    let time2 = device
+        .time_since_last_update("TEMPERATURE".to_string())
+        .await
+        .unwrap();
+
+    assert!(time1 < 1.0);
+    assert!(time2 < 1.0);
+}
+
+// =============================================================================
+// Sensor Description - All Unimplemented Sensors
+// =============================================================================
+
+#[tokio::test]
+async fn test_sensor_description_unimplemented_sensors() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    let unimplemented_sensors = vec![
+        "cloudcover",
+        "pressure",
+        "rainrate",
+        "skybrightness",
+        "skyquality",
+        "starfwhm",
+        "skytemperature",
+        "winddirection",
+        "windgust",
+        "windspeed",
+    ];
+
+    for sensor in unimplemented_sensors {
+        let result = device.sensor_description(sensor.to_string()).await;
+
+        match result {
+            Err(ASCOMError {
+                code: ASCOMErrorCode::NOT_IMPLEMENTED,
+                ..
+            }) => {
+                // Expected
+            }
+            _ => panic!(
+                "Expected NOT_IMPLEMENTED for sensor_description('{}'), got {:?}",
+                sensor, result
+            ),
+        }
+    }
+}
+
+// =============================================================================
+// Refresh Data Update Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_refresh_updates_sensor_data() {
+    // Use different values in the refresh response to confirm data updates
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),                                     // Ping
+        "PPBA:12.5:3.2:20.0:50:10.0:1:0:128:64:0:0:0".to_string(), // Status (initial: temp=20.0, humidity=50, dewpoint=10.0)
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // Power stats
+        "PPBA:12.5:3.2:30.0:70:20.0:1:0:128:64:0:0:0".to_string(), // Status for refresh (temp=30.0, humidity=70, dewpoint=20.0)
+        "PPBA:12.5:3.2:30.0:70:20.0:1:0:128:64:0:0:0".to_string(), // Polling
+        "PPBA:12.5:3.2:30.0:70:20.0:1:0:128:64:0:0:0".to_string(), // Polling
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let temp_before = device.temperature().await.unwrap();
+
+    // Force refresh with updated data
+    device.refresh().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let temp_after = device.temperature().await.unwrap();
+
+    // The mean should shift toward the new values
+    assert!(
+        temp_after > temp_before,
+        "Expected temperature to increase after refresh with higher values, before={}, after={}",
+        temp_before,
+        temp_after
+    );
+}
+
+// =============================================================================
+// Average Period Fractional and Transition Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_set_average_period_fractional() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Set to 0.5 hours (30 minutes)
+    device.set_average_period(0.5).await.unwrap();
+
+    let period = device.average_period().await.unwrap();
+    assert!(
+        (period - 0.5).abs() < 0.0001,
+        "Expected 0.5 hours, got {}",
+        period
+    );
+}
+
+#[tokio::test]
+async fn test_set_average_period_transition_from_instantaneous() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Set to instantaneous
+    device.set_average_period(0.0).await.unwrap();
+    assert_eq!(device.average_period().await.unwrap(), 0.0);
+
+    // Then change to 1 hour
+    device.set_average_period(1.0).await.unwrap();
+    assert_eq!(device.average_period().await.unwrap(), 1.0);
+
+    // And back to instantaneous
+    device.set_average_period(0.0).await.unwrap();
+    assert_eq!(device.average_period().await.unwrap(), 0.0);
+}
+
+// =============================================================================
+// Sensor Readings with Different Data
+// =============================================================================
+
+#[tokio::test]
+async fn test_sensor_readings_reflect_status_values() {
+    // Use specific known values
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:18.3:45:8.7:1:0:128:64:0:0:0".to_string(), // temp=18.3, humidity=45, dewpoint=8.7
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:18.3:45:8.7:1:0:128:64:0:0:0".to_string(), // Polling
+        "PPBA:12.5:3.2:18.3:45:8.7:1:0:128:64:0:0:0".to_string(), // Polling
+        "PPBA:12.5:3.2:18.3:45:8.7:1:0:128:64:0:0:0".to_string(), // Polling
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let temp = device.temperature().await.unwrap();
+    assert!(
+        (temp - 18.3).abs() < 0.1,
+        "Expected temp ~18.3, got {}",
+        temp
+    );
+
+    let humidity = device.humidity().await.unwrap();
+    assert!(
+        (humidity - 45.0).abs() < 0.1,
+        "Expected humidity ~45, got {}",
+        humidity
+    );
+
+    let dewpoint = device.dew_point().await.unwrap();
+    assert!(
+        (dewpoint - 8.7).abs() < 0.1,
+        "Expected dewpoint ~8.7, got {}",
+        dewpoint
+    );
+}
