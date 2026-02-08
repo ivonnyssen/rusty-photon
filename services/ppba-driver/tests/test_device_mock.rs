@@ -613,7 +613,7 @@ async fn test_switch_value_types() {
 
     // PWM switches should return 0-255
     let value = device.get_switch_value(2).await.unwrap();
-    assert!(value >= 0.0 && value <= 255.0);
+    assert!((0.0..=255.0).contains(&value));
 
     // Sensor switches return various ranges
     let voltage = device.get_switch_value(10).await.unwrap();
@@ -752,19 +752,19 @@ async fn test_sensor_value_ranges() {
 
     // Voltage should be in reasonable range (0-15V)
     let voltage = device.get_switch_value(10).await.unwrap();
-    assert!(voltage >= 0.0 && voltage <= 15.0);
+    assert!((0.0..=15.0).contains(&voltage));
 
     // Current should be in reasonable range (0-20A)
     let current = device.get_switch_value(11).await.unwrap();
-    assert!(current >= 0.0 && current <= 20.0);
+    assert!((0.0..=20.0).contains(&current));
 
     // Temperature should be in reasonable range (-40 to 60°C)
     let temp = device.get_switch_value(12).await.unwrap();
-    assert!(temp >= -40.0 && temp <= 60.0);
+    assert!((-40.0..=60.0).contains(&temp));
 
     // Humidity should be 0-100%
     let humidity = device.get_switch_value(13).await.unwrap();
-    assert!(humidity >= 0.0 && humidity <= 100.0);
+    assert!((0.0..=100.0).contains(&humidity));
 }
 
 #[tokio::test]
@@ -802,7 +802,7 @@ async fn test_boolean_switch_get_switch() {
 
     // get_switch should work for boolean switches
     let quad = device.get_switch(0).await.unwrap();
-    assert!(quad == true || quad == false);
+    let _: bool = quad; // type-check is sufficient; bool can only be true or false
 
     // get_switch on non-boolean switch should handle gracefully
     // (returns true if value != 0)

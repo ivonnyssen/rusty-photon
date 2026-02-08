@@ -97,6 +97,9 @@ impl ServerBuilder {
         info!("Serial port: {}", self.config.serial.port);
 
         let bound = server.bind().await?;
+        // This println is parsed by conformu_integration tests to discover the bound port.
+        // It must go to stdout (not tracing/stderr) so the subprocess output can be read.
+        println!("Bound Alpaca server bound_addr={}", bound.listen_addr());
         info!("Bound Alpaca server bound_addr={}", bound.listen_addr());
         Ok(bound)
     }

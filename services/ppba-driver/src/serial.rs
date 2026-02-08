@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_serial_port_factory_default() {
-        let factory = TokioSerialPortFactory::default();
+        let factory = TokioSerialPortFactory;
         let _ = factory;
     }
 

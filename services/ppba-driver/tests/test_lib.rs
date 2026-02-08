@@ -8,6 +8,9 @@
 //!
 //! Tests run sequentially because the ASCOM Alpaca discovery service binds
 //! to a fixed address, so only one server can run at a time.
+// The std::Mutex is intentional here: it serializes sequential test runs because
+// the ASCOM Alpaca discovery service binds to a fixed address.
+#![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
 
 use std::sync::{Arc, Mutex};

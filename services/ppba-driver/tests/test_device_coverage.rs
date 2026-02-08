@@ -160,7 +160,7 @@ async fn test_can_async_returns_false() {
     // All switches should return false for can_async
     for id in 0..16 {
         let result = device.can_async(id).await.unwrap();
-        assert_eq!(result, false, "Switch {} should not support async ops", id);
+        assert!(!result, "Switch {} should not support async ops", id);
     }
 }
 
@@ -189,8 +189,8 @@ async fn test_state_change_complete_always_true() {
     // All switches should return true for state_change_complete (no async ops)
     for id in 0..16 {
         let result = device.state_change_complete(id).await.unwrap();
-        assert_eq!(
-            result, true,
+        assert!(
+            result,
             "Switch {} state change should always be complete",
             id
         );
