@@ -327,8 +327,18 @@ async fn test_invalid_switch_id_operations() {
             id
         );
         assert!(
+            device.get_switch(id).await.is_err(),
+            "get_switch should fail for ID {}",
+            id
+        );
+        assert!(
             device.get_switch_value(id).await.is_err(),
             "get_switch_value should fail for ID {}",
+            id
+        );
+        assert!(
+            device.set_switch(id, true).await.is_err(),
+            "set_switch should fail for ID {}",
             id
         );
         assert!(
