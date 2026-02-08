@@ -5,15 +5,22 @@
 //!
 //! Requires the `mock` feature. All tests are skipped under Miri since it
 //! cannot call socket syscalls.
+//!
+//! Tests run sequentially because the ASCOM Alpaca discovery service binds
+//! to a fixed address, so only one server can run at a time.
 #![cfg(feature = "mock")]
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use ppba_driver::config::{ObservingConditionsConfig, SerialConfig, ServerConfig, SwitchConfig};
 use ppba_driver::io::{SerialPair, SerialPortFactory};
 use ppba_driver::{Config, Result};
+use std::time::Duration;
+
+// Mutex to serialize tests - the ASCOM Alpaca discovery service binds to a
+// fixed address, so only one server can run at a time.
+static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 /// Minimal serial port factory for server startup tests.
 /// The server only opens the port when a client connects, so this is never called
@@ -84,6 +91,7 @@ async fn get_json(port: u16, path: &str) -> serde_json::Value {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_starts_with_both_devices_enabled() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true, true)).await;
 
     let switch_status = get_status(port, "/api/v1/switch/0/name").await;
@@ -101,6 +109,7 @@ async fn test_server_starts_with_both_devices_enabled() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_starts_with_switch_only() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true, false)).await;
 
     let switch_status = get_status(port, "/api/v1/switch/0/name").await;
@@ -118,6 +127,7 @@ async fn test_server_starts_with_switch_only() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_starts_with_observingconditions_only() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(false, true)).await;
 
     let switch_status = get_status(port, "/api/v1/switch/0/name").await;
@@ -135,6 +145,7 @@ async fn test_server_starts_with_observingconditions_only() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_starts_with_no_devices() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(false, false)).await;
 
     let switch_status = get_status(port, "/api/v1/switch/0/name").await;
@@ -152,6 +163,7 @@ async fn test_server_starts_with_no_devices() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_returns_configured_switch_name() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let mut config = test_config(true, false);
     config.switch.name = "My Custom Switch".to_string();
     let (port, handle) = spawn_server(config).await;
@@ -165,6 +177,7 @@ async fn test_server_returns_configured_switch_name() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_returns_configured_oc_name() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let mut config = test_config(false, true);
     config.observingconditions.name = "My Weather Station".to_string();
     let (port, handle) = spawn_server(config).await;
@@ -178,6 +191,7 @@ async fn test_server_returns_configured_oc_name() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_server_binds_to_os_assigned_port() {
+    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true, false)).await;
 
     assert_ne!(port, 0, "OS should have assigned a real port");
