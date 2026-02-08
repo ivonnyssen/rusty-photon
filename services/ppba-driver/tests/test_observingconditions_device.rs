@@ -114,6 +114,17 @@ fn create_test_device(factory: Arc<dyn SerialPortFactory>) -> PpbaObservingCondi
     PpbaObservingConditionsDevice::new(config.observingconditions, serial_manager)
 }
 
+/// Helper to create device with mock factory, returning the serial manager too
+fn create_test_device_with_manager(
+    factory: Arc<dyn SerialPortFactory>,
+) -> (PpbaObservingConditionsDevice, Arc<SerialManager>) {
+    let config = Config::default();
+    let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
+    let device =
+        PpbaObservingConditionsDevice::new(config.observingconditions, serial_manager.clone());
+    (device, serial_manager)
+}
+
 // =============================================================================
 // Device Interface Tests
 // =============================================================================
@@ -330,25 +341,25 @@ async fn test_temperature_not_connected() {
 #[tokio::test]
 async fn test_temperature_no_data() {
     let factory = Arc::new(create_connected_mock_factory());
-    let device = create_test_device(factory);
+    let (device, serial_manager) = create_test_device_with_manager(factory);
 
     device.set_connected(true).await.unwrap();
 
-    // Immediately after connection, means might not have data yet
-    // This should return VALUE_NOT_SET
-    let result = device.temperature().await;
+    // Sleep so samples from connect() age, then shrink window to trigger cleanup
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    serial_manager
+        .set_averaging_period(Duration::from_millis(1))
+        .await;
 
+    let result = device.temperature().await;
     match result {
-        Ok(_) => {
-            // Data available, that's fine too
-        }
         Err(ASCOMError {
             code: ASCOMErrorCode::VALUE_NOT_SET,
             ..
         }) => {
-            // Expected if no samples yet
+            // get_mean() returned None because all samples aged out
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        other => panic!("Expected VALUE_NOT_SET error, got {:?}", other),
     }
 }
 
@@ -921,46 +932,48 @@ async fn test_time_since_last_update_unimplemented_sensors() {
 #[tokio::test]
 async fn test_humidity_no_data() {
     let factory = Arc::new(create_connected_mock_factory());
-    let device = create_test_device(factory);
+    let (device, serial_manager) = create_test_device_with_manager(factory);
     device.set_connected(true).await.unwrap();
 
-    // Immediately after connection, means might not have data yet
-    let result = device.humidity().await;
+    // Sleep so samples from connect() age, then shrink window to trigger cleanup
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    serial_manager
+        .set_averaging_period(Duration::from_millis(1))
+        .await;
 
+    let result = device.humidity().await;
     match result {
-        Ok(_) => {
-            // Data was available from initial refresh, that's fine
-        }
         Err(ASCOMError {
             code: ASCOMErrorCode::VALUE_NOT_SET,
             ..
         }) => {
-            // Expected if no samples yet
+            // get_mean() returned None because all samples aged out
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        other => panic!("Expected VALUE_NOT_SET error, got {:?}", other),
     }
 }
 
 #[tokio::test]
 async fn test_dew_point_no_data() {
     let factory = Arc::new(create_connected_mock_factory());
-    let device = create_test_device(factory);
+    let (device, serial_manager) = create_test_device_with_manager(factory);
     device.set_connected(true).await.unwrap();
 
-    // Immediately after connection, means might not have data yet
-    let result = device.dew_point().await;
+    // Sleep so samples from connect() age, then shrink window to trigger cleanup
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    serial_manager
+        .set_averaging_period(Duration::from_millis(1))
+        .await;
 
+    let result = device.dew_point().await;
     match result {
-        Ok(_) => {
-            // Data was available from initial refresh, that's fine
-        }
         Err(ASCOMError {
             code: ASCOMErrorCode::VALUE_NOT_SET,
             ..
         }) => {
-            // Expected if no samples yet
+            // get_mean() returned None because all samples aged out
         }
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        other => panic!("Expected VALUE_NOT_SET error, got {:?}", other),
     }
 }
 

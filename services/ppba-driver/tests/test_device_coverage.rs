@@ -739,3 +739,266 @@ async fn test_cancel_async_invalid_id() {
     let result = device.cancel_async(999).await;
     assert!(result.is_err(), "cancel_async with invalid ID should fail");
 }
+
+// ============================================================================
+// Category 7: to_ascom_error Mapping Tests
+// ============================================================================
+
+/// Mock serial port factory that always fails on open
+struct FailingSerialPortFactory;
+
+#[async_trait]
+impl SerialPortFactory for FailingSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Err(PpbaError::ConnectionFailed(
+            "mock port not found".to_string(),
+        ))
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn test_to_ascom_error_connection_failed_maps_to_invalid_operation() {
+    let factory: Arc<dyn SerialPortFactory> = Arc::new(FailingSerialPortFactory);
+    let device = create_test_device(factory);
+
+    let result = device.set_connected(true).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {} // ConnectionFailed -> wildcard -> INVALID_OPERATION
+        other => panic!(
+            "Expected INVALID_OPERATION for connection failure, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_to_ascom_error_bad_ping_maps_to_invalid_operation() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "GARBAGE".to_string(), // Bad ping response
+    ]));
+    let device = create_test_device(factory);
+
+    let result = device.set_connected(true).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::INVALID_OPERATION,
+            ..
+        }) => {} // InvalidResponse -> wildcard -> INVALID_OPERATION
+        other => panic!("Expected INVALID_OPERATION for bad ping, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_to_ascom_error_switch_not_writable_maps_to_not_implemented() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Switch 10 (InputVoltage) is read-only → SwitchNotWritable → NOT_IMPLEMENTED
+    let result = device.set_switch_value(10, 0.0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED,
+            ..
+        }) => {} // SwitchNotWritable -> NOT_IMPLEMENTED
+        other => panic!(
+            "Expected NOT_IMPLEMENTED for read-only switch, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_to_ascom_error_invalid_switch_id_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // get_switch_value with invalid ID → InvalidSwitchId → INVALID_VALUE
+    let result = device.get_switch_value(99).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {} // InvalidSwitchId -> INVALID_VALUE
+        other => panic!(
+            "Expected INVALID_VALUE for invalid switch ID, got {:?}",
+            other
+        ),
+    }
+
+    // set_switch_value with invalid ID → same mapping
+    let result = device.set_switch_value(99, 0.0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {} // InvalidSwitchId -> INVALID_VALUE
+        other => panic!(
+            "Expected INVALID_VALUE for invalid switch ID on set, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_to_ascom_error_invalid_value_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // PWM switch (DewHeaterA, id=2) with value out of range → InvalidValue → INVALID_VALUE
+    let result = device.set_switch_value(2, -1.0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {} // InvalidValue -> INVALID_VALUE
+        other => panic!(
+            "Expected INVALID_VALUE for out-of-range value, got {:?}",
+            other
+        ),
+    }
+}
+
+// ============================================================================
+// Category 8: Async Methods - Not Connected Error Path
+// ============================================================================
+
+#[tokio::test]
+async fn test_can_async_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    let result = device.can_async(0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {}
+        other => panic!("Expected NOT_CONNECTED for can_async, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_state_change_complete_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    let result = device.state_change_complete(0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {}
+        other => panic!(
+            "Expected NOT_CONNECTED for state_change_complete, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn test_cancel_async_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    let result = device.cancel_async(0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {}
+        other => panic!("Expected NOT_CONNECTED for cancel_async, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_set_async_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    let result = device.set_async(0, true).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {}
+        other => panic!("Expected NOT_CONNECTED for set_async, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_set_async_value_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    let result = device.set_async_value(0, 1.0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {}
+        other => panic!(
+            "Expected NOT_CONNECTED for set_async_value, got {:?}",
+            other
+        ),
+    }
+}
+
+// ============================================================================
+// Category 9: set_async / set_async_value - Working Delegation
+// ============================================================================
+
+#[tokio::test]
+async fn test_set_async_delegates_to_set_switch() {
+    // set_async should delegate to set_switch, which sends the command
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "PPBA_OK".to_string(),                                     // connect: ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // connect: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // connect: power stats
+        "P1:1".to_string(),                                        // set_async: Quad12V on
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // set_async: refresh status
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // polling
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // polling
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // set_async with valid writable switch should succeed
+    device.set_async(0, true).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_set_async_value_delegates_to_set_switch_value() {
+    // set_async_value should delegate to set_switch_value
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "PPBA_OK".to_string(),                                     // connect: ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // connect: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // connect: power stats
+        "PU:1".to_string(),                                        // set_async_value: USB hub on
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // polling
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // polling
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // set_async_value with valid USB hub switch should succeed
+    device.set_async_value(4, 1.0).await.unwrap();
+}
