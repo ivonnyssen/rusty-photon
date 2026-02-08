@@ -1,7 +1,7 @@
 //! Tests for lib.rs - server startup and device registration
 //!
-//! Tests verify that `start_server_with_factory_notify` correctly registers
-//! devices based on configuration flags and starts the ASCOM Alpaca server.
+//! Tests verify that `ServerBuilder` correctly registers devices based on
+//! configuration flags and starts the ASCOM Alpaca server.
 //!
 //! Requires the `mock` feature. All tests are skipped under Miri since it
 //! cannot call socket syscalls.
@@ -61,14 +61,20 @@ fn test_config(switch_enabled: bool, oc_enabled: bool) -> Config {
 /// Spawn the server with port 0 and return the actual bound port.
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
     let factory: Arc<dyn SerialPortFactory> = Arc::new(StubSerialPortFactory);
-    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    let bound = ppba_driver::ServerBuilder::new(config)
+        .with_factory(factory)
+        .build()
+        .await
+        .expect("Server failed to bind");
+
+    let port = bound.listen_addr().port();
 
     let handle = tokio::spawn(async move {
-        let _ = ppba_driver::start_server_with_factory_notify(config, factory, tx).await;
+        let _ = bound.start().await;
     });
 
-    let addr = rx.await.expect("Server failed to bind");
-    (addr.port(), handle)
+    (port, handle)
 }
 
 /// Helper: GET an ASCOM Alpaca endpoint and return the HTTP status code.

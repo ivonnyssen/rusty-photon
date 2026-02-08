@@ -7,10 +7,10 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::Level;
 
-#[cfg(not(feature = "mock"))]
-use ppba_driver::{load_config, start_server, Config};
 #[cfg(feature = "mock")]
-use ppba_driver::{load_config, start_server_with_factory, Config, MockSerialPortFactory};
+use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+#[cfg(not(feature = "mock"))]
+use ppba_driver::{load_config, Config, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "ppba-driver")]
@@ -102,12 +102,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "mock")]
     {
         let factory = std::sync::Arc::new(MockSerialPortFactory::default());
-        start_server_with_factory(config, factory).await?;
+        ServerBuilder::new(config)
+            .with_factory(factory)
+            .build()
+            .await?
+            .start()
+            .await?;
     }
 
     #[cfg(not(feature = "mock"))]
     {
-        start_server(config).await?;
+        ServerBuilder::new(config).build().await?.start().await?;
     }
 
     Ok(())

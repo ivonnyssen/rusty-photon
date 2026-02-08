@@ -169,7 +169,7 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
 ```
 ppba-switch/
 ├── src/
-│   ├── lib.rs           # Crate root, start_server()
+│   ├── lib.rs           # Crate root, ServerBuilder
 │   ├── main.rs          # CLI entry point
 │   ├── config.rs        # Configuration types
 │   ├── error.rs         # Error types
