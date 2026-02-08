@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 
 /// Shared state between mock reader and writer
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MockState {
     /// Queue of responses to return
     response_queue: Vec<String>,
@@ -97,13 +97,6 @@ impl MockDeviceState {
 }
 
 impl MockState {
-    fn new() -> Self {
-        Self {
-            response_queue: Vec::new(),
-            device_state: MockDeviceState::default(),
-        }
-    }
-
     /// Process a command and queue the appropriate response
     fn process_command(&mut self, command: &str) {
         let command = command.trim();
@@ -237,25 +230,10 @@ impl SerialWriter for MockSerialWriter {
 ///
 /// Maintains persistent state across multiple open/close cycles to simulate
 /// real hardware behavior where device state persists even when disconnected.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MockSerialPortFactory {
     /// Persistent state shared across all connections
     persistent_state: Arc<Mutex<MockState>>,
-}
-
-impl Default for MockSerialPortFactory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MockSerialPortFactory {
-    /// Create a new mock factory with persistent state
-    pub fn new() -> Self {
-        Self {
-            persistent_state: Arc::new(Mutex::new(MockState::new())),
-        }
-    }
 }
 
 #[async_trait]
@@ -366,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_factory_creates_working_pair() {
-        let factory = MockSerialPortFactory::new();
+        let factory = MockSerialPortFactory::default();
         let mut pair = factory
             .open("/dev/mock", 9600, Duration::from_secs(1))
             .await
