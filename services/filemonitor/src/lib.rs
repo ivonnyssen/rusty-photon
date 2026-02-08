@@ -250,7 +250,11 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
     );
     tracing::info!("Monitoring file: {:?}", config.file.path);
 
-    server.start().await?;
+    let bound = server.bind().await?;
+    let addr = bound.listen_addr();
+    println!("Bound Alpaca server bound_addr={}", addr);
+
+    bound.start().await?;
 
     Ok(())
 }
