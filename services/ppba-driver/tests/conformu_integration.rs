@@ -7,29 +7,41 @@ use ascom_alpaca::api::{ObservingConditions, Switch};
 use ascom_alpaca::test::conformu_tests;
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::time::{sleep, timeout};
 use tracing_subscriber::{fmt, EnvFilter};
 
 // Static mutex to ensure conformu tests run sequentially
 // Required because both tests bind the ASCOM Alpaca discovery service to a fixed address
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
-/// Parse the bound port from service stdout
-/// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT"
-async fn parse_bound_port(stdout: tokio::process::ChildStdout) -> Option<u16> {
-    let mut reader = BufReader::new(stdout).lines();
+/// Parse the bound port from service stdout.
+/// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT".
+/// Returns the port and spawns a background task to drain remaining stdout,
+/// preventing the server from blocking when the pipe buffer fills.
+async fn parse_bound_port(
+    stdout: tokio::process::ChildStdout,
+) -> Option<(u16, tokio::task::JoinHandle<()>)> {
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
 
-    while let Ok(Some(line)) = reader.next_line().await {
-        if let Some(addr_str) = line.strip_prefix("Bound Alpaca server bound_addr=") {
+    while reader.read_line(&mut line).await.ok()? > 0 {
+        if let Some(addr_str) = line.trim().strip_prefix("Bound Alpaca server bound_addr=") {
             if let Some(port_str) = addr_str.split(':').last() {
                 if let Ok(port) = port_str.parse::<u16>() {
-                    return Some(port);
+                    // Drain remaining stdout in background so the server never
+                    // blocks on a write to stdout (tracing writes to stdout by default).
+                    let drain_handle = tokio::spawn(async move {
+                        let mut buf = String::new();
+                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+                            buf.clear();
+                        }
+                    });
+                    return Some((port, drain_handle));
                 }
             }
         }
+        line.clear();
     }
     None
 }
@@ -147,46 +159,18 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    // Parse the bound port from stdout
+    // Parse the bound port from stdout - the server is ready once this message appears
+    // since the socket is already listening after bind()
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let port = parse_bound_port(stdout)
+    let (port, stdout_drain) = parse_bound_port(stdout)
         .await
         .ok_or("Failed to parse bound port from service output")?;
 
-    // Wait for service to be ready with health check
-    let client = reqwest::Client::new();
-    let mut ready = false;
-
-    for _ in 0..30 {
-        sleep(Duration::from_secs(1)).await;
-
-        if let Ok(Ok(resp)) = timeout(
-            Duration::from_secs(2),
-            client
-                .get(format!(
-                    "http://localhost:{}/management/v1/description",
-                    port
-                ))
-                .send(),
-        )
-        .await
-        {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
-        }
-    }
-
-    if !ready {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 30 seconds".into());
-    }
-
     println!("::group::ConformU Compliance Test Results");
-    println!("Running ASCOM Alpaca Switch compliance tests...");
+    println!(
+        "Running ASCOM Alpaca Switch compliance tests on port {}...",
+        port
+    );
 
     // Run ConformU tests with reduced delays for faster CI
     let result = conformu_tests::<dyn Switch>(&format!("http://localhost:{}", port), 0)?
@@ -210,6 +194,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Cleanup - ensure process is properly terminated
     let _ = child.kill().await;
     let _ = child.wait().await;
+    stdout_drain.abort();
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
@@ -323,46 +308,18 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    // Parse the bound port from stdout
+    // Parse the bound port from stdout - the server is ready once this message appears
+    // since the socket is already listening after bind()
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let port = parse_bound_port(stdout)
+    let (port, stdout_drain) = parse_bound_port(stdout)
         .await
         .ok_or("Failed to parse bound port from service output")?;
 
-    // Wait for service to be ready with health check
-    let client = reqwest::Client::new();
-    let mut ready = false;
-
-    for _ in 0..30 {
-        sleep(Duration::from_secs(1)).await;
-
-        if let Ok(Ok(resp)) = timeout(
-            Duration::from_secs(2),
-            client
-                .get(format!(
-                    "http://localhost:{}/management/v1/description",
-                    port
-                ))
-                .send(),
-        )
-        .await
-        {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
-        }
-    }
-
-    if !ready {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 30 seconds".into());
-    }
-
     println!("::group::ConformU ObservingConditions Compliance Test Results");
-    println!("Running ASCOM Alpaca ObservingConditions compliance tests...");
+    println!(
+        "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
+        port
+    );
 
     // Run ConformU tests
     let result =
@@ -387,6 +344,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
     // Cleanup - ensure process is properly terminated
     let _ = child.kill().await;
     let _ = child.wait().await;
+    stdout_drain.abort();
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;

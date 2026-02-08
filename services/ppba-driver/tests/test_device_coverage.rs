@@ -471,6 +471,9 @@ async fn test_max_switch_boundary() {
     let max = device.max_switch().await.unwrap();
     assert_eq!(max, 16);
 
+    // Connect so that switch methods work
+    device.set_connected(true).await.unwrap();
+
     // Switch ID 15 (max-1) should be valid
     assert!(device.get_switch_name(15).await.is_ok());
 

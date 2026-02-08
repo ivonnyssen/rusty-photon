@@ -17,6 +17,16 @@ use crate::config::ObservingConditionsConfig;
 use crate::error::PpbaError;
 use crate::serial_manager::SerialManager;
 
+/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+macro_rules! ensure_connected {
+    ($self:ident) => {
+        if !$self.connected().await.is_ok_and(|connected| connected) {
+            debug!("ObservingConditions device not connected");
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+    };
+}
+
 /// PPBA ObservingConditions device for ASCOM Alpaca
 pub struct PpbaObservingConditionsDevice {
     config: ObservingConditionsConfig,
@@ -78,17 +88,23 @@ impl Device for PpbaObservingConditionsDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if connected {
-            self.serial_manager
-                .connect()
-                .await
-                .map_err(Self::to_ascom_error)?;
-            *self.requested_connection.write().await = true;
-            debug!("ObservingConditions device connected");
-        } else {
-            *self.requested_connection.write().await = false;
-            self.serial_manager.disconnect().await;
-            debug!("ObservingConditions device disconnected");
+        if self.connected().await? == connected {
+            return Ok(());
+        }
+        match connected {
+            true => {
+                self.serial_manager
+                    .connect()
+                    .await
+                    .map_err(Self::to_ascom_error)?;
+                *self.requested_connection.write().await = true;
+                debug!("ObservingConditions device connected");
+            }
+            false => {
+                *self.requested_connection.write().await = false;
+                self.serial_manager.disconnect().await;
+                debug!("ObservingConditions device disconnected");
+            }
         }
         Ok(())
     }
@@ -105,6 +121,7 @@ impl Device for PpbaObservingConditionsDevice {
 #[async_trait]
 impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let cached = self.serial_manager.get_cached_state().await;
         let window = cached.temp_mean.window();
 
@@ -118,6 +135,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // ASCOM spec requires hours. Must accept 0.0 for instantaneous readings.
         // Per spec: "All drivers must accept 0.0 to specify that an instantaneous value is available"
 
@@ -155,9 +173,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn temperature(&self) -> ASCOMResult<f64> {
-        if !self.connected().await? {
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        ensure_connected!(self);
 
         let state = self.serial_manager.get_cached_state().await;
         state.temp_mean.get_mean().ok_or_else(|| {
@@ -169,9 +185,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn humidity(&self) -> ASCOMResult<f64> {
-        if !self.connected().await? {
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        ensure_connected!(self);
 
         let state = self.serial_manager.get_cached_state().await;
         state.humidity_mean.get_mean().ok_or_else(|| {
@@ -183,9 +197,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn dew_point(&self) -> ASCOMResult<f64> {
-        if !self.connected().await? {
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        ensure_connected!(self);
 
         let state = self.serial_manager.get_cached_state().await;
         state.dewpoint_mean.get_mean().ok_or_else(|| {
@@ -197,9 +209,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn time_since_last_update(&self, sensor_name: String) -> ASCOMResult<f64> {
-        if !self.connected().await? {
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        ensure_connected!(self);
 
         let state = self.serial_manager.get_cached_state().await;
 
@@ -240,6 +250,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn sensor_description(&self, sensor_name: String) -> ASCOMResult<String> {
+        ensure_connected!(self);
         match sensor_name.to_lowercase().as_str() {
             "temperature" => Ok("PPBA internal temperature sensor".to_string()),
             "humidity" => Ok("PPBA internal humidity sensor".to_string()),
@@ -263,9 +274,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     }
 
     async fn refresh(&self) -> ASCOMResult<()> {
-        if !self.connected().await? {
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        ensure_connected!(self);
 
         // Trigger immediate refresh via SerialManager
         self.serial_manager

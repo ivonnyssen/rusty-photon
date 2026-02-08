@@ -215,6 +215,7 @@ async fn test_set_connected_false() {
 async fn test_average_period_default() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Default should be 5 minutes = 5/60 hours = 0.0833... hours
     let period = device.average_period().await.unwrap();
@@ -229,6 +230,7 @@ async fn test_average_period_default() {
 async fn test_set_average_period() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Set to 2 hours
     device.set_average_period(2.0).await.unwrap();
@@ -241,6 +243,7 @@ async fn test_set_average_period() {
 async fn test_set_average_period_minimum() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Minimum: 0.0 hours (instantaneous)
     device.set_average_period(0.0).await.unwrap();
@@ -253,6 +256,7 @@ async fn test_set_average_period_minimum() {
 async fn test_set_average_period_maximum() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Maximum: 24 hours
     device.set_average_period(24.0).await.unwrap();
@@ -265,6 +269,7 @@ async fn test_set_average_period_maximum() {
 async fn test_set_average_period_too_small() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Negative values are rejected
     let result = device.set_average_period(-1.0).await;
@@ -284,6 +289,7 @@ async fn test_set_average_period_too_small() {
 async fn test_set_average_period_too_large() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // More than 24 hours is rejected
     let result = device.set_average_period(25.0).await;
@@ -435,6 +441,7 @@ async fn test_dew_point_with_data() {
 async fn test_sensor_description_temperature() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     let desc = device
         .sensor_description("temperature".to_string())
@@ -447,6 +454,7 @@ async fn test_sensor_description_temperature() {
 async fn test_sensor_description_humidity() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     let desc = device
         .sensor_description("humidity".to_string())
@@ -459,6 +467,7 @@ async fn test_sensor_description_humidity() {
 async fn test_sensor_description_dewpoint() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     let desc = device
         .sensor_description("dewpoint".to_string())
@@ -471,6 +480,7 @@ async fn test_sensor_description_dewpoint() {
 async fn test_sensor_description_case_insensitive() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Should work with different cases
     let desc1 = device
@@ -489,6 +499,7 @@ async fn test_sensor_description_case_insensitive() {
 async fn test_sensor_description_unknown() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // "pressure" is an unimplemented sensor - should return NOT_IMPLEMENTED
     let result = device.sensor_description("pressure".to_string()).await;

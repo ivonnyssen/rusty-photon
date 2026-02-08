@@ -278,6 +278,7 @@ async fn test_can_write_invalid_switch() {
 async fn test_get_switch_name() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     let name = device.get_switch_name(0).await.unwrap();
     assert_eq!(name, "Quad 12V Output");
@@ -290,6 +291,7 @@ async fn test_get_switch_name() {
 async fn test_get_switch_description() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     let desc = device.get_switch_description(0).await.unwrap();
     assert!(desc.contains("12V"));
@@ -319,6 +321,7 @@ async fn test_set_switch_name_not_supported() {
 async fn test_min_switch_value() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Boolean switch
     let min = device.min_switch_value(0).await.unwrap();
@@ -333,6 +336,7 @@ async fn test_min_switch_value() {
 async fn test_max_switch_value() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Boolean switch
     let max = device.max_switch_value(0).await.unwrap();
@@ -347,6 +351,7 @@ async fn test_max_switch_value() {
 async fn test_switch_step() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     // Most switches have step=1, but sensor switches may have finer granularity
     for id in 0..16 {
@@ -619,6 +624,7 @@ async fn test_switch_value_types() {
 async fn test_all_switches_have_names() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     for id in 0..16 {
         let name = device.get_switch_name(id).await.unwrap();
@@ -634,6 +640,7 @@ async fn test_all_switches_have_names() {
 async fn test_all_switches_have_descriptions() {
     let factory = Arc::new(create_connected_mock_factory());
     let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
 
     for id in 0..16 {
         let desc = device.get_switch_description(id).await.unwrap();

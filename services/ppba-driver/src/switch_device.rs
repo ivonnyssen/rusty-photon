@@ -18,6 +18,16 @@ use crate::protocol::PpbaCommand;
 use crate::serial_manager::SerialManager;
 use crate::switches::{SwitchId, MAX_SWITCH};
 
+/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+macro_rules! ensure_connected {
+    ($self:ident) => {
+        if !$self.connected().await.is_ok_and(|connected| connected) {
+            debug!("Switch device not connected");
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+    };
+}
+
 /// PPBA Switch device for ASCOM Alpaca
 pub struct PpbaSwitchDevice {
     config: SwitchConfig,
@@ -221,17 +231,23 @@ impl Device for PpbaSwitchDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if connected {
-            self.serial_manager
-                .connect()
-                .await
-                .map_err(Self::to_ascom_error)?;
-            *self.requested_connection.write().await = true;
-            debug!("Switch device connected");
-        } else {
-            *self.requested_connection.write().await = false;
-            self.serial_manager.disconnect().await;
-            debug!("Switch device disconnected");
+        if self.connected().await? == connected {
+            return Ok(());
+        }
+        match connected {
+            true => {
+                self.serial_manager
+                    .connect()
+                    .await
+                    .map_err(Self::to_ascom_error)?;
+                *self.requested_connection.write().await = true;
+                debug!("Switch device connected");
+            }
+            false => {
+                *self.requested_connection.write().await = false;
+                self.serial_manager.disconnect().await;
+                debug!("Switch device disconnected");
+            }
         }
         Ok(())
     }
@@ -255,13 +271,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
-        // ASCOM spec: CanWrite must throw NotConnectedException when disconnected
-        if !self.connected().await? {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Device not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         // Validate switch ID
         let switch_id = SwitchId::from_id(id)
@@ -295,12 +305,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
-        if !self.connected().await? {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         let value = self
             .get_switch_value_internal(id)
@@ -314,12 +319,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_switch(&self, id: usize, state: bool) -> ASCOMResult<()> {
-        if !self.connected().await? {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
@@ -338,12 +338,14 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().description.to_string())
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().name.to_string())
@@ -357,12 +359,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        if !self.connected().await? {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         self.get_switch_value_internal(id)
             .await
@@ -370,12 +367,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_switch_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
-        if !self.connected().await? {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         self.set_switch_value_internal(id, value)
             .await
@@ -383,24 +375,28 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().min_value)
     }
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().max_value)
     }
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().step)
     }
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -413,6 +409,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -425,6 +422,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -439,6 +437,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -453,6 +452,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(

@@ -100,13 +100,13 @@ async fn start_server_internal(
         );
     }
 
-    info!(
-        "Starting ASCOM Alpaca server on port {}",
-        config.server.port
-    );
     info!("Serial port: {}", config.serial.port);
 
-    server.start().await?;
+    let bound = server.bind().await?;
+    let addr = bound.listen_addr();
+    println!("Bound Alpaca server bound_addr={}", addr);
+
+    bound.start().await?;
 
     Ok(())
 }

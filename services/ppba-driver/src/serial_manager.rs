@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
@@ -52,7 +52,9 @@ pub struct SerialManager {
     cached_state: Arc<RwLock<CachedState>>,
     reader: Arc<Mutex<Option<Box<dyn SerialReader>>>>,
     writer: Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
+    command_lock: Arc<Mutex<()>>,
     polling_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    shutdown_tx: watch::Sender<bool>,
     serial_factory: Arc<dyn SerialPortFactory>,
 }
 
@@ -66,6 +68,8 @@ impl SerialManager {
         cached_state.humidity_mean.set_window(window);
         cached_state.dewpoint_mean.set_window(window);
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Self {
             config: config.serial,
             connection_count: Arc::new(AtomicU32::new(0)),
@@ -73,7 +77,9 @@ impl SerialManager {
             cached_state: Arc::new(RwLock::new(cached_state)),
             reader: Arc::new(Mutex::new(None)),
             writer: Arc::new(Mutex::new(None)),
+            command_lock: Arc::new(Mutex::new(())),
             polling_handle: Arc::new(Mutex::new(None)),
+            shutdown_tx,
             serial_factory,
         }
     }
@@ -137,12 +143,16 @@ impl SerialManager {
             // Last device disconnecting - close the port
             debug!("Last device disconnecting, closing serial port");
 
+            // Signal polling loop to stop before waiting for it to finish.
+            // This must happen first so the loop sees the flag and exits
+            // cleanly, releasing any held locks.
+            self.serial_available.store(false, Ordering::SeqCst);
+            let _ = self.shutdown_tx.send(true);
+
             self.stop_polling().await;
 
             *self.reader.lock().await = None;
             *self.writer.lock().await = None;
-
-            self.serial_available.store(false, Ordering::SeqCst);
 
             info!("Serial port closed (connection count: 0)");
         } else {
@@ -174,6 +184,7 @@ impl SerialManager {
 
     /// Internal command sending (doesn't check connection state)
     async fn send_command_internal(&self, command: PpbaCommand) -> Result<String> {
+        let _cmd_guard = self.command_lock.lock().await;
         let command_str = command.to_command_string();
         debug!("Sending command: {}", command_str);
 
@@ -251,12 +262,21 @@ impl SerialManager {
         let serial_available = Arc::clone(&self.serial_available);
         let reader = Arc::clone(&self.reader);
         let writer = Arc::clone(&self.writer);
+        let command_lock = Arc::clone(&self.command_lock);
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         let handle = tokio::spawn(async move {
             let mut poll_interval = interval(Duration::from_millis(polling_interval_ms));
 
             loop {
-                poll_interval.tick().await;
+                // Wait for the next tick or a shutdown signal, whichever comes first
+                tokio::select! {
+                    _ = poll_interval.tick() => {}
+                    _ = shutdown_rx.changed() => {
+                        debug!("Polling stopped: shutdown signal received");
+                        break;
+                    }
+                }
 
                 // Check if still connected
                 if !serial_available.load(Ordering::SeqCst) {
@@ -265,12 +285,16 @@ impl SerialManager {
                 }
 
                 // Refresh status
-                if let Err(e) = Self::poll_status(&reader, &writer, &cached_state).await {
+                if let Err(e) =
+                    Self::poll_status(&command_lock, &reader, &writer, &cached_state).await
+                {
                     warn!("Failed to poll PPBA status: {}", e);
                 }
 
                 // Refresh power stats
-                if let Err(e) = Self::poll_power_stats(&reader, &writer, &cached_state).await {
+                if let Err(e) =
+                    Self::poll_power_stats(&command_lock, &reader, &writer, &cached_state).await
+                {
                     warn!("Failed to poll PPBA power stats: {}", e);
                 }
             }
@@ -282,10 +306,12 @@ impl SerialManager {
 
     /// Poll status (for use in background task)
     async fn poll_status(
+        command_lock: &Arc<Mutex<()>>,
         reader: &Arc<Mutex<Option<Box<dyn SerialReader>>>>,
         writer: &Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
         cached_state: &Arc<RwLock<CachedState>>,
     ) -> Result<()> {
+        let _cmd_guard = command_lock.lock().await;
         let command_str = PpbaCommand::Status.to_command_string();
 
         // Write command
@@ -326,10 +352,12 @@ impl SerialManager {
 
     /// Poll power stats (for use in background task)
     async fn poll_power_stats(
+        command_lock: &Arc<Mutex<()>>,
         reader: &Arc<Mutex<Option<Box<dyn SerialReader>>>>,
         writer: &Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
         cached_state: &Arc<RwLock<CachedState>>,
     ) -> Result<()> {
+        let _cmd_guard = command_lock.lock().await;
         let command_str = PpbaCommand::PowerStats.to_command_string();
 
         // Write command
@@ -362,11 +390,20 @@ impl SerialManager {
     }
 
     /// Stop background polling
+    ///
+    /// Waits for the polling task to exit gracefully with a timeout.
+    /// Falls back to aborting the task if it doesn't exit within 5 seconds.
+    /// The caller must set `serial_available` to false before calling this
+    /// so the polling loop sees the flag and breaks out.
     async fn stop_polling(&self) {
         let mut handle = self.polling_handle.lock().await;
         if let Some(h) = handle.take() {
-            h.abort();
-            debug!("Polling task aborted");
+            match tokio::time::timeout(Duration::from_secs(5), h).await {
+                Ok(_) => debug!("Polling task stopped gracefully"),
+                Err(_) => {
+                    warn!("Polling task did not stop within 5 seconds, it will be dropped");
+                }
+            }
         }
     }
 
