@@ -528,3 +528,204 @@ async fn test_connection_state_queries() {
     device.set_connected(false).await.unwrap();
     assert!(!device.connected().await.unwrap());
 }
+
+// ============================================================================
+// Category 5: USB Hub and Auto-Dew Special Path Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_set_switch_value_usb_hub() {
+    // USB hub (switch 4) uses a special code path: sends PU command,
+    // then manually tracks state via set_usb_hub_state.
+    // The USB hub path returns early without a status refresh, so we only need
+    // the PU:1 response after the connection handshake. Provide enough extra
+    // responses for any polling cycles that might occur.
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "PPBA_OK".to_string(),                                     // connect: ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // connect: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // connect: power stats
+        "PU:1".to_string(),                                        // set_switch_value: PU command
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // polling: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // polling: power stats
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Enable USB hub via set_switch_value (no sleep - act immediately before polling fires)
+    device.set_switch_value(4, 1.0).await.unwrap();
+
+    // USB hub state should be tracked via set_usb_hub_state
+    let usb_value = device.get_switch_value(4).await.unwrap();
+    assert_eq!(usb_value, 1.0);
+}
+
+#[tokio::test]
+async fn test_set_switch_value_auto_dew() {
+    // Auto-dew (switch 5) is a boolean toggle.
+    // set_switch_value_internal sends the PD command, then calls refresh_status.
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "PPBA_OK".to_string(),                                     // connect: ping
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(), // connect: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // connect: power stats
+        "PD:1".to_string(),                                        // set_switch_value: PD command
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // set_switch_value: refresh status
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // polling: status
+        "PS:2.5:10.5:126.0:3600000".to_string(),                   // polling: power stats
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Enable auto-dew (act immediately before polling fires)
+    device.set_switch_value(5, 1.0).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_set_switch_readonly_sensor() {
+    // Switches 6-15 are read-only; attempting to write should return
+    // NOT_IMPLEMENTED (via SwitchNotWritable error path)
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Additional status for the refresh in set_switch_value_internal
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    // Try writing to each read-only sensor switch
+    for id in 6..16 {
+        let result = device.set_switch_value(id, 0.0).await;
+        assert!(
+            result.is_err(),
+            "Writing to read-only switch {} should fail",
+            id
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_get_switch_value_no_cached_status() {
+    // When cache has no status (status=None), switches that read from
+    // status should return NOT_CONNECTED
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+
+    // Create a device manually without connecting (so cache is empty)
+    // We can't call get_switch_value without connecting, but we can test
+    // that connecting with bad responses leads to appropriate errors
+    let device = create_test_device(factory);
+
+    // Not connected → NOT_CONNECTED
+    let result = device.get_switch_value(0).await;
+    match result {
+        Err(ascom_alpaca::ASCOMError {
+            code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {} // Expected
+        _ => panic!("Expected NOT_CONNECTED error, got {:?}", result),
+    }
+}
+
+#[tokio::test]
+async fn test_get_switch_value_no_cached_power_stats() {
+    // Power stat switches (6-9) require power_stats in cache.
+    // Without them, should return NOT_CONNECTED.
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(vec![]));
+    let device = create_test_device(factory);
+
+    // Not connected → NOT_CONNECTED for power stat switches
+    for id in 6..10 {
+        let result = device.get_switch_value(id).await;
+        match result {
+            Err(ascom_alpaca::ASCOMError {
+                code: ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED,
+                ..
+            }) => {} // Expected
+            _ => panic!("Expected NOT_CONNECTED for switch {}, got {:?}", id, result),
+        }
+    }
+}
+
+// ============================================================================
+// Category 6: Async Operation Invalid ID Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_set_async_invalid_switch_id() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    let result = device.set_async(16, true).await;
+    assert!(result.is_err(), "set_async with invalid ID should fail");
+
+    let result = device.set_async(999, false).await;
+    assert!(result.is_err(), "set_async with invalid ID should fail");
+}
+
+#[tokio::test]
+async fn test_set_async_value_invalid_switch_id() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    let result = device.set_async_value(16, 0.0).await;
+    assert!(
+        result.is_err(),
+        "set_async_value with invalid ID should fail"
+    );
+
+    let result = device.set_async_value(999, 0.0).await;
+    assert!(
+        result.is_err(),
+        "set_async_value with invalid ID should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_state_change_complete_invalid_id() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    let result = device.state_change_complete(16).await;
+    assert!(
+        result.is_err(),
+        "state_change_complete with invalid ID should fail"
+    );
+
+    let result = device.state_change_complete(999).await;
+    assert!(
+        result.is_err(),
+        "state_change_complete with invalid ID should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_cancel_async_invalid_id() {
+    let factory = Arc::new(MockSerialPortFactory::with_ok_responses(
+        standard_connection_responses(),
+    ));
+    let device = create_test_device(factory);
+
+    device.set_connected(true).await.unwrap();
+
+    let result = device.cancel_async(16).await;
+    assert!(result.is_err(), "cancel_async with invalid ID should fail");
+
+    let result = device.cancel_async(999).await;
+    assert!(result.is_err(), "cancel_async with invalid ID should fail");
+}

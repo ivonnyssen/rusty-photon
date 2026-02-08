@@ -795,3 +795,231 @@ async fn test_wind_speed_not_implemented() {
         _ => panic!("Expected NOT_IMPLEMENTED error for wind_speed"),
     }
 }
+
+// =============================================================================
+// Sensor Description Edge Case Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_sensor_description_empty_string() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    let result = device.sensor_description("".to_string()).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {
+            // Expected - empty sensor name is invalid
+        }
+        _ => panic!("Expected INVALID_VALUE error for empty sensor name"),
+    }
+}
+
+#[tokio::test]
+async fn test_sensor_description_truly_unknown() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // "foobar" is not a recognized sensor name at all
+    let result = device.sensor_description("foobar".to_string()).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {
+            // Expected - truly unknown sensor returns INVALID_VALUE
+        }
+        _ => panic!("Expected INVALID_VALUE error for truly unknown sensor name"),
+    }
+}
+
+// =============================================================================
+// Time Since Last Update Edge Case Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_time_since_last_update_empty_string() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Wait for polling to gather data
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Empty string should return most recent update across all sensors
+    let time = device.time_since_last_update("".to_string()).await.unwrap();
+    assert!(time < 1.0, "Expected recent update time, got {}", time);
+}
+
+#[tokio::test]
+async fn test_time_since_last_update_truly_unknown() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // "foobar" is not a recognized sensor
+    let result = device.time_since_last_update("foobar".to_string()).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::INVALID_VALUE,
+            ..
+        }) => {
+            // Expected - truly unknown sensor returns INVALID_VALUE
+        }
+        _ => panic!("Expected INVALID_VALUE error for truly unknown sensor"),
+    }
+}
+
+#[tokio::test]
+async fn test_time_since_last_update_unimplemented_sensors() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    let unimplemented_sensors = vec![
+        "cloudcover",
+        "pressure",
+        "rainrate",
+        "skybrightness",
+        "skyquality",
+        "starfwhm",
+        "skytemperature",
+        "winddirection",
+        "windgust",
+        "windspeed",
+    ];
+
+    for sensor in unimplemented_sensors {
+        let result = device.time_since_last_update(sensor.to_string()).await;
+
+        match result {
+            Err(ASCOMError {
+                code: ASCOMErrorCode::NOT_IMPLEMENTED,
+                ..
+            }) => {
+                // Expected
+            }
+            _ => panic!(
+                "Expected NOT_IMPLEMENTED for time_since_last_update('{}'), got {:?}",
+                sensor, result
+            ),
+        }
+    }
+}
+
+// =============================================================================
+// No Data Edge Case Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_humidity_no_data() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Immediately after connection, means might not have data yet
+    let result = device.humidity().await;
+
+    match result {
+        Ok(_) => {
+            // Data was available from initial refresh, that's fine
+        }
+        Err(ASCOMError {
+            code: ASCOMErrorCode::VALUE_NOT_SET,
+            ..
+        }) => {
+            // Expected if no samples yet
+        }
+        Err(e) => panic!("Unexpected error: {:?}", e),
+    }
+}
+
+#[tokio::test]
+async fn test_dew_point_no_data() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Immediately after connection, means might not have data yet
+    let result = device.dew_point().await;
+
+    match result {
+        Ok(_) => {
+            // Data was available from initial refresh, that's fine
+        }
+        Err(ASCOMError {
+            code: ASCOMErrorCode::VALUE_NOT_SET,
+            ..
+        }) => {
+            // Expected if no samples yet
+        }
+        Err(e) => panic!("Unexpected error: {:?}", e),
+    }
+}
+
+// =============================================================================
+// Not Connected Error Path Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_set_average_period_not_connected() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+
+    let result = device.set_average_period(1.0).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {
+            // Expected
+        }
+        _ => panic!("Expected NOT_CONNECTED error when setting average period while disconnected"),
+    }
+}
+
+#[tokio::test]
+async fn test_average_period_not_connected() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+
+    let result = device.average_period().await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {
+            // Expected
+        }
+        _ => panic!("Expected NOT_CONNECTED error when reading average period while disconnected"),
+    }
+}
+
+#[tokio::test]
+async fn test_sensor_description_not_connected() {
+    let factory = Arc::new(create_connected_mock_factory());
+    let device = create_test_device(factory);
+
+    let result = device.sensor_description("temperature".to_string()).await;
+
+    match result {
+        Err(ASCOMError {
+            code: ASCOMErrorCode::NOT_CONNECTED,
+            ..
+        }) => {
+            // Expected
+        }
+        _ => panic!(
+            "Expected NOT_CONNECTED error when reading sensor description while disconnected"
+        ),
+    }
+}
