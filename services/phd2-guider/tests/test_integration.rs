@@ -619,9 +619,7 @@ fn start_mock_phd2_auto_port(_mode: &str) -> Option<(u16, Child)> {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_connection() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
         eprintln!(
             "Mock PHD2 binary not found. Run 'cargo build -p phd2-guider --bin mock_phd2' first"
         );
@@ -665,10 +663,8 @@ async fn test_mock_phd2_connection() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_get_app_state() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -697,10 +693,8 @@ async fn test_mock_phd2_get_app_state() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_get_profiles() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -731,10 +725,8 @@ async fn test_mock_phd2_get_profiles() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_get_equipment() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -765,10 +757,8 @@ async fn test_mock_phd2_get_equipment() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_exposure_methods() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -806,10 +796,8 @@ async fn test_mock_phd2_exposure_methods() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_calibration_methods() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -857,10 +845,8 @@ async fn test_mock_phd2_calibration_methods() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_guiding_control() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -917,10 +903,8 @@ async fn test_mock_phd2_guiding_control() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_star_operations() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -960,10 +944,8 @@ async fn test_mock_phd2_star_operations() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_cooling() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -996,10 +978,8 @@ async fn test_mock_phd2_cooling() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_star_image() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -1031,10 +1011,8 @@ async fn test_mock_phd2_star_image() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_event_subscription() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -1075,10 +1053,8 @@ async fn test_mock_phd2_event_subscription() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_reconnect_on_disconnect() {
-    let port = get_available_port();
-
-    let Some(mut child) = start_mock_phd2(port) else {
-        eprintln!("Mock PHD2 binary not found");
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 binary not found or failed to start");
         return;
     };
 
@@ -1229,15 +1205,16 @@ async fn test_process_manager_start_stop_mock() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_start_already_running() {
-    let port = get_available_port();
-
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
         return;
     };
 
-    // Start mock manually first
-    let mut child = start_mock_phd2(port).expect("Should start mock");
+    // Start mock manually first with auto-assigned port
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 failed to start");
+        return;
+    };
 
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
@@ -1441,15 +1418,16 @@ async fn test_process_manager_stop_without_client() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_start_when_external_running() {
-    let port = get_available_port();
-
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
         return;
     };
 
-    // Start mock manually first (simulating externally running PHD2)
-    let mut child = start_mock_phd2(port).expect("Should start mock");
+    // Start mock manually first (simulating externally running PHD2) with auto-assigned port
+    let Some((port, mut child)) = start_mock_phd2_auto_port("normal") else {
+        eprintln!("Mock PHD2 failed to start");
+        return;
+    };
 
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),

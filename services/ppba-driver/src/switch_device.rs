@@ -5,310 +5,59 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::{Device, Switch};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tokio::sync::RwLock;
+use tracing::debug;
 
-use crate::config::Config;
+use crate::config::SwitchConfig;
 use crate::error::{PpbaError, Result};
-use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-use crate::protocol::{
-    parse_power_stats_response, parse_status_response, validate_ping_response,
-    validate_set_response, PpbaCommand, PpbaPowerStats, PpbaStatus,
-};
-use crate::serial::TokioSerialPortFactory;
+use crate::protocol::PpbaCommand;
+use crate::serial_manager::SerialManager;
 use crate::switches::{SwitchId, MAX_SWITCH};
 
-/// Cached state from the PPBA device
-#[derive(Debug, Clone, Default)]
-struct CachedState {
-    /// Last known device status (from PA command)
-    status: Option<PpbaStatus>,
-    /// Last known power statistics (from PS command)
-    power_stats: Option<PpbaPowerStats>,
-    /// USB hub state (tracked separately)
-    usb_hub_enabled: bool,
+/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+macro_rules! ensure_connected {
+    ($self:ident) => {
+        if !$self.connected().await.is_ok_and(|connected| connected) {
+            debug!("Switch device not connected");
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+    };
 }
 
 /// PPBA Switch device for ASCOM Alpaca
 pub struct PpbaSwitchDevice {
-    config: Config,
-    connected: Arc<RwLock<bool>>,
-    cached_state: Arc<RwLock<CachedState>>,
-    reader: Arc<Mutex<Option<Box<dyn SerialReader>>>>,
-    writer: Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
-    polling_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    serial_factory: Arc<dyn SerialPortFactory>,
+    config: SwitchConfig,
+    requested_connection: Arc<RwLock<bool>>,
+    serial_manager: Arc<SerialManager>,
 }
 
 impl fmt::Debug for PpbaSwitchDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PpbaSwitchDevice")
             .field("config", &self.config)
-            .field("connected", &self.connected)
-            .field("cached_state", &self.cached_state)
+            .field("requested_connection", &self.requested_connection)
             .finish_non_exhaustive()
     }
 }
 
 impl PpbaSwitchDevice {
-    /// Create a new PPBA switch device with the default serial port factory
-    pub fn new(config: Config) -> Self {
-        Self::with_serial_factory(config, Arc::new(TokioSerialPortFactory::new()))
-    }
-
-    /// Create a new PPBA switch device with a custom serial port factory
-    ///
-    /// This is primarily used for testing with mock implementations.
-    pub fn with_serial_factory(config: Config, factory: Arc<dyn SerialPortFactory>) -> Self {
+    /// Create a new PPBA switch device
+    pub fn new(config: SwitchConfig, serial_manager: Arc<SerialManager>) -> Self {
         Self {
             config,
-            connected: Arc::new(RwLock::new(false)),
-            cached_state: Arc::new(RwLock::new(CachedState::default())),
-            reader: Arc::new(Mutex::new(None)),
-            writer: Arc::new(Mutex::new(None)),
-            polling_handle: Arc::new(Mutex::new(None)),
-            serial_factory: factory,
-        }
-    }
-
-    /// Connect to the PPBA device
-    async fn connect_device(&self) -> Result<()> {
-        let timeout = Duration::from_secs(self.config.serial.timeout_seconds);
-
-        let pair: SerialPair = self
-            .serial_factory
-            .open(
-                &self.config.serial.port,
-                self.config.serial.baud_rate,
-                timeout,
-            )
-            .await?;
-
-        // Store the reader and writer
-        {
-            let mut reader_guard = self.reader.lock().await;
-            *reader_guard = Some(pair.reader);
-        }
-        {
-            let mut writer_guard = self.writer.lock().await;
-            *writer_guard = Some(pair.writer);
-        }
-
-        // Verify connection with ping
-        self.send_command(PpbaCommand::Ping).await?;
-
-        // Get initial status
-        self.refresh_status().await?;
-        self.refresh_power_stats().await?;
-
-        info!("Connected to PPBA device on {}", self.config.serial.port);
-
-        Ok(())
-    }
-
-    /// Disconnect from the PPBA device
-    async fn disconnect_device(&self) {
-        // Clear reader and writer
-        {
-            let mut reader_guard = self.reader.lock().await;
-            *reader_guard = None;
-        }
-        {
-            let mut writer_guard = self.writer.lock().await;
-            *writer_guard = None;
-        }
-
-        info!("Disconnected from PPBA device");
-    }
-
-    /// Send a command and get the response
-    async fn send_command(&self, command: PpbaCommand) -> Result<String> {
-        let command_str = command.to_command_string();
-        debug!("Sending command: {}", command_str);
-
-        // Write the command
-        {
-            let mut writer_guard = self.writer.lock().await;
-            let writer = writer_guard.as_mut().ok_or(PpbaError::NotConnected)?;
-            writer.write_message(&command_str).await?;
-        }
-
-        // Read the response
-        let response = {
-            let mut reader_guard = self.reader.lock().await;
-            let reader = reader_guard.as_mut().ok_or(PpbaError::NotConnected)?;
-            reader
-                .read_line()
-                .await?
-                .ok_or(PpbaError::Communication("Connection closed".to_string()))?
-        };
-
-        debug!("Received response: {}", response);
-
-        // Validate response based on command type
-        match &command {
-            PpbaCommand::Ping => validate_ping_response(&response)?,
-            PpbaCommand::Status | PpbaCommand::PowerStats | PpbaCommand::FirmwareVersion => {
-                // These commands return data, validation happens during parsing
-            }
-            _ => validate_set_response(&command, &response)?,
-        }
-
-        Ok(response)
-    }
-
-    /// Refresh the device status (PA command)
-    async fn refresh_status(&self) -> Result<()> {
-        let response = self.send_command(PpbaCommand::Status).await?;
-        let status = parse_status_response(&response)?;
-
-        let mut cached = self.cached_state.write().await;
-        cached.status = Some(status);
-
-        Ok(())
-    }
-
-    /// Refresh power statistics (PS command)
-    async fn refresh_power_stats(&self) -> Result<()> {
-        let response = self.send_command(PpbaCommand::PowerStats).await?;
-        let stats = parse_power_stats_response(&response)?;
-
-        let mut cached = self.cached_state.write().await;
-        cached.power_stats = Some(stats);
-
-        Ok(())
-    }
-
-    /// Start background polling for status updates
-    async fn start_polling(&self) {
-        let config = self.config.clone();
-        let cached_state = Arc::clone(&self.cached_state);
-        let connected = Arc::clone(&self.connected);
-        let reader = Arc::clone(&self.reader);
-        let writer = Arc::clone(&self.writer);
-
-        let handle = tokio::spawn(async move {
-            let mut poll_interval =
-                interval(Duration::from_millis(config.serial.polling_interval_ms));
-
-            loop {
-                poll_interval.tick().await;
-
-                // Check if still connected
-                if !*connected.read().await {
-                    debug!("Polling stopped: device disconnected");
-                    break;
-                }
-
-                // Refresh status
-                if let Err(e) = Self::poll_status(&reader, &writer, &cached_state).await {
-                    warn!("Failed to poll PPBA status: {}", e);
-                }
-
-                // Refresh power stats
-                if let Err(e) = Self::poll_power_stats(&reader, &writer, &cached_state).await {
-                    warn!("Failed to poll PPBA power stats: {}", e);
-                }
-            }
-        });
-
-        let mut polling_handle = self.polling_handle.lock().await;
-        *polling_handle = Some(handle);
-    }
-
-    /// Poll status (for use in background task)
-    async fn poll_status(
-        reader: &Arc<Mutex<Option<Box<dyn SerialReader>>>>,
-        writer: &Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
-        cached_state: &Arc<RwLock<CachedState>>,
-    ) -> Result<()> {
-        let command_str = PpbaCommand::Status.to_command_string();
-
-        // Write command
-        {
-            let mut writer_guard = writer.lock().await;
-            if let Some(w) = writer_guard.as_mut() {
-                w.write_message(&command_str).await?;
-            } else {
-                return Err(PpbaError::NotConnected);
-            }
-        }
-
-        // Read response
-        let response = {
-            let mut reader_guard = reader.lock().await;
-            if let Some(r) = reader_guard.as_mut() {
-                r.read_line()
-                    .await?
-                    .ok_or(PpbaError::Communication("Connection closed".to_string()))?
-            } else {
-                return Err(PpbaError::NotConnected);
-            }
-        };
-
-        let status = parse_status_response(&response)?;
-        let mut cached = cached_state.write().await;
-        cached.status = Some(status);
-
-        Ok(())
-    }
-
-    /// Poll power stats (for use in background task)
-    async fn poll_power_stats(
-        reader: &Arc<Mutex<Option<Box<dyn SerialReader>>>>,
-        writer: &Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
-        cached_state: &Arc<RwLock<CachedState>>,
-    ) -> Result<()> {
-        let command_str = PpbaCommand::PowerStats.to_command_string();
-
-        // Write command
-        {
-            let mut writer_guard = writer.lock().await;
-            if let Some(w) = writer_guard.as_mut() {
-                w.write_message(&command_str).await?;
-            } else {
-                return Err(PpbaError::NotConnected);
-            }
-        }
-
-        // Read response
-        let response = {
-            let mut reader_guard = reader.lock().await;
-            if let Some(r) = reader_guard.as_mut() {
-                r.read_line()
-                    .await?
-                    .ok_or(PpbaError::Communication("Connection closed".to_string()))?
-            } else {
-                return Err(PpbaError::NotConnected);
-            }
-        };
-
-        let stats = parse_power_stats_response(&response)?;
-        let mut cached = cached_state.write().await;
-        cached.power_stats = Some(stats);
-
-        Ok(())
-    }
-
-    /// Stop background polling
-    async fn stop_polling(&self) {
-        let mut handle = self.polling_handle.lock().await;
-        if let Some(h) = handle.take() {
-            h.abort();
-            debug!("Polling task aborted");
+            requested_connection: Arc::new(RwLock::new(false)),
+            serial_manager,
         }
     }
 
     /// Get the current switch value for a given switch ID
     async fn get_switch_value_internal(&self, id: usize) -> Result<f64> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
-        let cached = self.cached_state.read().await;
+        let cached = self.serial_manager.get_cached_state().await;
 
         match switch_id {
             // Controllable switches
@@ -391,12 +140,11 @@ impl PpbaSwitchDevice {
 
         // Additional check for dew heaters: verify auto-dew is OFF
         // Refresh state first to ensure we have current auto-dew status
-        // This prevents issues if auto-dew was changed externally
         if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
             // Refresh status to get current auto-dew state from device
-            self.refresh_status().await?;
+            self.serial_manager.refresh_status().await?;
 
-            let cached = self.cached_state.read().await;
+            let cached = self.serial_manager.get_cached_state().await;
             if let Some(status) = &cached.status {
                 if status.auto_dew {
                     return Err(PpbaError::AutoDewEnabled(id));
@@ -418,22 +166,23 @@ impl PpbaSwitchDevice {
             SwitchId::DewHeaterA => PpbaCommand::SetDewA(value.round() as u8),
             SwitchId::DewHeaterB => PpbaCommand::SetDewB(value.round() as u8),
             SwitchId::UsbHub => {
+                // USB hub state is not included in PA status response,
+                // so we need to track it manually
                 let enabled = value >= 0.5;
-                let cmd = PpbaCommand::SetUsbHub(enabled);
-                self.send_command(cmd).await?;
-                // Update cached state
-                let mut cached = self.cached_state.write().await;
-                cached.usb_hub_enabled = enabled;
+                self.serial_manager
+                    .send_command(PpbaCommand::SetUsbHub(enabled))
+                    .await?;
+                self.serial_manager.set_usb_hub_state(enabled).await;
                 return Ok(());
             }
             SwitchId::AutoDew => PpbaCommand::SetAutoDew(value >= 0.5),
             _ => return Err(PpbaError::SwitchNotWritable(id)),
         };
 
-        self.send_command(command).await?;
+        self.serial_manager.send_command(command).await?;
 
         // Refresh status to get updated values
-        self.refresh_status().await?;
+        self.serial_manager.refresh_status().await?;
 
         Ok(())
     }
@@ -464,53 +213,50 @@ impl PpbaSwitchDevice {
 #[async_trait]
 impl Device for PpbaSwitchDevice {
     fn static_name(&self) -> &str {
-        &self.config.device.name
+        &self.config.name
     }
 
     fn unique_id(&self) -> &str {
-        &self.config.device.unique_id
+        &self.config.unique_id
     }
 
     async fn description(&self) -> ASCOMResult<String> {
-        Ok(self.config.device.description.clone())
+        Ok(self.config.description.clone())
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        Ok(*self.connected.read().await)
+        let requested = *self.requested_connection.read().await;
+        let serial_ok = self.serial_manager.is_available();
+        Ok(requested && serial_ok)
     }
 
-    async fn set_connected(&self, connected: bool) -> std::result::Result<(), ASCOMError> {
-        if connected {
-            // Connect to device
-            self.connect_device().await.map_err(Self::to_ascom_error)?;
-
-            // Set connected state
-            {
-                let mut conn_state = self.connected.write().await;
-                *conn_state = true;
-            }
-
-            // Start polling
-            self.start_polling().await;
-        } else {
-            // Stop polling first
-            self.stop_polling().await;
-
-            // Set disconnected state
-            {
-                let mut conn_state = self.connected.write().await;
-                *conn_state = false;
-            }
-
-            // Disconnect device
-            self.disconnect_device().await;
+    async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        if self.connected().await? == connected {
+            return Ok(());
         }
-
+        match connected {
+            true => {
+                self.serial_manager
+                    .connect()
+                    .await
+                    .map_err(Self::to_ascom_error)?;
+                *self.requested_connection.write().await = true;
+                debug!("Switch device connected");
+            }
+            false => {
+                *self.requested_connection.write().await = false;
+                self.serial_manager.disconnect().await;
+                debug!("Switch device disconnected");
+            }
+        }
         Ok(())
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("PPBA Switch Driver for Pegasus Astro Pocket Powerbox Advance Gen2".to_string())
+        Ok(
+            "PPBA Driver - Switch interface for Pegasus Astro Pocket Powerbox Advance Gen2"
+                .to_string(),
+        )
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {
@@ -525,13 +271,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
-        // ASCOM spec: CanWrite must throw NotConnectedException when disconnected
-        if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Device not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         // Validate switch ID
         let switch_id = SwitchId::from_id(id)
@@ -540,18 +280,21 @@ impl Switch for PpbaSwitchDevice {
         // For dew heaters, writability depends on auto-dew state
         if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
             // Check if cache is populated, refresh if not
-            {
-                let cached = self.cached_state.read().await;
-                if cached.status.is_none() {
-                    // Cache not populated yet, refresh it
-                    drop(cached); // Release read lock before refreshing
-                    self.refresh_status().await.map_err(Self::to_ascom_error)?;
-                }
-            }
+            let cached = self.serial_manager.get_cached_state().await;
+            if cached.status.is_none() {
+                // Cache not populated yet, refresh it
+                self.serial_manager
+                    .refresh_status()
+                    .await
+                    .map_err(Self::to_ascom_error)?;
 
-            // Now check auto-dew state from cache
-            let cached = self.cached_state.read().await;
-            if let Some(status) = &cached.status {
+                // Get updated cache
+                let cached = self.serial_manager.get_cached_state().await;
+                if let Some(status) = &cached.status {
+                    // Writable only when auto-dew is OFF
+                    return Ok(!status.auto_dew);
+                }
+            } else if let Some(status) = &cached.status {
                 // Writable only when auto-dew is OFF
                 return Ok(!status.auto_dew);
             }
@@ -562,12 +305,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
-        if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         let value = self
             .get_switch_value_internal(id)
@@ -581,12 +319,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_switch(&self, id: usize, state: bool) -> ASCOMResult<()> {
-        if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
@@ -605,12 +338,14 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().description.to_string())
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().name.to_string())
@@ -624,12 +359,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
-        if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         self.get_switch_value_internal(id)
             .await
@@ -637,12 +367,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_switch_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
-        if !*self.connected.read().await {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_CONNECTED,
-                "Not connected",
-            ));
-        }
+        ensure_connected!(self);
 
         self.set_switch_value_internal(id, value)
             .await
@@ -650,24 +375,28 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().min_value)
     }
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().max_value)
     }
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(switch_id.info().step)
     }
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -680,6 +409,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -692,6 +422,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -706,6 +437,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -720,6 +452,7 @@ impl Switch for PpbaSwitchDevice {
     }
 
     async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
+        ensure_connected!(self);
         // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(

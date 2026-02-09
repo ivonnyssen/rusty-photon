@@ -7,14 +7,14 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::Level;
 
-#[cfg(not(feature = "mock"))]
-use ppba_switch::{load_config, start_server, Config};
 #[cfg(feature = "mock")]
-use ppba_switch::{load_config, start_server_with_factory, Config, MockSerialPortFactory};
+use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+#[cfg(not(feature = "mock"))]
+use ppba_driver::{load_config, Config, ServerBuilder};
 
 #[derive(Parser)]
-#[command(name = "ppba-switch")]
-#[command(about = "ASCOM Alpaca Switch driver for Pegasus Astro PPBA Gen2")]
+#[command(name = "ppba-driver")]
+#[command(about = "ASCOM Alpaca driver for Pegasus Astro PPBA Gen2")]
 #[command(version)]
 struct Args {
     /// Path to configuration file
@@ -28,6 +28,14 @@ struct Args {
     /// Server port (overrides config file)
     #[arg(long)]
     server_port: Option<u16>,
+
+    /// Enable/disable Switch device
+    #[arg(long)]
+    enable_switch: Option<bool>,
+
+    /// Enable/disable ObservingConditions device
+    #[arg(long)]
+    enable_observingconditions: Option<bool>,
 
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
@@ -76,8 +84,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(server_port) = args.server_port {
         config.server.port = server_port;
     }
+    if let Some(enable) = args.enable_switch {
+        config.switch.enabled = enable;
+    }
+    if let Some(enable) = args.enable_observingconditions {
+        config.observingconditions.enabled = enable;
+    }
 
-    tracing::info!("Starting PPBA Switch driver");
+    tracing::info!("Starting PPBA driver");
     #[cfg(feature = "mock")]
     tracing::info!("Running in MOCK MODE - no real hardware");
     #[cfg(not(feature = "mock"))]
@@ -87,13 +101,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     {
-        let factory = std::sync::Arc::new(MockSerialPortFactory);
-        start_server_with_factory(config, factory).await?;
+        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        ServerBuilder::new(config)
+            .with_factory(factory)
+            .build()
+            .await?
+            .start()
+            .await?;
     }
 
     #[cfg(not(feature = "mock"))]
     {
-        start_server(config).await?;
+        ServerBuilder::new(config).build().await?.start().await?;
     }
 
     Ok(())

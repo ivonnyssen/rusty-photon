@@ -1,6 +1,6 @@
 //! Protocol parsing tests for PPBA Switch driver
 
-use ppba_switch::protocol::{
+use ppba_driver::protocol::{
     parse_power_stats_response, parse_status_response, validate_ping_response,
     validate_set_response, PpbaCommand,
 };

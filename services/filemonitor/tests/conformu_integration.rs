@@ -1,21 +1,39 @@
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;
-use std::time::Duration;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::time::{sleep, timeout};
 use tracing_subscriber::{fmt, EnvFilter};
 
-fn get_random_port() -> u16 {
-    use std::net::TcpListener;
+/// Parse the bound port from service stdout.
+/// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT".
+/// Returns the port and spawns a background task to drain remaining stdout,
+/// preventing the server from blocking when the pipe buffer fills.
+async fn parse_bound_port(
+    stdout: tokio::process::ChildStdout,
+) -> Option<(u16, tokio::task::JoinHandle<()>)> {
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
 
-    // Bind to port 0 to get a random available port
-    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
-    let port = listener
-        .local_addr()
-        .expect("Failed to get local addr")
-        .port();
-    drop(listener); // Release the port
-    port
+    while reader.read_line(&mut line).await.ok()? > 0 {
+        if let Some(addr_str) = line.trim().strip_prefix("Bound Alpaca server bound_addr=") {
+            if let Some(port_str) = addr_str.split(':').last() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    // Drain remaining stdout in background so the server never
+                    // blocks on a write to stdout (tracing writes to stdout by default).
+                    let drain_handle = tokio::spawn(async move {
+                        let mut buf = String::new();
+                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+                            buf.clear();
+                        }
+                    });
+                    return Some((port, drain_handle));
+                }
+            }
+        }
+        line.clear();
+    }
+    None
 }
 
 #[tokio::test]
@@ -36,7 +54,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = test_dir.join("config.json");
     let status_file = test_dir.join("status.txt");
-    let port = get_random_port();
 
     let config = serde_json::json!({
         "device": {
@@ -60,7 +77,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "case_sensitive": false
         },
         "server": {
-            "port": port,
+            "port": 0,
             "device_number": 0
         }
     });
@@ -68,45 +85,22 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
     std::fs::write(&status_file, "SAFE")?;
 
-    // Start filemonitor service
+    // Start filemonitor service, capturing stdout to parse bound port
     let mut child = Command::new("cargo")
         .args(["run", "--", "-c", config_path.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
 
-    // Wait for service to be ready with health check
-    let client = reqwest::Client::new();
-    let mut ready = false;
-
-    for _ in 0..30 {
-        sleep(Duration::from_secs(1)).await;
-
-        if let Ok(Ok(resp)) = timeout(
-            Duration::from_secs(2),
-            client
-                .get(format!(
-                    "http://localhost:{}/management/v1/description",
-                    port
-                ))
-                .send(),
-        )
+    // Parse the bound port from stdout - the server is ready once this message appears
+    // since the socket is already listening after bind()
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let (port, stdout_drain) = parse_bound_port(stdout)
         .await
-        {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
-        }
-    }
-
-    if !ready {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        std::fs::remove_dir_all(&test_dir).ok();
-        return Err("Service failed to start within 30 seconds".into());
-    }
+        .ok_or("Failed to parse bound port from service output")?;
 
     println!("::group::ConformU Compliance Test Results");
-    println!("Running ASCOM Alpaca compliance tests...");
+    println!("Running ASCOM Alpaca compliance tests on port {}...", port);
 
     // Run ConformU tests and capture result
     let result =
@@ -128,6 +122,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Cleanup - ensure process is properly terminated
     let _ = child.kill().await;
     let _ = child.wait().await;
+    stdout_drain.abort();
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;

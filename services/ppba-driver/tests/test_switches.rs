@@ -1,6 +1,6 @@
 //! Switch definition tests for PPBA Switch driver
 
-use ppba_switch::{SwitchId, MAX_SWITCH};
+use ppba_driver::{SwitchId, MAX_SWITCH};
 
 #[test]
 fn max_switch_is_sixteen() {

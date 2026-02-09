@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 
 /// Shared state between mock reader and writer
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MockState {
     /// Queue of responses to return
     response_queue: Vec<String>,
@@ -97,17 +97,12 @@ impl MockDeviceState {
 }
 
 impl MockState {
-    fn new() -> Self {
-        Self {
-            response_queue: Vec::new(),
-            device_state: MockDeviceState::default(),
-        }
-    }
-
     /// Process a command and queue the appropriate response
     fn process_command(&mut self, command: &str) {
         let command = command.trim();
-        debug!("Mock processing command: {}", command);
+        debug!("Mock processing command: '{}' | Current state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
+               command, self.device_state.quad_12v, self.device_state.adjustable,
+               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
 
         let response = if command == "P#" {
             // Ping
@@ -162,7 +157,9 @@ impl MockState {
             "ERR".to_string()
         };
 
-        debug!("Mock queuing response: {}", response);
+        debug!("Mock queuing response: '{}' | New state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
+               response, self.device_state.quad_12v, self.device_state.adjustable,
+               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
         self.response_queue.push(response);
     }
 
@@ -192,12 +189,16 @@ impl MockSerialReader {
 impl SerialReader for MockSerialReader {
     async fn read_line(&mut self) -> Result<Option<String>> {
         let mut state = self.state.lock().await;
+        let queue_len = state.response_queue.len();
         if let Some(response) = state.next_response() {
-            debug!("Mock serial read: {}", response);
+            debug!(
+                "Mock serial read: '{}' (queue had {} items)",
+                response, queue_len
+            );
             Ok(Some(response))
         } else {
             // No response queued - this shouldn't happen in normal operation
-            debug!("Mock serial read: no response queued");
+            debug!("Mock serial read: NO RESPONSE QUEUED (queue empty)");
             Ok(None)
         }
     }
@@ -226,14 +227,13 @@ impl SerialWriter for MockSerialWriter {
 }
 
 /// Mock serial port factory for testing
+///
+/// Maintains persistent state across multiple open/close cycles to simulate
+/// real hardware behavior where device state persists even when disconnected.
 #[derive(Clone, Default)]
-pub struct MockSerialPortFactory;
-
-impl MockSerialPortFactory {
-    /// Create a new mock factory
-    pub fn new() -> Self {
-        Self
-    }
+pub struct MockSerialPortFactory {
+    /// Persistent state shared across all connections
+    persistent_state: Arc<Mutex<MockState>>,
 }
 
 #[async_trait]
@@ -241,7 +241,8 @@ impl SerialPortFactory for MockSerialPortFactory {
     async fn open(&self, port: &str, baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
         debug!("Mock serial port opened: {} at {} baud", port, baud_rate);
 
-        let state = Arc::new(Mutex::new(MockState::new()));
+        // Use persistent state instead of creating a new one
+        let state = Arc::clone(&self.persistent_state);
 
         Ok(SerialPair {
             reader: Box::new(MockSerialReader::new(Arc::clone(&state))),
@@ -260,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_ping_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -271,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_status_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -282,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_power_stats_response() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -293,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_set_quad_12v() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -308,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_set_dew_heater() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -323,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_state_persists() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -343,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_factory_creates_working_pair() {
-        let factory = MockSerialPortFactory::new();
+        let factory = MockSerialPortFactory::default();
         let mut pair = factory
             .open("/dev/mock", 9600, Duration::from_secs(1))
             .await
@@ -356,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_usb_hub() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 
@@ -371,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_auto_dew() {
-        let state = Arc::new(Mutex::new(MockState::new()));
+        let state = Arc::new(Mutex::new(MockState::default()));
         let mut writer = MockSerialWriter::new(Arc::clone(&state));
         let mut reader = MockSerialReader::new(state);
 

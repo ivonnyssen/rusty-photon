@@ -2,7 +2,7 @@
 members = [
   "services/filemonitor",
   "services/phd2-guider",
-  "services/ppba-switch",
+  "services/ppba-driver",
 ]
 resolver = "2"
 
