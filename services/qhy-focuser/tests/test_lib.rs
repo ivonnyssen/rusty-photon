@@ -89,6 +89,7 @@ async fn test_server_starts_with_focuser_enabled() {
     assert_eq!(status, 200, "Focuser name endpoint should respond");
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -101,6 +102,7 @@ async fn test_server_starts_with_focuser_disabled() {
     assert_ne!(status, 200, "Focuser should not be registered");
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -115,6 +117,7 @@ async fn test_server_returns_configured_focuser_name() {
     assert_eq!(body["Value"], "My Custom Focuser");
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -129,4 +132,5 @@ async fn test_server_binds_to_os_assigned_port() {
     assert!(stream.is_ok(), "Server should be reachable on bound port");
 
     handle.abort();
+    let _ = handle.await;
 }
