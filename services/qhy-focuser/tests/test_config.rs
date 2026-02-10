@@ -12,7 +12,7 @@ fn default_config_has_expected_values() {
     assert_eq!(config.focuser.speed, 0);
     assert!(!config.focuser.reverse);
 
-    assert_eq!(config.serial.port, "/dev/ttyUSB0");
+    assert_eq!(config.serial.port, "/dev/ttyACM0");
     assert_eq!(config.serial.baud_rate, 9600);
     assert_eq!(config.serial.polling_interval_ms, 1000);
     assert_eq!(config.serial.timeout_seconds, 2);
@@ -38,7 +38,7 @@ fn focuser_config_default() {
 fn serial_config_default() {
     let config = SerialConfig::default();
 
-    assert_eq!(config.port, "/dev/ttyUSB0");
+    assert_eq!(config.port, "/dev/ttyACM0");
     assert_eq!(config.baud_rate, 9600);
     assert_eq!(config.polling_interval_ms, 1000);
     assert_eq!(config.timeout_seconds, 2);
@@ -57,7 +57,7 @@ fn config_serializes_to_json() {
     let json = serde_json::to_string(&config).unwrap();
 
     assert!(json.contains("QHY Q-Focuser"));
-    assert!(json.contains("/dev/ttyUSB0"));
+    assert!(json.contains("/dev/ttyACM0"));
     assert!(json.contains("9600"));
     assert!(json.contains("11113"));
 }

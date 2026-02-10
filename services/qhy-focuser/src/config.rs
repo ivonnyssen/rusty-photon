@@ -70,7 +70,7 @@ fn default_max_step() -> u32 {
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyUSB0".to_string(),
+            port: "/dev/ttyACM0".to_string(),
             baud_rate: default_baud_rate(),
             polling_interval_ms: default_polling_interval(),
             timeout_seconds: default_timeout(),

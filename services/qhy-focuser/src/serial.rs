@@ -17,7 +17,7 @@ use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 /// Serial reader using tokio-serial
 pub struct TokioSerialReader {
     reader: BufReader<ReadHalf<SerialStream>>,
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl TokioSerialReader {
@@ -25,7 +25,7 @@ impl TokioSerialReader {
     pub fn new(reader: ReadHalf<SerialStream>) -> Self {
         Self {
             reader: BufReader::new(reader),
-            buffer: String::new(),
+            buffer: Vec::new(),
         }
     }
 }
@@ -34,10 +34,16 @@ impl TokioSerialReader {
 impl SerialReader for TokioSerialReader {
     async fn read_line(&mut self) -> Result<Option<String>> {
         self.buffer.clear();
-        match self.reader.read_line(&mut self.buffer).await {
+        match self.reader.read_until(b'}', &mut self.buffer).await {
             Ok(0) => Ok(None),
             Ok(_) => {
-                let line = self.buffer.trim().to_string();
+                let raw = String::from_utf8_lossy(&self.buffer);
+                // Trim any leading junk before the opening `{`
+                let trimmed = match raw.find('{') {
+                    Some(start) => &raw[start..],
+                    None => raw.trim(),
+                };
+                let line = trimmed.to_string();
                 debug!("Serial read: {}", line);
                 Ok(Some(line))
             }
@@ -66,7 +72,7 @@ impl SerialWriter for TokioSerialWriter {
     async fn write_message(&mut self, message: &str) -> Result<()> {
         debug!("Serial write: {}", message);
         self.writer
-            .write_all(format!("{}\n", message).as_bytes())
+            .write_all(message.as_bytes())
             .await
             .map_err(|e| QhyFocuserError::Communication(format!("Failed to write: {}", e)))?;
         self.writer

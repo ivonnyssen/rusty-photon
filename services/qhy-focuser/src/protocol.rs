@@ -15,8 +15,8 @@ pub enum Command {
     GetVersion,
     /// Relative move (cmd_id: 2)
     RelativeMove {
-        direction: u8,
-        speed: u8,
+        /// Direction: 1 = inward, -1 = outward
+        direction: i8,
         steps: u32,
     },
     /// Abort current movement (cmd_id: 3)
@@ -26,7 +26,7 @@ pub enum Command {
     /// Get current position (cmd_id: 5)
     GetPosition,
     /// Move to absolute position (cmd_id: 6)
-    AbsoluteMove { position: i64, speed: u8 },
+    AbsoluteMove { position: i64 },
     /// Set reverse direction (cmd_id: 7)
     SetReverse { enabled: bool },
     /// Sync position counter (cmd_id: 11)
@@ -63,16 +63,11 @@ impl Command {
             Command::GetVersion => {
                 serde_json::json!({"cmd_id": 1})
             }
-            Command::RelativeMove {
-                direction,
-                speed,
-                steps,
-            } => {
+            Command::RelativeMove { direction, steps } => {
                 serde_json::json!({
                     "cmd_id": 2,
-                    "direction": direction,
-                    "speed": speed,
-                    "steps": steps
+                    "dir": direction,
+                    "step": steps
                 })
             }
             Command::Abort => {
@@ -84,23 +79,22 @@ impl Command {
             Command::GetPosition => {
                 serde_json::json!({"cmd_id": 5})
             }
-            Command::AbsoluteMove { position, speed } => {
+            Command::AbsoluteMove { position } => {
                 serde_json::json!({
                     "cmd_id": 6,
-                    "position": position,
-                    "speed": speed
+                    "tar": position
                 })
             }
             Command::SetReverse { enabled } => {
                 serde_json::json!({
                     "cmd_id": 7,
-                    "enabled": if *enabled { 1 } else { 0 }
+                    "rev": if *enabled { 1 } else { 0 }
                 })
             }
             Command::SyncPosition { position } => {
                 serde_json::json!({
                     "cmd_id": 11,
-                    "position": position
+                    "init_val": position
                 })
             }
             Command::SetSpeed { speed } => {
@@ -119,7 +113,7 @@ impl Command {
             Command::SetPdnMode { pdn } => {
                 serde_json::json!({
                     "cmd_id": 19,
-                    "pdn": pdn
+                    "pdn_d": pdn
                 })
             }
         };
@@ -228,9 +222,9 @@ pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
     let value = parse_response(response, 5)?;
 
     let position = value
-        .get("position")
+        .get("pos")
         .and_then(|v| v.as_i64())
-        .ok_or_else(|| QhyFocuserError::ParseError("Missing 'position' field".to_string()))?;
+        .ok_or_else(|| QhyFocuserError::ParseError("Missing 'pos' field".to_string()))?;
 
     Ok(PositionResponse { position })
 }

@@ -94,16 +94,17 @@ impl SerialPortFactory for MockSerialPortFactory {
     }
 }
 
-/// Standard handshake responses: version + position + temperature
+/// Standard handshake responses: version + set_speed + position + temperature
 fn standard_connection_responses() -> Vec<String> {
     vec![
         r#"{"idx": 1, "firmware_version": "2.1.0", "board_version": "1.0"}"#.to_string(),
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 13}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
         // Polling responses
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
     ]
 }

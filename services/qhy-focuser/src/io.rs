@@ -21,11 +21,11 @@ pub struct SerialPair {
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait SerialReader: Send {
-    /// Read a line from the serial port
+    /// Read a response from the serial port
     ///
-    /// Returns `Ok(Some(line))` if a line was read successfully,
-    /// `Ok(None)` if the port was closed,
-    /// or an error if reading failed.
+    /// Reads until the `}` response terminator. Returns `Ok(Some(line))`
+    /// if a response was read successfully, `Ok(None)` if the port was
+    /// closed, or an error if reading failed.
     async fn read_line(&mut self) -> Result<Option<String>>;
 }
 
@@ -35,7 +35,7 @@ pub trait SerialReader: Send {
 pub trait SerialWriter: Send {
     /// Write a message to the serial port
     ///
-    /// The message is written with a newline terminator.
+    /// The message bytes are written as-is without any terminator.
     async fn write_message(&mut self, message: &str) -> Result<()>;
 }
 

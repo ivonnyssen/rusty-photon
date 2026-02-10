@@ -18,16 +18,14 @@ fn test_get_version_command() {
 #[test]
 fn test_relative_move_command() {
     let cmd = Command::RelativeMove {
-        direction: 1,
-        speed: 3,
+        direction: -1,
         steps: 1000,
     };
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["cmd_id"], 2);
-    assert_eq!(parsed["direction"], 1);
-    assert_eq!(parsed["speed"], 3);
-    assert_eq!(parsed["steps"], 1000);
+    assert_eq!(parsed["dir"], -1);
+    assert_eq!(parsed["step"], 1000);
     assert_eq!(cmd.cmd_id(), 2);
 }
 
@@ -60,27 +58,20 @@ fn test_get_position_command() {
 
 #[test]
 fn test_absolute_move_command() {
-    let cmd = Command::AbsoluteMove {
-        position: 32000,
-        speed: 0,
-    };
+    let cmd = Command::AbsoluteMove { position: 32000 };
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["cmd_id"], 6);
-    assert_eq!(parsed["position"], 32000);
-    assert_eq!(parsed["speed"], 0);
+    assert_eq!(parsed["tar"], 32000);
     assert_eq!(cmd.cmd_id(), 6);
 }
 
 #[test]
 fn test_absolute_move_negative_position() {
-    let cmd = Command::AbsoluteMove {
-        position: -5000,
-        speed: 4,
-    };
+    let cmd = Command::AbsoluteMove { position: -5000 };
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed["position"], -5000);
+    assert_eq!(parsed["tar"], -5000);
 }
 
 #[test]
@@ -89,7 +80,7 @@ fn test_set_reverse_enabled() {
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["cmd_id"], 7);
-    assert_eq!(parsed["enabled"], 1);
+    assert_eq!(parsed["rev"], 1);
 }
 
 #[test]
@@ -97,7 +88,7 @@ fn test_set_reverse_disabled() {
     let cmd = Command::SetReverse { enabled: false };
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed["enabled"], 0);
+    assert_eq!(parsed["rev"], 0);
 }
 
 #[test]
@@ -106,7 +97,7 @@ fn test_sync_position_command() {
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["cmd_id"], 11);
-    assert_eq!(parsed["position"], 10000);
+    assert_eq!(parsed["init_val"], 10000);
 }
 
 #[test]
@@ -137,7 +128,7 @@ fn test_set_pdn_mode_command() {
     let json = cmd.to_json_string();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["cmd_id"], 19);
-    assert_eq!(parsed["pdn"], 1);
+    assert_eq!(parsed["pdn_d"], 1);
 }
 
 // ============================================================================
@@ -146,21 +137,21 @@ fn test_set_pdn_mode_command() {
 
 #[test]
 fn test_parse_response_valid_idx() {
-    let response = r#"{"idx": 5, "position": 1000}"#;
+    let response = r#"{"idx": 5, "pos": 1000}"#;
     let value = parse_response(response, 5).unwrap();
     assert_eq!(value["idx"], 5);
 }
 
 #[test]
 fn test_parse_response_wrong_idx() {
-    let response = r#"{"idx": 3, "position": 1000}"#;
+    let response = r#"{"idx": 3, "pos": 1000}"#;
     let err = parse_response(response, 5).unwrap_err();
     assert!(err.to_string().contains("Expected idx 5, got 3"));
 }
 
 #[test]
 fn test_parse_response_missing_idx() {
-    let response = r#"{"position": 1000}"#;
+    let response = r#"{"pos": 1000}"#;
     let err = parse_response(response, 5).unwrap_err();
     assert!(err.to_string().contains("Missing 'idx' field"));
 }
@@ -214,21 +205,21 @@ fn test_parse_temperature_response_missing_field() {
 
 #[test]
 fn test_parse_position_response() {
-    let response = r#"{"idx": 5, "position": 32000}"#;
+    let response = r#"{"idx": 5, "pos": 32000}"#;
     let pos = parse_position_response(response).unwrap();
     assert_eq!(pos.position, 32000);
 }
 
 #[test]
 fn test_parse_position_response_negative() {
-    let response = r#"{"idx": 5, "position": -10000}"#;
+    let response = r#"{"idx": 5, "pos": -10000}"#;
     let pos = parse_position_response(response).unwrap();
     assert_eq!(pos.position, -10000);
 }
 
 #[test]
 fn test_parse_position_response_zero() {
-    let response = r#"{"idx": 5, "position": 0}"#;
+    let response = r#"{"idx": 5, "pos": 0}"#;
     let pos = parse_position_response(response).unwrap();
     assert_eq!(pos.position, 0);
 }
@@ -237,7 +228,7 @@ fn test_parse_position_response_zero() {
 fn test_parse_position_response_missing_field() {
     let response = r#"{"idx": 5}"#;
     let err = parse_position_response(response).unwrap_err();
-    assert!(err.to_string().contains("position"));
+    assert!(err.to_string().contains("pos"));
 }
 
 // ============================================================================
@@ -246,10 +237,7 @@ fn test_parse_position_response_missing_field() {
 
 #[test]
 fn test_command_clone() {
-    let cmd = Command::AbsoluteMove {
-        position: 100,
-        speed: 0,
-    };
+    let cmd = Command::AbsoluteMove { position: 100 };
     let cloned = cmd.clone();
     assert_eq!(cmd, cloned);
 }

@@ -116,22 +116,24 @@ impl SerialPortFactory for FailingFactory {
     }
 }
 
-/// Standard responses: version + position + temperature (enough for handshake)
+/// Standard responses: version + set_speed + position + temperature (enough for handshake)
 /// Then additional position+temp pairs for polling cycles
 fn standard_connection_responses() -> Vec<String> {
     vec![
         // Handshake: version response
         r#"{"idx": 1, "firmware_version": "2.1.0", "board_version": "1.0"}"#.to_string(),
+        // Handshake: set speed response
+        r#"{"idx": 13}"#.to_string(),
         // Handshake: position response
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         // Handshake: temperature response
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
         // Polling: position
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         // Polling: temperature
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
         // Extra polling responses
-        r#"{"idx": 5, "position": 10000}"#.to_string(),
+        r#"{"idx": 5, "pos": 10000}"#.to_string(),
         r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string(),
     ]
 }
@@ -301,7 +303,7 @@ async fn test_move_absolute_sets_state() {
     // Add response for the absolute move command
     responses.push(r#"{"idx": 6}"#.to_string());
     // Add extra polling responses
-    responses.push(r#"{"idx": 5, "position": 10000}"#.to_string());
+    responses.push(r#"{"idx": 5, "pos": 10000}"#.to_string());
     responses.push(r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string());
 
     let factory = Arc::new(MockSerialPortFactory::new(responses));
@@ -325,7 +327,7 @@ async fn test_abort_clears_moving_state() {
     // Abort command response
     responses.push(r#"{"idx": 3}"#.to_string());
     // Extra polling
-    responses.push(r#"{"idx": 5, "position": 15000}"#.to_string());
+    responses.push(r#"{"idx": 5, "pos": 15000}"#.to_string());
     responses.push(r#"{"idx": 4, "o_t": 25000, "c_t": 30000, "c_r": 125}"#.to_string());
 
     let factory = Arc::new(MockSerialPortFactory::new(responses));

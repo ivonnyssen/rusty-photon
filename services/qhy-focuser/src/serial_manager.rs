@@ -16,7 +16,8 @@ use crate::config::{Config, SerialConfig};
 use crate::error::{QhyFocuserError, Result};
 use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 use crate::protocol::{
-    parse_position_response, parse_temperature_response, parse_version_response, Command,
+    parse_position_response, parse_response, parse_temperature_response, parse_version_response,
+    Command,
 };
 
 /// Cached state from the QHY Q-Focuser device
@@ -188,10 +189,7 @@ impl SerialManager {
             cached.is_moving = true;
         }
 
-        let command = Command::AbsoluteMove {
-            position,
-            speed: self.speed,
-        };
+        let command = Command::AbsoluteMove { position };
 
         self.send_command_internal(command).await?;
 
@@ -274,7 +272,7 @@ impl SerialManager {
         Ok(())
     }
 
-    /// Perform handshake: get version, initial position and temperature
+    /// Perform handshake: get version, set speed, initial position and temperature
     async fn perform_handshake(&self) -> Result<()> {
         // Get version
         let version_response = self.send_command_internal(Command::GetVersion).await?;
@@ -283,6 +281,11 @@ impl SerialManager {
             "Firmware: {}, Board: {}",
             version.firmware_version, version.board_version
         );
+
+        // Set configured speed
+        self.send_command_internal(Command::SetSpeed { speed: self.speed })
+            .await?;
+        debug!("Speed set to {} during handshake", self.speed);
 
         // Get initial position
         let position_response = self.send_command_internal(Command::GetPosition).await?;
@@ -311,9 +314,13 @@ impl SerialManager {
         Ok(())
     }
 
+    /// Maximum number of stale responses to discard before giving up
+    const MAX_RESPONSE_RETRIES: usize = 5;
+
     /// Internal command sending (doesn't check connection state)
     async fn send_command_internal(&self, command: Command) -> Result<String> {
         let _cmd_guard = self.command_lock.lock().await;
+        let expected_idx = command.cmd_id();
         let command_str = command.to_json_string();
         debug!("Sending command: {}", command_str);
 
@@ -324,20 +331,50 @@ impl SerialManager {
             writer.write_message(&command_str).await?;
         }
 
-        // Read the response
+        // Read responses, discarding any with mismatched idx.
+        // The device may send unsolicited position updates during movement.
         let response = {
             let mut reader_guard = self.reader.lock().await;
             let reader = reader_guard.as_mut().ok_or(QhyFocuserError::NotConnected)?;
-            reader
-                .read_line()
-                .await?
-                .ok_or(QhyFocuserError::Communication(
-                    "Connection closed".to_string(),
-                ))?
+            Self::read_response_for(reader, expected_idx).await?
         };
 
         debug!("Received response: {}", response);
         Ok(response)
+    }
+
+    /// Read responses from the serial port until one matches `expected_idx`,
+    /// discarding stale/unsolicited responses from the device.
+    async fn read_response_for(
+        reader: &mut Box<dyn SerialReader>,
+        expected_idx: u8,
+    ) -> Result<String> {
+        for attempt in 0..Self::MAX_RESPONSE_RETRIES {
+            let response = reader
+                .read_line()
+                .await?
+                .ok_or(QhyFocuserError::Communication(
+                    "Connection closed".to_string(),
+                ))?;
+
+            match parse_response(&response, expected_idx) {
+                Ok(_) => return Ok(response),
+                Err(_) => {
+                    debug!(
+                        "Discarding stale response (attempt {}, expected idx {}): {}",
+                        attempt + 1,
+                        expected_idx,
+                        response
+                    );
+                }
+            }
+        }
+
+        Err(QhyFocuserError::Communication(format!(
+            "No response with idx {} after {} reads",
+            expected_idx,
+            Self::MAX_RESPONSE_RETRIES
+        )))
     }
 
     /// Start background polling for position and temperature
@@ -395,7 +432,8 @@ impl SerialManager {
         cached_state: &Arc<RwLock<CachedState>>,
     ) -> Result<()> {
         let _cmd_guard = command_lock.lock().await;
-        let command_str = Command::GetPosition.to_json_string();
+        let cmd = Command::GetPosition;
+        let command_str = cmd.to_json_string();
 
         {
             let mut writer_guard = writer.lock().await;
@@ -409,9 +447,7 @@ impl SerialManager {
         let response = {
             let mut reader_guard = reader.lock().await;
             if let Some(r) = reader_guard.as_mut() {
-                r.read_line().await?.ok_or(QhyFocuserError::Communication(
-                    "Connection closed".to_string(),
-                ))?
+                Self::read_response_for(r, cmd.cmd_id()).await?
             } else {
                 return Err(QhyFocuserError::NotConnected);
             }
@@ -447,7 +483,8 @@ impl SerialManager {
         cached_state: &Arc<RwLock<CachedState>>,
     ) -> Result<()> {
         let _cmd_guard = command_lock.lock().await;
-        let command_str = Command::ReadTemperature.to_json_string();
+        let cmd = Command::ReadTemperature;
+        let command_str = cmd.to_json_string();
 
         {
             let mut writer_guard = writer.lock().await;
@@ -461,9 +498,7 @@ impl SerialManager {
         let response = {
             let mut reader_guard = reader.lock().await;
             if let Some(r) = reader_guard.as_mut() {
-                r.read_line().await?.ok_or(QhyFocuserError::Communication(
-                    "Connection closed".to_string(),
-                ))?
+                Self::read_response_for(r, cmd.cmd_id()).await?
             } else {
                 return Err(QhyFocuserError::NotConnected);
             }

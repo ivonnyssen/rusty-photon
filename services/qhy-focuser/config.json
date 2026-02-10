@@ -1,6 +1,6 @@
 {
   "serial": {
-    "port": "/dev/ttyUSB0",
+    "port": "/dev/ttyACM0",
     "baud_rate": 9600,
     "polling_interval_ms": 1000,
     "timeout_seconds": 2

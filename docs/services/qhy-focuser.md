@@ -21,19 +21,21 @@ The service follows the same architecture as `ppba-driver`:
 
 The Q-Focuser uses JSON objects over serial. Commands include a `cmd_id` field; responses echo the ID in an `idx` field.
 
-| cmd_id | Command | Parameters | Notes |
-|--------|---------|------------|-------|
-| 1 | GetVersion | — | Returns firmware_version, board_version |
-| 2 | RelativeMove | direction, speed, steps | direction: 0=out, 1=in |
-| 3 | Abort | — | Stops current movement |
-| 4 | ReadTemperature | — | Returns o_t, c_t (÷1000→°C), c_r (÷10→V) |
-| 5 | GetPosition | — | Returns current position |
-| 6 | AbsoluteMove | position, speed | Moves to absolute position |
-| 7 | SetReverse | enabled (0/1) | Reverses motor direction |
-| 11 | SyncPosition | position | Sets position counter without moving |
-| 13 | SetSpeed | speed (0-8) | 0 = fastest |
-| 16 | SetHoldCurrent | ihold, irun | Motor current (0-31 each) |
-| 19 | SetPdnMode | pdn | Motor power-down mode |
+| cmd_id | Command | Parameters | Response Fields | Notes |
+|--------|---------|------------|-----------------|-------|
+| 1 | GetVersion | — | firmware_version, board_version | |
+| 2 | RelativeMove | dir, step | — | dir: 1=inward, -1=outward |
+| 3 | Abort | — | — | Stops current movement |
+| 4 | ReadTemperature | — | o_t, c_t (÷1000→°C), c_r (÷10→V) | |
+| 5 | GetPosition | — | pos | Returns current position |
+| 6 | AbsoluteMove | tar | — | Moves to absolute position |
+| 7 | SetReverse | rev (0/1) | — | Reverses motor direction |
+| 11 | SyncPosition | init_val | — | Sets position counter without moving |
+| 13 | SetSpeed | speed (0-8) | — | 0 = fastest |
+| 16 | SetHoldCurrent | ihold, irun | — | Motor current (0-31 each) |
+| 19 | SetPdnMode | pdn_d | — | Motor power-down mode |
+
+Responses are JSON objects terminated by `}` (no newline). Commands are sent as raw JSON without any terminator.
 
 ## ASCOM Focuser Mapping
 
@@ -56,7 +58,7 @@ The Q-Focuser uses JSON objects over serial. Commands include a `cmd_id` field; 
 ```json
 {
   "serial": {
-    "port": "/dev/ttyUSB0",
+    "port": "/dev/ttyACM0",
     "baud_rate": 9600,
     "polling_interval_ms": 1000,
     "timeout_seconds": 2
@@ -125,7 +127,7 @@ cargo run -p qhy-focuser --features mock
 
 1. ASCOM client calls `set_connected(true)`
 2. Serial manager opens port (first connection only, ref-counted)
-3. Handshake: GetVersion → GetPosition → ReadTemperature
+3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature
 4. Background polling starts: position + temperature at configured interval
 5. Move detection: polling compares position to target, clears `is_moving` when reached
 6. On disconnect: ref-count decremented, port closed when last device disconnects

@@ -93,10 +93,10 @@ impl MockState {
             }
             2 => {
                 // RelativeMove
-                let direction = parsed["direction"].as_u64().unwrap_or(0);
-                let steps = parsed["steps"].as_u64().unwrap_or(0) as i64;
+                let dir = parsed["dir"].as_i64().unwrap_or(1);
+                let steps = parsed["step"].as_u64().unwrap_or(0) as i64;
 
-                let delta = if direction == 0 { steps } else { -steps };
+                let delta = if dir > 0 { steps } else { -steps };
                 self.device_state.target_position = Some(self.device_state.position + delta);
                 self.device_state.is_moving = true;
                 // Simulate instant move for mock
@@ -143,26 +143,26 @@ impl MockState {
 
                 serde_json::json!({
                     "idx": 5,
-                    "position": self.device_state.position
+                    "pos": self.device_state.position
                 })
                 .to_string()
             }
             6 => {
                 // AbsoluteMove
-                let position = parsed["position"].as_i64().unwrap_or(0);
+                let position = parsed["tar"].as_i64().unwrap_or(0);
                 self.device_state.target_position = Some(position);
                 self.device_state.is_moving = true;
                 serde_json::json!({"idx": 6}).to_string()
             }
             7 => {
                 // SetReverse
-                let enabled = parsed["enabled"].as_u64().unwrap_or(0) == 1;
+                let enabled = parsed["rev"].as_u64().unwrap_or(0) == 1;
                 self.device_state.reverse = enabled;
                 serde_json::json!({"idx": 7}).to_string()
             }
             11 => {
                 // SyncPosition
-                let position = parsed["position"].as_i64().unwrap_or(0);
+                let position = parsed["init_val"].as_i64().unwrap_or(0);
                 self.device_state.position = position;
                 serde_json::json!({"idx": 11}).to_string()
             }
@@ -303,7 +303,7 @@ mod tests {
         let response = reader.read_line().await.unwrap().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed["idx"], 5);
-        assert_eq!(parsed["position"], 0);
+        assert_eq!(parsed["pos"], 0);
     }
 
     #[tokio::test]
@@ -329,7 +329,7 @@ mod tests {
 
         // Send absolute move
         writer
-            .write_message(r#"{"cmd_id": 6, "position": 5000, "speed": 0}"#)
+            .write_message(r#"{"cmd_id": 6, "tar": 5000}"#)
             .await
             .unwrap();
         let response = reader.read_line().await.unwrap().unwrap();
@@ -357,7 +357,7 @@ mod tests {
 
         // Sync position to 15000
         writer
-            .write_message(r#"{"cmd_id": 11, "position": 15000}"#)
+            .write_message(r#"{"cmd_id": 11, "init_val": 15000}"#)
             .await
             .unwrap();
         let _ = reader.read_line().await.unwrap();
@@ -366,7 +366,7 @@ mod tests {
         writer.write_message(r#"{"cmd_id": 5}"#).await.unwrap();
         let response = reader.read_line().await.unwrap().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(parsed["position"], 15000);
+        assert_eq!(parsed["pos"], 15000);
     }
 
     #[tokio::test]
@@ -398,7 +398,7 @@ mod tests {
 
         // Set reverse
         writer
-            .write_message(r#"{"cmd_id": 7, "enabled": 1}"#)
+            .write_message(r#"{"cmd_id": 7, "rev": 1}"#)
             .await
             .unwrap();
         let _ = reader.read_line().await.unwrap();
