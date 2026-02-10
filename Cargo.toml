@@ -32,3 +32,4 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 tokio-serial = "5.4"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "feature/conformu-settings-file", default-features = false }
+reqwest = "0.12"

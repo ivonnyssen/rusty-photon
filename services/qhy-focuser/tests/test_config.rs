@@ -1,6 +1,8 @@
 //! Configuration tests for QHY Q-Focuser driver
 
-use qhy_focuser::{Config, FocuserConfig, SerialConfig, ServerConfig};
+use std::path::PathBuf;
+
+use qhy_focuser::{load_config, Config, FocuserConfig, SerialConfig, ServerConfig};
 
 #[test]
 fn default_config_has_expected_values() {
@@ -151,4 +153,55 @@ fn config_debug_works() {
     assert!(debug_str.contains("FocuserConfig"));
     assert!(debug_str.contains("SerialConfig"));
     assert!(debug_str.contains("ServerConfig"));
+}
+
+#[test]
+fn load_config_from_file() {
+    let dir = std::env::temp_dir().join("qhy_focuser_test_load_config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+
+    let json = r#"{
+        "serial": { "port": "/dev/ttyUSB0", "baud_rate": 115200 },
+        "server": { "port": 9999 },
+        "focuser": {
+            "name": "Test Focuser",
+            "unique_id": "test-001",
+            "description": "A test focuser",
+            "speed": 7
+        }
+    }"#;
+    std::fs::write(&path, json).unwrap();
+
+    let config = load_config(&path).unwrap();
+    assert_eq!(config.serial.port, "/dev/ttyUSB0");
+    assert_eq!(config.serial.baud_rate, 115200);
+    assert_eq!(config.server.port, 9999);
+    assert_eq!(config.focuser.name, "Test Focuser");
+    assert_eq!(config.focuser.speed, 7);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn load_config_nonexistent_file() {
+    let path = PathBuf::from("/tmp/qhy_focuser_nonexistent_config_12345.json");
+    let result = load_config(&path);
+    assert!(result.is_err());
+}
+
+#[test]
+fn load_config_invalid_json() {
+    let dir = std::env::temp_dir().join("qhy_focuser_test_invalid_json");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bad_config.json");
+
+    std::fs::write(&path, "this is not valid json").unwrap();
+
+    let result = load_config(&path);
+    assert!(result.is_err());
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -406,4 +406,109 @@ mod tests {
         // Verify state persists (mock tracks these internally)
         // The mock correctly processes sequential commands
     }
+
+    #[tokio::test]
+    async fn test_mock_relative_move_forward() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        // Move forward 500 steps
+        writer
+            .write_message(r#"{"cmd_id": 2, "dir": 1, "step": 500}"#)
+            .await
+            .unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["idx"], 2);
+
+        // Verify position changed
+        writer.write_message(r#"{"cmd_id": 5}"#).await.unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["pos"], 500);
+    }
+
+    #[tokio::test]
+    async fn test_mock_relative_move_backward() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        // First move forward to position 1000
+        writer
+            .write_message(r#"{"cmd_id": 2, "dir": 1, "step": 1000}"#)
+            .await
+            .unwrap();
+        let _ = reader.read_line().await.unwrap();
+
+        // Move backward 300 steps
+        writer
+            .write_message(r#"{"cmd_id": 2, "dir": -1, "step": 300}"#)
+            .await
+            .unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["idx"], 2);
+
+        // Verify position
+        writer.write_message(r#"{"cmd_id": 5}"#).await.unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["pos"], 700);
+    }
+
+    #[tokio::test]
+    async fn test_mock_set_hold_current() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        writer
+            .write_message(r#"{"cmd_id": 16, "ihold": 10, "irun": 20}"#)
+            .await
+            .unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["idx"], 16);
+    }
+
+    #[tokio::test]
+    async fn test_mock_set_pdn_mode() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        writer
+            .write_message(r#"{"cmd_id": 19, "pdn_d": 1}"#)
+            .await
+            .unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["idx"], 19);
+    }
+
+    #[tokio::test]
+    async fn test_mock_unknown_command() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        writer.write_message(r#"{"cmd_id": 99}"#).await.unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["error"], "unknown command");
+    }
+
+    #[tokio::test]
+    async fn test_mock_invalid_json() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let mut writer = MockSerialWriter::new(Arc::clone(&state));
+        let mut reader = MockSerialReader::new(state);
+
+        writer.write_message("not json").await.unwrap();
+        let response = reader.read_line().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["error"], "invalid command");
+    }
 }

@@ -31,4 +31,4 @@ command = "cargo test -p qhy-focuser --features mock --test conformu_integration
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }
-reqwest = "0.12"
+reqwest = { workspace = true }

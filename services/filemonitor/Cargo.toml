@@ -25,5 +25,5 @@ command = "cargo test -p filemonitor --test conformu_integration -- --ignored --
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }
-reqwest = "0.12"
+reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
