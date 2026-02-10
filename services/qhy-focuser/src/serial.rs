@@ -147,7 +147,9 @@ mod tests {
     #[tokio::test]
     async fn test_port_exists_existing_path() {
         let factory = TokioSerialPortFactory::new();
-        assert!(factory.port_exists("/dev/null").await);
+        // Use a path that exists on all platforms
+        let path = std::env::current_exe().unwrap();
+        assert!(factory.port_exists(path.to_str().unwrap()).await);
     }
 
     #[test]
