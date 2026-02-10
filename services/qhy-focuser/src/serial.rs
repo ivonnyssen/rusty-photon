@@ -159,6 +159,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio-serial uses unsupported syscall flags under Miri
     async fn test_open_nonexistent_port() {
         let factory = TokioSerialPortFactory::new();
         let result = factory
