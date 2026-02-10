@@ -1,0 +1,21 @@
+{
+  "serial": {
+    "port": "COM3",
+    "baud_rate": 9600,
+    "polling_interval_ms": 1000,
+    "timeout_seconds": 2
+  },
+  "server": {
+    "port": 11113
+  },
+  "focuser": {
+    "name": "QHY Q-Focuser",
+    "unique_id": "qhy-focuser-001",
+    "description": "QHY Q-Focuser (EAF) Stepper Motor Controller",
+    "device_number": 0,
+    "enabled": true,
+    "max_step": 64000,
+    "speed": 0,
+    "reverse": false
+  }
+}

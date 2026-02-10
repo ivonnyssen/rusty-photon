@@ -113,6 +113,7 @@ async fn test_server_starts_with_both_devices_enabled() {
     );
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -131,6 +132,7 @@ async fn test_server_starts_with_switch_only() {
     );
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -149,6 +151,7 @@ async fn test_server_starts_with_observingconditions_only() {
     );
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -167,6 +170,7 @@ async fn test_server_starts_with_no_devices() {
     );
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -181,6 +185,7 @@ async fn test_server_returns_configured_switch_name() {
     assert_eq!(body["Value"], "My Custom Switch");
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -195,6 +200,7 @@ async fn test_server_returns_configured_oc_name() {
     assert_eq!(body["Value"], "My Weather Station");
 
     handle.abort();
+    let _ = handle.await;
 }
 
 #[tokio::test]
@@ -209,4 +215,5 @@ async fn test_server_binds_to_os_assigned_port() {
     assert!(stream.is_ok(), "Server should be reachable on bound port");
 
     handle.abort();
+    let _ = handle.await;
 }

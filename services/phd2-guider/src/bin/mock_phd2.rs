@@ -117,7 +117,10 @@ fn main() {
                     handle_client(stream, shutdown_clone, ignore_shutdown_clone);
                 });
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 // No connection available, sleep briefly
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -176,7 +179,10 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdo
                     break;
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 // Timeout, check shutdown flag
                 if shutdown.load(Ordering::Relaxed) {
                     break;
