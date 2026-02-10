@@ -143,4 +143,31 @@ mod tests {
         let factory = TokioSerialPortFactory::new();
         assert!(!factory.port_exists("/dev/nonexistent_port_12345").await);
     }
+
+    #[tokio::test]
+    async fn test_port_exists_existing_path() {
+        let factory = TokioSerialPortFactory::new();
+        assert!(factory.port_exists("/dev/null").await);
+    }
+
+    #[test]
+    fn test_serial_port_factory_clone() {
+        let factory = TokioSerialPortFactory::new();
+        let _cloned = factory.clone();
+    }
+
+    #[tokio::test]
+    async fn test_open_nonexistent_port() {
+        let factory = TokioSerialPortFactory::new();
+        let result = factory
+            .open("/dev/nonexistent_port_12345", 9600, Duration::from_secs(1))
+            .await;
+        match result {
+            Err(QhyFocuserError::SerialPort(msg)) => {
+                assert!(msg.contains("/dev/nonexistent_port_12345"), "got: {}", msg);
+            }
+            Err(other) => panic!("Expected SerialPort error, got {:?}", other),
+            Ok(_) => panic!("Expected error opening nonexistent port"),
+        }
+    }
 }
