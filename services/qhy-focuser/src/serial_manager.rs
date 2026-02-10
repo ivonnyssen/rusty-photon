@@ -537,3 +537,85 @@ impl std::fmt::Debug for SerialManager {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::SerialReader;
+
+    /// Simple mock reader that returns responses in order, then None.
+    struct MockReader {
+        responses: Vec<String>,
+        index: usize,
+    }
+
+    impl MockReader {
+        fn new(responses: Vec<String>) -> Box<dyn SerialReader> {
+            Box::new(Self {
+                responses,
+                index: 0,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SerialReader for MockReader {
+        async fn read_line(&mut self) -> Result<Option<String>> {
+            if self.index < self.responses.len() {
+                let response = self.responses[self.index].clone();
+                self.index += 1;
+                Ok(Some(response))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_response_for_returns_matching_idx() {
+        let mut reader = MockReader::new(vec![r#"{"idx": 5, "pos": 10000}"#.to_string()]);
+        let response = SerialManager::read_response_for(&mut reader, 5)
+            .await
+            .unwrap();
+        assert!(response.contains("10000"));
+    }
+
+    #[tokio::test]
+    async fn test_read_response_for_discards_stale() {
+        let mut reader = MockReader::new(vec![
+            r#"{"idx": 6}"#.to_string(),               // stale — wrong idx
+            r#"{"idx": 5, "pos": 12345}"#.to_string(), // correct
+        ]);
+        let response = SerialManager::read_response_for(&mut reader, 5)
+            .await
+            .unwrap();
+        assert!(response.contains("12345"));
+    }
+
+    #[tokio::test]
+    async fn test_read_response_for_retries_exhausted() {
+        let stale_responses: Vec<String> = (0..5).map(|_| r#"{"idx": 6}"#.to_string()).collect();
+        let mut reader = MockReader::new(stale_responses);
+
+        let err = SerialManager::read_response_for(&mut reader, 5)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No response with idx 5 after 5 reads"),
+            "Expected retry-exhaustion error, got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_response_for_connection_closed() {
+        let mut reader = MockReader::new(vec![]);
+
+        let err = SerialManager::read_response_for(&mut reader, 5)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Connection closed"), "got: {}", msg);
+    }
+}
