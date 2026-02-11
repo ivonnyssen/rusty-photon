@@ -78,7 +78,6 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 #[test]
-#[cfg(not(miri))]
 fn test_get_default_phd2_path() {
     // This test just verifies the function doesn't panic
     let path = get_default_phd2_path();
@@ -88,7 +87,6 @@ fn test_get_default_phd2_path() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_load_config() {
     let config_path = PathBuf::from("tests/config.json");
     let result = load_config(&config_path);
@@ -100,7 +98,6 @@ fn test_load_config() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_load_config_with_defaults() {
     let config_path = PathBuf::from("tests/config_minimal.json");
     let result = load_config(&config_path);
@@ -113,7 +110,6 @@ fn test_load_config_with_defaults() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_load_config_file_not_found() {
     let config_path = PathBuf::from("tests/nonexistent.json");
     let result = load_config(&config_path);
@@ -125,7 +121,6 @@ fn test_load_config_file_not_found() {
 // ============================================================================
 
 #[test]
-#[cfg(not(miri))]
 fn test_client_creation() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -134,7 +129,6 @@ fn test_client_creation() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_process_manager_creation() {
     let config = create_test_config();
     let manager = Phd2ProcessManager::new(config);
@@ -426,7 +420,6 @@ async fn test_connect_to_nonexistent_server() {
 }
 
 #[tokio::test]
-#[cfg(not(miri))]
 async fn test_send_request_when_not_connected() {
     let config = create_test_config();
     let client = Phd2Client::new(config);

@@ -33,3 +33,5 @@ mockall = "0.14.0"
 tokio-serial = "5.4"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "feature/conformu-settings-file", default-features = false }
 reqwest = "0.12"
+cucumber = "0.21"
+tempfile = "3"
