@@ -17,7 +17,7 @@ async fn parse_bound_port(
 
     while reader.read_line(&mut line).await.ok()? > 0 {
         if let Some(addr_str) = line.trim().strip_prefix("Bound Alpaca server bound_addr=") {
-            if let Some(port_str) = addr_str.split(':').last() {
+            if let Some(port_str) = addr_str.split(':').next_back() {
                 if let Ok(port) = port_str.parse::<u16>() {
                     // Drain remaining stdout in background so the server never
                     // blocks on a write to stdout (tracing writes to stdout by default).

@@ -20,7 +20,7 @@ fn test_guide_request_params_format() {
     assert!(params["settle"]["pixels"].as_f64().is_some());
     assert!(params["settle"]["time"].as_u64().is_some());
     assert!(params["settle"]["timeout"].as_u64().is_some());
-    assert_eq!(params["recalibrate"].as_bool().unwrap(), false);
+    assert!(!params["recalibrate"].as_bool().unwrap());
 }
 
 #[test]
@@ -62,28 +62,28 @@ fn test_dither_request_params_format() {
     });
 
     assert_eq!(params["amount"].as_f64().unwrap(), 5.0);
-    assert_eq!(params["raOnly"].as_bool().unwrap(), true);
+    assert!(params["raOnly"].as_bool().unwrap());
     assert!(params["settle"]["pixels"].as_f64().is_some());
 }
 
 #[test]
 fn test_pause_request_params_full() {
     let params = serde_json::json!({"paused": true, "full": "full"});
-    assert_eq!(params["paused"].as_bool().unwrap(), true);
+    assert!(params["paused"].as_bool().unwrap());
     assert_eq!(params["full"].as_str().unwrap(), "full");
 }
 
 #[test]
 fn test_pause_request_params_partial() {
     let params = serde_json::json!({"paused": true});
-    assert_eq!(params["paused"].as_bool().unwrap(), true);
+    assert!(params["paused"].as_bool().unwrap());
     assert!(params.get("full").is_none());
 }
 
 #[test]
 fn test_resume_request_params() {
     let params = serde_json::json!({"paused": false});
-    assert_eq!(params["paused"].as_bool().unwrap(), false);
+    assert!(!params["paused"].as_bool().unwrap());
 }
 
 #[test]

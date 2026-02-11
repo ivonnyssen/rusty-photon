@@ -65,9 +65,11 @@ impl MessageWriter for MockMessageWriterWithRecorder {
     }
 }
 
+type MockPair = (Vec<Option<String>>, Arc<StdMutex<Vec<String>>>);
+
 /// Mock connection factory that returns pre-configured reader/writer pairs
 struct MockConnectionFactoryWithPairs {
-    pairs: StdMutex<VecDeque<(Vec<Option<String>>, Arc<StdMutex<Vec<String>>>)>>,
+    pairs: StdMutex<VecDeque<MockPair>>,
 }
 
 impl MockConnectionFactoryWithPairs {

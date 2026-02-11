@@ -17,7 +17,7 @@ fn test_rect_creation() {
 #[test]
 fn test_rect_serialization() {
     let rect = Rect::new(100, 200, 50, 50);
-    let json = serde_json::to_value(&rect).unwrap();
+    let json = serde_json::to_value(rect).unwrap();
     assert_eq!(json["x"], 100);
     assert_eq!(json["y"], 200);
     assert_eq!(json["width"], 50);

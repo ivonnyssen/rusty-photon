@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_tcp_connection_factory_default() {
-        let factory = TcpConnectionFactory::default();
+        let factory = TcpConnectionFactory;
         // Just verify we can create an instance
         let _ = factory;
     }
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_tokio_process_spawner_default() {
-        let spawner = TokioProcessSpawner::default();
+        let spawner = TokioProcessSpawner;
         // Just verify we can create an instance
         let _ = spawner;
     }

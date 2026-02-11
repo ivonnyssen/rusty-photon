@@ -550,7 +550,7 @@ mod tests {
     }
 
     impl MockReader {
-        fn new(responses: Vec<String>) -> Box<dyn SerialReader> {
+        fn boxed(responses: Vec<String>) -> Box<dyn SerialReader> {
             Box::new(Self {
                 responses,
                 index: 0,
@@ -573,7 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_response_for_returns_matching_idx() {
-        let mut reader = MockReader::new(vec![r#"{"idx": 5, "pos": 10000}"#.to_string()]);
+        let mut reader = MockReader::boxed(vec![r#"{"idx": 5, "pos": 10000}"#.to_string()]);
         let response = SerialManager::read_response_for(&mut reader, 5)
             .await
             .unwrap();
@@ -582,7 +582,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_response_for_discards_stale() {
-        let mut reader = MockReader::new(vec![
+        let mut reader = MockReader::boxed(vec![
             r#"{"idx": 6}"#.to_string(),               // stale — wrong idx
             r#"{"idx": 5, "pos": 12345}"#.to_string(), // correct
         ]);
@@ -595,7 +595,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_response_for_retries_exhausted() {
         let stale_responses: Vec<String> = (0..5).map(|_| r#"{"idx": 6}"#.to_string()).collect();
-        let mut reader = MockReader::new(stale_responses);
+        let mut reader = MockReader::boxed(stale_responses);
 
         let err = SerialManager::read_response_for(&mut reader, 5)
             .await
@@ -610,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_response_for_connection_closed() {
-        let mut reader = MockReader::new(vec![]);
+        let mut reader = MockReader::boxed(vec![]);
 
         let err = SerialManager::read_response_for(&mut reader, 5)
             .await
