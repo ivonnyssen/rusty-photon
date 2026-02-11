@@ -1,5 +1,8 @@
+#[cfg(not(miri))]
 use std::fs;
+#[cfg(not(miri))]
 use std::path::PathBuf;
+#[cfg(not(miri))]
 use std::process::Command;
 
 #[test]
