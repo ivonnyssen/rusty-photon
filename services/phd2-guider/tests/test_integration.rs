@@ -78,6 +78,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 #[test]
+#[cfg_attr(miri, ignore)] // get_default_phd2_path() spawns a process via Command::output()
 fn test_get_default_phd2_path() {
     // This test just verifies the function doesn't panic
     let path = get_default_phd2_path();
@@ -121,6 +122,7 @@ fn test_load_config_file_not_found() {
 // ============================================================================
 
 #[test]
+#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
 fn test_client_creation() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -129,6 +131,7 @@ fn test_client_creation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
 fn test_process_manager_creation() {
     let config = create_test_config();
     let manager = Phd2ProcessManager::new(config);
@@ -420,6 +423,7 @@ async fn test_connect_to_nonexistent_server() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
 async fn test_send_request_when_not_connected() {
     let config = create_test_config();
     let client = Phd2Client::new(config);

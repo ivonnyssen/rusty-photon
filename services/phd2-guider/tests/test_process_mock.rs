@@ -56,10 +56,7 @@ impl ProcessHandle for MockProcessHandle {
 
     async fn kill(&mut self) -> phd2_guider::Result<()> {
         if self.kill_error {
-            Err(Phd2Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Mock kill error",
-            )))
+            Err(Phd2Error::Io(std::io::Error::other("Mock kill error")))
         } else {
             *self.running.lock().unwrap() = false;
             Ok(())
