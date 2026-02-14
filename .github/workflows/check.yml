@@ -47,19 +47,27 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
         uses: awalsh128/cache-apt-pkgs-action@latest
+        continue-on-error: true
         with:
           packages: libcfitsio-dev
           version: 1.0
+      - name: Install cfitsio (act fallback)
+        if: env.ACT == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
-      - name: cargo clippy
+      - name: cargo clippy (GitHub)
+        if: env.ACT != 'true'
         uses: giraffate/clippy-action@v1
         with:
           reporter: "github-pr-check"
           github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: cargo clippy (act fallback)
+        if: env.ACT == 'true'
+        run: cargo clippy --all-targets --all-features -- -D warnings
   hack:
     # cargo-hack checks combinations of feature flags to ensure that features are all additive
     # which is required for feature unification
@@ -69,9 +77,13 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
         uses: awalsh128/cache-apt-pkgs-action@latest
+        continue-on-error: true
         with:
           packages: libcfitsio-dev
           version: 1.0
+      - name: Install cfitsio (act fallback)
+        if: env.ACT == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
@@ -121,9 +133,13 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
         uses: awalsh128/cache-apt-pkgs-action@latest
+        continue-on-error: true
         with:
           packages: libcfitsio-dev
           version: 1.0
+      - name: Install cfitsio (act fallback)
+        if: env.ACT == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:

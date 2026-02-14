@@ -135,7 +135,7 @@ fn main() {
 
 fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdown: bool) {
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .ok();
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))

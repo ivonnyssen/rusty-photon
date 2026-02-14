@@ -3,7 +3,49 @@
 Local equivalents for every CI quality gate. Run these before pushing to avoid
 surprises on GitHub Actions.
 
-## Quick Reference
+## Recommended: Run via `act`
+
+The easiest way to run the full CI suite locally is with `act`, which executes
+the actual GitHub Actions workflows in Docker containers:
+
+```bash
+# Run all independent checks in parallel
+act -W .github/workflows/check.yml -j fmt &
+act -W .github/workflows/check.yml -j clippy &
+act -W .github/workflows/check.yml -j hack &
+act -W .github/workflows/test.yml -j required &
+act -W .github/workflows/test.yml -j coverage &
+act -W .github/workflows/safety.yml -j sanitizers &
+act -W .github/workflows/scheduled.yml -j nightly &
+act -W .github/workflows/scheduled.yml -j update &
+wait
+
+# Then run jobs with dependencies
+act -W .github/workflows/check.yml -j discover-msrv -j msrv
+act -W .github/workflows/conformu.yml -j discover -j conformu
+
+# Optional: miri (slow)
+act -W .github/workflows/scheduled.yml -j miri
+```
+
+Or use the Claude Code command which does this automatically:
+
+```
+/pre-push          # All checks except miri
+/pre-push miri     # All checks including miri
+```
+
+> **Note:** `act` runs Linux Docker containers, so the `os-check` job
+> (macOS/Windows) is skipped locally. Multi-OS `conformu` jobs run the ubuntu
+> variant only.
+
+---
+
+## Fallback: Raw `cargo` Commands
+
+When Docker or `act` is unavailable, use these cargo commands directly.
+
+### Quick Reference
 
 Copy-paste block for the common case (stable toolchain, cargo-hack installed):
 
@@ -134,6 +176,8 @@ Current services and their commands:
 | Rust stable | `rustup default stable` | All checks |
 | cfitsio | `sudo apt install libcfitsio-dev` (Ubuntu) / `brew install cfitsio` (macOS) | All workspace builds |
 | cargo-hack | `cargo install cargo-hack` | Feature powerset checks |
+| Docker | [docs.docker.com](https://docs.docker.com/get-docker/) | act-based workflow execution |
+| act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
 
 ### Optional tools
 
