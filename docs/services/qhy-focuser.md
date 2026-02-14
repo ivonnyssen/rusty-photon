@@ -17,6 +17,16 @@ The service follows the same architecture as `ppba-driver`:
 - **Mock mode**: Feature-gated mock serial implementation for testing without hardware (`mock.rs`)
 - **Server builder**: Configures and starts the ASCOM Alpaca server (`lib.rs`)
 
+## Hardware Constraints
+
+- **Connection**: USB (presents as a virtual serial/COM port via USB-CDC)
+- **Receive buffer**: 128 bytes (`USB_CDC_RX_LEN`) — commands must stay within this limit
+- **Stepper motor** with configurable hold current and power-down mode
+- **Position range**: -64,000 to +64,000 (max configurable up to 2,000,000)
+- **Speed scale**: 0 (fastest) to 8 (slowest)
+- **Sensors**: External temperature, chip temperature, input voltage
+- **Voltage threshold**: 11.5V — hold force settings are only available above this voltage
+
 ## Protocol Reference
 
 The Q-Focuser uses JSON objects over serial. Commands include a `cmd_id` field; responses echo the ID in an `idx` field.
@@ -34,6 +44,8 @@ The Q-Focuser uses JSON objects over serial. Commands include a `cmd_id` field; 
 | 13 | SetSpeed | speed (0-8) | — | 0 = fastest |
 | 16 | SetHoldCurrent | ihold, irun | — | Motor current (0-31 each) |
 | 19 | SetPdnMode | pdn_d | — | Motor power-down mode |
+
+**Not implemented:** cmd_id 12 (SetHoldForce) controls motor holding torque when idle. It exists in the INDI reference driver but is not currently implemented in this service.
 
 Responses are JSON objects terminated by `}` (no newline). Commands are sent as raw JSON without any terminator.
 
@@ -131,3 +143,10 @@ cargo run -p qhy-focuser --features mock
 4. Background polling starts: position + temperature at configured interval
 5. Move detection: polling compares position to target, clears `is_moving` when reached
 6. On disconnect: ref-count decremented, port closed when last device disconnects
+
+## References
+
+- **INDI QHY Focuser Driver** (reference implementation used for protocol reverse-engineering): [qhy_focuser.cpp](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.cpp), [qhy_focuser.h](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.h)
+- **Q-Focuser Product Page**: [qhyccd.com/q-focuser](https://www.qhyccd.com/q-focuser/)
+
+**Note:** The QHYCCD camera SDK functions `SetQHYCCDFocusSetting()` and `QHYCCD_3A_AUTOFOCUS` (control ID 40) are camera-side autofocus features — they control the camera's focus ROI for autofocus algorithms, not the physical Q-Focuser motor. The Q-Focuser is architecturally independent from any QHY camera.
