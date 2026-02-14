@@ -1,5 +1,9 @@
 # Running GitHub CI Workflows Locally
 
+> **See also:** [docs/pre-push-checklist.md](docs/pre-push-checklist.md) for a
+> complete mapping of every CI check to its local `cargo` equivalent, and the
+> `/pre-push` Claude Code command that runs the full suite.
+
 This repository is set up to run GitHub Actions workflows locally using [act](https://github.com/nektos/act).
 
 ## Prerequisites
@@ -91,24 +95,26 @@ chmod +x conformu
 
 ### check.yml
 - **fmt**: Code formatting check (`cargo fmt --check`)
-- **clippy**: Linting with clippy
-- **doc**: Documentation generation
-- **hack**: Feature flag combinations
-- **msrv**: Minimum supported Rust version check
+- **clippy**: Linting with clippy (stable + beta)
+- **hack**: Feature flag combinations (`cargo hack --feature-powerset check`)
+- **msrv**: Minimum supported Rust version verification per service
 
 ### test.yml
 - **required**: Main test suite (stable + beta Rust)
-- **minimal**: Tests with minimal dependency versions
 - **os-check**: Cross-platform testing (macOS, Windows)
-- **coverage**: Test coverage collection
+- **coverage**: Test coverage collection with llvm-cov
 
 ### safety.yml
-- **sanitizers**: Memory safety checks
-- **miri**: Miri interpreter checks
-- **loom**: Concurrency testing
+- **sanitizers**: Address and leak sanitizer checks (nightly)
 
-### nostd.yml
-- **nostd**: No-std compatibility checks
+### conformu.yml
+- **discover**: Discover services with ConformU metadata
+- **conformu**: Run ASCOM Alpaca conformance tests per service (all platforms)
+
+### scheduled.yml (rolling)
+- **nightly**: Test suite on nightly toolchain
+- **miri**: Miri interpreter checks (push to main only)
+- **update**: Tests with updated dependencies (beta)
 
 ## Manual act Usage
 
