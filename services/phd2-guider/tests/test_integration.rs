@@ -78,7 +78,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 #[test]
-#[cfg_attr(miri, ignore)] // get_default_phd2_path() spawns a process via Command::output()
+#[cfg(not(miri))] // get_default_phd2_path() spawns a process via Command::output()
 fn test_get_default_phd2_path() {
     // This test just verifies the function doesn't panic
     let path = get_default_phd2_path();
@@ -122,7 +122,7 @@ fn test_load_config_file_not_found() {
 // ============================================================================
 
 #[test]
-#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
+#[cfg(not(miri))] // create_test_config() calls get_default_phd2_path() which spawns a process
 fn test_client_creation() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -131,7 +131,7 @@ fn test_client_creation() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
+#[cfg(not(miri))] // create_test_config() calls get_default_phd2_path() which spawns a process
 fn test_process_manager_creation() {
     let config = create_test_config();
     let manager = Phd2ProcessManager::new(config);
@@ -423,7 +423,7 @@ async fn test_connect_to_nonexistent_server() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore)] // create_test_config() calls get_default_phd2_path() which spawns a process
+#[cfg(not(miri))] // create_test_config() calls get_default_phd2_path() which spawns a process
 async fn test_send_request_when_not_connected() {
     let config = create_test_config();
     let client = Phd2Client::new(config);
@@ -544,12 +544,6 @@ fn find_mock_phd2_binary() -> Option<PathBuf> {
     None
 }
 
-/// Stub for miri - always returns None
-#[cfg(miri)]
-fn find_mock_phd2_binary() -> Option<PathBuf> {
-    None
-}
-
 /// Start the mock PHD2 server on a specific port
 #[cfg(not(miri))]
 fn start_mock_phd2(port: u16) -> Option<Child> {
@@ -565,12 +559,6 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
     std::thread::sleep(Duration::from_millis(200));
 
     Some(child)
-}
-
-/// Stub for miri - always returns None
-#[cfg(miri)]
-fn start_mock_phd2(_port: u16) -> Option<Child> {
-    None
 }
 
 /// Start the mock PHD2 server with auto-assigned port and specified mode.
@@ -604,12 +592,6 @@ fn start_mock_phd2_auto_port(mode: &str) -> Option<(u16, Child)> {
 
     // If we didn't find the port line, the mock failed to start
     let _ = child.kill();
-    None
-}
-
-/// Stub for miri - always returns None
-#[cfg(miri)]
-fn start_mock_phd2_auto_port(_mode: &str) -> Option<(u16, Child)> {
     None
 }
 
