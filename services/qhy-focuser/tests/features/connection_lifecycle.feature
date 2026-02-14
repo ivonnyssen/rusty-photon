@@ -41,3 +41,8 @@ Feature: Connection lifecycle
     Given a serial manager with no responses
     When I disconnect the serial manager
     Then the serial manager should not be available
+
+  Scenario: Serial manager starts not available and has debug representation
+    Given a serial manager with no responses
+    Then the serial manager should not be available
+    And the serial manager debug representation should contain "SerialManager"

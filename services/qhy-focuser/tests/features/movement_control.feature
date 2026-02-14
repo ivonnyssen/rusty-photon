@@ -69,3 +69,13 @@ Feature: Movement control
     Given a serial manager with no responses
     When I try to set reverse to true
     Then the serial manager operation should fail with not-connected
+
+  Scenario: Send command fails when not connected
+    Given a serial manager with no responses
+    When I try to send a get-position command
+    Then the serial manager operation should fail with not-connected
+
+  Scenario: Refresh position fails when not connected
+    Given a serial manager with no responses
+    When I try to refresh the position
+    Then the serial manager operation should fail with not-connected

@@ -51,3 +51,7 @@ Feature: Device metadata
     Given a focuser device with standard mock responses
     When I try to read step size
     Then the operation should fail with not-implemented
+
+  Scenario: Device debug representation is non-empty
+    Given a focuser device with standard mock responses
+    Then the device debug representation should not be empty

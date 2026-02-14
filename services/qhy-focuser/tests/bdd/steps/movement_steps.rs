@@ -5,6 +5,7 @@ use crate::world::QhyFocuserWorld;
 use ascom_alpaca::api::Focuser;
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then, when};
+use qhy_focuser::protocol::Command;
 
 // ============================================================================
 // Given steps
@@ -142,6 +143,24 @@ async fn try_set_speed(world: &mut QhyFocuserWorld, speed: u8) {
 async fn set_reverse(world: &mut QhyFocuserWorld, enabled: String) {
     let manager = world.serial_manager.as_ref().expect("manager not created");
     manager.set_reverse(enabled == "true").await.unwrap();
+}
+
+#[when("I try to send a get-position command")]
+async fn try_send_command(world: &mut QhyFocuserWorld) {
+    let manager = world.serial_manager.as_ref().expect("manager not created");
+    match manager.send_command(Command::GetPosition).await {
+        Ok(_) => world.last_error = None,
+        Err(e) => world.last_error = Some(format!("{:?}", e)),
+    }
+}
+
+#[when("I try to refresh the position")]
+async fn try_refresh_position(world: &mut QhyFocuserWorld) {
+    let manager = world.serial_manager.as_ref().expect("manager not created");
+    match manager.refresh_position().await {
+        Ok(()) => world.last_error = None,
+        Err(e) => world.last_error = Some(format!("{:?}", e)),
+    }
 }
 
 #[when(expr = "I try to set reverse to {word}")]

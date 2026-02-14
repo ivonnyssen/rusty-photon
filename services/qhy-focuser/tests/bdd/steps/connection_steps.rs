@@ -107,3 +107,15 @@ fn manager_should_not_be_available(world: &mut QhyFocuserWorld) {
     let manager = world.serial_manager.as_ref().expect("manager not created");
     assert!(!manager.is_available());
 }
+
+#[then(expr = "the serial manager debug representation should contain {string}")]
+fn manager_debug_contains(world: &mut QhyFocuserWorld, expected: String) {
+    let manager = world.serial_manager.as_ref().expect("manager not created");
+    let debug_str = format!("{:?}", manager);
+    assert!(
+        debug_str.contains(&expected),
+        "expected debug to contain '{}', got: {}",
+        expected,
+        debug_str
+    );
+}

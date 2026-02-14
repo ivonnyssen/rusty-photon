@@ -149,6 +149,13 @@ async fn temp_comp_should_be_off(world: &mut QhyFocuserWorld) {
     assert!(!device.temp_comp().await.unwrap());
 }
 
+#[then("the device debug representation should not be empty")]
+fn device_debug_not_empty(world: &mut QhyFocuserWorld) {
+    let device = world.device.as_ref().expect("device not created");
+    let debug_str = format!("{:?}", device);
+    assert!(!debug_str.is_empty());
+}
+
 #[then("the operation should fail with not-implemented")]
 fn operation_should_fail_not_implemented(world: &mut QhyFocuserWorld) {
     let code = world
