@@ -50,6 +50,8 @@ jobs:
         with:
           toolchain: ${{ env.NIGHTLY }}
           components: miri
+      - name: cargo clean (avoid stale artifacts)
+        run: cargo clean
       - name: cargo miri test
         run: cargo miri test
         env:
