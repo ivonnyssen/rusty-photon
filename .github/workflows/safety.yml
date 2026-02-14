@@ -21,9 +21,13 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
         uses: awalsh128/cache-apt-pkgs-action@latest
+        continue-on-error: true
         with:
           packages: libcfitsio-dev
           version: 1.0
+      - name: Install cfitsio (act fallback)
+        if: env.ACT == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |

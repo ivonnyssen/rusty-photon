@@ -1,4 +1,6 @@
+#[cfg(not(miri))]
 use filemonitor::{Config, DeviceConfig, FileConfig, ParsingConfig, ServerConfig};
+#[cfg(not(miri))]
 use std::path::PathBuf;
 
 #[tokio::test]
