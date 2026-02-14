@@ -28,6 +28,17 @@ fn get_available_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+/// Fixed port for error-path tests (exit_immediately, connection_timeout).
+/// These tests require that nothing is listening on the port, so they use a
+/// dedicated fixed port and serialize via ERROR_PATH_LOCK to prevent any
+/// interference from parallel tests whose mock servers use auto-assigned ports.
+#[cfg(not(miri))]
+const ERROR_PATH_PORT: u16 = 19876;
+
+/// Mutex to serialize error-path process tests that share ERROR_PATH_PORT.
+#[cfg(not(miri))]
+static ERROR_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Helper to check if PHD2 is available on the system
 fn is_phd2_available() -> bool {
     get_default_phd2_path().is_some()
@@ -1460,7 +1471,8 @@ async fn test_process_manager_no_executable_no_default() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_exit_immediately() {
-    let port = get_available_port();
+    let _lock = ERROR_PATH_LOCK.lock().await;
+    let port = ERROR_PATH_PORT;
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1502,7 +1514,8 @@ async fn test_process_exit_immediately() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_connection_timeout() {
-    let port = get_available_port();
+    let _lock = ERROR_PATH_LOCK.lock().await;
+    let port = ERROR_PATH_PORT;
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");

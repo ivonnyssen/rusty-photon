@@ -15,19 +15,10 @@ use crate::error::Result;
 use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 
 /// Shared state between mock reader and writer
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MockState {
     response_queue: Vec<String>,
     device_state: MockDeviceState,
-}
-
-impl Default for MockState {
-    fn default() -> Self {
-        Self {
-            response_queue: Vec::new(),
-            device_state: MockDeviceState::default(),
-        }
-    }
 }
 
 /// Simulated focuser device state
