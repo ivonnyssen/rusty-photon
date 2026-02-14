@@ -15,6 +15,7 @@ jobs:
     outputs:
       services: ${{ steps.find.outputs.services }}
       has_services: ${{ steps.find.outputs.has_services }}
+      os: ${{ steps.os.outputs.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -38,6 +39,15 @@ jobs:
             echo "No ConformU services found"
           fi
 
+      - name: Determine OS matrix
+        id: os
+        run: |
+          if [ "$ACT" = "true" ]; then
+            echo 'os=["ubuntu-latest"]' >> $GITHUB_OUTPUT
+          else
+            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> $GITHUB_OUTPUT
+          fi
+
   conformu:
     name: ${{ matrix.service.name }} (${{ matrix.os }})
     needs: discover
@@ -49,11 +59,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJson(needs.discover.outputs.os) }}
         service: ${{ fromJson(needs.discover.outputs.services) }}
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install cfitsio (cached)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        continue-on-error: true
+        with:
+          packages: libcfitsio-dev
+          version: 1.0
+      - name: Install cfitsio (act fallback)
+        if: env.ACT == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
