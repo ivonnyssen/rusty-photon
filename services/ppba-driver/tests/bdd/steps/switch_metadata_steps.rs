@@ -242,6 +242,21 @@ async fn querying_switch_name_should_fail(world: &mut PpbaWorld, id: usize) {
     assert!(device.get_switch_name(id).await.is_err());
 }
 
+#[then(expr = "the switch device debug output should contain {string}")]
+fn switch_device_debug_should_contain(world: &mut PpbaWorld, expected: String) {
+    let device = world
+        .switch_device
+        .as_ref()
+        .expect("switch device not created");
+    let debug_output = format!("{:?}", device);
+    assert!(
+        debug_output.contains(&expected),
+        "expected debug output to contain '{}', got: {}",
+        expected,
+        debug_output
+    );
+}
+
 #[then("the switch device static name should not be empty")]
 fn switch_device_static_name_not_empty(world: &mut PpbaWorld) {
     let device = world

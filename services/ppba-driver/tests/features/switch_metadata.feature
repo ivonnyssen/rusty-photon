@@ -77,6 +77,12 @@ Feature: Switch Metadata
     When I try to set switch 0 name to "New Name"
     Then the last error code should be NOT_IMPLEMENTED
 
+  Scenario: Debug output includes config and uses non-exhaustive format
+    Given a switch device with name "Debug Test PPBA"
+    Then the switch device debug output should contain "PpbaSwitchDevice"
+    And the switch device debug output should contain "Debug Test PPBA"
+    And the switch device debug output should contain ".."
+
   Scenario: Device info methods return non-empty values
     Given a switch device with standard mock responses
     Then the switch device static name should not be empty
