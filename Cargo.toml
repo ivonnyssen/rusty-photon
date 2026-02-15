@@ -4,6 +4,8 @@ members = [
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",
+  "services/sentinel",
+  "services/sentinel-app",
 ]
 resolver = "2"
 
@@ -35,3 +37,12 @@ ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", bran
 reqwest = "0.12"
 cucumber = "0.21"
 tempfile = "3"
+
+[[workspace.metadata.leptos]]
+name = "sentinel-dashboard"
+bin-package = "sentinel"
+lib-package = "sentinel-app"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+site-addr = "127.0.0.1:11114"
+reload-port = 11115

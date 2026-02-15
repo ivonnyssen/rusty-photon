@@ -1,0 +1,44 @@
+{
+  "monitors": [
+    {
+      "type": "alpaca_safety_monitor",
+      "name": "Roof Safety Monitor",
+      "host": "localhost",
+      "port": 11111,
+      "device_number": 0,
+      "polling_interval_seconds": 30
+    }
+  ],
+  "notifiers": [
+    {
+      "type": "pushover",
+      "api_token": "your-app-token",
+      "user_key": "your-user-key",
+      "default_title": "Observatory Alert",
+      "default_priority": 0,
+      "default_sound": "pushover"
+    }
+  ],
+  "transitions": [
+    {
+      "monitor_name": "Roof Safety Monitor",
+      "direction": "safe_to_unsafe",
+      "notifiers": ["pushover"],
+      "message_template": "ALERT: {monitor_name} changed to {new_state}",
+      "priority": 1,
+      "sound": "siren"
+    },
+    {
+      "monitor_name": "Roof Safety Monitor",
+      "direction": "unsafe_to_safe",
+      "notifiers": ["pushover"],
+      "message_template": "OK: {monitor_name} is now {new_state}",
+      "priority": -1
+    }
+  ],
+  "dashboard": {
+    "enabled": true,
+    "port": 11114,
+    "history_size": 100
+  }
+}
