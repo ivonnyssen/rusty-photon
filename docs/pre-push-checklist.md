@@ -24,8 +24,8 @@ wait
 act -W .github/workflows/check.yml -j discover-msrv -j msrv
 act -W .github/workflows/conformu.yml -j discover -j conformu
 
-# Optional: miri (slow)
-act -W .github/workflows/scheduled.yml -j miri
+# Optional: miri (slow, per-package via discover)
+act -W .github/workflows/scheduled.yml -j discover-miri -j miri
 ```
 
 Or use the Claude Code command which does this automatically:
@@ -158,8 +158,19 @@ Current services and their commands:
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
 | **nightly** | `cargo test --locked --all-features --all-targets` (nightly) | `cargo +nightly test --locked --all-features --all-targets` | nightly, cfitsio | Optional |
-| **miri** | `cargo miri test` | `cargo +nightly miri test` | nightly + miri component | Optional |
+| **discover-miri** | `cargo metadata` + jq | Same | jq | — |
+| **miri** | `cargo miri test -p <service>` (per service) | `cargo +nightly miri test -p <service>` | nightly + miri component | Optional |
 | **update** | `cargo update && cargo test` (beta) | `cargo +beta update && cargo +beta test --locked --all-features --all-targets` | beta | Optional |
+
+Miri services are discovered dynamically via `[package.metadata.miri]` in each
+service's `Cargo.toml`. To list them:
+
+```bash
+cargo metadata --format-version 1 --no-deps | \
+  jq -c '[.packages[] | select(.metadata.miri) | .name]'
+```
+
+Current services: filemonitor, phd2-guider, ppba-driver, qhy-focuser
 
 > **Note:** Miri only runs on push to main (not on PRs) and requires
 > `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build (`cargo clean`) is
@@ -189,7 +200,7 @@ Current services and their commands:
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
 | cargo-llvm-cov | `cargo install cargo-llvm-cov` | Coverage |
 | ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
-| jq | `sudo apt install jq` / `brew install jq` | ConformU discovery |
+| jq | `sudo apt install jq` / `brew install jq` | ConformU & miri discovery |
 | llvm | `sudo apt install llvm` | Address sanitizer symbolization |
 
 ---

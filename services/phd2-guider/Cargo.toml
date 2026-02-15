@@ -20,6 +20,8 @@ base64 = { workspace = true }
 fitsio = { workspace = true }
 async-trait = { workspace = true }
 
+[package.metadata.miri]
+
 [[bin]]
 name = "mock_phd2"
 path = "src/bin/mock_phd2.rs"

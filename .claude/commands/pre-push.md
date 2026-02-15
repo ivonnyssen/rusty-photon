@@ -75,7 +75,7 @@ Replace `{PREFIX}` with the worktree name from the Context section above:
 
 | Agent label         | Command                                                                              |
 |---------------------|--------------------------------------------------------------------------------------|
-| miri                | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j miri`   |
+| miri                | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j discover-miri -j miri` |
 
 **Notes:**
 - Skip `test.yml` `os-check` job entirely (act runs Linux Docker containers).
