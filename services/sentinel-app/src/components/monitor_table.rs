@@ -56,7 +56,7 @@ pub fn MonitorTable() -> impl IntoView {
 async fn fetch_monitors() -> Result<Vec<MonitorStatusResponse>, String> {
     // In SSR mode, this returns empty (server populates via initial state)
     // In hydrate/CSR mode, this fetches from the JSON API
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(feature = "hydrate", target_arch = "wasm32"))]
     {
         let window = web_sys::window().ok_or("no window")?;
         let origin = window.location().origin().map_err(|e| format!("{:?}", e))?;
@@ -70,7 +70,7 @@ async fn fetch_monitors() -> Result<Vec<MonitorStatusResponse>, String> {
         resp.json().await.map_err(|e| format!("{}", e))
     }
 
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(not(all(feature = "hydrate", target_arch = "wasm32")))]
     {
         Ok(vec![])
     }

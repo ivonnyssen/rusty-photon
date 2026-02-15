@@ -54,7 +54,7 @@ pub fn HistoryTable() -> impl IntoView {
 }
 
 async fn fetch_history() -> Result<Vec<NotificationHistoryResponse>, String> {
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(feature = "hydrate", target_arch = "wasm32"))]
     {
         let window = web_sys::window().ok_or("no window")?;
         let origin = window.location().origin().map_err(|e| format!("{:?}", e))?;
@@ -68,7 +68,7 @@ async fn fetch_history() -> Result<Vec<NotificationHistoryResponse>, String> {
         resp.json().await.map_err(|e| format!("{}", e))
     }
 
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(not(all(feature = "hydrate", target_arch = "wasm32")))]
     {
         Ok(vec![])
     }

@@ -18,7 +18,12 @@ leptos_router = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# WASM-only deps (hydrate feature)
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location"] }
+gloo-net = { version = "0.6", optional = true, features = ["http"] }
+
 [features]
 default = []
-hydrate = ["leptos/hydrate"]
+hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:web-sys", "dep:gloo-net"]
 ssr = ["leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub monitors: Vec<MonitorConfig>,
@@ -14,17 +14,6 @@ pub struct Config {
     pub transitions: Vec<TransitionConfig>,
     #[serde(default)]
     pub dashboard: DashboardConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            monitors: Vec::new(),
-            notifiers: Vec::new(),
-            transitions: Vec::new(),
-            dashboard: DashboardConfig::default(),
-        }
-    }
 }
 
 /// Monitor configuration with tagged enum for extensibility

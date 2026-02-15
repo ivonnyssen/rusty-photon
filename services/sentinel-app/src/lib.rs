@@ -9,7 +9,7 @@ pub mod components;
 pub use app::App;
 
 /// Hydration entry point for WASM client
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     leptos::mount::hydrate_body(App);
