@@ -32,3 +32,8 @@ tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
+cucumber = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
