@@ -1,0 +1,245 @@
+# This workflow runs when a version tag is pushed (e.g., v0.1.0).
+# It builds platform-specific packages and creates a GitHub Release:
+# - Linux: .deb, .rpm, and .tar.gz (x86_64 + aarch64)
+# - macOS: .tar.gz (Intel + Apple Silicon)
+# - Windows: .msi (x86_64)
+# - Homebrew: updates the tap formula with new checksums
+permissions:
+  contents: write
+on:
+  push:
+    tags:
+      - "v*"
+name: release
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+    name: linux / ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross-compilation tools (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p filemonitor
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Strip binary
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            strip target/${{ matrix.target }}/release/filemonitor
+          else
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/filemonitor
+          fi
+      - name: Create tarball
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/filemonitor staging/
+          cd staging
+          tar czf ../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz filemonitor
+      - name: Install cargo-deb
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo install cargo-deb
+      - name: Build .deb package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo deb -p filemonitor --no-build --no-strip --target ${{ matrix.target }}
+      - name: Install cargo-generate-rpm
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo install cargo-generate-rpm
+      - name: Build .rpm package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo generate-rpm -p services/filemonitor --target ${{ matrix.target }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/debian/*.deb
+            target/${{ matrix.target }}/generate-rpm/*.rpm
+            filemonitor-*.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+    name: macos / ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p filemonitor
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/filemonitor
+      - name: Create tarball
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/filemonitor staging/
+          cd staging
+          tar czf ../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz filemonitor
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: filemonitor-*.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    name: windows / x86_64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-wix
+        run: cargo install cargo-wix
+      - name: Add WiX to PATH
+        shell: pwsh
+        run: |
+          # WiX 3.14.x is pre-installed on windows-latest
+          $wixPath = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*" -Directory |
+            Select-Object -First 1
+          if ($wixPath) {
+            echo "$($wixPath.FullName)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            Write-Error "WiX Toolset v3 not found"
+            exit 1
+          }
+      - name: Build MSI
+        run: cargo wix -p filemonitor --nocapture
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: target/wix/*.msi
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    name: create release
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*.tar.gz" \) \
+            -exec sh -c 'sha256sum "$1" | sed "s|  \./|  |"' _ {} \; \
+            | sort -k2 > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.msi
+            artifacts/**/*.tar.gz
+            SHA256SUMS.txt
+
+  update-homebrew:
+    needs: [release]
+    runs-on: ubuntu-latest
+    name: update homebrew tap
+    steps:
+      - name: Download tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          merge-multiple: true
+          path: artifacts
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+            file="artifacts/filemonitor-${VERSION}-${target}.tar.gz"
+            if [ -f "$file" ]; then
+              sha=$(sha256sum "$file" | awk '{print $1}')
+              key=$(echo "$target" | tr '-' '_')
+              echo "sha_${key}=${sha}" >> $GITHUB_OUTPUT
+            fi
+          done
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v5
+        with:
+          repository: ivonnyssen/homebrew-rusty-photon
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Update formula
+        run: |
+          VERSION=${{ steps.checksums.outputs.version }}
+
+          cat > homebrew-tap/Formula/filemonitor.rb << FORMULA
+          class Filemonitor < Formula
+            desc "ASCOM Alpaca SafetyMonitor for astrophotography"
+            homepage "https://github.com/ivonnyssen/rusty_photon"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.checksums.outputs.sha_aarch64_apple_darwin }}"
+              else
+                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.checksums.outputs.sha_x86_64_apple_darwin }}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.checksums.outputs.sha_aarch64_unknown_linux_gnu }}"
+              else
+                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.checksums.outputs.sha_x86_64_unknown_linux_gnu }}"
+              end
+            end
+
+            def install
+              bin.install "filemonitor"
+            end
+
+            test do
+              assert_match "filemonitor", shell_output("#{bin}/filemonitor --help")
+            end
+          end
+          FORMULA
+      - name: Commit and push formula update
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/filemonitor.rb
+          git commit -m "Update filemonitor to ${{ steps.checksums.outputs.version }}"
+          git push

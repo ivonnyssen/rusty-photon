@@ -175,16 +175,20 @@ sudo rpm -i filemonitor-0.1.0-1.x86_64.rpm
 
 Same layout as the `.deb` package. User edits to `/etc/filemonitor/config.json` are preserved on upgrade (`noreplace`).
 
-#### Linux / macOS — from source
+#### macOS — Homebrew
 ```bash
-cargo build --release -p filemonitor
-./target/release/filemonitor -c config.json
+brew tap ivonnyssen/rusty-photon
+brew install filemonitor
 ```
 
-#### Windows — from source
-```cmd
+#### Windows — `.msi` installer
+Download `filemonitor-<version>-x86_64.msi` from the GitHub Releases page and run it. The installer places the binary in `Program Files` and adds it to the system PATH.
+
+#### From source (all platforms)
+```bash
 cargo build --release -p filemonitor
-.\target\release\filemonitor.exe -c config.json
+./target/release/filemonitor -c config.json   # Linux/macOS
+.\target\release\filemonitor.exe -c config.json  # Windows
 ```
 
 ### Service Integration
@@ -201,7 +205,7 @@ sudo systemctl enable --now filemonitor
 The service runs as a dedicated `filemonitor` system user, created automatically during package installation.
 
 #### macOS / Windows
-Service integration for macOS (launchd) and Windows (Windows Service) is not yet implemented.
+Service integration for macOS (launchd) and Windows (Windows Service) is not yet implemented. The MSI installer places the binary but does not register it as a Windows Service.
 
 ### Monorepo Structure
 
