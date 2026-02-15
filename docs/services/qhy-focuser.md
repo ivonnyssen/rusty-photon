@@ -117,15 +117,19 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 
 ## Testing
 
-- **Unit tests**: Protocol serialization, config, error types
-- **Integration tests**: Device behavior with mock serial, server startup
+- **Unit tests**: Protocol serialization, config, error types, response parsing
+- **BDD tests** (cucumber-rs): Device connection lifecycle, metadata, readings, movement control, and background polling — all using mock serial infrastructure
+- **Server tests**: Server startup with mock feature (`test_lib.rs`, feature-gated)
 - **ConformU**: ASCOM Alpaca compliance testing (requires ConformU installation)
 
 ```bash
 # Run all tests
 cargo test -p qhy-focuser --quiet
 
-# Run with mock feature (for device tests)
+# Run BDD tests specifically
+cargo test -p qhy-focuser --test bdd
+
+# Run with mock feature (for server tests)
 cargo test -p qhy-focuser --features mock
 
 # Run ConformU compliance tests
