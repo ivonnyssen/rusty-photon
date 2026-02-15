@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+if ! getent passwd filemonitor > /dev/null; then
+    adduser --system --group --no-create-home --quiet filemonitor
+fi
+#DEBHELPER#

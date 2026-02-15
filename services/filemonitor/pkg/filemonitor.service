@@ -1,0 +1,15 @@
+[Unit]
+Description=Filemonitor - ASCOM Alpaca SafetyMonitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/filemonitor --config /etc/filemonitor/config.json
+Restart=on-failure
+RestartSec=5
+User=filemonitor
+Group=filemonitor
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
