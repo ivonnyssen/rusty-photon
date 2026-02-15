@@ -209,8 +209,7 @@ mod tests {
     use crate::state::new_state_handle;
 
     fn setup_state() -> StateHandle {
-        let state = new_state_handle(vec!["Test Monitor".to_string()], 10);
-        state
+        new_state_handle(vec!["Test Monitor".to_string()], 10)
     }
 
     #[tokio::test]
