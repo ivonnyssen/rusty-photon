@@ -1,4 +1,4 @@
-@mock
+@mock @serial
 Feature: Server Registration
   As a system administrator
   I want the server to register devices based on configuration

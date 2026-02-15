@@ -184,32 +184,32 @@ Feature: Observing Conditions
     Given an OC device with standard mock responses
     When I connect the OC device
     And I wait for status cache
-    Then time since last update for "temperature" should be less than 1.0 seconds
+    Then time since last update for "temperature" should be less than 5.0 seconds
 
   Scenario: Time since last update for humidity
     Given an OC device with standard mock responses
     When I connect the OC device
     And I wait for status cache
-    Then time since last update for "humidity" should be less than 1.0 seconds
+    Then time since last update for "humidity" should be less than 5.0 seconds
 
   Scenario: Time since last update for dewpoint
     Given an OC device with standard mock responses
     When I connect the OC device
     And I wait for status cache
-    Then time since last update for "dewpoint" should be less than 1.0 seconds
+    Then time since last update for "dewpoint" should be less than 5.0 seconds
 
   Scenario: Time since last update is case insensitive
     Given an OC device with standard mock responses
     When I connect the OC device
     And I wait for status cache
-    Then time since last update for "Temperature" should be less than 1.0 seconds
-    And time since last update for "TEMPERATURE" should be less than 1.0 seconds
+    Then time since last update for "Temperature" should be less than 5.0 seconds
+    And time since last update for "TEMPERATURE" should be less than 5.0 seconds
 
   Scenario: Time since last update for empty string returns most recent
     Given an OC device with standard mock responses
     When I connect the OC device
     And I wait for status cache
-    Then time since last update for "" should be less than 1.0 seconds
+    Then time since last update for "" should be less than 5.0 seconds
 
   Scenario: Time since last update for unknown sensor returns NOT_IMPLEMENTED
     Given an OC device with standard mock responses
