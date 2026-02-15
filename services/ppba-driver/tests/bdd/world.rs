@@ -91,6 +91,14 @@ impl PpbaWorld {
         )));
     }
 
+    /// Abort the server task if one was spawned (server_registration scenarios).
+    #[cfg(feature = "mock")]
+    fn abort_server(&mut self) {
+        if let Some(handle) = self.server_handle.take() {
+            handle.abort();
+        }
+    }
+
     /// Build a serial manager directly (no device) with mock responses and long polling.
     pub fn build_manager_with_responses(&mut self, responses: Vec<String>) {
         let factory: Arc<dyn SerialPortFactory> =
@@ -142,5 +150,12 @@ impl PpbaWorld {
     /// Build an OC device with bad ping response.
     pub fn build_oc_device_with_bad_ping(&mut self) {
         self.build_oc_device_with_responses(vec!["GARBAGE".to_string()]);
+    }
+}
+
+#[cfg(feature = "mock")]
+impl Drop for PpbaWorld {
+    fn drop(&mut self) {
+        self.abort_server();
     }
 }
