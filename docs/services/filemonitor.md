@@ -168,6 +168,13 @@ sudo dpkg -i filemonitor_0.1.0-1_amd64.deb
 
 This installs the binary to `/usr/bin/filemonitor`, a default config to `/etc/filemonitor/config.json`, enables and starts a systemd service, and creates a `filemonitor` system user. Edit `/etc/filemonitor/config.json` to point to your monitored file. The config is preserved across package upgrades.
 
+#### Linux (Fedora/RHEL) — `.rpm` package
+```bash
+sudo rpm -i filemonitor-0.1.0-1.x86_64.rpm
+```
+
+Same layout as the `.deb` package. User edits to `/etc/filemonitor/config.json` are preserved on upgrade (`noreplace`).
+
 #### Linux / macOS — from source
 ```bash
 cargo build --release -p filemonitor
@@ -183,7 +190,7 @@ cargo build --release -p filemonitor
 ### Service Integration
 
 #### Linux (systemd)
-A systemd unit file is provided at `pkg/filemonitor.service`. When installed via the `.deb` package, the service is automatically enabled and started. Manual setup:
+A systemd unit file is provided at `pkg/filemonitor.service`. When installed via the `.deb` or `.rpm` package, the service is automatically enabled and started. Manual setup:
 
 ```bash
 sudo cp pkg/filemonitor.service /etc/systemd/system/

@@ -44,6 +44,26 @@ enable = true
 start = true
 restart-after-upgrade = true
 
+[package.metadata.generate-rpm]
+summary = "ASCOM Alpaca SafetyMonitor that monitors file content"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/filemonitor", dest = "/usr/bin/filemonitor", mode = "755" },
+    { source = "pkg/config.json", dest = "/etc/filemonitor/config.json", mode = "644", config = "noreplace" },
+    { source = "pkg/filemonitor.service", dest = "/usr/lib/systemd/system/filemonitor.service", mode = "644" },
+]
+post_install_script = """
+getent passwd filemonitor > /dev/null || useradd -r -s /sbin/nologin filemonitor
+systemctl daemon-reload
+systemctl enable filemonitor.service
+"""
+pre_uninstall_script = """
+systemctl stop filemonitor.service || true
+systemctl disable filemonitor.service || true
+"""
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }
