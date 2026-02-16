@@ -167,23 +167,48 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
 ### Module Structure
 
 ```
-ppba-switch/
+ppba-driver/
 ├── src/
-│   ├── lib.rs           # Crate root, ServerBuilder
-│   ├── main.rs          # CLI entry point
-│   ├── config.rs        # Configuration types
-│   ├── error.rs         # Error types
-│   ├── device.rs        # ASCOM Device + Switch implementation
-│   ├── protocol.rs      # PPBA command/response handling
-│   ├── io.rs            # I/O trait abstractions
-│   ├── serial.rs        # tokio-serial implementations
-│   └── switches.rs      # Switch definitions
+│   ├── lib.rs                        # Crate root, ServerBuilder
+│   ├── main.rs                       # CLI entry point
+│   ├── config.rs                     # Configuration types
+│   ├── error.rs                      # Error types
+│   ├── switch_device.rs              # ASCOM Switch implementation
+│   ├── observingconditions_device.rs # ASCOM ObservingConditions implementation
+│   ├── serial_manager.rs             # Ref-counted shared serial connection + polling
+│   ├── protocol.rs                   # PPBA command/response handling
+│   ├── io.rs                         # I/O trait abstractions
+│   ├── serial.rs                     # tokio-serial implementations
+│   ├── switches.rs                   # Switch definitions
+│   └── mean.rs                       # Sliding window sensor mean
 ├── tests/
-│   ├── test_protocol.rs      # Protocol parsing tests
-│   ├── test_switches.rs      # Switch definition tests
-│   ├── test_config.rs        # Configuration tests
-│   ├── test_device_mock.rs   # Device tests with mock serial
-│   └── conformu_integration.rs # ASCOM ConformU compliance tests
+│   ├── bdd.rs                        # BDD entry point (cucumber-rs)
+│   ├── bdd/
+│   │   ├── world.rs                  # PpbaWorld struct + helpers
+│   │   ├── mock_serial.rs            # Shared mock serial infrastructure
+│   │   └── steps/
+│   │       ├── mod.rs
+│   │       ├── connection_steps.rs   # Connect/disconnect, ref counting
+│   │       ├── switch_metadata_steps.rs
+│   │       ├── switch_control_steps.rs
+│   │       ├── switch_error_steps.rs
+│   │       ├── sensor_steps.rs
+│   │       ├── oc_steps.rs           # ObservingConditions steps
+│   │       └── server_steps.rs       # Server registration (mock feature)
+│   ├── features/
+│   │   ├── connection_lifecycle.feature
+│   │   ├── switch_metadata.feature
+│   │   ├── switch_control.feature
+│   │   ├── switch_errors.feature
+│   │   ├── sensor_readings.feature
+│   │   ├── observing_conditions.feature
+│   │   └── server_registration.feature
+│   ├── test_serial_manager.rs        # SerialManager internal API unit tests
+│   ├── test_protocol.rs              # Protocol parsing unit tests
+│   ├── test_switches.rs              # Switch definition unit tests
+│   ├── test_config.rs                # Configuration unit tests
+│   ├── test_error.rs                 # Error type unit tests
+│   └── conformu_integration.rs       # ASCOM ConformU compliance tests
 └── examples/
     ├── config-linux.json
     ├── config-macos.json
@@ -288,20 +313,23 @@ When running ASCOM ConformU compliance tests against real hardware, auto-dew mus
 ## Testing
 
 ```bash
-# Run all tests (includes mock-based tests)
-cargo test -p ppba-switch --all-features
+# Run all tests (BDD + unit, excluding server registration)
+cargo test -p ppba-driver --quiet
 
-# Run with verbose output
-cargo test -p ppba-switch --all-features -- --nocapture
+# Run all tests including server registration (requires mock feature)
+cargo test -p ppba-driver --features mock --quiet
 
-# Run specific test module
-cargo test -p ppba-switch --all-features test_protocol
+# Run BDD tests only
+cargo test -p ppba-driver --test bdd --quiet
+
+# Run specific unit test module
+cargo test -p ppba-driver test_protocol
 
 # Run ConformU compliance test (requires ConformU installed)
 cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture
 ```
 
-Note: The `--all-features` flag enables the `mock` feature which is required for device tests that use mock serial ports.
+The `--features mock` flag enables the `mock` feature which is required for server registration BDD tests. BDD tests use cucumber-rs with feature files in `tests/features/`.
 
 ### ConformU Compliance Testing
 

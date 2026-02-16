@@ -22,6 +22,9 @@ tracing-subscriber = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p filemonitor --test conformu_integration -- --ignored --nocapture"
 
+[package.metadata.miri]
+command = "cargo miri test -p filemonitor"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }

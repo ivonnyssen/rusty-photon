@@ -20,6 +20,9 @@ base64 = { workspace = true }
 fitsio = { workspace = true }
 async-trait = { workspace = true }
 
+[package.metadata.miri]
+command = "cargo miri test -p phd2-guider"
+
 [[bin]]
 name = "mock_phd2"
 path = "src/bin/mock_phd2.rs"
