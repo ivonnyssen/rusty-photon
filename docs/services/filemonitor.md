@@ -161,29 +161,51 @@ The service uses Rust's `PathBuf` for cross-platform path handling:
 
 ### Installation
 
-#### Linux
+#### Linux (Debian/Ubuntu) — `.deb` package
 ```bash
-cargo build --release
-./target/release/filemonitor -c config.json
+sudo dpkg -i filemonitor_0.1.0-1_amd64.deb
 ```
 
-#### macOS
+This installs the binary to `/usr/bin/filemonitor`, a default config to `/etc/filemonitor/config.json`, enables and starts a systemd service, and creates a `filemonitor` system user. Edit `/etc/filemonitor/config.json` to point to your monitored file. The config is preserved across package upgrades.
+
+#### Linux (Fedora/RHEL) — `.rpm` package
 ```bash
-cargo build --release
-./target/release/filemonitor -c config.json
+sudo rpm -i filemonitor-0.1.0-1.x86_64.rpm
 ```
 
-#### Windows
-```cmd
-cargo build --release
-.\target\release\filemonitor.exe -c config.json
+Same layout as the `.deb` package. User edits to `/etc/filemonitor/config.json` are preserved on upgrade (`noreplace`).
+
+#### macOS — Homebrew
+```bash
+brew tap ivonnyssen/rusty-photon
+brew install filemonitor
+```
+
+#### Windows — `.msi` installer
+Download `filemonitor-<version>-x86_64.msi` from the GitHub Releases page and run it. The installer places the binary in `Program Files` and adds it to the system PATH.
+
+#### From source (all platforms)
+```bash
+cargo build --release -p filemonitor
+./target/release/filemonitor -c config.json   # Linux/macOS
+.\target\release\filemonitor.exe -c config.json  # Windows
 ```
 
 ### Service Integration
-Service integration files are not yet implemented. Future versions will include:
-- **Linux**: systemd service files
-- **macOS**: launchd plist files
-- **Windows**: Windows Service or Task Scheduler
+
+#### Linux (systemd)
+A systemd unit file is provided at `pkg/filemonitor.service`. When installed via the `.deb` or `.rpm` package, the service is automatically enabled and started. Manual setup:
+
+```bash
+sudo cp pkg/filemonitor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now filemonitor
+```
+
+The service runs as a dedicated `filemonitor` system user, created automatically during package installation.
+
+#### macOS / Windows
+Service integration for macOS (launchd) and Windows (Windows Service) is not yet implemented. The MSI installer places the binary but does not register it as a Windows Service.
 
 ### Monorepo Structure
 
