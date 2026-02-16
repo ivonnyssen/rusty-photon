@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(not(miri))]
 use std::sync::Arc;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[cfg(not(miri))]
 async fn test_server_loop_stops_on_stop_signal() {
     let dir = tempfile::tempdir().unwrap();
@@ -50,10 +50,10 @@ async fn test_server_loop_stops_on_stop_signal() {
     )
     .await;
 
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "stop test failed: {:?}", result.err());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[cfg(not(miri))]
 async fn test_server_loop_reloads_on_reload_signal() {
     let dir = tempfile::tempdir().unwrap();
@@ -119,7 +119,7 @@ async fn test_server_loop_reloads_on_reload_signal() {
     )
     .await;
 
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "reload test failed: {:?}", result.err());
     assert!(
         loop_count.load(Ordering::Relaxed) >= 2,
         "Server loop should have run at least twice (once initial + once after reload)"
