@@ -109,6 +109,15 @@
                     </Component>
                     -->
 
+                    <Component Id='ConfigFile' Guid='*'>
+                        <File
+                            Id='config0'
+                            Name='config.json'
+                            DiskId='1'
+                            Source='examples\config-windows.json'
+                            KeyPath='yes'/>
+                    </Component>
+
                     <Directory Id='Bin' Name='bin'>
                         <Component Id='Path' Guid='3D9F7ECF-E58E-4659-AACF-A6EBC163C0E0' KeyPath='yes'>
                             <Environment
@@ -150,6 +159,7 @@
             <!--<ComponentRef Id='License'/>-->
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='ConfigFile'/>
 
             <Feature
                 Id='Environment'
