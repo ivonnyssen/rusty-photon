@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
-async fn run_with_reload(config_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_with_reload(config_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     run_server_loop(
         config_path,
         || {
