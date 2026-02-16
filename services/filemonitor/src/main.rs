@@ -57,6 +57,8 @@ async fn run_with_reload(config_path: &PathBuf) -> Result<(), Box<dyn std::error
             })
         },
         || {
+            // cfg(unix) covers both Linux and macOS — reload via SIGHUP
+            // (e.g. `systemctl reload filemonitor` or `kill -HUP <pid>`)
             #[cfg(unix)]
             {
                 Box::pin(async {
@@ -66,6 +68,8 @@ async fn run_with_reload(config_path: &PathBuf) -> Result<(), Box<dyn std::error
                     sig.recv().await;
                 })
             }
+            // Windows console mode has no reload signal — only Ctrl+C for shutdown.
+            // In service mode, reload is handled via SCM ParamChange in service.rs.
             #[cfg(not(unix))]
             {
                 Box::pin(std::future::pending())

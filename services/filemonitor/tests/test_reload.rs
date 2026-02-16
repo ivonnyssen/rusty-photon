@@ -122,11 +122,7 @@ async fn test_server_loop_stop_and_reload() {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "reload test failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "reload test failed: {:?}", result.err());
         assert!(
             loop_count.load(Ordering::Relaxed) >= 2,
             "Server loop should have run at least twice (once initial + once after reload)"
