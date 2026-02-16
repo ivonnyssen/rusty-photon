@@ -114,7 +114,7 @@
                             Id='config0'
                             Name='config.json'
                             DiskId='1'
-                            Source='examples\config-windows.json'
+                            Source='services\filemonitor\examples\config-windows.json'
                             KeyPath='yes'/>
                     </Component>
 
@@ -136,6 +136,22 @@
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\filemonitor.exe'
                                 KeyPath='yes'/>
+                            <ServiceInstall
+                                Id='InstallService'
+                                Name='filemonitor'
+                                DisplayName='Filemonitor'
+                                Description='ASCOM Alpaca SafetyMonitor that monitors file content'
+                                Start='auto'
+                                Type='ownProcess'
+                                ErrorControl='normal'
+                                Arguments='--service --config "[APPLICATIONFOLDER]config.json"' />
+                            <ServiceControl
+                                Id='StartService'
+                                Name='filemonitor'
+                                Start='install'
+                                Stop='both'
+                                Remove='uninstall'
+                                Wait='yes' />
                         </Component>
                     </Directory>
                 </Directory>

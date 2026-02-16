@@ -1,10 +1,13 @@
 use ascom_alpaca::api::{Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -256,5 +259,22 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
     bound.start().await?;
 
+    Ok(())
+}
+
+pub async fn run_server_loop(
+    config_path: &Path,
+    mut stop: impl FnMut() -> Pin<Box<dyn Future<Output = ()>>>,
+    mut reload: impl FnMut() -> Pin<Box<dyn Future<Output = ()>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let config = load_config(&config_path.to_path_buf())?;
+        info!("Starting filemonitor server on port {}", config.server.port);
+        tokio::select! {
+            result = start_server(config) => return result,
+            _ = stop() => { info!("Received stop signal"); break; }
+            _ = reload() => { info!("Reloading configuration"); continue; }
+        }
+    }
     Ok(())
 }

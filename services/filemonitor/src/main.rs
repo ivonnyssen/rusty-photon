@@ -1,7 +1,10 @@
 use clap::Parser;
-use filemonitor::{load_config, start_server};
+use filemonitor::run_server_loop;
 use std::path::PathBuf;
-use tracing::{debug, info, Level};
+use tracing::{debug, Level};
+
+#[cfg(windows)]
+mod service;
 
 #[derive(Parser)]
 #[command(name = "filemonitor")]
@@ -14,27 +17,60 @@ struct Args {
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager)
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Setup tracing with specified log level
-    tracing_subscriber::fmt()
-        .with_max_level(args.log_level)
-        .init();
+    #[cfg(windows)]
+    if args.service {
+        return service::run(args.config, args.log_level);
+    }
 
     debug!(
         "Parsed command line arguments: config={:?}, log_level={:?}",
         args.config, args.log_level
     );
 
-    let config = load_config(&args.config)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        tracing_subscriber::fmt()
+            .with_max_level(args.log_level)
+            .init();
 
-    info!("Starting filemonitor server on port {}", config.server.port);
+        let config_path = args.config;
+        run_with_reload(&config_path).await
+    })
+}
 
-    start_server(config).await?;
-
-    Ok(())
+async fn run_with_reload(config_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    run_server_loop(
+        config_path,
+        || {
+            Box::pin(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+        },
+        || {
+            #[cfg(unix)]
+            {
+                Box::pin(async {
+                    let mut sig =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to register SIGHUP handler");
+                    sig.recv().await;
+                })
+            }
+            #[cfg(not(unix))]
+            {
+                Box::pin(std::future::pending())
+            }
+        },
+    )
+    .await
 }

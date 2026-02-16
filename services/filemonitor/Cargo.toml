@@ -19,6 +19,9 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+
 [package.metadata.conformu]
 command = "cargo test -p filemonitor --test conformu_integration -- --ignored --nocapture"
 
