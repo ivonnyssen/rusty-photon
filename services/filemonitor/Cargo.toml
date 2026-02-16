@@ -25,6 +25,9 @@ command = "cargo test -p filemonitor --test conformu_integration -- --ignored --
 [package.metadata.miri]
 command = "cargo miri test -p filemonitor"
 
+[package.metadata.wix]
+eula = false
+
 [package.metadata.deb]
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
 extended-description = "ASCOM Alpaca SafetyMonitor that monitors file content for astrophotography safety."
