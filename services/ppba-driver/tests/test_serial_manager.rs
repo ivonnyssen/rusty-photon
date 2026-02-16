@@ -1,7 +1,9 @@
-//! Tests for the SerialManager module
+//! Unit tests for SerialManager internal API methods
 //!
-//! Tests cover creation/initialization, connection lifecycle (reference counting),
-//! command sending, status/power refresh, utility methods, and error handling.
+//! These tests exercise internal SerialManager methods (send_command, refresh,
+//! cached state, averaging period) that are not directly exposed through the
+//! ASCOM device interface. Connection lifecycle tests are in the BDD feature
+//! `connection_lifecycle.feature`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,30 +102,6 @@ impl SerialPortFactory for MockSerialPortFactory {
     }
 }
 
-/// Mock factory that fails on open
-struct FailingFactory {
-    error_msg: String,
-}
-
-impl FailingFactory {
-    fn new(error_msg: &str) -> Self {
-        Self {
-            error_msg: error_msg.to_string(),
-        }
-    }
-}
-
-#[async_trait]
-impl SerialPortFactory for FailingFactory {
-    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
-        Err(PpbaError::ConnectionFailed(self.error_msg.clone()))
-    }
-
-    async fn port_exists(&self, _port: &str) -> bool {
-        false
-    }
-}
-
 /// Standard responses: ping + status + power stats (enough for one connect)
 fn standard_connection_responses() -> Vec<String> {
     vec![
@@ -142,131 +120,6 @@ fn standard_connection_responses() -> Vec<String> {
 fn create_manager(factory: Arc<dyn SerialPortFactory>) -> SerialManager {
     let config = Config::default();
     SerialManager::new(config, factory)
-}
-
-// ============================================================================
-// Creation & Initialization Tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_new_creates_manager() {
-    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-    let manager = create_manager(factory);
-
-    // Manager should exist and have a debug representation
-    let debug_str = format!("{:?}", manager);
-    assert!(debug_str.contains("SerialManager"));
-}
-
-#[tokio::test]
-async fn test_initially_not_available() {
-    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-    let manager = create_manager(factory);
-
-    assert!(!manager.is_available());
-}
-
-// ============================================================================
-// Connection Lifecycle (Reference Counting) Tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_connect_first_device() {
-    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager = create_manager(factory);
-
-    manager.connect().await.unwrap();
-
-    assert!(manager.is_available());
-
-    // Clean up
-    manager.disconnect().await;
-}
-
-#[tokio::test]
-async fn test_connect_second_device_increments_refcount() {
-    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager = create_manager(factory);
-
-    // First connect opens port
-    manager.connect().await.unwrap();
-    assert!(manager.is_available());
-
-    // Second connect increments refcount but doesn't re-open
-    manager.connect().await.unwrap();
-    assert!(manager.is_available());
-
-    // Clean up: need two disconnects
-    manager.disconnect().await;
-    assert!(manager.is_available()); // Still one ref
-    manager.disconnect().await;
-}
-
-#[tokio::test]
-async fn test_disconnect_last_device_closes_port() {
-    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager = create_manager(factory);
-
-    manager.connect().await.unwrap();
-    assert!(manager.is_available());
-
-    manager.disconnect().await;
-    assert!(!manager.is_available());
-}
-
-#[tokio::test]
-async fn test_disconnect_not_last_preserves_connection() {
-    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager = create_manager(factory);
-
-    // Two connections
-    manager.connect().await.unwrap();
-    manager.connect().await.unwrap();
-
-    // Disconnect one - should still be available
-    manager.disconnect().await;
-    assert!(manager.is_available());
-
-    // Disconnect last
-    manager.disconnect().await;
-    assert!(!manager.is_available());
-}
-
-#[tokio::test]
-async fn test_connect_disconnect_full_lifecycle() {
-    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager = create_manager(factory);
-
-    // Initially not available
-    assert!(!manager.is_available());
-
-    // Connect → available
-    manager.connect().await.unwrap();
-    assert!(manager.is_available());
-
-    // Disconnect → not available
-    manager.disconnect().await;
-    assert!(!manager.is_available());
-}
-
-#[tokio::test]
-async fn test_disconnect_when_already_zero_does_not_underflow() {
-    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-    let manager = create_manager(factory);
-
-    // Disconnect without ever connecting - count is already 0
-    manager.disconnect().await;
-
-    // Should still be at 0, not underflowed to u32::MAX
-    assert!(!manager.is_available());
-
-    // A subsequent connect should work normally (count goes 0 → 1)
-    let factory2 = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-    let manager2 = create_manager(factory2);
-    manager2.connect().await.unwrap();
-    assert!(manager2.is_available());
-    manager2.disconnect().await;
-    assert!(!manager2.is_available());
 }
 
 // ============================================================================
@@ -434,30 +287,4 @@ async fn test_get_cached_state_returns_clone() {
     );
 
     manager.disconnect().await;
-}
-
-// ============================================================================
-// Error Handling Tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_connect_fails_on_factory_error() {
-    let factory = Arc::new(FailingFactory::new("port not found"));
-    let manager = create_manager(factory);
-
-    let result = manager.connect().await;
-    assert!(result.is_err());
-    assert!(!manager.is_available());
-}
-
-#[tokio::test]
-async fn test_connect_fails_on_bad_ping() {
-    // Factory returns a bad ping response
-    let factory = Arc::new(MockSerialPortFactory::new(vec![
-        "GARBAGE_RESPONSE".to_string()
-    ]));
-    let manager = create_manager(factory);
-
-    let result = manager.connect().await;
-    assert!(result.is_err());
 }

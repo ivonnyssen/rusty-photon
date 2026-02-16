@@ -27,6 +27,9 @@ thiserror = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p qhy-focuser --features mock --test conformu_integration -- --ignored --nocapture"
 
+[package.metadata.miri]
+command = "cargo miri test -p qhy-focuser"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 mockall = { workspace = true }

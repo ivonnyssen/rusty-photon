@@ -36,10 +36,44 @@ jobs:
         run: cargo generate-lockfile
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
-  miri:
-    if: github.event_name != 'pull_request'
+  discover-miri:
+    name: Discover Miri Services
     runs-on: ubuntu-latest
-    name: scheduled / ubuntu / miri
+    outputs:
+      services: ${{ steps.find.outputs.services }}
+      has_services: ${{ steps.find.outputs.has_services }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Find Miri services
+        id: find
+        run: |
+          # Get all packages with miri metadata and build JSON array
+          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+            jq -c '[.packages[] | select(.metadata.miri.command) | {name: .name, command: .metadata.miri.command}]')
+
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+
+          # Check if we have any services
+          COUNT=$(echo "$SERVICES" | jq 'length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_services=true" >> $GITHUB_OUTPUT
+            echo "Found $COUNT Miri services:"
+            echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
+          else
+            echo "has_services=false" >> $GITHUB_OUTPUT
+            echo "No Miri services found"
+          fi
+
+  miri:
+    if: github.event_name != 'pull_request' && needs.discover-miri.outputs.has_services == 'true'
+    needs: discover-miri
+    runs-on: ubuntu-latest
+    name: scheduled / ubuntu / miri / ${{ matrix.service.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.discover-miri.outputs.services) }}
     steps:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
@@ -61,7 +95,7 @@ jobs:
       - name: cargo clean (avoid stale artifacts)
         run: cargo clean
       - name: cargo miri test
-        run: cargo miri test
+        run: ${{ matrix.service.command }}
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
   # https://twitter.com/alcuadrado/status/1571291687837732873

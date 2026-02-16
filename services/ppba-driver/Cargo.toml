@@ -27,8 +27,16 @@ thiserror = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture"
 
+[package.metadata.miri]
+command = "cargo miri test -p ppba-driver"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
+cucumber = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
