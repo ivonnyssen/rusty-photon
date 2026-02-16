@@ -5,8 +5,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::Notify;
 use tracing::{error, Level};
 use windows_service::service::{
-    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-    ServiceType,
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::{define_windows_service, service_dispatcher};
@@ -35,9 +34,7 @@ fn service_main(_arguments: Vec<OsString>) {
 fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     let (config_path, log_level) = SERVICE_CONFIG.get().expect("Service config not set");
 
-    tracing_subscriber::fmt()
-        .with_max_level(*log_level)
-        .init();
+    tracing_subscriber::fmt().with_max_level(*log_level).init();
 
     let stop_notify = Arc::new(Notify::new());
     let reload_notify = Arc::new(Notify::new());
@@ -45,21 +42,22 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     let stop_notify_clone = Arc::clone(&stop_notify);
     let reload_notify_clone = Arc::clone(&reload_notify);
 
-    let status_handle = service_control_handler::register(
-        SERVICE_NAME,
-        move |control_event| match control_event {
-            ServiceControl::Stop => {
-                stop_notify_clone.notify_one();
-                ServiceControlHandlerResult::NoError
-            }
-            ServiceControl::ParamChange => {
-                reload_notify_clone.notify_one();
-                ServiceControlHandlerResult::NoError
-            }
-            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            _ => ServiceControlHandlerResult::NotImplemented,
-        },
-    )?;
+    let status_handle =
+        service_control_handler::register(
+            SERVICE_NAME,
+            move |control_event| match control_event {
+                ServiceControl::Stop => {
+                    stop_notify_clone.notify_one();
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::ParamChange => {
+                    reload_notify_clone.notify_one();
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                _ => ServiceControlHandlerResult::NotImplemented,
+            },
+        )?;
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
