@@ -159,7 +159,7 @@ Current services and their commands:
 |--------|-----------|------------------|---------------|-----------|
 | **nightly** | `cargo test --locked --all-features --all-targets` (nightly) | `cargo +nightly test --locked --all-features --all-targets` | nightly, cfitsio | Optional |
 | **discover-miri** | `cargo metadata` + jq | Same | jq | — |
-| **miri** | `cargo miri test -p <service>` (per service) | `cargo +nightly miri test -p <service>` | nightly + miri component | Optional |
+| **miri** | Per-service command from metadata | Same (see below) | nightly + miri component | Optional |
 | **update** | `cargo update && cargo test` (beta) | `cargo +beta update && cargo +beta test --locked --all-features --all-targets` | beta | Optional |
 
 Miri services are discovered dynamically via `[package.metadata.miri]` in each
@@ -167,10 +167,14 @@ service's `Cargo.toml`. To list them:
 
 ```bash
 cargo metadata --format-version 1 --no-deps | \
-  jq -c '[.packages[] | select(.metadata.miri) | .name]'
+  jq -r '.packages[] | select(.metadata.miri.command) | "\(.name): \(.metadata.miri.command)"'
 ```
 
-Current services: filemonitor, phd2-guider, ppba-driver, qhy-focuser
+Current services and their commands:
+- **filemonitor**: `cargo miri test -p filemonitor`
+- **phd2-guider**: `cargo miri test -p phd2-guider`
+- **ppba-driver**: `cargo miri test -p ppba-driver`
+- **qhy-focuser**: `cargo miri test -p qhy-focuser`
 
 > **Note:** Miri only runs on push to main (not on PRs) and requires
 > `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build (`cargo clean`) is

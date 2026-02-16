@@ -21,6 +21,7 @@ fitsio = { workspace = true }
 async-trait = { workspace = true }
 
 [package.metadata.miri]
+command = "cargo miri test -p phd2-guider"
 
 [[bin]]
 name = "mock_phd2"

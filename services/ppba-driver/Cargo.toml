@@ -28,6 +28,7 @@ thiserror = { workspace = true }
 command = "cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture"
 
 [package.metadata.miri]
+command = "cargo miri test -p ppba-driver"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
