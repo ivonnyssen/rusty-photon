@@ -37,6 +37,22 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 crate::monitor::MonitorState::Unsafe => ("#721c24", "#f8d7da"),
                 crate::monitor::MonitorState::Unknown => ("#383d41", "#e2e3e5"),
             };
+            let last_check = if m.last_poll_epoch_ms == 0 {
+                "Never".to_string()
+            } else {
+                format!(
+                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    m.last_poll_epoch_ms
+                )
+            };
+            let next_check = if m.last_poll_epoch_ms == 0 {
+                "Pending".to_string()
+            } else {
+                format!(
+                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    m.last_poll_epoch_ms + m.polling_interval_ms
+                )
+            };
             format!(
                 r#"<tr style="border-bottom: 1px solid #dee2e6;">
                     <td style="padding: 0.5rem;">{}</td>
@@ -44,8 +60,10 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: {}; background-color: {};">{}</span>
                     </td>
                     <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                m.name, color, bg, m.state, m.consecutive_errors
+                m.name, color, bg, m.state, m.consecutive_errors, last_check, next_check
             )
         })
         .collect();
@@ -87,12 +105,16 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                             'Unsafe': ['#721c24', '#f8d7da'],
                         }};
                         const [color, bg] = colors[m.state] || ['#383d41', '#e2e3e5'];
+                        const lastCheck = m.last_poll_epoch_ms === 0 ? 'Never' : new Date(m.last_poll_epoch_ms).toLocaleTimeString();
+                        const nextCheck = m.last_poll_epoch_ms === 0 ? 'Pending' : new Date(m.last_poll_epoch_ms + m.polling_interval_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
                             <td style="padding: 0.5rem;">${{m.name}}</td>
                             <td style="padding: 0.5rem;">
                                 <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{m.state}}</span>
                             </td>
                             <td style="padding: 0.5rem;">${{m.consecutive_errors}}</td>
+                            <td style="padding: 0.5rem;">${{lastCheck}}</td>
+                            <td style="padding: 0.5rem;">${{nextCheck}}</td>
                         </tr>`;
                     }}).join('');
                 }});
@@ -124,6 +146,8 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <th style="padding: 0.5rem; text-align: left;">Name</th>
                     <th style="padding: 0.5rem; text-align: left;">State</th>
                     <th style="padding: 0.5rem; text-align: left;">Errors</th>
+                    <th style="padding: 0.5rem; text-align: left;">Last Check</th>
+                    <th style="padding: 0.5rem; text-align: left;">Next Check</th>
                 </tr>
             </thead>
             <tbody id="monitor-body">{monitor_rows}</tbody>
@@ -165,6 +189,7 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
                 "last_poll_epoch_ms": m.last_poll_epoch_ms,
                 "last_change_epoch_ms": m.last_change_epoch_ms,
                 "consecutive_errors": m.consecutive_errors,
+                "polling_interval_ms": m.polling_interval_ms,
             })
         })
         .collect();
@@ -209,7 +234,7 @@ mod tests {
     use crate::state::new_state_handle;
 
     fn setup_state() -> StateHandle {
-        new_state_handle(vec!["Test Monitor".to_string()], 10)
+        new_state_handle(vec![("Test Monitor".to_string(), 30000)], 10)
     }
 
     #[tokio::test]
@@ -254,6 +279,7 @@ mod tests {
         assert_eq!(json.len(), 1);
         assert_eq!(json[0]["name"], "Test Monitor");
         assert_eq!(json[0]["state"], "Safe");
+        assert_eq!(json[0]["polling_interval_ms"], 30000);
     }
 
     #[tokio::test]
@@ -306,6 +332,8 @@ mod tests {
             .unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Sentinel Dashboard"));
+        assert!(html.contains("Last Check"));
+        assert!(html.contains("Next Check"));
     }
 
     #[tokio::test]

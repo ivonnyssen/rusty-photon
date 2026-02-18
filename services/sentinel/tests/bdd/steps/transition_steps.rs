@@ -64,7 +64,7 @@ async fn monitor_in_state(world: &mut SentinelWorld, name: String, state_str: St
     world.transition_monitor_name = Some(name.clone());
     world.transition_initial_state = Some(state);
 
-    let state_handle = new_state_handle(vec![name.clone()], 100);
+    let state_handle = new_state_handle(vec![(name.clone(), 30000)], 100);
     {
         let mut s = state_handle.write().await;
         s.update_monitor(&name, state, 0);

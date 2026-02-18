@@ -320,7 +320,7 @@ mod tests {
     async fn dispatch_sends_notification_on_matching_transition() {
         use crate::state::new_state_handle;
 
-        let state = new_state_handle(vec!["m1".to_string()], 10);
+        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
         let transitions = vec![TransitionConfig {
             monitor_name: "m1".to_string(),
             direction: TransitionDirection::SafeToUnsafe,
@@ -355,7 +355,7 @@ mod tests {
     async fn dispatch_skips_non_matching_transition() {
         use crate::state::new_state_handle;
 
-        let state = new_state_handle(vec!["m1".to_string()], 10);
+        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
         let transitions = vec![TransitionConfig {
             monitor_name: "m1".to_string(),
             direction: TransitionDirection::SafeToUnsafe,
@@ -389,7 +389,7 @@ mod tests {
     async fn dispatch_records_failure() {
         use crate::state::new_state_handle;
 
-        let state = new_state_handle(vec!["m1".to_string()], 10);
+        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
         let transitions = vec![TransitionConfig {
             monitor_name: "m1".to_string(),
             direction: TransitionDirection::SafeToUnsafe,

@@ -61,8 +61,11 @@ pub async fn run(config: Config) -> Result<()> {
     }
 
     // Build shared state
-    let monitor_names: Vec<String> = monitors.iter().map(|m| m.name().to_string()).collect();
-    let state = state::new_state_handle(monitor_names, config.dashboard.history_size);
+    let monitors_with_intervals: Vec<(String, u64)> = polling_intervals
+        .iter()
+        .map(|(name, dur)| (name.clone(), dur.as_millis() as u64))
+        .collect();
+    let state = state::new_state_handle(monitors_with_intervals, config.dashboard.history_size);
 
     // Build engine
     let engine = Engine::new(
