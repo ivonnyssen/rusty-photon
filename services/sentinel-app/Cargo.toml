@@ -1,0 +1,29 @@
+[package]
+name = "sentinel-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.88.0"
+description = "Leptos frontend for the sentinel monitoring dashboard"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = "0.8"
+leptos_meta = "0.8"
+leptos_router = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# WASM-only deps (hydrate feature)
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location"] }
+gloo-net = { version = "0.6", optional = true, features = ["http"] }
+
+[features]
+default = []
+hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:web-sys", "dep:gloo-net"]
+ssr = ["leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]

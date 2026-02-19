@@ -1,0 +1,301 @@
+//! ASCOM Alpaca SafetyMonitor client
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::config::MonitorConfig;
+use crate::io::HttpClient;
+use crate::monitor::{Monitor, MonitorState};
+
+/// ASCOM Alpaca API response for boolean values
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct AlpacaBoolResponse {
+    value: bool,
+    #[allow(dead_code)]
+    error_number: i32,
+    #[allow(dead_code)]
+    error_message: String,
+}
+
+/// Client for an ASCOM Alpaca SafetyMonitor device
+pub struct AlpacaSafetyMonitor {
+    name: String,
+    base_url: String,
+    http: Arc<dyn HttpClient>,
+}
+
+impl std::fmt::Debug for AlpacaSafetyMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlpacaSafetyMonitor")
+            .field("name", &self.name)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+impl AlpacaSafetyMonitor {
+    pub fn new(config: &MonitorConfig, http: Arc<dyn HttpClient>) -> Self {
+        let MonitorConfig::AlpacaSafetyMonitor {
+            name,
+            host,
+            port,
+            device_number,
+            ..
+        } = config;
+
+        let base_url = format!(
+            "http://{}:{}/api/v1/safetymonitor/{}",
+            host, port, device_number
+        );
+
+        tracing::debug!("Created AlpacaSafetyMonitor '{}' at {}", name, base_url);
+
+        Self {
+            name: name.clone(),
+            base_url,
+            http,
+        }
+    }
+}
+
+#[async_trait]
+impl Monitor for AlpacaSafetyMonitor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn poll(&self) -> MonitorState {
+        let url = format!("{}/issafe", self.base_url);
+        tracing::debug!("Polling {} at {}", self.name, url);
+
+        match self.http.get(&url).await {
+            Ok(response) => {
+                if response.status != 200 {
+                    tracing::debug!(
+                        "Non-200 response from {}: status={}",
+                        self.name,
+                        response.status
+                    );
+                    return MonitorState::Unknown;
+                }
+
+                match serde_json::from_str::<AlpacaBoolResponse>(&response.body) {
+                    Ok(parsed) => {
+                        if parsed.error_number != 0 {
+                            tracing::debug!(
+                                "ASCOM error from {}: {} - {}",
+                                self.name,
+                                parsed.error_number,
+                                parsed.error_message
+                            );
+                            return MonitorState::Unknown;
+                        }
+                        if parsed.value {
+                            MonitorState::Safe
+                        } else {
+                            MonitorState::Unsafe
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to parse response from {}: {}", self.name, e);
+                        MonitorState::Unknown
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Failed to poll {}: {}", self.name, e);
+                MonitorState::Unknown
+            }
+        }
+    }
+
+    async fn connect(&self) -> crate::Result<()> {
+        let url = format!("{}/connected", self.base_url);
+        tracing::debug!("Connecting {}", self.name);
+        self.http
+            .put_form(&url, &[("Connected", "true"), ("ClientID", "1")])
+            .await?;
+        tracing::debug!("Connected {}", self.name);
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> crate::Result<()> {
+        let url = format!("{}/connected", self.base_url);
+        tracing::debug!("Disconnecting {}", self.name);
+        self.http
+            .put_form(&url, &[("Connected", "false"), ("ClientID", "1")])
+            .await?;
+        tracing::debug!("Disconnected {}", self.name);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::HttpResponse;
+    use crate::io::MockHttpClient;
+
+    fn test_config() -> MonitorConfig {
+        MonitorConfig::AlpacaSafetyMonitor {
+            name: "Test Monitor".to_string(),
+            host: "localhost".to_string(),
+            port: 11111,
+            device_number: 0,
+            polling_interval_seconds: 30,
+        }
+    }
+
+    fn safe_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: r#"{"Value": true, "ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
+        }
+    }
+
+    fn unsafe_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: r#"{"Value": false, "ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
+        }
+    }
+
+    fn ascom_error_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: r#"{"Value": false, "ErrorNumber": 1031, "ErrorMessage": "Not connected"}"#
+                .to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_returns_safe() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .withf(|url| url.contains("/issafe"))
+            .returning(|_| Box::pin(async { Ok(safe_response()) }));
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Safe);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_unsafe() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .withf(|url| url.contains("/issafe"))
+            .returning(|_| Box::pin(async { Ok(unsafe_response()) }));
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unsafe);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_unknown_on_http_error() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get().returning(|_| {
+            Box::pin(async { Err(crate::SentinelError::Http("connection refused".to_string())) })
+        });
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_unknown_on_non_200() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get().returning(|_| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 500,
+                    body: "Internal Server Error".to_string(),
+                })
+            })
+        });
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_unknown_on_ascom_error() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .returning(|_| Box::pin(async { Ok(ascom_error_response()) }));
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_unknown_on_invalid_json() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get().returning(|_| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    body: "not json".to_string(),
+                })
+            })
+        });
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn connect_sends_put() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_put_form()
+            .withf(|url, params| {
+                url.contains("/connected") && params.contains(&("Connected", "true"))
+            })
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: r#"{"ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
+                    })
+                })
+            });
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        monitor.connect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnect_sends_put() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_put_form()
+            .withf(|url, params| {
+                url.contains("/connected") && params.contains(&("Connected", "false"))
+            })
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: r#"{"ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
+                    })
+                })
+            });
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        monitor.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn name_returns_configured_name() {
+        let mock = MockHttpClient::new();
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        assert_eq!(monitor.name(), "Test Monitor");
+    }
+}

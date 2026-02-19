@@ -4,6 +4,8 @@ members = [
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",
+  "services/sentinel",
+  "services/sentinel-app",
 ]
 resolver = "2"
 
@@ -32,6 +34,16 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 tokio-serial = "5.4"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "feature/conformu-settings-file", default-features = false }
-reqwest = "0.12"
-cucumber = "0.21"
+native-tls = "0.2.18"
+reqwest = { version = "0.13.2", features = ["form"] }
+cucumber = "0.22.1"
 tempfile = "3"
+
+[[workspace.metadata.leptos]]
+name = "sentinel-dashboard"
+bin-package = "sentinel"
+lib-package = "sentinel-app"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+site-addr = "127.0.0.1:11114"
+reload-port = 11115
