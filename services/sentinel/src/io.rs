@@ -90,3 +90,65 @@ impl HttpClient for ReqwestHttpClient {
         Ok(HttpResponse { status, body })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A URL that will always refuse connections (port 1 is reserved and unbound)
+    const UNREACHABLE_URL: &str = "http://127.0.0.1:1/test";
+
+    #[tokio::test]
+    async fn get_connection_refused_returns_http_error() {
+        let client = ReqwestHttpClient::default();
+        let err = client.get(UNREACHABLE_URL).await.unwrap_err();
+
+        match &err {
+            crate::SentinelError::Http(msg) => {
+                assert!(
+                    msg.starts_with("GET http://127.0.0.1:1/test failed:"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected SentinelError::Http, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn put_form_connection_refused_returns_http_error() {
+        let client = ReqwestHttpClient::default();
+        let err = client
+            .put_form(UNREACHABLE_URL, &[("key", "value")])
+            .await
+            .unwrap_err();
+
+        match &err {
+            crate::SentinelError::Http(msg) => {
+                assert!(
+                    msg.starts_with("PUT http://127.0.0.1:1/test failed:"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected SentinelError::Http, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn post_form_connection_refused_returns_http_error() {
+        let client = ReqwestHttpClient::default();
+        let err = client
+            .post_form(UNREACHABLE_URL, &[("key", "value")])
+            .await
+            .unwrap_err();
+
+        match &err {
+            crate::SentinelError::Http(msg) => {
+                assert!(
+                    msg.starts_with("POST http://127.0.0.1:1/test failed:"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected SentinelError::Http, got {other:?}"),
+        }
+    }
+}
