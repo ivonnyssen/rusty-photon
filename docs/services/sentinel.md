@@ -59,6 +59,34 @@ See `examples/config.json` for a complete example.
 
 - `pushover` — Sends push notifications via the Pushover API
 
+### Environment Variable Overrides
+
+Pushover credentials can be provided (or overridden) via environment variables so that secrets do not need to be committed to the config file:
+
+| Variable | Overrides |
+|----------|-----------|
+| `PUSHOVER_API_TOKEN` | `api_token` in Pushover notifier config |
+| `PUSHOVER_USER_KEY` | `user_key` in Pushover notifier config |
+
+When set and non-empty, environment variables take precedence over JSON config values. When using environment variables exclusively, the credentials can be omitted from the JSON config entirely.
+
+After resolution, sentinel returns a configuration error if either field is still empty.
+
+**Usage with 1Password CLI:**
+
+Create a `.env` file (already in `.gitignore`) with `op://` secret references:
+
+```
+PUSHOVER_API_TOKEN=op://Personal/Pushover/add more/sentinel app key
+PUSHOVER_USER_KEY=op://Personal/Pushover/add more/user key
+```
+
+Then run sentinel with `op run` to inject the resolved values:
+
+```bash
+op run --env-file .env -- cargo run -p sentinel -- -c services/sentinel/examples/config.json -l debug
+```
+
 ### Transition Rules
 
 Transitions define when notifications should be sent. Each rule specifies:

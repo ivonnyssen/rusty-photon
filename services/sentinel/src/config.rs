@@ -3,6 +3,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Environment variable name for overriding the Pushover API token
+const PUSHOVER_API_TOKEN_ENV: &str = "PUSHOVER_API_TOKEN";
+
+/// Environment variable name for overriding the Pushover user key
+const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
+
 /// Main configuration structure
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -14,6 +20,61 @@ pub struct Config {
     pub transitions: Vec<TransitionConfig>,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+}
+
+impl Config {
+    /// Resolve secrets from environment variables, overriding config file values.
+    ///
+    /// For each Pushover notifier, `PUSHOVER_API_TOKEN` and `PUSHOVER_USER_KEY`
+    /// environment variables override the corresponding JSON config values when
+    /// set and non-empty. Returns an error if either field is still empty after
+    /// resolution.
+    pub fn resolve_secrets(&mut self) -> crate::Result<()> {
+        let env_api_token = std::env::var(PUSHOVER_API_TOKEN_ENV)
+            .ok()
+            .filter(|v| !v.is_empty());
+        let env_user_key = std::env::var(PUSHOVER_USER_KEY_ENV)
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        for notifier in &mut self.notifiers {
+            match notifier {
+                NotifierConfig::Pushover {
+                    api_token,
+                    user_key,
+                    ..
+                } => {
+                    if let Some(ref token) = env_api_token {
+                        tracing::debug!(
+                            "Overriding Pushover api_token from {} environment variable",
+                            PUSHOVER_API_TOKEN_ENV
+                        );
+                        *api_token = token.clone();
+                    }
+                    if let Some(ref key) = env_user_key {
+                        tracing::debug!(
+                            "Overriding Pushover user_key from {} environment variable",
+                            PUSHOVER_USER_KEY_ENV
+                        );
+                        *user_key = key.clone();
+                    }
+
+                    if api_token.is_empty() {
+                        return Err(crate::SentinelError::Config(
+                            "Pushover api_token is empty: set it in the config file or via the PUSHOVER_API_TOKEN environment variable".to_string(),
+                        ));
+                    }
+                    if user_key.is_empty() {
+                        return Err(crate::SentinelError::Config(
+                            "Pushover user_key is empty: set it in the config file or via the PUSHOVER_USER_KEY environment variable".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Monitor configuration with tagged enum for extensibility
@@ -57,7 +118,9 @@ impl MonitorConfig {
 pub enum NotifierConfig {
     #[serde(rename = "pushover")]
     Pushover {
+        #[serde(default)]
         api_token: String,
+        #[serde(default)]
         user_key: String,
         #[serde(default = "default_pushover_title")]
         default_title: String,
@@ -168,6 +231,23 @@ pub fn load_config(path: &Path) -> crate::Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that mutate environment variables.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn pushover_config(api_token: &str, user_key: &str) -> Config {
+        Config {
+            notifiers: vec![NotifierConfig::Pushover {
+                api_token: api_token.to_string(),
+                user_key: user_key.to_string(),
+                default_title: default_pushover_title(),
+                default_priority: 0,
+                default_sound: default_pushover_sound(),
+            }],
+            ..Config::default()
+        }
+    }
 
     #[test]
     fn parse_full_config() {
@@ -359,5 +439,113 @@ mod tests {
         assert!(config.notifiers.is_empty());
         assert!(config.transitions.is_empty());
         assert!(config.dashboard.enabled);
+    }
+
+    #[test]
+    fn resolve_secrets_env_overrides_config() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PUSHOVER_API_TOKEN", "env-token");
+        std::env::set_var("PUSHOVER_USER_KEY", "env-key");
+
+        let mut config = pushover_config("json-token", "json-key");
+        config.resolve_secrets().unwrap();
+
+        match &config.notifiers[0] {
+            NotifierConfig::Pushover {
+                api_token,
+                user_key,
+                ..
+            } => {
+                assert_eq!(api_token, "env-token");
+                assert_eq!(user_key, "env-key");
+            }
+        }
+
+        std::env::remove_var("PUSHOVER_API_TOKEN");
+        std::env::remove_var("PUSHOVER_USER_KEY");
+    }
+
+    #[test]
+    fn resolve_secrets_falls_back_to_json() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PUSHOVER_API_TOKEN");
+        std::env::remove_var("PUSHOVER_USER_KEY");
+
+        let mut config = pushover_config("json-token", "json-key");
+        config.resolve_secrets().unwrap();
+
+        match &config.notifiers[0] {
+            NotifierConfig::Pushover {
+                api_token,
+                user_key,
+                ..
+            } => {
+                assert_eq!(api_token, "json-token");
+                assert_eq!(user_key, "json-key");
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_secrets_error_when_both_empty() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PUSHOVER_API_TOKEN");
+        std::env::remove_var("PUSHOVER_USER_KEY");
+
+        let mut config = pushover_config("", "");
+        let err = config.resolve_secrets().unwrap_err();
+        assert!(err.to_string().contains("api_token is empty"));
+    }
+
+    #[test]
+    fn resolve_secrets_empty_env_treated_as_unset() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PUSHOVER_API_TOKEN", "");
+        std::env::set_var("PUSHOVER_USER_KEY", "");
+
+        let mut config = pushover_config("json-token", "json-key");
+        config.resolve_secrets().unwrap();
+
+        match &config.notifiers[0] {
+            NotifierConfig::Pushover {
+                api_token,
+                user_key,
+                ..
+            } => {
+                assert_eq!(api_token, "json-token");
+                assert_eq!(user_key, "json-key");
+            }
+        }
+
+        std::env::remove_var("PUSHOVER_API_TOKEN");
+        std::env::remove_var("PUSHOVER_USER_KEY");
+    }
+
+    #[test]
+    fn resolve_secrets_no_notifiers_is_ok() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let mut config = Config::default();
+        config.resolve_secrets().unwrap();
+    }
+
+    #[test]
+    fn parse_pushover_without_credentials() {
+        let json = r#"{
+            "notifiers": [{
+                "type": "pushover"
+            }]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        match &config.notifiers[0] {
+            NotifierConfig::Pushover {
+                api_token,
+                user_key,
+                ..
+            } => {
+                assert_eq!(api_token, "");
+                assert_eq!(user_key, "");
+            }
+        }
     }
 }

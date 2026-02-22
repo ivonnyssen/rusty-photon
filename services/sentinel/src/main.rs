@@ -58,6 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Config::default()
     };
 
+    config.resolve_secrets()?;
+
     if let Some(dashboard_port) = args.dashboard_port {
         config.dashboard.port = dashboard_port;
     }
