@@ -26,4 +26,12 @@ pub struct SentinelWorld {
     pub transition_rules: Option<Vec<TransitionConfig>>,
     pub transition_notifiers: Option<Vec<Arc<dyn Notifier>>>,
     pub transition_recording_notifier: Option<Arc<dyn Notifier>>,
+
+    // Engine testing
+    pub engine_monitors: Option<Vec<Arc<dyn Monitor>>>,
+    pub engine_state: Option<StateHandle>,
+
+    // Dashboard testing
+    pub dashboard_state: Option<StateHandle>,
+    pub dashboard_response_body: Option<String>,
 }

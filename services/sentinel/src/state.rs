@@ -199,4 +199,10 @@ mod tests {
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Safe));
         assert_eq!(state.get_monitor_state("nonexistent"), None);
     }
+
+    #[test]
+    fn get_consecutive_errors_for_unknown_monitor_returns_zero() {
+        let state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        assert_eq!(state.get_monitor_consecutive_errors("nonexistent"), 0);
+    }
 }

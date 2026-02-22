@@ -30,6 +30,33 @@ fn parse_direction(s: &str) -> TransitionDirection {
     }
 }
 
+/// A test notifier that always fails
+#[derive(Debug)]
+struct FailingNotifier {
+    type_name: String,
+}
+
+impl FailingNotifier {
+    fn new(type_name: &str) -> Self {
+        Self {
+            type_name: type_name.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Notifier for FailingNotifier {
+    fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    async fn notify(&self, _notification: &Notification) -> sentinel::Result<()> {
+        Err(sentinel::SentinelError::Notifier(
+            "test failure".to_string(),
+        ))
+    }
+}
+
 /// A test notifier that records notifications
 #[derive(Debug)]
 struct RecordingNotifier {
@@ -169,6 +196,18 @@ async fn no_notification_dispatched(world: &mut SentinelWorld) {
     );
 }
 
+#[given(expr = "a notifier {string} that returns errors")]
+fn failing_notifier(world: &mut SentinelWorld, notifier_type: String) {
+    let notifiers = world
+        .transition_notifiers
+        .as_mut()
+        .expect("notifiers not set");
+    // Replace any existing notifier with the same type name
+    notifiers.retain(|n| n.type_name() != notifier_type);
+    let notifier: Arc<dyn Notifier> = Arc::new(FailingNotifier::new(&notifier_type));
+    notifiers.push(notifier);
+}
+
 #[then(expr = "the notification message should contain {string}")]
 async fn notification_contains(world: &mut SentinelWorld, expected: String) {
     let state_handle = world.transition_state.as_ref().unwrap();
@@ -179,5 +218,20 @@ async fn notification_contains(world: &mut SentinelWorld, expected: String) {
         "Expected message to contain '{}', got '{}'",
         expected,
         last.message
+    );
+}
+
+#[then("the notification should be marked as failed")]
+async fn notification_marked_failed(world: &mut SentinelWorld) {
+    let state_handle = world.transition_state.as_ref().unwrap();
+    let state = state_handle.read().await;
+    let last = state.history.back().expect("no notification in history");
+    assert!(
+        !last.success,
+        "Expected notification to be marked as failed, but it was marked as successful"
+    );
+    assert!(
+        last.error.is_some(),
+        "Expected notification to have an error message, but it was None"
     );
 }

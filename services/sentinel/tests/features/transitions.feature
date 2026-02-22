@@ -39,3 +39,11 @@ Feature: State transitions and notification dispatch
     And a transition rule for "Roof" on "safe_to_unsafe" via "test"
     When the monitor transitions to "Unknown"
     Then no notification should be dispatched
+
+  Scenario: Failed notification is recorded in history
+    Given a monitor named "Roof" in state "Safe"
+    And a transition rule for "Roof" on "safe_to_unsafe" via "failing"
+    And a notifier "failing" that returns errors
+    When the monitor transitions to "Unsafe"
+    Then a notification should be dispatched
+    And the notification should be marked as failed

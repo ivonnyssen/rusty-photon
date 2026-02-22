@@ -316,142 +316,16 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn dispatch_sends_notification_on_matching_transition() {
-        use crate::state::new_state_handle;
-
-        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
-        let transitions = vec![TransitionConfig {
-            monitor_name: "m1".to_string(),
-            direction: TransitionDirection::SafeToUnsafe,
-            notifiers: vec!["test".to_string()],
-            message_template: "{monitor_name} is now {new_state}".to_string(),
-            priority: Some(1),
-            sound: Some("siren".to_string()),
-        }];
-
-        let notifier = Arc::new(TestNotifier::new(true));
-        let notifiers: Vec<Arc<dyn Notifier>> = vec![notifier.clone()];
-
-        dispatch_notifications(
-            "m1",
-            MonitorState::Safe,
-            MonitorState::Unsafe,
-            &transitions,
-            &notifiers,
-            &state,
-            1000,
-        )
-        .await;
-
-        let state_lock = state.read().await;
-        assert_eq!(state_lock.history.len(), 1);
-        assert!(state_lock.history[0].success);
-        assert_eq!(state_lock.history[0].message, "m1 is now Unsafe");
-        assert_eq!(notifier.call_count().await, 1);
-    }
-
-    #[tokio::test]
-    async fn dispatch_skips_non_matching_transition() {
-        use crate::state::new_state_handle;
-
-        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
-        let transitions = vec![TransitionConfig {
-            monitor_name: "m1".to_string(),
-            direction: TransitionDirection::SafeToUnsafe,
-            notifiers: vec!["test".to_string()],
-            message_template: "alert".to_string(),
-            priority: None,
-            sound: None,
-        }];
-
-        let notifier = Arc::new(TestNotifier::new(true));
-        let notifiers: Vec<Arc<dyn Notifier>> = vec![notifier.clone()];
-
-        // This is unsafe -> safe, but rule is safe -> unsafe
-        dispatch_notifications(
-            "m1",
-            MonitorState::Unsafe,
-            MonitorState::Safe,
-            &transitions,
-            &notifiers,
-            &state,
-            1000,
-        )
-        .await;
-
-        let state_lock = state.read().await;
-        assert_eq!(state_lock.history.len(), 0);
-        assert_eq!(notifier.call_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn dispatch_records_failure() {
-        use crate::state::new_state_handle;
-
-        let state = new_state_handle(vec![("m1".to_string(), 30000)], 10);
-        let transitions = vec![TransitionConfig {
-            monitor_name: "m1".to_string(),
-            direction: TransitionDirection::SafeToUnsafe,
-            notifiers: vec!["test".to_string()],
-            message_template: "alert".to_string(),
-            priority: None,
-            sound: None,
-        }];
-
-        let notifier = Arc::new(TestNotifier::new(false));
-        let notifiers: Vec<Arc<dyn Notifier>> = vec![notifier];
-
-        dispatch_notifications(
-            "m1",
-            MonitorState::Safe,
-            MonitorState::Unsafe,
-            &transitions,
-            &notifiers,
-            &state,
-            1000,
-        )
-        .await;
-
-        let state_lock = state.read().await;
-        assert_eq!(state_lock.history.len(), 1);
-        assert!(!state_lock.history[0].success);
-        assert!(state_lock.history[0].error.is_some());
-    }
-
-    /// A test notifier that can succeed or fail
-    #[derive(Debug)]
-    struct TestNotifier {
-        succeed: bool,
-        calls: Arc<tokio::sync::RwLock<u32>>,
-    }
-
-    impl TestNotifier {
-        fn new(succeed: bool) -> Self {
-            Self {
-                succeed,
-                calls: Arc::new(tokio::sync::RwLock::new(0)),
-            }
-        }
-
-        async fn call_count(&self) -> u32 {
-            *self.calls.read().await
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Notifier for TestNotifier {
-        fn type_name(&self) -> &str {
-            "test"
-        }
-
-        async fn notify(&self, _notification: &Notification) -> crate::Result<()> {
-            *self.calls.write().await += 1;
-            if self.succeed {
-                Ok(())
-            } else {
-                Err(crate::SentinelError::Notifier("test failure".to_string()))
-            }
-        }
+    #[test]
+    fn current_epoch_ms_returns_reasonable_value() {
+        let now = current_epoch_ms();
+        // Should be after 2024-01-01 (1704067200000 ms)
+        assert!(now > 1_704_067_200_000);
+        // Should be within a few seconds of now
+        let check = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(check.abs_diff(now) < 1000);
     }
 }
