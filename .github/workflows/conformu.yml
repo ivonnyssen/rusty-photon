@@ -90,7 +90,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install ConformU
-        uses: ivonnyssen/conformu-install@v1
+        uses: ivonnyssen/conformu-install@v2
 
       - name: Run ConformU tests
         shell: bash
