@@ -24,22 +24,9 @@ pub trait HttpClient: Send + Sync {
 }
 
 /// Production HTTP client using reqwest
+#[derive(Default)]
 pub struct ReqwestHttpClient {
     client: reqwest::Client,
-}
-
-impl ReqwestHttpClient {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
-    }
-}
-
-impl Default for ReqwestHttpClient {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[async_trait]

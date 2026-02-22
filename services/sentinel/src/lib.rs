@@ -32,7 +32,7 @@ use crate::pushover::PushoverNotifier;
 
 /// Run the sentinel service with the given configuration
 pub async fn run(config: Config) -> Result<()> {
-    let http: Arc<dyn io::HttpClient> = Arc::new(ReqwestHttpClient::new());
+    let http: Arc<dyn io::HttpClient> = Arc::new(ReqwestHttpClient::default());
     let cancel = CancellationToken::new();
 
     // Build monitors
