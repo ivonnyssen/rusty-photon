@@ -10,10 +10,15 @@ description = "ASCOM Alpaca driver for Pegasus Astro Pocket Powerbox Advance Gen
 
 [features]
 default = []
-mock = []  # Enables mock hardware for testing without real serial port
+mock = []    # Enables mock hardware for testing without real serial port
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "switch", "observing_conditions", "test"] }
+ascom-alpaca = { workspace = true, features = [
+  "server",
+  "switch",
+  "observing_conditions",
+  "test",
+] }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }
@@ -27,8 +32,8 @@ thiserror = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture"
 
-[package.metadata.miri]
-command = "cargo miri test -p ppba-driver"
+#[package.metadata.miri] - takes over 6 hours on github, so disabling
+#command = "cargo miri test -p ppba-driver"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
