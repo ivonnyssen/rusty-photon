@@ -51,3 +51,22 @@ Feature: Sentinel builder and lifecycle
     And an injected notifier of type "stub"
     When the sentinel is built
     Then the build should succeed
+
+  Scenario: Builder binds dashboard when enabled
+    Given an empty sentinel config with dashboard enabled on a free port
+    When the sentinel is built
+    Then the build should succeed
+    And the dashboard should be bound
+
+  Scenario: Dashboard is reachable through full lifecycle
+    Given an empty sentinel config with dashboard enabled on a free port
+    When the sentinel is built and started with dashboard
+    Then the lifecycle should complete successfully
+    And the dashboard health endpoint should return OK
+
+  Scenario: Builder continues without dashboard when port is in use
+    Given an empty sentinel config with dashboard enabled on a free port
+    And the dashboard port is already in use
+    When the sentinel is built
+    Then the build should succeed
+    And the dashboard should not be bound

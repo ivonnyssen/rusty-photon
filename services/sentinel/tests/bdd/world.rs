@@ -46,4 +46,8 @@ pub struct SentinelWorld {
     pub lifecycle_injected_notifiers: Option<Vec<Arc<dyn Notifier>>>,
     pub lifecycle_build_succeeded: Option<bool>,
     pub lifecycle_start_succeeded: Option<bool>,
+    pub lifecycle_dashboard_port: Option<u16>,
+    pub lifecycle_dashboard_bound: Option<bool>,
+    pub lifecycle_dashboard_health_ok: Option<bool>,
+    pub lifecycle_port_blocker: Option<tokio::net::TcpListener>,
 }

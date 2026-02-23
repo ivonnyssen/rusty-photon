@@ -184,6 +184,11 @@ pub struct Sentinel {
 }
 
 impl Sentinel {
+    /// Returns whether the dashboard listener was successfully bound during build.
+    pub fn has_dashboard(&self) -> bool {
+        self.dashboard_listener.is_some()
+    }
+
     /// Start the sentinel service: runs the polling loop until cancelled, then disconnects.
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
