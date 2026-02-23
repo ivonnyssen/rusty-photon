@@ -22,17 +22,8 @@ struct Args {
     dashboard_port: Option<u16>,
 
     /// Log level
-    #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
+    #[arg(short, long, default_value = "info")]
     log_level: Level,
-}
-
-fn parse_log_level(s: &str) -> Result<Level, String> {
-    s.parse().map_err(|_| {
-        format!(
-            "Invalid log level: {}. Use: trace, debug, info, warn, error",
-            s
-        )
-    })
 }
 
 #[tokio::main]
