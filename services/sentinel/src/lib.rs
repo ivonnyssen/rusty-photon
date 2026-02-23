@@ -238,267 +238,8 @@ impl Sentinel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DashboardConfig, MonitorConfig};
-    use crate::io::{HttpResponse, MockHttpClient};
-
-    fn pre_cancelled_token() -> CancellationToken {
-        let token = CancellationToken::new();
-        token.cancel();
-        token
-    }
-
-    fn disabled_dashboard() -> DashboardConfig {
-        DashboardConfig {
-            enabled: false,
-            ..DashboardConfig::default()
-        }
-    }
-
-    fn ok_response() -> HttpResponse {
-        HttpResponse {
-            status: 200,
-            body: r#"{"Value": true, "ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
-        }
-    }
-
-    fn single_monitor_config(name: &str, host: &str, port: u16, device_number: u32) -> Config {
-        Config {
-            monitors: vec![MonitorConfig::AlpacaSafetyMonitor {
-                name: name.to_string(),
-                host: host.to_string(),
-                port,
-                device_number,
-                polling_interval_seconds: 30,
-            }],
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        }
-    }
-
-    // Build-phase tests (call build() only, drop Sentinel)
-
-    #[tokio::test]
-    async fn build_with_empty_config_succeeds() {
-        let config = Config {
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        };
-        let mock = MockHttpClient::new();
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .build()
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn build_connects_monitors() {
-        let config = single_monitor_config("Test", "localhost", 11111, 0);
-        let mut mock = MockHttpClient::new();
-
-        mock.expect_put_form()
-            .withf(|_url, params| params.contains(&("Connected", "true")))
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .build()
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn build_creates_monitor_with_correct_url() {
-        let config = single_monitor_config("Test", "myhost", 9999, 2);
-        let mut mock = MockHttpClient::new();
-
-        mock.expect_put_form()
-            .withf(|url, _params| url == "http://myhost:9999/api/v1/safetymonitor/2/connected")
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .build()
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn build_with_multiple_monitors_connects_all() {
-        let config = Config {
-            monitors: vec![
-                MonitorConfig::AlpacaSafetyMonitor {
-                    name: "Monitor1".to_string(),
-                    host: "localhost".to_string(),
-                    port: 11111,
-                    device_number: 0,
-                    polling_interval_seconds: 30,
-                },
-                MonitorConfig::AlpacaSafetyMonitor {
-                    name: "Monitor2".to_string(),
-                    host: "localhost".to_string(),
-                    port: 11111,
-                    device_number: 1,
-                    polling_interval_seconds: 30,
-                },
-            ],
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        };
-        let mut mock = MockHttpClient::new();
-
-        mock.expect_put_form()
-            .withf(|_url, params| params.contains(&("Connected", "true")))
-            .times(2)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .build()
-            .await
-            .unwrap();
-    }
-
-    // Lifecycle tests (call build() + start() with pre-cancelled token)
-
-    #[tokio::test]
-    async fn start_with_empty_config_completes() {
-        let config = Config {
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        };
-        let mock = MockHttpClient::new();
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .with_cancellation_token(pre_cancelled_token())
-            .build()
-            .await
-            .unwrap()
-            .start()
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn start_disconnects_monitors_on_shutdown() {
-        let config = single_monitor_config("Test", "localhost", 11111, 0);
-        let mut mock = MockHttpClient::new();
-
-        mock.expect_put_form()
-            .withf(|_url, params| params.contains(&("Connected", "true")))
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        mock.expect_put_form()
-            .withf(|_url, params| params.contains(&("Connected", "false")))
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        mock.expect_get()
-            .returning(|_| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .with_cancellation_token(pre_cancelled_token())
-            .build()
-            .await
-            .unwrap()
-            .start()
-            .await
-            .unwrap();
-    }
-
-    // Injection tests
-
-    #[derive(Debug)]
-    struct StubMonitor {
-        monitor_name: String,
-    }
-
-    #[async_trait::async_trait]
-    impl Monitor for StubMonitor {
-        fn name(&self) -> &str {
-            &self.monitor_name
-        }
-
-        async fn poll(&self) -> monitor::MonitorState {
-            monitor::MonitorState::Safe
-        }
-
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-
-        fn polling_interval(&self) -> std::time::Duration {
-            std::time::Duration::from_secs(30)
-        }
-    }
-
-    #[tokio::test]
-    async fn build_with_injected_monitors_uses_them() {
-        let config = Config {
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        };
-        let stub: Arc<dyn Monitor> = Arc::new(StubMonitor {
-            monitor_name: "injected".to_string(),
-        });
-
-        // No HTTP mock expectations needed — injected monitors bypass config factories
-        let mock = MockHttpClient::new();
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .with_monitors(vec![stub])
-            .build()
-            .await
-            .unwrap();
-    }
-
-    #[derive(Debug)]
-    struct StubNotifier {
-        notifier_type: String,
-    }
-
-    #[async_trait::async_trait]
-    impl Notifier for StubNotifier {
-        fn type_name(&self) -> &str {
-            &self.notifier_type
-        }
-
-        async fn notify(&self, _notification: &notifier::Notification) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn build_with_injected_notifiers_uses_them() {
-        let config = Config {
-            dashboard: disabled_dashboard(),
-            ..Config::default()
-        };
-        let stub: Arc<dyn Notifier> = Arc::new(StubNotifier {
-            notifier_type: "stub".to_string(),
-        });
-
-        // No HTTP mock expectations needed — injected notifiers bypass config factories
-        let mock = MockHttpClient::new();
-
-        SentinelBuilder::new(config)
-            .with_http_client(Arc::new(mock))
-            .with_notifiers(vec![stub])
-            .build()
-            .await
-            .unwrap();
-    }
+    use crate::config::MonitorConfig;
+    use crate::io::MockHttpClient;
 
     #[tokio::test]
     async fn build_notifiers_creates_pushover_from_config() {
@@ -519,5 +260,26 @@ mod tests {
 
         assert_eq!(notifiers.len(), 1);
         assert_eq!(notifiers[0].type_name(), "pushover");
+    }
+
+    #[test]
+    fn build_monitors_creates_alpaca_from_config() {
+        let config = Config {
+            monitors: vec![MonitorConfig::AlpacaSafetyMonitor {
+                name: "Test Monitor".to_string(),
+                host: "localhost".to_string(),
+                port: 11111,
+                device_number: 0,
+                polling_interval_seconds: 30,
+            }],
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let monitors = config.build_monitors(&http);
+
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].name(), "Test Monitor");
     }
 }

@@ -3,10 +3,13 @@
 use std::sync::Arc;
 
 use cucumber::World;
-use sentinel::config::TransitionConfig;
+use sentinel::config::{MonitorConfig, TransitionConfig};
 use sentinel::monitor::{Monitor, MonitorState};
 use sentinel::notifier::Notifier;
 use sentinel::state::StateHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::steps::lifecycle_steps::RecordingHttpClient;
 
 #[derive(Debug, Default, World)]
 pub struct SentinelWorld {
@@ -34,4 +37,13 @@ pub struct SentinelWorld {
     // Dashboard testing
     pub dashboard_state: Option<StateHandle>,
     pub dashboard_response_body: Option<String>,
+
+    // Lifecycle / builder testing
+    pub lifecycle_http: Option<Arc<RecordingHttpClient>>,
+    pub lifecycle_cancel: Option<CancellationToken>,
+    pub lifecycle_monitor_configs: Vec<MonitorConfig>,
+    pub lifecycle_injected_monitors: Option<Vec<Arc<dyn Monitor>>>,
+    pub lifecycle_injected_notifiers: Option<Vec<Arc<dyn Notifier>>>,
+    pub lifecycle_build_succeeded: Option<bool>,
+    pub lifecycle_start_succeeded: Option<bool>,
 }
