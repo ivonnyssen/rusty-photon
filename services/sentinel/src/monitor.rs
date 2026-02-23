@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The state of a monitored device
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,4 +47,7 @@ pub trait Monitor: Send + Sync + std::fmt::Debug {
 
     /// Disconnect from the device
     async fn disconnect(&self) -> crate::Result<()>;
+
+    /// The polling interval for this monitor
+    fn polling_interval(&self) -> Duration;
 }

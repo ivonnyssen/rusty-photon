@@ -1,6 +1,7 @@
 //! ASCOM Alpaca SafetyMonitor client
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -24,6 +25,7 @@ struct AlpacaBoolResponse {
 pub struct AlpacaSafetyMonitor {
     name: String,
     base_url: String,
+    polling_interval: Duration,
     http: Arc<dyn HttpClient>,
 }
 
@@ -43,7 +45,7 @@ impl AlpacaSafetyMonitor {
             host,
             port,
             device_number,
-            ..
+            polling_interval_seconds,
         } = config;
 
         let base_url = format!(
@@ -56,6 +58,7 @@ impl AlpacaSafetyMonitor {
         Self {
             name: name.clone(),
             base_url,
+            polling_interval: Duration::from_secs(*polling_interval_seconds),
             http,
         }
     }
@@ -130,6 +133,10 @@ impl Monitor for AlpacaSafetyMonitor {
             .await?;
         tracing::debug!("Disconnected {}", self.name);
         Ok(())
+    }
+
+    fn polling_interval(&self) -> Duration {
+        self.polling_interval
     }
 }
 

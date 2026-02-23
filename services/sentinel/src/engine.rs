@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Config, TransitionConfig, TransitionDirection};
+use crate::config::{TransitionConfig, TransitionDirection};
 use crate::monitor::{Monitor, MonitorState};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
@@ -23,14 +23,14 @@ impl Engine {
     pub fn new(
         monitors: Vec<Arc<dyn Monitor>>,
         notifiers: Vec<Arc<dyn Notifier>>,
-        config: &Config,
+        transitions: Vec<TransitionConfig>,
         state: StateHandle,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             monitors,
             notifiers,
-            transitions: config.transitions.clone(),
+            transitions,
             state,
             cancel,
         }
@@ -57,24 +57,21 @@ impl Engine {
     }
 
     /// Start polling all monitors. Returns when the cancellation token is triggered.
-    pub async fn run(&self, polling_intervals: &[(String, Duration)]) {
+    pub async fn run(&self) {
         let mut handles = Vec::new();
 
-        for (name, interval) in polling_intervals {
-            let monitor = self.monitors.iter().find(|m| m.name() == name).cloned();
+        for monitor in &self.monitors {
+            let monitor = Arc::clone(monitor);
+            let interval = monitor.polling_interval();
+            let state = Arc::clone(&self.state);
+            let transitions = self.transitions.clone();
+            let notifiers: Vec<Arc<dyn Notifier>> = self.notifiers.clone();
+            let cancel = self.cancel.clone();
 
-            if let Some(monitor) = monitor {
-                let state = Arc::clone(&self.state);
-                let transitions = self.transitions.clone();
-                let notifiers: Vec<Arc<dyn Notifier>> = self.notifiers.clone();
-                let cancel = self.cancel.clone();
-                let interval = *interval;
-
-                let handle = tokio::spawn(async move {
-                    poll_loop(monitor, state, transitions, notifiers, interval, cancel).await;
-                });
-                handles.push(handle);
-            }
+            let handle = tokio::spawn(async move {
+                poll_loop(monitor, state, transitions, notifiers, interval, cancel).await;
+            });
+            handles.push(handle);
         }
 
         // Wait for cancellation

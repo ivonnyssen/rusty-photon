@@ -18,32 +18,67 @@ pub use error::{Result, SentinelError};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::alpaca_client::AlpacaSafetyMonitor;
-use crate::config::MonitorConfig;
 use crate::engine::Engine;
 use crate::io::ReqwestHttpClient;
 use crate::monitor::Monitor;
 use crate::notifier::Notifier;
 use crate::pushover::PushoverNotifier;
 
-/// Builder for running the sentinel service with injectable dependencies
-pub struct SentinelRunner {
+/// Factory methods for building monitors and notifiers from config.
+///
+/// These live in `lib.rs` (rather than `config.rs`) because they depend on
+/// concrete types (`AlpacaSafetyMonitor`, `PushoverNotifier`) that are defined
+/// in sibling modules.
+impl Config {
+    pub fn build_monitors(&self, http: &Arc<dyn io::HttpClient>) -> Vec<Arc<dyn Monitor>> {
+        self.monitors
+            .iter()
+            .map(|monitor_config| -> Arc<dyn Monitor> {
+                match monitor_config {
+                    config::MonitorConfig::AlpacaSafetyMonitor { .. } => {
+                        Arc::new(AlpacaSafetyMonitor::new(monitor_config, Arc::clone(http)))
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub fn build_notifiers(&self, http: &Arc<dyn io::HttpClient>) -> Vec<Arc<dyn Notifier>> {
+        self.notifiers
+            .iter()
+            .map(|notifier_config| -> Arc<dyn Notifier> {
+                match notifier_config {
+                    config::NotifierConfig::Pushover { .. } => {
+                        Arc::new(PushoverNotifier::new(notifier_config, Arc::clone(http)))
+                    }
+                }
+            })
+            .collect()
+    }
+}
+
+/// Builder for the sentinel service with injectable dependencies
+pub struct SentinelBuilder {
     config: Config,
     http: Arc<dyn io::HttpClient>,
     cancel: CancellationToken,
+    monitors: Option<Vec<Arc<dyn Monitor>>>,
+    notifiers: Option<Vec<Arc<dyn Notifier>>>,
 }
 
-impl SentinelRunner {
-    /// Create a new runner with production defaults
+impl SentinelBuilder {
+    /// Create a new builder with production defaults
     pub fn new(config: Config) -> Self {
         Self {
             config,
             http: Arc::new(ReqwestHttpClient::default()),
             cancel: CancellationToken::new(),
+            monitors: None,
+            notifiers: None,
         }
     }
 
@@ -59,41 +94,42 @@ impl SentinelRunner {
         self
     }
 
-    /// Run the sentinel service
-    pub async fn run(self) -> Result<()> {
+    /// Inject pre-built monitors instead of constructing them from config
+    pub fn with_monitors(mut self, monitors: Vec<Arc<dyn Monitor>>) -> Self {
+        self.monitors = Some(monitors);
+        self
+    }
+
+    /// Inject pre-built notifiers instead of constructing them from config
+    pub fn with_notifiers(mut self, notifiers: Vec<Arc<dyn Notifier>>) -> Self {
+        self.notifiers = Some(notifiers);
+        self
+    }
+
+    /// Build the sentinel service: constructs monitors, notifiers, engine, connects monitors,
+    /// and binds the dashboard listener if enabled.
+    pub async fn build(self) -> Result<Sentinel> {
         let http = self.http;
         let cancel = self.cancel;
         let config = self.config;
 
-        // Build monitors
-        let mut monitors: Vec<Arc<dyn Monitor>> = Vec::new();
-        let mut polling_intervals = Vec::new();
-        for monitor_config in &config.monitors {
-            let monitor: Arc<dyn Monitor> = match monitor_config {
-                MonitorConfig::AlpacaSafetyMonitor { .. } => {
-                    Arc::new(AlpacaSafetyMonitor::new(monitor_config, Arc::clone(&http)))
-                }
-            };
-            let interval = Duration::from_secs(monitor_config.polling_interval_seconds());
-            polling_intervals.push((monitor.name().to_string(), interval));
-            monitors.push(monitor);
-        }
-
-        // Build notifiers
-        let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
-        for notifier_config in &config.notifiers {
-            let notifier: Arc<dyn Notifier> = match notifier_config {
-                config::NotifierConfig::Pushover { .. } => {
-                    Arc::new(PushoverNotifier::new(notifier_config, Arc::clone(&http)))
-                }
-            };
-            notifiers.push(notifier);
-        }
+        // Use injected monitors/notifiers or fall back to config factories
+        let monitors = self
+            .monitors
+            .unwrap_or_else(|| config.build_monitors(&http));
+        let notifiers = self
+            .notifiers
+            .unwrap_or_else(|| config.build_notifiers(&http));
 
         // Build shared state
-        let monitors_with_intervals: Vec<(String, u64)> = polling_intervals
+        let monitors_with_intervals: Vec<(String, u64)> = monitors
             .iter()
-            .map(|(name, dur)| (name.clone(), dur.as_millis() as u64))
+            .map(|m| {
+                (
+                    m.name().to_string(),
+                    m.polling_interval().as_millis() as u64,
+                )
+            })
             .collect();
         let state = state::new_state_handle(monitors_with_intervals, config.dashboard.history_size);
 
@@ -101,13 +137,56 @@ impl SentinelRunner {
         let engine = Engine::new(
             monitors,
             notifiers,
-            &config,
+            config.transitions.clone(),
             Arc::clone(&state),
             cancel.clone(),
         );
 
         // Connect monitors
         engine.connect_all().await;
+
+        // Bind dashboard listener if enabled
+        let dashboard_listener = if config.dashboard.enabled {
+            let addr = SocketAddr::from(([0, 0, 0, 0], config.dashboard.port));
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    tracing::debug!("Dashboard bound to {}", addr);
+                    Some(listener)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to bind dashboard to port {}: {}. Continuing without dashboard.",
+                        config.dashboard.port,
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Sentinel {
+            engine,
+            state,
+            cancel,
+            dashboard_listener,
+        })
+    }
+}
+
+/// A fully constructed sentinel service ready to run
+pub struct Sentinel {
+    engine: Engine,
+    state: state::StateHandle,
+    cancel: CancellationToken,
+    dashboard_listener: Option<tokio::net::TcpListener>,
+}
+
+impl Sentinel {
+    /// Start the sentinel service: runs the polling loop until cancelled, then disconnects.
+    pub async fn start(self) -> Result<()> {
+        let cancel = self.cancel;
 
         // Setup shutdown handler
         let cancel_for_signal = cancel.clone();
@@ -119,28 +198,18 @@ impl SentinelRunner {
             cancel_for_signal.cancel();
         });
 
-        // Start dashboard if enabled
-        if config.dashboard.enabled {
-            let dashboard_port = config.dashboard.port;
-            let dashboard_state = Arc::clone(&state);
+        // Start dashboard if we have a bound listener
+        if let Some(listener) = self.dashboard_listener {
+            let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
+
+            tracing::info!(
+                "Dashboard listening on http://{}",
+                listener.local_addr().unwrap()
+            );
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);
-                let addr = SocketAddr::from(([0, 0, 0, 0], dashboard_port));
-                tracing::info!("Dashboard listening on http://{}", addr);
-
-                let listener = match tokio::net::TcpListener::bind(addr).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to bind dashboard to port {}: {}. Continuing without dashboard.",
-                            dashboard_port,
-                            e
-                        );
-                        return;
-                    }
-                };
 
                 axum::serve(listener, router)
                     .with_graceful_shutdown(async move {
@@ -156,10 +225,10 @@ impl SentinelRunner {
         tracing::info!("Sentinel engine started");
 
         // Run the engine (blocks until cancelled)
-        engine.run(&polling_intervals).await;
+        self.engine.run().await;
 
         // Disconnect monitors
-        engine.disconnect_all().await;
+        self.engine.disconnect_all().await;
         tracing::info!("Sentinel engine stopped");
 
         Ok(())
@@ -206,24 +275,25 @@ mod tests {
         }
     }
 
+    // Build-phase tests (call build() only, drop Sentinel)
+
     #[tokio::test]
-    async fn run_with_empty_config_completes() {
+    async fn build_with_empty_config_succeeds() {
         let config = Config {
             dashboard: disabled_dashboard(),
             ..Config::default()
         };
         let mock = MockHttpClient::new();
 
-        SentinelRunner::new(config)
+        SentinelBuilder::new(config)
             .with_http_client(Arc::new(mock))
-            .with_cancellation_token(pre_cancelled_token())
-            .run()
+            .build()
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn run_connects_and_disconnects_monitors() {
+    async fn build_connects_monitors() {
         let config = single_monitor_config("Test", "localhost", 11111, 0);
         let mut mock = MockHttpClient::new();
 
@@ -232,46 +302,32 @@ mod tests {
             .times(1)
             .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
 
-        mock.expect_put_form()
-            .withf(|_url, params| params.contains(&("Connected", "false")))
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
-
-        mock.expect_get()
-            .returning(|_| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelRunner::new(config)
+        SentinelBuilder::new(config)
             .with_http_client(Arc::new(mock))
-            .with_cancellation_token(pre_cancelled_token())
-            .run()
+            .build()
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn run_creates_monitor_with_correct_url() {
+    async fn build_creates_monitor_with_correct_url() {
         let config = single_monitor_config("Test", "myhost", 9999, 2);
         let mut mock = MockHttpClient::new();
 
         mock.expect_put_form()
             .withf(|url, _params| url == "http://myhost:9999/api/v1/safetymonitor/2/connected")
-            .times(2)
+            .times(1)
             .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
 
-        mock.expect_get()
-            .withf(|url| url == "http://myhost:9999/api/v1/safetymonitor/2/issafe")
-            .returning(|_| Box::pin(async { Ok(ok_response()) }));
-
-        SentinelRunner::new(config)
+        SentinelBuilder::new(config)
             .with_http_client(Arc::new(mock))
-            .with_cancellation_token(pre_cancelled_token())
-            .run()
+            .build()
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn run_with_multiple_monitors_connects_all() {
+    async fn build_with_multiple_monitors_connects_all() {
         let config = Config {
             monitors: vec![
                 MonitorConfig::AlpacaSafetyMonitor {
@@ -295,17 +351,114 @@ mod tests {
         let mut mock = MockHttpClient::new();
 
         mock.expect_put_form()
-            .times(4)
+            .withf(|_url, params| params.contains(&("Connected", "true")))
+            .times(2)
+            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
+
+        SentinelBuilder::new(config)
+            .with_http_client(Arc::new(mock))
+            .build()
+            .await
+            .unwrap();
+    }
+
+    // Lifecycle tests (call build() + start() with pre-cancelled token)
+
+    #[tokio::test]
+    async fn start_with_empty_config_completes() {
+        let config = Config {
+            dashboard: disabled_dashboard(),
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+
+        SentinelBuilder::new(config)
+            .with_http_client(Arc::new(mock))
+            .with_cancellation_token(pre_cancelled_token())
+            .build()
+            .await
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn start_disconnects_monitors_on_shutdown() {
+        let config = single_monitor_config("Test", "localhost", 11111, 0);
+        let mut mock = MockHttpClient::new();
+
+        mock.expect_put_form()
+            .withf(|_url, params| params.contains(&("Connected", "true")))
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
+
+        mock.expect_put_form()
+            .withf(|_url, params| params.contains(&("Connected", "false")))
+            .times(1)
             .returning(|_, _| Box::pin(async { Ok(ok_response()) }));
 
         mock.expect_get()
-            .times(2)
             .returning(|_| Box::pin(async { Ok(ok_response()) }));
 
-        SentinelRunner::new(config)
+        SentinelBuilder::new(config)
             .with_http_client(Arc::new(mock))
             .with_cancellation_token(pre_cancelled_token())
-            .run()
+            .build()
+            .await
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+    }
+
+    // Injection tests
+
+    #[derive(Debug)]
+    struct StubMonitor {
+        monitor_name: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Monitor for StubMonitor {
+        fn name(&self) -> &str {
+            &self.monitor_name
+        }
+
+        async fn poll(&self) -> monitor::MonitorState {
+            monitor::MonitorState::Safe
+        }
+
+        async fn connect(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn polling_interval(&self) -> std::time::Duration {
+            std::time::Duration::from_secs(30)
+        }
+    }
+
+    #[tokio::test]
+    async fn build_with_injected_monitors_uses_them() {
+        let config = Config {
+            dashboard: disabled_dashboard(),
+            ..Config::default()
+        };
+        let stub: Arc<dyn Monitor> = Arc::new(StubMonitor {
+            monitor_name: "injected".to_string(),
+        });
+
+        // No HTTP mock expectations needed — injected monitors bypass config factories
+        let mock = MockHttpClient::new();
+
+        SentinelBuilder::new(config)
+            .with_http_client(Arc::new(mock))
+            .with_monitors(vec![stub])
+            .build()
             .await
             .unwrap();
     }

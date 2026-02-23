@@ -33,9 +33,15 @@ Dashboard (axum + Leptos SSR) --- reactive web UI
 
 ### Key Traits
 
-- **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`. First implementation: `AlpacaSafetyMonitor`.
+- **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. First implementation: `AlpacaSafetyMonitor`.
 - **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`.
 - **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by both monitors and notifiers.
+
+### Dependency Injection
+
+`Config` provides `build_monitors()` and `build_notifiers()` factory methods (in `lib.rs`) that map config enums to concrete implementations. `SentinelBuilder` uses these by default.
+
+For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monitors()` / `with_notifiers()` on the builder to inject pre-built instances, bypassing the config factories entirely.
 
 ### State Flow
 
@@ -113,7 +119,7 @@ The `sentinel-app` crate contains Leptos components for a future WASM-hydrated f
 ```
 services/sentinel/src/
   main.rs              CLI entry point
-  lib.rs               Module declarations + run() orchestrator
+  lib.rs               Module declarations + SentinelBuilder + Sentinel + Config factory methods
   config.rs            Config types + load_config()
   error.rs             SentinelError + Result alias
   io.rs                HttpClient trait + ReqwestHttpClient

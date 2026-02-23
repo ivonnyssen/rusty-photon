@@ -7,7 +7,6 @@ use cucumber::{given, then, when};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use sentinel::config::Config;
 use sentinel::engine::Engine;
 use sentinel::monitor::{Monitor, MonitorState};
 use sentinel::state::new_state_handle;
@@ -22,6 +21,7 @@ struct TestMonitor {
     connect_result: Result<(), String>,
     disconnect_result: Result<(), String>,
     poll_count: Arc<RwLock<u32>>,
+    polling_interval: Duration,
 }
 
 impl TestMonitor {
@@ -32,6 +32,7 @@ impl TestMonitor {
             connect_result: Ok(()),
             disconnect_result: Ok(()),
             poll_count: Arc::new(RwLock::new(0)),
+            polling_interval: Duration::from_millis(100),
         }
     }
 
@@ -67,6 +68,10 @@ impl Monitor for TestMonitor {
         self.disconnect_result
             .clone()
             .map_err(sentinel::SentinelError::Monitor)
+    }
+
+    fn polling_interval(&self) -> Duration {
+        self.polling_interval
     }
 }
 
@@ -166,9 +171,8 @@ fn build_engine(world: &SentinelWorld) -> Engine {
         .engine_state
         .clone()
         .unwrap_or_else(|| new_state_handle(monitors_with_intervals, 10));
-    let config = Config::default();
     let cancel = CancellationToken::new();
-    Engine::new(monitors, vec![], &config, state, cancel)
+    Engine::new(monitors, vec![], vec![], state, cancel)
 }
 
 #[when("the engine connects all monitors")]
@@ -191,15 +195,9 @@ async fn engine_runs_and_cancels(world: &mut SentinelWorld) {
         .expect("no monitors set")
         .clone();
     let state = world.engine_state.as_ref().expect("state not set").clone();
-    let config = Config::default();
     let cancel = CancellationToken::new();
 
-    let polling_intervals: Vec<(String, Duration)> = monitors
-        .iter()
-        .map(|m| (m.name().to_string(), Duration::from_millis(100)))
-        .collect();
-
-    let engine = Engine::new(monitors, vec![], &config, state, cancel.clone());
+    let engine = Engine::new(monitors, vec![], vec![], state, cancel.clone());
 
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
@@ -207,7 +205,7 @@ async fn engine_runs_and_cancels(world: &mut SentinelWorld) {
         cancel_clone.cancel();
     });
 
-    engine.run(&polling_intervals).await;
+    engine.run().await;
 }
 
 #[then("no errors should occur")]
