@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use sentinel::{load_config, Config};
+use sentinel::{load_config, Config, SentinelRunner};
 use tracing::Level;
 
 #[derive(Parser)]
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.transitions.len()
     );
 
-    sentinel::run(config).await?;
+    SentinelRunner::new(config).run().await?;
 
     Ok(())
 }
