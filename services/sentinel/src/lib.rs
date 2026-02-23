@@ -462,4 +462,62 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[derive(Debug)]
+    struct StubNotifier {
+        notifier_type: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Notifier for StubNotifier {
+        fn type_name(&self) -> &str {
+            &self.notifier_type
+        }
+
+        async fn notify(&self, _notification: &notifier::Notification) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn build_with_injected_notifiers_uses_them() {
+        let config = Config {
+            dashboard: disabled_dashboard(),
+            ..Config::default()
+        };
+        let stub: Arc<dyn Notifier> = Arc::new(StubNotifier {
+            notifier_type: "stub".to_string(),
+        });
+
+        // No HTTP mock expectations needed — injected notifiers bypass config factories
+        let mock = MockHttpClient::new();
+
+        SentinelBuilder::new(config)
+            .with_http_client(Arc::new(mock))
+            .with_notifiers(vec![stub])
+            .build()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn build_notifiers_creates_pushover_from_config() {
+        let config = Config {
+            notifiers: vec![config::NotifierConfig::Pushover {
+                api_token: "tok".to_string(),
+                user_key: "usr".to_string(),
+                default_title: "Alert".to_string(),
+                default_priority: 0,
+                default_sound: "pushover".to_string(),
+            }],
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let notifiers = config.build_notifiers(&http);
+
+        assert_eq!(notifiers.len(), 1);
+        assert_eq!(notifiers[0].type_name(), "pushover");
+    }
 }
