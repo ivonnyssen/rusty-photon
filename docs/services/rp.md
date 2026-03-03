@@ -29,8 +29,7 @@ network API.
 
 ## Architecture
 
-The system is a constellation of independent web services. The main application
-is the orchestrator at the center.
+The system is a constellation of independent web services. `rp` is the orchestrator at the center.
 
 ```
                        ┌───────────────────┐
@@ -41,7 +40,7 @@ is the orchestrator at the center.
                        └────────┬──────────┘
                                 │ REST + WebSocket
                        ┌────────▼──────────┐
-                       │   Main App        │
+                       │       RP          │
                        │                   │
                        │  Orchestrator     │
                        │  Event Bus        │
@@ -73,7 +72,7 @@ is the orchestrator at the center.
 ### Service Boundaries
 
 Every component is a separate process communicating over HTTP (or JSON-RPC for
-PHD2). The main application is one service among many. Device drivers, plugins,
+PHD2). `rp` is one service among many. Device drivers, plugins,
 the guider service, Sentinel, and UIs are all independent processes. This
 follows naturally from the Alpaca-only integration tenet — the device drivers
 are already separate services.
@@ -88,7 +87,7 @@ The exposure document is the central data exchange mechanism. Each exposure
 produces one document — a sidecar JSON file that lives alongside the FITS file.
 The document accumulates data as it flows through the system.
 
-### Core Fields (owned by main app)
+### Core Fields (owned by `rp`)
 
 ```json
 {
@@ -111,9 +110,8 @@ The document accumulates data as it flows through the system.
 
 ### Plugin Sections (contributed via API)
 
-Plugins write results into named sections. The main app merges them into the
-document and persists the sidecar JSON. Each section is opaque to the main
-app — it stores and serves whatever the plugin provides.
+Plugins write results into named sections. `rp` merges them into the
+document and persists the sidecar JSON. Each section is opaque to `rp` — it stores and serves whatever the plugin provides.
 
 ```json
 {
@@ -162,7 +160,7 @@ contribute sections. Updates are atomic (write to temp file, rename).
 
 ## Event System
 
-The main application emits events. Plugins and services subscribe via webhooks.
+`rp` emits events. Plugins and services subscribe via webhooks.
 The application does not know or care what subscribers do with events.
 
 ### Events
@@ -192,8 +190,8 @@ The application does not know or care what subscribers do with events.
 
 ### Delivery: Webhooks
 
-Plugins register a callback URL in the configuration. The main app POSTs events
-to each registered URL. Delivery is fire-and-forget — the app does not wait
+Plugins register a callback URL in the configuration. `rp` POSTs events
+to each registered URL. Delivery is fire-and-forget — `rp` does not wait
 for or depend on webhook responses.
 
 ```
@@ -210,12 +208,12 @@ Content-Type: application/json
 }
 ```
 
-Webhook delivery failures are logged but do not affect the main application.
+Webhook delivery failures are logged but do not affect `rp`.
 Plugins are responsible for their own reliability.
 
 ### Commands (Request-Response)
 
-Some operations require the main app to wait for a result. These are direct
+Some operations require `rp` to wait for a result. These are direct
 HTTP calls to a specific service, not events:
 
 | Command | Target | Why synchronous |
@@ -247,7 +245,7 @@ Response 200:
 
 ### Plugin Section Updates
 
-After processing an event, plugins POST their results back to the main app:
+After processing an event, plugins POST their results back to `rp`:
 
 ```
 POST /api/documents/{document_id}/sections
@@ -263,7 +261,7 @@ Content-Type: application/json
 }
 ```
 
-The main app merges the section into the document and persists the updated
+`rp` merges the section into the document and persists the updated
 sidecar JSON.
 
 ## Equipment Integration
@@ -271,7 +269,7 @@ sidecar JSON.
 ### ASCOM Alpaca Devices
 
 All devices with an Alpaca interface are accessed exclusively via ASCOM Alpaca
-HTTP API. The main application is an Alpaca client, not a server. Equipment is
+HTTP API. `rp` is an Alpaca client, not a server. Equipment is
 configured in the JSON config file — no discovery protocol is used.
 
 Supported ASCOM device types:
@@ -289,11 +287,11 @@ Supported ASCOM device types:
 The guider service wraps PHD2 and exposes an HTTP API for commands (start,
 stop, dither, pause) and event subscriptions. The existing `phd2-guider`
 library provides the PHD2 JSON-RPC integration and will be reworked to run as
-an HTTP service that fits the main application's event and command patterns.
+an HTTP service that fits `rp`'s event and command patterns.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
-this protocol so the main app speaks only HTTP.
+this protocol so `rp` speaks only HTTP.
 
 ### Plate Solver
 
@@ -309,7 +307,7 @@ background solving.
 
 ### File Accessibility
 
-Plugins and the main application are assumed to share a filesystem (local paths
+Plugins and `rp` are assumed to share a filesystem (local paths
 work). Distributed deployments where plugins run on separate machines are a
 future concern and out of scope for the initial design.
 
@@ -522,8 +520,8 @@ Safety monitoring is a top-level concern that can override any state.
 
 ### SafetyMonitor Polling
 
-The main application polls configured ASCOM Alpaca SafetyMonitor devices at a
-configurable interval. On an unsafe transition:
+`rp` polls configured ASCOM Alpaca SafetyMonitor devices at a configurable
+interval. On an unsafe transition:
 
 1. Abort all in-progress exposures (discard partial frames).
 2. Stop guiding.
@@ -540,8 +538,7 @@ On a safe transition while in PARKED state:
 ### Sentinel Watchdog Integration
 
 Sentinel is extended beyond safety monitoring to serve as an operation watchdog
-and supervisor for the entire system. It subscribes to the main application's
-event bus and monitors operation deadlines.
+and supervisor for the entire system. It subscribes to `rp`'s event bus and monitors operation deadlines.
 
 #### Monitored Operations
 
@@ -560,11 +557,10 @@ When a deadline expires without the expected completion event:
 1. **Health check** — Sentinel pings the relevant Alpaca service endpoint
    to determine if it is responsive.
 2. **Responsive but stuck** — Sentinel commands an abort via the device's
-   Alpaca API (e.g., `PUT camera/0/abortexposure`). Notifies the main app
-   to re-plan.
+   Alpaca API (e.g., `PUT camera/0/abortexposure`). Notifies `rp` to re-plan.
 3. **Unresponsive** — Sentinel executes the configured restart command for
    that service (e.g., `systemctl restart qhyccd-alpaca`). After restart,
-   notifies the main app to reconnect and resume.
+   notifies `rp` to reconnect and resume.
 4. **Notification** — Sentinel sends a push notification (Pushover or other
    configured notifier) describing the failure and corrective action taken.
 
@@ -579,18 +575,18 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
   │
   ├─► Health check camera driver endpoint
   │     │
-  │     ├─► Responsive → PUT abortexposure → notify main app
+  │     ├─► Responsive → PUT abortexposure → notify `rp`
   │     │
   │     └─► Unresponsive → run restart command → wait for service
   │           │
-  │           └─► Service back → notify main app → main app reconnects
+  │           └─► Service back → notify `rp` → `rp` reconnects
   │                                                 and resumes session
   └─► Send push notification describing what happened
 ```
 
 ## API Layer
 
-The main application exposes an HTTP API for UIs and external consumers. The
+`rp` exposes an HTTP API for UIs and external consumers. The
 API is a dumb pipe — it exposes state and accepts commands. It contains no
 application logic.
 
