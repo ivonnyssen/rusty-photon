@@ -186,19 +186,26 @@ The application does not know or care what subscribers do with events.
 | `temperature_changed` | sensor, value | Significant temperature change |
 | `meridian_flip_started` | hour_angle | Flip initiated |
 | `meridian_flip_complete` | — | Flip and re-center done |
+| `target_switch` | old_target, new_target | Planner decided to switch targets |
+| `filter_switch` | camera_id, old_filter, new_filter | Filter change on a camera |
+| `frame_rejected` | document_id, plugin, reason | Plugin rejected a frame via `skip_to` |
+| `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration_secs` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
 
 ### Delivery: Webhooks
 
-Plugins register a callback URL in the configuration. `rp` POSTs events
-to each registered URL. Delivery is fire-and-forget — `rp` does not wait
-for or depend on webhook responses.
+Plugins register a callback URL and subscribed events in the configuration.
+`rp` POSTs events to each registered URL. All plugins use the same
+asynchronous request-response pattern.
+
+#### Request
 
 ```
 POST <plugin_webhook_url>
 Content-Type: application/json
 
 {
+  "event_id": "evt-550e8400-e29b-41d4",
   "event": "exposure_complete",
   "timestamp": "2026-03-02T01:25:02Z",
   "payload": {
@@ -208,8 +215,157 @@ Content-Type: application/json
 }
 ```
 
-Webhook delivery failures are logged but do not affect `rp`.
-Plugins are responsible for their own reliability.
+#### Step 1: Acknowledgment (immediate HTTP response)
+
+The plugin responds immediately to the webhook HTTP request with an
+acknowledgment declaring how long it expects to take:
+
+```json
+{
+  "estimated_duration_secs": 20,
+  "max_duration_secs": 30
+}
+```
+
+- `estimated_duration_secs`: how long the plugin expects processing to
+  take. The planner uses this for scheduling decisions. Provided
+  dynamically per invocation — a plate solve on a wide-field image may
+  differ from a narrow-field one.
+- `max_duration_secs`: hard timeout. If the plugin doesn't complete within
+  this time, `rp` proceeds and emits a warning.
+
+`rp` records the durations and continues with the orchestration. The next
+exposure can start immediately after `exposure_complete` — the plugin
+processes in parallel.
+
+#### Step 2: Completion (callback POST to `rp`)
+
+When the plugin finishes processing, it POSTs a completion to `rp`:
+
+```
+POST /api/plugins/{event_id}/complete
+Content-Type: application/json
+
+{
+  "status": "complete"
+}
+```
+
+Or, to request a corrective workflow change:
+
+```json
+{
+  "status": "complete",
+  "skip_to": "focus_started",
+  "reason": "HFR degraded from 2.3 to 4.8 — likely focus drift"
+}
+```
+
+- `skip_to` (optional): requests that the orchestrator transition to a
+  different state instead of proceeding normally (see Workflow Deviation
+  below).
+- `reason` (optional): human-readable explanation, logged and included in
+  events.
+
+#### Barriers
+
+A plugin can optionally declare **barriers** — orchestrator events that
+must not fire until the plugin has posted its completion for the most
+recent webhook. This tells `rp`: "if you haven't heard back from me yet,
+wait before firing these events."
+
+```json
+{
+  "name": "image-analyzer",
+  "webhook_url": "http://localhost:11140/webhook",
+  "subscribes_to": ["exposure_complete"],
+  "barriers": ["target_switch", "filter_switch"]
+}
+```
+
+When a barrier event is about to fire, `rp` checks whether any barrier
+plugin still has an outstanding (uncompleted) webhook. If so, `rp` waits
+for the completion — up to `max_duration_secs` from the acknowledgment —
+before proceeding. All outstanding plugins are waited on in parallel.
+
+A plugin with no `barriers` (or an empty list) is never waited on. Its
+completion is still processed when it arrives, but `rp` never blocks on
+it.
+
+#### Workflow Deviation (`skip_to`)
+
+A plugin can request that the orchestrator transition to a different state
+by including `skip_to` in its completion. The `skip_to` field references
+a valid orchestrator state:
+
+- After `exposure_complete`, an image analyzer detects degraded HFR →
+  `skip_to: "focus_started"`. `rp` cancels the in-progress exposure,
+  does not count the rejected frame toward the exposure goal, and
+  transitions to auto-focus.
+- On `target_switch` barrier, the same analyzer finds a bad frame →
+  `skip_to: "focus_started"`. `rp` refocuses instead of switching,
+  rolls back the exposure counter, and stays on the current target.
+
+`rp` validates the `skip_to` target against the current state machine.
+Invalid or irrelevant requests (e.g., the target has already switched)
+are logged and ignored.
+
+**Conflict resolution:** when multiple plugins request different `skip_to`
+targets, the most regressive target wins — the one earliest in the state
+machine pipeline. If one plugin requests refocus and another requests
+recenter, recenter wins because it is earlier and includes refocusing.
+
+**Frame rejection:** a `skip_to` completion implicitly rejects the frame
+that triggered the event. `rp`:
+
+1. Does not count the rejected frame toward the exposure goal.
+2. Marks the exposure document with the rejection reason.
+3. Emits a `frame_rejected` event.
+
+#### Timeout Behavior
+
+When `max_duration_secs` (from the acknowledgment) expires without a
+completion:
+
+1. `rp` proceeds as if the plugin completed with `"complete"` and no
+   `skip_to`.
+2. A `plugin_timeout` warning event is emitted.
+3. The timeout is logged.
+
+Webhook delivery failures (connection refused, HTTP errors) are treated
+as immediate completion with no `skip_to`. Plugins are responsible for
+their own reliability.
+
+#### Example: Image Analyzer Flow
+
+Setup: 5 exposures on the same target, 300s each, analysis takes 20s.
+
+```
+Exposure 3 completes
+  → rp POSTs exposure_complete to analyzer
+  → analyzer responds immediately:
+      {"estimated_duration_secs": 20, "max_duration_secs": 30}
+  → rp records durations, starts exposure 4 (no blocking)
+  → analyzer processes frame 3 in parallel (20s)
+  → analyzer POSTs to /api/plugins/{event_id}/complete:
+
+    Case A — frame OK:
+      {"status": "complete"}
+      → rp notes the completion, capture continues normally
+
+    Case B — frame bad, no barrier pending:
+      {"status": "complete", "skip_to": "focus_started",
+       "reason": "HFR 4.8, expected < 3.0"}
+      → rp cancels exposure 4, rolls counter back to 3
+      → transitions to auto-focus, then resumes capture
+
+    Case C — frame bad, target_switch pending:
+      (rp was about to switch targets but is waiting for
+       the analyzer's outstanding completion)
+      → analyzer completes with skip_to: "focus_started"
+      → rp cancels the target switch, refocuses, stays on target
+      → counter rolls back, resumes capture
+```
 
 ### Commands (Request-Response)
 
@@ -618,6 +774,10 @@ application logic.
 - `GET /api/documents/{id}` — full document with all sections
 - `POST /api/documents/{id}/sections` — add/update a section (plugin endpoint)
 
+#### Plugins
+- `POST /api/plugins/{event_id}/complete` — plugin completion callback
+  (status, optional `skip_to` and `reason`)
+
 #### System
 - `GET /health` — health check
 - `GET /api/events/subscribe` — WebSocket or SSE stream of real-time events
@@ -717,7 +877,8 @@ connection details. Plugins register their webhook URLs and command endpoints.
     {
       "name": "image-analyzer",
       "webhook_url": "http://localhost:11140/webhook",
-      "subscribes_to": ["exposure_complete"]
+      "subscribes_to": ["exposure_complete"],
+      "barriers": ["target_switch", "filter_switch"]
     },
     {
       "name": "cloud-backup",
