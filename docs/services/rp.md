@@ -642,13 +642,9 @@ invokes it when a session starts:
   "type": "orchestrator",
   "invoke_url": "http://localhost:11160/invoke",
   "requires_tools": ["slew", "capture", "start_guiding", "stop_guiding",
-                      "dither", "get_next_target", "record_exposure"],
-  "max_duration_secs": 0
+                      "dither", "get_next_target", "record_exposure"]
 }
 ```
-
-`max_duration_secs: 0` means no timeout — the orchestrator runs for
-the entire session. `rp` terminates it on session stop or safety events.
 
 #### Orchestrator Invocation Protocol
 
@@ -670,13 +666,38 @@ Content-Type: application/json
 On recovery after a safety event or power failure, `recovery` contains
 the last known session state so the orchestrator can resume.
 
-The orchestrator acknowledges:
+The orchestrator acknowledges with timing estimates computed from the
+session context it just received:
 
 ```json
 {
   "estimated_duration_secs": 28800,
   "max_duration_secs": 0
 }
+```
+
+- `estimated_duration_secs`: how long the orchestrator expects the
+  workflow to take. Used for UI display and logging.
+- `max_duration_secs`: hard timeout. If the orchestrator doesn't
+  complete within this time, `rp` cancels it and moves equipment to a
+  safe state. `0` means no timeout — the orchestrator runs until it
+  completes, the user stops the session, or a safety event occurs.
+
+These values are dynamic, not static config — the orchestrator
+computes them at invocation time based on the session it receives.
+This follows the same pattern as event plugin acknowledgments.
+
+A deep-sky orchestrator returns `max_duration_secs: 0` because it
+runs all night. A flat calibration orchestrator computes a meaningful
+timeout based on the work it needs to do:
+
+```
+rp invokes flat-calibration orchestrator with session context
+  → orchestrator inspects session: 4 filters × 20 flats × ~2s each
+  → orchestrator acknowledges:
+      {"estimated_duration_secs": 300, "max_duration_secs": 600}
+  → if orchestrator hangs, rp kills it after 600s — not after an
+    hour-long static ceiling that wastes a time-critical dusk window
 ```
 
 **Step 2: Tool calls via MCP.** The orchestrator connects to `rp`'s
@@ -773,14 +794,13 @@ At startup, `rp` validates the full plugin dependency graph:
 1. Connect to each tool-providing plugin's MCP server and discover
    their tools via `tools/list`.
 2. Build the unified tool catalog from built-in tools and all
-   discovered plugin-provided tools.
-3. For each workflow plugin, verify that every tool in
-   `requires_tools` exists in the catalog.
-4. For each orchestrator phase that expects a workflow plugin (focusing,
-   centering), verify that exactly one plugin declares `handles` for
-   that phase.
-5. If validation fails, `rp` refuses to start and reports the missing
-   tools or conflicting handlers.
+   discovered plugin-provided tools. Reject duplicate tool names —
+   no two providers (including built-ins) may expose the same tool
+   name.
+3. For each plugin with `requires_tools`, verify that every listed
+   tool exists in the catalog.
+4. If validation fails, `rp` refuses to start and reports the missing
+   or duplicate tools.
 
 This ensures the system is fully configured before the session begins.
 A missing dependency is a startup error, not a 3 AM surprise.
@@ -1067,15 +1087,14 @@ The application must survive power failures and resume from where it left off.
 
 ### Recovery Behavior
 
-On startup, the application checks for an existing session state file:
+On startup, `rp` checks for an existing session state file:
 
 1. If no session file exists, start fresh (wait for user to start a session).
 2. If a session file exists and the session is still valid (nighttime, targets
-   remaining), resume automatically:
-   - Reconnect to all equipment.
-   - Verify mount position (plate solve to confirm pointing).
-   - Re-acquire guiding.
-   - Continue from the next planned exposure.
+   remaining), reconnect to all equipment and re-invoke the orchestrator with
+   recovery context (the persisted session state and the reason for
+   interruption). The orchestrator decides how to resume — verify mount
+   position, re-acquire guiding, continue from the last target, etc.
 3. If a session file exists but conditions have changed (daytime, all targets
    complete), mark the session as finished and archive the state file.
 
@@ -1119,7 +1138,10 @@ On a safe transition while in parked state:
 ### Sentinel Watchdog Integration
 
 Sentinel is extended beyond safety monitoring to serve as an operation watchdog
-and supervisor for the entire system. It subscribes to `rp`'s event bus and monitors operation deadlines.
+and supervisor for the entire system. It connects to `rp`'s real-time event
+stream (`/api/events/subscribe`) and monitors operation deadlines. The stream
+connection also serves as a health signal — if `rp` itself crashes or hangs,
+the disconnection is an immediate trigger for Sentinel to attempt recovery.
 
 #### Monitored Operations
 
@@ -1200,8 +1222,10 @@ application logic.
 - `POST /api/documents/{id}/sections` — add/update a section (plugin endpoint)
 
 #### Plugins
-- `POST /api/plugins/{event_id}/complete` — plugin completion callback
-  (status, optional `correction`)
+- `POST /api/plugins/{id}/complete` — plugin completion callback
+  (status, optional `correction`). The `{id}` is the `event_id` for
+  event plugins or the `workflow_id` for orchestrators — both use the
+  same endpoint.
 
 #### MCP
 - `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
@@ -1214,11 +1238,14 @@ application logic.
 ### Real-Time Stream
 
 The `/api/events/subscribe` endpoint provides a WebSocket (or SSE) connection
-that streams all events in real time. UIs connect here for live updates. The
-stream includes the same events that are delivered to plugin webhooks.
+that streams all events in real time. Any consumer that needs live events
+connects here — UIs for rendering state, and monitoring services like
+Sentinel for tracking operation deadlines. The stream includes the same
+events that are delivered to plugin webhooks.
 
-This is the primary mechanism for UI updates. The UI does not poll — it
-receives push updates over the stream.
+This is the primary mechanism for passive consumers. Clients receive push
+updates over the stream without the overhead of the webhook
+ack/completion protocol.
 
 ## Configuration
 
