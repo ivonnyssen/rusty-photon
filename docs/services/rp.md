@@ -2,11 +2,12 @@
 
 ## Overview
 
-`rp` is the orchestration layer of Rusty Photon. It connects to
-equipment via ASCOM Alpaca, plans imaging sessions dynamically, coordinates
-multi-camera capture, and emits events that plugins consume. It does not
-integrate with hardware directly — every device interaction goes through a
-network API.
+`rp` is the equipment gateway, event bus, and safety enforcer of Rusty
+Photon. It exposes all equipment and services as MCP tools, emits events
+that plugins consume, and enforces safety constraints that can override
+any operation. It does not contain workflow logic — orchestration is
+handled by a separate orchestrator plugin that drives the session by
+calling tools on `rp`.
 
 ### Tenets
 
@@ -29,7 +30,10 @@ network API.
 
 ## Architecture
 
-The system is a constellation of independent web services. `rp` is the orchestrator at the center.
+The system is a constellation of independent web services. `rp` is the
+equipment gateway at the center — it provides MCP tools, emits events,
+and enforces safety. An orchestrator plugin drives the imaging session
+by calling tools on `rp`.
 
 ```
                        ┌───────────────────┐
@@ -42,23 +46,31 @@ The system is a constellation of independent web services. `rp` is the orchestra
                        ┌────────▼──────────┐
                        │       RP          │
                        │                   │
-                       │  Orchestrator     │
+                       │  MCP Tool Server  │
                        │  Event Bus        │
-                       │  Dynamic Planner  │
+                       │  Safety Enforcer  │
                        │  Session State    │
+                       │  Planner          │
                        │  API Layer        │
                        └──┬────┬────┬──────┘
                           │    │    │
             ┌─────────────┤    │    ├─────────────┐
             │   Alpaca    │    │    │  Webhooks   │
             ▼             ▼    │    ▼             ▼
-       [Camera]      [Mount]   │ [Plate Solver] [Analyzer]
-       [Focuser]     [FWheel]  │ [Cloud Backup] [Custom]
+       [Camera]      [Mount]   │ [Analyzer]  [Cloud Backup]
+       [Focuser]     [FWheel]  │ [Custom]
        [SafetyMon]             │
-                               │ HTTP (commands + events)
-                               ▼
-                        [Guider Service]
-                        (wraps PHD2)
+                               │ MCP (tools/call)
+                     ┌─────────┴──────────┐
+                     ▼                    ▼
+              [Orchestrator]       [Guider Service]
+              (workflow plugin     (wraps PHD2)
+               drives session)
+                     │
+                     │ MCP (tools/call)
+                     ▼
+              [Plate Solver]  [Focus Plugin]  [Centering Plugin]
+              (tool providers — compound tools that call back to rp)
 
             ┌──────────────────────────────────┐
             │          Sentinel                │
@@ -473,6 +485,23 @@ the exact parameter types and return structure.
 | `plate_solve` | image_path, hint (optional) | ra, dec, rotation, scale | Solve an image via the configured plate solver service |
 | `measure_basic` | image_path | hfr, star_count, background_mean, background_stddev | Compute basic image statistics |
 
+**Planner**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `get_next_target` | — | target, filter, duration, reason | Evaluate candidates and recommend next target/filter |
+| `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a target |
+| `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip needed |
+| `record_exposure` | target, filter | completed, goal | Increment counter, return updated progress |
+| `get_session_progress` | — | per-target, per-filter progress | Full progress overview |
+
+**Session**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `save_session_state` | — | — | Persist current session state to disk |
+| `get_session_state` | — | session state JSON | Read persisted session state |
+
 All built-in tools validate parameters before execution. `move_focuser`
 checks position bounds. `capture` checks that the camera is connected and
 idle. Invalid requests return an MCP error — they never reach the
@@ -513,54 +542,61 @@ exposure document as a section.** This is the one rule — the document is
 the shared data bus. `rp` enforces this: compute tool results are merged
 into the document before being returned to the caller.
 
-### Workflow Plugins
+### Plugin Types
 
-Workflow plugins are a second plugin type alongside event plugins. Where
-event plugins react to events asynchronously (webhook → ack → complete),
-workflow plugins take imperative control of a sub-workflow by calling
-MCP tools on `rp`.
+There are three plugin types:
 
-A workflow plugin handles a specific orchestrator phase — focusing,
-centering, or any future sub-workflow. When the orchestrator reaches that
-phase, it delegates to the configured workflow plugin.
+| Type | Role | Interface |
+|------|------|-----------|
+| **Event** | React to events asynchronously | Webhook (receive events, post completion) |
+| **Tool provider** | Provide compound tools for other plugins | MCP server (rp aggregates their tools) |
+| **Orchestrator** | Drive the imaging session | MCP client (calls tools on rp) |
 
-#### Registration
+A plugin can combine types. For example, a focus plugin can be a
+**tool provider** (exposes `auto_focus` tool) and also an **event
+plugin** (subscribes to `temperature_changed` to track focus drift).
 
-Workflow plugins declare what they handle and what tools they require
-(for config-time validation). They may also provide tools for other
-plugins and declare an MCP server URL if they do:
+#### Tool Provider Registration
+
+Tool providers run their own MCP servers. `rp` connects at startup,
+discovers their tools, and proxies them through its own MCP server:
 
 ```json
 {
   "name": "vcurve-focus",
-  "type": "workflow",
-  "invoke_url": "http://localhost:11150/invoke",
-  "handles": ["focusing"],
-  "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
-  "max_duration_secs": 300
+  "type": "tool_provider",
+  "mcp_server_url": "http://localhost:11150/mcp",
+  "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"]
 }
 ```
 
-A plugin that both handles a workflow and provides tools for others:
+The `requires_tools` field is for config-time validation only — `rp`
+checks that all required tools exist in the catalog before starting.
+At runtime, the plugin can call any tool on `rp`.
+
+#### Orchestrator Registration
+
+Exactly one orchestrator plugin is configured per session type. `rp`
+invokes it when a session starts:
 
 ```json
 {
-  "name": "advanced-centering",
-  "type": "workflow",
-  "invoke_url": "http://localhost:11151/invoke",
-  "handles": ["centering"],
-  "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"],
-  "mcp_server_url": "http://localhost:11151/mcp",
-  "max_duration_secs": 180
+  "name": "deep-sky-orchestrator",
+  "type": "orchestrator",
+  "invoke_url": "http://localhost:11160/invoke",
+  "requires_tools": ["slew", "capture", "start_guiding", "stop_guiding",
+                      "dither", "get_next_target", "record_exposure"],
+  "max_duration_secs": 0
 }
 ```
 
-#### Delegation Protocol
+`max_duration_secs: 0` means no timeout — the orchestrator runs for
+the entire session. `rp` terminates it on session stop or safety events.
 
-When the orchestrator enters a phase handled by a workflow plugin:
+#### Orchestrator Invocation Protocol
 
-**Step 1: Invocation.** `rp` POSTs to the plugin's `invoke_url` with
-the phase context and the MCP server endpoint:
+**Step 1: Invocation.** When a session starts, `rp` POSTs to the
+orchestrator's `invoke_url`:
 
 ```
 POST <invoke_url>
@@ -568,53 +604,31 @@ Content-Type: application/json
 
 {
   "workflow_id": "wf-550e8400-e29b-41d4",
-  "phase": "focusing",
-  "context": {
-    "camera_id": "main-cam",
-    "focuser_id": "main-focuser",
-    "current_position": 12000,
-    "temperature_c": -5.2,
-    "last_known_hfr": 2.3
-  },
-  "mcp_server_url": "http://localhost:11115/mcp"
+  "session_id": "session-2026-03-01",
+  "mcp_server_url": "http://localhost:11115/mcp",
+  "recovery": null
 }
 ```
 
-The plugin acknowledges immediately (same pattern as event plugins):
+On recovery after a safety event or power failure, `recovery` contains
+the last known session state so the orchestrator can resume.
+
+The orchestrator acknowledges:
 
 ```json
 {
-  "estimated_duration_secs": 120,
-  "max_duration_secs": 300
+  "estimated_duration_secs": 28800,
+  "max_duration_secs": 0
 }
 ```
 
-**Step 2: Tool calls via MCP.** The plugin connects to `rp`'s MCP
-server and drives the sub-workflow using standard MCP tool calls:
+**Step 2: Tool calls via MCP.** The orchestrator connects to `rp`'s
+MCP server and drives the session using standard MCP tool calls. It
+can call any tool — built-in or plugin-provided. See the Orchestration
+section for a full example flow.
 
-```
-→ tools/list
-← [{name: "move_focuser", inputSchema: {...}},
-   {name: "capture", inputSchema: {...}},
-   {name: "measure_basic", inputSchema: {...}},
-   {name: "measure_eccentricity", inputSchema: {...}},
-   ...]
-
-→ tools/call {name: "move_focuser", arguments: {focuser_id: "main-focuser", position: 10000}}
-← {content: [{type: "text", text: "{\"actual_position\": 10000}"}]}
-
-→ tools/call {name: "capture", arguments: {camera_id: "main-cam", duration_secs: 2}}
-← {content: [{type: "text", text: "{\"image_path\": \"/tmp/focus_001.fits\", ...}"}]}
-```
-
-The plugin can call **any tool in the catalog** — there is no per-workflow
-scoping. Safety is enforced at the tool level (see Safety Guardrails).
-The plugin discovers what's available at runtime via `tools/list` and can
-adapt — for example, using `measure_eccentricity` if available or falling
-back to `measure_basic`.
-
-**Step 3: Completion.** When the plugin finishes, it POSTs to the
-standard completion endpoint:
+**Step 3: Completion.** When the orchestrator finishes (all targets
+done, dawn approaching, or explicit stop):
 
 ```
 POST /api/plugins/{workflow_id}/complete
@@ -623,26 +637,22 @@ Content-Type: application/json
 {
   "status": "complete",
   "result": {
-    "best_position": 12450,
-    "best_hfr": 2.1,
-    "curve_points": 15
+    "reason": "all_targets_complete",
+    "exposures_captured": 87
   }
 }
 ```
 
-The result is opaque to `rp` — it is logged and included in the relevant
-event payload (e.g., `focus_complete`).
+#### Example: V-Curve Focus Tool Provider
 
-#### Example: V-Curve Focus Workflow
+The `vcurve-focus` plugin exposes an `auto_focus` tool. When called by
+the orchestrator (via rp's proxy), it drives the V-curve internally:
 
 ```
-rp enters FOCUSING state
-  → POSTs to vcurve-focus invoke_url:
-      phase: "focusing", context: {camera: "main-cam", focuser: "main-focuser", ...}
-      mcp_server_url: "http://localhost:11115/mcp"
-  → plugin acks: {estimated: 120, max: 300}
+Orchestrator calls: tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
+  → rp proxies to vcurve-focus plugin's MCP server
 
-  Plugin connects to rp's MCP server and drives the V-curve:
+  vcurve-focus connects to rp as MCP client and drives the V-curve:
     → tools/call  move_focuser {focuser_id: "main-focuser", position: 10000}
     ← {actual_position: 10000}
     → tools/call  capture {camera_id: "main-cam", duration_secs: 2}
@@ -650,43 +660,35 @@ rp enters FOCUSING state
     → tools/call  measure_basic {image_path: "/tmp/focus_001.fits"}
     ← {hfr: 5.2, star_count: 340}
     → tools/call  move_focuser {focuser_id: "main-focuser", position: 10200}
-    ← {actual_position: 10200}
-    → tools/call  capture {...}
     ... 12 more iterations ...
     → tools/call  move_focuser {focuser_id: "main-focuser", position: 12450}
-    ← {actual_position: 12450}
 
-  Plugin disconnects from MCP, completes:
-    → POST /api/plugins/{wf}/complete
-        {status: "complete", result: {best_position: 12450, best_hfr: 2.1}}
+  vcurve-focus returns to rp:
+    ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
 
-rp emits focus_complete event, transitions to GUIDE_START
+  rp returns to orchestrator:
+    ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
 ```
 
-#### Example: Iterative Centering Workflow
+#### Example: Iterative Centering Tool Provider
+
+The `iterative-centering` plugin exposes a `center_on_target` tool:
 
 ```
-rp enters CENTERING state
-  → POSTs to centering plugin invoke_url:
-      phase: "centering", context: {target_ra, target_dec, tolerance_arcsec: 5}
-      mcp_server_url: "http://localhost:11115/mcp"
-  → plugin acks: {estimated: 60, max: 180}
+Orchestrator calls: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance: 5}
+  → rp proxies to centering plugin's MCP server
 
-  Plugin connects to rp's MCP server and drives the centering loop:
+  centering plugin connects to rp and drives the loop:
     → tools/call  capture {camera_id: "main-cam", duration_secs: 5}
-    ← {image_path: "/tmp/center_001.fits", document_id: "doc-002"}
+    ← {image_path: "/tmp/center_001.fits"}
     → tools/call  plate_solve {image_path: "/tmp/center_001.fits"}
     ← {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
     → tools/call  sync_mount {ra: 10.6820, dec: 41.2650}
     → tools/call  slew {ra: 10.6847, dec: 41.2689}
-    ← {actual_ra: 10.6845, actual_dec: 41.2688}
     → repeat until error < tolerance ...
 
-  Plugin disconnects from MCP, completes:
-    → POST /api/plugins/{wf}/complete
-        {status: "complete", result: {final_error_arcsec: 2.1, attempts: 3}}
-
-rp emits centering_complete event, transitions to FOCUSING
+  centering plugin returns:
+    ← {final_error_arcsec: 2.1, attempts: 3}
 ```
 
 ### Safety Guardrails
@@ -781,135 +783,168 @@ Plugins and `rp` are assumed to share a filesystem (local paths
 work). Distributed deployments where plugins run on separate machines are a
 future concern and out of scope for the initial design.
 
-## Orchestration Engine
+## Orchestration
 
-The engine is an async state machine that coordinates the imaging workflow
-across multiple cameras on a shared mount.
+`rp` does not contain workflow logic. The imaging workflow — what to do,
+in what order, and when to switch targets — is driven by an
+**orchestrator plugin** that connects to `rp`'s MCP server and calls
+tools.
 
-### Mount-Level State Machine
+Different imaging types use different orchestrators:
 
-```
-                    ┌──────────┐
-         ┌─────────│  IDLE     │◄──────────────────┐
-         │         └────┬─────┘                    │
-         │              │ planner decides           │
-         │              │ next target               │
-         │         ┌────▼─────┐                    │
-         │         │ SLEWING  │                    │
-         │         └────┬─────┘                    │
-         │              │ mount reports done        │
-         │         ┌────▼──────┐                   │
-         │         │ CENTERING │◄──┐               │
-         │         └────┬──────┘   │               │
-         │              │          │ error > threshold
-         │              │ solved   │ (retry)        │
-         │         ┌────▼──────┐   │               │
-         │         │ check err ├───┘               │
-         │         └────┬──────┘                   │
-         │              │ error < threshold         │
-         │         ┌────▼─────┐                    │
-         │         │ FOCUSING │                    │
-         │         └────┬─────┘                    │
-         │              │ focus complete            │
-         │         ┌────▼──────────┐               │
-         │         │ GUIDE_START   │               │
-         │         └────┬──────────┘               │
-         │              │ guider settled            │
-         │         ┌────▼──────┐                   │
-         │         │ CAPTURING │───────────────────┘
-         │         └───────────┘  target complete
-         │                        or planner switches
-         │
-    SAFETY_OVERRIDE (can interrupt any state)
-         │
-    ┌────▼─────┐
-    │ PARKING  │──► abort exposures, stop guiding, park mount
-    └──────────┘
-```
+| Orchestrator | Workflow |
+|-------------|----------|
+| `deep-sky-orchestrator` | slew → center → focus → guide → capture loop, with dithering, meridian flips, target switching |
+| `planetary-orchestrator` | slew → focus → high-fps capture, no guiding or plate solving |
+| `flat-calibration` | panel or sky flats with auto-exposure, rotator-aware sequencing |
 
-#### Workflow Delegation
+### What `rp` Owns vs. What the Orchestrator Owns
 
-The CENTERING and FOCUSING states are implemented as workflow plugin
-delegations (see Action System). When the orchestrator enters one of
-these states, it invokes the configured workflow plugin, which drives the
-sub-workflow by calling actions on `rp`. The state machine waits for the
-workflow plugin to complete before transitioning to the next state.
+**`rp` owns** (enforced regardless of which orchestrator runs):
 
-If no workflow plugin is configured for a phase, `rp` uses a built-in
-default implementation (iterative plate-solve-and-correct for centering,
-V-curve for focusing). The defaults use the same action primitives that
-plugins use — they are simply bundled with `rp`.
+- **MCP tool server** — all equipment, guider, compute, planner, and
+  session tools.
+- **Event bus** — emits events to webhook subscribers and the real-time
+  stream.
+- **Safety enforcement** — polls SafetyMonitors. On an unsafe
+  transition, `rp` cancels the active orchestrator workflow, aborts
+  exposures, stops guiding, parks the mount, and persists session state.
+  The orchestrator cannot prevent or delay this.
+- **Session persistence** — provides tools for saving and loading
+  session state. Also persists automatically on safety events.
 
-### Per-Camera State Machine (during CAPTURING)
+**The orchestrator owns** (implemented as plugin logic):
 
-Each camera runs its own capture loop within the mount-level CAPTURING state:
+- **Workflow state machine** — the sequence of operations (slew, center,
+  focus, guide, capture, dither, meridian flip, etc.).
+- **Capture loop** — deciding when to start/stop exposures, managing
+  multi-camera coordination, barrier synchronization.
+- **Conditional logic** — when to refocus (temperature drift, HFR
+  degradation), when to take flats, how to handle meridian flips.
+- **Sub-workflow delegation** — the orchestrator can call compound tools
+  provided by other plugins (e.g., `auto_focus`, `center_on_target`)
+  or implement sub-workflows directly using primitive tools.
+
+### Orchestrator Lifecycle
 
 ```
-┌──────┐   next exposure    ┌──────────┐   shutter closed   ┌─────────┐
-│ IDLE ├───────────────────►│ EXPOSING ├────────────────────►│ READING │
-└──▲───┘                    └──────────┘                     └────┬────┘
-   │                                                              │
-   │         ┌────────────┐   readout complete                    │
-   └─────────┤ PROCESSING │◄──────────────────────────────────────┘
-             └────────────┘
-              (parallel: next exposure can start immediately)
+rp starts
+  → validates config, connects to equipment
+  → builds MCP tool catalog (built-in + plugin-provided)
+  → starts MCP server, event bus, safety polling
+  → waits for session start command (from UI or API)
+
+User starts session via API
+  → rp invokes the configured orchestrator plugin
+  → orchestrator connects to rp's MCP server
+  → orchestrator drives the session using tool calls
+  → rp emits events as tools execute (exposure_started, slew_complete, etc.)
+
+Safety event (unsafe transition)
+  → rp immediately: aborts exposures, stops guiding, parks mount
+  → rp terminates the orchestrator's MCP session
+  → rp persists session state
+  → on safe transition: rp re-invokes the orchestrator with recovery context
+
+Session ends (orchestrator completes, user stops, or dawn)
+  → orchestrator disconnects from MCP
+  → rp persists final session state
+  → rp emits session_stopped event
 ```
 
-The PROCESSING state runs in parallel with the next EXPOSING state. This is
-where the post-capture pipeline fires — save FITS, emit `exposure_complete`
-event, and let plugins do their work. The camera does not wait for processing
-to finish before starting the next exposure.
+### Example: Deep-Sky Orchestrator Flow
 
-### Multi-Camera Barrier Synchronization
-
-Mount-level operations (slew, meridian flip) and guiding operations (dither)
-require all cameras to be idle. This is a barrier:
+The deep-sky orchestrator implements the classic imaging workflow. This
+is what a typical orchestrator looks like — it's a program that calls
+tools:
 
 ```
-Camera A (300s): [========expose========][idle]
-Camera B (120s): [==expose==][==expose==][idle]
-                                         ↑ barrier: all idle
-                                         [dither / slew / flip]
+Orchestrator connects to rp MCP server
+
+Loop:
+  → tools/call get_next_target {}
+  ← {name: "M31", ra: 10.6847, dec: 41.2689, filter: "Luminance", ...}
+
+  → tools/call slew {ra: 10.6847, dec: 41.2689}
+  ← {actual_ra: 10.6845, actual_dec: 41.2688}
+
+  → tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance: 5}
+    (compound tool — centering plugin handles internally)
+  ← {final_error_arcsec: 2.1, attempts: 3}
+
+  → tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
+    (compound tool — focus plugin handles internally)
+  ← {best_position: 12450, best_hfr: 2.1}
+
+  → tools/call start_guiding {}
+  ← {rms_ra: 0.4, rms_dec: 0.3}
+
+  Capture loop:
+    → tools/call capture {camera_id: "main-cam", duration_secs: 300}
+    ← {image_path: "...", document_id: "doc-042"}
+    → tools/call record_exposure {target: "M31", filter: "Luminance"}
+    ← {completed: 13, goal: 40}
+    → check if dither needed → tools/call dither {pixels: 5}
+    → check if temperature drifted → tools/call auto_focus {...}
+    → check if meridian flip needed → stop guide, flip, re-center, re-focus, start guide
+    → tools/call get_next_target → if target changed, break capture loop
+
+  → tools/call stop_guiding {}
+  → continue outer loop with new target
 ```
 
-The orchestrator enforces the barrier:
+### Compound Tools (Sub-Workflow Plugins)
 
-1. When a mount operation or dither is pending, cameras that finish early
-   enter IDLE and wait rather than starting a new exposure.
-2. A camera does NOT start a new exposure if it would extend past the
-   earliest pending barrier time.
-3. Once all cameras are idle, the mount operation executes.
-4. After the operation completes, all cameras resume.
+Sub-workflows like focusing and centering are implemented as
+**tool-provider plugins**. They run their own MCP servers and expose
+high-level compound tools. Internally, they call back to `rp`'s MCP
+server to use primitive tools.
 
-Barrier triggers:
-- **Dither**: configurable interval (e.g., every N exposures of the longest
-  camera). All cameras must be idle.
-- **Meridian flip**: when the mount approaches the meridian limit. All cameras
-  must be idle. After flip: re-center, re-focus, re-start guiding.
-- **Target switch**: when the planner decides to move to a new target. All
-  cameras must be idle.
+```
+Orchestrator                    rp                     Focus Plugin
+    │                           │                           │
+    │  tools/call auto_focus    │                           │
+    ├──────────────────────────►│  tools/call auto_focus    │
+    │                           ├──────────────────────────►│
+    │                           │                           │
+    │                           │  tools/call move_focuser  │
+    │                           │◄──────────────────────────┤
+    │                           │  ← {actual_position}      │
+    │                           ├──────────────────────────►│
+    │                           │                           │
+    │                           │  tools/call capture       │
+    │                           │◄──────────────────────────┤
+    │                           │  ← {image_path}           │
+    │                           ├──────────────────────────►│
+    │                           │                           │
+    │                           │  ... repeat ...           │
+    │                           │                           │
+    │                           │  ← {best_position, hfr}   │
+    │  ← {best_position, hfr}  │◄──────────────────────────┤
+    │◄──────────────────────────┤                           │
+```
+
+This keeps the orchestrator simple — it calls `auto_focus` without
+knowing the focus algorithm. The focus plugin can be swapped (V-curve,
+quadratic, FWHM-based) without changing the orchestrator.
 
 ## Dynamic Planner
 
-The planner is a pure function: given current state, it produces the next
-action. No user input is required during a session.
+The planner is a pure function exposed as MCP tools. Given current state,
+it produces recommendations. The orchestrator calls planner tools to
+decide what to do next — `rp` does not make workflow decisions.
 
-### Inputs
+### Planner Tools
 
-- **Target list**: targets with desired filter/exposure combinations and total
-  integration time per filter
-- **Progress**: how many exposures of each filter have been captured per target
-- **Sky state**: target altitude, hour angle, azimuth (computed from
-  coordinates and time)
-- **Meridian**: time until meridian flip required
-- **Camera state**: which cameras are available, their current filter, cooldown
-  status
-- **Moon**: distance from each target (optional, for prioritization)
-- **Constraints**: minimum altitude, maximum airmass, dawn time
+| Tool | Parameters | Returns | Description |
+|------|-----------|---------|-------------|
+| `get_next_target` | — | target, filter, duration, reason | Evaluate all candidates and recommend the best target/filter |
+| `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
+| `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
+| `record_exposure` | target, filter | completed, goal | Increment exposure counter, return updated progress |
+| `get_session_progress` | — | per-target, per-filter progress | Full progress overview |
 
-### Decision Logic
-
-The planner evaluates candidates and selects the best action:
+### Decision Logic (inside `get_next_target`)
 
 1. Eliminate targets below minimum altitude or that will set before a
    minimum number of exposures can be taken.
@@ -918,10 +953,11 @@ The planner evaluates candidates and selects the best action:
 4. Minimize filter changes (batch same-filter exposures).
 5. Account for meridian flip timing — avoid starting a long exposure if a
    flip is imminent.
-6. If no targets are viable, wait or end the session.
+6. If no targets are viable, return a "wait" or "end session"
+   recommendation.
 
-The planner runs after each exposure completes, after each target switch, and
-when conditions change (safety, temperature-triggered refocus).
+The orchestrator decides when to call `get_next_target` — typically
+after each exposure, after each target switch, or when conditions change.
 
 ### Target Definition
 
@@ -999,24 +1035,29 @@ This ensures at most one exposure is lost on power failure.
 
 ## Safety
 
-Safety monitoring is a top-level concern that can override any state.
+Safety monitoring is a top-level concern owned exclusively by `rp`. It
+can override any operation, including cancelling the active orchestrator.
 
 ### SafetyMonitor Polling
 
 `rp` polls configured ASCOM Alpaca SafetyMonitor devices at a configurable
 interval. On an unsafe transition:
 
-1. Abort all in-progress exposures (discard partial frames).
-2. Stop guiding.
-3. Park the mount.
-4. Persist session state.
-5. Emit `safety_changed` event.
-6. Enter PARKED state and wait.
+1. Terminate the orchestrator's MCP session (cancel any in-flight tool
+   calls).
+2. Abort all in-progress exposures (discard partial frames).
+3. Stop guiding.
+4. Park the mount.
+5. Persist session state.
+6. Emit `safety_changed` event.
+7. Wait in parked state.
 
-On a safe transition while in PARKED state:
+On a safe transition while in parked state:
 1. Unpark mount.
-2. Verify conditions (is the previous target still viable?).
-3. Resume session from persisted state.
+2. Re-invoke the orchestrator with recovery context (last session state,
+   reason for interruption).
+3. The orchestrator decides how to resume (verify pointing, re-acquire
+   guiding, continue from last target).
 
 ### Sentinel Watchdog Integration
 
@@ -1220,19 +1261,23 @@ connection details. Plugins register their webhook URLs and command endpoints.
     },
     {
       "name": "vcurve-focus",
-      "type": "workflow",
-      "invoke_url": "http://localhost:11150/invoke",
-      "handles": ["focusing"],
-      "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
-      "max_duration_secs": 300
+      "type": "tool_provider",
+      "mcp_server_url": "http://localhost:11150/mcp",
+      "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"]
     },
     {
       "name": "iterative-centering",
-      "type": "workflow",
-      "invoke_url": "http://localhost:11151/invoke",
-      "handles": ["centering"],
-      "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"],
-      "max_duration_secs": 180
+      "type": "tool_provider",
+      "mcp_server_url": "http://localhost:11151/mcp",
+      "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"]
+    },
+    {
+      "name": "deep-sky-orchestrator",
+      "type": "orchestrator",
+      "invoke_url": "http://localhost:11160/invoke",
+      "requires_tools": ["slew", "capture", "auto_focus", "center_on_target",
+                          "start_guiding", "stop_guiding", "dither",
+                          "get_next_target", "record_exposure"]
     }
   ],
   "targets": [
@@ -1309,19 +1354,12 @@ services/rp/src/
     guider.rs           Guider service client (backs start/stop/dither tools)
     plate_solver.rs     Plate solver client (backs plate_solve tool)
 
-  # Orchestration
-  engine/
-    mod.rs              Engine: top-level orchestrator, owns state machine
-    state.rs            Mount-level state machine (Idle, Slewing, Centering, ...)
-    capture.rs          Per-camera capture loop (Idle, Exposing, Reading, Processing)
-    barrier.rs          Multi-camera barrier synchronization
-    centering.rs        Plate solve + correct pointing loop
-    focusing.rs         Auto-focus routine
-    safety.rs           Safety monitoring + park/resume logic
+  # Safety enforcement
+  safety.rs             SafetyMonitor polling, park/resume, orchestrator cancellation
 
-  # Planning
+  # Planning (exposed as MCP tools)
   planner/
-    mod.rs              Planner: evaluate candidates, select next action
+    mod.rs              Planner tool implementations (get_next_target, etc.)
     sky.rs              Altitude, azimuth, hour angle, meridian calculations
     scorer.rs           Target scoring (altitude, progress, priority, filter)
 
@@ -1361,29 +1399,34 @@ Testing follows the conventions in `docs/testing-rules.md`.
 
 ### Unit Tests
 
-- **Planner**: Given a target list, progress, and sky state, assert correct
-  target/filter selection. Pure function, easy to test exhaustively.
-- **State machine**: Assert correct transitions, barrier behavior, safety
-  overrides.
+- **Planner tools**: Given a target list, progress, and sky state, assert
+  correct target/filter selection. Pure function, easy to test exhaustively.
+- **Safety enforcement**: Assert correct behavior on unsafe transitions
+  (orchestrator cancellation, mount parking, session persistence).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
+- **Config-time validation**: Missing tools, conflicting plugins, circular
+  dependencies.
 - **Sky calculations**: Altitude, hour angle, meridian time against known
   ephemeris data.
 
 ### BDD Tests (Cucumber)
 
-Behavioral specifications for the orchestration workflows:
+Behavioral specifications for `rp`'s responsibilities:
 
-- Session lifecycle (start, capture, pause, resume, stop)
-- Multi-camera barrier synchronization
-- Safety override during capture
-- Meridian flip sequence
-- Dynamic target switching
-- Power failure recovery
+- Session lifecycle (start → invoke orchestrator, stop, safety override)
+- Safety override (cancel orchestrator, park mount, persist state, resume)
+- MCP tool validation and safety guardrails
+- Event delivery to webhook endpoints
+- Power failure recovery (re-invoke orchestrator with recovery context)
+
+Note: orchestration workflow tests (capture loops, target switching,
+meridian flips) belong to the orchestrator plugin, not to `rp`.
 
 ### Integration Tests
 
-- API endpoint tests with mock equipment and plugins
+- MCP tool tests with mock equipment
+- Tool provider aggregation (proxy plugin-provided tools)
 - Event delivery to webhook endpoints
 - Session persistence and recovery round-trips
 
@@ -1403,5 +1446,7 @@ Items explicitly out of scope for the initial implementation:
 - **Multiple mounts** — the current design assumes one mount; extending to
   multiple mounts is a separate concern
 - **Dome control** — ASCOM Dome device integration
-- **Flat/dark frame automation** — calibration frame capture sequences
 - **Mosaic planning** — multi-panel target definitions
+
+Note: flat/dark frame automation is no longer out of scope — it can be
+implemented as a calibration orchestrator plugin without changes to `rp`.
