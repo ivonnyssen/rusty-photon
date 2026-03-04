@@ -395,23 +395,52 @@ from `rp` to plugins (notifications), actions flow inward from plugins to
 `rp` (requests). Actions are the primitives that plugins use to control
 equipment and trigger computations through `rp`.
 
-`rp` never exposes raw device access. Every action validates parameters,
+The action system uses the
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) as its
+wire protocol. `rp` runs an MCP server that exposes all available actions
+as **MCP tools**. Workflow plugins connect as MCP clients to discover and
+call tools.
+
+MCP provides:
+
+- **Tool discovery** — `tools/list` returns all available tools with
+  JSON Schema parameter definitions.
+- **Typed invocation** — `tools/call` with schema-validated parameters
+  and structured results.
+- **Formal schemas** — every tool's parameters and return types are
+  described by JSON Schema, derived from Rust types at compile time
+  (via `#[tool]` + `JsonSchema` derives in the `rmcp` crate).
+- **Language-agnostic** — plugins can be written in any language with an
+  MCP client library (Rust, Python, TypeScript, Go, etc.).
+
+`rp` never exposes raw device access. Every tool validates parameters,
 enforces safety constraints, and tracks state before touching hardware.
 
-### Action Catalog
+### MCP Server
 
-`rp` maintains a registry of all available actions. The catalog is built
-at startup from two sources:
+`rp` runs a single MCP server using the streamable HTTP transport. This
+server exposes all available tools — both built-in and aggregated from
+plugin providers (see Plugin-Provided Tools below).
 
-1. **Built-in actions** — hardware primitives and basic compute provided
-   by `rp` itself.
-2. **Plugin-provided actions** — compute or analysis actions registered by
-   plugins.
+The server endpoint is configurable (default: `http://localhost:11115/mcp`).
+Workflow plugins connect to this endpoint as MCP clients during their
+active workflow. The orchestrator itself also uses the same tool
+implementations internally.
 
-When a workflow plugin is invoked (see Workflow Plugins below), `rp` sends
-it the current action catalog so the plugin knows what it can call.
+### Tool Catalog
 
-### Built-in Actions
+The catalog is built at startup from two sources:
+
+1. **Built-in tools** — hardware primitives, guider operations, and basic
+   compute provided by `rp` itself.
+2. **Plugin-provided tools** — compute or analysis tools aggregated from
+   plugins that run their own MCP servers.
+
+Workflow plugins discover available tools via the standard MCP
+`tools/list` call. Each tool includes its JSON Schema, so plugins know
+the exact parameter types and return structure.
+
+### Built-in Tools
 
 **Hardware**
 
@@ -444,35 +473,52 @@ it the current action catalog so the plugin knows what it can call.
 | `plate_solve` | image_path, hint (optional) | ra, dec, rotation, scale | Solve an image via the configured plate solver service |
 | `measure_basic` | image_path | hfr, star_count, background_mean, background_stddev | Compute basic image statistics |
 
-All built-in actions validate parameters before execution. `move_focuser`
+All built-in tools validate parameters before execution. `move_focuser`
 checks position bounds. `capture` checks that the camera is connected and
-idle. Invalid requests return an error — they never reach the hardware.
+idle. Invalid requests return an MCP error — they never reach the
+hardware.
 
-### Plugin-Provided Actions
+### Plugin-Provided Tools
 
-A plugin can register actions that other plugins can call through `rp`.
-For example, a specialized measurement plugin might provide:
+A plugin can provide additional tools by running its own MCP server. At
+startup, `rp` connects to each tool-providing plugin as an MCP client,
+discovers their tools via `tools/list`, and proxies them through its own
+MCP server. Workflow plugins see a single unified catalog — they don't
+know or care whether a tool is built-in or provided by another plugin.
 
-| Action | Provider | Description |
-|--------|----------|-------------|
+```
+┌─────────────────┐  tools/list   ┌──────────────────┐
+│  star-analyzer   ├─────────────►│                  │
+│  (MCP server)    │              │       rp         │  tools/list + tools/call
+│  measure_eccen.. │◄─────────────┤  (MCP server +   ├──────────────────────────►  workflow plugins
+└─────────────────┘  tools/call   │   MCP client)    │                             (MCP clients)
+                                  │                  │
+┌─────────────────┐  tools/list   │  Aggregates all  │
+│  wavefront-anlzr ├─────────────►│  tools into one  │
+│  (MCP server)    │              │  unified catalog  │
+│  measure_wavefr..│◄─────────────┤                  │
+└─────────────────┘  tools/call   └──────────────────┘
+```
+
+Example: a specialized measurement plugin provides tools that a focus
+plugin can use:
+
+| Tool | Provider | Description |
+|------|----------|-------------|
 | `measure_eccentricity` | star-analyzer | Measure star eccentricity across the field |
 | `measure_wavefront` | wavefront-analyzer | Wavefront error analysis |
 
-Plugin-provided actions follow the same request-response pattern as
-built-in actions. When a workflow plugin calls a plugin-provided action,
-`rp` routes the request to the providing plugin and returns the result.
-
-**All action results that produce image metrics MUST be written into the
+**All tool results that produce image metrics MUST be written into the
 exposure document as a section.** This is the one rule — the document is
-the shared data bus. `rp` enforces this: compute action results are
-merged into the document before being returned to the caller.
+the shared data bus. `rp` enforces this: compute tool results are merged
+into the document before being returned to the caller.
 
 ### Workflow Plugins
 
 Workflow plugins are a second plugin type alongside event plugins. Where
 event plugins react to events asynchronously (webhook → ack → complete),
 workflow plugins take imperative control of a sub-workflow by calling
-actions on `rp`.
+MCP tools on `rp`.
 
 A workflow plugin handles a specific orchestrator phase — focusing,
 centering, or any future sub-workflow. When the orchestrator reaches that
@@ -480,31 +526,31 @@ phase, it delegates to the configured workflow plugin.
 
 #### Registration
 
-Workflow plugins declare what they handle, what actions they need, and
-optionally what actions they provide:
+Workflow plugins declare what they handle and what tools they require
+(for config-time validation). They may also provide tools for other
+plugins and declare an MCP server URL if they do:
 
 ```json
 {
   "name": "vcurve-focus",
   "type": "workflow",
-  "workflow_url": "http://localhost:11150/workflow",
+  "invoke_url": "http://localhost:11150/invoke",
   "handles": ["focusing"],
-  "requires_actions": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
-  "provides_actions": [],
+  "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
   "max_duration_secs": 300
 }
 ```
 
-A plugin that both handles a workflow and provides actions for others:
+A plugin that both handles a workflow and provides tools for others:
 
 ```json
 {
   "name": "advanced-centering",
   "type": "workflow",
-  "workflow_url": "http://localhost:11151/workflow",
+  "invoke_url": "http://localhost:11151/invoke",
   "handles": ["centering"],
-  "requires_actions": ["capture", "slew", "sync_mount", "plate_solve"],
-  "provides_actions": ["measure_field_curvature"],
+  "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"],
+  "mcp_server_url": "http://localhost:11151/mcp",
   "max_duration_secs": 180
 }
 ```
@@ -513,10 +559,11 @@ A plugin that both handles a workflow and provides actions for others:
 
 When the orchestrator enters a phase handled by a workflow plugin:
 
-**Step 1: Invocation.** `rp` POSTs to the plugin's `workflow_url`:
+**Step 1: Invocation.** `rp` POSTs to the plugin's `invoke_url` with
+the phase context and the MCP server endpoint:
 
 ```
-POST <workflow_url>
+POST <invoke_url>
 Content-Type: application/json
 
 {
@@ -529,13 +576,7 @@ Content-Type: application/json
     "temperature_c": -5.2,
     "last_known_hfr": 2.3
   },
-  "action_catalog": [
-    { "name": "capture", "type": "built_in" },
-    { "name": "move_focuser", "type": "built_in" },
-    { "name": "get_focuser_position", "type": "built_in" },
-    { "name": "measure_basic", "type": "built_in" },
-    { "name": "measure_eccentricity", "type": "plugin", "provider": "star-analyzer" }
-  ]
+  "mcp_server_url": "http://localhost:11115/mcp"
 }
 ```
 
@@ -548,33 +589,29 @@ The plugin acknowledges immediately (same pattern as event plugins):
 }
 ```
 
-**Step 2: Action calls.** The plugin drives the sub-workflow by calling
-action endpoints on `rp`:
+**Step 2: Tool calls via MCP.** The plugin connects to `rp`'s MCP
+server and drives the sub-workflow using standard MCP tool calls:
 
 ```
-POST /api/actions/{workflow_id}/execute
-Content-Type: application/json
+→ tools/list
+← [{name: "move_focuser", inputSchema: {...}},
+   {name: "capture", inputSchema: {...}},
+   {name: "measure_basic", inputSchema: {...}},
+   {name: "measure_eccentricity", inputSchema: {...}},
+   ...]
 
-{
-  "action": "move_focuser",
-  "params": {
-    "focuser_id": "main-focuser",
-    "position": 10000
-  }
-}
+→ tools/call {name: "move_focuser", arguments: {focuser_id: "main-focuser", position: 10000}}
+← {content: [{type: "text", text: "{\"actual_position\": 10000}"}]}
 
-Response 200:
-{
-  "result": {
-    "actual_position": 10000
-  }
-}
+→ tools/call {name: "capture", arguments: {camera_id: "main-cam", duration_secs: 2}}
+← {content: [{type: "text", text: "{\"image_path\": \"/tmp/focus_001.fits\", ...}"}]}
 ```
 
-Each action call is synchronous from the plugin's perspective — it sends
-a request and waits for the result. `rp` validates the request, executes
-it, and returns the result. The `workflow_id` scopes the action to the
-active workflow for auditing and safety enforcement.
+The plugin can call **any tool in the catalog** — there is no per-workflow
+scoping. Safety is enforced at the tool level (see Safety Guardrails).
+The plugin discovers what's available at runtime via `tools/list` and can
+adapt — for example, using `measure_eccentricity` if available or falling
+back to `measure_basic`.
 
 **Step 3: Completion.** When the plugin finishes, it POSTs to the
 standard completion endpoint:
@@ -600,25 +637,26 @@ event payload (e.g., `focus_complete`).
 
 ```
 rp enters FOCUSING state
-  → POSTs to vcurve-focus plugin:
+  → POSTs to vcurve-focus invoke_url:
       phase: "focusing", context: {camera: "main-cam", focuser: "main-focuser", ...}
+      mcp_server_url: "http://localhost:11115/mcp"
   → plugin acks: {estimated: 120, max: 300}
 
-  Plugin drives the V-curve:
-    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 10000}
+  Plugin connects to rp's MCP server and drives the V-curve:
+    → tools/call  move_focuser {focuser_id: "main-focuser", position: 10000}
     ← {actual_position: 10000}
-    → POST /api/actions/{wf}/execute  {action: "capture", camera_id: "main-cam", duration: 2}
+    → tools/call  capture {camera_id: "main-cam", duration_secs: 2}
     ← {image_path: "/tmp/focus_001.fits", document_id: "doc-001"}
-    → POST /api/actions/{wf}/execute  {action: "measure_basic", image_path: "/tmp/focus_001.fits"}
+    → tools/call  measure_basic {image_path: "/tmp/focus_001.fits"}
     ← {hfr: 5.2, star_count: 340}
-    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 10200}
+    → tools/call  move_focuser {focuser_id: "main-focuser", position: 10200}
     ← {actual_position: 10200}
-    → POST /api/actions/{wf}/execute  {action: "capture", ...}
+    → tools/call  capture {...}
     ... 12 more iterations ...
-    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 12450}
+    → tools/call  move_focuser {focuser_id: "main-focuser", position: 12450}
     ← {actual_position: 12450}
 
-  Plugin completes:
+  Plugin disconnects from MCP, completes:
     → POST /api/plugins/{wf}/complete
         {status: "complete", result: {best_position: 12450, best_hfr: 2.1}}
 
@@ -629,21 +667,22 @@ rp emits focus_complete event, transitions to GUIDE_START
 
 ```
 rp enters CENTERING state
-  → POSTs to centering plugin:
+  → POSTs to centering plugin invoke_url:
       phase: "centering", context: {target_ra, target_dec, tolerance_arcsec: 5}
+      mcp_server_url: "http://localhost:11115/mcp"
   → plugin acks: {estimated: 60, max: 180}
 
-  Plugin drives the centering loop:
-    → POST /api/actions/{wf}/execute  {action: "capture", duration: 5}
+  Plugin connects to rp's MCP server and drives the centering loop:
+    → tools/call  capture {camera_id: "main-cam", duration_secs: 5}
     ← {image_path: "/tmp/center_001.fits", document_id: "doc-002"}
-    → POST /api/actions/{wf}/execute  {action: "plate_solve", image_path: ...}
+    → tools/call  plate_solve {image_path: "/tmp/center_001.fits"}
     ← {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
-    → POST /api/actions/{wf}/execute  {action: "sync_mount", ra: 10.6820, dec: 41.2650}
-    → POST /api/actions/{wf}/execute  {action: "slew", ra: 10.6847, dec: 41.2689}
+    → tools/call  sync_mount {ra: 10.6820, dec: 41.2650}
+    → tools/call  slew {ra: 10.6847, dec: 41.2689}
     ← {actual_ra: 10.6845, actual_dec: 41.2688}
     → repeat until error < tolerance ...
 
-  Plugin completes:
+  Plugin disconnects from MCP, completes:
     → POST /api/plugins/{wf}/complete
         {status: "complete", result: {final_error_arcsec: 2.1, attempts: 3}}
 
@@ -652,37 +691,37 @@ rp emits centering_complete event, transitions to FOCUSING
 
 ### Safety Guardrails
 
-`rp` enforces safety on every action call:
+There is no per-workflow scoping — any workflow plugin can call any tool
+in the catalog. Safety is enforced at the tool level, universally:
 
 - **Parameter validation**: focuser position within min/max bounds,
   exposure duration within configured limits, slew coordinates above
   horizon.
 - **State validation**: cannot capture while another capture is in
   progress on the same camera, cannot slew during an exposure.
-- **Scope restriction**: a workflow plugin can only control equipment
-  relevant to its phase. A focusing workflow cannot slew the mount.
 - **Timeout**: if `max_duration_secs` expires without completion, `rp`
   cancels the workflow, moves equipment to a safe state, and proceeds
-  with the next orchestration phase.
+  with the next orchestration phase. The MCP session is terminated.
 - **Safety override**: a safety event (unsafe transition) immediately
-  cancels any active workflow. The plugin's next action call returns an
-  error indicating the workflow was cancelled.
+  cancels any active workflow. The MCP session is terminated — the
+  plugin's next tool call returns an error indicating the workflow was
+  cancelled.
 
 ### Config-Time Validation
 
 At startup, `rp` validates the full plugin dependency graph:
 
-1. Build the action catalog from built-in actions and all
-   `provides_actions` declarations.
-2. For each workflow plugin, verify that every action in
-   `requires_actions` exists in the catalog.
-3. For each orchestrator phase that expects a workflow plugin (focusing,
+1. Connect to each tool-providing plugin's MCP server and discover
+   their tools via `tools/list`.
+2. Build the unified tool catalog from built-in tools and all
+   discovered plugin-provided tools.
+3. For each workflow plugin, verify that every tool in
+   `requires_tools` exists in the catalog.
+4. For each orchestrator phase that expects a workflow plugin (focusing,
    centering), verify that exactly one plugin declares `handles` for
    that phase.
-4. Detect circular dependencies — a plugin cannot both provide an action
-   and require it.
 5. If validation fails, `rp` refuses to start and reports the missing
-   actions or conflicting handlers.
+   tools or conflicting handlers.
 
 This ensures the system is fully configured before the session begins.
 A missing dependency is a startup error, not a 3 AM surprise.
@@ -715,18 +754,18 @@ PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
 this protocol so `rp` speaks only HTTP.
 
-Guider operations are exposed as built-in actions (`start_guiding`,
+Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
-`get_guiding_stats`). `rp` proxies these action calls to the guider service's
+`get_guiding_stats`). `rp` proxies these tool calls to the guider service's
 HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
-control guiding through the same action mechanism as any other equipment.
+control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
 service that implements the same HTTP endpoints.
 
 ### Plate Solver
 
 The plate solver is a plugin service that accepts FITS files and returns
-solved coordinates. It is exposed as a built-in action (`plate_solve`)
+solved coordinates. It is exposed as a built-in MCP tool (`plate_solve`)
 so that workflow plugins (e.g., centering) can use it. `rp` proxies the
 call to the configured plate solver service. The plate solver can also
 subscribe to `exposure_complete` events for background solving.
@@ -1066,11 +1105,9 @@ application logic.
 - `POST /api/plugins/{event_id}/complete` — plugin completion callback
   (status, optional `skip_to` and `reason`)
 
-#### Actions
-- `GET /api/actions/catalog` — list all available actions (built-in and
-  plugin-provided)
-- `POST /api/actions/{workflow_id}/execute` — execute an action within a
-  workflow context (called by workflow plugins)
+#### MCP
+- `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
+  plugins connect here as MCP clients to discover and call tools.
 
 #### System
 - `GET /health` — health check
@@ -1184,19 +1221,17 @@ connection details. Plugins register their webhook URLs and command endpoints.
     {
       "name": "vcurve-focus",
       "type": "workflow",
-      "workflow_url": "http://localhost:11150/workflow",
+      "invoke_url": "http://localhost:11150/invoke",
       "handles": ["focusing"],
-      "requires_actions": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
-      "provides_actions": [],
+      "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
       "max_duration_secs": 300
     },
     {
       "name": "iterative-centering",
       "type": "workflow",
-      "workflow_url": "http://localhost:11151/workflow",
+      "invoke_url": "http://localhost:11151/invoke",
       "handles": ["centering"],
-      "requires_actions": ["capture", "slew", "sync_mount", "plate_solve"],
-      "provides_actions": [],
+      "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"],
       "max_duration_secs": 180
     }
   ],
@@ -1268,11 +1303,11 @@ services/rp/src/
     filter_wheel.rs     Filter wheel wrapper (set/get position)
     safety_monitor.rs   SafetyMonitor wrapper (poll is_safe)
 
-  # Services (non-Alpaca integrations, backing built-in actions)
+  # Services (non-Alpaca integrations, backing built-in MCP tools)
   services/
     mod.rs              Service trait, service manager
-    guider.rs           Guider service client (backs start/stop/dither actions)
-    plate_solver.rs     Plate solver client (backs plate_solve action)
+    guider.rs           Guider service client (backs start/stop/dither tools)
+    plate_solver.rs     Plate solver client (backs plate_solve tool)
 
   # Orchestration
   engine/
@@ -1295,11 +1330,11 @@ services/rp/src/
     mod.rs              Event types, EventBus
     webhook.rs          Webhook delivery (fire-and-forget HTTP POST)
 
-  # Action system
-  actions/
-    mod.rs              Action registry, catalog builder, config-time validation
-    built_in.rs         Built-in action implementations (capture, move_focuser, etc.)
-    router.rs           Routes action calls to built-in or plugin-provided handlers
+  # MCP tool system
+  mcp/
+    mod.rs              MCP server setup, tool registry, config-time validation
+    built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
+    aggregator.rs       Connects to plugin MCP servers, proxies their tools
 
   # Post-capture pipeline
   pipeline/
