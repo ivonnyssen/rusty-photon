@@ -200,7 +200,7 @@ The application does not know or care what subscribers do with events.
 | `meridian_flip_complete` | — | Flip and re-center done |
 | `target_switch` | old_target, new_target | Planner decided to switch targets |
 | `filter_switch` | camera_id, old_filter, new_filter | Filter change on a camera |
-| `frame_rejected` | document_id, plugin, reason | Plugin rejected a frame via `skip_to` |
+| `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
 | `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration_secs` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
 
@@ -263,76 +263,120 @@ Content-Type: application/json
 }
 ```
 
-Or, to request a corrective workflow change:
+Or, to request a corrective action:
 
 ```json
 {
   "status": "complete",
-  "skip_to": "focus_started",
-  "reason": "HFR degraded from 2.3 to 4.8 — likely focus drift"
+  "correction": {
+    "action": "focus",
+    "reason": "HFR degraded from 2.3 to 4.8 — likely focus drift",
+    "urgency": "immediate"
+  }
 }
 ```
 
-- `skip_to` (optional): requests that the orchestrator transition to a
-  different state instead of proceeding normally (see Workflow Deviation
-  below).
-- `reason` (optional): human-readable explanation, logged and included in
-  events.
+- `correction` (optional): requests that the orchestrator perform a
+  corrective action (see Corrections below).
+  - `action`: the corrective action to take (e.g., `"focus"`,
+    `"center"`). Must be a recognized action name.
+  - `reason`: human-readable explanation, logged and included in events.
+  - `urgency`: either `"immediate"` (abort in-flight operations, reject
+    the frame) or `"after_current"` (queue until the current operation
+    completes naturally, frame counts normally).
 
 #### Barriers
 
-A plugin can optionally declare **barriers** — orchestrator events that
-must not fire until the plugin has posted its completion for the most
+A plugin can optionally declare **barrier gates** — MCP tools that must
+not proceed until the plugin has posted its completion for the most
 recent webhook. This tells `rp`: "if you haven't heard back from me yet,
-wait before firing these events."
+block these tools until you have."
 
 ```json
 {
   "name": "image-analyzer",
   "webhook_url": "http://localhost:11140/webhook",
   "subscribes_to": ["exposure_complete"],
-  "barriers": ["target_switch", "filter_switch"]
+  "barrier_gates": ["slew", "set_filter"]
 }
 ```
 
-When a barrier event is about to fire, `rp` checks whether any barrier
-plugin still has an outstanding (uncompleted) webhook. If so, `rp` waits
-for the completion — up to `max_duration_secs` from the acknowledgment —
-before proceeding. All outstanding plugins are waited on in parallel.
+When the orchestrator calls a gated tool, `rp` checks whether any
+barrier plugin still has an outstanding (uncompleted) webhook. If so,
+`rp` blocks the tool call — up to `max_duration_secs` from the
+acknowledgment — before executing. All outstanding plugins are waited on
+in parallel.
 
-A plugin with no `barriers` (or an empty list) is never waited on. Its
-completion is still processed when it arrives, but `rp` never blocks on
-it.
+A plugin with no `barrier_gates` (or an empty list) is never waited on.
+Its completion is still processed when it arrives, but `rp` never blocks
+on it.
 
-#### Workflow Deviation (`skip_to`)
+If a barrier plugin completes with a correction while a tool call is
+blocked, the gated tool returns the correction to the orchestrator
+instead of executing (see Corrections below).
 
-A plugin can request that the orchestrator transition to a different state
-by including `skip_to` in its completion. The `skip_to` field references
-a valid orchestrator state:
+#### Corrections
 
-- After `exposure_complete`, an image analyzer detects degraded HFR →
-  `skip_to: "focus_started"`. `rp` cancels the in-progress exposure,
-  does not count the rejected frame toward the exposure goal, and
-  transitions to auto-focus.
-- On `target_switch` barrier, the same analyzer finds a bad frame →
-  `skip_to: "focus_started"`. `rp` refocuses instead of switching,
-  rolls back the exposure counter, and stays on the current target.
+A plugin can request that the orchestrator perform a corrective action
+by including a `correction` in its completion. Corrections have two
+urgency levels that determine how `rp` delivers them to the
+orchestrator:
 
-`rp` validates the `skip_to` target against the current state machine.
-Invalid or irrelevant requests (e.g., the target has already switched)
-are logged and ignored.
+**`immediate`** — the current frame is unusable. `rp` aborts any
+in-flight operation (e.g., aborts the active camera exposure), returns
+the correction to the orchestrator in the aborted tool call's result,
+and rejects the frame:
 
-**Conflict resolution:** when multiple plugins request different `skip_to`
-targets, the most regressive target wins — the one earliest in the state
-machine pipeline. If one plugin requests refocus and another requests
-recenter, recenter wins because it is earlier and includes refocusing.
+```json
+{
+  "status": "aborted",
+  "correction": {
+    "action": "focus",
+    "reason": "HFR 4.8, frame unusable",
+    "source": "image-analyzer"
+  }
+}
+```
 
-**Frame rejection:** a `skip_to` completion implicitly rejects the frame
-that triggered the event. `rp`:
+**`after_current`** — the current frame is still usable, but a
+corrective action should happen before the next exposure. `rp` queues
+the correction and surfaces it in the result of the current in-flight
+tool call when it completes naturally:
+
+```json
+{
+  "image_path": "/data/lights/M31/M31_L_300s_004.fits",
+  "document_id": "doc-043",
+  "pending_correction": {
+    "action": "focus",
+    "reason": "HFR 3.0, trending worse",
+    "source": "image-analyzer"
+  }
+}
+```
+
+In both cases the orchestrator decides **what to do** with the
+correction. `rp` controls **when** the orchestrator hears about it.
+
+**Conflict resolution:** when multiple plugins request corrections,
+the most disruptive action wins. If one plugin requests refocus and
+another requests recenter, recenter wins because it includes refocusing.
+
+**Frame rejection:** an `immediate` correction implicitly rejects the
+frame that triggered the event. `rp`:
 
 1. Does not count the rejected frame toward the exposure goal.
 2. Marks the exposure document with the rejection reason.
 3. Emits a `frame_rejected` event.
+
+An `after_current` correction does not reject the frame. The current
+exposure counts normally.
+
+**Barrier interaction:** when a barrier plugin completes with a
+correction while a gated tool call is blocked, `rp` returns the
+correction to the orchestrator instead of executing the gated tool.
+The orchestrator sees the correction and acts accordingly (e.g.,
+refocuses instead of slewing to a new target).
 
 #### Timeout Behavior
 
@@ -340,12 +384,14 @@ When `max_duration_secs` (from the acknowledgment) expires without a
 completion:
 
 1. `rp` proceeds as if the plugin completed with `"complete"` and no
-   `skip_to`.
-2. A `plugin_timeout` warning event is emitted.
-3. The timeout is logged.
+   correction.
+2. If a tool call was blocked on this barrier, it unblocks and executes
+   normally.
+3. A `plugin_timeout` warning event is emitted.
+4. The timeout is logged.
 
 Webhook delivery failures (connection refused, HTTP errors) are treated
-as immediate completion with no `skip_to`. Plugins are responsible for
+as immediate completion with no correction. Plugins are responsible for
 their own reliability.
 
 #### Example: Image Analyzer Flow
@@ -357,26 +403,37 @@ Exposure 3 completes
   → rp POSTs exposure_complete to analyzer
   → analyzer responds immediately:
       {"estimated_duration_secs": 20, "max_duration_secs": 30}
-  → rp records durations, starts exposure 4 (no blocking)
-  → analyzer processes frame 3 in parallel (20s)
-  → analyzer POSTs to /api/plugins/{event_id}/complete:
+  → rp records outstanding barrier, starts exposure 4 (not gated)
 
-    Case A — frame OK:
-      {"status": "complete"}
-      → rp notes the completion, capture continues normally
+  Case A — frame OK, no target switch pending:
+    → analyzer POSTs completion: {"status": "complete"}
+    → rp notes completion, clears barrier
+    → capture continues normally
 
-    Case B — frame bad, no barrier pending:
-      {"status": "complete", "skip_to": "focus_started",
-       "reason": "HFR 4.8, expected < 3.0"}
-      → rp cancels exposure 4, rolls counter back to 3
-      → transitions to auto-focus, then resumes capture
+  Case B — frame bad (immediate), exposure 4 in-flight:
+    → analyzer POSTs completion:
+        {"status": "complete", "correction": {"action": "focus",
+         "reason": "HFR 4.8", "urgency": "immediate"}}
+    → rp aborts exposure 4, returns capture with:
+        {"status": "aborted", "correction": {"action": "focus", ...}}
+    → orchestrator refocuses, resumes capture
 
-    Case C — frame bad, target_switch pending:
-      (rp was about to switch targets but is waiting for
-       the analyzer's outstanding completion)
-      → analyzer completes with skip_to: "focus_started"
-      → rp cancels the target switch, refocuses, stays on target
-      → counter rolls back, resumes capture
+  Case C — frame marginal (after_current), exposure 4 in-flight:
+    → analyzer POSTs completion:
+        {"status": "complete", "correction": {"action": "focus",
+         "reason": "HFR 3.0, trending", "urgency": "after_current"}}
+    → rp queues correction, exposure 4 continues
+    → exposure 4 completes, capture returns with:
+        {"image_path": "...", "pending_correction": {"action": "focus", ...}}
+    → orchestrator refocuses before starting exposure 5
+
+  Case D — frame bad, slew pending (barrier in action):
+    → orchestrator calls slew → rp blocks (outstanding barrier)
+    → analyzer POSTs completion with immediate correction
+    → rp returns slew with correction instead of executing:
+        {"status": "blocked_by_correction",
+         "correction": {"action": "focus", ...}}
+    → orchestrator refocuses, stays on current target
 ```
 
 ### Plugin Section Updates
@@ -1144,7 +1201,7 @@ application logic.
 
 #### Plugins
 - `POST /api/plugins/{event_id}/complete` — plugin completion callback
-  (status, optional `skip_to` and `reason`)
+  (status, optional `correction`)
 
 #### MCP
 - `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
@@ -1251,7 +1308,7 @@ connection details. Plugins register their webhook URLs and command endpoints.
       "type": "event",
       "webhook_url": "http://localhost:11140/webhook",
       "subscribes_to": ["exposure_complete"],
-      "barriers": ["target_switch", "filter_switch"]
+      "barrier_gates": ["slew", "set_filter"]
     },
     {
       "name": "cloud-backup",
