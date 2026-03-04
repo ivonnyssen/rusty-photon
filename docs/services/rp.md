@@ -367,38 +367,6 @@ Exposure 3 completes
       → counter rolls back, resumes capture
 ```
 
-### Commands (Request-Response)
-
-Some operations require `rp` to wait for a result. These are direct
-HTTP calls to a specific service, not events:
-
-| Command | Target | Why synchronous |
-|---------|--------|-----------------|
-| Plate solve | Plate solver service | Centering needs solved coordinates |
-| Start guiding | Guider service | Must wait for settle before capturing |
-| Dither | Guider service | Must wait for settle |
-| Stop guiding | Guider service | Must confirm stopped before slew |
-
-Commands use a simple request-response pattern:
-
-```
-POST <service_url>/solve
-Content-Type: application/json
-
-{
-  "file_path": "/data/lights/M31/M31_L_300s_001.fits",
-  "hint": { "ra": 10.6847, "dec": 41.2689, "scale": 1.05 }
-}
-
-Response 200:
-{
-  "ra": 10.6848,
-  "dec": 41.2690,
-  "rotation": 12.3,
-  "scale_arcsec_per_pixel": 1.05
-}
-```
-
 ### Plugin Section Updates
 
 After processing an event, plugins POST their results back to `rp`:
@@ -420,6 +388,305 @@ Content-Type: application/json
 `rp` merges the section into the document and persists the updated
 sidecar JSON.
 
+## Action System
+
+The action system complements the event system. Where events flow outward
+from `rp` to plugins (notifications), actions flow inward from plugins to
+`rp` (requests). Actions are the primitives that plugins use to control
+equipment and trigger computations through `rp`.
+
+`rp` never exposes raw device access. Every action validates parameters,
+enforces safety constraints, and tracks state before touching hardware.
+
+### Action Catalog
+
+`rp` maintains a registry of all available actions. The catalog is built
+at startup from two sources:
+
+1. **Built-in actions** — hardware primitives and basic compute provided
+   by `rp` itself.
+2. **Plugin-provided actions** — compute or analysis actions registered by
+   plugins.
+
+When a workflow plugin is invoked (see Workflow Plugins below), `rp` sends
+it the current action catalog so the plugin knows what it can call.
+
+### Built-in Actions
+
+**Hardware**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `capture` | camera_id, duration_secs, binning | image_path, document_id | Take an exposure and save the FITS file |
+| `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
+| `get_focuser_position` | focuser_id | position | Read current focuser position |
+| `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
+| `slew` | ra, dec | actual_ra, actual_dec | Slew mount to coordinates (blocks until settled) |
+| `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
+| `set_filter` | filter_wheel_id, filter_name | — | Change filter wheel position |
+| `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
+
+**Guider**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `start_guiding` | — | rms_ra, rms_dec | Start guiding loop, block until settled |
+| `stop_guiding` | — | — | Stop guiding loop, block until confirmed |
+| `dither` | pixels | rms_ra, rms_dec | Send dither command, block until settled |
+| `pause_guiding` | — | — | Pause guiding (e.g., during readout) |
+| `resume_guiding` | — | — | Resume paused guiding |
+| `get_guiding_stats` | — | rms_ra, rms_dec, total_rms | Read current guiding statistics |
+
+**Compute**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `plate_solve` | image_path, hint (optional) | ra, dec, rotation, scale | Solve an image via the configured plate solver service |
+| `measure_basic` | image_path | hfr, star_count, background_mean, background_stddev | Compute basic image statistics |
+
+All built-in actions validate parameters before execution. `move_focuser`
+checks position bounds. `capture` checks that the camera is connected and
+idle. Invalid requests return an error — they never reach the hardware.
+
+### Plugin-Provided Actions
+
+A plugin can register actions that other plugins can call through `rp`.
+For example, a specialized measurement plugin might provide:
+
+| Action | Provider | Description |
+|--------|----------|-------------|
+| `measure_eccentricity` | star-analyzer | Measure star eccentricity across the field |
+| `measure_wavefront` | wavefront-analyzer | Wavefront error analysis |
+
+Plugin-provided actions follow the same request-response pattern as
+built-in actions. When a workflow plugin calls a plugin-provided action,
+`rp` routes the request to the providing plugin and returns the result.
+
+**All action results that produce image metrics MUST be written into the
+exposure document as a section.** This is the one rule — the document is
+the shared data bus. `rp` enforces this: compute action results are
+merged into the document before being returned to the caller.
+
+### Workflow Plugins
+
+Workflow plugins are a second plugin type alongside event plugins. Where
+event plugins react to events asynchronously (webhook → ack → complete),
+workflow plugins take imperative control of a sub-workflow by calling
+actions on `rp`.
+
+A workflow plugin handles a specific orchestrator phase — focusing,
+centering, or any future sub-workflow. When the orchestrator reaches that
+phase, it delegates to the configured workflow plugin.
+
+#### Registration
+
+Workflow plugins declare what they handle, what actions they need, and
+optionally what actions they provide:
+
+```json
+{
+  "name": "vcurve-focus",
+  "type": "workflow",
+  "workflow_url": "http://localhost:11150/workflow",
+  "handles": ["focusing"],
+  "requires_actions": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
+  "provides_actions": [],
+  "max_duration_secs": 300
+}
+```
+
+A plugin that both handles a workflow and provides actions for others:
+
+```json
+{
+  "name": "advanced-centering",
+  "type": "workflow",
+  "workflow_url": "http://localhost:11151/workflow",
+  "handles": ["centering"],
+  "requires_actions": ["capture", "slew", "sync_mount", "plate_solve"],
+  "provides_actions": ["measure_field_curvature"],
+  "max_duration_secs": 180
+}
+```
+
+#### Delegation Protocol
+
+When the orchestrator enters a phase handled by a workflow plugin:
+
+**Step 1: Invocation.** `rp` POSTs to the plugin's `workflow_url`:
+
+```
+POST <workflow_url>
+Content-Type: application/json
+
+{
+  "workflow_id": "wf-550e8400-e29b-41d4",
+  "phase": "focusing",
+  "context": {
+    "camera_id": "main-cam",
+    "focuser_id": "main-focuser",
+    "current_position": 12000,
+    "temperature_c": -5.2,
+    "last_known_hfr": 2.3
+  },
+  "action_catalog": [
+    { "name": "capture", "type": "built_in" },
+    { "name": "move_focuser", "type": "built_in" },
+    { "name": "get_focuser_position", "type": "built_in" },
+    { "name": "measure_basic", "type": "built_in" },
+    { "name": "measure_eccentricity", "type": "plugin", "provider": "star-analyzer" }
+  ]
+}
+```
+
+The plugin acknowledges immediately (same pattern as event plugins):
+
+```json
+{
+  "estimated_duration_secs": 120,
+  "max_duration_secs": 300
+}
+```
+
+**Step 2: Action calls.** The plugin drives the sub-workflow by calling
+action endpoints on `rp`:
+
+```
+POST /api/actions/{workflow_id}/execute
+Content-Type: application/json
+
+{
+  "action": "move_focuser",
+  "params": {
+    "focuser_id": "main-focuser",
+    "position": 10000
+  }
+}
+
+Response 200:
+{
+  "result": {
+    "actual_position": 10000
+  }
+}
+```
+
+Each action call is synchronous from the plugin's perspective — it sends
+a request and waits for the result. `rp` validates the request, executes
+it, and returns the result. The `workflow_id` scopes the action to the
+active workflow for auditing and safety enforcement.
+
+**Step 3: Completion.** When the plugin finishes, it POSTs to the
+standard completion endpoint:
+
+```
+POST /api/plugins/{workflow_id}/complete
+Content-Type: application/json
+
+{
+  "status": "complete",
+  "result": {
+    "best_position": 12450,
+    "best_hfr": 2.1,
+    "curve_points": 15
+  }
+}
+```
+
+The result is opaque to `rp` — it is logged and included in the relevant
+event payload (e.g., `focus_complete`).
+
+#### Example: V-Curve Focus Workflow
+
+```
+rp enters FOCUSING state
+  → POSTs to vcurve-focus plugin:
+      phase: "focusing", context: {camera: "main-cam", focuser: "main-focuser", ...}
+  → plugin acks: {estimated: 120, max: 300}
+
+  Plugin drives the V-curve:
+    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 10000}
+    ← {actual_position: 10000}
+    → POST /api/actions/{wf}/execute  {action: "capture", camera_id: "main-cam", duration: 2}
+    ← {image_path: "/tmp/focus_001.fits", document_id: "doc-001"}
+    → POST /api/actions/{wf}/execute  {action: "measure_basic", image_path: "/tmp/focus_001.fits"}
+    ← {hfr: 5.2, star_count: 340}
+    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 10200}
+    ← {actual_position: 10200}
+    → POST /api/actions/{wf}/execute  {action: "capture", ...}
+    ... 12 more iterations ...
+    → POST /api/actions/{wf}/execute  {action: "move_focuser", position: 12450}
+    ← {actual_position: 12450}
+
+  Plugin completes:
+    → POST /api/plugins/{wf}/complete
+        {status: "complete", result: {best_position: 12450, best_hfr: 2.1}}
+
+rp emits focus_complete event, transitions to GUIDE_START
+```
+
+#### Example: Iterative Centering Workflow
+
+```
+rp enters CENTERING state
+  → POSTs to centering plugin:
+      phase: "centering", context: {target_ra, target_dec, tolerance_arcsec: 5}
+  → plugin acks: {estimated: 60, max: 180}
+
+  Plugin drives the centering loop:
+    → POST /api/actions/{wf}/execute  {action: "capture", duration: 5}
+    ← {image_path: "/tmp/center_001.fits", document_id: "doc-002"}
+    → POST /api/actions/{wf}/execute  {action: "plate_solve", image_path: ...}
+    ← {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
+    → POST /api/actions/{wf}/execute  {action: "sync_mount", ra: 10.6820, dec: 41.2650}
+    → POST /api/actions/{wf}/execute  {action: "slew", ra: 10.6847, dec: 41.2689}
+    ← {actual_ra: 10.6845, actual_dec: 41.2688}
+    → repeat until error < tolerance ...
+
+  Plugin completes:
+    → POST /api/plugins/{wf}/complete
+        {status: "complete", result: {final_error_arcsec: 2.1, attempts: 3}}
+
+rp emits centering_complete event, transitions to FOCUSING
+```
+
+### Safety Guardrails
+
+`rp` enforces safety on every action call:
+
+- **Parameter validation**: focuser position within min/max bounds,
+  exposure duration within configured limits, slew coordinates above
+  horizon.
+- **State validation**: cannot capture while another capture is in
+  progress on the same camera, cannot slew during an exposure.
+- **Scope restriction**: a workflow plugin can only control equipment
+  relevant to its phase. A focusing workflow cannot slew the mount.
+- **Timeout**: if `max_duration_secs` expires without completion, `rp`
+  cancels the workflow, moves equipment to a safe state, and proceeds
+  with the next orchestration phase.
+- **Safety override**: a safety event (unsafe transition) immediately
+  cancels any active workflow. The plugin's next action call returns an
+  error indicating the workflow was cancelled.
+
+### Config-Time Validation
+
+At startup, `rp` validates the full plugin dependency graph:
+
+1. Build the action catalog from built-in actions and all
+   `provides_actions` declarations.
+2. For each workflow plugin, verify that every action in
+   `requires_actions` exists in the catalog.
+3. For each orchestrator phase that expects a workflow plugin (focusing,
+   centering), verify that exactly one plugin declares `handles` for
+   that phase.
+4. Detect circular dependencies — a plugin cannot both provide an action
+   and require it.
+5. If validation fails, `rp` refuses to start and reports the missing
+   actions or conflicting handlers.
+
+This ensures the system is fully configured before the session begins.
+A missing dependency is a startup error, not a 3 AM surprise.
+
 ## Equipment Integration
 
 ### ASCOM Alpaca Devices
@@ -440,21 +707,29 @@ Supported ASCOM device types:
 
 ### Guider Service
 
-The guider service wraps PHD2 and exposes an HTTP API for commands (start,
-stop, dither, pause) and event subscriptions. The existing `phd2-guider`
-library provides the PHD2 JSON-RPC integration and will be reworked to run as
-an HTTP service that fits `rp`'s event and command patterns.
+The guider service wraps PHD2 and exposes an HTTP API. The existing
+`phd2-guider` library provides the PHD2 JSON-RPC integration and will be
+reworked to run as an HTTP service.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
 this protocol so `rp` speaks only HTTP.
 
+Guider operations are exposed as built-in actions (`start_guiding`,
+`stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
+`get_guiding_stats`). `rp` proxies these action calls to the guider service's
+HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
+control guiding through the same action mechanism as any other equipment.
+Swapping in a different guiding backend requires only a different guider
+service that implements the same HTTP endpoints.
+
 ### Plate Solver
 
-The plate solver is a plugin service that accepts FITS files and returns solved
-coordinates. It exposes a command endpoint (`POST /solve`) for synchronous
-centering operations and subscribes to `exposure_complete` events for
-background solving.
+The plate solver is a plugin service that accepts FITS files and returns
+solved coordinates. It is exposed as a built-in action (`plate_solve`)
+so that workflow plugins (e.g., centering) can use it. `rp` proxies the
+call to the configured plate solver service. The plate solver can also
+subscribe to `exposure_complete` events for background solving.
 
 > **Note:** The choice of plate solving engine requires further research.
 > The first implementation should wrap an open-source, cross-platform, locally
@@ -512,6 +787,19 @@ across multiple cameras on a shared mount.
     │ PARKING  │──► abort exposures, stop guiding, park mount
     └──────────┘
 ```
+
+#### Workflow Delegation
+
+The CENTERING and FOCUSING states are implemented as workflow plugin
+delegations (see Action System). When the orchestrator enters one of
+these states, it invokes the configured workflow plugin, which drives the
+sub-workflow by calling actions on `rp`. The state machine waits for the
+workflow plugin to complete before transitioning to the next state.
+
+If no workflow plugin is configured for a phase, `rp` uses a built-in
+default implementation (iterative plate-solve-and-correct for centering,
+V-curve for focusing). The defaults use the same action primitives that
+plugins use — they are simply bundled with `rp`.
 
 ### Per-Camera State Machine (during CAPTURING)
 
@@ -778,6 +1066,12 @@ application logic.
 - `POST /api/plugins/{event_id}/complete` — plugin completion callback
   (status, optional `skip_to` and `reason`)
 
+#### Actions
+- `GET /api/actions/catalog` — list all available actions (built-in and
+  plugin-provided)
+- `POST /api/actions/{workflow_id}/execute` — execute an action within a
+  workflow context (called by workflow plugins)
+
 #### System
 - `GET /health` — health check
 - `GET /api/events/subscribe` — WebSocket or SSE stream of real-time events
@@ -876,14 +1170,34 @@ connection details. Plugins register their webhook URLs and command endpoints.
   "plugins": [
     {
       "name": "image-analyzer",
+      "type": "event",
       "webhook_url": "http://localhost:11140/webhook",
       "subscribes_to": ["exposure_complete"],
       "barriers": ["target_switch", "filter_switch"]
     },
     {
       "name": "cloud-backup",
+      "type": "event",
       "webhook_url": "http://localhost:11141/webhook",
       "subscribes_to": ["exposure_complete", "session_stopped"]
+    },
+    {
+      "name": "vcurve-focus",
+      "type": "workflow",
+      "workflow_url": "http://localhost:11150/workflow",
+      "handles": ["focusing"],
+      "requires_actions": ["capture", "move_focuser", "get_focuser_position", "measure_basic"],
+      "provides_actions": [],
+      "max_duration_secs": 300
+    },
+    {
+      "name": "iterative-centering",
+      "type": "workflow",
+      "workflow_url": "http://localhost:11151/workflow",
+      "handles": ["centering"],
+      "requires_actions": ["capture", "slew", "sync_mount", "plate_solve"],
+      "provides_actions": [],
+      "max_duration_secs": 180
     }
   ],
   "targets": [
@@ -954,11 +1268,11 @@ services/rp/src/
     filter_wheel.rs     Filter wheel wrapper (set/get position)
     safety_monitor.rs   SafetyMonitor wrapper (poll is_safe)
 
-  # Services (non-Alpaca integrations)
+  # Services (non-Alpaca integrations, backing built-in actions)
   services/
     mod.rs              Service trait, service manager
-    guider.rs           Guider service client (HTTP commands to guider service)
-    plate_solver.rs     Plate solver client (HTTP commands to solver plugin)
+    guider.rs           Guider service client (backs start/stop/dither actions)
+    plate_solver.rs     Plate solver client (backs plate_solve action)
 
   # Orchestration
   engine/
@@ -981,11 +1295,16 @@ services/rp/src/
     mod.rs              Event types, EventBus
     webhook.rs          Webhook delivery (fire-and-forget HTTP POST)
 
+  # Action system
+  actions/
+    mod.rs              Action registry, catalog builder, config-time validation
+    built_in.rs         Built-in action implementations (capture, move_focuser, etc.)
+    router.rs           Routes action calls to built-in or plugin-provided handlers
+
   # Post-capture pipeline
   pipeline/
     mod.rs              Pipeline orchestrator: dispatch async tasks after capture
     save.rs             Write FITS to final location, create sidecar JSON
-    command.rs          Synchronous calls to plate solver / guider
 
   # API layer
   api/
