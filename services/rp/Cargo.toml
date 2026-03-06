@@ -1,0 +1,30 @@
+[package]
+name = "rp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rusty Photon main application - equipment gateway, event bus, and safety enforcer"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+axum = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
