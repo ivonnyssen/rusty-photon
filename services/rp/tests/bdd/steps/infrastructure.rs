@@ -27,52 +27,59 @@ pub struct OmniSimHandle {
 
 impl OmniSimHandle {
     /// Start OmniSim via `docker run`. Returns once the container is healthy.
+    ///
+    /// Handles concurrent calls from parallel cucumber scenarios. Multiple
+    /// scenarios race to create/start the same container — we retry with
+    /// `docker start` to handle the brief window where a container name is
+    /// reserved by another thread's `docker run` but not yet startable.
     pub async fn start() -> Self {
-        // Check if OmniSim is already running (reuse across scenarios)
-        let output = tokio::process::Command::new("docker")
-            .args(["ps", "-q", "-f", "name=rp-test-omnisim"])
+        // Try to start an existing container (works for both stopped and running)
+        let start_result = tokio::process::Command::new("docker")
+            .args(["start", "rp-test-omnisim"])
             .output()
             .await
-            .expect("failed to run docker ps");
+            .expect("failed to run docker start");
 
-        let existing_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !start_result.status.success() {
+            // No container exists — create one
+            let run_result = tokio::process::Command::new("docker")
+                .args([
+                    "run",
+                    "-d",
+                    "--name",
+                    "rp-test-omnisim",
+                    "-p",
+                    "32323:32323",
+                    "ghcr.io/ascominitiative/ascom-alpaca-simulators:latest",
+                ])
+                .output()
+                .await
+                .expect("failed to start OmniSim container");
 
-        if !existing_id.is_empty() {
-            let handle = Self {
-                container_id: existing_id,
-                base_url: "http://localhost:32323".to_string(),
-            };
-            handle.wait_healthy().await;
-            return handle;
+            if !run_result.status.success() {
+                // Race: another concurrent scenario is creating it. Retry docker start
+                // with backoff to wait for the container to become available.
+                let mut started = false;
+                for _ in 0..10 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let retry = tokio::process::Command::new("docker")
+                        .args(["start", "rp-test-omnisim"])
+                        .output()
+                        .await
+                        .expect("failed to run docker start");
+                    if retry.status.success() {
+                        started = true;
+                        break;
+                    }
+                }
+                assert!(started, "failed to start OmniSim container after retries");
+            }
         }
 
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "run",
-                "-d",
-                "--name",
-                "rp-test-omnisim",
-                "-p",
-                "32323:32323",
-                "ghcr.io/ascominitiative/ascom-alpaca-simulators:latest",
-            ])
-            .output()
-            .await
-            .expect("failed to start OmniSim container");
-
-        assert!(
-            output.status.success(),
-            "docker run failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
         let handle = Self {
-            container_id,
+            container_id: "rp-test-omnisim".to_string(),
             base_url: "http://localhost:32323".to_string(),
         };
-
         handle.wait_healthy().await;
         handle
     }

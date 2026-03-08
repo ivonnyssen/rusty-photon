@@ -60,6 +60,14 @@ async fn rp_starts(world: &mut RpWorld) {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
+    // Set a temporary handle so build_config() picks up the dynamic port
+    world.rp = Some(RpHandle {
+        child: None,
+        base_url: format!("http://127.0.0.1:{}", port),
+        port,
+        config_path: String::new(),
+    });
+
     // Write config to a temp file
     let config = world.build_config();
     let config_path = format!("/tmp/rp-test-config-{}.json", port);
@@ -67,10 +75,8 @@ async fn rp_starts(world: &mut RpWorld) {
         .await
         .expect("failed to write config");
 
-    let mut handle = RpHandle::start(&config_path, port).await;
-    handle.port = port;
-    handle.base_url = format!("http://127.0.0.1:{}", port);
-    world.rp = Some(handle);
+    // Start the real rp process and replace the temporary handle
+    world.rp = Some(RpHandle::start(&config_path, port).await);
 
     assert!(
         world.wait_for_rp_healthy().await,

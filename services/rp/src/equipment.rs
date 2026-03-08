@@ -1,0 +1,263 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use ascom_alpaca::api::{Camera, FilterWheel, TypedDevice};
+use ascom_alpaca::Client;
+use serde::Serialize;
+use tracing::debug;
+
+use crate::config;
+
+pub struct CameraEntry {
+    pub id: String,
+    pub connected: bool,
+    pub config: config::CameraConfig,
+    pub device: Option<Arc<dyn Camera>>,
+}
+
+pub struct FilterWheelEntry {
+    pub id: String,
+    pub connected: bool,
+    pub config: config::FilterWheelConfig,
+    pub device: Option<Arc<dyn FilterWheel>>,
+}
+
+pub struct EquipmentRegistry {
+    pub cameras: Vec<CameraEntry>,
+    pub filter_wheels: Vec<FilterWheelEntry>,
+}
+
+#[derive(Serialize)]
+pub struct EquipmentStatus {
+    pub cameras: Vec<DeviceStatus>,
+    pub filter_wheels: Vec<DeviceStatus>,
+}
+
+#[derive(Serialize)]
+pub struct DeviceStatus {
+    pub id: String,
+    pub connected: bool,
+}
+
+impl EquipmentRegistry {
+    pub async fn new(equipment_config: &config::EquipmentConfig) -> Self {
+        let mut cameras = Vec::new();
+        let mut filter_wheels = Vec::new();
+
+        for cam_config in &equipment_config.cameras {
+            let entry = connect_camera(cam_config).await;
+            cameras.push(entry);
+        }
+
+        for fw_config in &equipment_config.filter_wheels {
+            let entry = connect_filter_wheel(fw_config).await;
+            filter_wheels.push(entry);
+        }
+
+        Self {
+            cameras,
+            filter_wheels,
+        }
+    }
+
+    pub fn status(&self) -> EquipmentStatus {
+        EquipmentStatus {
+            cameras: self
+                .cameras
+                .iter()
+                .map(|c| DeviceStatus {
+                    id: c.id.clone(),
+                    connected: c.connected,
+                })
+                .collect(),
+            filter_wheels: self
+                .filter_wheels
+                .iter()
+                .map(|fw| DeviceStatus {
+                    id: fw.id.clone(),
+                    connected: fw.connected,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn find_camera(&self, id: &str) -> Option<&CameraEntry> {
+        self.cameras.iter().find(|c| c.id == id)
+    }
+
+    pub fn find_filter_wheel(&self, id: &str) -> Option<&FilterWheelEntry> {
+        self.filter_wheels.iter().find(|fw| fw.id == id)
+    }
+}
+
+async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
+    debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
+
+    let client = match Client::new(&config.alpaca_url) {
+        Ok(c) => c,
+        Err(e) => {
+            debug!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
+            return CameraEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => {
+            debug!(camera_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            return CameraEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+        Err(_) => {
+            debug!(camera_id = %config.id, "timeout connecting to Alpaca server");
+            return CameraEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let mut camera_index = 0u32;
+    let mut found_camera: Option<Arc<dyn Camera>> = None;
+
+    for device in devices {
+        if let TypedDevice::Camera(cam) = device {
+            if camera_index == config.device_number {
+                found_camera = Some(cam);
+                break;
+            }
+            camera_index += 1;
+        }
+    }
+
+    let cam = match found_camera {
+        Some(c) => c,
+        None => {
+            debug!(camera_id = %config.id, device_number = config.device_number, "camera not found on Alpaca server");
+            return CameraEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    match cam.set_connected(true).await {
+        Ok(()) => {
+            debug!(camera_id = %config.id, "camera connected successfully");
+            CameraEntry {
+                id: config.id.clone(),
+                connected: true,
+                config: config.clone(),
+                device: Some(cam),
+            }
+        }
+        Err(e) => {
+            debug!(camera_id = %config.id, error = %e, "failed to connect camera");
+            CameraEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            }
+        }
+    }
+}
+
+async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheelEntry {
+    debug!(fw_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to filter wheel");
+
+    let client = match Client::new(&config.alpaca_url) {
+        Ok(c) => c,
+        Err(e) => {
+            debug!(fw_id = %config.id, error = %e, "failed to create Alpaca client for filter wheel");
+            return FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => {
+            debug!(fw_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            return FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+        Err(_) => {
+            debug!(fw_id = %config.id, "timeout connecting to Alpaca server");
+            return FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let mut fw_index = 0u32;
+    let mut found_fw: Option<Arc<dyn FilterWheel>> = None;
+
+    for device in devices {
+        if let TypedDevice::FilterWheel(fw) = device {
+            if fw_index == config.device_number {
+                found_fw = Some(fw);
+                break;
+            }
+            fw_index += 1;
+        }
+    }
+
+    let fw = match found_fw {
+        Some(f) => f,
+        None => {
+            debug!(fw_id = %config.id, device_number = config.device_number, "filter wheel not found on Alpaca server");
+            return FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    match fw.set_connected(true).await {
+        Ok(()) => {
+            debug!(fw_id = %config.id, "filter wheel connected successfully");
+            FilterWheelEntry {
+                id: config.id.clone(),
+                connected: true,
+                config: config.clone(),
+                device: Some(fw),
+            }
+        }
+        Err(e) => {
+            debug!(fw_id = %config.id, error = %e, "failed to connect filter wheel");
+            FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            }
+        }
+    }
+}

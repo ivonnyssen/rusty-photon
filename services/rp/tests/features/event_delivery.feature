@@ -24,6 +24,7 @@ Feature: Event delivery to webhook subscribers
     And the test webhook receiver should receive an "exposure_complete" event
     And "exposure_started" should have been received before "exposure_complete"
 
+  @serial
   Scenario: Filter switch event is delivered when filter changes
     Given a running Alpaca simulator
     And a test webhook receiver subscribed to "filter_switch"

@@ -54,6 +54,7 @@ Feature: Session lifecycle with flat calibration orchestrator
     Then the test orchestrator should have been cancelled
     And the session status should be "idle"
 
+  @serial
   Scenario: Flat calibration orchestrator captures flats across filters
     Given a running Alpaca simulator
     And a test flat-calibration orchestrator configured for 2 "Luminance" flats and 2 "Red" flats of 1 second

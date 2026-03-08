@@ -9,7 +9,7 @@ mod steps;
 use cucumber::World as _;
 use world::RpWorld;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     RpWorld::run("tests/features").await;
 }

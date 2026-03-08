@@ -91,6 +91,15 @@ async fn try_start_another_session(world: &mut RpWorld) {
 
 #[when("the test orchestrator posts completion to rp")]
 async fn orchestrator_posts_completion(world: &mut RpWorld) {
+    // Wait for the orchestrator to be invoked (happens asynchronously after session start)
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let inv = world.orchestrator_invocations.read().await;
+        if !inv.is_empty() {
+            break;
+        }
+    }
+
     let invocations = world.orchestrator_invocations.read().await;
     let invocation = invocations
         .last()

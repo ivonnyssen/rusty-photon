@@ -293,7 +293,7 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
 }
 
 pub async fn start_rp(world: &mut RpWorld) {
-    if world.rp.is_some() {
+    if world.rp.as_ref().is_some_and(|h| h.child.is_some()) {
         return;
     }
 
@@ -303,16 +303,22 @@ pub async fn start_rp(world: &mut RpWorld) {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
+    // Set a temporary handle so build_config() picks up the dynamic port
+    world.rp = Some(RpHandle {
+        child: None,
+        base_url: format!("http://127.0.0.1:{}", port),
+        port,
+        config_path: String::new(),
+    });
+
     let config = world.build_config();
     let config_path = format!("/tmp/rp-test-config-{}.json", port);
     tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
         .await
         .expect("failed to write config");
 
-    let mut handle = RpHandle::start(&config_path, port).await;
-    handle.port = port;
-    handle.base_url = format!("http://127.0.0.1:{}", port);
-    world.rp = Some(handle);
+    // Start the real rp process and replace the temporary handle
+    world.rp = Some(RpHandle::start(&config_path, port).await);
 
     assert!(
         world.wait_for_rp_healthy().await,

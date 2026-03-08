@@ -11,6 +11,7 @@ Feature: MCP tool execution against equipment
     Then the tool result should contain an image path
     And the tool result should contain a document id
 
+  @serial
   Scenario: Set filter changes the active filter
     Given a running Alpaca simulator
     And rp is running with a filter wheel on the simulator
