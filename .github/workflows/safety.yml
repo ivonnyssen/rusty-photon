@@ -28,6 +28,8 @@ jobs:
       - name: Install cfitsio (act fallback)
         if: env.ACT == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |
@@ -46,6 +48,11 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
           cat Cargo.toml
         name: Enable debug symbols
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --package rp --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: "-Z sanitizer=address"
       - name: cargo test -Zsanitizer=address
         # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
         run: cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu
