@@ -1507,6 +1507,21 @@ Behavioral specifications for `rp`'s responsibilities:
 Note: orchestration workflow tests (capture loops, target switching,
 meridian flips) belong to the orchestrator plugin, not to `rp`.
 
+#### Prerequisites
+
+BDD tests require the [ASCOM Alpaca Simulators (OmniSim)](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators)
+binary. The test harness discovers the binary in this order:
+
+1. `OMNISIM_PATH` env var — full path to the binary
+2. `OMNISIM_DIR` env var — directory containing the binary
+3. `ascom.alpaca.simulators` on `PATH`
+
+To install locally, download the appropriate release binary for your
+platform from the [v0.5.0 release](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0),
+extract it, and either add its directory to `PATH` or set one of the
+environment variables above. In CI, the `.github/actions/install-omnisim`
+composite action handles this automatically.
+
 ### Integration Tests
 
 - MCP tool tests with mock equipment

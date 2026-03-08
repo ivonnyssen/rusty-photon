@@ -36,6 +36,8 @@ jobs:
       - name: Install cfitsio (act fallback)
         if: env.ACT == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -69,6 +71,8 @@ jobs:
       - name: Install cfitsio (macOS)
         if: runner.os == 'macOS'
         run: brew install cfitsio
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
@@ -118,6 +122,8 @@ jobs:
       - name: Install cfitsio (act fallback)
         if: env.ACT == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:

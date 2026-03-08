@@ -1,7 +1,8 @@
 #![allow(dead_code)]
-//! Test infrastructure: OmniSim Docker management, rp process management,
+//! Test infrastructure: OmniSim process management, rp process management,
 //! test webhook receiver, and test orchestrator.
 
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,73 +16,74 @@ use tokio::sync::RwLock;
 use crate::world::{OrchestratorInvocation, ReceivedEvent};
 
 // ---------------------------------------------------------------------------
-// OmniSim Docker handle
+// OmniSim native process handle
 // ---------------------------------------------------------------------------
 
-/// Handle to a running OmniSim Docker container
+/// Handle to a running OmniSim native process
 #[derive(Debug)]
 pub struct OmniSimHandle {
-    pub container_id: String,
+    pub child: Option<tokio::process::Child>,
     pub base_url: String,
+    pub port: u16,
 }
 
 impl OmniSimHandle {
-    /// Start OmniSim via `docker run`. Returns once the container is healthy.
+    /// Start OmniSim as a native child process. Returns once healthy.
     ///
-    /// Handles concurrent calls from parallel cucumber scenarios. Multiple
-    /// scenarios race to create/start the same container — we retry with
-    /// `docker start` to handle the brief window where a container name is
-    /// reserved by another thread's `docker run` but not yet startable.
+    /// Binary discovery order:
+    /// 1. `OMNISIM_PATH` env var — full path to the binary
+    /// 2. `OMNISIM_DIR` env var — directory containing the binary
+    /// 3. `ascom.alpaca.simulators` (or `.exe` on Windows) on `PATH`
     pub async fn start() -> Self {
-        // Try to start an existing container (works for both stopped and running)
-        let start_result = tokio::process::Command::new("docker")
-            .args(["start", "rp-test-omnisim"])
-            .output()
-            .await
-            .expect("failed to run docker start");
+        let binary = Self::find_binary();
+        let port = Self::find_free_port().await;
 
-        if !start_result.status.success() {
-            // No container exists — create one
-            let run_result = tokio::process::Command::new("docker")
-                .args([
-                    "run",
-                    "-d",
-                    "--name",
-                    "rp-test-omnisim",
-                    "-p",
-                    "32323:32323",
-                    "ghcr.io/ascominitiative/ascom-alpaca-simulators:latest",
-                ])
-                .output()
-                .await
-                .expect("failed to start OmniSim container");
-
-            if !run_result.status.success() {
-                // Race: another concurrent scenario is creating it. Retry docker start
-                // with backoff to wait for the container to become available.
-                let mut started = false;
-                for _ in 0..10 {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    let retry = tokio::process::Command::new("docker")
-                        .args(["start", "rp-test-omnisim"])
-                        .output()
-                        .await
-                        .expect("failed to run docker start");
-                    if retry.status.success() {
-                        started = true;
-                        break;
-                    }
-                }
-                assert!(started, "failed to start OmniSim container after retries");
-            }
-        }
+        let child = tokio::process::Command::new(&binary)
+            .args(["--urls", &format!("http://127.0.0.1:{}", port)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap_or_else(|e| panic!("failed to start OmniSim binary '{}': {}", binary, e));
 
         let handle = Self {
-            container_id: "rp-test-omnisim".to_string(),
-            base_url: "http://localhost:32323".to_string(),
+            child: Some(child),
+            base_url: format!("http://127.0.0.1:{}", port),
+            port,
         };
         handle.wait_healthy().await;
         handle
+    }
+
+    /// Find the OmniSim binary using env vars or PATH
+    fn find_binary() -> String {
+        // 1. OMNISIM_PATH — full path to the binary
+        if let Ok(path) = std::env::var("OMNISIM_PATH") {
+            return path;
+        }
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "ascom.alpaca.simulators.exe"
+        } else {
+            "ascom.alpaca.simulators"
+        };
+
+        // 2. OMNISIM_DIR — directory containing the binary
+        if let Ok(dir) = std::env::var("OMNISIM_DIR") {
+            let path = std::path::Path::new(&dir).join(binary_name);
+            return path.to_string_lossy().to_string();
+        }
+
+        // 3. Assume it's on PATH
+        binary_name.to_string()
+    }
+
+    /// Allocate a free TCP port by binding to :0 and releasing
+    async fn find_free_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind to find free port for OmniSim");
+        listener.local_addr().unwrap().port()
     }
 
     /// Wait for OmniSim to respond to HTTP requests
@@ -98,10 +100,23 @@ impl OmniSimHandle {
         }
         panic!("OmniSim did not become healthy within 30 seconds");
     }
+
+    /// Stop the OmniSim process
+    pub async fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+    }
 }
 
-// We intentionally do NOT stop the container in Drop — it is reused
-// across scenarios for speed. A cleanup script or CI job handles removal.
+impl Drop for OmniSimHandle {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.child {
+            let _ = child.start_kill();
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // rp process handle

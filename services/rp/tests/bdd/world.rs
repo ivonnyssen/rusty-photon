@@ -36,7 +36,7 @@ pub struct OrchestratorInvocation {
 #[derive(Debug, Default, World)]
 pub struct RpWorld {
     // --- Infrastructure handles ---
-    /// Running OmniSim Docker container
+    /// Running OmniSim process
     pub omnisim: Option<OmniSimHandle>,
     /// Running rp process
     pub rp: Option<RpHandle>,
@@ -104,12 +104,14 @@ pub struct FilterWheelConfig {
 }
 
 impl RpWorld {
-    /// The base URL for the OmniSim Alpaca simulator
+    /// The base URL for the OmniSim Alpaca simulator.
+    /// Panics if OmniSim has not been started yet.
     pub fn omnisim_url(&self) -> String {
         self.omnisim
             .as_ref()
-            .map(|h| h.base_url.clone())
-            .unwrap_or_else(|| "http://localhost:32323".to_string())
+            .expect("OmniSim must be started before accessing its URL")
+            .base_url
+            .clone()
     }
 
     /// The base URL for the rp REST API
