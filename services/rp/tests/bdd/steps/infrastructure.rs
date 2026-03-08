@@ -11,30 +11,51 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::world::{OrchestratorInvocation, ReceivedEvent};
 
 // ---------------------------------------------------------------------------
-// OmniSim native process handle
+// OmniSim native process handle (shared singleton)
 // ---------------------------------------------------------------------------
 
-/// Handle to a running OmniSim native process
-#[derive(Debug)]
+/// Shared OmniSim info returned to each scenario
+#[derive(Debug, Clone)]
 pub struct OmniSimHandle {
-    pub child: Option<tokio::process::Child>,
     pub base_url: String,
     pub port: u16,
 }
 
+/// Singleton that owns the OmniSim child process for the entire test run
+struct OmniSimProcess {
+    _child: tokio::process::Child,
+    base_url: String,
+    port: u16,
+}
+
+/// Global singleton — one OmniSim process shared by all scenarios
+static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
+
 impl OmniSimHandle {
-    /// Start OmniSim as a native child process. Returns once healthy.
+    /// Get or start the shared OmniSim process. Returns a lightweight handle.
     ///
     /// Binary discovery order:
     /// 1. `OMNISIM_PATH` env var — full path to the binary
     /// 2. `OMNISIM_DIR` env var — directory containing the binary
     /// 3. `ascom.alpaca.simulators` (or `.exe` on Windows) on `PATH`
     pub async fn start() -> Self {
+        let process = OMNISIM
+            .get_or_init(|| async { OmniSimProcess::spawn().await })
+            .await;
+        Self {
+            base_url: process.base_url.clone(),
+            port: process.port,
+        }
+    }
+}
+
+impl OmniSimProcess {
+    async fn spawn() -> Self {
         let binary = Self::find_binary();
         let port = Self::find_free_port().await;
 
@@ -46,13 +67,13 @@ impl OmniSimHandle {
             .spawn()
             .unwrap_or_else(|e| panic!("failed to start OmniSim binary '{}': {}", binary, e));
 
-        let handle = Self {
-            child: Some(child),
+        let process = Self {
+            _child: child,
             base_url: format!("http://127.0.0.1:{}", port),
             port,
         };
-        handle.wait_healthy().await;
-        handle
+        process.wait_healthy().await;
+        process
     }
 
     /// Find the OmniSim binary using env vars or PATH
@@ -99,22 +120,6 @@ impl OmniSimHandle {
             }
         }
         panic!("OmniSim did not become healthy within 30 seconds");
-    }
-
-    /// Stop the OmniSim process
-    pub async fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-    }
-}
-
-impl Drop for OmniSimHandle {
-    fn drop(&mut self) {
-        if let Some(ref mut child) = self.child {
-            let _ = child.start_kill();
-        }
     }
 }
 
