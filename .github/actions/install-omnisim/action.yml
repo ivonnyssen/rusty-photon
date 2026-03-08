@@ -56,8 +56,9 @@ runs:
         elif [[ "$ASSET" == *.zip ]]; then
           unzip -o "omnisim/$ASSET" -d "$TMPDIR"
         fi
-        # Archives contain a single subdirectory — flatten into omnisim/
-        SUBDIR=$(ls -d "$TMPDIR"/*/ | head -1)
+        # Archives contain a subdirectory named ascom.alpaca.simulators.* — flatten into omnisim/
+        # macOS zips also include a __MACOSX metadata dir, so match by name
+        SUBDIR=$(ls -d "$TMPDIR"/ascom.alpaca.simulators.*/ | head -1)
         rm -rf omnisim
         mv "$SUBDIR" omnisim
         rm -rf "$TMPDIR"
