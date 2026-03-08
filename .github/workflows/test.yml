@@ -46,6 +46,9 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
@@ -78,6 +81,9 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       - name: cargo test
         # Exclude phd2-guider on Windows (cfitsio not available)
         run: |
@@ -133,6 +139,9 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       - name: cargo llvm-cov
         run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
       - name: Record Rust version
