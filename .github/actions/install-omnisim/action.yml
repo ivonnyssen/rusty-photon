@@ -48,14 +48,19 @@ runs:
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        cd omnisim
         ASSET="${{ steps.asset.outputs.asset }}"
+        TMPDIR="omnisim-extract"
+        mkdir -p "$TMPDIR"
         if [[ "$ASSET" == *.tar.xz ]]; then
-          tar xf "$ASSET"
+          tar xf "omnisim/$ASSET" -C "$TMPDIR"
         elif [[ "$ASSET" == *.zip ]]; then
-          unzip -o "$ASSET"
+          unzip -o "omnisim/$ASSET" -d "$TMPDIR"
         fi
-        rm -f "$ASSET"
+        # Archives contain a single subdirectory — flatten into omnisim/
+        SUBDIR=$(ls -d "$TMPDIR"/*/ | head -1)
+        rm -rf omnisim
+        mv "$SUBDIR" omnisim
+        rm -rf "$TMPDIR"
 
     - name: Set permissions (Linux/macOS)
       if: runner.os != 'Windows'
