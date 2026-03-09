@@ -17,6 +17,15 @@ name: safety
 jobs:
   sanitizers:
     runs-on: ubuntu-latest
+    # CARGO_BUILD_TARGET makes every cargo invocation (including `cargo run`
+    # spawned by BDD tests) implicitly use --target. This is critical because
+    # when --target is set, RUSTFLAGS only applies to the target compilation
+    # and not to proc-macros / build scripts, which would otherwise fail with
+    # sanitizer flags (e.g. "can't find crate for `core`"). It also ensures
+    # the pre-build and BDD `cargo run` share the same artifact directory
+    # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
       - name: Install cfitsio (cached)
@@ -48,19 +57,19 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
           cat Cargo.toml
         name: Enable debug symbols
-      # Pre-build all binaries so that `cargo run` during BDD tests finds cached artifacts.
-      # No --target or --all-features: must match the flags `cargo run` sees at test time.
+      # Pre-build all binaries so `cargo run` during BDD tests reuses cached artifacts.
+      # CARGO_BUILD_TARGET (job env) ensures artifacts land in the same directory.
       - name: cargo build (asan)
         run: cargo build --all
         env:
           RUSTFLAGS: "-Z sanitizer=address"
       - name: cargo test -Zsanitizer=address
         # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
-        run: cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu
+        run: cargo test --lib --tests --all-features
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
           RUSTFLAGS: "-Z sanitizer=address"
-      # Pre-build all binaries for lsan (different RUSTFLAGS = different cache).
+      # Pre-build again for lsan — different RUSTFLAGS means different artifact cache.
       - name: cargo build (lsan)
         if: always()
         run: cargo build --all
@@ -68,7 +77,7 @@ jobs:
           RUSTFLAGS: "-Z sanitizer=leak"
       - name: cargo test -Zsanitizer=leak
         if: always()
-        run: cargo test --all-features --target x86_64-unknown-linux-gnu
+        run: cargo test --all-features
         env:
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=leak"
