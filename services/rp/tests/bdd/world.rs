@@ -208,11 +208,12 @@ impl RpWorld {
         })
     }
 
-    /// Wait for rp to become healthy (retry GET /health)
+    /// Wait for rp to become healthy (retry GET /health).
+    /// Timeout: 120 × 250ms = 30s (sanitizer-instrumented binaries start slower).
     pub async fn wait_for_rp_healthy(&self) -> bool {
         let client = reqwest::Client::new();
         let url = format!("{}/health", self.rp_url());
-        for _ in 0..40 {
+        for _ in 0..120 {
             tokio::time::sleep(Duration::from_millis(250)).await;
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().as_u16() == 200 {
