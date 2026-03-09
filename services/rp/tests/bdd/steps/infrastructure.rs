@@ -59,8 +59,13 @@ impl OmniSimProcess {
         let binary = Self::find_binary();
         let port = Self::find_free_port().await;
 
+        // Clear sanitizer-related env vars so the .NET runtime isn't broken
+        // by LD_PRELOAD injection from ASAN/LSAN.
         let child = tokio::process::Command::new(&binary)
             .args(["--urls", &format!("http://127.0.0.1:{}", port)])
+            .env_remove("LD_PRELOAD")
+            .env_remove("ASAN_OPTIONS")
+            .env_remove("LSAN_OPTIONS")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
