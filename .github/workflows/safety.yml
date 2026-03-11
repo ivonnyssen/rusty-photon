@@ -17,11 +17,12 @@ name: safety
 jobs:
   sanitizers:
     runs-on: ubuntu-latest
-    name: ${{ matrix.package }}
+    name: ${{ matrix.package }} / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
       matrix:
         package: [filemonitor, phd2-guider, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app]
+        sanitizer: [address, leak]
     # CARGO_BUILD_TARGET makes every cargo invocation (including `cargo run`
     # spawned by BDD tests) implicitly use --target. This is critical because
     # when --target is set, RUSTFLAGS only applies to the target compilation
@@ -29,6 +30,10 @@ jobs:
     # sanitizer flags (e.g. "can't find crate for `core`"). It also ensures
     # the pre-build and BDD `cargo run` share the same artifact directory
     # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
+    #
+    # Each package × sanitizer combination runs in its own job to prevent
+    # orphaned child processes (OmniSim, rp) from one sanitizer run
+    # interfering with the next.
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -62,26 +67,20 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
           cat Cargo.toml
         name: Enable debug symbols
-      # # Pre-build the package so `cargo run` during BDD tests reuses cached artifacts.
-      # # CARGO_BUILD_TARGET (job env) ensures artifacts land in the same directory.
-      # - name: cargo build (asan)
-      #   run: cargo build --package ${{ matrix.package }}
-      #   env:
-      #     RUSTFLAGS: "-Z sanitizer=address"
-      # - name: cargo test -Zsanitizer=address
-      #   # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
-      #   run: cargo test --package ${{ matrix.package }} --lib --tests --all-features
-      #   env:
-      #     ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
-      #     RUSTFLAGS: "-Z sanitizer=address"
-      # Pre-build for lsan.
-      # CARGO_BUILD_TARGET (job env) ensures artifacts land in the same directory.
-      - name: cargo build (lsan)
+      # Pre-build the package so `cargo run` during BDD tests reuses cached artifacts.
+      - name: cargo build
         run: cargo build --package ${{ matrix.package }}
         env:
-          RUSTFLAGS: "-Z sanitizer=leak"
-      - name: cargo test -Zsanitizer=leak
-        run: cargo test --package ${{ matrix.package }} --all-features
+          RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
+      - name: cargo test
+        # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        run: |
+          if [ "${{ matrix.sanitizer }}" = "address" ]; then
+            cargo test --package ${{ matrix.package }} --lib --tests --all-features
+          else
+            cargo test --package ${{ matrix.package }} --all-features
+          fi
         env:
+          ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
-          RUSTFLAGS: "-Z sanitizer=leak"
+          RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
