@@ -27,7 +27,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!(config_path = %args.config, "loading configuration");
     let config = rp::config::load_config(&args.config)?;
 
-    rp::start(config).await?;
+    rp::ServerBuilder::new()
+        .with_config(config)
+        .build()
+        .await?
+        .start()
+        .await?;
 
     Ok(())
 }

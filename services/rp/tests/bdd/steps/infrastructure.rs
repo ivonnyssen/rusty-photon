@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::debug;
 
 use axum::extract::State;
@@ -141,20 +142,27 @@ pub struct RpHandle {
     pub base_url: String,
     pub port: u16,
     pub config_path: String,
+    pub stdout_drain: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RpHandle {
     /// Start the rp binary with the given config file.
     ///
+    /// The rp process binds its own port (use `"port": 0` in config for
+    /// OS-assigned allocation) and prints the bound address to stdout.
+    /// This function parses that output to discover the actual port,
+    /// eliminating the TOCTOU race of pre-allocating a port externally.
+    ///
     /// Binary discovery order:
     /// 1. `RP_BINARY` env var — full path to the binary
     /// 2. Look for the binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
     /// 3. Fall back to `cargo run --package rp`
-    pub async fn start(config_path: &str, port: u16) -> Self {
-        let child = if let Some(binary) = Self::find_binary() {
+    pub async fn start(config_path: &str) -> Self {
+        let mut child = if let Some(binary) = Self::find_binary() {
             debug!(binary = %binary, "starting rp from pre-built binary");
             tokio::process::Command::new(&binary)
                 .args(["--config", config_path])
+                .stdout(Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap_or_else(|e| panic!("failed to start rp binary '{}': {}", binary, e))
@@ -170,16 +178,23 @@ impl RpHandle {
                     "--config",
                     config_path,
                 ])
+                .stdout(Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()
                 .expect("failed to start rp process")
         };
+
+        let stdout = child.stdout.take().expect("failed to capture rp stdout");
+        let (port, stdout_drain) = parse_bound_port(stdout)
+            .await
+            .expect("failed to parse bound port from rp output");
 
         Self {
             child: Some(child),
             base_url: format!("http://127.0.0.1:{}", port),
             port,
             config_path: config_path.to_string(),
+            stdout_drain: Some(stdout_drain),
         }
     }
 
@@ -221,6 +236,9 @@ impl RpHandle {
     /// Stop the rp process gracefully via SIGTERM, falling back to SIGKILL.
     /// Graceful shutdown allows the process to flush coverage data (profraw).
     pub async fn stop(&mut self) {
+        if let Some(handle) = self.stdout_drain.take() {
+            handle.abort();
+        }
         if let Some(mut child) = self.child.take() {
             if let Some(pid) = child.id() {
                 // Send SIGTERM for graceful shutdown
@@ -247,6 +265,9 @@ impl RpHandle {
 
 impl Drop for RpHandle {
     fn drop(&mut self) {
+        if let Some(handle) = self.stdout_drain.take() {
+            handle.abort();
+        }
         if let Some(ref mut child) = self.child {
             // Best-effort SIGTERM on drop, fall back to kill
             if let Some(pid) = child.id() {
@@ -260,6 +281,37 @@ impl Drop for RpHandle {
             }
         }
     }
+}
+
+/// Parse the bound port from rp subprocess stdout.
+/// Looks for "Bound rp server bound_addr=<host>:<port>".
+/// Returns the port and spawns a background task to drain remaining stdout,
+/// preventing the server from blocking when the pipe buffer fills.
+async fn parse_bound_port(
+    stdout: tokio::process::ChildStdout,
+) -> Option<(u16, tokio::task::JoinHandle<()>)> {
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+
+    while reader.read_line(&mut line).await.ok()? > 0 {
+        if let Some(addr_str) = line.trim().strip_prefix("Bound rp server bound_addr=") {
+            if let Some(port_str) = addr_str.split(':').next_back() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    // Drain remaining stdout in background so the server never
+                    // blocks on a write to stdout.
+                    let drain_handle = tokio::spawn(async move {
+                        let mut buf = String::new();
+                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+                            buf.clear();
+                        }
+                    });
+                    return Some((port, drain_handle));
+                }
+            }
+        }
+        line.clear();
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

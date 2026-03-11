@@ -1413,7 +1413,7 @@ connection details. Plugins register their webhook URLs and command endpoints.
 ```
 services/rp/src/
   main.rs               CLI entry point (clap + tracing)
-  lib.rs                Public API, AppBuilder, module declarations
+  lib.rs                Public API, ServerBuilder + BoundServer, module declarations
   config.rs             Configuration types + load_config()
   error.rs              AppError enum (thiserror)
 

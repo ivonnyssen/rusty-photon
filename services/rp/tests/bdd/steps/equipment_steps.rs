@@ -53,30 +53,30 @@ fn configured_with_camera_at(world: &mut RpWorld, url: String, device_number: i3
 
 #[when("rp starts")]
 async fn rp_starts(world: &mut RpWorld) {
-    // Allocate a free port for rp
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind for port allocation");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    // Set a temporary handle so build_config() picks up the dynamic port
+    // Use port 0 so the rp process binds to an OS-assigned port.
+    // The actual port is discovered by parsing the process stdout.
     world.rp = Some(RpHandle {
         child: None,
-        base_url: format!("http://127.0.0.1:{}", port),
-        port,
+        base_url: String::new(),
+        port: 0,
         config_path: String::new(),
+        stdout_drain: None,
     });
 
-    // Write config to a temp file
     let config = world.build_config();
-    let config_path = format!("/tmp/rp-test-config-{}.json", port);
+    let config_path = format!(
+        "/tmp/rp-test-config-{}.json",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
     tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
         .await
         .expect("failed to write config");
 
-    // Start the real rp process and replace the temporary handle
-    world.rp = Some(RpHandle::start(&config_path, port).await);
+    // Start rp — it discovers its own port from stdout
+    world.rp = Some(RpHandle::start(&config_path).await);
 
     assert!(
         world.wait_for_rp_healthy().await,
