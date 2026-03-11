@@ -8,6 +8,7 @@ pub mod session;
 
 use std::sync::Arc;
 
+use tokio::signal;
 use tracing::{debug, info};
 
 use crate::config::Config;
@@ -57,7 +58,34 @@ pub async fn start(config: Config) -> Result<()> {
 
     info!("rp service started on {}", local_addr);
 
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    debug!("rp service shut down");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => debug!("received Ctrl+C"),
+        () = terminate => debug!("received SIGTERM"),
+    }
 }

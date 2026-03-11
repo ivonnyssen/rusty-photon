@@ -6,6 +6,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::debug;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -142,21 +144,36 @@ pub struct RpHandle {
 }
 
 impl RpHandle {
-    /// Start rp via `cargo run` with the given config file
+    /// Start the rp binary with the given config file.
+    ///
+    /// Binary discovery order:
+    /// 1. `RP_BINARY` env var — full path to the binary
+    /// 2. Look for the binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
+    /// 3. Fall back to `cargo run --package rp`
     pub async fn start(config_path: &str, port: u16) -> Self {
-        let child = tokio::process::Command::new("cargo")
-            .args([
-                "run",
-                "--package",
-                "rp",
-                "--quiet",
-                "--",
-                "--config",
-                config_path,
-            ])
-            .kill_on_drop(true)
-            .spawn()
-            .expect("failed to start rp process");
+        let child = if let Some(binary) = Self::find_binary() {
+            debug!(binary = %binary, "starting rp from pre-built binary");
+            tokio::process::Command::new(&binary)
+                .args(["--config", config_path])
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap_or_else(|e| panic!("failed to start rp binary '{}': {}", binary, e))
+        } else {
+            debug!("starting rp via cargo run");
+            tokio::process::Command::new("cargo")
+                .args([
+                    "run",
+                    "--package",
+                    "rp",
+                    "--quiet",
+                    "--",
+                    "--config",
+                    config_path,
+                ])
+                .kill_on_drop(true)
+                .spawn()
+                .expect("failed to start rp process")
+        };
 
         Self {
             child: Some(child),
@@ -166,11 +183,64 @@ impl RpHandle {
         }
     }
 
-    /// Stop the rp process
+    /// Find the rp binary if pre-built.
+    fn find_binary() -> Option<String> {
+        // 1. Explicit env var
+        if let Ok(path) = std::env::var("RP_BINARY") {
+            return Some(path);
+        }
+
+        // 2. Look in target dir, respecting CARGO_TARGET_DIR and CARGO_BUILD_TARGET
+        let target_dir = std::env::var("CARGO_TARGET_DIR")
+            .or_else(|_| std::env::var("CARGO_LLVM_COV_TARGET_DIR"))
+            .unwrap_or_else(|_| "target".to_string());
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "rp.exe"
+        } else {
+            "rp"
+        };
+
+        // With CARGO_BUILD_TARGET: target/<triple>/debug/rp
+        if let Ok(triple) = std::env::var("CARGO_BUILD_TARGET") {
+            let path = format!("{}/{}/debug/{}", target_dir, triple, binary_name);
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+
+        // Without target: target/debug/rp
+        let path = format!("{}/debug/{}", target_dir, binary_name);
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+
+        None
+    }
+
+    /// Stop the rp process gracefully via SIGTERM, falling back to SIGKILL.
+    /// Graceful shutdown allows the process to flush coverage data (profraw).
     pub async fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            if let Some(pid) = child.id() {
+                // Send SIGTERM for graceful shutdown
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                // Wait up to 5 seconds for clean exit
+                match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(_) => return,
+                    Err(_) => {
+                        debug!("rp did not exit after SIGTERM, sending SIGKILL");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
+            } else {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
         }
     }
 }
@@ -178,8 +248,16 @@ impl RpHandle {
 impl Drop for RpHandle {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.child {
-            // Best-effort kill on drop — async kill not possible in Drop
-            let _ = child.start_kill();
+            // Best-effort SIGTERM on drop, fall back to kill
+            if let Some(pid) = child.id() {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                let _ = pid; // suppress unused warning on non-unix
+            } else {
+                let _ = child.start_kill();
+            }
         }
     }
 }
