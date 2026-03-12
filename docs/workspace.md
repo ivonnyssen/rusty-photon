@@ -13,6 +13,7 @@ belong in any single service design doc.
 | [qhy-focuser](services/qhy-focuser.md) | Focuser | 11113 | `docs/services/qhy-focuser.md` |
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
+| [rp](services/main-app.md) | — (orchestrator) | 11115 | `docs/services/main-app.md` |
 
 ## Documentation Index
 

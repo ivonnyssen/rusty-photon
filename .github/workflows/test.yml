@@ -36,6 +36,8 @@ jobs:
       - name: Install cfitsio (act fallback)
         if: env.ACT == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -44,6 +46,9 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
@@ -69,11 +74,16 @@ jobs:
       - name: Install cfitsio (macOS)
         if: runner.os == 'macOS'
         run: brew install cfitsio
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       - name: cargo test
         # Exclude phd2-guider on Windows (cfitsio not available)
         run: |
@@ -118,6 +128,8 @@ jobs:
       - name: Install cfitsio (act fallback)
         if: env.ACT == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -127,6 +139,9 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
+      - name: cargo build --package rp
+        run: cargo build --locked --package rp
       - name: cargo llvm-cov
         run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
       - name: Record Rust version
