@@ -176,8 +176,8 @@ impl RpWorld {
 
         serde_json::json!({
             "session": {
-                "data_directory": "/tmp/rp-test-data",
-                "session_state_file": "/tmp/rp-test-session.json",
+                "data_directory": std::env::temp_dir().join("rp-test-data").to_string_lossy().to_string(),
+                "session_state_file": std::env::temp_dir().join("rp-test-session.json").to_string_lossy().to_string(),
                 "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
             },
             "equipment": {

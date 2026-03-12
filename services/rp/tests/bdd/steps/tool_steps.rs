@@ -308,13 +308,16 @@ pub async fn start_rp(world: &mut RpWorld) {
     });
 
     let config = world.build_config();
-    let config_path = format!(
-        "/tmp/rp-test-config-{}.json",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
+    let config_path = std::env::temp_dir()
+        .join(format!(
+            "rp-test-config-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+        .to_string_lossy()
+        .to_string();
     tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
         .await
         .expect("failed to write config");
