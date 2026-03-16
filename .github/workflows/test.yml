@@ -71,9 +71,6 @@ jobs:
       # - run: vcpkg install openssl:x64-windows-static-md
       #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
-      - name: Install cfitsio (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cfitsio
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
@@ -81,18 +78,13 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build all service binaries so BDD tests find cached binaries
+      # Pre-build all service binaries so BDD tests find cached binaries.
+      # --all-features enables fitsio-src + src-cmake so cfitsio builds from
+      # source via cmake, avoiding the need for a system cfitsio on Windows.
       - name: cargo build --workspace
-        run: cargo build --locked --workspace
+        run: cargo build --locked --workspace --all-features
       - name: cargo test
-        # Exclude phd2-guider on Windows (cfitsio not available)
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            cargo test --locked --all-features --all-targets --workspace --exclude phd2-guider
-          else
-            cargo test --locked --all-features --all-targets
-          fi
-        shell: bash
+        run: cargo test --locked --all-features --all-targets
   coverage:
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io
