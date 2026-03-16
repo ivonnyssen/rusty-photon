@@ -1522,6 +1522,33 @@ extract it, and either add its directory to `PATH` or set one of the
 environment variables above. In CI, the `.github/actions/install-omnisim`
 composite action handles this automatically.
 
+#### Graceful Shutdown and Coverage
+
+BDD tests spawn `rp` as a child process. For LLVM coverage data to be
+captured from the child process, two conditions must be met:
+
+1. **Graceful shutdown via SIGTERM.** LLVM coverage writes `.profraw`
+   files through an `atexit` handler, which only runs on clean process
+   exit. `SIGKILL` skips `atexit`, so no coverage data is written.
+   `lib.rs` handles `SIGTERM` (and `Ctrl-C`) via `tokio::signal` to
+   trigger a clean shutdown.
+
+2. **Explicit `stop()` before `Drop`.** The `RpHandle` is created with
+   `kill_on_drop(true)` as a safety net against leaked processes. However,
+   when `Drop` fires, it sends `SIGTERM` immediately followed by `SIGKILL`
+   from `kill_on_drop` — too fast for the process to flush. The cucumber
+   `after` hook in `bdd.rs` calls `rp.stop()` explicitly, which sends
+   `SIGTERM` and waits for the process to actually exit (up to 5 seconds)
+   before the `RpHandle` is dropped.
+
+The CI coverage job uses `cargo llvm-cov show-env` to set up an
+instrumented build environment, then builds all workspace binaries with
+`cargo build --workspace`. The BDD test discovers the instrumented `rp`
+binary via `CARGO_LLVM_COV_TARGET_DIR`. The child process inherits
+`LLVM_PROFILE_FILE` (with `%p`/`%7m` placeholders to avoid file
+conflicts), and `cargo llvm-cov report` merges all `.profraw` files from
+both test binaries and spawned child processes.
+
 ### Integration Tests
 
 - MCP tool tests with mock equipment

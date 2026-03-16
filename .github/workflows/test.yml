@@ -46,9 +46,9 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
-      - name: cargo build --package rp
-        run: cargo build --locked --package rp
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
@@ -81,9 +81,9 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
-      - name: cargo build --package rp
-        run: cargo build --locked --package rp
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace
       - name: cargo test
         # Exclude phd2-guider on Windows (cfitsio not available)
         run: |
@@ -139,11 +139,22 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build rp so that `cargo run` during BDD tests finds a cached binary
-      - name: cargo build --package rp
-        run: cargo build --locked --package rp
-      - name: cargo llvm-cov
-        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
+      # Two-phase coverage: build all binaries with instrumentation,
+      # then run tests so spawned child processes also produce .profraw files.
+      - name: Clean previous coverage artifacts
+        run: cargo llvm-cov clean --workspace
+      - name: Build all workspace binaries with coverage instrumentation
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo build --locked --workspace
+      - name: Run tests with coverage
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo test --locked --all-features --all-targets
+      - name: Generate coverage report
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov report --locked --lcov --output-path lcov.info
       - name: Record Rust version
         run: echo "RUST=$(rustc --version)" >> "$GITHUB_ENV"
       - name: Upload to codecov.io
