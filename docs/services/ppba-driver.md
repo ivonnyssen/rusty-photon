@@ -204,6 +204,8 @@ ppba-driver/
 │   │   ├── observing_conditions.feature
 │   │   └── server_registration.feature
 │   ├── test_serial_manager.rs        # SerialManager internal API unit tests
+│   ├── test_switch_device.rs         # Switch device error mapping unit tests
+│   ├── test_oc_device.rs             # ObservingConditions device unit tests
 │   ├── test_protocol.rs              # Protocol parsing unit tests
 │   ├── test_switches.rs              # Switch definition unit tests
 │   ├── test_config.rs                # Configuration unit tests

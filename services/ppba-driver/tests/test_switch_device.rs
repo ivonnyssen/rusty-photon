@@ -1,0 +1,444 @@
+//! Unit tests for PpbaSwitchDevice ASCOM error mapping and edge cases
+//!
+//! These tests exercise error paths in the Switch device that are only
+//! reachable through internal failures (factory errors, bad pings) or
+//! specific invalid inputs, covering `to_ascom_error` branches and the
+//! Debug implementation.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use ascom_alpaca::api::{Device, Switch};
+use ascom_alpaca::ASCOMErrorCode;
+use async_trait::async_trait;
+use ppba_driver::error::PpbaError;
+use ppba_driver::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
+use ppba_driver::{Config, PpbaSwitchDevice, Result, SerialManager, MAX_SWITCH};
+use tokio::sync::Mutex;
+
+// ============================================================================
+// Mock Serial Infrastructure
+// ============================================================================
+
+struct MockSerialReader {
+    responses: Arc<Mutex<Vec<String>>>,
+    index: Arc<Mutex<usize>>,
+}
+
+impl MockSerialReader {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+            index: Arc::new(Mutex::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl SerialReader for MockSerialReader {
+    async fn read_line(&mut self) -> Result<Option<String>> {
+        let responses = self.responses.lock().await;
+        let mut index = self.index.lock().await;
+        if *index < responses.len() {
+            let response = responses[*index].clone();
+            *index += 1;
+            Ok(Some(response))
+        } else {
+            *index = 0;
+            if !responses.is_empty() {
+                Ok(Some(responses[0].clone()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+struct MockSerialWriter;
+
+#[async_trait]
+impl SerialWriter for MockSerialWriter {
+    async fn write_message(&mut self, _message: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct MockSerialPortFactory {
+    responses: Vec<String>,
+}
+
+impl MockSerialPortFactory {
+    fn new(responses: Vec<String>) -> Self {
+        Self { responses }
+    }
+}
+
+#[async_trait]
+impl SerialPortFactory for MockSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Ok(SerialPair {
+            reader: Box::new(MockSerialReader::new(self.responses.clone())),
+            writer: Box::new(MockSerialWriter),
+        })
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        true
+    }
+}
+
+struct FailingMockSerialPortFactory;
+
+#[async_trait]
+impl SerialPortFactory for FailingMockSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Err(PpbaError::ConnectionFailed(
+            "Mock factory error".to_string(),
+        ))
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        false
+    }
+}
+
+fn standard_connection_responses() -> Vec<String> {
+    vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]
+}
+
+fn create_switch_device(factory: Arc<dyn SerialPortFactory>) -> PpbaSwitchDevice {
+    let config = Config::default();
+    let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
+    PpbaSwitchDevice::new(config.switch, serial_manager)
+}
+
+// ============================================================================
+// Connection Error Mapping Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_connect_factory_error_maps_to_invalid_operation() {
+    let device = create_switch_device(Arc::new(FailingMockSerialPortFactory));
+
+    let err = device.set_connected(true).await.unwrap_err();
+    // ConnectionFailed maps to INVALID_OPERATION via to_ascom_error's catch-all
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("Connection failed"));
+}
+
+#[tokio::test]
+async fn test_switch_connect_bad_ping_maps_to_invalid_operation() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "BAD_RESPONSE".to_string(), // bad ping
+    ]));
+    let device = create_switch_device(factory);
+
+    let err = device.set_connected(true).await.unwrap_err();
+    // InvalidResponse maps to INVALID_OPERATION via to_ascom_error's catch-all
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+// ============================================================================
+// Switch Value Error Mapping Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_get_value_invalid_id_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    let err = device.get_switch_value(99).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_value_invalid_id_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    let err = device.set_switch_value(99, 0.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_value_read_only_maps_to_not_implemented() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Switch 10 (InputVoltage) is read-only
+    let err = device.set_switch_value(10, 5.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_value_out_of_range_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Switch 0 (Quad12V) is boolean: min=0, max=1. Value 5.0 is out of range.
+    let err = device.set_switch_value(0, 5.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_value_auto_dew_enabled_maps_to_invalid_operation() {
+    // Auto-dew ON: status field auto_dew=1
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto_dew=1
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // refresh_status response for the set_switch_value_internal call
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Switch 2 (DewHeaterA) should fail when auto-dew is enabled
+    let err = device.set_switch_value(2, 128.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("auto-dew"));
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
+// Not Connected Guard Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_operations_fail_when_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    // All operations requiring connection should return NOT_CONNECTED
+    assert_eq!(
+        device.get_switch(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.get_switch_value(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.set_switch(0, true).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.set_switch_value(0, 1.0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.can_write(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.get_switch_name(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.get_switch_description(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.min_switch_value(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.max_switch_value(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.switch_step(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+}
+
+#[tokio::test]
+async fn test_switch_async_operations_fail_when_not_connected() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    assert_eq!(
+        device.can_async(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.state_change_complete(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.cancel_async(0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.set_async(0, true).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+    assert_eq!(
+        device.set_async_value(0, 1.0).await.unwrap_err().code,
+        ASCOMErrorCode::NOT_CONNECTED
+    );
+}
+
+// ============================================================================
+// Async Switch Delegation Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_set_async_delegates_to_set_switch() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Response for the set command
+        "P1:1".to_string(),
+        // refresh_status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // set_async should delegate to set_switch and succeed
+    device.set_async(0, true).await.unwrap();
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_async_value_delegates_to_set_switch_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Response for the set command
+        "P1:1".to_string(),
+        // refresh_status after set
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // set_async_value should delegate to set_switch_value and succeed
+    device.set_async_value(0, 1.0).await.unwrap();
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_async_invalid_id_maps_to_invalid_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    assert_eq!(
+        device.can_async(MAX_SWITCH).await.unwrap_err().code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+    assert_eq!(
+        device
+            .state_change_complete(MAX_SWITCH)
+            .await
+            .unwrap_err()
+            .code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+    assert_eq!(
+        device.cancel_async(MAX_SWITCH).await.unwrap_err().code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+    assert_eq!(
+        device.set_async(MAX_SWITCH, true).await.unwrap_err().code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+    assert_eq!(
+        device
+            .set_async_value(MAX_SWITCH, 1.0)
+            .await
+            .unwrap_err()
+            .code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
+// Miscellaneous Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_max_switch() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    assert_eq!(device.max_switch().await.unwrap(), MAX_SWITCH);
+}
+
+#[tokio::test]
+async fn test_switch_set_switch_name_not_implemented() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    let err = device
+        .set_switch_name(0, "test".to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn test_switch_device_debug_format() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    let debug_str = format!("{:?}", device);
+    assert!(debug_str.contains("PpbaSwitchDevice"));
+    assert!(debug_str.contains("config"));
+    assert!(debug_str.contains("requested_connection"));
+    assert!(debug_str.contains(".."));
+}
+
+#[tokio::test]
+async fn test_switch_device_info() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let device = create_switch_device(factory);
+
+    let info = device.driver_info().await.unwrap();
+    assert!(info.contains("PPBA"));
+
+    let version = device.driver_version().await.unwrap();
+    assert!(!version.is_empty());
+
+    let description = device.description().await.unwrap();
+    assert!(!description.is_empty());
+}
