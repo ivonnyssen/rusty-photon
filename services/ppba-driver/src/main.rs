@@ -100,20 +100,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Server port: {}", config.server.port);
 
     #[cfg(feature = "mock")]
-    {
+    let bound = {
         let factory = std::sync::Arc::new(MockSerialPortFactory::default());
         ServerBuilder::new(config)
             .with_factory(factory)
             .build()
             .await?
-            .start()
-            .await?;
-    }
+    };
 
     #[cfg(not(feature = "mock"))]
-    {
-        ServerBuilder::new(config).build().await?.start().await?;
+    let bound = ServerBuilder::new(config).build().await?;
+
+    // Race the server with a shutdown signal so SIGTERM triggers a clean
+    // exit, allowing llvm-cov profraw data to be flushed.
+    tokio::select! {
+        result = bound.start() => { result?; },
+        () = shutdown_signal() => {
+            tracing::debug!("shutting down");
+        }
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::debug!("received Ctrl+C"),
+        () = terminate => tracing::debug!("received SIGTERM"),
+    }
 }
