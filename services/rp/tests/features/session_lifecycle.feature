@@ -102,7 +102,7 @@ Feature: Session lifecycle with flat calibration orchestrator
 
   Scenario: Session can be restarted after completion
     Given a running Alpaca simulator
-    And a test orchestrator that completes immediately
+    And a test orchestrator that waits for a stop signal
     And rp is running with a camera and filter wheel on the simulator and the test orchestrator
     When a session is started via the REST API
     And the test orchestrator posts completion to rp
