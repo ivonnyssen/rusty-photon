@@ -730,8 +730,9 @@ fn test_monitor_receives_version_event() {
         .spawn()
         .expect("Failed to spawn monitor");
 
-    // Give it time to connect and receive the version event
-    std::thread::sleep(Duration::from_secs(1));
+    // Give it time to connect and receive the version event.
+    // Windows process startup + TCP connect is slower than Linux.
+    std::thread::sleep(Duration::from_secs(3));
 
     // Kill the monitor
     child.kill().expect("Failed to kill monitor");
@@ -752,10 +753,12 @@ fn test_monitor_receives_version_event() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_connection_refused() {
-    // Use a port that's definitely not listening
+    // Use a port that's definitely not listening.
+    // The CLI has a 10s connection timeout, so allow enough time for it to
+    // fail and exit (Windows TCP refusal can be slower than Linux).
     let port = get_available_port();
 
-    let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(3));
+    let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(15));
 
     assert!(
         !output.status.success(),
@@ -766,9 +769,11 @@ fn test_connection_refused() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_connection_timeout_message() {
+    // The CLI has a 10s connection timeout; allow enough for it to fail
+    // and exit on Windows where TCP refusal is slower.
     let port = get_available_port();
 
-    let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(3));
+    let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(15));
 
     assert!(
         !output.status.success(),

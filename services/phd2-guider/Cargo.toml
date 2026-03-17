@@ -17,7 +17,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
-fitsio = { workspace = true }
+fitrs = { workspace = true }
 async-trait = { workspace = true }
 
 [package.metadata.miri]
