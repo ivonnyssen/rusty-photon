@@ -246,6 +246,8 @@ impl RpHandle {
                 unsafe {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }
+                let _ = pid; // suppress unused warning on non-unix
+
                 // Wait up to 5 seconds for clean exit
                 match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
                     Ok(_) => return,
