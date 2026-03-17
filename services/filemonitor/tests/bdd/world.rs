@@ -148,8 +148,7 @@ impl FilemonitorWorld {
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(mut devices) = client.get_devices().await {
-                if let Some(device) = devices.next() {
-                    let TypedDevice::SafetyMonitor(monitor) = device;
+                if let Some(TypedDevice::SafetyMonitor(monitor)) = devices.next() {
                     return monitor;
                 }
             }
