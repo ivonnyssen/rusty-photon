@@ -77,6 +77,7 @@ reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
+cargo-husky = { workspace = true }
 
 [[test]]
 name = "bdd"

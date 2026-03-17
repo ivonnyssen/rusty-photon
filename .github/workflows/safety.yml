@@ -38,6 +38,8 @@ jobs:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |
@@ -58,7 +60,7 @@ jobs:
         name: Enable debug symbols
       # Pre-build the package so `cargo run` during BDD tests reuses cached artifacts.
       - name: cargo build
-        run: cargo build --package ${{ matrix.package }}
+        run: cargo build --package ${{ matrix.package }} --all-features
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test

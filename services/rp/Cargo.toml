@@ -26,6 +26,7 @@ cucumber = { workspace = true }
 libc = "0.2"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+cargo-husky = { workspace = true }
 
 [[test]]
 name = "bdd"

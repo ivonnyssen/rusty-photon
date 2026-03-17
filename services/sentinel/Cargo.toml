@@ -28,6 +28,7 @@ tokio-test = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
+cargo-husky = { workspace = true }
 
 [[test]]
 name = "bdd"

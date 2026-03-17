@@ -31,3 +31,4 @@ path = "src/bin/mock_phd2.rs"
 tokio-test = { workspace = true }
 base64 = { workspace = true }
 mockall = { workspace = true }
+cargo-husky = { workspace = true }

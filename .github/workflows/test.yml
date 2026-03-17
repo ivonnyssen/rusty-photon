@@ -27,6 +27,8 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -37,7 +39,7 @@ jobs:
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
-        run: cargo build --locked --workspace
+        run: cargo build --locked --workspace --all-features
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
@@ -60,14 +62,14 @@ jobs:
       # - run: vcpkg install openssl:x64-windows-static-md
       #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries.
-      # --all-features enables fitsio-src + src-cmake so cfitsio builds from
-      # source via cmake, avoiding the need for a system cfitsio on Windows.
       - name: cargo build --workspace
         run: cargo build --locked --workspace --all-features
       - name: cargo test
@@ -98,6 +100,8 @@ jobs:
     name: ubuntu / stable / coverage
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -114,7 +118,7 @@ jobs:
       - name: Build all workspace binaries with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
-          cargo build --locked --workspace
+          cargo build --locked --workspace --all-features
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
