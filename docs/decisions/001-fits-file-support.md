@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+Superseded — replaced `fitsio` (CFITSIO wrapper) with `fitrs` (pure Rust).
+The CFITSIO C dependency caused Windows/MSVC build failures due to missing
+`pthread.h`. Since our usage is limited to writing small guide star
+thumbnails, the pure Rust `fitrs` crate covers our needs without any
+system library dependencies. Pixel data is stored as BITPIX=32 (i32)
+instead of BITPIX=16 (u16) because `fitrs` does not support u16, but
+this is acceptable for guide star images.
 
 ## Context
 

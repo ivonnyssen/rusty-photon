@@ -45,15 +45,6 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -75,15 +66,6 @@ jobs:
     name: ubuntu / stable / features
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
@@ -131,15 +113,6 @@ jobs:
     name: ubuntu / msrv / ${{ matrix.service }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:
