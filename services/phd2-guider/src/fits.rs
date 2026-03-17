@@ -6,8 +6,7 @@
 use std::path::Path;
 
 use base64::Engine;
-use fitsio::images::{ImageDescription, ImageType};
-use fitsio::FitsFile;
+use fitrs::{Fits, Hdu};
 use tracing::debug;
 
 use crate::error::{Phd2Error, Result};
@@ -51,6 +50,10 @@ pub fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>> {
 ///
 /// Creates a new FITS file with the given pixel data. The file will be
 /// overwritten if it already exists.
+///
+/// Pixel values are stored as 32-bit integers (BITPIX=32) because the
+/// `fitrs` crate does not support unsigned 16-bit. This is acceptable
+/// for guide star thumbnails where file size is not a concern.
 ///
 /// # Arguments
 /// * `path` - Path where the FITS file will be written
@@ -121,45 +124,27 @@ fn write_fits_sync(
     height: u32,
     headers: Option<&[(String, String)]>,
 ) -> Result<()> {
-    // FITS uses FORTRAN-style column-major ordering, so dimensions are [NAXIS1, NAXIS2]
-    // where NAXIS1 is the fastest-varying dimension (columns/width)
-    let description = ImageDescription {
-        data_type: ImageType::UnsignedShort,
-        dimensions: &[width as usize, height as usize],
-    };
-
-    // Remove existing file if present (fitsio requires this)
+    // Remove existing file if present (fitrs does not overwrite)
     if path.exists() {
         std::fs::remove_file(path).map_err(|e| {
             Phd2Error::InvalidState(format!("Failed to remove existing file: {}", e))
         })?;
     }
 
-    let mut fptr = FitsFile::create(path)
-        .with_custom_primary(&description)
-        .open()
-        .map_err(|e| Phd2Error::InvalidState(format!("Failed to create FITS file: {}", e)))?;
-
-    let hdu = fptr
-        .primary_hdu()
-        .map_err(|e| Phd2Error::InvalidState(format!("Failed to get primary HDU: {}", e)))?;
-
-    // Convert u16 to i64 for fitsio (it expects signed values for write_image)
-    // Actually, fitsio's write_image can handle u16 directly for UnsignedShort type
-    // But we need to convert to the appropriate type
+    // Convert u16 to i32 — fitrs does not support u16 directly.
+    // FITS dimensions are [NAXIS1, NAXIS2] where NAXIS1 = width.
     let pixels_i32: Vec<i32> = pixels.iter().map(|&p| p as i32).collect();
 
-    hdu.write_image(&mut fptr, &pixels_i32)
-        .map_err(|e| Phd2Error::InvalidState(format!("Failed to write image data: {}", e)))?;
+    let mut hdu = Hdu::new(&[width as usize, height as usize], pixels_i32);
 
-    // Write optional headers
     if let Some(headers) = headers {
         for (key, value) in headers {
-            hdu.write_key(&mut fptr, key, value.as_str()).map_err(|e| {
-                Phd2Error::InvalidState(format!("Failed to write header {}: {}", key, e))
-            })?;
+            hdu.insert(key.as_str(), value.as_str());
         }
     }
+
+    Fits::create(path, hdu)
+        .map_err(|e| Phd2Error::InvalidState(format!("Failed to create FITS file: {}", e)))?;
 
     debug!("FITS file written successfully to {}", path.display());
     Ok(())

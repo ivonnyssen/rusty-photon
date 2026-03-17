@@ -27,15 +27,6 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -66,23 +57,13 @@ jobs:
       # - run: vcpkg install openssl:x64-windows-static-md
       #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
-      - name: Install cfitsio (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cfitsio
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo test
-        # Exclude phd2-guider on Windows (cfitsio not available)
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            cargo test --locked --all-features --all-targets --workspace --exclude phd2-guider
-          else
-            cargo test --locked --all-features --all-targets
-          fi
-        shell: bash
+        run: cargo test --locked --all-features --all-targets
   coverage:
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io
@@ -109,15 +90,6 @@ jobs:
     name: ubuntu / stable / coverage
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:

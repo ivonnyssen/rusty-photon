@@ -75,10 +75,10 @@ cargo test --locked --all-features --doc
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
 | **fmt** | `cargo fmt --check` | `cargo fmt --check` | stable rustfmt | Yes |
-| **clippy (stable)** | clippy-action (stable) | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy, cfitsio | Yes |
-| **clippy (beta)** | clippy-action (beta) | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain, cfitsio | Optional |
-| **hack** | `cargo hack --feature-powerset check` | `cargo hack --feature-powerset check` | cargo-hack, cfitsio | Yes |
-| **msrv** | `cargo msrv verify` per service | `cargo msrv verify --manifest-path services/<name>/Cargo.toml` | cargo-msrv, cfitsio | Optional |
+| **clippy (stable)** | clippy-action (stable) | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | Yes |
+| **clippy (beta)** | clippy-action (beta) | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain | Optional |
+| **hack** | `cargo hack --feature-powerset check` | `cargo hack --feature-powerset check` | cargo-hack | Yes |
+| **msrv** | `cargo msrv verify` per service | `cargo msrv verify --manifest-path services/<name>/Cargo.toml` | cargo-msrv | Optional |
 
 MSRV services are discovered dynamically. Current services with MSRV:
 - filemonitor (1.88.0)
@@ -100,8 +100,8 @@ done
 
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
-| **required (stable)** | `cargo test --locked --all-features --all-targets` | Same | stable, cfitsio | Yes |
-| **required (stable, doc)** | `cargo test --locked --all-features --doc` | Same | stable, cfitsio | Yes |
+| **required (stable)** | `cargo test --locked --all-features --all-targets` | Same | stable | Yes |
+| **required (stable, doc)** | `cargo test --locked --all-features --doc` | Same | stable | Yes |
 | **required (beta)** | Same commands with beta | `cargo +beta test --locked --all-features --all-targets` | beta toolchain | Optional |
 | **os-check** | Tests on macOS/Windows | N/A (cross-platform) | — | CI-only |
 | **coverage** | `cargo llvm-cov --locked --all-features --lcov` | Same | cargo-llvm-cov, llvm-tools-preview | Optional |
@@ -110,8 +110,8 @@ done
 
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
-| **address sanitizer** | `cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu` with `RUSTFLAGS="-Z sanitizer=address"` | Same (see below) | nightly, llvm, cfitsio | Optional |
-| **leak sanitizer** | `cargo test --all-features --target x86_64-unknown-linux-gnu` with `RUSTFLAGS="-Z sanitizer=leak"` | Same (see below) | nightly, cfitsio | Optional |
+| **address sanitizer** | `cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu` with `RUSTFLAGS="-Z sanitizer=address"` | Same (see below) | nightly, llvm | Optional |
+| **leak sanitizer** | `cargo test --all-features --target x86_64-unknown-linux-gnu` with `RUSTFLAGS="-Z sanitizer=leak"` | Same (see below) | nightly | Optional |
 
 Address sanitizer:
 
@@ -138,7 +138,7 @@ RUSTFLAGS="-Z sanitizer=leak" \
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
 | **discover** | `cargo metadata` + jq | Same | jq | — |
-| **conformu** | Per-service command from metadata | Same (see below) | ConformU, cfitsio | Optional |
+| **conformu** | Per-service command from metadata | Same (see below) | ConformU | Optional |
 
 ConformU services are discovered dynamically via `[package.metadata.conformu]`
 in each service's `Cargo.toml`. To list them:
@@ -157,7 +157,7 @@ Current services and their commands:
 
 | CI Job | CI Command | Local Equivalent | Prerequisites | Required? |
 |--------|-----------|------------------|---------------|-----------|
-| **nightly** | `cargo test --locked --all-features --all-targets` (nightly) | `cargo +nightly test --locked --all-features --all-targets` | nightly, cfitsio | Optional |
+| **nightly** | `cargo test --locked --all-features --all-targets` (nightly) | `cargo +nightly test --locked --all-features --all-targets` | nightly | Optional |
 | **discover-miri** | `cargo metadata` + jq | Same | jq | — |
 | **miri** | Per-service command from metadata | Same (see below) | nightly + miri component | Optional |
 | **update** | `cargo update && cargo test` (beta) | `cargo +beta update && cargo +beta test --locked --all-features --all-targets` | beta | Optional |
@@ -189,7 +189,6 @@ Current services and their commands:
 | Tool | Install | Used by |
 |------|---------|---------|
 | Rust stable | `rustup default stable` | All checks |
-| cfitsio | `sudo apt install libcfitsio-dev` (Ubuntu) / `brew install cfitsio` (macOS) | All workspace builds |
 | cargo-hack | `cargo install cargo-hack` | Feature powerset checks |
 | Docker | [docs.docker.com](https://docs.docker.com/get-docker/) | act-based workflow execution |
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
@@ -211,9 +210,6 @@ Current services and their commands:
 
 ## Conditional Compilation Notes
 
-- The `filemonitor` crate requires `cfitsio` to compile. If cfitsio is not
-  installed, use `-p <package>` to build/test specific packages that don't
-  need it.
 - The `mock` feature is used by ppba-driver and qhy-focuser for integration
   testing (including ConformU). It is not required for normal builds.
 - Feature powerset checks (`cargo hack --feature-powerset`) test all
