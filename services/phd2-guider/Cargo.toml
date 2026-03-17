@@ -17,13 +17,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
-fitsio = { workspace = true }
+fitrs = { workspace = true }
 async-trait = { workspace = true }
-
-[features]
-# Build cfitsio from vendored source via cmake (no system cfitsio needed).
-# Enabled automatically by `cargo build --all-features` in CI.
-fitsio-src = ["fitsio/fitsio-src", "fitsio/src-cmake"]
 
 [package.metadata.miri]
 command = "cargo miri test -p phd2-guider"

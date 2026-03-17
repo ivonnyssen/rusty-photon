@@ -55,8 +55,5 @@ reference them with `dep.workspace = true`.
 
 ## Build Notes
 
-- The `filemonitor` crate depends on `fitsio-sys` which requires the `cfitsio`
-  system library (`libcfitsio-dev` on Ubuntu, `cfitsio` via Homebrew on macOS).
-  Use `-p <package>` to build other services when cfitsio is not installed.
 - The `ascom-alpaca` crate is a git dependency from
   `ivonnyssen/ascom-alpaca-rs.git` (branch `feature/conformu-settings-file`).

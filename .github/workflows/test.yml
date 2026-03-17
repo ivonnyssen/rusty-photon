@@ -27,15 +27,6 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install ${{ matrix.toolchain }}
@@ -78,11 +69,9 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build all service binaries so BDD tests find cached binaries.
-      # --all-features enables fitsio-src + src-cmake so cfitsio builds from
-      # source via cmake, avoiding the need for a system cfitsio on Windows.
+      # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace
       - name: cargo test
         run: cargo test --locked --all-features --all-targets
   coverage:
@@ -111,15 +100,6 @@ jobs:
     name: ubuntu / stable / coverage
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable

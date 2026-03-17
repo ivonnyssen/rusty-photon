@@ -20,15 +20,6 @@ jobs:
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
@@ -81,15 +72,6 @@ jobs:
         service: ${{ fromJson(needs.discover-miri.outputs.services) }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - run: |
           echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> "$GITHUB_ENV"
       - name: Install ${{ env.NIGHTLY }}
@@ -117,15 +99,6 @@ jobs:
     # steps, so we repeat it.
     steps:
       - uses: actions/checkout@v5
-      - name: Install cfitsio (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        continue-on-error: true
-        with:
-          packages: libcfitsio-dev
-          version: 1.0
-      - name: Install cfitsio (act fallback)
-        if: env.ACT == 'true'
-        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install beta

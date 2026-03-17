@@ -678,7 +678,7 @@ serde_json = "1"
 tracing = "0.1"
 thiserror = "2"
 base64 = "0.22"
-fitsio = "0.21"
+fitrs = "0.5"
 ```
 
 ## Testing Strategy
