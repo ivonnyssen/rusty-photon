@@ -1,34 +1,33 @@
 [package]
-name = "phd2-guider"
+name = "rp"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.85.0"
-description = "PHD2 guider client library and service for Rusty Photon"
+description = "Rusty Photon main application - equipment gateway, event bus, and safety enforcer"
 
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
-base64 = { workspace = true }
-fitrs = { workspace = true }
-async-trait = { workspace = true }
-
-[package.metadata.miri]
-command = "cargo miri test -p phd2-guider"
-
-[[bin]]
-name = "mock_phd2"
-path = "src/bin/mock_phd2.rs"
+reqwest = { workspace = true }
+axum = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel"] }
 
 [dev-dependencies]
+cucumber = { workspace = true }
+libc = "0.2"
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
-base64 = { workspace = true }
-mockall = { workspace = true }
 cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

@@ -27,6 +27,8 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -35,6 +37,9 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
@@ -57,11 +62,16 @@ jobs:
       # - run: vcpkg install openssl:x64-windows-static-md
       #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build all service binaries so BDD tests find cached binaries.
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features
       - name: cargo test
         run: cargo test --locked --all-features --all-targets
   coverage:
@@ -90,6 +100,8 @@ jobs:
     name: ubuntu / stable / coverage
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -99,8 +111,22 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      - name: cargo llvm-cov
-        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
+      # Two-phase coverage: build all binaries with instrumentation,
+      # then run tests so spawned child processes also produce .profraw files.
+      - name: Clean previous coverage artifacts
+        run: cargo llvm-cov clean --workspace
+      - name: Build all workspace binaries with coverage instrumentation
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo build --locked --workspace --all-features
+      - name: Run tests with coverage
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo test --locked --all-features --all-targets
+      - name: Generate coverage report
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov report --locked --lcov --output-path lcov.info
       - name: Record Rust version
         run: echo "RUST=$(rustc --version)" >> "$GITHUB_ENV"
       - name: Upload to codecov.io

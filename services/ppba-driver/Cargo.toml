@@ -41,6 +41,7 @@ mockall = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 cucumber = { workspace = true }
+cargo-husky = { workspace = true }
 
 [[test]]
 name = "bdd"

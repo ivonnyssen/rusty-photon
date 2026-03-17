@@ -1,0 +1,78 @@
+name: Install ASCOM OmniSim
+description: Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests
+
+inputs:
+  version:
+    description: OmniSim release version
+    required: false
+    default: "v0.5.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Determine asset name
+      id: asset
+      shell: bash
+      run: |
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)    ASSET="ascom.alpaca.simulators.linux-x64.tar.xz" ;;
+          Linux-ARM64)  ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz" ;;
+          macOS-ARM64)  ASSET="ascom.alpaca.simulators.macos-arm64.zip" ;;
+          macOS-X64)    ASSET="ascom.alpaca.simulators.macos-x64.zip" ;;
+          Windows-X64)  ASSET="ascom.alpaca.simulators.windows-x64.zip" ;;
+          *)
+            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+        echo "cache-key=omnisim-${{ inputs.version }}-$ASSET" >> "$GITHUB_OUTPUT"
+
+    - name: Cache OmniSim binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: omnisim
+        key: ${{ steps.asset.outputs.cache-key }}
+
+    - name: Download OmniSim
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p omnisim
+        URL="https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/download/${{ inputs.version }}/${{ steps.asset.outputs.asset }}"
+        echo "Downloading $URL"
+        curl -fsSL -o "omnisim/${{ steps.asset.outputs.asset }}" "$URL"
+
+    - name: Extract OmniSim
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        ASSET="${{ steps.asset.outputs.asset }}"
+        TMPDIR="omnisim-extract"
+        mkdir -p "$TMPDIR"
+        if [[ "$ASSET" == *.tar.xz ]]; then
+          tar xf "omnisim/$ASSET" -C "$TMPDIR"
+        elif [[ "$ASSET" == *.zip ]]; then
+          unzip -o "omnisim/$ASSET" -d "$TMPDIR"
+        fi
+        # Archives contain a subdirectory named ascom.alpaca.simulators.* — flatten into omnisim/
+        # macOS zips also include a __MACOSX metadata dir, so match by name
+        SUBDIR=$(ls -d "$TMPDIR"/ascom.alpaca.simulators.*/ | head -1)
+        rm -rf omnisim
+        mv "$SUBDIR" omnisim
+        rm -rf "$TMPDIR"
+
+    - name: Set permissions (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x omnisim/ascom.alpaca.simulators
+
+    - name: Remove quarantine (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: xattr -d com.apple.quarantine omnisim/ascom.alpaca.simulators 2>/dev/null || true
+
+    - name: Add to PATH
+      shell: bash
+      run: echo "${{ github.workspace }}/omnisim" >> "$GITHUB_PATH"

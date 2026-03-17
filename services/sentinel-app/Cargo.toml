@@ -27,3 +27,6 @@ gloo-net = { version = "0.6", optional = true, features = ["http"] }
 default = []
 hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:web-sys", "dep:gloo-net"]
 ssr = ["leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]
+
+[dev-dependencies]
+cargo-husky = { workspace = true }

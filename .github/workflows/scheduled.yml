@@ -20,11 +20,16 @@ jobs:
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
   discover-miri:
@@ -94,12 +99,18 @@ jobs:
     # steps, so we repeat it.
     steps:
       - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        if: hashFiles('Cargo.lock') != ''
+        run: cargo build --locked --workspace --all-features
       - name: cargo test
         if: hashFiles('Cargo.lock') != ''
         run: cargo test --locked --all-features --all-targets

@@ -4,6 +4,7 @@ members = [
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",
+  "services/rp",
   "services/sentinel",
   "services/sentinel-app",
 ]
@@ -18,26 +19,32 @@ repository = "https://github.com/ivonnyssen/rusty_photon"
 description = "Rusty Photon - An astrophotography application"
 
 [workspace.dependencies]
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-clap = { version = "4.5.55", features = ["derive"] }
-regex = "1.12.2"
+clap = { version = "4.5.60", features = ["derive"] }
+regex = "1.12.3"
 async-trait = "0.1.89"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio-test = "0.4.5"
-proptest = "1.9.0"
+proptest = "1.10.0"
 fitrs = "0.5.0"
 thiserror = "2.0.18"
 base64 = "0.22.1"
 mockall = "0.14.0"
-tokio-serial = "5.4"
-ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "feature/conformu-settings-file", default-features = false }
+tokio-serial = "5.4.5"
+ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "fix/macos-trait-recursion-overflow", default-features = false }
 native-tls = "0.2.18"
-reqwest = { version = "0.13.2", features = ["form"] }
+reqwest = { version = "0.13.2", features = ["form", "json"] }
 cucumber = "0.22.1"
-tempfile = "3"
+tempfile = "3.27.0"
+cargo-husky = { version = "1", default-features = false, features = [
+  "precommit-hook",
+  "run-cargo-fmt",
+  "run-cargo-clippy",
+  "run-for-all",
+] }
 
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"
