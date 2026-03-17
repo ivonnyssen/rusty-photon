@@ -339,3 +339,243 @@ fn send_sigterm(pid: u32) {
     #[cfg(not(unix))]
     let _ = pid;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+
+    // -----------------------------------------------------------------------
+    // parse_bound_port tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_parse_bound_port_alpaca_prefix() {
+        let mut child = tokio::process::Command::new("echo")
+            .arg("Bound Alpaca server bound_addr=0.0.0.0:54321")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (port, drain) = parse_bound_port(stdout).await.unwrap();
+        assert_eq!(port, 54321);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn test_parse_bound_port_rp_prefix() {
+        let mut child = tokio::process::Command::new("echo")
+            .arg("Bound rp server bound_addr=127.0.0.1:9999")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (port, drain) = parse_bound_port(stdout).await.unwrap();
+        assert_eq!(port, 9999);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn test_parse_bound_port_arbitrary_prefix() {
+        let mut child = tokio::process::Command::new("echo")
+            .arg("some future service bound_addr=10.0.0.1:8080")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (port, drain) = parse_bound_port(stdout).await.unwrap();
+        assert_eq!(port, 8080);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn test_parse_bound_port_with_preceding_lines() {
+        // printf outputs multiple lines; the port line comes after noise
+        let mut child = tokio::process::Command::new("printf")
+            .arg("starting up...\nloading config\nBound Alpaca server bound_addr=0.0.0.0:11111\n")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (port, drain) = parse_bound_port(stdout).await.unwrap();
+        assert_eq!(port, 11111);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn test_parse_bound_port_no_match_returns_none() {
+        let mut child = tokio::process::Command::new("echo")
+            .arg("no port info here")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let result = parse_bound_port(stdout).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_parse_bound_port_empty_output_returns_none() {
+        let mut child = tokio::process::Command::new("true")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let result = parse_bound_port(stdout).await;
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // load_config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_config_with_env_var_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "test-service"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.bdd]
+env_var = "TEST_SERVICE_BINARY"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path().to_str().unwrap());
+        assert_eq!(config.env_var, "TEST_SERVICE_BINARY");
+        assert!(config.features.is_empty());
+    }
+
+    #[test]
+    fn test_load_config_with_features() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "test-service"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.bdd]
+env_var = "MY_BINARY"
+features = ["mock", "test-helpers"]
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path().to_str().unwrap());
+        assert_eq!(config.env_var, "MY_BINARY");
+        assert_eq!(config.features, vec!["mock", "test-helpers"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "missing [package.metadata.bdd]")]
+    fn test_load_config_missing_bdd_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "test-service"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+
+        load_config(dir.path().to_str().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid [package.metadata.bdd]")]
+    fn test_load_config_missing_required_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "test-service"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.bdd]
+features = ["mock"]
+"#,
+        )
+        .unwrap();
+
+        load_config(dir.path().to_str().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to read")]
+    fn test_load_config_nonexistent_dir() {
+        load_config("/nonexistent/path/to/nowhere");
+    }
+
+    // -----------------------------------------------------------------------
+    // find_binary tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_binary_from_env_var() {
+        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_12345";
+        std::env::set_var(unique_var, "/some/path/to/binary");
+        let result = find_binary(unique_var, "irrelevant");
+        std::env::remove_var(unique_var);
+
+        assert_eq!(result, Some("/some/path/to/binary".to_string()));
+    }
+
+    #[test]
+    fn test_find_binary_returns_none_when_nothing_found() {
+        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_NONE";
+        std::env::remove_var(unique_var);
+        let result = find_binary(unique_var, "nonexistent-binary-xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_binary_in_target_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let debug_dir = dir.path().join("debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        let binary_path = debug_dir.join("my-service");
+        std::fs::write(&binary_path, "fake binary").unwrap();
+
+        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_TARGET";
+        std::env::remove_var(unique_var);
+        // Temporarily override CARGO_TARGET_DIR
+        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+        std::env::set_var("CARGO_TARGET_DIR", dir.path());
+
+        let result = find_binary(unique_var, "my-service");
+
+        // Restore
+        match old_target {
+            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+            None => std::env::remove_var("CARGO_TARGET_DIR"),
+        }
+
+        assert_eq!(
+            result,
+            Some(format!("{}/debug/my-service", dir.path().display()))
+        );
+    }
+}
