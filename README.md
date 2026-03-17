@@ -83,7 +83,7 @@ cargo run -p sentinel -- -c services/sentinel/examples/config.json
 
 ## Testing
 
-The project uses a layered test strategy. See [docs/testing-rules.md](docs/testing-rules.md) for the full testing guide.
+The project uses a layered test strategy. See [docs/skills/testing.md](docs/skills/testing.md) for the full testing guide.
 
 ```bash
 # Run all unit and BDD tests
@@ -111,7 +111,7 @@ cargo test --test conformu_integration -- --ignored
 
 ### Local CI
 
-CI workflows can be run locally using [act](https://github.com/nektos/act). See [CI_LOCAL.md](CI_LOCAL.md) for instructions, or run the pre-push quality gate:
+CI workflows can be run locally using [act](https://github.com/nektos/act). See [docs/skills/pre-push.md](docs/skills/pre-push.md) for the full guide, or run the minimum pre-push checks:
 
 ```bash
 cargo build --all --quiet --color never
@@ -133,11 +133,10 @@ rusty-photon/
     sentinel-app/          Leptos web frontend for sentinel dashboard
   docs/
     services/              Per-service design documentation
+    skills/                How-to playbooks for agents and operators
+    references/            Protocol and standards reference
     decisions/             Architecture Decision Records
     workspace.md           Workspace architecture and shared patterns
-    testing-rules.md       Test strategy and conventions
-    ascom-alpaca.md        ASCOM Alpaca protocol reference
-    pre-push-checklist.md  CI checks mapped to local commands
   scripts/                 CI and ConformU setup scripts
   external/phd2/           PHD2 source (git submodule, reference only)
 ```
@@ -147,10 +146,10 @@ rusty-photon/
 | Document | Description |
 |----------|-------------|
 | [docs/workspace.md](docs/workspace.md) | Workspace architecture, shared patterns, dependency policy |
-| [docs/testing-rules.md](docs/testing-rules.md) | Test pyramid, BDD conventions, unit test guidelines |
-| [docs/ascom-alpaca.md](docs/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
-| [docs/pre-push-checklist.md](docs/pre-push-checklist.md) | Local equivalents of CI checks |
-| [CI_LOCAL.md](CI_LOCAL.md) | Running CI workflows locally with `act` |
+| [docs/skills/development-workflow.md](docs/skills/development-workflow.md) | Skill: design-first, test-first development workflow |
+| [docs/skills/testing.md](docs/skills/testing.md) | Skill: writing and organizing tests |
+| [docs/skills/pre-push.md](docs/skills/pre-push.md) | Skill: running CI quality gates before pushing |
+| [docs/references/ascom-alpaca.md](docs/references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/decisions/](docs/decisions/) | Architecture Decision Records |
 
 ## License

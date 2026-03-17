@@ -13,18 +13,21 @@ belong in any single service design doc.
 | [qhy-focuser](services/qhy-focuser.md) | Focuser | 11113 | `docs/services/qhy-focuser.md` |
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
-| [rp](services/main-app.md) | — (orchestrator) | 11115 | `docs/services/main-app.md` |
+| [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
 
 ## Documentation Index
 
 | Document | Purpose |
 |----------|---------|
-| [CLAUDE.md](../CLAUDE.md) | Rules for Claude Code |
-| [docs/AGENTS.md](AGENTS.md) | Rules for Kiro CLI |
-| [docs/testing-rules.md](testing-rules.md) | Test pyramid, BDD conventions, unit test rules |
-| [docs/ascom-alpaca.md](ascom-alpaca.md) | ASCOM Alpaca protocol reference |
-| [docs/pre-push-checklist.md](pre-push-checklist.md) | CI checks mapped to local commands |
-| [CI_LOCAL.md](../CI_LOCAL.md) | Running CI workflows locally with `act` |
+| **Rules** | |
+| [docs/AGENTS.md](AGENTS.md) | Rules for all AI agents and human operators (`CLAUDE.md` is a symlink to this file) |
+| **Skills** (how-to playbooks — read before performing the respective task) | |
+| [docs/skills/development-workflow.md](skills/development-workflow.md) | Skill: design-first, test-first development workflow |
+| [docs/skills/testing.md](skills/testing.md) | Skill: writing and organizing tests (test pyramid, BDD, unit tests) |
+| [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
+| **References** | |
+| [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
+| **Decisions** | |
 | [docs/decisions/](decisions/) | Architecture Decision Records |
 
 ## Shared Architecture Patterns

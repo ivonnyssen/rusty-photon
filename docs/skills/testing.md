@@ -1,12 +1,26 @@
-# Testing Rules and Guidelines
+# Skill: Writing and Organizing Tests
 
-This document defines the rules and conventions for writing tests in the rusty-photon project. Follow these rules when adding new features, fixing bugs, or migrating existing tests.
+## When to Read This
 
-## 1. Test Pyramid: Which Test Type to Use
+- Before writing any new tests (unit, BDD, or property-based)
+- Before adding a new feature to a service (see the checklist in Section 9)
+- Before migrating existing integration tests to BDD
+
+## Prerequisites
+
+- Read the service's design document (`docs/services/<service>.md`) per AGENTS.md Rule 1a
+- Familiarity with the Rust test ecosystem (`cargo test`, `#[test]`, `#[tokio::test]`)
+- For BDD tests: the `cucumber` crate (cucumber-rs)
+
+---
+
+## Procedure
+
+### 1. Test Pyramid: Which Test Type to Use
 
 The project uses four testing layers. Each serves a distinct purpose.
 
-### 1.1 BDD Tests (Feature Files + Cucumber)
+#### 1.1 BDD Tests (Feature Files + Cucumber)
 
 **Purpose:** Living specifications. These are the primary test type for service behavior.
 
@@ -23,7 +37,7 @@ The project uses four testing layers. Each serves a distinct purpose.
 - ASCOM compliance (use ConformU)
 - Fuzz-like edge case exploration (use property-based tests)
 
-### 1.2 Unit Tests (Rust `#[test]` / `#[tokio::test]`)
+#### 1.2 Unit Tests (Rust `#[test]` / `#[tokio::test]`)
 
 **Purpose:** Fast, focused verification of internal components.
 
@@ -34,7 +48,7 @@ The project uses four testing layers. Each serves a distinct purpose.
 - Pure functions and data transformations
 - In-source `#[cfg(test)]` modules for module-private logic
 
-### 1.3 Property-Based Tests (proptest)
+#### 1.3 Property-Based Tests (proptest)
 
 **Purpose:** Discover edge cases through randomized input.
 
@@ -44,7 +58,7 @@ The project uses four testing layers. Each serves a distinct purpose.
 - Round-trip properties (serialize then deserialize returns original)
 - Domain invariants that should hold for all inputs
 
-### 1.4 ConformU Integration Tests
+#### 1.4 ConformU Integration Tests
 
 **Purpose:** ASCOM Alpaca protocol compliance.
 
@@ -54,26 +68,26 @@ The project uses four testing layers. Each serves a distinct purpose.
 
 ---
 
-## 2. BDD Feature File Rules
+### 2. BDD Feature File Rules
 
 These are the most important rules. Feature files are both tests and documentation.
 
-### 2.1 One Feature File Per Concern
+#### 2.1 One Feature File Per Concern
 
 Organize feature files by functional area, not by implementation module. Each feature file should answer the question: *"What does the system do regarding [concern]?"*
 
 **Good file names (concern-oriented):**
-- `safety_evaluation.feature` — How safety rules are evaluated
-- `connection_lifecycle.feature` — How the device connects and disconnects
-- `file_polling.feature` — How file changes are detected
-- `configuration.feature` — How configuration is loaded and validated
+- `safety_evaluation.feature` -- How safety rules are evaluated
+- `connection_lifecycle.feature` -- How the device connects and disconnects
+- `file_polling.feature` -- How file changes are detected
+- `configuration.feature` -- How configuration is loaded and validated
 
 **Bad file names (implementation-oriented):**
-- `device_tests.feature` — Too vague
-- `serial_manager.feature` — Names an internal component, not a behavior
-- `misc.feature` — No organizing principle
+- `device_tests.feature` -- Too vague
+- `serial_manager.feature` -- Names an internal component, not a behavior
+- `misc.feature` -- No organizing principle
 
-### 2.2 Feature Descriptions State the Contract
+#### 2.2 Feature Descriptions State the Contract
 
 The `Feature:` line plus its description should read as a specification, not a test plan. State the behavioral contract: what the system does, what rules apply, what the defaults are.
 
@@ -91,7 +105,7 @@ Feature: Safety evaluation tests
   Tests for the safety evaluation logic.
 ```
 
-### 2.3 Scenarios Describe Outcomes, Not Procedures
+#### 2.3 Scenarios Describe Outcomes, Not Procedures
 
 A scenario title should state **what happens** (the outcome), not **what you do** (the procedure). A reader should understand the expected behavior from the title alone.
 
@@ -110,7 +124,7 @@ Scenario: Check rule priority
 Scenario: Call is_safe when disconnected
 ```
 
-### 2.4 Use Scenario Outlines for Parameterized Behavior
+#### 2.4 Use Scenario Outlines for Parameterized Behavior
 
 When the same behavioral pattern applies to multiple inputs, use `Scenario Outline` with `Examples`. This makes the pattern explicit and the variations easy to scan.
 
@@ -133,7 +147,7 @@ Scenario Outline: Contains rule evaluation
 
 Use individual scenarios (not outlines) when different inputs need different setup or tell different stories.
 
-### 2.5 Use `@serial` Tag for Tests With Side Effects
+#### 2.5 Use `@serial` Tag for Tests With Side Effects
 
 Tag features or scenarios with `@serial` when they depend on timing, shared resources, or file I/O that cannot safely run in parallel.
 
@@ -142,32 +156,32 @@ Tag features or scenarios with `@serial` when they depend on timing, shared reso
 Feature: File content polling
 ```
 
-### 2.6 Avoid Gherkin Parser Pitfalls
+#### 2.6 Avoid Gherkin Parser Pitfalls
 
 These are known issues with the Gherkin parser used by cucumber-rs:
 
-- **Do NOT start description lines with `Rule`** — it is a Gherkin 6+ keyword and will be parsed as structure, not text.
-- **Do NOT use `|` in step text** — it is the table delimiter. Use symbolic names mapped in step definitions instead.
+- **Do NOT start description lines with `Rule`** -- it is a Gherkin 6+ keyword and will be parsed as structure, not text.
+- **Do NOT use `|` in step text** -- it is the table delimiter. Use symbolic names mapped in step definitions instead.
 - **Regex patterns go in step definitions, not feature files.** Use human-readable names in features (e.g., `"safe_or_ok"`) mapped to actual patterns in code via a resolver function.
 
 ---
 
-## 3. Step Definition Rules
+### 3. Step Definition Rules
 
-### 3.1 Organize Steps by Concern, Matching Feature Files
+#### 3.1 Organize Steps by Concern, Matching Feature Files
 
 Each feature file should have a corresponding step definition module. Steps that are shared across features (like connection steps used in both `connection_lifecycle.feature` and `file_polling.feature`) go in the module matching their primary concern.
 
 ```
 features/                        steps/
-  configuration.feature    →       config_steps.rs
-  connection_lifecycle.feature →   connection_steps.rs
-  safety_evaluation.feature  →    safety_steps.rs
-  file_polling.feature       →    polling_steps.rs
-  concurrency.feature        →    concurrency_steps.rs
+  configuration.feature    ->      config_steps.rs
+  connection_lifecycle.feature ->  connection_steps.rs
+  safety_evaluation.feature  ->   safety_steps.rs
+  file_polling.feature       ->   polling_steps.rs
+  concurrency.feature        ->   concurrency_steps.rs
 ```
 
-### 3.2 Steps Must Be Reusable Across Scenarios
+#### 3.2 Steps Must Be Reusable Across Scenarios
 
 Write step definitions that are generic enough to be composed across scenarios. The same `Given a monitoring file containing {string}` step is used in connection, polling, and concurrency scenarios.
 
@@ -187,9 +201,9 @@ fn setup_safety_file(world: &mut MyWorld) {
 }
 ```
 
-### 3.3 Use `expect()` in Given/When Steps, `assert!` in Then Steps
+#### 3.3 Use `expect()` in Given/When Steps, `assert!` in Then Steps
 
-- **Given** steps set up preconditions. If setup fails, the test infrastructure is broken — use `expect()` or `unwrap()` to fail fast with a clear message.
+- **Given** steps set up preconditions. If setup fails, the test infrastructure is broken -- use `expect()` or `unwrap()` to fail fast with a clear message.
 - **When** steps execute the action under test. Use `unwrap()` for actions that should succeed, or capture errors into `world.last_error` when testing failure paths.
 - **Then** steps verify outcomes. Use `assert!`, `assert_eq!`, or `assert_ne!` with descriptive messages.
 
@@ -217,7 +231,7 @@ fn result_safe(world: &mut MyWorld) {
 }
 ```
 
-### 3.4 Use a Pattern Resolver for Complex Values
+#### 3.4 Use a Pattern Resolver for Complex Values
 
 When feature files need to reference technical values (regex patterns, JSON, binary data), use human-readable symbolic names in Gherkin and resolve them in step definitions.
 
@@ -234,20 +248,20 @@ fn resolve_regex_pattern(name: &str) -> String {
 
 This keeps feature files readable while allowing precise technical control.
 
-### 3.5 Distinguish "I do X" from "I try to do X"
+#### 3.5 Distinguish "I do X" from "I try to do X"
 
 Use separate step definitions for actions expected to succeed vs. actions expected to fail:
 
-- `When I connect the device` — calls `unwrap()`, fails the test if the action fails
-- `When I try to connect the device` — captures the error into `world.last_error`
+- `When I connect the device` -- calls `unwrap()`, fails the test if the action fails
+- `When I try to connect the device` -- captures the error into `world.last_error`
 
 This makes the intent clear in both the feature file and the step definition.
 
 ---
 
-## 4. World Struct Rules
+### 4. World Struct Rules
 
-### 4.1 Use `Option<T>` for State That Builds Incrementally
+#### 4.1 Use `Option<T>` for State That Builds Incrementally
 
 The World struct accumulates state across Given/When steps. Use `Option<T>` for values that are set during the scenario and `Vec<T>` for collections that grow.
 
@@ -262,7 +276,7 @@ pub struct MyWorld {
 }
 ```
 
-### 4.2 Put Setup Helpers on the World Struct
+#### 4.2 Put Setup Helpers on the World Struct
 
 Common setup logic (creating temp files, building configs, constructing devices) should be methods on the World struct, not free functions in step files. This keeps step definitions thin.
 
@@ -274,19 +288,19 @@ impl MyWorld {
 }
 ```
 
-### 4.3 Use `TempDir` for File Lifecycle
+#### 4.3 Use `TempDir` for File Lifecycle
 
 The `tempfile::TempDir` stored in the World struct ensures automatic cleanup when each scenario ends. Never use hardcoded paths for test files.
 
-### 4.4 Wrap Devices in `Arc` for Concurrency Scenarios
+#### 4.4 Wrap Devices in `Arc` for Concurrency Scenarios
 
 Concurrency scenarios spawn multiple async tasks that all need access to the device. Store devices as `Arc<Device>` in the World struct from the start. This avoids needing different World types for concurrent vs. sequential scenarios.
 
 ---
 
-## 5. BDD Test Infrastructure Rules
+### 5. BDD Test Infrastructure Rules
 
-### 5.1 Entry Point Structure
+#### 5.1 Entry Point Structure
 
 Each service's BDD tests follow this structure:
 
@@ -322,7 +336,7 @@ async fn main() {
 }
 ```
 
-### 5.2 Register in Cargo.toml
+#### 5.2 Register in Cargo.toml
 
 ```toml
 [[test]]
@@ -332,11 +346,11 @@ harness = false
 
 ---
 
-## 6. Unit Test Rules
+### 6. Unit Test Rules
 
 These rules apply to traditional `#[test]` and `#[tokio::test]` tests.
 
-### 6.1 One Test Function Per Behavior
+#### 6.1 One Test Function Per Behavior
 
 Each test should verify exactly one behavior. Name the test `test_<component>_<behavior>`:
 
@@ -348,9 +362,9 @@ async fn test_focuser_position_not_connected() { ... }
 async fn test_focuser_move_negative_position_rejected() { ... }
 ```
 
-### 6.2 Use `unwrap()` Over `assert!(result.is_ok())`
+#### 6.2 Use `unwrap()` Over `assert!(result.is_ok())`
 
-Per CLAUDE.md Rule 7: prefer tests that fail with clear errors. `unwrap()` produces a message showing **what** the error was. `assert!(result.is_ok())` just says `false`.
+Per AGENTS.md Rule 7: prefer tests that fail with clear errors. `unwrap()` produces a message showing **what** the error was. `assert!(result.is_ok())` just says `false`.
 
 **Good:**
 ```rust
@@ -364,7 +378,7 @@ let result = device.position().await;
 assert!(result.is_ok());
 ```
 
-### 6.3 Test Both Success and Error Paths
+#### 6.3 Test Both Success and Error Paths
 
 For any operation that can fail, write separate tests for the success path and each meaningful failure mode. Assert the specific error code, not just that an error occurred.
 
@@ -383,23 +397,23 @@ async fn test_focuser_position_not_connected() {
 }
 ```
 
-### 6.4 Test File Organization
+#### 6.4 Test File Organization
 
-- `test_protocol.rs` — Wire protocol serialization/deserialization
-- `test_config.rs` — Configuration defaults and JSON handling
-- `test_error.rs` — Error types, Display, and conversions
-- `test_serial_manager.rs` — Connection lifecycle and polling
-- `test_device_mock.rs` — Device trait implementation with mock I/O
-- `test_cli.rs` — CLI argument parsing
-- `test_server.rs` / `test_lib.rs` — Server integration tests
-- `test_property.rs` — Property-based tests
-- `conformu_integration.rs` — ASCOM conformance (always `#[ignore]`)
+- `test_protocol.rs` -- Wire protocol serialization/deserialization
+- `test_config.rs` -- Configuration defaults and JSON handling
+- `test_error.rs` -- Error types, Display, and conversions
+- `test_serial_manager.rs` -- Connection lifecycle and polling
+- `test_device_mock.rs` -- Device trait implementation with mock I/O
+- `test_cli.rs` -- CLI argument parsing
+- `test_server.rs` / `test_lib.rs` -- Server integration tests
+- `test_property.rs` -- Property-based tests
+- `conformu_integration.rs` -- ASCOM conformance (always `#[ignore]`)
 
-### 6.5 Mock Infrastructure Lives in Test Files
+#### 6.5 Mock Infrastructure Lives in Test Files
 
 Hand-written mocks (`MockSerialReader`, `MockSerialWriter`, `MockSerialPortFactory`) are defined in the test files that use them. They are NOT feature-gated. The `#[cfg(feature = "mock")]` flag is reserved for the feature-gated `MockSerialPortFactory` in `src/` used by ConformU and server tests.
 
-### 6.6 Serialize Server Tests
+#### 6.6 Serialize Server Tests
 
 Server integration tests that bind to ports must use a static `Mutex<()>` to prevent parallel execution conflicts with the discovery service:
 
@@ -415,7 +429,7 @@ async fn test_server_starts() {
 
 ---
 
-## 7. Migration Strategy: From Integration Tests to BDD
+### 7. Migration Strategy: From Integration Tests to BDD
 
 When migrating existing integration tests to BDD:
 
@@ -429,7 +443,7 @@ When migrating existing integration tests to BDD:
      Then the operation should fail with a not-connected error
    ```
 
-3. **Keep unit tests for protocol and serialization.** These have no behavioral story to tell — they verify data encoding. BDD adds no value here.
+3. **Keep unit tests for protocol and serialization.** These have no behavioral story to tell -- they verify data encoding. BDD adds no value here.
 
 4. **Keep property tests alongside BDD.** Property tests verify invariants across random inputs. BDD scenarios test specific, documented behaviors. They complement each other.
 
@@ -437,7 +451,7 @@ When migrating existing integration tests to BDD:
 
 ---
 
-## 8. Naming Conventions Summary
+### 8. Naming Conventions Summary
 
 | Element | Convention | Example |
 |---|---|---|
@@ -451,7 +465,7 @@ When migrating existing integration tests to BDD:
 
 ---
 
-## 9. Checklist: Adding a New Feature
+### 9. Checklist: Adding a New Feature
 
 When adding a new feature to a service:
 
@@ -463,3 +477,11 @@ When adding a new feature to a service:
 6. Write property tests if the feature has invariants over arbitrary input
 7. Run `cargo build --all --quiet --color never`, `cargo test --all --quiet --color never`, `cargo fmt`
 8. Update the design document if behavior described there has changed
+
+---
+
+## References
+
+- [AGENTS.md](../AGENTS.md) -- Rule 7 (prefer `unwrap()`) and Rule 8 (test smallest functionality)
+- [Pre-push skill](pre-push.md) -- Running the full CI quality-gate suite before pushing
+- [ASCOM Alpaca reference](../references/ascom-alpaca.md) -- Protocol details for ASCOM device tests
