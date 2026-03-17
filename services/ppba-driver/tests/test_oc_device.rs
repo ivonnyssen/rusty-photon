@@ -370,6 +370,56 @@ async fn test_oc_time_since_last_update_unknown_sensor() {
 }
 
 // ============================================================================
+// Sensor Read Tests (covers temperature/humidity/dewpoint value paths)
+// ============================================================================
+
+#[tokio::test]
+async fn test_oc_read_sensor_values_when_connected() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_oc_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Status: temp=25.0, humidity=60, dewpoint=15.5
+    let temp = device.temperature().await.unwrap();
+    assert!((temp - 25.0).abs() < 0.01);
+
+    let humidity = device.humidity().await.unwrap();
+    assert!((humidity - 60.0).abs() < 0.01);
+
+    let dewpoint = device.dew_point().await.unwrap();
+    assert!((dewpoint - 15.5).abs() < 0.01);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_oc_average_period_default() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_oc_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Default averaging period is based on polling interval config
+    let period = device.average_period().await.unwrap();
+    assert!(period > 0.0);
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_oc_set_average_period_normal_value() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_oc_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Set to 1 hour
+    device.set_average_period(1.0).await.unwrap();
+    let period = device.average_period().await.unwrap();
+    assert!((period - 1.0).abs() < 0.001);
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
 // Miscellaneous Tests
 // ============================================================================
 

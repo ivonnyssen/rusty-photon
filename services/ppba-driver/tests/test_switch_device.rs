@@ -393,6 +393,172 @@ async fn test_switch_async_invalid_id_maps_to_invalid_value() {
 }
 
 // ============================================================================
+// Switch Value Read Tests (covers get_switch_value_internal branches)
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_read_all_status_switches() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Controllable switches from PA status
+    // Status: voltage=12.5, current=3.2, temp=25.0, humidity=60, dewpoint=15.5,
+    //         quad=1, adj=0, dewA=128, dewB=64, autodew=0, warn=0
+    assert!((device.get_switch_value(0).await.unwrap() - 1.0).abs() < f64::EPSILON); // Quad12V on
+    assert!((device.get_switch_value(1).await.unwrap() - 0.0).abs() < f64::EPSILON); // Adj off
+    assert!((device.get_switch_value(2).await.unwrap() - 128.0).abs() < f64::EPSILON); // DewA
+    assert!((device.get_switch_value(3).await.unwrap() - 64.0).abs() < f64::EPSILON); // DewB
+    assert!((device.get_switch_value(4).await.unwrap() - 0.0).abs() < f64::EPSILON); // USB hub off
+    assert!((device.get_switch_value(5).await.unwrap() - 0.0).abs() < f64::EPSILON); // AutoDew off
+
+    // Read-only sensor switches from PA status
+    assert!((device.get_switch_value(10).await.unwrap() - 12.5).abs() < 0.01); // Voltage
+    assert!((device.get_switch_value(11).await.unwrap() - 3.2).abs() < 0.01); // Current
+    assert!((device.get_switch_value(12).await.unwrap() - 25.0).abs() < 0.01); // Temperature
+    assert!((device.get_switch_value(13).await.unwrap() - 60.0).abs() < 0.01); // Humidity
+    assert!((device.get_switch_value(14).await.unwrap() - 15.5).abs() < 0.01); // Dewpoint
+    assert!((device.get_switch_value(15).await.unwrap() - 0.0).abs() < f64::EPSILON); // PowerWarn
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_read_power_stat_switches() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Power stats: average_amps=2.5, amp_hours=10.5, watt_hours=126.0, uptime=3600000ms
+    assert!((device.get_switch_value(6).await.unwrap() - 2.5).abs() < 0.01); // AvgCurrent
+    assert!((device.get_switch_value(7).await.unwrap() - 10.5).abs() < 0.01); // AmpHours
+    assert!((device.get_switch_value(8).await.unwrap() - 126.0).abs() < 0.01); // WattHours
+    assert!((device.get_switch_value(9).await.unwrap() - 1.0).abs() < 0.01); // Uptime (1 hour)
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_get_boolean_state() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // get_switch returns true if value > min_value
+    assert!(device.get_switch(0).await.unwrap()); // Quad12V=1 > 0
+    assert!(!device.get_switch(1).await.unwrap()); // Adj=0, not > 0
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
+// Switch Metadata Read Tests (covers ASCOM trait methods when connected)
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_metadata_when_connected() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // can_write
+    assert!(device.can_write(0).await.unwrap()); // Quad12V is writable
+    assert!(!device.can_write(10).await.unwrap()); // InputVoltage is read-only
+
+    // name and description
+    let name = device.get_switch_name(0).await.unwrap();
+    assert!(!name.is_empty());
+    let desc = device.get_switch_description(0).await.unwrap();
+    assert!(!desc.is_empty());
+
+    // min/max/step
+    let min = device.min_switch_value(0).await.unwrap();
+    let max = device.max_switch_value(0).await.unwrap();
+    let step = device.switch_step(0).await.unwrap();
+    assert!((min - 0.0).abs() < f64::EPSILON);
+    assert!((max - 1.0).abs() < f64::EPSILON);
+    assert!((step - 1.0).abs() < f64::EPSILON);
+
+    // can_async / state_change_complete
+    assert!(!device.can_async(0).await.unwrap());
+    assert!(device.state_change_complete(0).await.unwrap());
+    device.cancel_async(0).await.unwrap();
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
+// Switch Write Tests (covers set_switch_value_internal command branches)
+// ============================================================================
+
+#[tokio::test]
+async fn test_switch_set_controllable_switches() {
+    // Provide enough responses for connect + multiple set commands + refresh after each
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        // Connect handshake
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Set Quad12V(false): command response + refresh_status
+        "P1:0".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
+        // Set AdjustableOutput(true): command response + refresh_status
+        "P2:1".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(),
+        // Set DewHeaterA: refresh_status (auto-dew check) + command + refresh_status
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(),
+        "P3:200".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(),
+        // Set DewHeaterB: refresh_status (auto-dew check) + command + refresh_status
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(),
+        "P4:100".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:0:0:0".to_string(),
+        // Set UsbHub: command only (no refresh_status)
+        "PU:1".to_string(),
+        // Set AutoDew: command + refresh_status
+        "PD:1".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:1:0:0".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:1:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // Set each controllable switch
+    device.set_switch_value(0, 0.0).await.unwrap(); // Quad12V off
+    device.set_switch_value(1, 1.0).await.unwrap(); // Adjustable on
+    device.set_switch_value(2, 200.0).await.unwrap(); // DewA PWM
+    device.set_switch_value(3, 100.0).await.unwrap(); // DewB PWM
+    device.set_switch_value(4, 1.0).await.unwrap(); // USB hub on
+    device.set_switch_value(5, 1.0).await.unwrap(); // AutoDew on
+
+    device.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_switch_set_switch_boolean() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // set_switch(0, false) → set_switch_value(0, 0.0): command + refresh
+        "P1:0".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let device = create_switch_device(factory);
+    device.set_connected(true).await.unwrap();
+
+    // set_switch uses boolean → min/max value conversion
+    device.set_switch(0, false).await.unwrap();
+
+    device.set_connected(false).await.unwrap();
+}
+
+// ============================================================================
 // Miscellaneous Tests
 // ============================================================================
 

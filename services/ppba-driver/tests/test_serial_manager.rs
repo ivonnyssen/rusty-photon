@@ -393,6 +393,34 @@ async fn test_refcount_second_connect_does_not_reopen() {
 }
 
 #[tokio::test]
+async fn test_send_command_response_mismatch() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Wrong response for SetQuad12V command (expected "P1:..." got "WRONG")
+        "WRONG".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let manager = create_manager(factory);
+    manager.connect().await.unwrap();
+
+    let err = manager
+        .send_command(ppba_driver::protocol::PpbaCommand::SetQuad12V(true))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PpbaError::Communication(_)),
+        "Expected Communication error, got {:?}",
+        err
+    );
+
+    manager.disconnect().await;
+}
+
+#[tokio::test]
 async fn test_debug_format() {
     let factory = Arc::new(MockSerialPortFactory::new(vec![]));
     let manager = create_manager(factory);
