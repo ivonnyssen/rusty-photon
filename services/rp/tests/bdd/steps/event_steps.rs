@@ -155,6 +155,23 @@ async fn timing_estimates_recorded(world: &mut RpWorld) {
     );
 }
 
+#[then(expr = "the {string} event payload should contain a {string}")]
+async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, field: String) {
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{}' event found", event_type));
+
+    assert!(
+        event.payload.get(&field).is_some(),
+        "expected '{}' in '{}' event payload, got: {:?}",
+        field,
+        event_type,
+        event.payload
+    );
+}
+
 #[then("the test webhook receiver should not have received any events")]
 async fn should_not_receive_events(world: &mut RpWorld) {
     // Wait briefly to ensure no events arrive

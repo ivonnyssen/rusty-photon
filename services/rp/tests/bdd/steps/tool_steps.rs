@@ -64,7 +64,10 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs:
         Ok(r) => {
             let body: serde_json::Value = r.json().await.unwrap_or_default();
             if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"].to_string()));
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
             } else {
                 world.last_tool_result = Some(Ok(body["result"].clone()));
             }
@@ -101,7 +104,10 @@ async fn mcp_call_set_filter(world: &mut RpWorld, fw_id: String, filter_name: St
         Ok(r) => {
             let body: serde_json::Value = r.json().await.unwrap_or_default();
             if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"].to_string()));
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
             } else {
                 world.last_tool_result = Some(Ok(body["result"].clone()));
             }
@@ -137,7 +143,10 @@ async fn mcp_call_get_filter(world: &mut RpWorld, fw_id: String) {
         Ok(r) => {
             let body: serde_json::Value = r.json().await.unwrap_or_default();
             if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"].to_string()));
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
             } else {
                 let result = &body["result"];
                 world.current_filter = result
@@ -184,6 +193,181 @@ async fn mcp_list_tools(world: &mut RpWorld) {
         }
         Err(_) => {
             world.last_tool_list = Some(vec![]);
+        }
+    }
+}
+
+#[given(expr = "rp is running with a camera at {string} device {int}")]
+async fn rp_running_with_camera_at(world: &mut RpWorld, url: String, device_number: i32) {
+    world.cameras.push(CameraConfig {
+        id: "main-cam".to_string(),
+        alpaca_url: url,
+        device_number: device_number as u32,
+    });
+    start_rp(world).await;
+}
+
+#[given(expr = "rp is running with a filter wheel at {string} device {int}")]
+async fn rp_running_with_fw_at(world: &mut RpWorld, url: String, device_number: i32) {
+    world.filter_wheels.push(FilterWheelConfig {
+        id: "main-fw".to_string(),
+        alpaca_url: url,
+        device_number: device_number as u32,
+        filters: vec![
+            "Luminance".to_string(),
+            "Red".to_string(),
+            "Green".to_string(),
+            "Blue".to_string(),
+        ],
+    });
+    start_rp(world).await;
+}
+
+#[when("the MCP client calls \"capture\" with no camera_id")]
+async fn mcp_call_capture_no_camera_id(world: &mut RpWorld) {
+    let client = reqwest::Client::new();
+    let url = world.rp_mcp_url();
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "capture",
+                "arguments": {
+                    "duration_secs": 1
+                }
+            }
+        }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body.get("error").is_some() {
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
+            } else {
+                world.last_tool_result = Some(Ok(body["result"].clone()));
+            }
+        }
+        Err(e) => {
+            world.last_tool_result = Some(Err(e.to_string()));
+        }
+    }
+}
+
+#[when(expr = "the MCP client calls \"capture\" with camera {string} but no duration")]
+async fn mcp_call_capture_no_duration(world: &mut RpWorld, camera_id: String) {
+    let client = reqwest::Client::new();
+    let url = world.rp_mcp_url();
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "capture",
+                "arguments": {
+                    "camera_id": camera_id
+                }
+            }
+        }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body.get("error").is_some() {
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
+            } else {
+                world.last_tool_result = Some(Ok(body["result"].clone()));
+            }
+        }
+        Err(e) => {
+            world.last_tool_result = Some(Err(e.to_string()));
+        }
+    }
+}
+
+#[when(expr = "the MCP client calls an unknown method {string}")]
+async fn mcp_call_unknown_method(world: &mut RpWorld, method: String) {
+    let client = reqwest::Client::new();
+    let url = world.rp_mcp_url();
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": {}
+        }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body.get("error").is_some() {
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
+            } else {
+                world.last_tool_result = Some(Ok(body["result"].clone()));
+            }
+        }
+        Err(e) => {
+            world.last_tool_result = Some(Err(e.to_string()));
+        }
+    }
+}
+
+#[when(expr = "the MCP client calls tool {string}")]
+async fn mcp_call_unknown_tool(world: &mut RpWorld, tool_name: String) {
+    let client = reqwest::Client::new();
+    let url = world.rp_mcp_url();
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": {}
+            }
+        }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body.get("error").is_some() {
+                world.last_tool_result = Some(Err(body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()));
+            } else {
+                world.last_tool_result = Some(Ok(body["result"].clone()));
+            }
+        }
+        Err(e) => {
+            world.last_tool_result = Some(Err(e.to_string()));
         }
     }
 }
@@ -241,6 +425,21 @@ fn tool_call_returned_error(world: &mut RpWorld) {
         result.is_err(),
         "expected tool call to return an error, got: {:?}",
         result
+    );
+}
+
+#[then(expr = "the error message should contain {string}")]
+fn error_message_contains(world: &mut RpWorld, expected: String) {
+    let result = world.last_tool_result.as_ref().expect("no tool result");
+    let err_msg = result
+        .as_ref()
+        .expect_err("expected an error but got success");
+
+    assert!(
+        err_msg.contains(&expected),
+        "expected error message to contain '{}', got: '{}'",
+        expected,
+        err_msg
     );
 }
 

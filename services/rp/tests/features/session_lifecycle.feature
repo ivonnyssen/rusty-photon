@@ -73,3 +73,49 @@ Feature: Session lifecycle with flat calibration orchestrator
     When a session is started via the REST API
     And I try to start another session via the REST API
     Then the second session start should fail with an error
+
+  Scenario: Session status is idle before any session starts
+    Given a running Alpaca simulator
+    And rp is running with a camera and filter wheel on the simulator
+    Then the session status should be "idle"
+
+  Scenario: Stopping a session when idle succeeds
+    Given a running Alpaca simulator
+    And rp is running with a camera and filter wheel on the simulator
+    When the session is stopped via the REST API
+    Then the session status should be "idle"
+
+  Scenario: Workflow complete with unknown workflow id is ignored
+    Given a running Alpaca simulator
+    And a test orchestrator that waits for a stop signal
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    And a workflow completion is posted with an unknown workflow id
+    Then the session status should be "active"
+
+  Scenario: Session with unreachable orchestrator still starts
+    Given a running Alpaca simulator
+    And a plugin configured as orchestrator with invoke URL "http://localhost:1/invoke"
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    Then the session status should be "active"
+
+  Scenario: Session can be restarted after completion
+    Given a running Alpaca simulator
+    And a test orchestrator that completes immediately
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    And the test orchestrator posts completion to rp
+    Then the session status should be "idle"
+    When a session is started via the REST API
+    Then the session status should be "active"
+
+  Scenario: Session can be restarted after manual stop
+    Given a running Alpaca simulator
+    And a test orchestrator that waits for a stop signal
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    And the session is stopped via the REST API
+    Then the session status should be "idle"
+    When a session is started via the REST API
+    Then the session status should be "active"

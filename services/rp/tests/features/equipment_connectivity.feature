@@ -27,3 +27,32 @@ Feature: Equipment connectivity
     Given rp is configured with a camera at "http://localhost:1" device 0
     When rp starts
     Then the equipment status should show the camera as disconnected
+
+  Scenario: Filter wheel reports disconnected when simulator is unreachable
+    Given rp is configured with a filter wheel at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the filter wheel as disconnected
+
+  Scenario: Startup succeeds with no equipment configured
+    When rp starts
+    Then rp should be healthy
+
+  Scenario: Camera on wrong device number reports disconnected
+    Given a running Alpaca simulator
+    And rp is configured with a camera at the simulator device 99
+    When rp starts
+    Then the equipment status should show the camera as disconnected
+
+  Scenario: Filter wheel on wrong device number reports disconnected
+    Given a running Alpaca simulator
+    And rp is configured with a filter wheel at the simulator device 99
+    When rp starts
+    Then the equipment status should show the filter wheel as disconnected
+
+  Scenario: Mixed reachable and unreachable equipment
+    Given a running Alpaca simulator
+    And rp is configured with a camera on the simulator
+    And rp is configured with a filter wheel at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the camera as connected
+    And the equipment status should show the filter wheel as disconnected

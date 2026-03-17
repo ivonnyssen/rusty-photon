@@ -39,6 +39,24 @@ async fn flat_calibration_orchestrator(
     add_orchestrator_plugin(world);
 }
 
+#[given(expr = "a plugin configured as orchestrator with invoke URL {string}")]
+fn plugin_configured_as_orchestrator(world: &mut RpWorld, invoke_url: String) {
+    // Only add if not already present
+    let already_exists = world
+        .plugin_configs
+        .iter()
+        .any(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"));
+
+    if !already_exists {
+        world.plugin_configs.push(serde_json::json!({
+            "name": "unreachable-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": invoke_url,
+            "requires_tools": []
+        }));
+    }
+}
+
 #[given("rp is running with a camera and filter wheel on the simulator and the test orchestrator")]
 async fn rp_running_with_equipment_and_orchestrator(world: &mut RpWorld) {
     crate::steps::tool_steps::ensure_omnisim(world).await;
@@ -143,6 +161,31 @@ async fn stop_session(world: &mut RpWorld) {
 
     // Mark orchestrator as cancelled
     *world.orchestrator_cancelled.write().await = true;
+
+    // Give rp time to process
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
+#[when("a workflow completion is posted with an unknown workflow id")]
+async fn workflow_complete_unknown_id(world: &mut RpWorld) {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/api/plugins/{}/complete",
+        world.rp_url(),
+        "00000000-0000-0000-0000-000000000000"
+    );
+
+    let _ = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "status": "complete",
+            "result": {
+                "reason": "all_targets_complete",
+                "exposures_captured": 0
+            }
+        }))
+        .send()
+        .await;
 
     // Give rp time to process
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
