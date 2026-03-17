@@ -14,6 +14,7 @@ belong in any single service design doc.
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
+| sentinel-app | — (Leptos web frontend for sentinel) | — | — |
 
 ## Documentation Index
 
@@ -32,8 +33,7 @@ belong in any single service design doc.
 
 ## Shared Architecture Patterns
 
-All serial-based services (ppba-driver, qhy-focuser) follow a common layered
-architecture. See individual design docs for details; the shared pattern is:
+### Serial-based services (ppba-driver, qhy-focuser)
 
 ```
 io.rs          — Traits (SerialReader, SerialWriter, SerialPortFactory)
@@ -44,19 +44,50 @@ lib.rs         — ServerBuilder (CLI args → server)
 main.rs        — Entry point
 ```
 
+### HTTP gateway services (rp)
+
+```
+config.rs      — Configuration types and loading
+equipment.rs   — EquipmentRegistry, ASCOM Alpaca client
+events.rs      — EventBus, webhook delivery
+mcp.rs         — JSON-RPC 2.0 dispatcher, tool handlers
+session.rs     — SessionManager, orchestrator invocation
+routes.rs      — Axum router (REST + MCP endpoints)
+lib.rs         — ServerBuilder (two-phase: build → start)
+main.rs        — Entry point
+```
+
+## MSRV
+
+| Service | rust-version |
+|---------|-------------|
+| phd2-guider | 1.85.0 |
+| filemonitor, ppba-driver, qhy-focuser, sentinel, sentinel-app | 1.88.0 |
+| rp | not specified |
+
 ## Workspace Dependencies
 
 Dependencies used by two or more services are declared in the workspace
 `Cargo.toml` under `[workspace.dependencies]` (CLAUDE.md Rule 10). Services
 reference them with `dep.workspace = true`.
 
+### Pre-commit hooks
+
+The workspace uses `cargo-husky` as a dev-dependency with `precommit-hook`,
+`run-cargo-fmt`, `run-cargo-clippy`, and `run-for-all` features. This
+automatically installs a git pre-commit hook that runs `cargo fmt` and
+`cargo clippy` on every commit.
+
 ## Feature Flags
 
 - **`mock`** — Enables `MockSerialPortFactory` with persistent state for
   integration testing (ConformU, server tests). Used by ppba-driver and
   qhy-focuser. Not used for unit tests — those define inline mocks.
+- **`hydrate`** / **`ssr`** — Leptos rendering modes for sentinel-app.
+  `ssr` is used by the sentinel binary for server-side rendering; `hydrate`
+  is for future WASM-hydrated frontend builds.
 
 ## Build Notes
 
 - The `ascom-alpaca` crate is a git dependency from
-  `ivonnyssen/ascom-alpaca-rs.git` (branch `feature/conformu-settings-file`).
+  `ivonnyssen/ascom-alpaca-rs.git` (branch `fix/macos-trait-recursion-overflow`).
