@@ -1,4 +1,4 @@
-use crate::steps::infrastructure::FilemonitorHandle;
+use crate::steps::infrastructure::ServiceHandle;
 use crate::world::FilemonitorWorld;
 use cucumber::{given, then, when};
 use serde_json::Value;
@@ -38,7 +38,8 @@ async fn try_start_with_config(world: &mut FilemonitorWorld) {
         .as_ref()
         .expect("config path not set")
         .clone();
-    match FilemonitorHandle::try_start(&path).await {
+    match ServiceHandle::try_start(env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"), &path).await
+    {
         Ok(handle) => {
             let monitor = world.acquire_monitor(&handle).await;
             world.monitor = Some(monitor);

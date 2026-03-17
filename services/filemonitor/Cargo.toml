@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version = "1.88.0"
 description = "File monitoring service for Rusty Photon"
 
+[package.metadata.bdd]
+env_var = "FILEMONITOR_BINARY"
+
 [features]
 default = []
 conformu = ["ascom-alpaca/test"]
@@ -75,12 +78,12 @@ post_uninstall_script = "systemctl daemon-reload"
 require-sh = true
 
 [dev-dependencies]
+bdd-infra = { workspace = true }
 tokio-test = { workspace = true }
 proptest = { workspace = true }
 tracing-subscriber = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
-libc = { workspace = true }
 cargo-husky = { workspace = true }
 
 [[test]]

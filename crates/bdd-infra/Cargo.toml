@@ -1,0 +1,15 @@
+[package]
+name = "bdd-infra"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared BDD test infrastructure for spawning, managing, and stopping service binaries"
+
+[dependencies]
+libc = { workspace = true }
+serde = { workspace = true }
+toml = "0.8"
+tokio = { workspace = true }
+tracing = { workspace = true }

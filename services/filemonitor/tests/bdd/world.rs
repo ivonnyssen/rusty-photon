@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::steps::infrastructure::FilemonitorHandle;
+use crate::steps::infrastructure::ServiceHandle;
 
 /// Serializable rule config (no filemonitor lib imports).
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ pub struct ParsingRuleConfig {
 #[derive(Debug, Default, World)]
 pub struct FilemonitorWorld {
     // Process handle
-    pub filemonitor: Option<FilemonitorHandle>,
+    pub filemonitor: Option<ServiceHandle>,
     pub monitor: Option<Arc<dyn SafetyMonitor>>,
 
     // Config building
@@ -115,7 +115,12 @@ impl FilemonitorWorld {
         let config_path = dir.path().join("config.json");
         std::fs::write(&config_path, config_json.to_string()).expect("failed to write config");
 
-        let handle = FilemonitorHandle::start(config_path.to_str().unwrap()).await;
+        let handle = ServiceHandle::start(
+            env!("CARGO_MANIFEST_DIR"),
+            env!("CARGO_PKG_NAME"),
+            config_path.to_str().unwrap(),
+        )
+        .await;
         let monitor = self.acquire_monitor(&handle).await;
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
@@ -135,14 +140,19 @@ impl FilemonitorWorld {
         let config_path = dir.path().join("config.json");
         std::fs::write(&config_path, config.to_string()).expect("failed to write config");
 
-        let handle = FilemonitorHandle::start(config_path.to_str().unwrap()).await;
+        let handle = ServiceHandle::start(
+            env!("CARGO_MANIFEST_DIR"),
+            env!("CARGO_PKG_NAME"),
+            config_path.to_str().unwrap(),
+        )
+        .await;
         let monitor = self.acquire_monitor(&handle).await;
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
     }
 
     /// Poll until the server returns a SafetyMonitor device via the typed client.
-    pub async fn acquire_monitor(&self, handle: &FilemonitorHandle) -> Arc<dyn SafetyMonitor> {
+    pub async fn acquire_monitor(&self, handle: &ServiceHandle) -> Arc<dyn SafetyMonitor> {
         let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
         let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {

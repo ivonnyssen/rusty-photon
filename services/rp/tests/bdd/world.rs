@@ -12,7 +12,9 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::steps::infrastructure::{OmniSimHandle, RpHandle, TestOrchestrator, WebhookReceiver};
+use crate::steps::infrastructure::{
+    OmniSimHandle, ServiceHandle, TestOrchestrator, WebhookReceiver,
+};
 
 /// Collected event received by the test webhook receiver
 #[derive(Debug, Clone)]
@@ -39,7 +41,7 @@ pub struct RpWorld {
     /// Running OmniSim process
     pub omnisim: Option<OmniSimHandle>,
     /// Running rp process
-    pub rp: Option<RpHandle>,
+    pub rp: Option<ServiceHandle>,
     /// Test webhook receiver (in-process HTTP server acting as an event plugin)
     pub webhook_receiver: Option<WebhookReceiver>,
     /// Test orchestrator (in-process HTTP server acting as an orchestrator plugin)
@@ -172,8 +174,6 @@ impl RpWorld {
             .map(|o| o.invoke_url.clone())
             .unwrap_or_default();
 
-        let rp_port = self.rp.as_ref().map(|h| h.port).unwrap_or(11115);
-
         serde_json::json!({
             "session": {
                 "data_directory": std::env::temp_dir().join("rp-test-data").to_string_lossy().to_string(),
@@ -202,7 +202,7 @@ impl RpWorld {
                 "resume_delay_secs": 300
             },
             "server": {
-                "port": rp_port,
+                "port": 0,
                 "bind_address": "127.0.0.1"
             }
         })

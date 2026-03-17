@@ -2,7 +2,7 @@
 
 use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::{OmniSimHandle, RpHandle};
+use crate::steps::infrastructure::{OmniSimHandle, ServiceHandle};
 use crate::world::{CameraConfig, FilterWheelConfig, RpWorld};
 
 // --- Given steps ---
@@ -492,19 +492,9 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
 }
 
 pub async fn start_rp(world: &mut RpWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.child.is_some()) {
+    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
         return;
     }
-
-    // Use port 0 so the rp process binds to an OS-assigned port.
-    // The actual port is discovered by parsing the process stdout.
-    world.rp = Some(RpHandle {
-        child: None,
-        base_url: String::new(),
-        port: 0,
-        config_path: String::new(),
-        stdout_drain: None,
-    });
 
     let config = world.build_config();
     let config_path = std::env::temp_dir()
@@ -521,8 +511,14 @@ pub async fn start_rp(world: &mut RpWorld) {
         .await
         .expect("failed to write config");
 
-    // Start rp — it discovers its own port from stdout
-    world.rp = Some(RpHandle::start(&config_path).await);
+    world.rp = Some(
+        ServiceHandle::start(
+            env!("CARGO_MANIFEST_DIR"),
+            env!("CARGO_PKG_NAME"),
+            &config_path,
+        )
+        .await,
+    );
 
     assert!(
         world.wait_for_rp_healthy().await,

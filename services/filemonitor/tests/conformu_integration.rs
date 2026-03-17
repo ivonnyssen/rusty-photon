@@ -3,40 +3,8 @@
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing_subscriber::{fmt, EnvFilter};
-
-/// Parse the bound port from service stdout.
-/// Looks for "Bound Alpaca server bound_addr=0.0.0.0:PORT".
-/// Returns the port and spawns a background task to drain remaining stdout,
-/// preventing the server from blocking when the pipe buffer fills.
-async fn parse_bound_port(
-    stdout: tokio::process::ChildStdout,
-) -> Option<(u16, tokio::task::JoinHandle<()>)> {
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-
-    while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some(addr_str) = line.trim().strip_prefix("Bound Alpaca server bound_addr=") {
-            if let Some(port_str) = addr_str.split(':').next_back() {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    // Drain remaining stdout in background so the server never
-                    // blocks on a write to stdout (tracing writes to stdout by default).
-                    let drain_handle = tokio::spawn(async move {
-                        let mut buf = String::new();
-                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-                            buf.clear();
-                        }
-                    });
-                    return Some((port, drain_handle));
-                }
-            }
-        }
-        line.clear();
-    }
-    None
-}
 
 #[tokio::test]
 #[ignore] // Run with --ignored flag since it requires ConformU installation
@@ -97,7 +65,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Parse the bound port from stdout - the server is ready once this message appears
     // since the socket is already listening after bind()
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let (port, stdout_drain) = parse_bound_port(stdout)
+    let (port, stdout_drain) = bdd_infra::parse_bound_port(stdout)
         .await
         .ok_or("Failed to parse bound port from service output")?;
 

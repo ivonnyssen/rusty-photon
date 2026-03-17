@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Rusty Photon main application - equipment gateway, event bus, and safety enforcer"
 rust-version = "1.88.0"
 
+[package.metadata.bdd]
+env_var = "RP_BINARY"
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +26,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel"] }
 
 [dev-dependencies]
+bdd-infra = { workspace = true }
 cucumber = { workspace = true }
 libc = { workspace = true }
 tempfile = { workspace = true }
