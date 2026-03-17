@@ -7,12 +7,12 @@ use ascom_alpaca::api::{ObservingConditions, Switch, TypedDevice};
 use ascom_alpaca::{ASCOMError, ASCOMResult, Client};
 use cucumber::World;
 
-use crate::steps::infrastructure::PpbaHandle;
+use crate::steps::infrastructure::ServiceHandle;
 
 #[derive(Debug, Default, World)]
 pub struct PpbaWorld {
     /// Handle to the running ppba-driver process
-    pub ppba: Option<PpbaHandle>,
+    pub ppba: Option<ServiceHandle>,
 
     /// Base URL of the running server (e.g. "http://127.0.0.1:12345")
     pub base_url: Option<String>,
@@ -49,7 +49,12 @@ impl PpbaWorld {
         .await
         .expect("failed to write test config");
 
-        let handle = PpbaHandle::start(config_path.to_str().unwrap()).await;
+        let handle = ServiceHandle::start(
+            env!("CARGO_MANIFEST_DIR"),
+            env!("CARGO_PKG_NAME"),
+            config_path.to_str().unwrap(),
+        )
+        .await;
         self.base_url = Some(handle.base_url.clone());
         self.ppba = Some(handle);
 

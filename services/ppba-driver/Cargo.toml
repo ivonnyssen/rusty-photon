@@ -49,7 +49,6 @@ reqwest = { workspace = true }
 cucumber = { workspace = true }
 cargo-husky = { workspace = true }
 tempfile = { workspace = true }
-libc = { workspace = true }
 
 [[test]]
 name = "bdd"
