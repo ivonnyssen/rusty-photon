@@ -56,11 +56,11 @@ pub struct ServerConfig {
     pub port: u16,
     pub device_number: u32,
     #[serde(default = "default_discovery_port")]
-    pub discovery_port: u16,
+    pub discovery_port: Option<u16>,
 }
 
-fn default_discovery_port() -> u16 {
-    32227
+fn default_discovery_port() -> Option<u16> {
+    Some(32227)
 }
 
 #[derive(Debug)]

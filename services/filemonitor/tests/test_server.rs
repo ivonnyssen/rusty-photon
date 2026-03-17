@@ -27,7 +27,7 @@ async fn test_start_server_creation() {
         server: ServerConfig {
             port: 0,
             device_number: 0,
-            discovery_port: 0,
+            discovery_port: None,
         },
     };
 
