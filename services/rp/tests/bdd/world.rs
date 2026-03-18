@@ -236,4 +236,35 @@ impl RpWorld {
         }
         false
     }
+
+    /// Wait for the session status to reach an expected value.
+    /// Timeout: 40 × 250ms = 10s.
+    pub async fn wait_for_session_status(&self, expected: &str) -> bool {
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/session/status", self.rp_url());
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if body.get("status").and_then(|v| v.as_str()) == Some(expected) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Wait for at least one orchestrator invocation to be recorded.
+    /// Timeout: 40 × 250ms = 10s.
+    pub async fn wait_for_orchestrator_invocation(&self) -> bool {
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let inv = self.orchestrator_invocations.read().await;
+            if !inv.is_empty() {
+                return true;
+            }
+        }
+        false
+    }
 }

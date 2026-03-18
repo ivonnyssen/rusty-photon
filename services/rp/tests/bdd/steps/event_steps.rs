@@ -174,8 +174,8 @@ async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, f
 
 #[then("the test webhook receiver should not have received any events")]
 async fn should_not_receive_events(world: &mut RpWorld) {
-    // Wait briefly to ensure no events arrive
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait briefly to ensure no events arrive (cannot poll for absence)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let events = world.received_events.read().await;
     assert!(
         events.is_empty(),

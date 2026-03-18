@@ -141,8 +141,11 @@ async fn orchestrator_posts_completion(world: &mut RpWorld) {
         .send()
         .await;
 
-    // Give rp time to process
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait for rp to process completion and return to idle
+    assert!(
+        world.wait_for_session_status("idle").await,
+        "session did not return to idle after completion"
+    );
 }
 
 #[when("the session is stopped via the REST API")]
@@ -162,8 +165,11 @@ async fn stop_session(world: &mut RpWorld) {
     // Mark orchestrator as cancelled
     *world.orchestrator_cancelled.write().await = true;
 
-    // Give rp time to process
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait for rp to process stop and return to idle
+    assert!(
+        world.wait_for_session_status("idle").await,
+        "session did not return to idle after stop"
+    );
 }
 
 #[when("a workflow completion is posted with an unknown workflow id")]
@@ -186,9 +192,6 @@ async fn workflow_complete_unknown_id(world: &mut RpWorld) {
         }))
         .send()
         .await;
-
-    // Give rp time to process
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
 #[when("the test orchestrator runs to completion")]
@@ -204,20 +207,19 @@ async fn orchestrator_runs_to_completion(world: &mut RpWorld) {
         "flat calibration orchestrator did not complete within timeout"
     );
 
-    // Give rp time to process completion
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Wait for rp to process completion and return to idle
+    assert!(
+        world.wait_for_session_status("idle").await,
+        "session did not return to idle after orchestrator completion"
+    );
 }
 
 // --- Then steps ---
 
 #[then("the test orchestrator should have been invoked")]
 async fn orchestrator_was_invoked(world: &mut RpWorld) {
-    // Wait briefly for async invocation
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    let invocations = world.orchestrator_invocations.read().await;
     assert!(
-        !invocations.is_empty(),
+        world.wait_for_orchestrator_invocation().await,
         "expected orchestrator to have been invoked"
     );
 }

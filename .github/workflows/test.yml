@@ -46,34 +46,53 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
+  discover-os-check:
+    # Discover all workspace packages for the per-service os-check matrix
+    runs-on: ubuntu-latest
+    name: discover-os-check
+    outputs:
+      packages: ${{ steps.find.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Find workspace packages
+        id: find
+        run: |
+          PACKAGES=$(cargo metadata --format-version 1 --no-deps | \
+            jq -c '[.packages[] | .name]')
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "Found packages: $PACKAGES"
   os-check:
-    # run cargo test on mac and windows
+    # Run cargo test per service on mac and windows in parallel
+    needs: discover-os-check
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} / stable
+    name: ${{ matrix.package }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
+        package: ${{ fromJson(needs.discover-os-check.outputs.packages) }}
     steps:
-      # if your project needs OpenSSL, uncomment this to fix Windows builds.
-      # it's commented out by default as the install command takes 5-10m.
-      # - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-      #   if: runner.os == 'Windows'
-      # - run: vcpkg install openssl:x64-windows-static-md
-      #   if: runner.os == 'Windows'
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build all service binaries so BDD tests find cached binaries.
-      - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+      - name: cargo build
+        run: cargo build --locked --package ${{ matrix.package }} --all-features
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
   coverage:
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io
