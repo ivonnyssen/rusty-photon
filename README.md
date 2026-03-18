@@ -1,22 +1,29 @@
-# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/test/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/github/ivonnyssen/rusty-photon/coverage.svg?branch=main)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/test/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) services and tools for observatory automation. ASCOM Alpaca is an open HTTP/REST standard for controlling astronomy equipment — these services expose real hardware as network-accessible devices that any Alpaca-compatible client (NINA, SGPro, Voyager, etc.) can discover and control.
 
+**Platforms:** Linux, macOS, Windows (all services). Designed to run efficiently on hardware as small as a Raspberry Pi 5.
+
 ## Services
 
-| Service | Type | Port | Description |
-|---------|------|------|-------------|
-| [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | Monitors file content for observatory safety status |
-| [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
-| [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | Driver for QHY Q-Focuser (EAF) |
-| [phd2-guider](services/phd2-guider) | Client library | — | Rust client for PHD2 autoguiding via JSON RPC |
-| [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
+| Service | Type | Port | Coverage | Description |
+|---------|------|------|----------|-------------|
+| [rp](services/rp) | Equipment gateway | 11115 | [![coverage][cov-rp]][cov-rp-link] | Main application: MCP tools, event bus, safety enforcer |
+| [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | [![coverage][cov-filemonitor]][cov-filemonitor-link] | Monitors file content for observatory safety status |
+| [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | [![coverage][cov-ppba-driver]][cov-ppba-driver-link] | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
+| [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | [![coverage][cov-qhy-focuser]][cov-qhy-focuser-link] | Driver for QHY Q-Focuser (EAF) |
+| [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
+| [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
+
+### RP (Main Application)
+
+Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by a separate orchestrator plugin that drives the session by calling tools on `rp`.
+
+See [docs/services/rp.md](docs/services/rp.md) for design documentation.
 
 ### Filemonitor
 
 ASCOM Alpaca SafetyMonitor that reads a plain text file and evaluates configurable regex/contains rules to determine observatory safety status. Supports case-sensitive and case-insensitive matching with per-rule safe/unsafe outcomes.
-
-**Platforms:** Linux, macOS, Windows
 
 See [docs/services/filemonitor.md](docs/services/filemonitor.md) for design documentation.
 
@@ -24,15 +31,11 @@ See [docs/services/filemonitor.md](docs/services/filemonitor.md) for design docu
 
 ASCOM Alpaca Switch and ObservingConditions driver for the Pegasus Astro Pocket Powerbox Advance Gen2. Exposes 16 switches (6 controllable power/dew/USB outputs, 10 read-only sensors) over serial. Includes dynamic write protection for dew heaters when auto-dew is enabled.
 
-**Platforms:** Linux, macOS, Windows
-
 See [docs/services/ppba-driver.md](docs/services/ppba-driver.md) for design documentation.
 
 ### QHY Focuser
 
 ASCOM Alpaca Focuser driver for the QHY Q-Focuser (Electronic Auto Focuser). Communicates via a JSON-based command/response protocol over USB-CDC serial. Supports absolute and relative moves, speed configuration, temperature readout, and motor hold current settings.
-
-**Platforms:** Linux, macOS, Windows
 
 See [docs/services/qhy-focuser.md](docs/services/qhy-focuser.md) for design documentation.
 
@@ -46,20 +49,13 @@ See [docs/services/phd2-guider.md](docs/services/phd2-guider.md) for design docu
 
 Observatory monitoring and notification service. Polls ASCOM Alpaca SafetyMonitor devices, detects safe/unsafe state transitions, sends push notifications via Pushover, and serves a live web dashboard. Unlike the other services, sentinel is a **client/consumer** of ASCOM devices, not a server.
 
-**Platforms:** Linux, macOS, Windows
-
 See [services/sentinel/README.md](services/sentinel/README.md) for usage and [docs/services/sentinel.md](docs/services/sentinel.md) for design documentation.
 
 ## Getting Started
 
 ### Prerequisites
 
-- **Rust** (edition 2021, MSRV 1.85.0 for most services, 1.88.0 for ppba-driver/qhy-focuser/sentinel)
-- **libcfitsio** — required by phd2-guider's FITS support:
-  - Ubuntu/Debian: `sudo apt install libcfitsio-dev`
-  - macOS: `brew install cfitsio`
-  - Windows: available via vcpkg
-  - To skip: build individual services with `cargo build -p <service>`
+- **Rust** (edition 2021, MSRV 1.88.0 for most services, 1.85.0 for phd2-guider)
 
 ### Building
 
@@ -125,6 +121,7 @@ cargo fmt
 rusty-photon/
   Cargo.toml              Workspace root with shared dependencies
   services/
+    rp/                    Main application: equipment gateway, event bus
     filemonitor/           ASCOM SafetyMonitor (file-based)
     ppba-driver/           ASCOM Switch + ObservingConditions (serial)
     qhy-focuser/           ASCOM Focuser (serial)
@@ -155,3 +152,17 @@ rusty-photon/
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
+
+<!-- per-service coverage badges -->
+[cov-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=rp
+[cov-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=rp
+[cov-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=filemonitor
+[cov-filemonitor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=filemonitor
+[cov-ppba-driver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=ppba-driver
+[cov-ppba-driver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ppba-driver
+[cov-qhy-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=qhy-focuser
+[cov-qhy-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=qhy-focuser
+[cov-phd2-guider]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=phd2-guider
+[cov-phd2-guider-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=phd2-guider
+[cov-sentinel]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sentinel
+[cov-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sentinel

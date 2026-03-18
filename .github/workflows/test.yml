@@ -46,31 +46,34 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
-  discover-os-check:
-    # Discover all workspace packages for the per-service os-check matrix
+  discover:
+    # Discover all workspace packages once; consumed by os-check and coverage
     runs-on: ubuntu-latest
-    name: discover-os-check
+    name: discover packages
     outputs:
       packages: ${{ steps.find.outputs.packages }}
+      flags: ${{ steps.find.outputs.flags }}
     steps:
       - uses: actions/checkout@v5
       - name: Find workspace packages
         id: find
         run: |
-          PACKAGES=$(cargo metadata --format-version 1 --no-deps | \
-            jq -c '[.packages[] | .name]')
+          META=$(cargo metadata --format-version 1 --no-deps)
+          PACKAGES=$(echo "$META" | jq -c '[.packages[].name]')
+          FLAGS=$(echo "$META" | jq -r '[.packages[].name] | join(",")')
           echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "flags=$FLAGS" >> $GITHUB_OUTPUT
           echo "Found packages: $PACKAGES"
   os-check:
     # Run cargo test per service on mac and windows in parallel
-    needs: discover-os-check
+    needs: discover
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.package }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-        package: ${{ fromJson(needs.discover-os-check.outputs.packages) }}
+        package: ${{ fromJson(needs.discover.outputs.packages) }}
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -94,6 +97,7 @@ jobs:
       - name: cargo test
         run: cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
   coverage:
+    needs: discover
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io
     #
@@ -154,4 +158,5 @@ jobs:
         with:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
+          flags: ${{ needs.discover.outputs.flags }}
           env_vars: OS,RUST
