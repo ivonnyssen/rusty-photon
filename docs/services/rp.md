@@ -20,8 +20,8 @@ calling tools on `rp`.
    session.
 4. **Remote interfaces only.** ASCOM Alpaca for devices, HTTP for plugins, HTTP
    for UIs. No direct hardware integrations. Ever.
-5. **Minimal footprint.** A Raspberry Pi is the target platform. Memory and CPU
-   budgets are tight.
+5. **Minimal footprint.** The application runs on Linux, macOS, and Windows, and
+   must be efficient enough for a Raspberry Pi 5. Memory and CPU budgets are tight.
 6. **Loose coupling via events.** The application emits events; plugins react.
    The application knows as little as possible about what plugins do.
 7. **UI is a client, not a component.** The web UI contains zero application
