@@ -1479,7 +1479,7 @@ services/rp/src/
 
 ## Testing Strategy
 
-Testing follows the conventions in `docs/testing-rules.md`.
+Testing follows the conventions in `docs/skills/testing.md`.
 
 ### Unit Tests
 

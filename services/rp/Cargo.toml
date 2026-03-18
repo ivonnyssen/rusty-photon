@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rusty Photon main application - equipment gateway, event bus, and safety enforcer"
+rust-version = "1.88.0"
 
 [dependencies]
 tokio = { workspace = true }
