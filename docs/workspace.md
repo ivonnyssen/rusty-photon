@@ -62,8 +62,7 @@ main.rs        — Entry point
 | Service | rust-version |
 |---------|-------------|
 | phd2-guider | 1.85.0 |
-| filemonitor, ppba-driver, qhy-focuser, sentinel, sentinel-app | 1.88.0 |
-| rp | not specified |
+| filemonitor, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app | 1.88.0 |
 
 ## Workspace Dependencies
 
