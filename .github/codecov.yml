@@ -16,21 +16,6 @@ ignore:
   - "tests"
   - "**/bin/mock_*.rs"
 
-# Per-service flags for README coverage badges
-flags:
-  rp:
-    paths: [services/rp/]
-  filemonitor:
-    paths: [services/filemonitor/]
-  ppba-driver:
-    paths: [services/ppba-driver/]
-  qhy-focuser:
-    paths: [services/qhy-focuser/]
-  phd2-guider:
-    paths: [services/phd2-guider/]
-  sentinel:
-    paths: [services/sentinel/]
-
 # Make comments less noisy
 comment:
   layout: "files"
