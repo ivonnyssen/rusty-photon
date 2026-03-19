@@ -28,7 +28,7 @@ educe = "0.6"
 qhyccd-rs = "0.1.9"
 
 [package.metadata.conformu]
-command = "cargo test -p qhy-camera --features simulation --test conformu_integration -- --ignored --nocapture"
+command = "cargo test -p qhy-camera --features mock --test conformu_integration -- --ignored --nocapture"
 
 [package.metadata.miri]
 command = "cargo miri test -p qhy-camera"

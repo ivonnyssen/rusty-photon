@@ -70,10 +70,17 @@ async fn wait_for_exposure(world: &mut QhyCameraWorld) {
 
 #[when("I abort the exposure")]
 async fn abort_exposure(world: &mut QhyCameraWorld) {
+    use ascom_alpaca::api::camera::CameraState;
     let camera = world.camera.as_ref().unwrap();
     camera.abort_exposure().await.unwrap();
-    // Give the background task a moment to process
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll until the background task transitions state to Idle
+    for _ in 0..100 {
+        if camera.camera_state().await.unwrap() == CameraState::Idle {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("camera did not return to idle after abort within timeout");
 }
 
 // --- Then ---
