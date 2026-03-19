@@ -52,7 +52,6 @@ jobs:
     name: discover packages
     outputs:
       packages: ${{ steps.find.outputs.packages }}
-      flags: ${{ steps.find.outputs.flags }}
     steps:
       - uses: actions/checkout@v5
       - name: Find workspace packages
@@ -60,9 +59,7 @@ jobs:
         run: |
           META=$(cargo metadata --format-version 1 --no-deps)
           PACKAGES=$(echo "$META" | jq -c '[.packages[].name]')
-          FLAGS=$(echo "$META" | jq -r '[.packages[].name] | join(",")')
           echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
-          echo "flags=$FLAGS" >> $GITHUB_OUTPUT
           echo "Found packages: $PACKAGES"
   os-check:
     # Run cargo test per service on mac and windows in parallel
@@ -98,8 +95,8 @@ jobs:
         run: cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
   coverage:
     needs: discover
-    # use llvm-cov to build and collect coverage and outputs in a format that
-    # is compatible with codecov.io
+    # use llvm-cov to build and collect coverage per workspace package and
+    # upload to codecov.io with per-package flags for README badges.
     #
     # note that codecov as of v4 requires that CODECOV_TOKEN from
     #
@@ -120,7 +117,11 @@ jobs:
     #
     # for lots of more discussion
     runs-on: ubuntu-latest
-    name: ubuntu / stable / coverage
+    name: coverage / ${{ matrix.package }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.discover.outputs.packages) }}
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -138,25 +139,24 @@ jobs:
       # then run tests so spawned child processes also produce .profraw files.
       - name: Clean previous coverage artifacts
         run: cargo llvm-cov clean --workspace
-      - name: Build all workspace binaries with coverage instrumentation
+      - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
-          cargo build --locked --workspace --all-features
+          cargo build --locked --package ${{ matrix.package }} --all-features
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
-          cargo test --locked --all-features --all-targets
+          cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
       - name: Generate coverage report
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov report --locked --lcov --output-path lcov.info
-      - name: Record Rust version
-        run: echo "RUST=$(rustc --version)" >> "$GITHUB_ENV"
+          cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
+            --output-path lcov.info
       - name: Upload to codecov.io
         if: env.ACT != 'true'
         uses: codecov/codecov-action@v5
         with:
-          fail_ci_if_error: true
+          files: lcov.info
+          flags: ${{ matrix.package }}
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: ${{ needs.discover.outputs.flags }}
-          env_vars: OS,RUST
+          fail_ci_if_error: true
