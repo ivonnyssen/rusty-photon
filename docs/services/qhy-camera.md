@@ -22,7 +22,7 @@ Unlike `qhy-focuser` which uses serial communication, this service uses the QHYC
 
 - **Connection**: USB (via libusb / QHYCCD C SDK)
 - **SDK dependency**: Requires QHYCCD SDK installed at system level (headers + shared library)
-- **Platform**: Linux only (QHYCCD SDK is Linux-only for this project)
+- **Platform**: Linux, macOS, and Windows (SDK available for all three via `ivonnyssen/qhyccd-sdk-install`)
 - **Stream mode**: Single-frame mode only (live/video mode is deferred)
 - **Binning**: Symmetric only (bin_x == bin_y), mode depends on camera model (1x1, 2x2, 3x3, 4x4, 6x6, 8x8)
 - **Filter wheel**: USB filter wheel accessed via same SDK, position changes are asynchronous

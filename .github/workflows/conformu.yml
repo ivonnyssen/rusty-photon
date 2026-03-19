@@ -61,14 +61,6 @@ jobs:
       matrix:
         os: ${{ fromJson(needs.discover.outputs.os) }}
         service: ${{ fromJson(needs.discover.outputs.services) }}
-        exclude:
-          # qhy-camera requires the QHYCCD SDK which is Linux-only
-          - service:
-              name: qhy-camera
-            os: macos-latest
-          - service:
-              name: qhy-camera
-            os: windows-latest
 
     steps:
       - uses: actions/checkout@v6
@@ -79,8 +71,7 @@ jobs:
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
-      - name: Install QHYCCD SDK (Linux)
-        if: runner.os == 'Linux'
+      - name: Install QHYCCD SDK
         uses: ivonnyssen/qhyccd-sdk-install@v1
         with:
           version: "25.09.29"

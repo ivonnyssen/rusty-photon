@@ -80,13 +80,14 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
         package: ${{ fromJson(needs.discover.outputs.packages) }}
-        exclude:
-          # qhy-camera requires the QHYCCD SDK which is Linux-only
-          - package: qhy-camera
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      - name: Install QHYCCD SDK
+        uses: ivonnyssen/qhyccd-sdk-install@v1
+        with:
+          version: "25.09.29"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
