@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [filemonitor, phd2-guider, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app]
+        package: [filemonitor, phd2-guider, ppba-driver, qhy-camera, qhy-focuser, rp, sentinel, sentinel-app]
         sanitizer: [address, leak]
     # CARGO_BUILD_TARGET makes every cargo invocation (including `cargo run`
     # spawned by BDD tests) implicitly use --target. This is critical because
@@ -40,6 +40,15 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      - name: Install libusb
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install QHYCCD SDK
+        uses: ivonnyssen/qhyccd-sdk-install@v1
+        with:
+          version: "25.09.29"
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |

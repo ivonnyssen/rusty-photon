@@ -3,6 +3,7 @@ members = [
   "services/filemonitor",
   "services/phd2-guider",
   "services/ppba-driver",
+  "services/qhy-camera",
   "services/qhy-focuser",
   "services/rp",
   "services/sentinel",

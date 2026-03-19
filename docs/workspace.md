@@ -14,6 +14,7 @@ belong in any single service design doc.
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
+| [qhy-camera](services/qhy-camera.md) | Camera + FilterWheel | 11116 | `docs/services/qhy-camera.md` |
 | sentinel-app | — (Leptos web frontend for sentinel) | — | — |
 
 ## Documentation Index
@@ -62,7 +63,7 @@ main.rs        — Entry point
 | Service | rust-version |
 |---------|-------------|
 | phd2-guider | 1.85.0 |
-| filemonitor, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app | 1.88.0 |
+| filemonitor, ppba-driver, qhy-camera, qhy-focuser, rp, sentinel, sentinel-app | 1.88.0 |
 
 ## Workspace Dependencies
 

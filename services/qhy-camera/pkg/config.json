@@ -1,0 +1,24 @@
+{
+  "server": {
+    "port": 11116
+  },
+  "cameras": [
+    {
+      "unique_id": "QHY600M-abc123",
+      "name": "QHY600M Main Camera",
+      "description": "QHYCCD QHY600M cooled CMOS camera",
+      "device_number": 0,
+      "enabled": true
+    }
+  ],
+  "filter_wheels": [
+    {
+      "unique_id": "CFW=QHY600M-abc123",
+      "name": "QHYCCD Filter Wheel",
+      "description": "QHYCCD CFW3 filter wheel",
+      "device_number": 0,
+      "enabled": true,
+      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"]
+    }
+  ]
+}
