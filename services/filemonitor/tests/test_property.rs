@@ -34,6 +34,7 @@ fn create_case_insensitive_config() -> Config {
         server: ServerConfig {
             port: 8080,
             device_number: 0,
+            discovery_port: None,
         },
     }
 }
@@ -67,6 +68,7 @@ fn create_test_config() -> Config {
         server: ServerConfig {
             port: 8080,
             device_number: 0,
+            discovery_port: None,
         },
     }
 }
@@ -127,6 +129,7 @@ proptest! {
             server: ServerConfig {
                 port: 8080,
                 device_number: 0,
+                discovery_port: None,
             },
         };
 
@@ -181,6 +184,7 @@ proptest! {
             server: ServerConfig {
                 port: 8080,
                 device_number: 0,
+                discovery_port: None,
             },
         };
 
@@ -220,6 +224,7 @@ proptest! {
             server: ServerConfig {
                 port,
                 device_number: 0,
+                discovery_port: None,
             },
         };
 
@@ -259,6 +264,7 @@ proptest! {
             server: ServerConfig {
                 port: 8080,
                 device_number: 0,
+                discovery_port: None,
             },
         };
 

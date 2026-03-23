@@ -55,6 +55,12 @@ pub enum RuleType {
 pub struct ServerConfig {
     pub port: u16,
     pub device_number: u32,
+    #[serde(default = "default_discovery_port")]
+    pub discovery_port: Option<u16>,
+}
+
+fn default_discovery_port() -> Option<u16> {
+    Some(32227)
 }
 
 #[derive(Debug)]
@@ -240,6 +246,7 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
     let mut server = Server::new(CargoServerInfo!());
     server.listen_addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
+    server.discovery_port = config.server.discovery_port;
     server.devices.register(device);
 
     tracing::info!(
