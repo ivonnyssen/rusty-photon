@@ -40,8 +40,9 @@ async fn try_start_with_config(world: &mut FilemonitorWorld) {
         .clone();
     match FilemonitorHandle::try_start(&path).await {
         Ok(handle) => {
+            let monitor = world.acquire_monitor(&handle).await;
+            world.monitor = Some(monitor);
             world.filemonitor = Some(handle);
-            world.client = Some(reqwest::Client::new());
             world.last_error = None;
         }
         Err(e) => world.last_error = Some(e),

@@ -1,6 +1,10 @@
+use ascom_alpaca::api::{SafetyMonitor, TypedDevice};
+use ascom_alpaca::Client as AlpacaClient;
 use cucumber::World;
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -16,9 +20,9 @@ pub struct ParsingRuleConfig {
 
 #[derive(Debug, Default, World)]
 pub struct FilemonitorWorld {
-    // Process handle (replaces Arc<FileMonitorDevice>)
+    // Process handle
     pub filemonitor: Option<FilemonitorHandle>,
-    pub client: Option<reqwest::Client>,
+    pub monitor: Option<Arc<dyn SafetyMonitor>>,
 
     // Config building
     pub rules: Vec<ParsingRuleConfig>,
@@ -47,6 +51,11 @@ impl FilemonitorWorld {
         std::fs::write(&path, content).expect("failed to write temp file");
         self.temp_file_path = Some(path.clone());
         path
+    }
+
+    /// Convenience accessor for the typed SafetyMonitor device.
+    pub fn monitor(&self) -> &Arc<dyn SafetyMonitor> {
+        self.monitor.as_ref().expect("monitor not acquired")
     }
 
     /// Build a JSON config from the accumulated world state.
@@ -97,7 +106,7 @@ impl FilemonitorWorld {
         })
     }
 
-    /// Write config to temp dir, start the binary, wait for healthy.
+    /// Write config to temp dir, start the binary, acquire typed client.
     pub async fn start_filemonitor(&mut self) {
         let config_json = self.build_config_json();
         let dir = self
@@ -107,9 +116,9 @@ impl FilemonitorWorld {
         std::fs::write(&config_path, config_json.to_string()).expect("failed to write config");
 
         let handle = FilemonitorHandle::start(config_path.to_str().unwrap()).await;
-        self.wait_for_healthy(&handle).await;
+        let monitor = self.acquire_monitor(&handle).await;
+        self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
-        self.client = Some(reqwest::Client::new());
     }
 
     /// Start filemonitor from an external config file (modifying port to 0).
@@ -127,70 +136,24 @@ impl FilemonitorWorld {
         std::fs::write(&config_path, config.to_string()).expect("failed to write config");
 
         let handle = FilemonitorHandle::start(config_path.to_str().unwrap()).await;
-        self.wait_for_healthy(&handle).await;
+        let monitor = self.acquire_monitor(&handle).await;
+        self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
-        self.client = Some(reqwest::Client::new());
     }
 
-    async fn wait_for_healthy(&self, handle: &FilemonitorHandle) {
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/v1/safetymonitor/0/connected", handle.base_url);
+    /// Poll until the server returns a SafetyMonitor device via the typed client.
+    pub async fn acquire_monitor(&self, handle: &FilemonitorHandle) -> Arc<dyn SafetyMonitor> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    return;
+            if let Ok(mut devices) = client.get_devices().await {
+                if let Some(device) = devices.next() {
+                    let TypedDevice::SafetyMonitor(monitor) = device;
+                    return monitor;
                 }
             }
         }
         panic!("filemonitor did not become healthy within 30 seconds");
-    }
-
-    pub fn alpaca_url(&self, method: &str) -> String {
-        let fm = self.filemonitor.as_ref().expect("filemonitor not started");
-        format!("{}/api/v1/safetymonitor/0/{}", fm.base_url, method)
-    }
-
-    pub async fn alpaca_get(&self, method: &str) -> Value {
-        let client = self.client.as_ref().expect("client not created");
-        let url = self.alpaca_url(method);
-        let resp = client.get(&url).send().await.expect("HTTP GET failed");
-        resp.json::<Value>()
-            .await
-            .expect("failed to parse response")
-    }
-
-    pub async fn alpaca_put_connected(&self, connected: bool) -> Result<(), String> {
-        let client = self.client.as_ref().expect("client not created");
-        let url = self.alpaca_url("connected");
-        let resp = client
-            .put(&url)
-            .form(&[
-                ("Connected", if connected { "true" } else { "false" }),
-                ("ClientID", "1"),
-                ("ClientTransactionID", "1"),
-            ])
-            .send()
-            .await
-            .expect("HTTP PUT failed");
-        let json: Value = resp.json().await.expect("failed to parse response");
-        let error_number = json["ErrorNumber"].as_i64().unwrap_or(0);
-        if error_number != 0 {
-            let error_message = json["ErrorMessage"].as_str().unwrap_or("").to_string();
-            Err(format!("Error {}: {}", error_number, error_message))
-        } else {
-            Ok(())
-        }
-    }
-
-    pub async fn alpaca_get_issafe(&self) -> Result<bool, (i32, String)> {
-        let json = self.alpaca_get("issafe").await;
-        let error_number = json["ErrorNumber"].as_i64().unwrap_or(0) as i32;
-        if error_number != 0 {
-            let error_message = json["ErrorMessage"].as_str().unwrap_or("").to_string();
-            Err((error_number, error_message))
-        } else {
-            Ok(json["Value"].as_bool().unwrap_or(false))
-        }
     }
 }

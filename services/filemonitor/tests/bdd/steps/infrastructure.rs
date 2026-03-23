@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Test infrastructure: filemonitor process management.
 
 use std::process::Stdio;
@@ -11,7 +10,6 @@ use tracing::debug;
 #[derive(Debug)]
 pub struct FilemonitorHandle {
     pub child: Option<tokio::process::Child>,
-    pub base_url: String,
     pub port: u16,
     pub stdout_drain: Option<tokio::task::JoinHandle<()>>,
 }
@@ -62,7 +60,6 @@ impl FilemonitorHandle {
 
         Self {
             child: Some(child),
-            base_url: format!("http://127.0.0.1:{}", port),
             port,
             stdout_drain: Some(stdout_drain),
         }
@@ -102,7 +99,6 @@ impl FilemonitorHandle {
         match tokio::time::timeout(Duration::from_secs(10), parse_bound_port(stdout)).await {
             Ok(Some((port, stdout_drain))) => Ok(Self {
                 child: Some(child),
-                base_url: format!("http://127.0.0.1:{}", port),
                 port,
                 stdout_drain: Some(stdout_drain),
             }),
@@ -163,7 +159,7 @@ impl FilemonitorHandle {
                 let _ = pid;
 
                 match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(_) => return,
+                    Ok(_) => (),
                     Err(_) => {
                         debug!("filemonitor did not exit after SIGTERM, sending SIGKILL");
                         let _ = child.kill().await;

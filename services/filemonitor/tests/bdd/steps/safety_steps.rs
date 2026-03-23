@@ -1,4 +1,5 @@
 use crate::world::{FilemonitorWorld, ParsingRuleConfig};
+use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then};
 
 #[given("case-insensitive matching")]
@@ -69,7 +70,7 @@ async fn filemonitor_running_with_rules_and_polling(world: &mut FilemonitorWorld
 
 #[then(expr = "is_safe should return {word}")]
 async fn is_safe_should_return(world: &mut FilemonitorWorld, expected: String) {
-    let result = world.alpaca_get_issafe().await.unwrap();
+    let result = world.monitor().is_safe().await.unwrap();
     let expected_val = expected == "true";
     assert_eq!(
         result, expected_val,
@@ -79,19 +80,23 @@ async fn is_safe_should_return(world: &mut FilemonitorWorld, expected: String) {
 
 #[then("is_safe should fail with a not connected error")]
 async fn is_safe_should_fail_not_connected(world: &mut FilemonitorWorld) {
-    let result = world.alpaca_get_issafe().await;
-    let (error_number, error_message) = result.expect_err("expected NotConnected error but got Ok");
+    let err = world
+        .monitor()
+        .is_safe()
+        .await
+        .expect_err("expected NotConnected error but got Ok");
     assert_eq!(
-        error_number, 1031,
-        "expected NOT_CONNECTED error code (1031) but got {}: {}",
-        error_number, error_message
+        err.code,
+        ASCOMErrorCode::NOT_CONNECTED,
+        "expected NOT_CONNECTED error code but got {:?}: {}",
+        err.code,
+        err
     );
 }
 
 #[then(expr = "the name should be {string}")]
 async fn name_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let json = world.alpaca_get("name").await;
-    let name = json["Value"].as_str().unwrap_or("");
+    let name = world.monitor().name().await.unwrap();
     assert_eq!(
         name, expected,
         "expected name '{expected}' but got '{name}'"
@@ -100,21 +105,18 @@ async fn name_should_be(world: &mut FilemonitorWorld, expected: String) {
 
 #[then(expr = "the description should be {string}")]
 async fn description_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let json = world.alpaca_get("description").await;
-    let description = json["Value"].as_str().unwrap_or("");
+    let description = world.monitor().description().await.unwrap();
     assert_eq!(description, expected);
 }
 
 #[then(expr = "the driver info should be {string}")]
 async fn driver_info_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let json = world.alpaca_get("driverinfo").await;
-    let driver_info = json["Value"].as_str().unwrap_or("");
+    let driver_info = world.monitor().driver_info().await.unwrap();
     assert_eq!(driver_info, expected);
 }
 
 #[then(expr = "the driver version should be {string}")]
 async fn driver_version_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let json = world.alpaca_get("driverversion").await;
-    let driver_version = json["Value"].as_str().unwrap_or("");
+    let driver_version = world.monitor().driver_version().await.unwrap();
     assert_eq!(driver_version, expected);
 }

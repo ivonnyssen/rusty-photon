@@ -20,33 +20,31 @@ async fn filemonitor_running_monitoring(world: &mut FilemonitorWorld, path: Stri
 
 #[when("I connect the device")]
 async fn connect_device(world: &mut FilemonitorWorld) {
-    world.alpaca_put_connected(true).await.unwrap();
+    world.monitor().set_connected(true).await.unwrap();
 }
 
 #[when("I disconnect the device")]
 async fn disconnect_device(world: &mut FilemonitorWorld) {
-    world.alpaca_put_connected(false).await.unwrap();
+    world.monitor().set_connected(false).await.unwrap();
 }
 
 #[when("I try to connect the device")]
 async fn try_connect_device(world: &mut FilemonitorWorld) {
-    match world.alpaca_put_connected(true).await {
+    match world.monitor().set_connected(true).await {
         Ok(()) => world.last_error = None,
-        Err(e) => world.last_error = Some(e),
+        Err(e) => world.last_error = Some(e.to_string()),
     }
 }
 
 #[then("the device should be disconnected")]
 async fn device_should_be_disconnected(world: &mut FilemonitorWorld) {
-    let json = world.alpaca_get("connected").await;
-    let connected = json["Value"].as_bool().unwrap_or(true);
+    let connected = world.monitor().connected().await.unwrap();
     assert!(!connected, "expected disconnected but device is connected");
 }
 
 #[then("the device should be connected")]
 async fn device_should_be_connected(world: &mut FilemonitorWorld) {
-    let json = world.alpaca_get("connected").await;
-    let connected = json["Value"].as_bool().unwrap_or(false);
+    let connected = world.monitor().connected().await.unwrap();
     assert!(connected, "expected connected but device is disconnected");
 }
 

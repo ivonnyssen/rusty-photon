@@ -1,6 +1,5 @@
 use crate::world::FilemonitorWorld;
 use cucumber::{then, when};
-use serde_json::Value;
 
 #[when(expr = "{int} tasks toggle the connection while {int} tasks read it")]
 async fn concurrent_toggle_and_read(
@@ -8,39 +7,20 @@ async fn concurrent_toggle_and_read(
     toggle_count: usize,
     read_count: usize,
 ) {
-    let client = world.client.clone().expect("client not created");
-    let base_url = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .base_url
-        .clone();
-    let connected_url = format!("{}/api/v1/safetymonitor/0/connected", base_url);
-
+    let monitor = world.monitor().clone();
     let mut handles = Vec::new();
 
     for i in 0..toggle_count {
-        let client = client.clone();
-        let url = connected_url.clone();
+        let m = monitor.clone();
         handles.push(tokio::spawn(async move {
-            let connected = if i % 2 == 0 { "true" } else { "false" };
-            let _ = client
-                .put(&url)
-                .form(&[
-                    ("Connected", connected),
-                    ("ClientID", "1"),
-                    ("ClientTransactionID", "1"),
-                ])
-                .send()
-                .await;
+            let _ = m.set_connected(i % 2 == 0).await;
         }));
     }
 
     for _ in 0..read_count {
-        let client = client.clone();
-        let url = connected_url.clone();
+        let m = monitor.clone();
         handles.push(tokio::spawn(async move {
-            let _ = client.get(&url).send().await;
+            let _ = m.connected().await;
         }));
     }
 
@@ -51,18 +31,12 @@ async fn concurrent_toggle_and_read(
 
 #[when(expr = "{int} tasks check is_safe concurrently")]
 async fn concurrent_issafe(world: &mut FilemonitorWorld, task_count: usize) {
-    let client = world.client.clone().expect("client not created");
-    let url = world.alpaca_url("issafe");
+    let monitor = world.monitor().clone();
 
     let handles: Vec<_> = (0..task_count)
         .map(|_| {
-            let client = client.clone();
-            let url = url.clone();
-            tokio::spawn(async move {
-                let resp = client.get(&url).send().await.unwrap();
-                let json: Value = resp.json().await.unwrap();
-                json["Value"].as_bool().unwrap_or(false)
-            })
+            let m = monitor.clone();
+            tokio::spawn(async move { m.is_safe().await.unwrap_or(false) })
         })
         .collect();
 
@@ -79,48 +53,24 @@ async fn concurrent_issafe(world: &mut FilemonitorWorld, task_count: usize) {
 
 #[when(expr = "{int} tasks perform mixed operations concurrently")]
 async fn concurrent_mixed_operations(world: &mut FilemonitorWorld, task_count: usize) {
-    let client = world.client.clone().expect("client not created");
-    let base_url = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .base_url
-        .clone();
+    let monitor = world.monitor().clone();
 
     let handles: Vec<_> = (0..task_count)
         .map(|i| {
-            let client = client.clone();
-            let base_url = base_url.clone();
+            let m = monitor.clone();
             tokio::spawn(async move {
                 match i % 4 {
                     0 => {
-                        let _ = client
-                            .put(format!("{}/api/v1/safetymonitor/0/connected", base_url))
-                            .form(&[
-                                ("Connected", "true"),
-                                ("ClientID", "1"),
-                                ("ClientTransactionID", "1"),
-                            ])
-                            .send()
-                            .await;
+                        let _ = m.set_connected(true).await;
                     }
                     1 => {
-                        let _ = client
-                            .get(format!("{}/api/v1/safetymonitor/0/issafe", base_url))
-                            .send()
-                            .await;
+                        let _ = m.is_safe().await;
                     }
                     2 => {
-                        let _ = client
-                            .get(format!("{}/api/v1/safetymonitor/0/name", base_url))
-                            .send()
-                            .await;
+                        let _ = m.name().await;
                     }
                     _ => {
-                        let _ = client
-                            .get(format!("{}/api/v1/safetymonitor/0/driverversion", base_url))
-                            .send()
-                            .await;
+                        let _ = m.driver_version().await;
                     }
                 }
             })

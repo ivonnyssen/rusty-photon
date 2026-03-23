@@ -9,7 +9,7 @@ rust-version = "1.88.0"
 description = "File monitoring service for Rusty Photon"
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "test"] }
+ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "test", "client"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -73,7 +73,6 @@ require-sh = true
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }
-reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
