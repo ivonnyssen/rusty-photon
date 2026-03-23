@@ -7,11 +7,18 @@ mod steps;
 use cucumber::World as _;
 use world::PpbaWorld;
 
-// Use current_thread to ensure deterministic task scheduling.
-// The serial manager spawns a background poller whose first tick fires
-// immediately — with a multi-threaded runtime, the poller races with
-// test steps for mock responses, causing non-deterministic failures.
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
-    PpbaWorld::run("tests/features").await;
+    PpbaWorld::cucumber()
+        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+            Box::pin(async move {
+                if let Some(world) = maybe_world {
+                    if let Some(ppba) = world.ppba.as_mut() {
+                        ppba.stop().await;
+                    }
+                }
+            })
+        })
+        .run_and_exit("tests/features")
+        .await;
 }

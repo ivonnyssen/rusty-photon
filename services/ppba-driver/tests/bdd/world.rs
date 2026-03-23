@@ -1,161 +1,134 @@
 //! World struct for PPBA Driver BDD tests
 
-use std::sync::Arc;
+use std::time::Duration;
 
 use cucumber::World;
-use ppba_driver::io::SerialPortFactory;
-use ppba_driver::{Config, PpbaObservingConditionsDevice, PpbaSwitchDevice, SerialManager};
 
-#[path = "mock_serial.rs"]
-pub mod mock_serial;
+use crate::steps::infrastructure::{alpaca_error_number, alpaca_get, is_alpaca_error, PpbaHandle};
 
 #[derive(Debug, Default, World)]
 pub struct PpbaWorld {
-    pub config: Option<Config>,
-    pub switch_device: Option<Arc<PpbaSwitchDevice>>,
-    pub oc_device: Option<Arc<PpbaObservingConditionsDevice>>,
-    pub serial_manager: Option<Arc<SerialManager>>,
-    pub last_error: Option<String>,
-    pub last_error_code: Option<u16>,
-    #[cfg(feature = "mock")]
-    pub server_port: Option<u16>,
-    #[cfg(feature = "mock")]
-    pub server_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the running ppba-driver process
+    pub ppba: Option<PpbaHandle>,
+
+    /// Base URL of the running server (e.g. "http://127.0.0.1:12345")
+    pub base_url: Option<String>,
+
+    /// Config JSON built up during Given steps, written to temp file before start
+    pub config: serde_json::Value,
+
+    /// ASCOM error number from the last operation (0 = no error)
+    pub last_error_number: Option<i64>,
+
+    /// ASCOM error message from the last operation
+    pub last_error_message: Option<String>,
 }
 
 impl PpbaWorld {
-    /// Build a switch device with mock serial responses and a long polling interval.
-    pub fn build_switch_device_with_responses(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = self.config.clone().unwrap_or_default();
-        config.serial.polling_interval_ms = 60_000;
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.switch_device = Some(Arc::new(PpbaSwitchDevice::new(
-            config.switch,
-            serial_manager,
-        )));
+    /// Start the ppba-driver binary with the current config.
+    /// Writes config to a temp file and spawns the process.
+    pub async fn start_ppba(&mut self) {
+        let config_path = std::env::temp_dir().join(format!(
+            "ppba-bdd-config-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&self.config).unwrap(),
+        )
+        .await
+        .expect("failed to write test config");
+
+        let handle = PpbaHandle::start(config_path.to_str().unwrap()).await;
+        self.base_url = Some(handle.base_url.clone());
+        self.ppba = Some(handle);
+
+        // Wait for the server to be ready
+        self.wait_for_ready().await;
     }
 
-    /// Build a switch device with custom config and mock responses.
-    pub fn build_switch_device_with_config_and_responses(
-        &mut self,
-        config: Config,
-        responses: Vec<String>,
-    ) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = config;
-        config.serial.polling_interval_ms = 60_000;
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.switch_device = Some(Arc::new(PpbaSwitchDevice::new(
-            config.switch,
-            serial_manager,
-        )));
+    /// Return the base URL for the switch device endpoints.
+    pub fn switch_url(&self) -> String {
+        format!(
+            "{}/api/v1/switch/0",
+            self.base_url.as_ref().expect("server not started")
+        )
     }
 
-    /// Build an OC device with mock serial responses.
-    ///
-    /// Uses default polling interval (5s) to preserve the correct averaging window
-    /// calculation (polling_interval_ms * 60 = 300_000ms = 5 min). Responses must
-    /// include poller-tick padding (status + PS pair) after the connect sequence.
-    pub fn build_oc_device_with_responses(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let config = self.config.clone().unwrap_or_default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.oc_device = Some(Arc::new(PpbaObservingConditionsDevice::new(
-            config.observingconditions,
-            serial_manager,
-        )));
+    /// Return the base URL for the OC device endpoints.
+    pub fn oc_url(&self) -> String {
+        format!(
+            "{}/api/v1/observingconditions/0",
+            self.base_url.as_ref().expect("server not started")
+        )
     }
 
-    /// Build an OC device with custom config and mock responses.
-    ///
-    /// Uses default polling interval to preserve the correct averaging window.
-    pub fn build_oc_device_with_config_and_responses(
-        &mut self,
-        config: Config,
-        responses: Vec<String>,
-    ) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.oc_device = Some(Arc::new(PpbaObservingConditionsDevice::new(
-            config.observingconditions,
-            serial_manager,
-        )));
-    }
+    /// Poll until the server is ready to accept requests.
+    /// Tries device endpoints and management endpoint until HTTP 200.
+    async fn wait_for_ready(&self) {
+        let base = self.base_url.as_ref().expect("server not started");
+        let client = reqwest::Client::new();
 
-    /// Abort the server task if one was spawned (server_registration scenarios).
-    #[cfg(feature = "mock")]
-    fn abort_server(&mut self) {
-        if let Some(handle) = self.server_handle.take() {
-            handle.abort();
+        // Try device endpoints and management endpoint (always available)
+        let urls = [
+            format!("{}/api/v1/switch/0/name", base),
+            format!("{}/api/v1/observingconditions/0/name", base),
+            format!("{}/management/apiversions", base),
+        ];
+
+        for _ in 0..120 {
+            for url in &urls {
+                if let Ok(resp) = client.get(url).send().await {
+                    if resp.status().is_success() {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        panic!("ppba-driver did not become ready within 30 seconds");
     }
 
-    /// Build a serial manager directly (no device) with mock responses and long polling.
-    pub fn build_manager_with_responses(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = self.config.clone().unwrap_or_default();
-        config.serial.polling_interval_ms = 60_000;
-        self.serial_manager = Some(Arc::new(SerialManager::new(config, factory)));
+    /// Poll until switch data is available (the status cache has been populated).
+    /// Checks GET getswitchvalue?Id=10 (input voltage) until it returns a non-error value.
+    pub async fn wait_for_switch_data(&self) {
+        let switch_url = self.switch_url();
+        for _ in 0..120 {
+            let resp = alpaca_get(&switch_url, "getswitchvalue?Id=10").await;
+            if !is_alpaca_error(&resp) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("switch data did not become available within 30 seconds");
     }
 
-    /// Build a switch device with a failing factory.
-    pub fn build_switch_device_with_failing_factory(&mut self, error_msg: &str) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::FailingFactory::new(error_msg));
-        let config = self.config.clone().unwrap_or_default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.switch_device = Some(Arc::new(PpbaSwitchDevice::new(
-            config.switch,
-            serial_manager,
-        )));
+    /// Poll until OC data is available (temperature returns a non-error value).
+    pub async fn wait_for_oc_data(&self) {
+        let oc_url = self.oc_url();
+        for _ in 0..120 {
+            let resp = alpaca_get(&oc_url, "temperature").await;
+            if !is_alpaca_error(&resp) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("OC data did not become available within 30 seconds");
     }
 
-    /// Build an OC device with a failing factory.
-    pub fn build_oc_device_with_failing_factory(&mut self, error_msg: &str) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::FailingFactory::new(error_msg));
-        let config = self.config.clone().unwrap_or_default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.oc_device = Some(Arc::new(PpbaObservingConditionsDevice::new(
-            config.observingconditions,
-            serial_manager,
-        )));
-    }
-
-    /// Build a serial manager with a failing factory.
-    pub fn build_manager_with_failing_factory(&mut self, error_msg: &str) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::FailingFactory::new(error_msg));
-        let config = self.config.clone().unwrap_or_default();
-        self.serial_manager = Some(Arc::new(SerialManager::new(config, factory)));
-    }
-
-    /// Build a switch device with bad ping response.
-    pub fn build_switch_device_with_bad_ping(&mut self) {
-        self.build_switch_device_with_responses(vec!["GARBAGE".to_string()]);
-    }
-
-    /// Build an OC device with bad ping response.
-    pub fn build_oc_device_with_bad_ping(&mut self) {
-        self.build_oc_device_with_responses(vec!["GARBAGE".to_string()]);
-    }
-}
-
-#[cfg(feature = "mock")]
-impl Drop for PpbaWorld {
-    fn drop(&mut self) {
-        self.abort_server();
+    /// Capture an ASCOM Alpaca response: if it has an error, store error info;
+    /// otherwise clear the error state.
+    pub fn capture_response(&mut self, resp: &serde_json::Value) {
+        let err = alpaca_error_number(resp);
+        if err != 0 {
+            self.last_error_number = Some(err);
+            self.last_error_message = Some(resp["ErrorMessage"].as_str().unwrap_or("").to_string());
+        } else {
+            self.last_error_number = None;
+            self.last_error_message = None;
+        }
     }
 }

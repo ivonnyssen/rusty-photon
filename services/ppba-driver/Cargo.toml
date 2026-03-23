@@ -42,6 +42,8 @@ proptest = { workspace = true }
 reqwest = { workspace = true }
 cucumber = { workspace = true }
 cargo-husky = { workspace = true }
+tempfile = { workspace = true }
+libc = "0.2"
 
 [[test]]
 name = "bdd"
