@@ -1,24 +1,25 @@
 @serial
 Feature: Concurrent operation safety
-  The safety monitor must handle concurrent operations
+  The safety monitor must handle concurrent HTTP operations
   without panics or data races.
 
   Scenario: Concurrent connection state changes
     Given a monitoring file containing "test"
-    And a device configured to monitor this file
-    When 10 tasks toggle the connection state while 10 tasks read it
+    And filemonitor is running
+    When 10 tasks toggle the connection while 10 tasks read it
     Then no panics should occur
 
-  Scenario: Concurrent safety evaluations are correct
+  Scenario: Concurrent safety evaluations return consistent results
     Given case-sensitive matching
     And a contains rule with pattern "SAFE" that evaluates to safe
-    And a device configured with these rules
-    When 5 tasks evaluate "SAFE operation" and "unsafe operation" 10 times each
-    Then all "SAFE operation" results should be safe
-    And all "unsafe operation" results should be unsafe
+    And a monitoring file containing "SAFE operation"
+    And filemonitor is running with these rules
+    When I connect the device
+    And 50 tasks check is_safe concurrently
+    Then all concurrent is_safe results should be true
 
   Scenario: Stress test with mixed concurrent operations
     Given a monitoring file containing "test"
-    And a device configured to monitor this file
+    And filemonitor is running
     When 20 tasks perform mixed operations concurrently
     Then no panics should occur

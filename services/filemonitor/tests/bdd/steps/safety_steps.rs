@@ -1,13 +1,5 @@
-use crate::world::FilemonitorWorld;
-use ascom_alpaca::api::{Device, SafetyMonitor};
-use ascom_alpaca::ASCOMErrorCode;
-use cucumber::{given, then, when};
-use filemonitor::{
-    Config, DeviceConfig, FileConfig, FileMonitorDevice, ParsingConfig, ParsingRule, RuleType,
-    ServerConfig,
-};
-use std::path::PathBuf;
-use std::sync::Arc;
+use crate::world::{FilemonitorWorld, ParsingRuleConfig};
+use cucumber::{given, then};
 
 #[given("case-insensitive matching")]
 fn case_insensitive(world: &mut FilemonitorWorld) {
@@ -21,8 +13,8 @@ fn case_sensitive(world: &mut FilemonitorWorld) {
 
 #[given(expr = "a contains rule with pattern {string} that evaluates to safe")]
 fn contains_rule_safe(world: &mut FilemonitorWorld, pattern: String) {
-    world.rules.push(ParsingRule {
-        rule_type: RuleType::Contains,
+    world.rules.push(ParsingRuleConfig {
+        rule_type: "contains".to_string(),
         pattern,
         safe: true,
     });
@@ -30,8 +22,8 @@ fn contains_rule_safe(world: &mut FilemonitorWorld, pattern: String) {
 
 #[given(expr = "a contains rule with pattern {string} that evaluates to unsafe")]
 fn contains_rule_unsafe(world: &mut FilemonitorWorld, pattern: String) {
-    world.rules.push(ParsingRule {
-        rule_type: RuleType::Contains,
+    world.rules.push(ParsingRuleConfig {
+        rule_type: "contains".to_string(),
         pattern,
         safe: false,
     });
@@ -48,8 +40,8 @@ fn resolve_regex_pattern(name: &str) -> String {
 
 #[given(expr = "a regex rule with pattern {string} that evaluates to safe")]
 fn regex_rule_safe(world: &mut FilemonitorWorld, pattern: String) {
-    world.rules.push(ParsingRule {
-        rule_type: RuleType::Regex,
+    world.rules.push(ParsingRuleConfig {
+        rule_type: "regex".to_string(),
         pattern: resolve_regex_pattern(&pattern),
         safe: true,
     });
@@ -57,136 +49,27 @@ fn regex_rule_safe(world: &mut FilemonitorWorld, pattern: String) {
 
 #[given(expr = "a regex rule with pattern {string} that evaluates to unsafe")]
 fn regex_rule_unsafe(world: &mut FilemonitorWorld, pattern: String) {
-    world.rules.push(ParsingRule {
-        rule_type: RuleType::Regex,
+    world.rules.push(ParsingRuleConfig {
+        rule_type: "regex".to_string(),
         pattern: resolve_regex_pattern(&pattern),
         safe: false,
     });
 }
 
-#[given("a device configured with these rules")]
-fn device_with_rules(world: &mut FilemonitorWorld) {
-    let config = Config {
-        device: DeviceConfig {
-            name: "Test".to_string(),
-            unique_id: "test-001".to_string(),
-            description: "Test device".to_string(),
-        },
-        file: FileConfig {
-            path: PathBuf::from("nonexistent.txt"),
-            polling_interval_seconds: 60,
-        },
-        parsing: ParsingConfig {
-            rules: world.rules.clone(),
-            case_sensitive: world.case_sensitive,
-        },
-        server: ServerConfig {
-            port: 0,
-            device_number: 0,
-        },
-    };
-    world.device = Some(Arc::new(FileMonitorDevice::new(config)));
+#[given("filemonitor is running with these rules")]
+async fn filemonitor_running_with_rules(world: &mut FilemonitorWorld) {
+    world.start_filemonitor().await;
 }
 
-#[given("a device configured with these rules and monitoring this file")]
-fn device_with_rules_and_file(world: &mut FilemonitorWorld) {
-    let path = world.temp_file_path.clone().expect("temp file not created");
-    let config = Config {
-        device: DeviceConfig {
-            name: "Test".to_string(),
-            unique_id: "test-001".to_string(),
-            description: "Test device".to_string(),
-        },
-        file: FileConfig {
-            path,
-            polling_interval_seconds: 60,
-        },
-        parsing: ParsingConfig {
-            rules: world.rules.clone(),
-            case_sensitive: world.case_sensitive,
-        },
-        server: ServerConfig {
-            port: 0,
-            device_number: 0,
-        },
-    };
-    world.device = Some(Arc::new(FileMonitorDevice::new(config)));
-}
-
-#[given(
-    expr = "a device configured with these rules and monitoring this file with {int} second polling"
-)]
-fn device_with_rules_file_and_polling(world: &mut FilemonitorWorld, interval: u64) {
-    let path = world.temp_file_path.clone().expect("temp file not created");
-    let config = Config {
-        device: DeviceConfig {
-            name: "Test".to_string(),
-            unique_id: "test-001".to_string(),
-            description: "Test device".to_string(),
-        },
-        file: FileConfig {
-            path,
-            polling_interval_seconds: interval,
-        },
-        parsing: ParsingConfig {
-            rules: world.rules.clone(),
-            case_sensitive: world.case_sensitive,
-        },
-        server: ServerConfig {
-            port: 0,
-            device_number: 0,
-        },
-    };
-    world.device = Some(Arc::new(FileMonitorDevice::new(config)));
-}
-
-#[given("a device configured with no rules and monitoring this file")]
-fn device_with_no_rules_and_file(world: &mut FilemonitorWorld) {
-    let path = world.temp_file_path.clone().expect("temp file not created");
-    let config = Config {
-        device: DeviceConfig {
-            name: "Test".to_string(),
-            unique_id: "test-001".to_string(),
-            description: "Test device".to_string(),
-        },
-        file: FileConfig {
-            path,
-            polling_interval_seconds: 60,
-        },
-        parsing: ParsingConfig {
-            rules: vec![],
-            case_sensitive: false,
-        },
-        server: ServerConfig {
-            port: 0,
-            device_number: 0,
-        },
-    };
-    world.device = Some(Arc::new(FileMonitorDevice::new(config)));
-}
-
-#[when(expr = "I evaluate the safety of {string}")]
-fn evaluate_safety(world: &mut FilemonitorWorld, content: String) {
-    let device = world.device.as_ref().expect("device not created");
-    world.safety_result = Some(device.evaluate_safety(&content));
-}
-
-#[then("the result should be safe")]
-fn result_should_be_safe(world: &mut FilemonitorWorld) {
-    let result = world.safety_result.expect("no safety result");
-    assert!(result, "expected safe but got unsafe");
-}
-
-#[then("the result should be unsafe")]
-fn result_should_be_unsafe(world: &mut FilemonitorWorld) {
-    let result = world.safety_result.expect("no safety result");
-    assert!(!result, "expected unsafe but got safe");
+#[given(expr = "filemonitor is running with these rules and {int} second polling")]
+async fn filemonitor_running_with_rules_and_polling(world: &mut FilemonitorWorld, interval: u64) {
+    world.polling_interval = interval;
+    world.start_filemonitor().await;
 }
 
 #[then(expr = "is_safe should return {word}")]
 async fn is_safe_should_return(world: &mut FilemonitorWorld, expected: String) {
-    let device = world.device.as_ref().expect("device not created");
-    let result = device.is_safe().await.unwrap();
+    let result = world.alpaca_get_issafe().await.unwrap();
     let expected_val = expected == "true";
     assert_eq!(
         result, expected_val,
@@ -196,40 +79,42 @@ async fn is_safe_should_return(world: &mut FilemonitorWorld, expected: String) {
 
 #[then("is_safe should fail with a not connected error")]
 async fn is_safe_should_fail_not_connected(world: &mut FilemonitorWorld) {
-    let device = world.device.as_ref().expect("device not created");
-    let result = device.is_safe().await;
-    let err = result.expect_err("expected NotConnected error but got Ok");
+    let result = world.alpaca_get_issafe().await;
+    let (error_number, error_message) = result.expect_err("expected NotConnected error but got Ok");
     assert_eq!(
-        err.code,
-        ASCOMErrorCode::NOT_CONNECTED,
-        "expected NOT_CONNECTED error code but got {:?}",
-        err.code
+        error_number, 1031,
+        "expected NOT_CONNECTED error code (1031) but got {}: {}",
+        error_number, error_message
     );
 }
 
-#[then(expr = "the static name should be {string}")]
-fn static_name_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let device = world.device.as_ref().expect("device not created");
-    assert_eq!(device.static_name(), expected);
+#[then(expr = "the name should be {string}")]
+async fn name_should_be(world: &mut FilemonitorWorld, expected: String) {
+    let json = world.alpaca_get("name").await;
+    let name = json["Value"].as_str().unwrap_or("");
+    assert_eq!(
+        name, expected,
+        "expected name '{expected}' but got '{name}'"
+    );
 }
 
 #[then(expr = "the description should be {string}")]
 async fn description_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let device = world.device.as_ref().expect("device not created");
-    let description = device.description().await.unwrap();
+    let json = world.alpaca_get("description").await;
+    let description = json["Value"].as_str().unwrap_or("");
     assert_eq!(description, expected);
 }
 
 #[then(expr = "the driver info should be {string}")]
 async fn driver_info_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let device = world.device.as_ref().expect("device not created");
-    let driver_info = device.driver_info().await.unwrap();
+    let json = world.alpaca_get("driverinfo").await;
+    let driver_info = json["Value"].as_str().unwrap_or("");
     assert_eq!(driver_info, expected);
 }
 
 #[then(expr = "the driver version should be {string}")]
 async fn driver_version_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let device = world.device.as_ref().expect("device not created");
-    let driver_version = device.driver_version().await.unwrap();
+    let json = world.alpaca_get("driverversion").await;
+    let driver_version = json["Value"].as_str().unwrap_or("");
     assert_eq!(driver_version, expected);
 }

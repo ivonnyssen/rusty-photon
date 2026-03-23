@@ -45,6 +45,7 @@ cargo-husky = { version = "1", default-features = false, features = [
   "run-cargo-clippy",
   "run-for-all",
 ] }
+libc = "0.2"
 
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"

@@ -14,16 +14,17 @@ Feature: Configuration loading and validation
     And rule 2 should have pattern "CLOSED" and be unsafe
     And case sensitivity should be disabled
 
-  Scenario: Create a device from valid configuration
-    Given a configuration file at "tests/config.json"
-    When I load the configuration
-    And I create a device from the configuration
-    Then the device should exist
+  Scenario: Binary starts with valid configuration and serves metadata
+    Given filemonitor is running with configuration "tests/config.json"
+    Then the name should be "File Safety Monitor"
+    And the description should be "ASCOM Alpaca SafetyMonitor that monitors file content"
+    And the driver info should be "ASCOM Alpaca SafetyMonitor that monitors file content"
+    And the driver version should be "0.1.0"
 
   Scenario Outline: Reject invalid configuration sources
     Given a configuration file at "<path>"
-    When I try to load the configuration
-    Then loading should fail with an error
+    When I try to start filemonitor with this configuration
+    Then the binary should fail to start
 
     Examples:
       | path                      |

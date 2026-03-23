@@ -24,7 +24,7 @@ ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel
 
 [dev-dependencies]
 cucumber = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }

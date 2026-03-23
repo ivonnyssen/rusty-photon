@@ -1,33 +1,46 @@
 use crate::world::FilemonitorWorld;
-use ascom_alpaca::api::Device;
 use cucumber::{then, when};
-use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use serde_json::Value;
 
-#[when(expr = "{int} tasks toggle the connection state while {int} tasks read it")]
+#[when(expr = "{int} tasks toggle the connection while {int} tasks read it")]
 async fn concurrent_toggle_and_read(
     world: &mut FilemonitorWorld,
     toggle_count: usize,
     read_count: usize,
 ) {
-    let device = world.device.clone().expect("device not created");
+    let client = world.client.clone().expect("client not created");
+    let base_url = world
+        .filemonitor
+        .as_ref()
+        .expect("filemonitor not started")
+        .base_url
+        .clone();
+    let connected_url = format!("{}/api/v1/safetymonitor/0/connected", base_url);
 
     let mut handles = Vec::new();
 
     for i in 0..toggle_count {
-        let d = Arc::clone(&device);
+        let client = client.clone();
+        let url = connected_url.clone();
         handles.push(tokio::spawn(async move {
-            let connected = i % 2 == 0;
-            let _ = d.set_connected(connected).await;
-            sleep(Duration::from_millis(1)).await;
+            let connected = if i % 2 == 0 { "true" } else { "false" };
+            let _ = client
+                .put(&url)
+                .form(&[
+                    ("Connected", connected),
+                    ("ClientID", "1"),
+                    ("ClientTransactionID", "1"),
+                ])
+                .send()
+                .await;
         }));
     }
 
     for _ in 0..read_count {
-        let d = Arc::clone(&device);
+        let client = client.clone();
+        let url = connected_url.clone();
         handles.push(tokio::spawn(async move {
-            let _ = d.connected().await;
-            sleep(Duration::from_millis(1)).await;
+            let _ = client.get(&url).send().await;
         }));
     }
 
@@ -36,73 +49,78 @@ async fn concurrent_toggle_and_read(
     }
 }
 
-#[when(expr = "{int} tasks evaluate {string} and {string} {int} times each")]
-async fn concurrent_evaluate(
-    world: &mut FilemonitorWorld,
-    task_count: usize,
-    safe_content: String,
-    unsafe_content: String,
-    iterations: usize,
-) {
-    let device = world.device.clone().expect("device not created");
+#[when(expr = "{int} tasks check is_safe concurrently")]
+async fn concurrent_issafe(world: &mut FilemonitorWorld, task_count: usize) {
+    let client = world.client.clone().expect("client not created");
+    let url = world.alpaca_url("issafe");
 
-    let mut safe_results = Vec::new();
-    let mut unsafe_results = Vec::new();
+    let handles: Vec<_> = (0..task_count)
+        .map(|_| {
+            let client = client.clone();
+            let url = url.clone();
+            tokio::spawn(async move {
+                let resp = client.get(&url).send().await.unwrap();
+                let json: Value = resp.json().await.unwrap();
+                json["Value"].as_bool().unwrap_or(false)
+            })
+        })
+        .collect();
 
-    let mut handles = Vec::new();
-
-    for i in 0..task_count {
-        let d = Arc::clone(&device);
-        let sc = safe_content.clone();
-        let uc = unsafe_content.clone();
-        handles.push(tokio::spawn(async move {
-            let mut safe_res = Vec::new();
-            let mut unsafe_res = Vec::new();
-            for _ in 0..iterations {
-                if i % 2 == 0 {
-                    safe_res.push(d.evaluate_safety(&sc));
-                } else {
-                    unsafe_res.push(d.evaluate_safety(&uc));
-                }
-                sleep(Duration::from_millis(1)).await;
-            }
-            (safe_res, unsafe_res)
-        }));
-    }
-
+    let mut all_true = true;
     for handle in handles {
-        let (sr, ur) = handle.await.unwrap();
-        safe_results.extend(sr);
-        unsafe_results.extend(ur);
+        let result = handle.await.unwrap();
+        if !result {
+            all_true = false;
+        }
     }
 
-    // Store results for later assertions
-    world.last_error = Some(format!(
-        "safe:{} unsafe:{}",
-        safe_results.iter().all(|r| *r),
-        unsafe_results.iter().all(|r| !*r)
-    ));
+    world.safety_result = Some(all_true);
 }
 
 #[when(expr = "{int} tasks perform mixed operations concurrently")]
 async fn concurrent_mixed_operations(world: &mut FilemonitorWorld, task_count: usize) {
-    let device = world.device.clone().expect("device not created");
+    let client = world.client.clone().expect("client not created");
+    let base_url = world
+        .filemonitor
+        .as_ref()
+        .expect("filemonitor not started")
+        .base_url
+        .clone();
 
     let handles: Vec<_> = (0..task_count)
         .map(|i| {
-            let d = Arc::clone(&device);
+            let client = client.clone();
+            let base_url = base_url.clone();
             tokio::spawn(async move {
-                match i % 3 {
+                match i % 4 {
                     0 => {
-                        let _ = d.set_connected(true).await;
-                        let _ = d.connected().await;
+                        let _ = client
+                            .put(format!("{}/api/v1/safetymonitor/0/connected", base_url))
+                            .form(&[
+                                ("Connected", "true"),
+                                ("ClientID", "1"),
+                                ("ClientTransactionID", "1"),
+                            ])
+                            .send()
+                            .await;
                     }
                     1 => {
-                        let _ = d.evaluate_safety("test content");
+                        let _ = client
+                            .get(format!("{}/api/v1/safetymonitor/0/issafe", base_url))
+                            .send()
+                            .await;
+                    }
+                    2 => {
+                        let _ = client
+                            .get(format!("{}/api/v1/safetymonitor/0/name", base_url))
+                            .send()
+                            .await;
                     }
                     _ => {
-                        let _ = d.description().await;
-                        let _ = d.driver_version().await;
+                        let _ = client
+                            .get(format!("{}/api/v1/safetymonitor/0/driverversion", base_url))
+                            .send()
+                            .await;
                     }
                 }
             })
@@ -119,20 +137,8 @@ fn no_panics(_world: &mut FilemonitorWorld) {
     // If we got here, no panics occurred during concurrent operations
 }
 
-#[then(expr = "all {string} results should be safe")]
-fn all_safe_results(world: &mut FilemonitorWorld, _content: String) {
-    let info = world.last_error.as_ref().expect("no concurrency results");
-    assert!(
-        info.contains("safe:true"),
-        "some safe evaluations returned unsafe: {info}"
-    );
-}
-
-#[then(expr = "all {string} results should be unsafe")]
-fn all_unsafe_results(world: &mut FilemonitorWorld, _content: String) {
-    let info = world.last_error.as_ref().expect("no concurrency results");
-    assert!(
-        info.contains("unsafe:true"),
-        "some unsafe evaluations returned safe: {info}"
-    );
+#[then("all concurrent is_safe results should be true")]
+fn all_concurrent_true(world: &mut FilemonitorWorld) {
+    let result = world.safety_result.expect("no concurrent results");
+    assert!(result, "not all concurrent is_safe results were true");
 }
