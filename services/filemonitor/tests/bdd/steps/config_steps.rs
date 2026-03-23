@@ -1,4 +1,5 @@
 use crate::world::FilemonitorWorld;
+use ascom_alpaca::api::Device;
 use cucumber::{given, then, when};
 use filemonitor::{load_config, FileMonitorDevice};
 use std::path::PathBuf;
@@ -40,8 +41,12 @@ fn device_name_should_be(world: &mut FilemonitorWorld, expected: String) {
 
 #[then(expr = "the unique ID should be {string}")]
 fn unique_id_should_be(world: &mut FilemonitorWorld, expected: String) {
-    let config = world.config.as_ref().expect("config not loaded");
-    assert_eq!(config.device.unique_id, expected);
+    if let Some(device) = world.device.as_ref() {
+        assert_eq!(device.unique_id(), expected);
+    } else {
+        let config = world.config.as_ref().expect("config not loaded");
+        assert_eq!(config.device.unique_id, expected);
+    }
 }
 
 #[then(expr = "the polling interval should be {int} seconds")]

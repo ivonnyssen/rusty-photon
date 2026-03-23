@@ -1,5 +1,6 @@
 use crate::world::FilemonitorWorld;
 use ascom_alpaca::api::{Device, SafetyMonitor};
+use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then, when};
 use filemonitor::{
     Config, DeviceConfig, FileConfig, FileMonitorDevice, ParsingConfig, ParsingRule, RuleType,
@@ -190,6 +191,19 @@ async fn is_safe_should_return(world: &mut FilemonitorWorld, expected: String) {
     assert_eq!(
         result, expected_val,
         "expected is_safe={expected_val} but got {result}"
+    );
+}
+
+#[then("is_safe should fail with a not connected error")]
+async fn is_safe_should_fail_not_connected(world: &mut FilemonitorWorld) {
+    let device = world.device.as_ref().expect("device not created");
+    let result = device.is_safe().await;
+    let err = result.expect_err("expected NotConnected error but got Ok");
+    assert_eq!(
+        err.code,
+        ASCOMErrorCode::NOT_CONNECTED,
+        "expected NOT_CONNECTED error code but got {:?}",
+        err.code
     );
 }
 

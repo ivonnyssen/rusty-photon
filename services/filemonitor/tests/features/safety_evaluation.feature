@@ -88,11 +88,18 @@ Feature: Safety evaluation rules
     When I evaluate the safety of "any content"
     Then the result should be unsafe
 
-  Scenario: Disconnected device reports unsafe via is_safe
+  Scenario: Connected device with matching content reports safe via is_safe
+    Given a monitoring file containing "Status: OPEN"
+    And a contains rule with pattern "OPEN" that evaluates to safe
+    And a device configured with these rules and monitoring this file
+    When I connect the device
+    Then is_safe should return true
+
+  Scenario: Disconnected device returns not connected error from is_safe
     Given a monitoring file containing "OPEN"
     And a contains rule with pattern "OPEN" that evaluates to safe
     And a device configured with these rules and monitoring this file
-    Then is_safe should return false
+    Then is_safe should fail with a not connected error
 
   Scenario: Connected device with no matching rules reports unsafe
     Given a monitoring file containing "UNKNOWN STATUS"
