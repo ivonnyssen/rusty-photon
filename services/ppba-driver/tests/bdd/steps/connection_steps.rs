@@ -6,7 +6,7 @@
 //! - "Then the last operation should have failed"
 //! - "Then the last error code should be {word}"
 
-use crate::steps::infrastructure::*;
+use crate::steps::infrastructure::default_test_config;
 use crate::world::PpbaWorld;
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then, when};
@@ -27,83 +27,51 @@ async fn a_running_ppba_server(world: &mut PpbaWorld) {
 
 #[when("I connect the switch device")]
 async fn connect_switch_device(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "true")]).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "connecting switch failed: {}",
-        alpaca_error_message(&resp)
-    );
+    world.switch_ref().set_connected(true).await.unwrap();
 }
 
 #[when("I disconnect the switch device")]
 async fn disconnect_switch_device(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "false")]).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "disconnecting switch failed: {}",
-        alpaca_error_message(&resp)
-    );
+    world.switch_ref().set_connected(false).await.unwrap();
 }
 
 #[when("I try to connect the switch device")]
 async fn try_connect_switch_device(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "true")]).await;
-    world.capture_response(&resp);
+    let result = world.switch_ref().set_connected(true).await;
+    world.capture_result(result);
 }
 
 #[when("I connect the OC device")]
 async fn connect_oc_device(world: &mut PpbaWorld) {
-    let url = world.oc_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "true")]).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "connecting OC failed: {}",
-        alpaca_error_message(&resp)
-    );
+    world.oc_ref().set_connected(true).await.unwrap();
 }
 
 #[when("I disconnect the OC device")]
 async fn disconnect_oc_device(world: &mut PpbaWorld) {
-    let url = world.oc_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "false")]).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "disconnecting OC failed: {}",
-        alpaca_error_message(&resp)
-    );
+    world.oc_ref().set_connected(false).await.unwrap();
 }
 
 #[when("I try to connect the OC device")]
 async fn try_connect_oc_device(world: &mut PpbaWorld) {
-    let url = world.oc_url();
-    let resp = alpaca_put(&url, "connected", &[("Connected", "true")]).await;
-    world.capture_response(&resp);
+    let result = world.oc_ref().set_connected(true).await;
+    world.capture_result(result);
 }
 
 #[when(expr = "I cycle the switch device connection {int} times")]
-async fn cycle_switch_device_connection(world: &mut PpbaWorld, count: usize) {
-    let url = world.switch_url();
+async fn cycle_switch_device_connection(world: &mut PpbaWorld, count: i32) {
+    let switch = world.switch_ref();
     for _ in 0..count {
-        let resp = alpaca_put(&url, "connected", &[("Connected", "true")]).await;
-        assert!(!is_alpaca_error(&resp), "connect failed during cycle");
+        switch.set_connected(true).await.unwrap();
 
-        let resp = alpaca_get(&url, "connected").await;
-        assert_eq!(
-            alpaca_value(&resp),
-            true,
+        assert!(
+            switch.connected().await.unwrap(),
             "switch should be connected during cycle"
         );
 
-        let resp = alpaca_put(&url, "connected", &[("Connected", "false")]).await;
-        assert!(!is_alpaca_error(&resp), "disconnect failed during cycle");
+        switch.set_connected(false).await.unwrap();
 
-        let resp = alpaca_get(&url, "connected").await;
-        assert_eq!(
-            alpaca_value(&resp),
-            false,
+        assert!(
+            !switch.connected().await.unwrap(),
             "switch should be disconnected during cycle"
         );
     }
@@ -115,60 +83,61 @@ async fn cycle_switch_device_connection(world: &mut PpbaWorld, count: usize) {
 
 #[then("the switch device should report connected")]
 async fn switch_device_should_report_connected(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "connected").await;
-    assert_eq!(alpaca_value(&resp), true, "switch should report connected");
+    assert!(
+        world.switch_ref().connected().await.unwrap(),
+        "switch should report connected"
+    );
 }
 
 #[then("the switch device should report disconnected")]
 async fn switch_device_should_report_disconnected(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "connected").await;
-    assert_eq!(
-        alpaca_value(&resp),
-        false,
+    assert!(
+        !world.switch_ref().connected().await.unwrap(),
         "switch should report disconnected"
     );
 }
 
 #[then("the OC device should report connected")]
 async fn oc_device_should_report_connected(world: &mut PpbaWorld) {
-    let url = world.oc_url();
-    let resp = alpaca_get(&url, "connected").await;
-    assert_eq!(alpaca_value(&resp), true, "OC should report connected");
+    assert!(
+        world.oc_ref().connected().await.unwrap(),
+        "OC should report connected"
+    );
 }
 
 #[then("the OC device should report disconnected")]
 async fn oc_device_should_report_disconnected(world: &mut PpbaWorld) {
-    let url = world.oc_url();
-    let resp = alpaca_get(&url, "connected").await;
-    assert_eq!(alpaca_value(&resp), false, "OC should report disconnected");
+    assert!(
+        !world.oc_ref().connected().await.unwrap(),
+        "OC should report disconnected"
+    );
 }
 
 #[then("the last operation should have failed")]
 fn last_operation_should_have_failed(world: &mut PpbaWorld) {
     assert!(
-        world.last_error_number.is_some(),
+        world.last_error.is_some(),
         "expected an error but none occurred"
     );
 }
 
 #[then(expr = "the last error code should be {word}")]
 fn last_error_code_should_be(world: &mut PpbaWorld, expected_code: String) {
-    let actual = world
-        .last_error_number
-        .expect("expected an error code but none was set");
+    let error = world
+        .last_error
+        .as_ref()
+        .expect("expected an error but none was set");
     let expected = match expected_code.as_str() {
-        "NOT_CONNECTED" => ASCOMErrorCode::NOT_CONNECTED.raw() as i64,
-        "INVALID_VALUE" => ASCOMErrorCode::INVALID_VALUE.raw() as i64,
-        "INVALID_OPERATION" => ASCOMErrorCode::INVALID_OPERATION.raw() as i64,
-        "NOT_IMPLEMENTED" => ASCOMErrorCode::NOT_IMPLEMENTED.raw() as i64,
-        "VALUE_NOT_SET" => ASCOMErrorCode::VALUE_NOT_SET.raw() as i64,
+        "NOT_CONNECTED" => ASCOMErrorCode::NOT_CONNECTED,
+        "INVALID_VALUE" => ASCOMErrorCode::INVALID_VALUE,
+        "INVALID_OPERATION" => ASCOMErrorCode::INVALID_OPERATION,
+        "NOT_IMPLEMENTED" => ASCOMErrorCode::NOT_IMPLEMENTED,
+        "VALUE_NOT_SET" => ASCOMErrorCode::VALUE_NOT_SET,
         other => panic!("Unknown ASCOM error code: {}", other),
     };
     assert_eq!(
-        actual, expected,
-        "expected error code {} ({}), got {} (message: {:?})",
-        expected_code, expected, actual, world.last_error_message
+        error.code, expected,
+        "expected error code {expected_code}, got {:?} (message: {})",
+        error.code, error.message
     );
 }

@@ -36,6 +36,7 @@ command = "cargo test -p ppba-driver --features mock --test conformu_integration
 #command = "cargo miri test -p ppba-driver"
 
 [dev-dependencies]
+ascom-alpaca = { workspace = true, features = ["client", "switch", "observing_conditions"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }

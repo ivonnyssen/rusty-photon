@@ -1,6 +1,6 @@
 //! Step definitions for switch_metadata.feature
 
-use crate::steps::infrastructure::*;
+use crate::steps::infrastructure::default_test_config;
 use crate::world::PpbaWorld;
 use cucumber::{given, then, when};
 
@@ -35,10 +35,8 @@ async fn running_server_with_switch_description(world: &mut PpbaWorld, descripti
 
 #[when(expr = "I try to set switch {int} name to {string}")]
 async fn try_set_switch_name(world: &mut PpbaWorld, id: i32, name: String) {
-    let url = world.switch_url();
-    let id_str = id.to_string();
-    let resp = alpaca_put(&url, "setswitchname", &[("Id", &id_str), ("Name", &name)]).await;
-    world.capture_response(&resp);
+    let result = world.switch_ref().set_switch_name(id as usize, name).await;
+    world.capture_result(result);
 }
 
 // ============================================================================
@@ -47,40 +45,19 @@ async fn try_set_switch_name(world: &mut PpbaWorld, id: i32, name: String) {
 
 #[then(expr = "the switch device static name should be {string}")]
 async fn switch_device_static_name_should_be(world: &mut PpbaWorld, expected: String) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "name").await;
-    assert!(!is_alpaca_error(&resp), "GET name failed");
-    assert_eq!(
-        alpaca_value(&resp).as_str().unwrap(),
-        expected,
-        "switch device name mismatch"
-    );
+    let name = world.switch_ref().name().await.unwrap();
+    assert_eq!(name, expected, "switch device name mismatch");
 }
 
 #[then(expr = "the switch device unique ID should be {string}")]
-async fn switch_device_unique_id_should_be(world: &mut PpbaWorld, expected: String) {
-    let base = world.base_url.as_ref().expect("server not started");
-    let resp = alpaca_get(base, "management/v1/configureddevices").await;
-    let devices = alpaca_value(&resp)
-        .as_array()
-        .expect("configureddevices should return an array");
-    let switch_entry = devices
-        .iter()
-        .find(|d| d["DeviceType"].as_str() == Some("Switch"))
-        .expect("no Switch device found in configureddevices");
-    assert_eq!(
-        switch_entry["UniqueID"].as_str().unwrap(),
-        expected,
-        "switch unique ID mismatch"
-    );
+fn switch_device_unique_id_should_be(world: &mut PpbaWorld, expected: String) {
+    let uid = world.switch_ref().unique_id();
+    assert_eq!(uid, expected, "switch unique ID mismatch");
 }
 
 #[then(expr = "the switch device description should be {string}")]
 async fn switch_device_description_should_be(world: &mut PpbaWorld, expected: String) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "description").await;
-    assert!(!is_alpaca_error(&resp), "GET description failed");
-    let desc = alpaca_value(&resp).as_str().unwrap();
+    let desc = world.switch_ref().description().await.unwrap();
     assert!(
         desc.contains(&expected),
         "expected description to contain '{}', got: {}",
@@ -91,10 +68,7 @@ async fn switch_device_description_should_be(world: &mut PpbaWorld, expected: St
 
 #[then(expr = "the switch device driver info should contain {string}")]
 async fn switch_device_driver_info_should_contain(world: &mut PpbaWorld, expected: String) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "driverinfo").await;
-    assert!(!is_alpaca_error(&resp), "GET driverinfo failed");
-    let info = alpaca_value(&resp).as_str().unwrap();
+    let info = world.switch_ref().driver_info().await.unwrap();
     assert!(
         info.contains(&expected),
         "expected driver info to contain '{}', got: {}",
@@ -105,33 +79,21 @@ async fn switch_device_driver_info_should_contain(world: &mut PpbaWorld, expecte
 
 #[then("the switch device driver version should not be empty")]
 async fn switch_device_driver_version_not_empty(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "driverversion").await;
-    assert!(!is_alpaca_error(&resp), "GET driverversion failed");
-    let version = alpaca_value(&resp).as_str().unwrap();
+    let version = world.switch_ref().driver_version().await.unwrap();
     assert!(!version.is_empty(), "driver version should not be empty");
 }
 
 #[then(expr = "the switch device max switch should be {int}")]
 async fn switch_device_max_switch_should_be(world: &mut PpbaWorld, expected: i32) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "maxswitch").await;
-    assert!(!is_alpaca_error(&resp), "GET maxswitch failed");
-    let max = alpaca_value(&resp).as_i64().unwrap();
-    assert_eq!(max, expected as i64, "max switch mismatch");
+    let max = world.switch_ref().max_switch().await.unwrap();
+    assert_eq!(max, expected as usize, "max switch mismatch");
 }
 
 #[then(expr = "all {int} switches should have non-empty names")]
 async fn all_switches_have_names(world: &mut PpbaWorld, count: i32) {
-    let url = world.switch_url();
+    let switch = world.switch_ref();
     for id in 0..count {
-        let resp = alpaca_get(&url, &format!("getswitchname?Id={}", id)).await;
-        assert!(
-            !is_alpaca_error(&resp),
-            "getswitchname failed for switch {}",
-            id
-        );
-        let name = alpaca_value(&resp).as_str().unwrap();
+        let name = switch.get_switch_name(id as usize).await.unwrap();
         assert!(
             !name.is_empty(),
             "switch {} should have a non-empty name",
@@ -142,15 +104,9 @@ async fn all_switches_have_names(world: &mut PpbaWorld, count: i32) {
 
 #[then(expr = "all {int} switches should have non-empty descriptions")]
 async fn all_switches_have_descriptions(world: &mut PpbaWorld, count: i32) {
-    let url = world.switch_url();
+    let switch = world.switch_ref();
     for id in 0..count {
-        let resp = alpaca_get(&url, &format!("getswitchdescription?Id={}", id)).await;
-        assert!(
-            !is_alpaca_error(&resp),
-            "getswitchdescription failed for switch {}",
-            id
-        );
-        let desc = alpaca_value(&resp).as_str().unwrap();
+        let desc = switch.get_switch_description(id as usize).await.unwrap();
         assert!(
             !desc.is_empty(),
             "switch {} should have a non-empty description",
@@ -161,15 +117,11 @@ async fn all_switches_have_descriptions(world: &mut PpbaWorld, count: i32) {
 
 #[then("all switches should have min less than max and positive step")]
 async fn all_switches_consistent(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    for id in 0..16 {
-        let resp_min = alpaca_get(&url, &format!("minswitchvalue?Id={}", id)).await;
-        let resp_max = alpaca_get(&url, &format!("maxswitchvalue?Id={}", id)).await;
-        let resp_step = alpaca_get(&url, &format!("switchstep?Id={}", id)).await;
-
-        let min = alpaca_value(&resp_min).as_f64().unwrap();
-        let max = alpaca_value(&resp_max).as_f64().unwrap();
-        let step = alpaca_value(&resp_step).as_f64().unwrap();
+    let switch = world.switch_ref();
+    for id in 0..16usize {
+        let min = switch.min_switch_value(id).await.unwrap();
+        let max = switch.max_switch_value(id).await.unwrap();
+        let step = switch.switch_step(id).await.unwrap();
 
         assert!(
             min < max,
@@ -189,14 +141,11 @@ async fn all_switches_consistent(world: &mut PpbaWorld) {
 
 #[then(expr = "switch {int} min value should be {float}")]
 async fn switch_min_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, &format!("minswitchvalue?Id={}", id)).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "minswitchvalue failed for switch {}",
-        id
-    );
-    let min = alpaca_value(&resp).as_f64().unwrap();
+    let min = world
+        .switch_ref()
+        .min_switch_value(id as usize)
+        .await
+        .unwrap();
     assert!(
         (min - expected).abs() < f64::EPSILON,
         "switch {} min: expected {}, got {}",
@@ -208,14 +157,11 @@ async fn switch_min_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
 
 #[then(expr = "switch {int} max value should be {float}")]
 async fn switch_max_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, &format!("maxswitchvalue?Id={}", id)).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "maxswitchvalue failed for switch {}",
-        id
-    );
-    let max = alpaca_value(&resp).as_f64().unwrap();
+    let max = world
+        .switch_ref()
+        .max_switch_value(id as usize)
+        .await
+        .unwrap();
     assert!(
         (max - expected).abs() < f64::EPSILON,
         "switch {} max: expected {}, got {}",
@@ -227,15 +173,9 @@ async fn switch_max_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
 
 #[then(expr = "all {int} switches should have positive step values")]
 async fn all_switches_positive_step(world: &mut PpbaWorld, count: i32) {
-    let url = world.switch_url();
+    let switch = world.switch_ref();
     for id in 0..count {
-        let resp = alpaca_get(&url, &format!("switchstep?Id={}", id)).await;
-        assert!(
-            !is_alpaca_error(&resp),
-            "switchstep failed for switch {}",
-            id
-        );
-        let step = alpaca_value(&resp).as_f64().unwrap();
+        let step = switch.switch_step(id as usize).await.unwrap();
         assert!(
             step > 0.0,
             "switch {} should have positive step, got {}",
@@ -247,46 +187,30 @@ async fn all_switches_positive_step(world: &mut PpbaWorld, count: i32) {
 
 #[then(expr = "switch {int} name should be queryable")]
 async fn switch_name_queryable(world: &mut PpbaWorld, id: i32) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, &format!("getswitchname?Id={}", id)).await;
-    assert!(
-        !is_alpaca_error(&resp),
-        "getswitchname should succeed for switch {}",
-        id
-    );
+    world
+        .switch_ref()
+        .get_switch_name(id as usize)
+        .await
+        .unwrap();
 }
 
 #[then(expr = "querying switch {int} name should fail")]
 async fn querying_switch_name_should_fail(world: &mut PpbaWorld, id: i32) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, &format!("getswitchname?Id={}", id)).await;
-    assert!(
-        is_alpaca_error(&resp),
-        "getswitchname should fail for switch {}",
-        id
-    );
+    world
+        .switch_ref()
+        .get_switch_name(id as usize)
+        .await
+        .unwrap_err();
 }
 
 #[then("the switch device static name should not be empty")]
 async fn switch_device_static_name_not_empty(world: &mut PpbaWorld) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "name").await;
-    assert!(!is_alpaca_error(&resp), "GET name failed");
-    let name = alpaca_value(&resp).as_str().unwrap();
+    let name = world.switch_ref().name().await.unwrap();
     assert!(!name.is_empty(), "switch device name should not be empty");
 }
 
 #[then("the switch device unique ID should not be empty")]
-async fn switch_device_unique_id_not_empty(world: &mut PpbaWorld) {
-    let base = world.base_url.as_ref().expect("server not started");
-    let resp = alpaca_get(base, "management/v1/configureddevices").await;
-    let devices = alpaca_value(&resp)
-        .as_array()
-        .expect("configureddevices should return an array");
-    let switch_entry = devices
-        .iter()
-        .find(|d| d["DeviceType"].as_str() == Some("Switch"))
-        .expect("no Switch device found in configureddevices");
-    let uid = switch_entry["UniqueID"].as_str().unwrap();
+fn switch_device_unique_id_not_empty(world: &mut PpbaWorld) {
+    let uid = world.switch_ref().unique_id();
     assert!(!uid.is_empty(), "switch unique ID should not be empty");
 }

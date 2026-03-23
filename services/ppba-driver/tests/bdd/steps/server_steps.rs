@@ -99,26 +99,14 @@ async fn oc_endpoint_not_200(world: &mut PpbaWorld) {
 
 #[then(expr = "the switch name endpoint should return {string}")]
 async fn switch_name_endpoint_returns(world: &mut PpbaWorld, expected: String) {
-    let url = world.switch_url();
-    let resp = alpaca_get(&url, "name").await;
-    assert!(!is_alpaca_error(&resp), "GET switch name failed");
-    assert_eq!(
-        alpaca_value(&resp).as_str().unwrap(),
-        expected,
-        "switch name mismatch"
-    );
+    let name = world.switch_ref().name().await.unwrap();
+    assert_eq!(name, expected, "switch name mismatch");
 }
 
 #[then(expr = "the OC name endpoint should return {string}")]
 async fn oc_name_endpoint_returns(world: &mut PpbaWorld, expected: String) {
-    let url = world.oc_url();
-    let resp = alpaca_get(&url, "name").await;
-    assert!(!is_alpaca_error(&resp), "GET OC name failed");
-    assert_eq!(
-        alpaca_value(&resp).as_str().unwrap(),
-        expected,
-        "OC name mismatch"
-    );
+    let name = world.oc_ref().name().await.unwrap();
+    assert_eq!(name, expected, "OC name mismatch");
 }
 
 #[then("the server should be reachable on the bound port")]

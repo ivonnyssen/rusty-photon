@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! Test infrastructure: ppba-driver process management and ASCOM Alpaca HTTP helpers.
+//! Test infrastructure: ppba-driver process management and config helpers.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -196,63 +196,6 @@ async fn parse_bound_port(
         line.clear();
     }
     None
-}
-
-// ---------------------------------------------------------------------------
-// ASCOM Alpaca HTTP helpers
-// ---------------------------------------------------------------------------
-
-/// GET an ASCOM Alpaca endpoint and return the parsed JSON response.
-pub async fn alpaca_get(base_url: &str, path: &str) -> serde_json::Value {
-    let url = format!("{}/{}", base_url, path.trim_start_matches('/'));
-    let resp = reqwest::get(&url)
-        .await
-        .unwrap_or_else(|e| panic!("GET {} failed: {}", url, e));
-    let text = resp
-        .text()
-        .await
-        .unwrap_or_else(|e| panic!("reading response from GET {} failed: {}", url, e));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parsing JSON from GET {} failed: {} body: {}", url, e, text))
-}
-
-/// PUT to an ASCOM Alpaca endpoint with form-encoded data and return the parsed JSON response.
-pub async fn alpaca_put(base_url: &str, path: &str, form: &[(&str, &str)]) -> serde_json::Value {
-    let url = format!("{}/{}", base_url, path.trim_start_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = client
-        .put(&url)
-        .form(form)
-        .send()
-        .await
-        .unwrap_or_else(|e| panic!("PUT {} failed: {}", url, e));
-    let text = resp
-        .text()
-        .await
-        .unwrap_or_else(|e| panic!("reading response from PUT {} failed: {}", url, e));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parsing JSON from PUT {} failed: {} body: {}", url, e, text))
-}
-
-/// Extract the `Value` field from an ASCOM Alpaca JSON response.
-pub fn alpaca_value(resp: &serde_json::Value) -> &serde_json::Value {
-    &resp["Value"]
-}
-
-/// Extract the `ErrorNumber` field from an ASCOM Alpaca JSON response.
-/// Returns 0 if no error.
-pub fn alpaca_error_number(resp: &serde_json::Value) -> i64 {
-    resp["ErrorNumber"].as_i64().unwrap_or(0)
-}
-
-/// Extract the `ErrorMessage` field from an ASCOM Alpaca JSON response.
-pub fn alpaca_error_message(resp: &serde_json::Value) -> String {
-    resp["ErrorMessage"].as_str().unwrap_or("").to_string()
-}
-
-/// Check if an ASCOM Alpaca response indicates an error.
-pub fn is_alpaca_error(resp: &serde_json::Value) -> bool {
-    alpaca_error_number(resp) != 0
 }
 
 // ---------------------------------------------------------------------------
