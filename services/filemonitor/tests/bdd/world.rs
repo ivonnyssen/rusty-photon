@@ -92,6 +92,7 @@ impl FilemonitorWorld {
             "server": {
                 "port": 0,
                 "device_number": 0,
+                "discovery_port": 0,
             },
         })
     }
@@ -117,6 +118,7 @@ impl FilemonitorWorld {
         let mut config: Value =
             serde_json::from_str(&content).expect("failed to parse config file");
         config["server"]["port"] = serde_json::json!(0);
+        config["server"]["discovery_port"] = serde_json::json!(0);
 
         let dir = self
             .temp_dir
