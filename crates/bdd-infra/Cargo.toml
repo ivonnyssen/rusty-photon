@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Shared BDD test infrastructure for spawning, managing, and stopping service binaries"
 
+# Used by integration tests to exercise ServiceHandle against test_service binary
+[package.metadata.bdd]
+env_var = "TEST_SERVICE_BINARY"
+
 [dependencies]
 libc = { workspace = true }
 serde = { workspace = true }
