@@ -1,9 +1,9 @@
 //! Unit tests for SerialManager internal API methods
 //!
 //! These tests exercise internal SerialManager methods (send_command, refresh,
-//! cached state, averaging period) that are not directly exposed through the
-//! ASCOM device interface. Connection lifecycle tests are in the BDD feature
-//! `connection_lifecycle.feature`.
+//! cached state, averaging period) and connection lifecycle branches (refcount,
+//! factory errors, bad pings) that are not directly exposed through the ASCOM
+//! device HTTP interface.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -93,6 +93,39 @@ impl SerialPortFactory for MockSerialPortFactory {
     async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
         Ok(SerialPair {
             reader: Box::new(MockSerialReader::new(self.responses.clone())),
+            writer: Box::new(MockSerialWriter::new()),
+        })
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        true
+    }
+}
+
+/// Mock serial port factory that always fails to open
+struct FailingMockSerialPortFactory;
+
+#[async_trait]
+impl SerialPortFactory for FailingMockSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Err(PpbaError::ConnectionFailed(
+            "Mock factory error".to_string(),
+        ))
+    }
+
+    async fn port_exists(&self, _port: &str) -> bool {
+        false
+    }
+}
+
+/// Mock serial port factory that returns a reader with a bad ping response
+struct BadPingMockSerialPortFactory;
+
+#[async_trait]
+impl SerialPortFactory for BadPingMockSerialPortFactory {
+    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+        Ok(SerialPair {
+            reader: Box::new(MockSerialReader::new(vec!["BAD_RESPONSE".to_string()])),
             writer: Box::new(MockSerialWriter::new()),
         })
     }
@@ -287,4 +320,116 @@ async fn test_get_cached_state_returns_clone() {
     );
 
     manager.disconnect().await;
+}
+
+// ============================================================================
+// Connection Lifecycle Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_connect_factory_error() {
+    let factory = Arc::new(FailingMockSerialPortFactory);
+    let manager = create_manager(factory);
+
+    let err = manager.connect().await.unwrap_err();
+    match err {
+        PpbaError::ConnectionFailed(msg) => assert!(msg.contains("Mock factory error")),
+        other => panic!("Expected ConnectionFailed, got {:?}", other),
+    }
+
+    assert!(!manager.is_available());
+}
+
+#[tokio::test]
+async fn test_connect_bad_ping() {
+    let factory = Arc::new(BadPingMockSerialPortFactory);
+    let manager = create_manager(factory);
+
+    let err = manager.connect().await.unwrap_err();
+    // Bad ping should produce an InvalidResponse error
+    assert!(
+        matches!(err, PpbaError::InvalidResponse(_)),
+        "Expected InvalidResponse, got {:?}",
+        err
+    );
+
+    assert!(!manager.is_available());
+}
+
+#[tokio::test]
+async fn test_disconnect_underflow_protection() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let manager = create_manager(factory);
+
+    // Disconnect without ever connecting — should be a no-op, not panic
+    manager.disconnect().await;
+    assert!(!manager.is_available());
+
+    // Double-disconnect should also be safe
+    manager.disconnect().await;
+    assert!(!manager.is_available());
+}
+
+#[tokio::test]
+async fn test_refcount_second_connect_does_not_reopen() {
+    let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
+    let manager = create_manager(factory);
+
+    // First connect opens the port
+    manager.connect().await.unwrap();
+    assert!(manager.is_available());
+
+    // Second connect increments refcount but doesn't re-open
+    manager.connect().await.unwrap();
+    assert!(manager.is_available());
+
+    // First disconnect decrements but doesn't close (count still > 0)
+    manager.disconnect().await;
+    assert!(manager.is_available());
+
+    // Second disconnect closes the port
+    manager.disconnect().await;
+    assert!(!manager.is_available());
+}
+
+#[tokio::test]
+async fn test_send_command_response_mismatch() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![
+        "PPBA_OK".to_string(),
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+        // Wrong response for SetQuad12V command (expected "P1:..." got "WRONG")
+        "WRONG".to_string(),
+        // Polling responses
+        "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
+        "PS:2.5:10.5:126.0:3600000".to_string(),
+    ]));
+    let manager = create_manager(factory);
+    manager.connect().await.unwrap();
+
+    let err = manager
+        .send_command(ppba_driver::protocol::PpbaCommand::SetQuad12V(true))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PpbaError::Communication(_)),
+        "Expected Communication error, got {:?}",
+        err
+    );
+
+    manager.disconnect().await;
+}
+
+#[tokio::test]
+async fn test_debug_format() {
+    let factory = Arc::new(MockSerialPortFactory::new(vec![]));
+    let manager = create_manager(factory);
+
+    let debug_str = format!("{:?}", manager);
+    assert!(debug_str.contains("SerialManager"));
+    assert!(debug_str.contains("config"));
+    assert!(debug_str.contains("connection_count"));
+    assert!(debug_str.contains("serial_available"));
+    // finish_non_exhaustive() adds ".."
+    assert!(debug_str.contains(".."));
 }

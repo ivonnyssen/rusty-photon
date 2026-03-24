@@ -185,16 +185,16 @@ ppba-driver/
 │   ├── bdd.rs                        # BDD entry point (cucumber-rs)
 │   ├── bdd/
 │   │   ├── world.rs                  # PpbaWorld struct + helpers
-│   │   ├── mock_serial.rs            # Shared mock serial infrastructure
 │   │   └── steps/
 │   │       ├── mod.rs
-│   │       ├── connection_steps.rs   # Connect/disconnect, ref counting
+│   │       ├── infrastructure.rs     # PpbaHandle, HTTP helpers, config helpers
+│   │       ├── connection_steps.rs   # Connect/disconnect via HTTP
 │   │       ├── switch_metadata_steps.rs
 │   │       ├── switch_control_steps.rs
 │   │       ├── switch_error_steps.rs
 │   │       ├── sensor_steps.rs
 │   │       ├── oc_steps.rs           # ObservingConditions steps
-│   │       └── server_steps.rs       # Server registration (mock feature)
+│   │       └── server_steps.rs       # Server registration
 │   ├── features/
 │   │   ├── connection_lifecycle.feature
 │   │   ├── switch_metadata.feature
@@ -204,6 +204,8 @@ ppba-driver/
 │   │   ├── observing_conditions.feature
 │   │   └── server_registration.feature
 │   ├── test_serial_manager.rs        # SerialManager internal API unit tests
+│   ├── test_switch_device.rs         # Switch device error mapping unit tests
+│   ├── test_oc_device.rs             # ObservingConditions device unit tests
 │   ├── test_protocol.rs              # Protocol parsing unit tests
 │   ├── test_switches.rs              # Switch definition unit tests
 │   ├── test_config.rs                # Configuration unit tests
@@ -313,14 +315,14 @@ When running ASCOM ConformU compliance tests against real hardware, auto-dew mus
 ## Testing
 
 ```bash
-# Run all tests (BDD + unit, excluding server registration)
+# Run unit tests only
 cargo test -p ppba-driver --quiet
 
-# Run all tests including server registration (requires mock feature)
-cargo test -p ppba-driver --features mock --quiet
+# Run BDD tests (requires mock feature — spawns the binary with MockSerialPortFactory)
+cargo test -p ppba-driver --features mock --test bdd --quiet
 
-# Run BDD tests only
-cargo test -p ppba-driver --test bdd --quiet
+# Run all tests (unit + BDD)
+cargo test -p ppba-driver --features mock --quiet
 
 # Run specific unit test module
 cargo test -p ppba-driver test_protocol
@@ -329,7 +331,7 @@ cargo test -p ppba-driver test_protocol
 cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture
 ```
 
-The `--features mock` flag enables the `mock` feature which is required for server registration BDD tests. BDD tests use cucumber-rs with feature files in `tests/features/`.
+BDD tests use cucumber-rs with feature files in `tests/features/`. Tests spawn the actual ppba-driver binary as a subprocess (with `--features mock` for the mock serial port) and communicate via ASCOM Alpaca HTTP REST API, testing the full stack from config loading through HTTP routing to device logic.
 
 ### ConformU Compliance Testing
 
