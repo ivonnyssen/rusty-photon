@@ -556,7 +556,13 @@ features = ["mock"]
         let dir = tempfile::tempdir().unwrap();
         let debug_dir = dir.path().join("debug");
         std::fs::create_dir_all(&debug_dir).unwrap();
-        let binary_path = debug_dir.join("my-service");
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "my-service.exe"
+        } else {
+            "my-service"
+        };
+        let binary_path = debug_dir.join(binary_name);
         std::fs::write(&binary_path, "fake binary").unwrap();
 
         let unique_var = "BDD_INFRA_TEST_FIND_BINARY_TARGET";
@@ -575,7 +581,7 @@ features = ["mock"]
 
         assert_eq!(
             result,
-            Some(format!("{}/debug/my-service", dir.path().display()))
+            Some(format!("{}/debug/{}", dir.path().display(), binary_name))
         );
     }
 }
