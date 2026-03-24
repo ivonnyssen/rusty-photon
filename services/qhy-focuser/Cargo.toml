@@ -11,9 +11,10 @@ description = "ASCOM Alpaca driver for QHY Q-Focuser (EAF)"
 [features]
 default = []
 mock = []  # Enables mock hardware for testing without real serial port
+conformu = ["ascom-alpaca/test"]
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "focuser", "test"] }
+ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }
@@ -25,7 +26,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 
 [package.metadata.conformu]
-command = "cargo test -p qhy-focuser --features mock --test conformu_integration -- --ignored --nocapture"
+command = "cargo test -p qhy-focuser --features mock,conformu --test conformu_integration -- --ignored --nocapture"
 
 [package.metadata.miri]
 command = "cargo miri test -p qhy-focuser"

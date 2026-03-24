@@ -8,8 +8,12 @@ repository.workspace = true
 rust-version = "1.88.0"
 description = "File monitoring service for Rusty Photon"
 
+[features]
+default = []
+conformu = ["ascom-alpaca/test"]
+
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "test", "client"] }
+ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "client"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,7 +27,7 @@ tracing-subscriber = { workspace = true }
 windows-service = "0.8"
 
 [package.metadata.conformu]
-command = "cargo test -p filemonitor --test conformu_integration -- --ignored --nocapture"
+command = "cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture"
 
 [package.metadata.miri]
 command = "cargo miri test -p filemonitor"
