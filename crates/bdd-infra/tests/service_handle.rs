@@ -1,4 +1,4 @@
-//! Integration tests for ServiceHandle using test_service binaries.
+//! Integration tests for ServiceHandle using test_service binary.
 
 use bdd_infra::ServiceHandle;
 
@@ -25,10 +25,45 @@ env_var = "{env_var_name}"
     dir
 }
 
+/// Create a temp manifest dir with no env var set, so find_binary falls back
+/// to cargo run. Uses the real bdd-infra package name so `cargo run --package
+/// bdd-infra` resolves to the test_service binary.
+fn setup_manifest_no_binary(env_var_name: &str) -> tempfile::TempDir {
+    std::env::remove_var(env_var_name);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        format!(
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.bdd]
+env_var = "{env_var_name}"
+"#
+        ),
+    )
+    .unwrap();
+    dir
+}
+
 /// Write an empty config file and return it.
 fn empty_config() -> tempfile::NamedTempFile {
     tempfile::NamedTempFile::new().unwrap()
 }
+
+/// Write a config file containing "fail" to trigger test_service exit.
+fn fail_config() -> tempfile::NamedTempFile {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "fail").unwrap();
+    file
+}
+
+// ---------------------------------------------------------------------------
+// Pre-built binary tests (env var points directly at the binary)
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_start_discovers_port_and_base_url() {
@@ -105,13 +140,13 @@ async fn test_try_start_succeeds_with_valid_binary() {
 async fn test_try_start_returns_error_when_binary_exits_without_binding() {
     let manifest = setup_manifest(
         "BDD_TEST_TRY_START_FAIL",
-        env!("CARGO_BIN_EXE_test_service_fail"),
+        env!("CARGO_BIN_EXE_test_service"),
     );
-    let config = empty_config();
+    let config = fail_config();
 
     let result = ServiceHandle::try_start(
         manifest.path().to_str().unwrap(),
-        "test-service-fail",
+        "test-service",
         config.path().to_str().unwrap(),
     )
     .await;
@@ -166,4 +201,53 @@ async fn test_port_is_actually_listening() {
     assert!(result.is_ok(), "should be able to connect to the service");
 
     handle.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// Cargo run fallback tests (no env var set, exercises `cargo run --package`)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_start_via_cargo_run() {
+    let manifest = setup_manifest_no_binary("BDD_TEST_CARGO_RUN");
+    let config = empty_config();
+
+    // No env var set and no binary in target dir for "bdd-infra",
+    // so find_binary returns None → falls back to cargo run.
+    // cargo run --package bdd-infra runs the test_service binary.
+    let mut handle = ServiceHandle::start(
+        manifest.path().to_str().unwrap(),
+        "bdd-infra",
+        config.path().to_str().unwrap(),
+    )
+    .await;
+
+    assert!(handle.port > 0);
+    assert!(handle.is_running());
+
+    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", handle.port)).await;
+    assert!(result.is_ok(), "should be able to connect to the service");
+
+    handle.stop().await;
+    assert!(!handle.is_running());
+}
+
+#[tokio::test]
+async fn test_try_start_via_cargo_run_with_fail_config() {
+    let manifest = setup_manifest_no_binary("BDD_TEST_CARGO_RUN_FAIL");
+    let config = fail_config();
+
+    let result = ServiceHandle::try_start(
+        manifest.path().to_str().unwrap(),
+        "bdd-infra",
+        config.path().to_str().unwrap(),
+    )
+    .await;
+
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("exited without binding"),
+        "unexpected error: {}",
+        err
+    );
 }
