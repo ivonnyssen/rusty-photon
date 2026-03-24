@@ -52,7 +52,7 @@ fn load_config(manifest_dir: &str) -> BddConfig {
     let path = format!("{}/Cargo.toml", manifest_dir);
     let content =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
-    let toml: toml::Value = content
+    let toml: toml::Table = content
         .parse()
         .unwrap_or_else(|e| panic!("failed to parse {}: {}", path, e));
     let bdd = toml
