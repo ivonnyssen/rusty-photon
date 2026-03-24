@@ -2,6 +2,7 @@
 //!
 //! These tests verify ASCOM Alpaca compliance by running the ConformU test suite
 //! against the driver running in mock mode.
+#![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 
 use ascom_alpaca::api::Focuser;

@@ -1,3 +1,5 @@
+#![cfg(feature = "conformu")]
+
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;
 use std::process::Stdio;
