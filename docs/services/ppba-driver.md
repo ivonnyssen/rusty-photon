@@ -187,7 +187,7 @@ ppba-driver/
 │   │   ├── world.rs                  # PpbaWorld struct + helpers
 │   │   └── steps/
 │   │       ├── mod.rs
-│   │       ├── infrastructure.rs     # PpbaHandle, HTTP helpers, config helpers
+│   │       ├── infrastructure.rs     # ServiceHandle (from bdd-infra), config helpers
 │   │       ├── connection_steps.rs   # Connect/disconnect via HTTP
 │   │       ├── switch_metadata_steps.rs
 │   │       ├── switch_control_steps.rs
