@@ -31,6 +31,12 @@ belong in any single service design doc.
 | **Decisions** | |
 | [docs/decisions/](decisions/) | Architecture Decision Records |
 
+## Shared Crates
+
+| Crate | Location | Purpose |
+|-------|----------|---------|
+| [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. Config read from each service's `[package.metadata.bdd]` in Cargo.toml. See [testing.md](skills/testing.md) Section 5.1. |
+
 ## Shared Architecture Patterns
 
 ### Serial-based services (ppba-driver, qhy-focuser)
