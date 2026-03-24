@@ -53,7 +53,27 @@ async fn run_with_reload(config_path: &std::path::Path) -> Result<(), Box<dyn st
         config_path,
         || {
             Box::pin(async {
-                let _ = tokio::signal::ctrl_c().await;
+                let ctrl_c = async {
+                    tokio::signal::ctrl_c()
+                        .await
+                        .expect("failed to install Ctrl+C handler");
+                };
+
+                #[cfg(unix)]
+                let terminate = async {
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to install SIGTERM handler")
+                        .recv()
+                        .await;
+                };
+
+                #[cfg(not(unix))]
+                let terminate = std::future::pending::<()>();
+
+                tokio::select! {
+                    () = ctrl_c => debug!("received Ctrl+C"),
+                    () = terminate => debug!("received SIGTERM"),
+                }
             })
         },
         || {
