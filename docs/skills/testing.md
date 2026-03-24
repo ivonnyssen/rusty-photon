@@ -300,7 +300,55 @@ Concurrency scenarios spawn multiple async tasks that all need access to the dev
 
 ### 5. BDD Test Infrastructure Rules
 
-#### 5.1 Entry Point Structure
+#### 5.1 Shared Infrastructure: `bdd-infra` Crate
+
+The `crates/bdd-infra` crate provides shared process lifecycle management for all
+services' BDD and integration tests. It eliminates per-service duplication of
+binary discovery, spawning, port parsing, and graceful shutdown logic.
+
+**Key types:**
+
+- `ServiceHandle` — spawns a service binary, parses its bound port from stdout,
+  provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
+  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
+- `parse_bound_port()` — standalone function also usable by ConformU tests.
+
+**Configuration** is stored in each service's `Cargo.toml`:
+
+```toml
+[package.metadata.bdd]
+env_var = "MY_SERVICE_BINARY"   # env var for explicit binary path
+# features = ["mock"]           # optional: cargo features for fallback `cargo run`
+```
+
+**Usage in test code:**
+
+```rust
+use bdd_infra::ServiceHandle;
+
+let handle = ServiceHandle::start(
+    env!("CARGO_MANIFEST_DIR"),
+    env!("CARGO_PKG_NAME"),
+    &config_path,
+).await;
+// handle.port, handle.base_url are available
+handle.stop().await;
+```
+
+The `env!()` macros resolve to the calling service's directory and package name
+at compile time, so the shared crate reads the correct `Cargo.toml` metadata.
+
+**Binary discovery order:**
+
+1. Explicit env var (e.g., `FILEMONITOR_BINARY=/path/to/bin`)
+2. Pre-built binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
+3. Fallback to `cargo run --package <name>`
+
+**Port discovery:** All services print `bound_addr=<host>:<port>` to stdout when
+they bind. The parser looks for `bound_addr=` in any line (the human-readable
+prefix before it can vary per service).
+
+#### 5.2 Entry Point Structure
 
 Each service's BDD tests follow this structure:
 
@@ -311,6 +359,7 @@ tests/
     world.rs                # World struct + helpers
     steps/
       mod.rs                # pub mod for each step file
+      infrastructure.rs     # ServiceHandle re-export + service-specific infra
       connection_steps.rs
       ...
   features/
@@ -332,13 +381,30 @@ use world::MyWorld;
 
 #[tokio::main]
 async fn main() {
-    MyWorld::run("tests/features").await;
+    MyWorld::cucumber()
+        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+            Box::pin(async move {
+                if let Some(world) = maybe_world {
+                    if let Some(handle) = world.service_handle.as_mut() {
+                        handle.stop().await;
+                    }
+                }
+            })
+        })
+        .run_and_exit("tests/features")
+        .await;
 }
 ```
 
-#### 5.2 Register in Cargo.toml
+#### 5.3 Register in Cargo.toml
 
 ```toml
+[package.metadata.bdd]
+env_var = "MY_SERVICE_BINARY"
+
+[dev-dependencies]
+bdd-infra = { workspace = true }
+
 [[test]]
 name = "bdd"
 harness = false

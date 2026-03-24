@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version = "1.88.0"
 description = "ASCOM Alpaca driver for QHY Q-Focuser (EAF)"
 
+[package.metadata.bdd]
+env_var = "QHY_FOCUSER_BINARY"
+features = ["mock"]
+
 [features]
 default = []
 mock = []  # Enables mock hardware for testing without real serial port
@@ -32,6 +36,7 @@ command = "cargo test -p qhy-focuser --features mock,conformu --test conformu_in
 command = "cargo miri test -p qhy-focuser"
 
 [dev-dependencies]
+bdd-infra = { workspace = true }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }

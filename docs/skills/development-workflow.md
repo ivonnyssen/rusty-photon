@@ -113,8 +113,11 @@ For services that depend on external systems, build test infrastructure early:
 - **Stub servers** for webhook receivers, plugin endpoints
 - **Process management** helpers to start/stop subprocesses in tests
 
-This infrastructure lives in the test directory (e.g.,
-`tests/bdd/infrastructure.rs`) and is shared across all feature files.
+Process management (binary discovery, port parsing, graceful shutdown) is
+centralized in the `bdd-infra` crate (`crates/bdd-infra`). Each service's
+`tests/bdd/steps/infrastructure.rs` re-exports `ServiceHandle` from this
+shared crate and adds any service-specific helpers (configuration builders,
+mock setup, etc.). See `docs/skills/testing.md` Section 5.1 for details.
 
 #### Step 2c: Write feature files from the design doc
 

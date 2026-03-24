@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/bdd-infra",
   "services/filemonitor",
   "services/phd2-guider",
   "services/ppba-driver",
@@ -19,10 +20,12 @@ repository = "https://github.com/ivonnyssen/rusty_photon"
 description = "Rusty Photon - An astrophotography application"
 
 [workspace.dependencies]
+bdd-infra = { path = "crates/bdd-infra" }
 tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 clap = { version = "4.5.60", features = ["derive"] }
+libc = "0.2"
 regex = "1.12.3"
 async-trait = "0.1.89"
 tracing = "0.1.44"
@@ -45,7 +48,6 @@ cargo-husky = { version = "1", default-features = false, features = [
   "run-cargo-clippy",
   "run-for-all",
 ] }
-libc = "0.2"
 
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"

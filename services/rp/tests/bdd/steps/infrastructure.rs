@@ -6,9 +6,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tracing::debug;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -17,6 +14,8 @@ use serde_json::Value;
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::world::{OrchestratorInvocation, ReceivedEvent};
+
+pub use bdd_infra::ServiceHandle;
 
 // ---------------------------------------------------------------------------
 // OmniSim native process handle (shared singleton)
@@ -129,191 +128,6 @@ impl OmniSimProcess {
         }
         panic!("OmniSim did not become healthy within 30 seconds");
     }
-}
-
-// ---------------------------------------------------------------------------
-// rp process handle
-// ---------------------------------------------------------------------------
-
-/// Handle to a running rp process
-#[derive(Debug)]
-pub struct RpHandle {
-    pub child: Option<tokio::process::Child>,
-    pub base_url: String,
-    pub port: u16,
-    pub config_path: String,
-    pub stdout_drain: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl RpHandle {
-    /// Start the rp binary with the given config file.
-    ///
-    /// The rp process binds its own port (use `"port": 0` in config for
-    /// OS-assigned allocation) and prints the bound address to stdout.
-    /// This function parses that output to discover the actual port,
-    /// eliminating the TOCTOU race of pre-allocating a port externally.
-    ///
-    /// Binary discovery order:
-    /// 1. `RP_BINARY` env var — full path to the binary
-    /// 2. Look for the binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
-    /// 3. Fall back to `cargo run --package rp`
-    pub async fn start(config_path: &str) -> Self {
-        let mut child = if let Some(binary) = Self::find_binary() {
-            debug!(binary = %binary, "starting rp from pre-built binary");
-            tokio::process::Command::new(&binary)
-                .args(["--config", config_path])
-                .stdout(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .unwrap_or_else(|e| panic!("failed to start rp binary '{}': {}", binary, e))
-        } else {
-            debug!("starting rp via cargo run");
-            tokio::process::Command::new("cargo")
-                .args([
-                    "run",
-                    "--package",
-                    "rp",
-                    "--quiet",
-                    "--",
-                    "--config",
-                    config_path,
-                ])
-                .stdout(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .expect("failed to start rp process")
-        };
-
-        let stdout = child.stdout.take().expect("failed to capture rp stdout");
-        let (port, stdout_drain) = parse_bound_port(stdout)
-            .await
-            .expect("failed to parse bound port from rp output");
-
-        Self {
-            child: Some(child),
-            base_url: format!("http://127.0.0.1:{}", port),
-            port,
-            config_path: config_path.to_string(),
-            stdout_drain: Some(stdout_drain),
-        }
-    }
-
-    /// Find the rp binary if pre-built.
-    fn find_binary() -> Option<String> {
-        // 1. Explicit env var
-        if let Ok(path) = std::env::var("RP_BINARY") {
-            return Some(path);
-        }
-
-        // 2. Look in target dir, respecting CARGO_TARGET_DIR and CARGO_BUILD_TARGET
-        let target_dir = std::env::var("CARGO_TARGET_DIR")
-            .or_else(|_| std::env::var("CARGO_LLVM_COV_TARGET_DIR"))
-            .unwrap_or_else(|_| "target".to_string());
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "rp.exe"
-        } else {
-            "rp"
-        };
-
-        // With CARGO_BUILD_TARGET: target/<triple>/debug/rp
-        if let Ok(triple) = std::env::var("CARGO_BUILD_TARGET") {
-            let path = format!("{}/{}/debug/{}", target_dir, triple, binary_name);
-            if std::path::Path::new(&path).exists() {
-                return Some(path);
-            }
-        }
-
-        // Without target: target/debug/rp
-        let path = format!("{}/debug/{}", target_dir, binary_name);
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
-
-        None
-    }
-
-    /// Stop the rp process gracefully via SIGTERM, falling back to SIGKILL.
-    /// Graceful shutdown allows the process to flush coverage data (profraw).
-    pub async fn stop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
-        }
-        if let Some(mut child) = self.child.take() {
-            if let Some(pid) = child.id() {
-                // Send SIGTERM for graceful shutdown
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-                let _ = pid; // suppress unused warning on non-unix
-
-                // Wait up to 5 seconds for clean exit
-                match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(_) => return,
-                    Err(_) => {
-                        debug!("rp did not exit after SIGTERM, sending SIGKILL");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                    }
-                }
-            } else {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-            }
-        }
-    }
-}
-
-impl Drop for RpHandle {
-    fn drop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
-        }
-        if let Some(ref mut child) = self.child {
-            // Best-effort SIGTERM on drop, fall back to kill
-            if let Some(pid) = child.id() {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-                let _ = pid; // suppress unused warning on non-unix
-            } else {
-                let _ = child.start_kill();
-            }
-        }
-    }
-}
-
-/// Parse the bound port from rp subprocess stdout.
-/// Looks for "Bound rp server bound_addr=<host>:<port>".
-/// Returns the port and spawns a background task to drain remaining stdout,
-/// preventing the server from blocking when the pipe buffer fills.
-async fn parse_bound_port(
-    stdout: tokio::process::ChildStdout,
-) -> Option<(u16, tokio::task::JoinHandle<()>)> {
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-
-    while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some(addr_str) = line.trim().strip_prefix("Bound rp server bound_addr=") {
-            if let Some(port_str) = addr_str.split(':').next_back() {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    // Drain remaining stdout in background so the server never
-                    // blocks on a write to stdout.
-                    let drain_handle = tokio::spawn(async move {
-                        let mut buf = String::new();
-                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-                            buf.clear();
-                        }
-                    });
-                    return Some((port, drain_handle));
-                }
-            }
-        }
-        line.clear();
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

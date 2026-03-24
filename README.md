@@ -120,6 +120,8 @@ cargo fmt
 ```
 rusty-photon/
   Cargo.toml              Workspace root with shared dependencies
+  crates/
+    bdd-infra/             Shared BDD test infrastructure (ServiceHandle)
   services/
     rp/                    Main application: equipment gateway, event bus
     filemonitor/           ASCOM SafetyMonitor (file-based)
