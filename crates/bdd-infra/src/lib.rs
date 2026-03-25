@@ -29,6 +29,42 @@
 //! // ...
 //! handle.stop().await;
 //! ```
+//!
+//! # Miri compatibility
+//!
+//! BDD tests that spawn child processes cannot run under Miri (`pidfd_spawnp`
+//! is unsupported). Use the [`bdd_main!`] macro in your `bdd.rs` entry point
+//! to automatically skip the test under Miri:
+//!
+//! ```rust,ignore
+//! bdd_infra::bdd_main! {
+//!     use cucumber::World as _;
+//!     use world::MyWorld;
+//!
+//!     MyWorld::cucumber()
+//!         .run_and_exit("tests/features")
+//!         .await;
+//! }
+//! ```
+
+/// Entry-point macro for BDD tests that spawn child processes.
+///
+/// Under Miri the macro expands to an empty `fn main() {}`, because Miri does
+/// not support `pidfd_spawnp` and other process-spawning FFI. Under normal
+/// compilation it expands to `#[tokio::main] async fn main() { ... }`.
+#[macro_export]
+macro_rules! bdd_main {
+    ($($body:tt)*) => {
+        #[cfg(miri)]
+        fn main() {}
+
+        #[cfg(not(miri))]
+        #[tokio::main]
+        async fn main() {
+            $($body)*
+        }
+    };
+}
 
 use std::process::Stdio;
 use std::time::Duration;

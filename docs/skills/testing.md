@@ -367,7 +367,14 @@ tests/
     ...
 ```
 
-The `bdd.rs` entry point uses `#[path = "..."]` imports because test crate roots see siblings, not children:
+The `bdd.rs` entry point uses `#[path = "..."]` imports because test crate roots see siblings, not children.
+
+**BDD tests that spawn child processes** (i.e. use `ServiceHandle`) **must** use the
+`bdd_infra::bdd_main!` macro instead of a hand-written `#[tokio::main] async fn main()`.
+The macro expands to an empty `fn main() {}` under Miri, because Miri does not
+support the `pidfd_spawnp` FFI that tokio uses for process spawning on Linux.
+BDD tests that are purely in-process (e.g. qhy-focuser with mock serial ports)
+do not need the macro.
 
 ```rust
 #[path = "bdd/world.rs"]
@@ -376,11 +383,10 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
-use cucumber::World as _;
-use world::MyWorld;
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::MyWorld;
 
-#[tokio::main]
-async fn main() {
     MyWorld::cucumber()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
