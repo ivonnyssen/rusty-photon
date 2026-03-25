@@ -104,6 +104,10 @@ name = "bdd"
 harness = false
 ```
 
+If the BDD tests spawn child processes (via `ServiceHandle`), use the
+`bdd_infra::bdd_main!` macro for Miri compatibility — see
+docs/skills/testing.md Section 5.2.
+
 #### Step 2b: Build test doubles
 
 For services that depend on external systems, build test infrastructure early:

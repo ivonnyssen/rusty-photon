@@ -4,11 +4,10 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
-use cucumber::World as _;
-use world::PpbaWorld;
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::PpbaWorld;
 
-#[tokio::main]
-async fn main() {
     PpbaWorld::cucumber()
         // Run one scenario at a time: each spawns a ppba-driver subprocess
         // that binds the Alpaca discovery UDP port (32227). On macOS,

@@ -6,11 +6,10 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
-use cucumber::World as _;
-use world::FilemonitorWorld;
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::FilemonitorWorld;
 
-#[tokio::main]
-async fn main() {
     FilemonitorWorld::cucumber()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
