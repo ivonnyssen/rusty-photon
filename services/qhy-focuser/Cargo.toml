@@ -18,7 +18,7 @@ mock = []  # Enables mock hardware for testing without real serial port
 conformu = ["ascom-alpaca/test"]
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
+ascom-alpaca = { workspace = true, features = ["server", "focuser", "client"] }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }

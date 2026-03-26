@@ -1,19 +1,24 @@
 //! World struct for QHY-Focuser BDD tests
+//!
+//! Uses binary spawning via ServiceHandle and HTTP interaction via AlpacaClient.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use ascom_alpaca::api::{Focuser, TypedDevice};
+use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::ServiceHandle;
 use cucumber::World;
-use qhy_focuser::io::SerialPortFactory;
-use qhy_focuser::{Config, QhyFocuserDevice, SerialManager};
-
-#[path = "mock_serial.rs"]
-pub mod mock_serial;
+use qhy_focuser::Config;
+use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
 pub struct QhyFocuserWorld {
+    pub focuser_handle: Option<ServiceHandle>,
+    pub focuser: Option<Arc<dyn Focuser>>,
     pub config: Option<Config>,
-    pub device: Option<Arc<QhyFocuserDevice>>,
-    pub serial_manager: Option<Arc<SerialManager>>,
+    pub temp_dir: Option<TempDir>,
     pub last_error: Option<String>,
     pub last_error_code: Option<u16>,
     pub position_result: Option<i32>,
@@ -22,50 +27,72 @@ pub struct QhyFocuserWorld {
 }
 
 impl QhyFocuserWorld {
-    /// Build a device with mock serial responses and a long polling interval
-    /// (to avoid the background poller consuming mock responses).
-    pub fn build_device_with_responses(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = self.config.clone().unwrap_or_default();
-        // Use long polling interval to prevent background poller from consuming responses
-        config.serial.polling_interval_ms = 60_000;
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.device = Some(Arc::new(QhyFocuserDevice::new(
-            config.focuser,
-            serial_manager,
-        )));
+    /// Convenience accessor for the Focuser device client.
+    pub fn focuser(&self) -> &Arc<dyn Focuser> {
+        self.focuser.as_ref().expect("focuser not acquired")
     }
 
-    /// Build a device with a failing factory.
-    pub fn build_device_with_failing_factory(&mut self, error_msg: &str) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::FailingFactory::new(error_msg));
+    /// Build a JSON config from current world state, write to temp file, and return path.
+    fn write_config(&mut self) -> String {
         let config = self.config.clone().unwrap_or_default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        self.serial_manager = Some(Arc::clone(&serial_manager));
-        self.device = Some(Arc::new(QhyFocuserDevice::new(
-            config.focuser,
-            serial_manager,
-        )));
+
+        let config_json = serde_json::json!({
+            "serial": {
+                "port": config.serial.port,
+                "baud_rate": config.serial.baud_rate,
+                "polling_interval_ms": config.serial.polling_interval_ms,
+                "timeout_seconds": config.serial.timeout_seconds,
+            },
+            "server": {
+                "port": 0,
+            },
+            "focuser": {
+                "name": config.focuser.name,
+                "unique_id": config.focuser.unique_id,
+                "description": config.focuser.description,
+                "device_number": config.focuser.device_number,
+                "enabled": config.focuser.enabled,
+                "max_step": config.focuser.max_step,
+                "speed": config.focuser.speed,
+                "reverse": config.focuser.reverse,
+            },
+        });
+
+        let dir = self
+            .temp_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        let config_path = dir.path().join("config.json");
+        std::fs::write(&config_path, config_json.to_string()).expect("failed to write config");
+        config_path.to_str().unwrap().to_string()
     }
 
-    /// Build a serial manager directly (no device) with mock responses and long polling.
-    pub fn build_manager_with_responses(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = self.config.clone().unwrap_or_default();
-        config.serial.polling_interval_ms = 60_000;
-        self.serial_manager = Some(Arc::new(SerialManager::new(config, factory)));
+    /// Start the focuser service binary and acquire a Focuser client.
+    pub async fn start_focuser(&mut self) {
+        let config_path = self.write_config();
+
+        let handle = ServiceHandle::start(
+            env!("CARGO_MANIFEST_DIR"),
+            env!("CARGO_PKG_NAME"),
+            &config_path,
+        )
+        .await;
+        let focuser = self.acquire_focuser(&handle).await;
+        self.focuser = Some(focuser);
+        self.focuser_handle = Some(handle);
     }
 
-    /// Build a serial manager with fast polling for polling tests.
-    pub fn build_manager_with_fast_polling(&mut self, responses: Vec<String>) {
-        let factory: Arc<dyn SerialPortFactory> =
-            Arc::new(mock_serial::MockSerialPortFactory::new(responses));
-        let mut config = self.config.clone().unwrap_or_default();
-        config.serial.polling_interval_ms = 50;
-        self.serial_manager = Some(Arc::new(SerialManager::new(config, factory)));
+    /// Poll until the server returns a Focuser device via the Alpaca client.
+    async fn acquire_focuser(&self, handle: &ServiceHandle) -> Arc<dyn Focuser> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let client = AlpacaClient::new_from_addr(addr);
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(mut devices) = client.get_devices().await {
+                if let Some(TypedDevice::Focuser(focuser)) = devices.next() {
+                    return focuser;
+                }
+            }
+        }
+        panic!("qhy-focuser did not become healthy within 30 seconds");
     }
 }
