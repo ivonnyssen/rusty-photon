@@ -11,7 +11,7 @@
 
 3. You MUST use `cargo run` when you start any service for testing.
 
-4. You MUST ALWAYS run `cargo build --all --all-targets --quiet --color never`, `cargo test --all --quiet --color never` and `cargo fmt` to build the package before committing your work and fix all errors and warnings from the change you've made. The `--all-targets` flag on the build step is critical: it compiles test, bench, and example targets, catching feature-unification errors that a plain `cargo build --all` misses. See docs/skills/pre-push.md for the full CI quality-gate suite.
+4. You MUST ALWAYS run `cargo build --all --all-targets --all-features --quiet --color never`, `cargo test --all --all-features --quiet --color never` and `cargo fmt` to build the package before committing your work and fix all errors and warnings from the change you've made. The `--all-targets` flag compiles test, bench, and example targets, catching feature-unification errors that a plain `cargo build --all` misses. The `--all-features` flag is critical: it enables feature-gated test code (e.g. `#[cfg(feature = "mock")]`) that CI always compiles. See docs/skills/pre-push.md for the full CI quality-gate suite.
 
 5. You MUST NEVER commit to the main branch of the git repository. ALL work MUST happen on a branch. Before making any code changes, verify you are on a feature branch. If on main, create and switch to an appropriate feature branch first. Use appropriate naming for branches such as `feature/new_feature_name` or `chore/update_dependency_x`.
 
