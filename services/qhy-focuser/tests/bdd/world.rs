@@ -45,6 +45,7 @@ impl QhyFocuserWorld {
             },
             "server": {
                 "port": 0,
+                "discovery_port": null,
             },
             "focuser": {
                 "name": config.focuser.name,

@@ -19,7 +19,10 @@ fn test_config() -> Config {
             polling_interval_ms: 60_000,
             ..Default::default()
         },
-        server: ServerConfig { port: 0 },
+        server: ServerConfig {
+            port: 0,
+            discovery_port: None,
+        },
         focuser: FocuserConfig::default(),
     }
 }

@@ -42,7 +42,10 @@ fn test_config(focuser_enabled: bool) -> Config {
             polling_interval_ms: 60000,
             ..Default::default()
         },
-        server: ServerConfig { port: 0 },
+        server: ServerConfig {
+            port: 0,
+            discovery_port: None,
+        },
         focuser: FocuserConfig {
             enabled: focuser_enabled,
             ..Default::default()
