@@ -5,12 +5,15 @@ pub mod events;
 pub mod mcp;
 pub mod routes;
 pub mod session;
+pub mod tls_cmd;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::signal;
 use tracing::{debug, info};
+
+use rp_tls::config::TlsConfig;
 
 use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
@@ -69,12 +72,14 @@ impl ServerBuilder {
         };
 
         let router = build_router(state);
+        let tls = config.server.tls.clone();
 
         let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
         let local_addr = listener.local_addr()?;
 
         // Set the MCP base URL on the session manager
-        let base_url = format!("http://{}", local_addr);
+        let scheme = if tls.is_some() { "https" } else { "http" };
+        let base_url = format!("{scheme}://{local_addr}");
         session.set_mcp_base_url(base_url).await;
 
         // This println is parsed by BDD tests to discover the bound port.
@@ -86,6 +91,7 @@ impl ServerBuilder {
             listener,
             router,
             local_addr,
+            tls,
         })
     }
 }
@@ -101,6 +107,7 @@ pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
+    tls: Option<TlsConfig>,
 }
 
 impl BoundServer {
@@ -109,11 +116,25 @@ impl BoundServer {
     }
 
     pub async fn start(self) -> Result<()> {
-        info!("rp service started on {}", self.local_addr);
-
-        axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        match self.tls {
+            Some(ref tls_config) => {
+                info!("rp service started on {} (TLS)", self.local_addr);
+                rp_tls::server::serve_tls(
+                    self.listener,
+                    self.router,
+                    tls_config,
+                    shutdown_signal(),
+                )
+                .await
+                .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
+            }
+            None => {
+                info!("rp service started on {}", self.local_addr);
+                axum::serve(self.listener, self.router)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await?;
+            }
+        }
 
         debug!("rp service shut down");
         Ok(())

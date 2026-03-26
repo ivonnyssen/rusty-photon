@@ -46,12 +46,10 @@ impl AlpacaSafetyMonitor {
             port,
             device_number,
             polling_interval_seconds,
+            scheme,
         } = config;
 
-        let base_url = format!(
-            "http://{}:{}/api/v1/safetymonitor/{}",
-            host, port, device_number
-        );
+        let base_url = format!("{scheme}://{host}:{port}/api/v1/safetymonitor/{device_number}");
 
         tracing::debug!("Created AlpacaSafetyMonitor '{}' at {}", name, base_url);
 
@@ -153,6 +151,7 @@ mod tests {
             port: 11111,
             device_number: 0,
             polling_interval_seconds: 30,
+            scheme: "http".to_string(),
         }
     }
 

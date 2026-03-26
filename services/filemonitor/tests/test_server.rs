@@ -28,6 +28,7 @@ async fn test_start_server_creation() {
             port: 0,
             device_number: 0,
             discovery_port: None,
+            tls: None,
         },
     };
 

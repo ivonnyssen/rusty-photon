@@ -28,6 +28,8 @@ pub struct SerialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
+    #[serde(default)]
+    pub tls: Option<rp_tls::config::TlsConfig>,
 }
 
 /// Switch device configuration
@@ -89,7 +91,10 @@ impl Default for SerialConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { port: 11112 }
+        Self {
+            port: 11112,
+            tls: None,
+        }
     }
 }
 
