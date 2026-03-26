@@ -1,3 +1,7 @@
+// Proptest is prohibitively slow under Miri's interpreter and uses getcwd
+// which is unsupported without -Zmiri-disable-isolation.
+#![cfg(not(miri))]
+
 use filemonitor::{
     Config, DeviceConfig, FileConfig, FileMonitorDevice, ParsingConfig, ParsingRule, RuleType,
     ServerConfig,
