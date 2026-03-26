@@ -21,6 +21,9 @@ pub use bdd_infra::ServiceHandle;
 // OmniSim native process handle (shared singleton)
 // ---------------------------------------------------------------------------
 
+/// OmniSim's default HTTP port when launched without `--urls`.
+const OMNISIM_PORT: u16 = 32323;
+
 /// Shared OmniSim info returned to each scenario
 #[derive(Debug, Clone)]
 pub struct OmniSimHandle {
@@ -28,9 +31,10 @@ pub struct OmniSimHandle {
     pub port: u16,
 }
 
-/// Singleton that owns the OmniSim child process for the entire test run
+/// Singleton that owns the OmniSim child process for the entire test run.
+/// When `None`, a pre-existing OmniSim was reused and we don't own the process.
 struct OmniSimProcess {
-    _child: tokio::process::Child,
+    _child: Option<std::process::Child>,
     base_url: String,
     port: u16,
 }
@@ -41,13 +45,17 @@ static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 impl OmniSimHandle {
     /// Get or start the shared OmniSim process. Returns a lightweight handle.
     ///
-    /// Binary discovery order:
+    /// If an OmniSim instance is already listening on the default port (32323),
+    /// it is reused. Otherwise a new process is spawned with
+    /// `PR_SET_PDEATHSIG` so the kernel kills it when the test process exits.
+    ///
+    /// Binary discovery order (when spawning):
     /// 1. `OMNISIM_PATH` env var — full path to the binary
     /// 2. `OMNISIM_DIR` env var — directory containing the binary
-    /// 3. `ascom.alpaca.simulators` (or `.exe` on Windows) on `PATH`
+    /// 3. `ascom.alpaca.simulators` on `PATH`
     pub async fn start() -> Self {
         let process = OMNISIM
-            .get_or_init(|| async { OmniSimProcess::spawn().await })
+            .get_or_init(|| async { OmniSimProcess::get_or_spawn().await })
             .await;
         Self {
             base_url: process.base_url.clone(),
@@ -57,27 +65,50 @@ impl OmniSimHandle {
 }
 
 impl OmniSimProcess {
-    async fn spawn() -> Self {
+    async fn get_or_spawn() -> Self {
+        let base_url = format!("http://127.0.0.1:{}", OMNISIM_PORT);
+
+        // Reuse an already-running OmniSim if it responds to a health check.
+        if Self::is_healthy(&base_url).await {
+            return Self {
+                _child: None,
+                base_url,
+                port: OMNISIM_PORT,
+            };
+        }
+
         let binary = Self::find_binary();
-        let port = Self::find_free_port().await;
 
         // Clear sanitizer-related env vars so the .NET runtime isn't broken
         // by LD_PRELOAD injection from ASAN/LSAN.
-        let child = tokio::process::Command::new(&binary)
-            .args(["--urls", &format!("http://127.0.0.1:{}", port)])
+        let mut cmd = std::process::Command::new(&binary);
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::null())
             .env_remove("LD_PRELOAD")
             .env_remove("ASAN_OPTIONS")
-            .env_remove("LSAN_OPTIONS")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .env_remove("LSAN_OPTIONS");
+
+        // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
+        // child when the test process exits (normal, panic, or SIGKILL).
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    Ok(())
+                });
+            }
+        }
+
+        let child = cmd
             .spawn()
             .unwrap_or_else(|e| panic!("failed to start OmniSim binary '{}': {}", binary, e));
 
         let process = Self {
-            _child: child,
-            base_url: format!("http://127.0.0.1:{}", port),
-            port,
+            _child: Some(child),
+            base_url,
+            port: OMNISIM_PORT,
         };
         process.wait_healthy().await;
         process
@@ -106,24 +137,22 @@ impl OmniSimProcess {
         binary_name.to_string()
     }
 
-    /// Allocate a free TCP port by binding to :0 and releasing
-    async fn find_free_port() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind to find free port for OmniSim");
-        listener.local_addr().unwrap().port()
+    /// Single health-check probe — returns true if OmniSim is responding.
+    async fn is_healthy(base_url: &str) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("failed to build reqwest client");
+        let url = format!("{}/api/v1/camera/0/connected", base_url);
+        matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
     }
 
     /// Wait for OmniSim to respond to HTTP requests
     async fn wait_healthy(&self) {
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/v1/camera/0/connected", self.base_url);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    return;
-                }
+            if Self::is_healthy(&self.base_url).await {
+                return;
             }
         }
         panic!("OmniSim did not become healthy within 30 seconds");
