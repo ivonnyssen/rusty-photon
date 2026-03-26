@@ -56,7 +56,8 @@ fn test_config(focuser_enabled: bool) -> Config {
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
     let factory: Arc<dyn SerialPortFactory> = Arc::new(StubSerialPortFactory);
 
-    let bound = qhy_focuser::ServerBuilder::new(config)
+    let bound = qhy_focuser::ServerBuilder::new()
+        .with_config(config)
         .with_factory(factory)
         .build()
         .await

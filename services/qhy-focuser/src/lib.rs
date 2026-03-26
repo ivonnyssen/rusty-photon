@@ -40,12 +40,23 @@ pub struct ServerBuilder {
     factory: Arc<dyn SerialPortFactory>,
 }
 
-impl ServerBuilder {
-    pub fn new(config: Config) -> Self {
+impl Default for ServerBuilder {
+    fn default() -> Self {
         Self {
-            config,
+            config: Config::default(),
             factory: Arc::new(TokioSerialPortFactory::new()),
         }
+    }
+}
+
+impl ServerBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn with_factory(mut self, factory: Arc<dyn SerialPortFactory>) -> Self {
