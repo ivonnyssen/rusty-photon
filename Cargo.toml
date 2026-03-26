@@ -44,9 +44,7 @@ cucumber = "0.22.1"
 tempfile = "3.27.0"
 cargo-husky = { version = "1", default-features = false, features = [
   "precommit-hook",
-  "run-cargo-fmt",
-  "run-cargo-clippy",
-  "run-for-all",
+  "user-hooks",
 ] }
 
 [[workspace.metadata.leptos]]
