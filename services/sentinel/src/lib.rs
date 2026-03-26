@@ -193,13 +193,30 @@ impl Sentinel {
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
 
-        // Setup shutdown handler
+        // Setup shutdown handler (Ctrl+C and SIGTERM)
         let cancel_for_signal = cancel.clone();
         tokio::spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to listen for ctrl-c");
-            tracing::info!("Shutdown signal received");
+            let ctrl_c = async {
+                tokio::signal::ctrl_c()
+                    .await
+                    .expect("Failed to listen for ctrl-c");
+            };
+
+            #[cfg(unix)]
+            let terminate = async {
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to install SIGTERM handler")
+                    .recv()
+                    .await;
+            };
+
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<()>();
+
+            tokio::select! {
+                () = ctrl_c => tracing::info!("Received Ctrl+C"),
+                () = terminate => tracing::info!("Received SIGTERM"),
+            }
             cancel_for_signal.cancel();
         });
 
@@ -208,10 +225,9 @@ impl Sentinel {
             let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
 
-            tracing::info!(
-                "Dashboard listening on http://{}",
-                listener.local_addr().unwrap()
-            );
+            let addr = listener.local_addr().unwrap();
+            tracing::info!("Dashboard listening on http://{}", addr);
+            println!("Sentinel dashboard bound_addr={}", addr);
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);
@@ -286,5 +302,127 @@ mod tests {
 
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].name(), "Test Monitor");
+    }
+
+    #[tokio::test]
+    async fn builder_with_http_client_uses_injected_client() {
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let sentinel = SentinelBuilder::new(Config::default())
+            .with_http_client(http)
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_with_monitors_skips_config_factory() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let config = Config {
+            monitors: vec![MonitorConfig::AlpacaSafetyMonitor {
+                name: "Should Be Ignored".to_string(),
+                host: "localhost".to_string(),
+                port: 11111,
+                device_number: 0,
+                polling_interval_seconds: 30,
+            }],
+            ..Config::default()
+        };
+
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        // Injecting empty monitors should override the config factory
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .with_monitors(vec![])
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_with_notifiers_skips_config_factory() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let config = Config {
+            notifiers: vec![config::NotifierConfig::Pushover {
+                api_token: "tok".to_string(),
+                user_key: "usr".to_string(),
+                default_title: "Alert".to_string(),
+                default_priority: 0,
+                default_sound: "pushover".to_string(),
+            }],
+            ..Config::default()
+        };
+
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        // Injecting empty notifiers should override the config factory
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .with_notifiers(vec![])
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn has_dashboard_true_when_enabled() {
+        let config = Config {
+            dashboard: config::DashboardConfig {
+                enabled: true,
+                port: 0,
+                ..config::DashboardConfig::default()
+            },
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .build()
+            .await
+            .unwrap();
+
+        assert!(sentinel.has_dashboard());
+    }
+
+    #[tokio::test]
+    async fn has_dashboard_false_when_disabled() {
+        let config = Config {
+            dashboard: config::DashboardConfig {
+                enabled: false,
+                ..config::DashboardConfig::default()
+            },
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .build()
+            .await
+            .unwrap();
+
+        assert!(!sentinel.has_dashboard());
     }
 }
