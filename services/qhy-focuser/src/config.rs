@@ -32,7 +32,7 @@ pub struct ServerConfig {
 }
 
 fn default_discovery_port() -> Option<u16> {
-    Some(32227)
+    Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
 /// Focuser device configuration
