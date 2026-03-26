@@ -27,6 +27,12 @@ pub struct SerialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
+    #[serde(default = "default_discovery_port")]
+    pub discovery_port: Option<u16>,
+}
+
+fn default_discovery_port() -> Option<u16> {
+    Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
 /// Focuser device configuration
@@ -80,7 +86,10 @@ impl Default for SerialConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { port: 11113 }
+        Self {
+            port: 11113,
+            discovery_port: default_discovery_port(),
+        }
     }
 }
 

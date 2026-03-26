@@ -2,27 +2,19 @@
 
 use crate::world::QhyFocuserWorld;
 use cucumber::{given, when};
+use qhy_focuser::Config;
 use std::time::Duration;
 
 // ============================================================================
 // Given steps
 // ============================================================================
 
-#[given("a serial manager with fast polling and updated values")]
-fn manager_with_fast_polling_and_updated_values(world: &mut QhyFocuserWorld) {
-    let mut responses = vec![
-        // Handshake
-        r#"{"idx": 1, "firmware_version": "2.1.0", "board_version": "1.0"}"#.to_string(),
-        r#"{"idx": 13}"#.to_string(),
-        r#"{"idx": 5, "pos": 1000}"#.to_string(),
-        r#"{"idx": 4, "o_t": 20000, "c_t": 25000, "c_r": 120}"#.to_string(),
-    ];
-    // Polling responses — updated values that differ from handshake
-    for _ in 0..10 {
-        responses.push(r#"{"idx": 5, "pos": 2000}"#.to_string());
-        responses.push(r#"{"idx": 4, "o_t": 28000, "c_t": 33000, "c_r": 130}"#.to_string());
-    }
-    world.build_manager_with_fast_polling(responses);
+#[given("a focuser service with fast polling")]
+async fn focuser_with_fast_polling(world: &mut QhyFocuserWorld) {
+    let mut config = Config::default();
+    config.serial.polling_interval_ms = 50;
+    world.config = Some(config);
+    world.start_focuser().await;
 }
 
 // ============================================================================
@@ -31,5 +23,5 @@ fn manager_with_fast_polling_and_updated_values(world: &mut QhyFocuserWorld) {
 
 #[when("I wait for polling to update")]
 async fn wait_for_polling(_world: &mut QhyFocuserWorld) {
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
 }

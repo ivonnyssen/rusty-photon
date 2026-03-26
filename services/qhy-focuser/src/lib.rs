@@ -40,12 +40,23 @@ pub struct ServerBuilder {
     factory: Arc<dyn SerialPortFactory>,
 }
 
-impl ServerBuilder {
-    pub fn new(config: Config) -> Self {
+impl Default for ServerBuilder {
+    fn default() -> Self {
         Self {
-            config,
+            config: Config::default(),
             factory: Arc::new(TokioSerialPortFactory::new()),
         }
+    }
+}
+
+impl ServerBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn with_factory(mut self, factory: Arc<dyn SerialPortFactory>) -> Self {
@@ -58,6 +69,7 @@ impl ServerBuilder {
     ) -> std::result::Result<ascom_alpaca::BoundServer, Box<dyn std::error::Error>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        server.discovery_port = self.config.server.discovery_port;
 
         let serial_manager = Arc::new(SerialManager::new(self.config.clone(), self.factory));
 
