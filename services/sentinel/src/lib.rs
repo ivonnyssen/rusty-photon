@@ -382,4 +382,47 @@ mod tests {
 
         sentinel.start().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn has_dashboard_true_when_enabled() {
+        let config = Config {
+            dashboard: config::DashboardConfig {
+                enabled: true,
+                port: 0,
+                ..config::DashboardConfig::default()
+            },
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .build()
+            .await
+            .unwrap();
+
+        assert!(sentinel.has_dashboard());
+    }
+
+    #[tokio::test]
+    async fn has_dashboard_false_when_disabled() {
+        let config = Config {
+            dashboard: config::DashboardConfig {
+                enabled: false,
+                ..config::DashboardConfig::default()
+            },
+            ..Config::default()
+        };
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .build()
+            .await
+            .unwrap();
+
+        assert!(!sentinel.has_dashboard());
+    }
 }
