@@ -10,9 +10,6 @@ bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::FilemonitorWorld;
 
-    // Install ring crypto provider for rustls (needed by ascom-alpaca client)
-    rp_tls::install_crypto_provider();
-
     FilemonitorWorld::cucumber()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {

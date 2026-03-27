@@ -32,7 +32,6 @@ pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
 
 /// Bind a TCP listener with dual-stack support and return a tokio `TcpListener`.
 pub async fn bind_dual_stack_tokio(addr: SocketAddr) -> Result<TcpListener> {
-    crate::install_crypto_provider();
     let std_listener = bind_dual_stack(addr)?;
     let listener = TcpListener::from_std(std_listener)?;
     Ok(listener)
@@ -40,7 +39,6 @@ pub async fn bind_dual_stack_tokio(addr: SocketAddr) -> Result<TcpListener> {
 
 /// Load TLS certificate and key from a `TlsConfig`, returning a `TlsAcceptor`.
 pub fn build_tls_acceptor(tls_config: &TlsConfig) -> Result<TlsAcceptor> {
-    crate::install_crypto_provider();
     let cert_path = tls_config.resolved_cert_path();
     let key_path = tls_config.resolved_key_path();
 
