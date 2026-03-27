@@ -154,7 +154,7 @@ jobs:
             --output-path lcov.info
       - name: Upload to codecov.io
         if: env.ACT != 'true'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           flags: ${{ matrix.package }}
