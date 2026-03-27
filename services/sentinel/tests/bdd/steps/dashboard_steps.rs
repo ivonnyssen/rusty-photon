@@ -1,122 +1,98 @@
-//! BDD step definitions for dashboard feature
+//! BDD step definitions for dashboard API feature
 
-use axum::body::Body;
-use axum::http::Request;
-use cucumber::{given, then, when};
-use tower::ServiceExt;
-
-use sentinel::dashboard::build_router;
-use sentinel::monitor::MonitorState;
-use sentinel::notifier::NotificationRecord;
-use sentinel::state::new_state_handle;
+use cucumber::{then, when};
 
 use crate::world::SentinelWorld;
 
-fn parse_state(s: &str) -> MonitorState {
-    match s {
-        "Safe" => MonitorState::Safe,
-        "Unsafe" => MonitorState::Unsafe,
-        "Unknown" => MonitorState::Unknown,
-        other => panic!("Unknown state: {}", other),
-    }
+#[when("the health endpoint is requested")]
+async fn request_health(world: &mut SentinelWorld) {
+    world.http_get("/health").await;
 }
 
-#[given(expr = "a monitor {string} with poll timestamp {int} in state {string}")]
-async fn monitor_with_poll_data(
-    world: &mut SentinelWorld,
-    name: String,
-    timestamp: u64,
-    state_str: String,
-) {
-    let state = parse_state(&state_str);
-    let handle = new_state_handle(vec![(name.clone(), 30000)], 10);
-    {
-        let mut s = handle.write().await;
-        s.update_monitor(&name, state, timestamp);
-    }
-    world.dashboard_state = Some(handle);
+#[when("the status API endpoint is requested")]
+async fn request_status(world: &mut SentinelWorld) {
+    world.http_get("/api/status").await;
 }
 
-#[given(expr = "a monitor {string} in the dashboard state")]
-fn monitor_in_dashboard(world: &mut SentinelWorld, name: String) {
-    let handle = new_state_handle(vec![(name, 30000)], 10);
-    world.dashboard_state = Some(handle);
+#[when("the history API endpoint is requested")]
+async fn request_history(world: &mut SentinelWorld) {
+    world.http_get("/api/history").await;
 }
 
-#[given(expr = "a notification record for {string} with message {string} that succeeded")]
-async fn notification_succeeded(world: &mut SentinelWorld, monitor_name: String, message: String) {
-    let handle = world.dashboard_state.as_ref().expect("state not set");
-    let mut s = handle.write().await;
-    s.add_notification(NotificationRecord {
-        monitor_name,
-        notifier_type: "pushover".to_string(),
-        message,
-        success: true,
-        error: None,
-        timestamp_epoch_ms: 1000,
-    });
+#[then(expr = "the response status should be {int}")]
+fn response_status(world: &mut SentinelWorld, expected: u16) {
+    let status = world.last_status_code.expect("no response status captured");
+    assert_eq!(status, expected, "Expected status {expected}, got {status}");
 }
 
-#[given(expr = "a notification record for {string} with message {string} that failed")]
-async fn notification_failed(world: &mut SentinelWorld, monitor_name: String, message: String) {
-    let handle = world.dashboard_state.as_ref().expect("state not set");
-    let mut s = handle.write().await;
-    s.add_notification(NotificationRecord {
-        monitor_name,
-        notifier_type: "pushover".to_string(),
-        message,
-        success: false,
-        error: Some("timeout".to_string()),
-        timestamp_epoch_ms: 2000,
-    });
-}
-
-#[when("the dashboard index page is requested")]
-async fn request_index(world: &mut SentinelWorld) {
-    let state = world
-        .dashboard_state
-        .as_ref()
-        .expect("state not set")
-        .clone();
-    let app = build_router(state);
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    world.dashboard_response_body = Some(String::from_utf8(body.to_vec()).unwrap());
-}
-
-#[then(expr = "the response should contain {string}")]
-fn response_contains(world: &mut SentinelWorld, expected: String) {
+#[then(expr = "the response body should be {string}")]
+fn response_body(world: &mut SentinelWorld, expected: String) {
     let body = world
-        .dashboard_response_body
+        .last_response_body
         .as_ref()
-        .expect("no response body");
-    assert!(
-        body.contains(&expected),
-        "Expected response to contain '{}', but it didn't.\nResponse body:\n{}",
+        .expect("no response body captured");
+    assert_eq!(body, &expected, "Expected body '{expected}', got '{body}'");
+}
+
+#[then(expr = "the response should be a JSON array with {int} entry")]
+fn response_json_array_len(world: &mut SentinelWorld, expected: usize) {
+    let body = world
+        .last_response_body
+        .as_ref()
+        .expect("no response body captured");
+    let json: Vec<serde_json::Value> =
+        serde_json::from_str(body).expect("response is not a JSON array");
+    assert_eq!(
+        json.len(),
         expected,
-        body
+        "Expected {} entries, got {}",
+        expected,
+        json.len()
     );
 }
 
-#[then(expr = "the response should contain a time script for epoch {int}")]
-fn response_contains_time_script(world: &mut SentinelWorld, epoch: u64) {
+#[then(expr = "the first entry should have name {string}")]
+fn first_entry_name(world: &mut SentinelWorld, expected: String) {
     let body = world
-        .dashboard_response_body
+        .last_response_body
         .as_ref()
-        .expect("no response body");
-    let expected = format!(
-        "<script>document.write(new Date({}).toLocaleTimeString())</script>",
-        epoch
+        .expect("no response body captured");
+    let json: Vec<serde_json::Value> =
+        serde_json::from_str(body).expect("response is not a JSON array");
+    let name = json[0]["name"]
+        .as_str()
+        .expect("first entry has no 'name' field");
+    assert_eq!(name, expected, "Expected name '{expected}', got '{name}'");
+}
+
+#[then(expr = "the first entry should have state {string}")]
+fn first_entry_state(world: &mut SentinelWorld, expected: String) {
+    let body = world
+        .last_response_body
+        .as_ref()
+        .expect("no response body captured");
+    let json: Vec<serde_json::Value> =
+        serde_json::from_str(body).expect("response is not a JSON array");
+    let state = json[0]["state"]
+        .as_str()
+        .expect("first entry has no 'state' field");
+    assert_eq!(
+        state, expected,
+        "Expected state '{expected}', got '{state}'"
     );
+}
+
+#[then("the response should be an empty JSON array")]
+fn response_empty_json_array(world: &mut SentinelWorld) {
+    let body = world
+        .last_response_body
+        .as_ref()
+        .expect("no response body captured");
+    let json: Vec<serde_json::Value> =
+        serde_json::from_str(body).expect("response is not a JSON array");
     assert!(
-        body.contains(&expected),
-        "Expected response to contain time script for epoch {}, but it didn't.\nResponse body:\n{}",
-        epoch,
-        body
+        json.is_empty(),
+        "Expected empty JSON array, got {} entries",
+        json.len()
     );
 }

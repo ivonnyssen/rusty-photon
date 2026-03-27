@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version = "1.88.0"
 description = "Observatory monitoring and notification service"
 
+[package.metadata.bdd]
+env_var = "SENTINEL_BINARY"
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -24,6 +27,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
+bdd-infra = { workspace = true }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }

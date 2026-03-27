@@ -193,13 +193,30 @@ impl Sentinel {
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
 
-        // Setup shutdown handler
+        // Setup shutdown handler (Ctrl+C and SIGTERM)
         let cancel_for_signal = cancel.clone();
         tokio::spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to listen for ctrl-c");
-            tracing::info!("Shutdown signal received");
+            let ctrl_c = async {
+                tokio::signal::ctrl_c()
+                    .await
+                    .expect("Failed to listen for ctrl-c");
+            };
+
+            #[cfg(unix)]
+            let terminate = async {
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to install SIGTERM handler")
+                    .recv()
+                    .await;
+            };
+
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<()>();
+
+            tokio::select! {
+                () = ctrl_c => tracing::info!("Received Ctrl+C"),
+                () = terminate => tracing::info!("Received SIGTERM"),
+            }
             cancel_for_signal.cancel();
         });
 
@@ -208,10 +225,9 @@ impl Sentinel {
             let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
 
-            tracing::info!(
-                "Dashboard listening on http://{}",
-                listener.local_addr().unwrap()
-            );
+            let addr = listener.local_addr().unwrap();
+            tracing::info!("Dashboard listening on http://{}", addr);
+            println!("Sentinel dashboard bound_addr={}", addr);
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);

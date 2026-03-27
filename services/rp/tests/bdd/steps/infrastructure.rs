@@ -282,20 +282,15 @@ pub struct TestOrchestratorState {
 }
 
 /// Configurable behavior for the test orchestrator
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum OrchestratorBehavior {
     /// Complete immediately after being invoked
+    #[default]
     CompleteImmediately,
     /// Wait until explicitly stopped (via cancellation)
     WaitForStop,
     /// Run a flat calibration plan: Vec<(filter, count, duration_secs)>
     FlatCalibration(Vec<(String, u32, f64)>),
-}
-
-impl Default for OrchestratorBehavior {
-    fn default() -> Self {
-        Self::CompleteImmediately
-    }
 }
 
 /// In-process HTTP server that acts as an orchestrator plugin
@@ -463,7 +458,7 @@ async fn run_flat_calibration(
     for (filter, count, duration_secs) in plan {
         // Set filter
         let _set_filter = client
-            .post(&format!("{}/mcp", base_url))
+            .post(format!("{}/mcp", base_url))
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -482,7 +477,7 @@ async fn run_flat_calibration(
         // Capture N flats
         for _ in 0..*count {
             let _capture = client
-                .post(&format!("{}/mcp", base_url))
+                .post(format!("{}/mcp", base_url))
                 .json(&serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": 1,

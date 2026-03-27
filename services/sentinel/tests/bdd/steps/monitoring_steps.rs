@@ -1,0 +1,137 @@
+//! BDD step definitions for end-to-end monitoring feature
+
+use cucumber::{given, then, when};
+
+use crate::world::SentinelWorld;
+
+// --- Given steps ---
+
+#[given(expr = "a monitoring file containing {string}")]
+fn monitoring_file_containing(world: &mut SentinelWorld, content: String) {
+    world.create_temp_file(&content);
+}
+
+#[given(expr = "filemonitor is running with a contains rule {string} as safe")]
+async fn filemonitor_running_with_rule(world: &mut SentinelWorld, pattern: String) {
+    world.fm_rules.push(serde_json::json!({
+        "type": "contains",
+        "pattern": pattern,
+        "safe": true
+    }));
+    world.start_filemonitor().await;
+}
+
+#[given(
+    expr = "filemonitor is running with a contains rule {string} as safe and {int} second polling"
+)]
+async fn filemonitor_running_with_rule_and_polling(
+    world: &mut SentinelWorld,
+    pattern: String,
+    interval: u64,
+) {
+    world.fm_rules.push(serde_json::json!({
+        "type": "contains",
+        "pattern": pattern,
+        "safe": true
+    }));
+    world.fm_polling_interval = interval;
+    world.start_filemonitor().await;
+}
+
+#[given(expr = "sentinel is configured to monitor the filemonitor with {int} second polling")]
+fn sentinel_configured_with_polling(world: &mut SentinelWorld, interval: u64) {
+    world.sentinel_polling_interval = interval;
+    world.add_filemonitor_monitor("Roof Monitor");
+}
+
+#[given(expr = "a safe-to-unsafe transition rule for {string}")]
+fn safe_to_unsafe_transition(world: &mut SentinelWorld, monitor_name: String) {
+    world.sentinel_has_notifiers = true;
+    world.sentinel_transitions.push(serde_json::json!({
+        "monitor_name": monitor_name,
+        "direction": "safe_to_unsafe",
+        "notifiers": ["pushover"],
+        "message_template": "{monitor_name} changed to {new_state}"
+    }));
+}
+
+#[given("sentinel is configured to monitor a device at an unreachable address")]
+fn sentinel_configured_unreachable(world: &mut SentinelWorld) {
+    world.sentinel_monitors.push(serde_json::json!({
+        "type": "alpaca_safety_monitor",
+        "name": "Unreachable Monitor",
+        "host": "127.0.0.1",
+        "port": 1,
+        "device_number": 0,
+        "polling_interval_seconds": 1
+    }));
+}
+
+// --- When steps ---
+
+#[when("I wait for sentinel to poll")]
+async fn wait_for_poll(world: &mut SentinelWorld) {
+    world.wait_for_poll().await;
+}
+
+#[when(expr = "the monitoring file changes to {string}")]
+fn file_changes(world: &mut SentinelWorld, content: String) {
+    let path = world
+        .temp_file_path
+        .as_ref()
+        .expect("temp file not created");
+    std::fs::write(path, content).expect("failed to write to temp file");
+}
+
+#[when("I wait for the state to change")]
+async fn wait_for_state_change(world: &mut SentinelWorld) {
+    world.wait_for_state_change().await;
+}
+
+// --- Then steps ---
+
+#[then(expr = "the dashboard status should show {string} for {string}")]
+async fn dashboard_status_shows(world: &mut SentinelWorld, expected_state: String, name: String) {
+    let statuses = world.get_status().await;
+    let monitor = statuses
+        .iter()
+        .find(|m| m["name"].as_str() == Some(&name))
+        .unwrap_or_else(|| panic!("Monitor '{}' not found in status response", name));
+    let state = monitor["state"]
+        .as_str()
+        .expect("monitor has no 'state' field");
+    assert_eq!(
+        state, expected_state,
+        "Expected '{}' to be in state '{}', but got '{}'",
+        name, expected_state, state
+    );
+}
+
+#[then(expr = "the dashboard history should contain a record for {string}")]
+async fn dashboard_history_contains(world: &mut SentinelWorld, monitor_name: String) {
+    let history = world.get_history().await;
+    let found = history
+        .iter()
+        .any(|h| h["monitor_name"].as_str() == Some(&monitor_name));
+    assert!(
+        found,
+        "Expected notification history to contain record for '{}', but it didn't. History: {:?}",
+        monitor_name, history
+    );
+}
+
+#[then(expr = "the history record message should contain {string}")]
+async fn history_record_message_contains(world: &mut SentinelWorld, expected: String) {
+    let history = world.get_history().await;
+    let found = history.iter().any(|h| {
+        h["message"]
+            .as_str()
+            .map(|m| m.contains(&expected))
+            .unwrap_or(false)
+    });
+    assert!(
+        found,
+        "Expected a history record with message containing '{}', but none found. History: {:?}",
+        expected, history
+    );
+}
