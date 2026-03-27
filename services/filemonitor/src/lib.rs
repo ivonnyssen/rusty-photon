@@ -1,13 +1,17 @@
-use ascom_alpaca::api::{Device, SafetyMonitor};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
-use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+
+use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
+use rp_tls::config::TlsConfig;
+use serde::{Deserialize, Serialize};
+use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -57,6 +61,8 @@ pub struct ServerConfig {
     pub device_number: u32,
     #[serde(default = "default_discovery_port")]
     pub discovery_port: Option<u16>,
+    #[serde(default)]
+    pub tls: Option<rp_tls::config::TlsConfig>,
 }
 
 fn default_discovery_port() -> Option<u16> {
@@ -237,36 +243,95 @@ pub fn load_config(path: &PathBuf) -> Result<Config, Box<dyn std::error::Error>>
     Ok(config)
 }
 
+/// Builder for the ASCOM Alpaca filemonitor server.
+///
+/// The returned [`BoundServer`] can be inspected (e.g. `listen_addr()`)
+/// before calling `start()`.
+pub struct ServerBuilder {
+    config: Config,
+}
+
+impl ServerBuilder {
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
+
+    pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error>> {
+        let device = FileMonitorDevice::new(self.config.clone());
+
+        let mut server = Server::new(CargoServerInfo!());
+        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        server.discovery_port = self.config.server.discovery_port;
+        server.devices.register(device);
+
+        info!(
+            "Starting ASCOM Alpaca server on port {}",
+            self.config.server.port
+        );
+        info!(
+            "Device: {} ({})",
+            self.config.device.name, self.config.device.unique_id
+        );
+        info!("Monitoring file: {:?}", self.config.file.path);
+
+        let tls = self.config.server.tls.clone();
+        let router = server.into_router();
+        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+            [0, 0, 0, 0],
+            self.config.server.port,
+        )))
+        .await?;
+        let local_addr = listener.local_addr()?;
+
+        println!("Bound Alpaca server bound_addr={}", local_addr);
+
+        Ok(BoundServer {
+            listener,
+            router,
+            local_addr,
+            tls,
+        })
+    }
+}
+
+/// A fully bound filemonitor server ready to accept connections.
+pub struct BoundServer {
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    local_addr: SocketAddr,
+    tls: Option<TlsConfig>,
+}
+
+impl BoundServer {
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub async fn start(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self.tls {
+            Some(ref tls_config) => {
+                info!("filemonitor started on {} (TLS)", self.local_addr);
+                rp_tls::server::serve_tls(
+                    self.listener,
+                    self.router,
+                    tls_config,
+                    shutdown_signal(),
+                )
+                .await?;
+            }
+            None => {
+                info!("filemonitor started on {}", self.local_addr);
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+            }
+        }
+        debug!("filemonitor shut down");
+        Ok(())
+    }
+}
+
+/// Legacy wrapper for backward compat with existing callers.
 pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    use ascom_alpaca::api::CargoServerInfo;
-    use ascom_alpaca::Server;
-    use std::net::SocketAddr;
-
-    let device = FileMonitorDevice::new(config.clone());
-
-    let mut server = Server::new(CargoServerInfo!());
-    server.listen_addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
-    server.discovery_port = config.server.discovery_port;
-    server.devices.register(device);
-
-    tracing::info!(
-        "Starting ASCOM Alpaca server on port {}",
-        config.server.port
-    );
-    tracing::info!(
-        "Device: {} ({})",
-        config.device.name,
-        config.device.unique_id
-    );
-    tracing::info!("Monitoring file: {:?}", config.file.path);
-
-    let bound = server.bind().await?;
-    let addr = bound.listen_addr();
-    println!("Bound Alpaca server bound_addr={}", addr);
-
-    bound.start().await?;
-
-    Ok(())
+    ServerBuilder::new(config).build().await?.start().await
 }
 
 pub async fn run_server_loop(
@@ -284,4 +349,28 @@ pub async fn run_server_loop(
         }
     }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => debug!("received Ctrl+C"),
+        () = terminate => debug!("received SIGTERM"),
+    }
 }

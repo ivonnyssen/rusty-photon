@@ -71,11 +71,22 @@ pub struct SentinelBuilder {
 }
 
 impl SentinelBuilder {
-    /// Create a new builder with production defaults
+    /// Create a new builder with production defaults.
+    ///
+    /// When `config.ca_cert` is set, the HTTP client trusts that CA for
+    /// connecting to TLS-enabled Alpaca services.
     pub fn new(config: Config) -> Self {
+        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
+        let http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::new(ca_path.as_deref()) {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!("Failed to build HTTP client with CA cert: {e}. Falling back to default client.");
+                Arc::new(ReqwestHttpClient::default())
+            }
+        };
         Self {
             config,
-            http: Arc::new(ReqwestHttpClient::default()),
+            http,
             cancel: CancellationToken::new(),
             monitors: None,
             notifiers: None,
@@ -166,11 +177,14 @@ impl SentinelBuilder {
             None
         };
 
+        let dashboard_tls = config.dashboard.tls.clone();
+
         Ok(Sentinel {
             engine,
             state,
             cancel,
             dashboard_listener,
+            dashboard_tls,
         })
     }
 }
@@ -181,6 +195,7 @@ pub struct Sentinel {
     state: state::StateHandle,
     cancel: CancellationToken,
     dashboard_listener: Option<tokio::net::TcpListener>,
+    dashboard_tls: Option<rp_tls::config::TlsConfig>,
 }
 
 impl Sentinel {
@@ -224,20 +239,37 @@ impl Sentinel {
         if let Some(listener) = self.dashboard_listener {
             let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
+            let dashboard_tls = self.dashboard_tls;
 
             let addr = listener.local_addr().unwrap();
-            tracing::info!("Dashboard listening on http://{}", addr);
+            let scheme = if dashboard_tls.is_some() {
+                "https"
+            } else {
+                "http"
+            };
+            tracing::info!("Dashboard listening on {scheme}://{}", addr);
             println!("Sentinel dashboard bound_addr={}", addr);
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);
 
-                axum::serve(listener, router)
-                    .with_graceful_shutdown(async move {
-                        cancel_for_dashboard.cancelled().await;
-                    })
-                    .await
-                    .ok();
+                match dashboard_tls {
+                    Some(ref tls_config) => {
+                        rp_tls::server::serve_tls(listener, router, tls_config, async move {
+                            cancel_for_dashboard.cancelled().await;
+                        })
+                        .await
+                        .ok();
+                    }
+                    None => {
+                        axum::serve(listener, router)
+                            .with_graceful_shutdown(async move {
+                                cancel_for_dashboard.cancelled().await;
+                            })
+                            .await
+                            .ok();
+                    }
+                }
 
                 tracing::debug!("Dashboard stopped");
             });
@@ -292,6 +324,7 @@ mod tests {
                 port: 11111,
                 device_number: 0,
                 polling_interval_seconds: 30,
+                scheme: "http".to_string(),
             }],
             ..Config::default()
         };
@@ -333,6 +366,7 @@ mod tests {
                 port: 11111,
                 device_number: 0,
                 polling_interval_seconds: 30,
+                scheme: "http".to_string(),
             }],
             ..Config::default()
         };

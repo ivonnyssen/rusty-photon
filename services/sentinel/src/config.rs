@@ -20,6 +20,9 @@ pub struct Config {
     pub transitions: Vec<TransitionConfig>,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    /// Path to CA certificate for trusting TLS-enabled services
+    #[serde(default)]
+    pub ca_cert: Option<String>,
 }
 
 impl Config {
@@ -92,6 +95,9 @@ pub enum MonitorConfig {
         device_number: u32,
         #[serde(default = "default_polling_interval")]
         polling_interval_seconds: u64,
+        /// URL scheme: "http" (default) or "https" for TLS-enabled services
+        #[serde(default = "default_scheme")]
+        scheme: String,
     },
 }
 
@@ -171,6 +177,8 @@ pub struct DashboardConfig {
     pub port: u16,
     #[serde(default = "default_history_size")]
     pub history_size: usize,
+    #[serde(default)]
+    pub tls: Option<rp_tls::config::TlsConfig>,
 }
 
 impl Default for DashboardConfig {
@@ -179,8 +187,13 @@ impl Default for DashboardConfig {
             enabled: true,
             port: default_dashboard_port(),
             history_size: default_history_size(),
+            tls: None,
         }
     }
+}
+
+fn default_scheme() -> String {
+    "http".to_string()
 }
 
 fn default_host() -> String {

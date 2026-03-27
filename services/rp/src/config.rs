@@ -77,6 +77,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_bind")]
     pub bind_address: String,
+    #[serde(default)]
+    pub tls: Option<rp_tls::config::TlsConfig>,
 }
 
 fn default_port() -> u16 {

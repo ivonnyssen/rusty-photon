@@ -22,6 +22,7 @@ fn test_config() -> Config {
         server: ServerConfig {
             port: 0,
             discovery_port: None,
+            tls: None,
         },
         focuser: FocuserConfig::default(),
     }

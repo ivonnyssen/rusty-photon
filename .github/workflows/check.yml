@@ -78,45 +78,45 @@ jobs:
     # Discover all packages with rust-version (MSRV) specified
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ steps.find.outputs.services }}
-      has_services: ${{ steps.find.outputs.has_services }}
+      packages: ${{ steps.find.outputs.packages }}
+      has_packages: ${{ steps.find.outputs.has_packages }}
     steps:
       - uses: actions/checkout@v5
-      - name: Find services with MSRV
+      - name: Find packages with MSRV
         id: find
         run: |
-          # Find all packages with rust-version specified
-          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -c '[.packages[] | select(.rust_version) | .name]')
+          # Find all packages with rust-version specified, emit name and manifest path
+          PACKAGES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+            jq -c '[.packages[] | select(.rust_version) | {name: .name, manifest: .manifest_path}]')
 
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
 
-          COUNT=$(echo "$SERVICES" | jq 'length')
+          COUNT=$(echo "$PACKAGES" | jq 'length')
           if [ "$COUNT" -gt 0 ]; then
-            echo "has_services=true" >> $GITHUB_OUTPUT
-            echo "Found $COUNT services with MSRV:"
-            echo "$SERVICES" | jq -r '.[]'
+            echo "has_packages=true" >> $GITHUB_OUTPUT
+            echo "Found $COUNT packages with MSRV:"
+            echo "$PACKAGES" | jq -r '.[].name'
           else
-            echo "has_services=false" >> $GITHUB_OUTPUT
-            echo "No services with MSRV found"
+            echo "has_packages=false" >> $GITHUB_OUTPUT
+            echo "No packages with MSRV found"
           fi
 
   msrv:
-    # check that we can build each service using its declared minimum rust version
+    # check that we can build each package using its declared minimum rust version
     needs: discover-msrv
-    if: needs.discover-msrv.outputs.has_services == 'true'
+    if: needs.discover-msrv.outputs.has_packages == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJson(needs.discover-msrv.outputs.services) }}
-    name: ubuntu / msrv / ${{ matrix.service }}
+        package: ${{ fromJson(needs.discover-msrv.outputs.packages) }}
+    name: ubuntu / msrv / ${{ matrix.package.name }}
     steps:
       - uses: actions/checkout@v5
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv
-      - name: Verify MSRV for ${{ matrix.service }}
-        run: cargo msrv verify --manifest-path services/${{ matrix.service }}/Cargo.toml
+      - name: Verify MSRV for ${{ matrix.package.name }}
+        run: cargo msrv verify --manifest-path ${{ matrix.package.manifest }}
 

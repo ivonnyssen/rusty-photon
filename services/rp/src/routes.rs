@@ -33,8 +33,8 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> StatusCode {
-    StatusCode::OK
+async fn health() -> &'static str {
+    "Hello World, I am healthy!"
 }
 
 async fn get_equipment(State(state): State<AppState>) -> Json<Value> {
