@@ -8,6 +8,8 @@ bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::PpbaWorld;
 
+    rp_tls::install_crypto_provider();
+
     PpbaWorld::cucumber()
         // Run one scenario at a time: each spawns a ppba-driver subprocess
         // that binds the Alpaca discovery UDP port (32227). On macOS,

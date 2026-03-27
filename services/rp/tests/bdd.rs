@@ -10,6 +10,8 @@ bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::RpWorld;
 
+    rp_tls::install_crypto_provider();
+
     RpWorld::cucumber()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
