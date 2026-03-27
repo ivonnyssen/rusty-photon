@@ -303,4 +303,83 @@ mod tests {
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].name(), "Test Monitor");
     }
+
+    #[tokio::test]
+    async fn builder_with_http_client_uses_injected_client() {
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let sentinel = SentinelBuilder::new(Config::default())
+            .with_http_client(http)
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_with_monitors_skips_config_factory() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let config = Config {
+            monitors: vec![MonitorConfig::AlpacaSafetyMonitor {
+                name: "Should Be Ignored".to_string(),
+                host: "localhost".to_string(),
+                port: 11111,
+                device_number: 0,
+                polling_interval_seconds: 30,
+            }],
+            ..Config::default()
+        };
+
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        // Injecting empty monitors should override the config factory
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .with_monitors(vec![])
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_with_notifiers_skips_config_factory() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let config = Config {
+            notifiers: vec![config::NotifierConfig::Pushover {
+                api_token: "tok".to_string(),
+                user_key: "usr".to_string(),
+                default_title: "Alert".to_string(),
+                default_priority: 0,
+                default_sound: "pushover".to_string(),
+            }],
+            ..Config::default()
+        };
+
+        let mock = MockHttpClient::new();
+        let http: Arc<dyn io::HttpClient> = Arc::new(mock);
+
+        // Injecting empty notifiers should override the config factory
+        let sentinel = SentinelBuilder::new(config)
+            .with_http_client(http)
+            .with_notifiers(vec![])
+            .with_cancellation_token(cancel)
+            .build()
+            .await
+            .unwrap();
+
+        sentinel.start().await.unwrap();
+    }
 }
