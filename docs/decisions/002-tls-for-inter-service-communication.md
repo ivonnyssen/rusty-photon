@@ -226,10 +226,68 @@ rp init-tls
 - Works on Linux (x86_64, ARM64), macOS, and Windows
 - No impact on Raspberry Pi builds
 
+## Future: ACME / Let's Encrypt Support
+
+A future enhancement could add support for publicly-trusted certificates
+via the ACME protocol (Let's Encrypt), eliminating the need for a
+self-signed CA entirely.
+
+### Motivation
+
+The self-signed CA approach requires every client to be configured with
+the CA certificate. Third-party Alpaca devices with publicly-signed
+certificates cannot be mixed with self-signed services in a single
+sentinel configuration without a custom certificate verifier. Publicly-
+trusted certificates from Let's Encrypt would remove both limitations.
+
+### How It Would Work
+
+Let's Encrypt's **DNS-01 challenge** validates domain ownership by
+checking a DNS TXT record — the services never need to be publicly
+accessible. A user who owns a domain (e.g., `vonnyssen.com`) could:
+
+1. Point subdomains to their local observatory IP:
+   ```
+   filemonitor.observatory.vonnyssen.com  →  192.168.1.100
+   rp.observatory.vonnyssen.com           →  192.168.1.100
+   ```
+2. Run `rp init-tls --acme --domain observatory.vonnyssen.com`
+3. Rusty Photon creates a DNS TXT record via the provider's API,
+   validates with Let's Encrypt, and receives a wildcard certificate
+   (`*.observatory.vonnyssen.com`) trusted by all clients natively.
+
+### Implementation Sketch
+
+- **ACME client**: `instant-acme` crate (v0.8, pure Rust, async/tokio,
+  supports DNS-01, automatic CSR via `rcgen`). Uses the `aws-lc-rs`
+  crypto backend, consistent with the rest of the project.
+- **DNS provider**: Start with Cloudflare (free tier, simple REST API
+  for TXT record management). Extensible to Route53, Google Cloud DNS.
+- **Renewal**: Certificates expire every 90 days. A `rp renew-tls`
+  command plus an optional systemd timer or cron job handles renewal.
+- **CLI**: `rp init-tls --acme --domain <DOMAIN> --dns-provider
+  cloudflare --dns-token <TOKEN>`
+- **Account state**: ACME credentials stored in
+  `~/.rusty-photon/acme/`.
+
+### Dual Path
+
+The self-signed CA (`rp init-tls`) remains the default for users
+without a domain. ACME is an opt-in alternative for users who want
+publicly-trusted certificates.
+
+```bash
+rp init-tls                                          # self-signed CA
+rp init-tls --acme --domain observatory.example.com  # Let's Encrypt
+```
+
 ## References
 
 - [rcgen crate](https://crates.io/crates/rcgen) — pure Rust X.509
   certificate generation
 - [rustls](https://crates.io/crates/rustls) — modern TLS in Rust
+- [instant-acme](https://crates.io/crates/instant-acme) — pure Rust
+  ACME client for Let's Encrypt / ZeroSSL
+- [Let's Encrypt DNS-01 challenge](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
 - [ASCOM Alpaca API](https://ascom-standards.org/api/)
 - [axum TLS examples](https://github.com/tokio-rs/axum/tree/main/examples/tls-rustls)
