@@ -19,7 +19,10 @@ pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Clie
         let ca_pem = std::fs::read(ca_path)?;
         let ca_cert = reqwest::Certificate::from_pem(&ca_pem)
             .map_err(|e| TlsError::Pem(format!("failed to parse CA certificate: {e}")))?;
-        builder = builder.add_root_certificate(ca_cert);
+        // Use tls_certs_only to disable built-in/platform root certs.
+        // Without this, the platform verifier (e.g. macOS Security framework)
+        // rejects our self-signed CA because it is not in the system keychain.
+        builder = builder.tls_certs_only([ca_cert]);
     }
 
     let client = builder
