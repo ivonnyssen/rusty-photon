@@ -40,6 +40,9 @@ pub struct FilemonitorWorld {
     // Config validation (for configuration.feature)
     pub loaded_config: Option<Value>,
     pub config_path: Option<String>,
+
+    // TLS test state
+    pub tls_pki_dir: Option<TempDir>,
 }
 
 impl FilemonitorWorld {

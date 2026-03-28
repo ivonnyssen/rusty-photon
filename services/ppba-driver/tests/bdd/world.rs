@@ -28,6 +28,9 @@ pub struct PpbaWorld {
 
     /// ASCOM error from the last "try" operation
     pub last_error: Option<ASCOMError>,
+
+    /// TLS test state
+    pub tls_pki_dir: Option<tempfile::TempDir>,
 }
 
 impl PpbaWorld {

@@ -43,6 +43,9 @@ pub struct SentinelWorld {
     pub last_response_body: Option<String>,
     pub last_status_code: Option<u16>,
     pub last_error: Option<String>,
+
+    // TLS test state
+    pub tls_pki_dir: Option<TempDir>,
 }
 
 impl SentinelWorld {
