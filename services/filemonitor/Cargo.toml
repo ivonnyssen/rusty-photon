@@ -26,6 +26,9 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+rp-tls = { workspace = true }
+axum = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 

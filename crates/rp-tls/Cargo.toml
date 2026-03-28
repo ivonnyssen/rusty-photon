@@ -1,0 +1,31 @@
+[package]
+name = "rp-tls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TLS utilities for Rusty Photon services"
+rust-version = "1.88.0"
+
+[dependencies]
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
+socket2 = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+hostname = "0.4"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
+time = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true }

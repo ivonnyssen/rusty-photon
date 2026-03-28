@@ -38,13 +38,15 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
+use rp_tls::config::TlsConfig;
 use serial::TokioSerialPortFactory;
-use tracing::info;
+use tokio::signal;
+use tracing::{debug, info};
 
 /// Builder for the ASCOM Alpaca server.
 ///
 /// Configures devices and serial port factory, then binds the server.
-/// The returned `BoundServer` can be inspected (e.g. `listen_addr()`)
+/// The returned [`BoundServer`] can be inspected (e.g. `listen_addr()`)
 /// before calling `start()`.
 pub struct ServerBuilder {
     config: Config,
@@ -64,9 +66,7 @@ impl ServerBuilder {
         self
     }
 
-    pub async fn build(
-        self,
-    ) -> std::result::Result<ascom_alpaca::BoundServer, Box<dyn std::error::Error>> {
+    pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
 
@@ -96,11 +96,84 @@ impl ServerBuilder {
 
         info!("Serial port: {}", self.config.serial.port);
 
-        let bound = server.bind().await?;
+        let tls = self.config.server.tls.clone();
+        let router = server.into_router();
+        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+            [0, 0, 0, 0],
+            self.config.server.port,
+        )))
+        .await?;
+        let local_addr = listener.local_addr()?;
+
         // This println is parsed by conformu_integration tests to discover the bound port.
         // It must go to stdout (not tracing/stderr) so the subprocess output can be read.
-        println!("Bound Alpaca server bound_addr={}", bound.listen_addr());
-        info!("Bound Alpaca server bound_addr={}", bound.listen_addr());
-        Ok(bound)
+        println!("Bound Alpaca server bound_addr={}", local_addr);
+        info!("Bound Alpaca server bound_addr={}", local_addr);
+
+        Ok(BoundServer {
+            listener,
+            router,
+            local_addr,
+            tls,
+        })
+    }
+}
+
+/// A fully bound ppba-driver server ready to accept connections.
+pub struct BoundServer {
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    local_addr: SocketAddr,
+    tls: Option<TlsConfig>,
+}
+
+impl BoundServer {
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub async fn start(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        match self.tls {
+            Some(ref tls_config) => {
+                info!("ppba-driver started on {} (TLS)", self.local_addr);
+                rp_tls::server::serve_tls(
+                    self.listener,
+                    self.router,
+                    tls_config,
+                    shutdown_signal(),
+                )
+                .await?;
+            }
+            None => {
+                info!("ppba-driver started on {}", self.local_addr);
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+            }
+        }
+        debug!("ppba-driver shut down");
+        Ok(())
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => debug!("received Ctrl+C"),
+        () = terminate => debug!("received SIGTERM"),
     }
 }

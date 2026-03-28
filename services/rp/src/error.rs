@@ -24,4 +24,7 @@ pub enum RpError {
 
     #[error("session error: {0}")]
     Session(String),
+
+    #[error("server error: {0}")]
+    Server(String),
 }

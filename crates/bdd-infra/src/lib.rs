@@ -246,6 +246,42 @@ impl Drop for ServiceHandle {
     }
 }
 
+/// Run a service binary once with the given arguments and wait for it to exit.
+///
+/// Uses the same binary discovery logic as [`ServiceHandle::start`]:
+/// env var, `CARGO_TARGET_DIR`, or `cargo run` fallback. Returns the
+/// process output (stdout, stderr, exit status).
+///
+/// Use this for one-shot commands like `rp init-tls` that are not
+/// long-running servers.
+pub fn run_once(manifest_dir: &str, package_name: &str, args: &[&str]) -> std::process::Output {
+    let config = load_config(manifest_dir);
+    let binary = find_binary(&config.env_var, package_name);
+
+    if let Some(binary) = &binary {
+        debug!(binary = %binary, "running {} from pre-built binary", package_name);
+        std::process::Command::new(binary)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {} binary '{}': {}", package_name, binary, e))
+    } else {
+        debug!("running {} via cargo run", package_name);
+        let mut full_args = vec!["run", "--package", package_name];
+        for feat in &config.features {
+            full_args.push("--features");
+            full_args.push(feat);
+        }
+        full_args.push("--quiet");
+        full_args.push("--");
+        full_args.extend_from_slice(args);
+
+        std::process::Command::new("cargo")
+            .args(&full_args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {} via cargo run: {}", package_name, e))
+    }
+}
+
 /// Find a pre-built service binary, or return `None` to fall back to `cargo run`.
 ///
 /// Discovery order:
@@ -619,5 +655,44 @@ features = ["mock"]
             result,
             Some(format!("{}/debug/{}", dir.path().display(), binary_name))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // run_once tests
+    // -----------------------------------------------------------------------
+
+    /// Use `rp` as the test subject since it has a one-shot `init-tls` subcommand.
+    /// The rp manifest dir is one level up from bdd-infra.
+    fn rp_manifest_dir() -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services")
+            .join("rp")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn test_run_once_successful_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+        );
+        assert!(output.status.success(), "init-tls should succeed");
+        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
+    }
+
+    #[test]
+    fn test_run_once_captures_stderr_on_failure() {
+        let output = run_once(&rp_manifest_dir(), "rp", &["serve"]);
+        // serve without --config should fail
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.is_empty(), "stderr should contain error message");
     }
 }

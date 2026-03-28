@@ -24,6 +24,9 @@ pub struct QhyFocuserWorld {
     pub position_result: Option<i32>,
     pub temperature_result: Option<f64>,
     pub is_moving_result: Option<bool>,
+
+    /// TLS test state
+    pub tls_pki_dir: Option<TempDir>,
 }
 
 impl QhyFocuserWorld {

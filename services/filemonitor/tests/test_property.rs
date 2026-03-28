@@ -39,6 +39,7 @@ fn create_case_insensitive_config() -> Config {
             port: 8080,
             device_number: 0,
             discovery_port: None,
+            tls: None,
         },
     }
 }
@@ -73,6 +74,7 @@ fn create_test_config() -> Config {
             port: 8080,
             device_number: 0,
             discovery_port: None,
+            tls: None,
         },
     }
 }
@@ -134,6 +136,7 @@ proptest! {
                 port: 8080,
                 device_number: 0,
                 discovery_port: None,
+                tls: None,
             },
         };
 
@@ -189,6 +192,7 @@ proptest! {
                 port: 8080,
                 device_number: 0,
                 discovery_port: None,
+                tls: None,
             },
         };
 
@@ -229,6 +233,7 @@ proptest! {
                 port,
                 device_number: 0,
                 discovery_port: None,
+                tls: None,
             },
         };
 
@@ -269,6 +274,7 @@ proptest! {
                 port: 8080,
                 device_number: 0,
                 discovery_port: None,
+                tls: None,
             },
         };
 

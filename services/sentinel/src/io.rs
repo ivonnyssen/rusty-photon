@@ -29,6 +29,20 @@ pub struct ReqwestHttpClient {
     client: reqwest::Client,
 }
 
+impl ReqwestHttpClient {
+    /// Create a new HTTP client with optional CA certificate trust.
+    ///
+    /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that
+    /// path is added as a trusted root, allowing connections to services using
+    /// certificates signed by the Rusty Photon CA.
+    pub fn new(ca_cert_path: Option<&std::path::Path>) -> crate::Result<Self> {
+        let client = rp_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
+            crate::SentinelError::Config(format!("failed to build HTTP client: {e}"))
+        })?;
+        Ok(Self { client })
+    }
+}
+
 #[async_trait]
 impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str) -> crate::Result<HttpResponse> {

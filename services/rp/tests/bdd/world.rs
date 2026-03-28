@@ -86,6 +86,14 @@ pub struct RpWorld {
     // --- Flat calibration orchestrator config ---
     /// Filter name → count for the test flat-calibration orchestrator
     pub flat_plan: Vec<(String, u32, f64)>,
+
+    // --- TLS test state ---
+    /// Temp directory holding generated PKI (CA + service certs)
+    pub tls_pki_dir: Option<tempfile::TempDir>,
+    /// Stored CA cert PEM for idempotency comparison
+    pub tls_ca_cert_pem: Option<String>,
+    /// Last HTTPS response status for TLS validation tests
+    pub tls_https_status: Option<u16>,
 }
 
 /// Camera configuration for test setup
