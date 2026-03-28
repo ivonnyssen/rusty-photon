@@ -656,4 +656,43 @@ features = ["mock"]
             Some(format!("{}/debug/{}", dir.path().display(), binary_name))
         );
     }
+
+    // -----------------------------------------------------------------------
+    // run_once tests
+    // -----------------------------------------------------------------------
+
+    /// Use `rp` as the test subject since it has a one-shot `init-tls` subcommand.
+    /// The rp manifest dir is one level up from bdd-infra.
+    fn rp_manifest_dir() -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services")
+            .join("rp")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn test_run_once_successful_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+        );
+        assert!(output.status.success(), "init-tls should succeed");
+        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
+    }
+
+    #[test]
+    fn test_run_once_captures_stderr_on_failure() {
+        let output = run_once(&rp_manifest_dir(), "rp", &["serve"]);
+        // serve without --config should fail
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.is_empty(), "stderr should contain error message");
+    }
 }
