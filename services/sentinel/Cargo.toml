@@ -22,7 +22,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 tokio-util = "0.7"
-axum = "0.8"
+axum = { workspace = true }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 rp-tls = { workspace = true }

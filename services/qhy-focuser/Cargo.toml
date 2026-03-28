@@ -29,7 +29,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 rp-tls = { workspace = true }
-axum = "0.8"
+axum = { workspace = true }
 
 [package.metadata.conformu]
 command = "cargo test -p qhy-focuser --features mock,conformu --test conformu_integration -- --ignored --nocapture"

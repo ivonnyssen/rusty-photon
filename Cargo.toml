@@ -39,6 +39,7 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 tokio-serial = "5.4.5"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "feature/expose-into-router", default-features = false }
+axum = "0.8"
 reqwest = { version = "0.13.2", features = ["form", "json"] }
 rp-tls = { path = "crates/rp-tls" }
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
