@@ -117,7 +117,7 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 
 ## Testing
 
-- **Unit tests**: Protocol serialization, config, error types, response parsing
+- **Unit tests**: Protocol serialization, config, error types, response parsing (in `src/` as `#[cfg(test)]` modules)
 - **BDD tests** (cucumber-rs): Device connection lifecycle, metadata, readings, movement control, and background polling — all using mock serial infrastructure
 - **Server tests**: Server startup with mock feature (`test_lib.rs`, feature-gated)
 - **ConformU**: ASCOM Alpaca compliance testing (requires ConformU installation)

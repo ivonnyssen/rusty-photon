@@ -42,9 +42,9 @@ The project uses four testing layers. Each serves a distinct purpose.
 **Purpose:** Fast, focused verification of internal components.
 
 **Use unit tests for:**
-- Protocol parsing and serialization (`test_protocol.rs`)
-- Error type conversions and Display implementations (`test_error.rs`)
-- Configuration defaults and deserialization (`test_config.rs`)
+- Protocol parsing and serialization (in `src/protocol.rs` `#[cfg(test)]` module)
+- Error type conversions and Display implementations (in `src/error.rs` `#[cfg(test)]` module)
+- Configuration defaults and deserialization (in `src/config.rs` `#[cfg(test)]` module)
 - Pure functions and data transformations
 - In-source `#[cfg(test)]` modules for module-private logic
 
@@ -471,14 +471,11 @@ async fn test_focuser_position_not_connected() {
 
 #### 6.4 Test File Organization
 
-- `test_protocol.rs` -- Wire protocol serialization/deserialization
-- `test_config.rs` -- Configuration defaults and JSON handling
-- `test_error.rs` -- Error types, Display, and conversions
+- `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit tests for protocol, config, error, switches (inline with source)
 - `test_serial_manager.rs` -- Connection lifecycle and polling
 - `test_device_mock.rs` -- Device trait implementation with mock I/O
 - `test_cli.rs` -- CLI argument parsing
 - `test_server.rs` / `test_lib.rs` -- Server integration tests
-- `test_property.rs` -- Property-based tests
 - `conformu_integration.rs` -- ASCOM conformance (always `#[ignore]`)
 
 #### 6.5 Mock Infrastructure Lives in Test Files

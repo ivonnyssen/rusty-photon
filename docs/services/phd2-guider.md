@@ -693,6 +693,7 @@ services/phd2-guider/tests/
 ├── test_client_mock.rs        # Mockall-based client unit tests (62 tests)
 ├── test_connection_mock.rs    # Mockall-based connection tests (18 tests)
 └── test_process_mock.rs       # Mockall-based process tests (14 tests)
+# Unit tests for events, types, rpc, config, client are in src/ as #[cfg(test)] modules
 ```
 
 ### Unit Tests (Mockall-based)

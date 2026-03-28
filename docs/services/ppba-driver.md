@@ -206,11 +206,8 @@ ppba-driver/
 │   ├── test_serial_manager.rs        # SerialManager internal API unit tests
 │   ├── test_switch_device.rs         # Switch device error mapping unit tests
 │   ├── test_oc_device.rs             # ObservingConditions device unit tests
-│   ├── test_protocol.rs              # Protocol parsing unit tests
-│   ├── test_switches.rs              # Switch definition unit tests
-│   ├── test_config.rs                # Configuration unit tests
-│   ├── test_error.rs                 # Error type unit tests
 │   └── conformu_integration.rs       # ASCOM ConformU compliance tests
+│   # Unit tests for protocol, config, error, switches are in src/ as #[cfg(test)] modules
 └── examples/
     ├── config-linux.json
     ├── config-macos.json
@@ -324,8 +321,8 @@ cargo test -p ppba-driver --features mock --test bdd --quiet
 # Run all tests (unit + BDD)
 cargo test -p ppba-driver --features mock --quiet
 
-# Run specific unit test module
-cargo test -p ppba-driver test_protocol
+# Run specific unit test module (now inline in src/)
+cargo test -p ppba-driver protocol::tests
 
 # Run ConformU compliance test (requires ConformU installed)
 cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture
