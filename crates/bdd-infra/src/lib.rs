@@ -246,6 +246,42 @@ impl Drop for ServiceHandle {
     }
 }
 
+/// Run a service binary once with the given arguments and wait for it to exit.
+///
+/// Uses the same binary discovery logic as [`ServiceHandle::start`]:
+/// env var, `CARGO_TARGET_DIR`, or `cargo run` fallback. Returns the
+/// process output (stdout, stderr, exit status).
+///
+/// Use this for one-shot commands like `rp init-tls` that are not
+/// long-running servers.
+pub fn run_once(manifest_dir: &str, package_name: &str, args: &[&str]) -> std::process::Output {
+    let config = load_config(manifest_dir);
+    let binary = find_binary(&config.env_var, package_name);
+
+    if let Some(binary) = &binary {
+        debug!(binary = %binary, "running {} from pre-built binary", package_name);
+        std::process::Command::new(binary)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {} binary '{}': {}", package_name, binary, e))
+    } else {
+        debug!("running {} via cargo run", package_name);
+        let mut full_args = vec!["run", "--package", package_name];
+        for feat in &config.features {
+            full_args.push("--features");
+            full_args.push(feat);
+        }
+        full_args.push("--quiet");
+        full_args.push("--");
+        full_args.extend_from_slice(args);
+
+        std::process::Command::new("cargo")
+            .args(&full_args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {} via cargo run: {}", package_name, e))
+    }
+}
+
 /// Find a pre-built service binary, or return `None` to fall back to `cargo run`.
 ///
 /// Discovery order:

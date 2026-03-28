@@ -14,43 +14,14 @@ use crate::world::RpWorld;
 // ---------------------------------------------------------------------------
 
 fn run_init_tls(output_dir: &str, extra_args: &[&str]) {
-    let binary = find_rp_binary();
-    let mut cmd = std::process::Command::new(&binary);
-    cmd.args(["init-tls", "--output-dir", output_dir]);
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    let output = cmd
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run rp init-tls: {e}"));
+    let mut args = vec!["init-tls", "--output-dir", output_dir];
+    args.extend_from_slice(extra_args);
+    let output = bdd_infra::run_once(env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"), &args);
     assert!(
         output.status.success(),
         "rp init-tls failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn find_rp_binary() -> String {
-    if let Ok(path) = std::env::var("RP_BINARY") {
-        return path;
-    }
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .or_else(|_| std::env::var("CARGO_LLVM_COV_TARGET_DIR"))
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("target")
-                .to_string_lossy()
-                .to_string()
-        });
-    let binary = PathBuf::from(&target_dir).join("debug").join("rp");
-    if binary.exists() {
-        return binary.to_string_lossy().to_string();
-    }
-    panic!("Could not find rp binary. Set RP_BINARY env var or build first.");
 }
 
 fn pki_dir(world: &RpWorld) -> PathBuf {
