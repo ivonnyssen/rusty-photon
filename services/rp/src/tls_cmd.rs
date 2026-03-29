@@ -100,6 +100,7 @@ fn print_config_hint(certs_dir: &Path, ca_cert_path: &Path, services: &[&str]) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

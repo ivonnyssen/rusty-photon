@@ -87,6 +87,7 @@ pub fn ca_key_path(pki_dir: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

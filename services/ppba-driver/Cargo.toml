@@ -16,6 +16,9 @@ features = ["mock"]
 default = []
 mock = []    # Enables mock hardware for testing without real serial port
 
+[lints]
+workspace = true
+
 [dependencies]
 ascom-alpaca = { workspace = true, features = [
   "server",

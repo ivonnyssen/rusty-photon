@@ -15,6 +15,9 @@ env_var = "FILEMONITOR_BINARY"
 default = []
 conformu = ["ascom-alpaca/test"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "client"] }
 tokio = { workspace = true }

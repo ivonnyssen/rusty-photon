@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! TLS utilities for Rusty Photon services.
 //!
 //! Provides certificate generation, TLS server helpers, client CA trust,

@@ -903,6 +903,7 @@ impl Phd2Client {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::config::ReconnectConfig;
@@ -1304,6 +1305,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod mock_tests {
     use super::*;
 

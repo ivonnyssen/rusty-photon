@@ -55,6 +55,7 @@ impl QhyFocuserError {
 pub type Result<T> = std::result::Result<T, QhyFocuserError>;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Sentinel Dashboard - Leptos frontend
 //!
 //! Reactive web UI for monitoring observatory device states.

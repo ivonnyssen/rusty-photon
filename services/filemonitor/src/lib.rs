@@ -377,6 +377,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 #[cfg(not(miri))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;

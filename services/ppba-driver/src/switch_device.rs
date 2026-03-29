@@ -468,6 +468,7 @@ impl Switch for PpbaSwitchDevice {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Unit tests for PpbaSwitchDevice ASCOM error mapping and edge cases
     //!

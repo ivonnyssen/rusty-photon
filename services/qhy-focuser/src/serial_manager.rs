@@ -539,6 +539,7 @@ impl std::fmt::Debug for SerialManager {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::io::SerialReader;
@@ -627,6 +628,7 @@ mod tests {
 ///
 /// Requires the `mock` feature (uses src/mock.rs MockSerialPortFactory).
 #[cfg(all(test, feature = "mock"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod mock_tests {
     use super::*;
     use crate::config::{FocuserConfig, ServerConfig};

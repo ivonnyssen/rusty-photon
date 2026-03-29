@@ -230,6 +230,7 @@ pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -290,6 +290,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Unit tests for PpbaObservingConditionsDevice ASCOM error mapping and edge cases
     //!

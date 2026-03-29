@@ -453,6 +453,7 @@ impl std::fmt::Debug for SerialManager {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Unit tests for SerialManager internal API methods
     //!

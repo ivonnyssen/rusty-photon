@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! PHD2 Guider Client Library
 //!
 //! This crate provides a Rust client for interacting with Open PHD Guiding 2 (PHD2)

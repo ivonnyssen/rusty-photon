@@ -11,6 +11,9 @@ rust-version = "1.88.0"
 [package.metadata.bdd]
 env_var = "RP_BINARY"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

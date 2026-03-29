@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! QHY Q-Focuser Driver
 //!
 //! ASCOM Alpaca driver for the QHY Q-Focuser (EAF).

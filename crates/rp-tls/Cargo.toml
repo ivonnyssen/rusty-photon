@@ -8,6 +8,9 @@ repository.workspace = true
 description = "TLS utilities for Rusty Photon services"
 rust-version = "1.88.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 rcgen = { workspace = true }
 rustls = { workspace = true }

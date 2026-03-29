@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version = "1.85.0"
 description = "PHD2 guider client library and service for Rusty Photon"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

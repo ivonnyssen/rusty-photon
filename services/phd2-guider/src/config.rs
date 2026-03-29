@@ -140,6 +140,7 @@ pub fn load_config(path: &PathBuf) -> std::result::Result<Config, Box<dyn std::e
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

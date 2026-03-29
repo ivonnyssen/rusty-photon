@@ -290,6 +290,7 @@ pub enum Phd2Event {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

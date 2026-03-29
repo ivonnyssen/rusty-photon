@@ -33,6 +33,7 @@ pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Clie
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
