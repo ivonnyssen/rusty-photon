@@ -34,7 +34,7 @@ jobs:
       - name: cargo build --workspace
         run: cargo build --locked --workspace --all-features
       - name: cargo nextest run
-        run: cargo nextest run --locked --all-features
+        run: cargo nextest run --locked --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked --all-features --test bdd
@@ -122,7 +122,7 @@ jobs:
         run: cargo build --locked --workspace --all-features
       - name: cargo nextest run
         if: hashFiles('Cargo.lock') != ''
-        run: cargo nextest run --locked --all-features
+        run: cargo nextest run --locked --all-features --all-targets
         env:
           RUSTFLAGS: -D deprecated
       # BDD tests use custom harness (bdd_main!) incompatible with nextest

@@ -74,7 +74,7 @@ With `cargo-hack`:
 cargo fmt --check
 cargo hack --feature-powerset clippy --all-targets -- -D warnings
 cargo hack --feature-powerset check
-cargo nextest run --locked --all-features
+cargo nextest run --locked --all-features --all-targets
 cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
@@ -84,7 +84,7 @@ Without `cargo-hack`:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo nextest run --locked --all-features
+cargo nextest run --locked --all-features --all-targets
 cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
@@ -123,7 +123,7 @@ done
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **required (stable)** | `cargo nextest run --locked --all-features` + `cargo test --locked --all-features --test bdd` | stable, cargo-nextest | Yes |
+| **required (stable)** | `cargo nextest run --locked --all-features --all-targets` + `cargo test --locked --all-features --test bdd` | stable, cargo-nextest | Yes |
 | **required (stable, doc)** | `cargo test --locked --all-features --doc` | stable | Yes |
 | **required (beta)** | Same commands with `+beta` | beta toolchain | Optional |
 | **os-check** | N/A (cross-platform) | -- | CI-only |
@@ -227,7 +227,7 @@ Minimum pre-push checks (copy-paste):
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo nextest run --locked --all-features
+cargo nextest run --locked --all-features --all-targets
 cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```

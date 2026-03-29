@@ -44,7 +44,7 @@ jobs:
         run: cargo build --locked --workspace --all-features
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
-        run: cargo nextest run --locked --all-features
+        run: cargo nextest run --locked --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked --all-features --test bdd
@@ -157,7 +157,7 @@ jobs:
         run: cargo llvm-cov clean --workspace
       # Run non-BDD tests with nextest under coverage instrumentation
       - name: Run non-BDD tests with coverage
-        run: cargo llvm-cov nextest --no-report --locked --package ${{ matrix.package }} --all-features
+        run: cargo llvm-cov nextest --no-report --locked --package ${{ matrix.package }} --all-features --all-targets
       # Run BDD tests under coverage (keeps nextest profraw) and generate report,
       # or just generate report for packages without BDD tests.
       - name: Run BDD tests and generate coverage report
