@@ -99,7 +99,7 @@ jobs:
       - name: cargo build
         run: cargo build --locked --package ${{ matrix.package }} --all-features
       - name: cargo nextest run
-        run: cargo nextest run --locked --package ${{ matrix.package }} --all-features
+        run: cargo nextest run --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
       - name: cargo test --test bdd
         shell: bash
         run: |
@@ -157,7 +157,7 @@ jobs:
         run: cargo llvm-cov clean --workspace
       # Run non-BDD tests with nextest under coverage instrumentation
       - name: Run non-BDD tests with coverage
-        run: cargo llvm-cov nextest --no-report --locked --package ${{ matrix.package }} --all-features --all-targets
+        run: cargo llvm-cov nextest --no-report --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
       # Run BDD tests under coverage (keeps nextest profraw) and generate report,
       # or just generate report for packages without BDD tests.
       - name: Run BDD tests and generate coverage report
