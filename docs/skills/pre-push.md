@@ -13,6 +13,7 @@
 | Tool | Install | Used by |
 |------|---------|---------|
 | Rust stable | `rustup default stable` | All checks |
+| cargo-nextest | `cargo install cargo-nextest` or `curl -LsSf https://get.nexte.st/latest/linux \| tar zxf - -C ~/.cargo/bin` | Test execution |
 | cargo-hack | `cargo install cargo-hack` | Feature powerset checks |
 | Docker | [docs.docker.com](https://docs.docker.com/get-docker/) | act-based workflow execution |
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
@@ -73,7 +74,8 @@ With `cargo-hack`:
 cargo fmt --check
 cargo hack --feature-powerset clippy --all-targets -- -D warnings
 cargo hack --feature-powerset check
-cargo test --locked --all-features --all-targets
+cargo nextest run --locked --all-features
+cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
 
@@ -82,7 +84,8 @@ Without `cargo-hack`:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --locked --all-features --all-targets
+cargo nextest run --locked --all-features
+cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
 
@@ -120,7 +123,7 @@ done
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **required (stable)** | `cargo test --locked --all-features --all-targets` | stable | Yes |
+| **required (stable)** | `cargo nextest run --locked --all-features` + `cargo test --locked --all-features --test bdd` | stable, cargo-nextest | Yes |
 | **required (stable, doc)** | `cargo test --locked --all-features --doc` | stable | Yes |
 | **required (beta)** | Same commands with `+beta` | beta toolchain | Optional |
 | **os-check** | N/A (cross-platform) | -- | CI-only |
@@ -177,10 +180,10 @@ Current services and their commands:
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **nightly** | `cargo +nightly test --locked --all-features --all-targets` | nightly | Optional |
+| **nightly** | `cargo +nightly nextest run --locked --all-features` + `cargo +nightly test --locked --all-features --test bdd` | nightly, cargo-nextest | Optional |
 | **discover-miri** | `cargo metadata` + jq | jq | -- |
 | **miri** | Per-service command (see below) | nightly + miri component | Optional |
-| **update** | `cargo +beta update && cargo +beta test --locked --all-features --all-targets` | beta | Optional |
+| **update** | `cargo +beta update && cargo +beta nextest run --locked --all-features` + `cargo +beta test --locked --all-features --test bdd` | beta, cargo-nextest | Optional |
 
 Miri services are discovered dynamically via `[package.metadata.miri]` in each
 service's `Cargo.toml`. To list them:
@@ -224,7 +227,8 @@ Minimum pre-push checks (copy-paste):
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --locked --all-features --all-targets
+cargo nextest run --locked --all-features
+cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
 
