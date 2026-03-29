@@ -689,10 +689,8 @@ fitrs = "0.5"
 services/phd2-guider/tests/
 ├── test_main_integration.rs   # CLI integration tests (38 tests)
 ├── test_integration.rs        # Library integration tests with mock server
-├── test_mock_server.rs        # Mock server protocol tests
-├── test_client_mock.rs        # Mockall-based client unit tests (62 tests)
-├── test_connection_mock.rs    # Mockall-based connection tests (18 tests)
-└── test_process_mock.rs       # Mockall-based process tests (14 tests)
+└── test_mock_server.rs        # Mock server protocol tests
+# Unit and mock-based tests are in src/ as #[cfg(test)] modules
 ```
 
 ### Unit Tests (Mockall-based)

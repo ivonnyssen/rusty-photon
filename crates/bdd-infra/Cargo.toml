@@ -11,6 +11,9 @@ description = "Shared BDD test infrastructure for spawning, managing, and stoppi
 [package.metadata.bdd]
 env_var = "TEST_SERVICE_BINARY"
 
+[lints]
+workspace = true
+
 [dependencies]
 libc = { workspace = true }
 serde = { workspace = true }

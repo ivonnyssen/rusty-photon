@@ -223,6 +223,7 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use axum::body::Body;

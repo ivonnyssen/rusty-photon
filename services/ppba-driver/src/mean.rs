@@ -114,6 +114,7 @@ impl Default for SensorMean {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::thread::sleep;

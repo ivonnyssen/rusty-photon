@@ -11,6 +11,9 @@ description = "Observatory monitoring and notification service"
 [package.metadata.bdd]
 env_var = "SENTINEL_BINARY"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

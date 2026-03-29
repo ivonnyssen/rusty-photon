@@ -106,6 +106,7 @@ impl HttpClient for ReqwestHttpClient {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

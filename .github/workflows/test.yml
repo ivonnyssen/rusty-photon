@@ -126,8 +126,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly (for coverage instrumentation)
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
       - name: cargo install cargo-llvm-cov

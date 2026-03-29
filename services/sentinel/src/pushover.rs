@@ -101,6 +101,7 @@ impl Notifier for PushoverNotifier {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::io::{HttpResponse, MockHttpClient};

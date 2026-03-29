@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Sentinel - Observatory monitoring and notification service
 //!
 //! Polls ASCOM Alpaca devices, detects state transitions, and sends notifications.
@@ -289,6 +290,7 @@ impl Sentinel {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::config::MonitorConfig;

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Shared BDD test infrastructure for rusty-photon services.
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service
@@ -413,6 +414,7 @@ fn send_sigterm(pid: u32) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::process::Stdio;

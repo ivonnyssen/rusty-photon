@@ -20,6 +20,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ivonnyssen/rusty_photon"
 description = "Rusty Photon - An astrophotography application"
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
 tokio = { version = "1.50.0", features = ["full"] }

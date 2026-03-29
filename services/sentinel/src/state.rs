@@ -112,6 +112,7 @@ pub fn new_state_handle(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
