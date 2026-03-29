@@ -133,15 +133,15 @@ impl CloudflareApi for RealCloudflareApi {
     async fn list_txt_records(&self, zone_id: String, name: String) -> Result<Vec<RecordInfo>> {
         use cloudflare::endpoints::dns::dns::{DnsContent, ListDnsRecords, ListDnsRecordsParams};
 
+        // Filter by name only; the record_type filter with DnsContent::TXT { content: "" }
+        // may not serialize correctly to the API's `type=TXT` parameter.
+        // Filter for TXT records client-side instead.
         let response = self
             .client
             .request(&ListDnsRecords {
                 zone_identifier: &zone_id,
                 params: ListDnsRecordsParams {
                     name: Some(name),
-                    record_type: Some(DnsContent::TXT {
-                        content: String::new(),
-                    }),
                     ..Default::default()
                 },
             })
@@ -151,6 +151,7 @@ impl CloudflareApi for RealCloudflareApi {
         Ok(response
             .result
             .into_iter()
+            .filter(|r| matches!(r.content, DnsContent::TXT { .. }))
             .map(|r| RecordInfo { id: r.id })
             .collect())
     }

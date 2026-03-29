@@ -126,6 +126,16 @@ impl AcmeClient for RealAcmeClient<'_> {
 
         // Solve DNS-01 challenges
         let challenge_fqdn = format!("_acme-challenge.{domain}");
+
+        // Clean up any leftover challenge records from previous runs
+        debug!(
+            "Cleaning up any existing challenge records for {}",
+            challenge_fqdn
+        );
+        if let Err(e) = self.dns_provider.delete_txt_record(&challenge_fqdn).await {
+            debug!("Pre-cleanup warning (non-fatal): {e}");
+        }
+
         let mut auths = order.authorizations();
         while let Some(auth_result) = auths.next().await {
             let mut auth = auth_result
