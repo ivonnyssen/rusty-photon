@@ -494,6 +494,52 @@ async fn test_server_starts() {
 }
 ```
 
+#### 6.7 Mock Strategy: Hand-Written vs mockall
+
+The project uses two mock strategies depending on the use case:
+
+**Hand-written mocks** — Use for stateful device simulators that maintain internal
+state across multiple calls. These mocks simulate hardware behavior: they process
+commands, maintain device state (temperature, position, voltage), and return
+responses from a queue. mockall cannot express this kind of stateful simulation.
+
+Examples: `MockSerialPortFactory` in ppba-driver and qhy-focuser, which simulate
+serial port communication with response queues and device state machines.
+
+**mockall (`#[automock]`)** — Use for service-boundary traits where you need simple
+"expect this call, return this value" behavior. These are thin abstractions over
+external APIs (HTTP clients, DNS providers, ACME protocol) where the mock just
+needs to return canned responses or verify call arguments.
+
+Examples: `DnsProvider` trait in rp-tls (mocks Cloudflare API), `AcmeClient` trait
+in rp-tls (mocks Let's Encrypt ACME protocol).
+
+**How to use mockall with async traits:**
+
+Place `#[automock]` before `#[async_trait]` on the trait definition, gated to
+test builds only:
+
+```rust
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait MyService: Send + Sync {
+    async fn do_something(&self, input: String) -> Result<String>;
+}
+```
+
+In tests, configure expectations on the generated `MockMyService`:
+
+```rust
+let mut mock = MockMyService::new();
+mock.expect_do_something()
+    .withf(|input| input == "expected")
+    .returning(|_| Ok("result".to_string()));
+```
+
+**Rule of thumb:** If the mock needs internal state or command processing logic,
+hand-write it. If it wraps an external API and just needs call/return behavior,
+use mockall.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD

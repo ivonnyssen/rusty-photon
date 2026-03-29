@@ -8,8 +8,9 @@ use crate::error::{Result, TlsError};
 
 /// Trait for DNS providers that can create and delete TXT records
 /// for ACME DNS-01 challenge validation.
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait DnsProvider: Send + Sync + Debug {
+pub trait DnsProvider: Send + Sync {
     /// Create a TXT record for the ACME challenge.
     async fn create_txt_record(&self, fqdn: &str, value: &str) -> Result<()>;
 
@@ -195,10 +196,9 @@ mod tests {
     #[tokio::test]
     async fn build_dns_provider_unknown_provider_returns_error() {
         let creds = HashMap::from([("api_token".to_string(), "tok".to_string())]);
-        let err = build_dns_provider("unknown", &creds, "example.com")
-            .await
-            .unwrap_err();
-        let msg = err.to_string();
+        let result = build_dns_provider("unknown", &creds, "example.com").await;
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
         assert!(
             msg.contains("unsupported DNS provider"),
             "error should mention unsupported provider: {msg}"
@@ -208,10 +208,9 @@ mod tests {
     #[tokio::test]
     async fn build_dns_provider_cloudflare_missing_token_returns_error() {
         let creds = HashMap::new();
-        let err = build_dns_provider("cloudflare", &creds, "example.com")
-            .await
-            .unwrap_err();
-        let msg = err.to_string();
+        let result = build_dns_provider("cloudflare", &creds, "example.com").await;
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
         assert!(
             msg.contains("api_token"),
             "error should mention missing api_token: {msg}"
