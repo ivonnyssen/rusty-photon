@@ -1403,7 +1403,11 @@ connection details. Plugins register their webhook URLs and command endpoints.
   },
   "server": {
     "port": 11115,
-    "bind_address": "0.0.0.0"
+    "bind_address": "0.0.0.0",
+    "auth": {
+      "username": "observatory",
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
+    }
   }
 }
 ```

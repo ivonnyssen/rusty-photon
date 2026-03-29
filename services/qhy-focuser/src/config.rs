@@ -31,6 +31,8 @@ pub struct ServerConfig {
     pub discovery_port: Option<u16>,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 fn default_discovery_port() -> Option<u16> {
@@ -92,6 +94,7 @@ impl Default for ServerConfig {
             port: 11113,
             discovery_port: default_discovery_port(),
             tls: None,
+            auth: None,
         }
     }
 }

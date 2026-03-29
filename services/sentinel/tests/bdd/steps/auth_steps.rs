@@ -1,0 +1,226 @@
+//! BDD step definitions for sentinel dashboard HTTP Basic Auth
+
+use cucumber::{given, then, when};
+use tempfile::TempDir;
+
+use crate::world::SentinelWorld;
+
+const AUTH_USERNAME: &str = "observatory";
+const AUTH_PASSWORD: &str = "test-password";
+
+fn pki_dir(world: &SentinelWorld) -> std::path::PathBuf {
+    world
+        .tls_pki_dir
+        .as_ref()
+        .expect("TLS certs not generated")
+        .path()
+        .to_path_buf()
+}
+
+#[given("sentinel is configured with dashboard TLS and auth enabled")]
+fn sentinel_configured_with_dashboard_auth(_world: &mut SentinelWorld) {
+    // Marker — config is built in the When step
+}
+
+#[when("sentinel is started with dashboard auth")]
+async fn sentinel_started_with_dashboard_auth(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let certs_dir = dir.join("certs");
+
+    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
+
+    let mut config = world.build_sentinel_config();
+    config["dashboard"]["tls"] = serde_json::json!({
+        "cert": certs_dir.join("sentinel.pem").to_string_lossy().to_string(),
+        "key": certs_dir.join("sentinel-key.pem").to_string_lossy().to_string()
+    });
+    config["dashboard"]["auth"] = serde_json::json!({
+        "username": AUTH_USERNAME,
+        "password_hash": hash
+    });
+
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().unwrap());
+    let config_path = temp_dir.path().join("sentinel_auth_config.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+    let handle = bdd_infra::ServiceHandle::start(
+        env!("CARGO_MANIFEST_DIR"),
+        env!("CARGO_PKG_NAME"),
+        config_path.to_str().unwrap(),
+    )
+    .await;
+
+    world.sentinel = Some(handle);
+}
+
+#[when("sentinel is started without dashboard auth")]
+async fn sentinel_started_without_dashboard_auth(world: &mut SentinelWorld) {
+    let config = world.build_sentinel_config();
+
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().unwrap());
+    let config_path = temp_dir.path().join("sentinel_noauth_config.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+    let handle = bdd_infra::ServiceHandle::start(
+        env!("CARGO_MANIFEST_DIR"),
+        env!("CARGO_PKG_NAME"),
+        config_path.to_str().unwrap(),
+    )
+    .await;
+
+    world.sentinel = Some(handle);
+}
+
+#[then("the dashboard health endpoint should respond with valid credentials")]
+async fn dashboard_health_responds_with_auth(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let ca_path = dir.join("ca.pem");
+    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let url = format!("https://localhost:{}/health", port);
+
+    let mut ok = false;
+    for _ in 0..60 {
+        if let Ok(resp) = client
+            .get(&url)
+            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
+            .send()
+            .await
+        {
+            if resp.status().as_u16() == 200 {
+                ok = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(
+        ok,
+        "Dashboard health endpoint did not respond with valid credentials"
+    );
+}
+
+#[then("the dashboard health endpoint should reject wrong credentials with 401")]
+async fn dashboard_rejects_wrong_credentials(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let ca_path = dir.join("ca.pem");
+    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let url = format!("https://localhost:{}/health", port);
+
+    // Wait for readiness with correct creds
+    let mut ready = false;
+    for _ in 0..60 {
+        if let Ok(resp) = client
+            .get(&url)
+            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
+            .send()
+            .await
+        {
+            if resp.status().as_u16() == 200 {
+                ready = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(ready, "Server did not become ready");
+
+    let resp = client
+        .get(&url)
+        .basic_auth(AUTH_USERNAME, Some("wrong-password"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[then("the dashboard health endpoint should reject missing credentials with 401")]
+async fn dashboard_rejects_missing_credentials(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let ca_path = dir.join("ca.pem");
+    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let url = format!("https://localhost:{}/health", port);
+
+    // Wait for readiness
+    let mut ready = false;
+    for _ in 0..60 {
+        if let Ok(resp) = client
+            .get(&url)
+            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
+            .send()
+            .await
+        {
+            if resp.status().as_u16() == 200 {
+                ready = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(ready, "Server did not become ready");
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[then("the dashboard 401 response should include a WWW-Authenticate header")]
+async fn dashboard_401_includes_www_authenticate(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let ca_path = dir.join("ca.pem");
+    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let url = format!("https://localhost:{}/health", port);
+
+    // Wait for readiness
+    let mut ready = false;
+    for _ in 0..60 {
+        if let Ok(resp) = client
+            .get(&url)
+            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
+            .send()
+            .await
+        {
+            if resp.status().as_u16() == 200 {
+                ready = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(ready, "Server did not become ready");
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+    let www_auth = resp
+        .headers()
+        .get("www-authenticate")
+        .expect("missing WWW-Authenticate header")
+        .to_str()
+        .unwrap();
+    assert_eq!(www_auth, "Basic realm=\"Rusty Photon\"");
+}
+
+#[then("the dashboard health endpoint should respond without credentials")]
+async fn dashboard_responds_without_credentials(world: &mut SentinelWorld) {
+    let client = reqwest::Client::new();
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let url = format!("http://127.0.0.1:{}/health", port);
+
+    let mut ok = false;
+    for _ in 0..60 {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().as_u16() == 200 {
+                ok = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(ok, "Dashboard health endpoint did not respond without auth");
+}

@@ -99,6 +99,22 @@ impl ServerBuilder {
 
         let tls = self.config.server.tls.clone();
         let router = server.into_router();
+
+        // Layer authentication if configured
+        let router = match &self.config.server.auth {
+            Some(auth) => {
+                if self.config.server.tls.is_none() {
+                    tracing::warn!(
+                        "Authentication is enabled but TLS is not. \
+                         Credentials will be transmitted in cleartext. \
+                         Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(router, auth)
+            }
+            None => router,
+        };
+
         let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
             [0, 0, 0, 0],
             self.config.server.port,

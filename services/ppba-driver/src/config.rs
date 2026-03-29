@@ -30,6 +30,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 /// Switch device configuration
@@ -94,6 +96,7 @@ impl Default for ServerConfig {
         Self {
             port: 11112,
             tls: None,
+            auth: None,
         }
     }
 }

@@ -27,6 +27,9 @@ pub struct QhyFocuserWorld {
 
     /// TLS test state
     pub tls_pki_dir: Option<TempDir>,
+
+    /// Auth test state — plaintext password for HTTP Basic Auth assertions
+    pub auth_password: Option<String>,
 }
 
 impl QhyFocuserWorld {

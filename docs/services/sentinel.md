@@ -59,7 +59,7 @@ See `examples/config.json` for a complete example.
 
 ### Monitor Types
 
-- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device
+- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md).
 
 ### Notifier Types
 
@@ -103,6 +103,12 @@ Transitions define when notifications should be sent. Each rule specifies:
 - Optional priority and sound overrides
 
 Empty transitions config means no notifications are sent.
+
+### Authentication
+
+The dashboard supports optional HTTP Basic Auth via the `dashboard.auth`
+config section. Monitor connections to auth-enabled Alpaca services use
+per-monitor `auth` credentials. See [ADR-003](../decisions/003-authentication-for-device-access.md).
 
 ## Dashboard
 

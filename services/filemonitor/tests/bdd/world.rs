@@ -43,6 +43,9 @@ pub struct FilemonitorWorld {
 
     // TLS test state
     pub tls_pki_dir: Option<TempDir>,
+
+    // Auth test state
+    pub auth_password: Option<String>,
 }
 
 impl FilemonitorWorld {

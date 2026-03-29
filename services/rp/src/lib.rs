@@ -3,6 +3,7 @@ pub mod config;
 pub mod equipment;
 pub mod error;
 pub mod events;
+pub mod hash_password_cmd;
 pub mod mcp;
 pub mod routes;
 pub mod session;
@@ -73,6 +74,22 @@ impl ServerBuilder {
         };
 
         let router = build_router(state);
+
+        // Layer authentication if configured
+        let router = match &config.server.auth {
+            Some(auth) => {
+                if config.server.tls.is_none() {
+                    tracing::warn!(
+                        "Authentication is enabled but TLS is not. \
+                         Credentials will be transmitted in cleartext. \
+                         Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(router, auth)
+            }
+            None => router,
+        };
+
         let tls = config.server.tls.clone();
 
         let listener = tokio::net::TcpListener::bind(&bind_addr).await?;

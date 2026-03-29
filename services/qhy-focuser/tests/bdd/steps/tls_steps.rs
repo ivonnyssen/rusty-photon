@@ -46,6 +46,7 @@ fn qhy_configured_with_tls(world: &mut QhyFocuserWorld) {
                     .to_string_lossy()
                     .into_owned(),
             }),
+            auth: None,
         },
         focuser: qhy_focuser::FocuserConfig {
             enabled: true,

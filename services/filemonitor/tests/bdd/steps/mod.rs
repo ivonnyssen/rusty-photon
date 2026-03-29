@@ -1,3 +1,4 @@
+pub mod auth_steps;
 pub mod concurrency_steps;
 pub mod config_steps;
 pub mod connection_steps;

@@ -179,6 +179,7 @@ impl SentinelBuilder {
         };
 
         let dashboard_tls = config.dashboard.tls.clone();
+        let dashboard_auth = config.dashboard.auth.clone();
 
         Ok(Sentinel {
             engine,
@@ -186,6 +187,7 @@ impl SentinelBuilder {
             cancel,
             dashboard_listener,
             dashboard_tls,
+            dashboard_auth,
         })
     }
 }
@@ -197,6 +199,7 @@ pub struct Sentinel {
     cancel: CancellationToken,
     dashboard_listener: Option<tokio::net::TcpListener>,
     dashboard_tls: Option<rp_tls::config::TlsConfig>,
+    dashboard_auth: Option<rp_auth::config::AuthConfig>,
 }
 
 impl Sentinel {
@@ -241,6 +244,7 @@ impl Sentinel {
             let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
             let dashboard_tls = self.dashboard_tls;
+            let dashboard_auth = self.dashboard_auth;
 
             let addr = listener.local_addr().unwrap();
             let scheme = if dashboard_tls.is_some() {
@@ -253,6 +257,21 @@ impl Sentinel {
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);
+
+                // Layer authentication if configured
+                let router = match &dashboard_auth {
+                    Some(auth) => {
+                        if dashboard_tls.is_none() {
+                            tracing::warn!(
+                                "Authentication is enabled but TLS is not. \
+                                 Credentials will be transmitted in cleartext. \
+                                 Consider enabling TLS (see `rp init-tls`)."
+                            );
+                        }
+                        rp_auth::layer(router, auth)
+                    }
+                    None => router,
+                };
 
                 match dashboard_tls {
                     Some(ref tls_config) => {
