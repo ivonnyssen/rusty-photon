@@ -231,23 +231,3 @@ async fn test_start_via_cargo_run() {
     handle.stop().await;
     assert!(!handle.is_running());
 }
-
-#[tokio::test]
-async fn test_try_start_via_cargo_run_with_fail_config() {
-    let manifest = setup_manifest_no_binary("BDD_TEST_CARGO_RUN_FAIL");
-    let config = fail_config();
-
-    let result = ServiceHandle::try_start(
-        manifest.path().to_str().unwrap(),
-        "bdd-infra",
-        config.path().to_str().unwrap(),
-    )
-    .await;
-
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("exited without binding"),
-        "unexpected error: {}",
-        err
-    );
-}

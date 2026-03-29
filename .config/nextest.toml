@@ -1,0 +1,7 @@
+[store]
+dir = "target/nextest"
+
+[profile.default]
+# BDD tests use custom harness (bdd_main!) incompatible with nextest's --list.
+# Run them separately with `cargo test -p <crate> --test bdd`.
+default-filter = "not binary(bdd)"

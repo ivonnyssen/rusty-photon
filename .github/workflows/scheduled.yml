@@ -25,14 +25,19 @@ jobs:
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
         run: cargo build --locked --workspace --all-features
-      - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked --all-features --all-targets
+      # BDD tests use custom harness (bdd_main!) incompatible with nextest
+      - name: cargo test --test bdd
+        run: cargo test --locked --all-features --test bdd
   discover-miri:
     name: Discover Miri Services
     runs-on: ubuntu-latest
@@ -105,6 +110,9 @@ jobs:
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
+      - name: Install cargo-nextest
+        if: hashFiles('Cargo.lock') != ''
+        uses: taiki-e/install-action@cargo-nextest
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
@@ -112,8 +120,14 @@ jobs:
       - name: cargo build --workspace
         if: hashFiles('Cargo.lock') != ''
         run: cargo build --locked --workspace --all-features
-      - name: cargo test
+      - name: cargo nextest run
         if: hashFiles('Cargo.lock') != ''
-        run: cargo test --locked --all-features --all-targets
+        run: cargo nextest run --locked --all-features --all-targets
+        env:
+          RUSTFLAGS: -D deprecated
+      # BDD tests use custom harness (bdd_main!) incompatible with nextest
+      - name: cargo test --test bdd
+        if: hashFiles('Cargo.lock') != ''
+        run: cargo test --locked --all-features --test bdd
         env:
           RUSTFLAGS: -D deprecated

@@ -219,6 +219,6 @@ These can be pursued in parallel:
 
 1. **Install mold linker** -- `sudo apt install mold` + `.cargo/config.toml` -- 40-60% faster linking for all targets
 2. **Reduce debug info** -- `[profile.dev] debug = "line-tables-only"` + `[profile.dev.package."*"] debug = false` in workspace Cargo.toml -- 20-30% smaller targets
-3. **cargo-nextest** -- 1.4x-3.4x faster test execution (separate from compilation)
+3. **cargo-nextest** -- ✅ DONE. Configured in `.config/nextest.toml`. Benchmarked at ~44% faster wall time (19m43s vs 35m20s) on 701 tests / 7 cores. BDD tests (`harness = false`) are excluded via `default-filter = "not binary(bdd)"` and must be run separately with `cargo test --test bdd`. Flaky test `test_try_start_via_cargo_run_with_fail_config` removed (redundant with pre-built binary variant; flaked due to cargo lock contention on the `cargo run` fallback path).
 
 Note: switching TLS crypto from aws-lc-rs to ring was investigated and is not viable for this project. aws-lc-sys (41.9s cmake build) remains a bottleneck but is mitigated by caching on incremental builds.

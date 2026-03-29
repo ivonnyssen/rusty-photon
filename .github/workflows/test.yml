@@ -33,6 +33,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
       - name: cargo generate-lockfile
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
@@ -41,8 +43,11 @@ jobs:
       - name: cargo build --workspace
         run: cargo build --locked --workspace --all-features
       # https://twitter.com/jonhoo/status/1571290371124260865
-      - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked --all-features --all-targets
+      # BDD tests use custom harness (bdd_main!) incompatible with nextest
+      - name: cargo test --test bdd
+        run: cargo test --locked --all-features --test bdd
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
@@ -77,6 +82,8 @@ jobs:
         uses: ./.github/actions/install-omnisim
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
       - name: Cache cargo
         uses: actions/cache@v5
         with:
@@ -91,8 +98,17 @@ jobs:
         run: cargo generate-lockfile
       - name: cargo build
         run: cargo build --locked --package ${{ matrix.package }} --all-features
-      - name: cargo test
-        run: cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
+      - name: cargo test --test bdd
+        shell: bash
+        run: |
+          PKG_DIR=$(cargo metadata --format-version 1 --no-deps -q | \
+            jq -r --arg pkg "${{ matrix.package }}" \
+            '.packages[] | select(.name == $pkg) | .manifest_path' | xargs dirname)
+          if [ -f "$PKG_DIR/tests/bdd.rs" ]; then
+            cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
+          fi
   coverage:
     needs: discover
     # use llvm-cov to build and collect coverage per workspace package and
@@ -130,26 +146,29 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
-      - name: cargo install cargo-llvm-cov
+      - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Two-phase coverage: build all binaries with instrumentation,
       # then run tests so spawned child processes also produce .profraw files.
+      # Uses show-env (not cargo llvm-cov nextest) because BDD tests spawn
+      # service binaries via find_binary(), which needs instrumented binaries
+      # in the default target/debug/ directory.
       - name: Clean previous coverage artifacts
         run: cargo llvm-cov clean --workspace
       - name: Build with coverage instrumentation
         run: |
-          source <(cargo llvm-cov show-env --export-prefix)
+          source <(cargo llvm-cov show-env --sh)
           cargo build --locked --package ${{ matrix.package }} --all-features
       - name: Run tests with coverage
         run: |
-          source <(cargo llvm-cov show-env --export-prefix)
+          source <(cargo llvm-cov show-env --sh)
           cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
       - name: Generate coverage report
         run: |
-          source <(cargo llvm-cov show-env --export-prefix)
+          source <(cargo llvm-cov show-env --sh)
           cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
             --output-path lcov.info
       - name: Upload to codecov.io
