@@ -119,31 +119,45 @@ pub async fn run_acme(
     rp_tls::acme_config::save_acme_config(&acme_config, &config_path)?;
     info!("Saved ACME configuration to {}", config_path.display());
 
-    // Build DNS provider
+    // Build DNS provider and issue certificate
     let resolved_creds = rp_tls::acme_config::resolve_credentials(&acme_config.dns_credentials)?;
     let dns_provider =
         rp_tls::dns::build_dns_provider(&acme_config.dns_provider, &resolved_creds, domain).await?;
+    let acme_client = rp_tls::acme::RealAcmeClient::new(dns_provider.as_ref());
 
-    // Issue certificate
-    info!("Requesting wildcard certificate for *.{}", domain);
-    if staging {
+    run_acme_issue(&acme_config, &pki_dir, &acme_client).await
+}
+
+/// Inner function that issues the certificate and prints the summary.
+///
+/// Separated from `run_acme` so it can be tested with mock dependencies.
+async fn run_acme_issue(
+    acme_config: &rp_tls::acme_config::AcmeConfig,
+    pki_dir: &Path,
+    acme_client: &dyn rp_tls::acme::AcmeClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!(
+        "Requesting wildcard certificate for *.{}",
+        acme_config.domain
+    );
+    if acme_config.staging {
         info!("Using Let's Encrypt STAGING environment");
     }
-    let acme_client = rp_tls::acme::RealAcmeClient::new(dns_provider.as_ref());
-    rp_tls::acme::issue_certificate(&acme_config, &pki_dir, &acme_client).await?;
+
+    rp_tls::acme::issue_certificate(acme_config, pki_dir, acme_client).await?;
 
     // Print summary
-    let cert_path = rp_tls::acme_config::acme_cert_path(&pki_dir);
-    let key_path = rp_tls::acme_config::acme_key_path(&pki_dir);
+    let cert_path = rp_tls::acme_config::acme_cert_path(pki_dir);
+    let key_path = rp_tls::acme_config::acme_key_path(pki_dir);
     println!("\nACME certificate issued successfully:");
     println!("  Certificate: {}", cert_path.display());
     println!("  Private key: {}", key_path.display());
-    println!("  Domain:      *.{}", domain);
-    if staging {
+    println!("  Domain:      *.{}", acme_config.domain);
+    if acme_config.staging {
         println!("  Environment: STAGING (not trusted by browsers)");
     }
 
-    print_acme_config_hint(&pki_dir);
+    print_acme_config_hint(pki_dir);
 
     Ok(())
 }
@@ -193,6 +207,107 @@ fn print_config_hint(certs_dir: &Path, ca_cert_path: &Path, services: &[&str]) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use rp_tls::acme::AcmeClient;
+    use rp_tls::error::TlsError;
+
+    // Local mock of AcmeClient for testing run_acme_issue.
+    // The rp-tls crate's MockAcmeClient is only available in its own test builds,
+    // so we define one here via mockall::mock!.
+    mockall::mock! {
+        Acme {}
+        #[async_trait::async_trait]
+        impl AcmeClient for Acme {
+            async fn create_or_load_account(
+                &self,
+                email: String,
+                directory_url: String,
+                existing_credentials_json: Option<String>,
+            ) -> rp_tls::error::Result<Option<String>>;
+            async fn order_certificate(
+                &self,
+                domain: String,
+            ) -> rp_tls::error::Result<(String, String)>;
+        }
+    }
+
+    #[tokio::test]
+    async fn run_acme_issue_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let acme_config = rp_tls::acme_config::AcmeConfig {
+            email: "test@example.com".to_string(),
+            domain: "observatory.example.com".to_string(),
+            dns_provider: "cloudflare".to_string(),
+            dns_credentials: std::collections::HashMap::new(),
+            staging: false,
+            renewal_days_before_expiry: 30,
+            post_renewal_hooks: vec![],
+        };
+
+        let mut mock = MockAcme::new();
+        mock.expect_create_or_load_account()
+            .returning(|_, _, _| Ok(Some(r#"{"account":"creds"}"#.to_string())));
+        mock.expect_order_certificate()
+            .returning(|_| Ok(("CERT-CHAIN".to_string(), "PRIV-KEY".to_string())));
+
+        run_acme_issue(&acme_config, dir.path(), &mock)
+            .await
+            .unwrap();
+
+        // Verify cert and key files written
+        let cert_path = rp_tls::acme_config::acme_cert_path(dir.path());
+        let key_path = rp_tls::acme_config::acme_key_path(dir.path());
+        assert_eq!(std::fs::read_to_string(cert_path).unwrap(), "CERT-CHAIN");
+        assert_eq!(std::fs::read_to_string(key_path).unwrap(), "PRIV-KEY");
+    }
+
+    #[tokio::test]
+    async fn run_acme_issue_staging_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let acme_config = rp_tls::acme_config::AcmeConfig {
+            email: "test@example.com".to_string(),
+            domain: "observatory.example.com".to_string(),
+            dns_provider: "cloudflare".to_string(),
+            dns_credentials: std::collections::HashMap::new(),
+            staging: true,
+            renewal_days_before_expiry: 30,
+            post_renewal_hooks: vec![],
+        };
+
+        let mut mock = MockAcme::new();
+        mock.expect_create_or_load_account()
+            .returning(|_, _, _| Ok(None));
+        mock.expect_order_certificate()
+            .returning(|_| Ok(("CERT".to_string(), "KEY".to_string())));
+
+        run_acme_issue(&acme_config, dir.path(), &mock)
+            .await
+            .unwrap();
+
+        assert!(rp_tls::acme_config::acme_cert_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn run_acme_issue_error_propagates() {
+        let dir = tempfile::tempdir().unwrap();
+        let acme_config = rp_tls::acme_config::AcmeConfig {
+            email: "test@example.com".to_string(),
+            domain: "example.com".to_string(),
+            dns_provider: "cloudflare".to_string(),
+            dns_credentials: std::collections::HashMap::new(),
+            staging: true,
+            renewal_days_before_expiry: 30,
+            post_renewal_hooks: vec![],
+        };
+
+        let mut mock = MockAcme::new();
+        mock.expect_create_or_load_account()
+            .returning(|_, _, _| Err(TlsError::Acme("test error".to_string())));
+
+        let err = run_acme_issue(&acme_config, dir.path(), &mock)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("test error"), "error: {err}");
+    }
 
     #[test]
     fn run_generates_all_default_certs() {
