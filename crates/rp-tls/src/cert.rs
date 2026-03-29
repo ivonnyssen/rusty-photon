@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SanType,
 };
 use tracing::debug;
@@ -65,10 +65,10 @@ pub fn generate_service_cert(
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
-    // Load CA
+    // Load CA as an Issuer for signing
     let ca_key = KeyPair::from_pem(ca_key_pem)?;
-    let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem)?;
-    let ca_cert = ca_params.self_signed(&ca_key)?;
+    let issuer = Issuer::from_ca_cert_pem(ca_cert_pem, &ca_key)
+        .map_err(|e| TlsError::Other(format!("failed to load CA issuer: {e}")))?;
 
     // Build service cert params
     let mut params = CertificateParams::new(build_dns_sans(extra_sans))
@@ -100,7 +100,7 @@ pub fn generate_service_cert(
         )));
 
     let service_key = KeyPair::generate()?;
-    let service_cert = params.signed_by(&service_key, &ca_cert, &ca_key)?;
+    let service_cert = params.signed_by(&service_key, &issuer)?;
 
     let cert_path = output_dir.join(format!("{service_name}.pem"));
     let key_path = output_dir.join(format!("{service_name}-key.pem"));

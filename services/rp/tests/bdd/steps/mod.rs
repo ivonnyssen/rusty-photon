@@ -1,5 +1,6 @@
 //! BDD step definitions for rp service
 
+pub mod acme_steps;
 pub mod equipment_steps;
 pub mod event_steps;
 pub mod infrastructure;

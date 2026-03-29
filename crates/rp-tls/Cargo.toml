@@ -24,7 +24,10 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
+async-trait = { workspace = true }
+cloudflare = { workspace = true }
 hostname = "0.4"
+instant-acme = { workspace = true }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 time = "0.3"
 

@@ -76,6 +76,95 @@ pub fn run(
     Ok(())
 }
 
+/// Run the ACME certificate issuance flow.
+///
+/// Creates an ACME account, requests a wildcard certificate via DNS-01
+/// challenge, and writes the certificate and key to the PKI directory.
+pub async fn run_acme(
+    output_dir: Option<&str>,
+    domain: Option<&str>,
+    dns_provider_name: Option<&str>,
+    dns_token: Option<&str>,
+    email: Option<&str>,
+    staging: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let domain = domain.ok_or("--domain is required with --acme")?;
+    let dns_provider_name = dns_provider_name.ok_or("--dns-provider is required with --acme")?;
+    let dns_token = dns_token.ok_or("--dns-token is required with --acme")?;
+    let email = email.ok_or("--email is required with --acme")?;
+
+    let pki_dir = match output_dir {
+        Some(dir) => config::expand_tilde(dir),
+        None => config::default_pki_dir(),
+    };
+
+    // Build and save ACME config
+    let mut dns_credentials = std::collections::HashMap::new();
+    dns_credentials.insert("api_token".to_string(), dns_token.to_string());
+
+    let acme_config = rp_tls::acme_config::AcmeConfig {
+        email: email.to_string(),
+        domain: domain.to_string(),
+        dns_provider: dns_provider_name.to_string(),
+        dns_credentials,
+        staging,
+        renewal_days_before_expiry: 30,
+        post_renewal_hooks: vec![],
+    };
+
+    let config_path = match output_dir {
+        Some(dir) => config::expand_tilde(dir).join("acme.json"),
+        None => rp_tls::acme_config::default_acme_config_path(),
+    };
+    rp_tls::acme_config::save_acme_config(&acme_config, &config_path)?;
+    info!("Saved ACME configuration to {}", config_path.display());
+
+    // Build DNS provider
+    let resolved_creds = rp_tls::acme_config::resolve_credentials(&acme_config.dns_credentials)?;
+    let dns_provider =
+        rp_tls::dns::build_dns_provider(&acme_config.dns_provider, &resolved_creds, domain).await?;
+
+    // Issue certificate
+    info!("Requesting wildcard certificate for *.{}", domain);
+    if staging {
+        info!("Using Let's Encrypt STAGING environment");
+    }
+    rp_tls::acme::issue_certificate(&acme_config, &pki_dir, dns_provider.as_ref()).await?;
+
+    // Print summary
+    let cert_path = rp_tls::acme_config::acme_cert_path(&pki_dir);
+    let key_path = rp_tls::acme_config::acme_key_path(&pki_dir);
+    println!("\nACME certificate issued successfully:");
+    println!("  Certificate: {}", cert_path.display());
+    println!("  Private key: {}", key_path.display());
+    println!("  Domain:      *.{}", domain);
+    if staging {
+        println!("  Environment: STAGING (not trusted by browsers)");
+    }
+
+    print_acme_config_hint(&pki_dir);
+
+    Ok(())
+}
+
+/// Print a hint showing how to configure services to use ACME certs.
+fn print_acme_config_hint(pki_dir: &Path) {
+    let cert = rp_tls::acme_config::acme_cert_path(pki_dir);
+    let key = rp_tls::acme_config::acme_key_path(pki_dir);
+    println!("\nAdd to each service's config.json:");
+    println!(
+        r#"  "server": {{
+    "tls": {{
+      "cert": "{}",
+      "key": "{}"
+    }}
+  }}"#,
+        cert.display(),
+        key.display()
+    );
+    println!("\nNo CA configuration needed for clients -- Let's Encrypt is publicly trusted.");
+}
+
 /// Print a hint showing how to configure services to use the generated certs.
 fn print_config_hint(certs_dir: &Path, ca_cert_path: &Path, services: &[&str]) {
     if let Some(first) = services.first() {
