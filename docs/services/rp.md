@@ -1264,12 +1264,16 @@ connection details. Plugins register their webhook URLs and command endpoints.
       {
         "id": "main-cam",
         "name": "Main Imaging Camera",
-        "alpaca_url": "http://localhost:11120",
+        "alpaca_url": "https://localhost:11120",
         "device_type": "camera",
         "device_number": 0,
         "cooler_target_c": -10,
         "gain": 100,
-        "offset": 50
+        "offset": 50,
+        "auth": {
+          "username": "observatory",
+          "password": "secret"
+        }
       },
       {
         "id": "guide-cam",

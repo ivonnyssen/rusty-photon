@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use ascom_alpaca::api::{Camera, FilterWheel, TypedDevice};
 use ascom_alpaca::Client;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use rp_auth::config::ClientAuthConfig;
 use serde::Serialize;
 use tracing::debug;
 
@@ -90,10 +93,34 @@ impl EquipmentRegistry {
     }
 }
 
+/// Build an Alpaca client with optional HTTP Basic Auth credentials.
+fn build_alpaca_client(
+    url: &str,
+    auth: Option<&ClientAuthConfig>,
+) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
+    match auth {
+        Some(a) => {
+            let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                "authorization",
+                format!("Basic {encoded}")
+                    .parse()
+                    .expect("valid header value"),
+            );
+            let http = reqwest::Client::builder()
+                .default_headers(headers)
+                .build()?;
+            Ok(Client::new_with_client(url, http)?)
+        }
+        None => Ok(Client::new(url)?),
+    }
+}
+
 async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
     debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
 
-    let client = match Client::new(&config.alpaca_url) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
             debug!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
@@ -179,7 +206,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
 async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheelEntry {
     debug!(fw_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to filter wheel");
 
-    let client = match Client::new(&config.alpaca_url) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
             debug!(fw_id = %config.id, error = %e, "failed to create Alpaca client for filter wheel");

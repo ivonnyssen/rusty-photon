@@ -57,6 +57,9 @@ pub struct CameraConfig {
     pub gain: Option<i32>,
     #[serde(default)]
     pub offset: Option<i32>,
+    /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +72,9 @@ pub struct FilterWheelConfig {
     pub device_number: u32,
     #[serde(default)]
     pub filters: Vec<String>,
+    /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
