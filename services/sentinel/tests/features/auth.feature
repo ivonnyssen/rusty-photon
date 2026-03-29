@@ -29,3 +29,10 @@ Feature: sentinel dashboard HTTP Basic Auth
   Scenario: dashboard auth disabled requires no credentials
     When sentinel is started without dashboard auth
     Then the dashboard health endpoint should respond without credentials
+
+  Scenario: sentinel polls auth-enabled filemonitor with correct credentials
+    Given generated TLS certificates for sentinel
+    And filemonitor is running with TLS and auth enabled and a contains rule "SAFE" as safe
+    And sentinel is configured to monitor the auth-enabled filemonitor
+    When sentinel is started with CA trust
+    Then sentinel should successfully poll the filemonitor

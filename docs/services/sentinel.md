@@ -108,7 +108,20 @@ Empty transitions config means no notifications are sent.
 
 The dashboard supports optional HTTP Basic Auth via the `dashboard.auth`
 config section. Monitor connections to auth-enabled Alpaca services use
-per-monitor `auth` credentials. See [ADR-003](../decisions/003-authentication-for-device-access.md).
+per-monitor `auth` credentials (plaintext password, `chmod 600` recommended).
+See [ADR-003](../decisions/003-authentication-for-device-access.md).
+
+```json
+{
+  "monitors": [{
+    "type": "alpaca_safety_monitor",
+    "name": "Roof Sensor",
+    "host": "localhost", "port": 11111, "device_number": 0,
+    "scheme": "https",
+    "auth": { "username": "observatory", "password": "secret" }
+  }]
+}
+```
 
 ## Dashboard
 

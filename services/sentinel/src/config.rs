@@ -98,6 +98,9 @@ pub enum MonitorConfig {
         /// URL scheme: "http" (default) or "https" for TLS-enabled services
         #[serde(default = "default_scheme")]
         scheme: String,
+        /// Optional HTTP Basic Auth credentials for connecting to auth-enabled services
+        #[serde(default)]
+        auth: Option<rp_auth::config::ClientAuthConfig>,
     },
 }
 

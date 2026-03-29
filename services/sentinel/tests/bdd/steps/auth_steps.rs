@@ -224,3 +224,120 @@ async fn dashboard_responds_without_credentials(world: &mut SentinelWorld) {
     }
     assert!(ok, "Dashboard health endpoint did not respond without auth");
 }
+
+// --- Cross-service client-side auth scenario ---
+
+#[given(
+    expr = "filemonitor is running with TLS and auth enabled and a contains rule {string} as safe"
+)]
+async fn filemonitor_running_with_tls_and_auth(world: &mut SentinelWorld, pattern: String) {
+    let dir = pki_dir(world);
+    let certs_dir = dir.join("certs");
+
+    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
+
+    world.fm_rules.push(serde_json::json!({
+        "type": "contains",
+        "pattern": pattern,
+        "safe": true
+    }));
+
+    // Create a temp file with safe content so filemonitor has something to monitor
+    world.create_temp_file(&pattern);
+
+    let mut config = world.build_filemonitor_config();
+    config["server"]["tls"] = serde_json::json!({
+        "cert": certs_dir.join("filemonitor.pem").to_string_lossy().to_string(),
+        "key": certs_dir.join("filemonitor-key.pem").to_string_lossy().to_string()
+    });
+    config["server"]["auth"] = serde_json::json!({
+        "username": AUTH_USERNAME,
+        "password_hash": hash
+    });
+
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().unwrap());
+    let config_path = temp_dir.path().join("filemonitor_auth_config.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+    let fm_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("filemonitor");
+    let handle = bdd_infra::ServiceHandle::start(
+        fm_manifest.to_str().unwrap(),
+        "filemonitor",
+        config_path.to_str().unwrap(),
+    )
+    .await;
+
+    world.filemonitor = Some(handle);
+}
+
+#[given("sentinel is configured to monitor the auth-enabled filemonitor")]
+fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
+    let fm = world.filemonitor.as_ref().expect("filemonitor not started");
+
+    world.sentinel_monitors.push(serde_json::json!({
+        "type": "alpaca_safety_monitor",
+        "name": "Auth Monitor",
+        "host": "localhost",
+        "port": fm.port,
+        "device_number": 0,
+        "polling_interval_seconds": 1,
+        "scheme": "https",
+        "auth": {
+            "username": AUTH_USERNAME,
+            "password": AUTH_PASSWORD
+        }
+    }));
+
+    world.sentinel_monitor_name = "Auth Monitor".to_string();
+}
+
+#[when("sentinel is started with CA trust")]
+async fn sentinel_started_with_ca_trust(world: &mut SentinelWorld) {
+    let dir = pki_dir(world);
+    let ca_path = dir.join("ca.pem");
+
+    let mut config = world.build_sentinel_config();
+    config["ca_cert"] = serde_json::json!(ca_path.to_string_lossy().to_string());
+
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().unwrap());
+    let config_path = temp_dir.path().join("sentinel_auth_monitor_config.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+    let handle = bdd_infra::ServiceHandle::start(
+        env!("CARGO_MANIFEST_DIR"),
+        env!("CARGO_PKG_NAME"),
+        config_path.to_str().unwrap(),
+    )
+    .await;
+
+    world.sentinel = Some(handle);
+}
+
+#[then("sentinel should successfully poll the filemonitor")]
+async fn sentinel_polls_successfully(world: &mut SentinelWorld) {
+    world.wait_for_poll().await;
+
+    let statuses = world.get_status().await;
+    assert!(!statuses.is_empty(), "no monitor statuses returned");
+
+    let monitor = statuses
+        .iter()
+        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("Auth Monitor"))
+        .expect("Auth Monitor not found in status");
+
+    let state = monitor
+        .get("state")
+        .and_then(|s| s.as_str())
+        .expect("state field missing");
+    assert_eq!(
+        state, "Safe",
+        "expected Safe state from auth-enabled filemonitor"
+    );
+}

@@ -35,13 +35,36 @@ use crate::pushover::PushoverNotifier;
 /// concrete types (`AlpacaSafetyMonitor`, `PushoverNotifier`) that are defined
 /// in sibling modules.
 impl Config {
-    pub fn build_monitors(&self, http: &Arc<dyn io::HttpClient>) -> Vec<Arc<dyn Monitor>> {
+    pub fn build_monitors(
+        &self,
+        http: &Arc<dyn io::HttpClient>,
+        ca_path: Option<&std::path::Path>,
+    ) -> Vec<Arc<dyn Monitor>> {
         self.monitors
             .iter()
             .map(|monitor_config| -> Arc<dyn Monitor> {
                 match monitor_config {
-                    config::MonitorConfig::AlpacaSafetyMonitor { .. } => {
-                        Arc::new(AlpacaSafetyMonitor::new(monitor_config, Arc::clone(http)))
+                    config::MonitorConfig::AlpacaSafetyMonitor { auth, .. } => {
+                        let client: Arc<dyn io::HttpClient> = match auth {
+                            Some(a) => {
+                                match ReqwestHttpClient::with_auth(
+                                    ca_path,
+                                    a.username.clone(),
+                                    a.password.clone(),
+                                ) {
+                                    Ok(c) => Arc::new(c),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to build auth HTTP client: {e}. \
+                                             Falling back to shared client."
+                                        );
+                                        Arc::clone(http)
+                                    }
+                                }
+                            }
+                            None => Arc::clone(http),
+                        };
+                        Arc::new(AlpacaSafetyMonitor::new(monitor_config, client))
                     }
                 }
             })
@@ -126,9 +149,10 @@ impl SentinelBuilder {
         let config = self.config;
 
         // Use injected monitors/notifiers or fall back to config factories
+        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
         let monitors = self
             .monitors
-            .unwrap_or_else(|| config.build_monitors(&http));
+            .unwrap_or_else(|| config.build_monitors(&http, ca_path.as_deref()));
         let notifiers = self
             .notifiers
             .unwrap_or_else(|| config.build_notifiers(&http));
@@ -346,13 +370,14 @@ mod tests {
                 device_number: 0,
                 polling_interval_seconds: 30,
                 scheme: "http".to_string(),
+                auth: None,
             }],
             ..Config::default()
         };
         let mock = MockHttpClient::new();
         let http: Arc<dyn io::HttpClient> = Arc::new(mock);
 
-        let monitors = config.build_monitors(&http);
+        let monitors = config.build_monitors(&http, None);
 
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].name(), "Test Monitor");
@@ -388,6 +413,7 @@ mod tests {
                 device_number: 0,
                 polling_interval_seconds: 30,
                 scheme: "http".to_string(),
+                auth: None,
             }],
             ..Config::default()
         };
