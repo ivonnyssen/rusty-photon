@@ -1,6 +1,8 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use crate::acme_config::{self, AcmeConfig};
@@ -31,21 +33,26 @@ pub trait AcmeClient: Send + Sync {
 
     /// Run the full ACME order flow for a wildcard domain:
     /// create order, solve DNS-01 challenges, finalize, return (cert_pem, key_pem).
+    ///
+    /// Must be called after `create_or_load_account`.
     async fn order_certificate(&self, domain: String) -> Result<(String, String)>;
 }
 
 /// Real ACME client using `instant-acme`.
 ///
-/// Holds the DNS provider reference needed for challenge solving.
-/// Constructed per-issuance by `issue_certificate_real`.
+/// Stores the account handle after `create_or_load_account` so that
+/// `order_certificate` can use it. Holds a DNS provider reference
+/// for solving DNS-01 challenges.
 pub struct RealAcmeClient<'a> {
-    _dns_provider: &'a dyn DnsProvider,
+    dns_provider: &'a dyn DnsProvider,
+    account: Arc<Mutex<Option<instant_acme::Account>>>,
 }
 
 impl<'a> RealAcmeClient<'a> {
     pub fn new(dns_provider: &'a dyn DnsProvider) -> Self {
         Self {
-            _dns_provider: dns_provider,
+            dns_provider,
+            account: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -64,11 +71,12 @@ impl AcmeClient for RealAcmeClient<'_> {
             debug!("Loading ACME account from credentials");
             let credentials: AccountCredentials = serde_json::from_str(&json)
                 .map_err(|e| TlsError::Acme(format!("failed to parse account credentials: {e}")))?;
-            Account::builder()
+            let account = Account::builder()
                 .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
                 .from_credentials(credentials)
                 .await
                 .map_err(|e| TlsError::Acme(format!("failed to load account: {e}")))?;
+            *self.account.lock().await = Some(account);
             debug!("Loaded existing ACME account");
             Ok(None)
         } else {
@@ -80,11 +88,13 @@ impl AcmeClient for RealAcmeClient<'_> {
                 only_return_existing: false,
             };
 
-            let (_account, credentials) = Account::builder()
+            let (account, credentials) = Account::builder()
                 .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
                 .create(&new_account, directory_url, None)
                 .await
                 .map_err(|e| TlsError::Acme(format!("failed to create ACME account: {e}")))?;
+
+            *self.account.lock().await = Some(account);
 
             let json = serde_json::to_string_pretty(&credentials)
                 .map_err(|e| TlsError::Acme(format!("failed to serialize credentials: {e}")))?;
@@ -93,23 +103,95 @@ impl AcmeClient for RealAcmeClient<'_> {
         }
     }
 
-    async fn order_certificate(&self, _domain: String) -> Result<(String, String)> {
-        // This trait method exists for the mock boundary; the real implementation
-        // uses issue_certificate_real which manages the full lifecycle directly.
-        Err(TlsError::Acme(
-            "RealAcmeClient::order_certificate should not be called directly; \
-             use issue_certificate_real for the full lifecycle"
-                .to_string(),
-        ))
+    async fn order_certificate(&self, domain: String) -> Result<(String, String)> {
+        use instant_acme::{ChallengeType, Identifier, NewOrder, RetryPolicy};
+
+        let mut account_guard = self.account.lock().await;
+        let account = account_guard.as_mut().ok_or_else(|| {
+            TlsError::Acme(
+                "account not initialized — call create_or_load_account first".to_string(),
+            )
+        })?;
+
+        // Create order for wildcard domain
+        let wildcard = format!("*.{domain}");
+        let identifiers = [Identifier::Dns(wildcard.clone())];
+        let new_order = NewOrder::new(&identifiers);
+
+        debug!("Creating ACME order for {}", wildcard);
+        let mut order = account
+            .new_order(&new_order)
+            .await
+            .map_err(|e| TlsError::Acme(format!("failed to create order: {e}")))?;
+
+        // Solve DNS-01 challenges
+        let challenge_fqdn = format!("_acme-challenge.{domain}");
+        let mut auths = order.authorizations();
+        while let Some(auth_result) = auths.next().await {
+            let mut auth = auth_result
+                .map_err(|e| TlsError::Acme(format!("failed to get authorization: {e}")))?;
+
+            let mut challenge = auth.challenge(ChallengeType::Dns01).ok_or_else(|| {
+                TlsError::Acme("no DNS-01 challenge offered by server".to_string())
+            })?;
+
+            let key_auth = challenge.key_authorization();
+            let dns_value = key_auth.dns_value();
+
+            debug!(
+                "Setting up DNS-01 challenge for {} with value {}",
+                challenge_fqdn, dns_value
+            );
+
+            self.dns_provider
+                .create_txt_record(&challenge_fqdn, &dns_value)
+                .await?;
+
+            debug!("Waiting 15 seconds for DNS propagation");
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+            challenge
+                .set_ready()
+                .await
+                .map_err(|e| TlsError::Acme(format!("failed to set challenge ready: {e}")))?;
+
+            debug!("Challenge marked as ready");
+        }
+
+        debug!("Polling order until ready");
+        order
+            .poll_ready(&RetryPolicy::default())
+            .await
+            .map_err(|e| TlsError::Acme(format!("order did not become ready: {e}")))?;
+
+        debug!("Cleaning up DNS challenge record");
+        if let Err(e) = self.dns_provider.delete_txt_record(&challenge_fqdn).await {
+            debug!("Warning: failed to clean up DNS record: {e}");
+        }
+
+        // Finalize
+        debug!("Finalizing order (generating CSR)");
+        let private_key_pem = order
+            .finalize()
+            .await
+            .map_err(|e| TlsError::Acme(format!("failed to finalize order: {e}")))?;
+
+        debug!("Polling for certificate");
+        let cert_chain_pem = order
+            .poll_certificate(&RetryPolicy::default())
+            .await
+            .map_err(|e| TlsError::Acme(format!("failed to retrieve certificate: {e}")))?;
+
+        Ok((cert_chain_pem, private_key_pem))
     }
 }
 
-/// Issue a wildcard certificate via ACME (mockable version).
+/// Issue a wildcard certificate via ACME.
 ///
-/// This is the testable entry point that uses the `AcmeClient` trait:
-/// 1. Creates or loads an ACME account
+/// This is the main entry point for certificate issuance:
+/// 1. Creates or loads an ACME account (via `AcmeClient`)
 /// 2. Persists new account credentials if created
-/// 3. Orders the certificate
+/// 3. Orders the certificate (via `AcmeClient`)
 /// 4. Writes the certificate and private key to disk
 pub async fn issue_certificate(
     config: &AcmeConfig,
@@ -146,147 +228,6 @@ pub async fn issue_certificate(
     // Order certificate
     let (cert_chain_pem, private_key_pem) =
         acme_client.order_certificate(config.domain.clone()).await?;
-
-    // Write certificate and key
-    let certs_dir = pki_dir.join("certs");
-    std::fs::create_dir_all(&certs_dir)?;
-
-    let cert_path = acme_config::acme_cert_path(pki_dir);
-    let key_path = acme_config::acme_key_path(pki_dir);
-
-    std::fs::write(&cert_path, &cert_chain_pem)?;
-    std::fs::write(&key_path, &private_key_pem)?;
-    set_restricted_permissions(&key_path)?;
-
-    info!("Certificate written to {}", cert_path.display());
-    info!("Private key written to {}", key_path.display());
-
-    Ok(())
-}
-
-/// Issue a certificate using the real ACME client (instant-acme).
-///
-/// This is the production entry point that handles the full lifecycle
-/// including account management and the ACME protocol flow directly.
-pub async fn issue_certificate_real(
-    config: &AcmeConfig,
-    pki_dir: &Path,
-    dns_provider: &dyn DnsProvider,
-) -> Result<()> {
-    use instant_acme::{
-        Account, AccountCredentials, ChallengeType, Identifier, NewAccount, NewOrder, RetryPolicy,
-    };
-
-    let account_path = acme_config::acme_account_path(pki_dir);
-    let directory_url = acme_config::directory_url(config.staging).to_string();
-
-    // Create or load account
-    let account = if account_path.exists() {
-        debug!("Loading ACME account from {}", account_path.display());
-        let json = std::fs::read_to_string(&account_path)?;
-        let credentials: AccountCredentials = serde_json::from_str(&json)
-            .map_err(|e| TlsError::Acme(format!("failed to parse account credentials: {e}")))?;
-        Account::builder()
-            .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
-            .from_credentials(credentials)
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to load account: {e}")))?
-    } else {
-        debug!("Creating new ACME account at {}", directory_url);
-        let contact = format!("mailto:{}", config.email);
-        let new_account = NewAccount {
-            contact: &[&contact],
-            terms_of_service_agreed: true,
-            only_return_existing: false,
-        };
-
-        let (account, credentials) = Account::builder()
-            .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
-            .create(&new_account, directory_url, None)
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to create ACME account: {e}")))?;
-
-        std::fs::create_dir_all(pki_dir)?;
-        let json = serde_json::to_string_pretty(&credentials)
-            .map_err(|e| TlsError::Acme(format!("failed to serialize credentials: {e}")))?;
-        std::fs::write(&account_path, json)?;
-        set_restricted_permissions(&account_path)?;
-        info!(
-            "Created new ACME account, saved to {}",
-            account_path.display()
-        );
-
-        account
-    };
-
-    // Create order for wildcard domain
-    let wildcard = format!("*.{}", config.domain);
-    let identifiers = [Identifier::Dns(wildcard.clone())];
-    let new_order = NewOrder::new(&identifiers);
-
-    debug!("Creating ACME order for {}", wildcard);
-    let mut order = account
-        .new_order(&new_order)
-        .await
-        .map_err(|e| TlsError::Acme(format!("failed to create order: {e}")))?;
-
-    // Solve DNS-01 challenges
-    let challenge_fqdn = format!("_acme-challenge.{}", config.domain);
-    let mut auths = order.authorizations();
-    while let Some(auth_result) = auths.next().await {
-        let mut auth =
-            auth_result.map_err(|e| TlsError::Acme(format!("failed to get authorization: {e}")))?;
-
-        let mut challenge = auth
-            .challenge(ChallengeType::Dns01)
-            .ok_or_else(|| TlsError::Acme("no DNS-01 challenge offered by server".to_string()))?;
-
-        let key_auth = challenge.key_authorization();
-        let dns_value = key_auth.dns_value();
-
-        debug!(
-            "Setting up DNS-01 challenge for {} with value {}",
-            challenge_fqdn, dns_value
-        );
-
-        dns_provider
-            .create_txt_record(&challenge_fqdn, &dns_value)
-            .await?;
-
-        debug!("Waiting 15 seconds for DNS propagation");
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-
-        challenge
-            .set_ready()
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to set challenge ready: {e}")))?;
-
-        debug!("Challenge marked as ready");
-    }
-
-    debug!("Polling order until ready");
-    order
-        .poll_ready(&RetryPolicy::default())
-        .await
-        .map_err(|e| TlsError::Acme(format!("order did not become ready: {e}")))?;
-
-    debug!("Cleaning up DNS challenge record");
-    if let Err(e) = dns_provider.delete_txt_record(&challenge_fqdn).await {
-        debug!("Warning: failed to clean up DNS record: {e}");
-    }
-
-    // Finalize
-    debug!("Finalizing order (generating CSR)");
-    let private_key_pem = order
-        .finalize()
-        .await
-        .map_err(|e| TlsError::Acme(format!("failed to finalize order: {e}")))?;
-
-    debug!("Polling for certificate");
-    let cert_chain_pem = order
-        .poll_certificate(&RetryPolicy::default())
-        .await
-        .map_err(|e| TlsError::Acme(format!("failed to retrieve certificate: {e}")))?;
 
     // Write certificate and key
     let certs_dir = pki_dir.join("certs");

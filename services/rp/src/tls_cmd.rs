@@ -129,7 +129,8 @@ pub async fn run_acme(
     if staging {
         info!("Using Let's Encrypt STAGING environment");
     }
-    rp_tls::acme::issue_certificate_real(&acme_config, &pki_dir, dns_provider.as_ref()).await?;
+    let acme_client = rp_tls::acme::RealAcmeClient::new(dns_provider.as_ref());
+    rp_tls::acme::issue_certificate(&acme_config, &pki_dir, &acme_client).await?;
 
     // Print summary
     let cert_path = rp_tls::acme_config::acme_cert_path(&pki_dir);
