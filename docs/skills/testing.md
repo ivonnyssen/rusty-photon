@@ -471,9 +471,7 @@ async fn test_focuser_position_not_connected() {
 
 #### 6.4 Test File Organization
 
-- `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit tests for protocol, config, error, switches (inline with source)
-- `test_serial_manager.rs` -- Connection lifecycle and polling
-- `test_device_mock.rs` -- Device trait implementation with mock I/O
+- `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit and mock-based component tests (inline with source)
 - `test_cli.rs` -- CLI argument parsing
 - `test_server.rs` / `test_lib.rs` -- Server integration tests
 - `conformu_integration.rs` -- ASCOM conformance (always `#[ignore]`)
