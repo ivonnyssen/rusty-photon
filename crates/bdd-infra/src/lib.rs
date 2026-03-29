@@ -729,4 +729,84 @@ features = ["mock"]
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.is_empty(), "stderr should contain error message");
     }
+
+    /// Resolve the absolute path to the rp binary in target/debug.
+    /// Builds it first if necessary.
+    fn rp_binary_path() -> String {
+        let build = std::process::Command::new("cargo")
+            .args(["build", "--package", "rp", "--quiet"])
+            .status()
+            .expect("cargo build failed");
+        assert!(build.success(), "cargo build --package rp failed");
+
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+
+        let target_dir = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| workspace_root.join("target"));
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "rp.exe"
+        } else {
+            "rp"
+        };
+        let binary = target_dir.join("debug").join(binary_name);
+        assert!(
+            binary.exists(),
+            "rp binary not found at {}",
+            binary.display()
+        );
+        binary.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn test_run_once_uses_prebuilt_binary_via_env_var() {
+        let binary = rp_binary_path();
+        std::env::set_var("RP_BINARY", &binary);
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+            None,
+        );
+
+        std::env::remove_var("RP_BINARY");
+
+        assert!(
+            output.status.success(),
+            "init-tls via pre-built binary should succeed"
+        );
+        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
+    }
+
+    #[test]
+    fn test_run_once_with_stdin_via_prebuilt_binary() {
+        let binary = rp_binary_path();
+        std::env::set_var("RP_BINARY", &binary);
+
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["hash-password", "--stdin"],
+            Some(b"test-password\n"),
+        );
+
+        std::env::remove_var("RP_BINARY");
+
+        assert!(
+            output.status.success(),
+            "hash-password via pre-built binary should succeed"
+        );
+        let hash = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            hash.trim().starts_with("$argon2id$"),
+            "expected Argon2id hash, got: {hash}"
+        );
+    }
 }

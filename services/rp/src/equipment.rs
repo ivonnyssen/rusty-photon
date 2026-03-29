@@ -288,3 +288,29 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_alpaca_client_without_auth() {
+        build_alpaca_client("http://localhost:11111", None).unwrap();
+    }
+
+    #[test]
+    fn build_alpaca_client_with_auth() {
+        let auth = ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "secret".to_string(),
+        };
+        build_alpaca_client("http://localhost:11111", Some(&auth)).unwrap();
+    }
+
+    #[test]
+    fn build_alpaca_client_with_invalid_url_fails() {
+        let result = build_alpaca_client("not-a-url", None);
+        assert!(result.is_err());
+    }
+}
