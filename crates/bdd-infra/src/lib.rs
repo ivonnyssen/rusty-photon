@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Shared BDD test infrastructure for rusty-photon services.
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Sentinel - Observatory monitoring and notification service
 //!
 //! Polls ASCOM Alpaca devices, detects state transitions, and sends notifications.
