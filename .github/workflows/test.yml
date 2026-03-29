@@ -148,30 +148,29 @@ jobs:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@cargo-nextest
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Two-phase coverage: build all binaries with instrumentation,
+      # then run tests so spawned child processes also produce .profraw files.
+      # Uses show-env (not cargo llvm-cov nextest) because BDD tests spawn
+      # service binaries via find_binary(), which needs instrumented binaries
+      # in the default target/debug/ directory.
       - name: Clean previous coverage artifacts
         run: cargo llvm-cov clean --workspace
-      # Run non-BDD tests with nextest under coverage instrumentation
-      - name: Run non-BDD tests with coverage
-        run: cargo llvm-cov nextest --no-report --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
-      # Run BDD tests under coverage (keeps nextest profraw) and generate report,
-      # or just generate report for packages without BDD tests.
-      - name: Run BDD tests and generate coverage report
+      - name: Build with coverage instrumentation
         run: |
-          PKG_DIR=$(cargo metadata --format-version 1 --no-deps -q | \
-            jq -r --arg pkg "${{ matrix.package }}" \
-            '.packages[] | select(.name == $pkg) | .manifest_path' | xargs dirname)
-          if [ -f "$PKG_DIR/tests/bdd.rs" ]; then
-            cargo llvm-cov --no-clean --locked --package ${{ matrix.package }} --all-features \
-              --test bdd --lcov --output-path lcov.info
-          else
-            cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
-              --output-path lcov.info
-          fi
+          source <(cargo llvm-cov show-env --sh)
+          cargo build --locked --package ${{ matrix.package }} --all-features
+      - name: Run tests with coverage
+        run: |
+          source <(cargo llvm-cov show-env --sh)
+          cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
+      - name: Generate coverage report
+        run: |
+          source <(cargo llvm-cov show-env --sh)
+          cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
+            --output-path lcov.info
       - name: Upload to codecov.io
         if: env.ACT != 'true'
         uses: codecov/codecov-action@v6
