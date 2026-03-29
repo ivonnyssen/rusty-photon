@@ -94,6 +94,10 @@ pub struct RpWorld {
     pub tls_ca_cert_pem: Option<String>,
     /// Last HTTPS response status for TLS validation tests
     pub tls_https_status: Option<u16>,
+
+    // --- ACME test state ---
+    /// Last command output (for ACME CLI tests)
+    pub last_command_output: Option<std::process::Output>,
 }
 
 /// Camera configuration for test setup

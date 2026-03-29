@@ -14,6 +14,15 @@ pub enum TlsError {
     #[error("PEM parsing error: {0}")]
     Pem(String),
 
+    #[error("ACME protocol error: {0}")]
+    Acme(String),
+
+    #[error("DNS provider error: {0}")]
+    DnsProvider(String),
+
+    #[error("configuration error: {0}")]
+    Config(String),
+
     #[error("{0}")]
     Other(String),
 }

@@ -43,6 +43,30 @@ enum Commands {
         #[arg(long)]
         extra_san: Option<Vec<String>>,
 
+        /// Use ACME/Let's Encrypt instead of self-signed CA
+        #[arg(long)]
+        acme: bool,
+
+        /// Domain for ACME wildcard certificate (requires --acme)
+        #[arg(long, requires = "acme")]
+        domain: Option<String>,
+
+        /// DNS provider for ACME challenge (e.g., "cloudflare") (requires --acme)
+        #[arg(long, requires = "acme")]
+        dns_provider: Option<String>,
+
+        /// DNS provider API token (requires --acme)
+        #[arg(long, requires = "acme")]
+        dns_token: Option<String>,
+
+        /// Email for ACME account registration (requires --acme)
+        #[arg(long, requires = "acme")]
+        email: Option<String>,
+
+        /// Use Let's Encrypt staging environment (requires --acme)
+        #[arg(long, requires = "acme")]
+        staging: bool,
+
         /// Log level (trace, debug, info, warn, error)
         #[arg(long, default_value = "info")]
         log_level: String,
@@ -62,14 +86,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output_dir,
             services,
             extra_san,
+            acme,
+            domain,
+            dns_provider,
+            dns_token,
+            email,
+            staging,
             log_level,
         }) => {
             init_tracing(&log_level);
-            rp::tls_cmd::run(
-                output_dir.as_deref(),
-                services.as_deref(),
-                &extra_san.unwrap_or_default(),
-            )
+            if acme {
+                rp::tls_cmd::run_acme(
+                    output_dir.as_deref(),
+                    domain.as_deref(),
+                    dns_provider.as_deref(),
+                    dns_token.as_deref(),
+                    email.as_deref(),
+                    staging,
+                )
+                .await
+            } else {
+                rp::tls_cmd::run(
+                    output_dir.as_deref(),
+                    services.as_deref(),
+                    &extra_san.unwrap_or_default(),
+                )
+            }
         }
         None => {
             // Backward compat: `rp --config <path>` works without a subcommand

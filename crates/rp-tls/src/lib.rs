@@ -4,8 +4,12 @@
 //! Provides certificate generation, TLS server helpers, client CA trust,
 //! and shared configuration types for opt-in HTTPS across all services.
 
+pub mod acme;
+pub mod acme_config;
 pub mod cert;
 pub mod client;
 pub mod config;
+pub mod dns;
 pub mod error;
+pub mod permissions;
 pub mod server;
