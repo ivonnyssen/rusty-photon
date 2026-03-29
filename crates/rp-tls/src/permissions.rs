@@ -47,6 +47,7 @@ mod tests {
         assert_eq!(mode, 0o600, "expected 0600 but got {mode:o}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn set_restricted_permissions_on_nonexistent_file_returns_error() {
         let dir = tempfile::tempdir().unwrap();
