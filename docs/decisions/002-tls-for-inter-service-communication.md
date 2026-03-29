@@ -226,11 +226,7 @@ rp init-tls
 - Works on Linux (x86_64, ARM64), macOS, and Windows
 - No impact on Raspberry Pi builds
 
-## Future: ACME / Let's Encrypt Support
-
-A future enhancement could add support for publicly-trusted certificates
-via the ACME protocol (Let's Encrypt), eliminating the need for a
-self-signed CA entirely.
+## ACME / Let's Encrypt Support
 
 ### Motivation
 
@@ -238,48 +234,397 @@ The self-signed CA approach requires every client to be configured with
 the CA certificate. Third-party Alpaca devices with publicly-signed
 certificates cannot be mixed with self-signed services in a single
 sentinel configuration without a custom certificate verifier. Publicly-
-trusted certificates from Let's Encrypt would remove both limitations.
+trusted certificates from Let's Encrypt remove both limitations: browsers
+and clients trust Let's Encrypt natively, and no manual CA installation
+is needed.
 
-### How It Would Work
+### Why DNS-01 Is the Only Viable Challenge Type
 
-Let's Encrypt's **DNS-01 challenge** validates domain ownership by
-checking a DNS TXT record — the services never need to be publicly
-accessible. A user who owns a domain (e.g., `vonnyssen.com`) could:
+Observatory services run on local networks behind NAT. They are not
+reachable on ports 80 or 443 from the internet. Of the three ACME
+challenge types, only DNS-01 works in this environment:
 
-1. Point subdomains to their local observatory IP:
-   ```
-   filemonitor.observatory.vonnyssen.com  →  192.168.1.100
-   rp.observatory.vonnyssen.com           →  192.168.1.100
-   ```
-2. Run `rp init-tls --acme --domain observatory.vonnyssen.com`
-3. Rusty Photon creates a DNS TXT record via the provider's API,
-   validates with Let's Encrypt, and receives a wildcard certificate
-   (`*.observatory.vonnyssen.com`) trusted by all clients natively.
+| Challenge    | Requires                  | Behind NAT? | Wildcards? |
+|------------- |---------------------------|-------------|------------|
+| HTTP-01      | Port 80 from internet     | No          | No         |
+| TLS-ALPN-01  | Port 443 from internet    | No          | No         |
+| **DNS-01**   | **DNS TXT record via API** | **Yes**     | **Yes**    |
 
-### Implementation Sketch
+DNS-01 proves domain ownership by creating a TXT record at
+`_acme-challenge.<DOMAIN>`. Let's Encrypt validates via public DNS. The
+actual services can live on `192.168.x.x` behind a home router — they
+never need to be publicly accessible.
 
-- **ACME client**: `instant-acme` crate (v0.8, pure Rust, async/tokio,
-  supports DNS-01, automatic CSR via `rcgen`). Uses the `aws-lc-rs`
-  crypto backend, consistent with the rest of the project.
-- **DNS provider**: Start with Cloudflare (free tier, simple REST API
-  for TXT record management). Extensible to Route53, Google Cloud DNS.
-- **Renewal**: Certificates expire every 90 days. A `rp renew-tls`
-  command plus an optional systemd timer or cron job handles renewal.
-- **CLI**: `rp init-tls --acme --domain <DOMAIN> --dns-provider
-  cloudflare --dns-token <TOKEN>`
-- **Account state**: ACME credentials stored in
-  `~/.rusty-photon/acme/`.
+### User Experience
 
-### Dual Path
+#### One-Time Setup
 
-The self-signed CA (`rp init-tls`) remains the default for users
-without a domain. ACME is an opt-in alternative for users who want
-publicly-trusted certificates.
+```bash
+rp init-tls --acme \
+  --domain observatory.example.com \
+  --dns-provider cloudflare \
+  --dns-token "$CLOUDFLARE_API_TOKEN" \
+  --email user@example.com
+```
+
+This single command:
+
+1. Creates an ACME account with Let's Encrypt
+2. Requests a wildcard certificate for `*.observatory.example.com`
+3. Creates a DNS TXT record via the Cloudflare API for validation
+4. Waits for DNS propagation, completes the challenge
+5. Writes the certificate chain and private key to
+   `~/.rusty-photon/pki/certs/`
+6. Prints configuration hints for each service
+
+After this, services use publicly-trusted certificates. No CA
+installation on clients. No manual renewal.
+
+#### Dual Path (Self-Signed Remains Default)
+
+Users without a domain (or on air-gapped networks) keep using the
+self-signed CA. ACME is an opt-in alternative:
 
 ```bash
 rp init-tls                                          # self-signed CA
 rp init-tls --acme --domain observatory.example.com  # Let's Encrypt
 ```
+
+#### Staging Environment
+
+Let's Encrypt provides a staging endpoint with much higher rate limits
+and untrusted root CAs. Users should test with staging before switching
+to production:
+
+```bash
+rp init-tls --acme --staging --domain observatory.example.com ...
+```
+
+The `--staging` flag uses `acme-staging-v02.api.letsencrypt.org`. This
+is the recommended first step to verify DNS provider credentials and
+challenge flow without risking rate limit exhaustion.
+
+### Single Wildcard Certificate
+
+All services share one wildcard certificate
+(`*.observatory.example.com`) rather than per-service certificates.
+
+**Rationale:**
+
+- One ACME order, one DNS challenge, one renewal — not five
+- Let's Encrypt rate limits (50 certs/domain/week) are a non-issue
+  with a single cert (renewals are exempt from rate limits)
+- Each service is distinguishable by subdomain (e.g.,
+  `filemonitor.observatory.example.com`,
+  `rp.observatory.example.com`)
+
+**Trade-off:** A compromised key exposes all services. This is
+acceptable for single-machine deployment where all services share the
+same trust boundary. For multi-machine setups, the same cert is
+distributed to each machine — the trust boundary is the observatory
+network, not individual hosts.
+
+### Multi-Machine Support
+
+The wildcard certificate is valid for all subdomains regardless of which
+IP they resolve to. Services on different machines simply need a copy of
+the same cert and key files:
+
+```
+*.observatory.example.com cert covers all of:
+
+filemonitor.observatory.example.com  →  192.168.1.50  (Pi in the dome)
+rp.observatory.example.com           →  192.168.1.50  (same Pi)
+camera.observatory.example.com       →  192.168.1.51  (different machine)
+mount.observatory.example.com        →  192.168.1.52  (yet another)
+```
+
+Users configure split-horizon DNS so domain names resolve to local IPs.
+Common approaches: Pi-hole/dnsmasq overrides, local hosts file entries,
+or Tailscale MagicDNS. The public DNS records exist only for ACME
+challenge validation — they do not need to resolve to anything
+meaningful externally.
+
+Certificate distribution to remote machines is handled via configurable
+`post_renewal_hooks` in the ACME config (see Configuration section).
+
+### Configuration
+
+ACME config is **standalone** at `~/.rusty-photon/acme.json`, not
+embedded in any service config. This decouples certificate management
+from any specific service and supports multi-machine deployments where
+the ACME client runs on one host:
+
+```json
+{
+  "email": "user@example.com",
+  "domain": "observatory.example.com",
+  "dns_provider": "cloudflare",
+  "dns_credentials": {
+    "api_token": "$CLOUDFLARE_API_TOKEN"
+  },
+  "staging": false,
+  "renewal_days_before_expiry": 30,
+  "post_renewal_hooks": [
+    "scp ~/.rusty-photon/pki/certs/acme-*.pem pi-dome:~/.rusty-photon/pki/certs/"
+  ]
+}
+```
+
+| Field                         | Required | Description |
+|-------------------------------|----------|-------------|
+| `email`                       | Yes      | ACME account email for expiry notifications |
+| `domain`                      | Yes      | Base domain (wildcard cert issued for `*.<domain>`) |
+| `dns_provider`                | Yes      | DNS provider identifier (e.g., `"cloudflare"`) |
+| `dns_credentials`             | Yes      | Provider-specific credentials; values starting with `$` are read from environment variables |
+| `staging`                     | No       | Use Let's Encrypt staging endpoint (default: `false`) |
+| `renewal_days_before_expiry`  | No       | Days before expiry to trigger renewal (default: `30`) |
+| `post_renewal_hooks`          | No       | Shell commands to run after successful renewal (e.g., distribute certs to remote machines) |
+
+#### File Layout
+
+```
+~/.rusty-photon/
+├── acme.json                  # ACME configuration (standalone)
+├── pki/
+│   ├── acme-account.json      # ACME account credentials (persistent)
+│   ├── ca.pem                 # Self-signed CA (unused with ACME)
+│   ├── ca-key.pem
+│   └── certs/
+│       ├── acme-cert.pem      # Wildcard certificate chain
+│       └── acme-key.pem       # Wildcard private key
+```
+
+#### Service Config (Unchanged Structure)
+
+Each service still uses the existing `tls` section. With ACME, all
+services point to the same wildcard cert files:
+
+```json
+{
+  "server": {
+    "port": 11112,
+    "tls": {
+      "cert": "~/.rusty-photon/pki/certs/acme-cert.pem",
+      "key": "~/.rusty-photon/pki/certs/acme-key.pem"
+    }
+  }
+}
+```
+
+On remote machines the paths are the same — certs arrive via
+`post_renewal_hooks`.
+
+### Pluggable DNS Providers
+
+DNS provider interaction is behind a trait so new providers can be added
+without touching ACME logic:
+
+```rust
+#[async_trait]
+pub trait DnsProvider: Send + Sync + Debug {
+    /// Create a TXT record for the ACME challenge.
+    async fn create_txt_record(&self, fqdn: &str, value: &str) -> Result<()>;
+
+    /// Remove the TXT record after validation completes.
+    async fn delete_txt_record(&self, fqdn: &str) -> Result<()>;
+}
+```
+
+The initial implementation ships **Cloudflare** only (free tier, widely
+used for domain management). The Cloudflare implementation uses the
+official [`cloudflare`](https://crates.io/crates/cloudflare) Rust crate,
+which handles authentication, error responses, zone ID lookup, and
+retry logic out of the box.
+
+Adding a new provider means implementing the `DnsProvider` trait and
+registering the provider identifier in the config parser. No changes to
+ACME orchestration, certificate management, or CLI.
+
+### Automatic Certificate Renewal
+
+Let's Encrypt certificates currently have a 90-day lifetime, moving to
+45 days by February 2028. Automated renewal is non-negotiable.
+
+#### Renewal Flow
+
+When `rp serve` starts and `~/.rusty-photon/acme.json` exists:
+
+1. A background tokio task checks certificate expiry daily
+2. If within `renewal_days_before_expiry` of expiration:
+   a. Load ACME account from `~/.rusty-photon/pki/acme-account.json`
+   b. Create a new ACME order via `instant-acme`
+   c. Complete DNS-01 challenge via the configured `DnsProvider`
+   d. Finalize the order and retrieve the new certificate chain
+   e. Write the new cert and key to `~/.rusty-photon/pki/certs/`
+   f. Hot-swap the certificate in the running server (see below)
+   g. Execute `post_renewal_hooks` to distribute to remote machines
+
+#### Manual Fallback
+
+A `rp renew-tls` CLI command provides the same flow as a one-shot
+operation, for users who prefer cron/systemd timers or want to trigger
+renewal explicitly.
+
+### Certificate Hot-Reloading
+
+The current implementation uses `with_single_cert()` which bakes the
+certificate into the `ServerConfig` at startup. For ACME, certificates
+must be swappable without restarting services.
+
+#### ResolvesServerCert Implementation
+
+Replace `with_single_cert()` with a custom `ResolvesServerCert`
+implementation backed by an `RwLock<Arc<CertifiedKey>>`:
+
+```rust
+#[derive(Debug)]
+pub struct ReloadableCertResolver {
+    current: RwLock<Arc<CertifiedKey>>,
+}
+
+impl ResolvesServerCert for ReloadableCertResolver {
+    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.current.read().unwrap().clone())
+    }
+}
+
+impl ReloadableCertResolver {
+    pub fn swap(&self, new_key: Arc<CertifiedKey>) {
+        *self.current.write().unwrap() = new_key;
+    }
+}
+```
+
+In `server.rs`:
+
+```rust
+// Before:
+.with_single_cert(certs, key)?
+
+// After:
+.with_cert_resolver(Arc::new(resolver))
+```
+
+This change is backward-compatible — self-signed certificates also use
+the resolver; they simply never get swapped.
+
+For remote machines receiving certs via `post_renewal_hooks`, services
+either:
+
+- Use a file-watcher (e.g., `tls-hot-reload` crate) to detect changes
+  and call `resolver.swap()` automatically
+- Restart on the next maintenance window — renewal happens at most once
+  every ~60 days, so a brief restart is acceptable
+
+### ACME Library: instant-acme
+
+[`instant-acme`](https://crates.io/crates/instant-acme) (v0.8) is the
+ACME protocol library. It is the only Rust crate supporting DNS-01
+challenges and aligns with the project's existing dependency stack:
+
+| Dependency   | instant-acme | Rusty Photon | Compatible? |
+|------------- |------------- |------------- |-------------|
+| `rcgen`      | Yes          | Yes (v0.13)  | Yes         |
+| `tokio`      | Yes          | Yes          | Yes         |
+| `rustls`     | Yes          | Yes (v0.23)  | Yes         |
+| Crypto       | `aws-lc-rs`  | `aws-lc-rs`  | Yes         |
+
+Features used: full RFC 8555 implementation (async), DNS-01 challenge
+support, CSR generation via `rcgen`, serializable account credentials
+for persistence, and certificate revocation.
+
+### Client-Side Trust: No CA Configuration Needed
+
+With the self-signed CA, clients (rp, sentinel) must be configured with
+`ca_cert` and use `tls_certs_only()` in the reqwest builder to disable
+platform root certificates. This workaround exists because the macOS
+Security framework rejects self-signed CAs that are not in the system
+keychain — the platform verifier and the custom CA conflict.
+
+With Let's Encrypt, this problem disappears entirely. Let's Encrypt's
+root CA is already in every platform's trust store (macOS, Windows,
+Linux). Clients use the default reqwest builder with no `ca_cert`
+configuration — the `build_reqwest_client(None)` path works on all
+platforms without any special handling.
+
+The `ca_cert` / `tls_certs_only()` code path remains for self-signed CA
+users only.
+
+### Security Considerations
+
+| Concern                   | Mitigation |
+|---------------------------|------------|
+| DNS API token on disk     | `$ENV_VAR` syntax in config; file permissions restricted to 0600 |
+| Private key storage       | Same `~/.rusty-photon/pki/` directory with 0600 permissions |
+| ACME account key          | Separate from cert keys; stored in `acme-account.json` |
+| Rate limit exhaustion     | Always test with `--staging` first; renewals are exempt from rate limits |
+| Compromised cert key      | One wildcard cert = one key to protect; same trust boundary as self-signed |
+| DNS credential blast radius | Optional CNAME delegation: `_acme-challenge.observatory.example.com CNAME _acme-challenge.acme.example.com` limits write access to a dedicated validation zone |
+
+#### Let's Encrypt Rate Limits (Production)
+
+| Limit                          | Value            |
+|--------------------------------|------------------|
+| Certificates per domain / week | 50 (renewals exempt) |
+| Duplicate certificates / week  | 5                |
+| Orders per account / 3 hours   | 300              |
+| Auth failures per host / hour  | 5                |
+
+For a single observatory with one wildcard cert, these limits are not a
+practical concern.
+
+### New Dependencies
+
+```toml
+# Workspace Cargo.toml [workspace.dependencies]
+instant-acme = "0.8"
+cloudflare = "0.12"
+```
+
+### Implementation Phases
+
+#### Phase 1: Core ACME Infrastructure
+
+- `DnsProvider` trait and Cloudflare implementation in `rp-tls`
+- ACME account creation and persistence via `instant-acme`
+- DNS-01 challenge solver (create record → wait for propagation →
+  respond to challenge → clean up record)
+- Certificate issuance flow (order → challenge → finalize → download)
+- Extend `rp init-tls` CLI with `--acme` flags
+
+#### Phase 2: Certificate Hot-Reloading
+
+- `ReloadableCertResolver` in `rp-tls`
+- Modify `server.rs` to use `with_cert_resolver` (backward-compatible)
+- Background renewal task in `rp serve`
+- `rp renew-tls` manual command
+
+#### Phase 3: Polish and Testing
+
+- Staging/production toggle (`--staging`)
+- Configuration validation and helpful error messages
+- BDD tests using [Pebble](https://github.com/letsencrypt/pebble)
+  (Let's Encrypt's official ACME test server) for end-to-end flows
+- `post_renewal_hooks` execution
+- Documentation updates
+
+### Future: DNS-PERSIST-01
+
+A new challenge type approved by the CA/Browser Forum (October 2025).
+Instead of creating a new TXT record for each renewal, the user sets a
+persistent authorization record once:
+
+```
+_acme-challenge.observatory.example.com TXT "acme-persist=<value>"
+```
+
+This eliminates DNS provider API credentials from the renewal flow
+entirely — credentials are needed only during initial setup.
+
+Expected production availability: Q2 2026. When available, it would be
+added as an alternative challenge strategy behind the same `DnsProvider`
+trait, dramatically simplifying the ongoing user experience.
 
 ## References
 
@@ -288,6 +633,12 @@ rp init-tls --acme --domain observatory.example.com  # Let's Encrypt
 - [rustls](https://crates.io/crates/rustls) — modern TLS in Rust
 - [instant-acme](https://crates.io/crates/instant-acme) — pure Rust
   ACME client for Let's Encrypt / ZeroSSL
-- [Let's Encrypt DNS-01 challenge](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
+- [Let's Encrypt challenge types](https://letsencrypt.org/docs/challenge-types/)
+- [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/)
+- [Let's Encrypt staging environment](https://letsencrypt.org/docs/staging-environment/)
+- [Let's Encrypt certificate lifetime changes](https://letsencrypt.org/2025/12/02/from-90-to-45)
+- [DNS-PERSIST-01 announcement](https://letsencrypt.org/2026/02/18/dns-persist-01)
+- [Pebble ACME test server](https://github.com/letsencrypt/pebble)
+- [rustls ResolvesServerCert](https://docs.rs/rustls/latest/rustls/server/trait.ResolvesServerCert.html)
 - [ASCOM Alpaca API](https://ascom-standards.org/api/)
 - [axum TLS examples](https://github.com/tokio-rs/axum/tree/main/examples/tls-rustls)
