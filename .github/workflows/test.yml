@@ -124,11 +124,17 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared with windows-bdd jobs so they get a warm cache without
+          # creating duplicate ~1.3GB entries per BDD service
+          shared-key: windows-stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # Build full workspace so the cache saved by this job includes all
+      # binaries needed by the per-service BDD jobs
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
@@ -151,6 +157,9 @@ jobs:
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-stable
+          save-if: false
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
