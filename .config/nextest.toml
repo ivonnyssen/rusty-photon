@@ -5,3 +5,13 @@ dir = "target/nextest"
 # BDD tests use custom harness (bdd_main!) incompatible with nextest's --list.
 # Run them separately with `cargo test -p <crate> --test bdd`.
 default-filter = "not binary(bdd)"
+
+# The bdd-infra cargo-run fallback tests invoke `cargo run` which compiles
+# the test_service binary. On Windows, parallel tests race to write the same
+# .exe, causing "Access is denied" file locking errors. Serialize them.
+[[profile.default.overrides]]
+filter = "package(bdd-infra) & test(cargo_run)"
+test-group = "bdd-infra-cargo-run"
+
+[test-groups.bdd-infra-cargo-run]
+max-threads = 1
