@@ -1447,10 +1447,12 @@ async fn test_process_manager_start_when_external_running() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_no_executable_no_default() {
-    // Create config without executable_path - will try to find default
-    // On CI, there's no real PHD2 installed, so this should fail
+    // Verify that start_phd2() fails with ExecutableNotFound when no
+    // executable_path is configured and PHD2 isn't installed.
+    // Use port 1 (privileged) so is_phd2_running() can't get a false
+    // positive from a random service listening on the port.
     let config = Phd2Config {
-        port: 59996, // Unlikely to be in use
+        port: 1,
         executable_path: None,
         ..Default::default()
     };
