@@ -60,36 +60,16 @@ jobs:
         run: cargo build --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
-      - name: cargo test (parallel per-package)
-        # Build is shared above; run tests per-package in parallel to avoid
-        # the ~17m sequential wall-clock of --workspace.
+      - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
         # exclude bdd-infra: its unit tests look for binaries in target/debug/
         # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
-          PACKAGES=$(cargo metadata --format-version 1 --no-deps | \
-            jq -r '.packages[].name' | grep -v '^bdd-infra$' | tr '\n' ' ')
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            TEST_FLAGS="--lib --tests --all-features"
+            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
           else
-            TEST_FLAGS="--all-features"
+            cargo test --workspace --exclude bdd-infra --all-features --all-targets
           fi
-          pids=()
-          for pkg in $PACKAGES; do
-            echo "::group::$pkg"
-            cargo test --package "$pkg" $TEST_FLAGS 2>&1 | sed "s/^/[$pkg] /" &
-            pids+=($!)
-            echo "::endgroup::"
-          done
-          failed=0
-          for i in "${!pids[@]}"; do
-            pkg=$(echo $PACKAGES | cut -d' ' -f$((i+1)))
-            if ! wait "${pids[$i]}"; then
-              echo "::error::$pkg failed"
-              failed=1
-            fi
-          done
-          exit $failed
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
