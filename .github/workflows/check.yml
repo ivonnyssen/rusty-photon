@@ -43,9 +43,6 @@ jobs:
       matrix:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ${{ matrix.toolchain }}
@@ -53,7 +50,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo clippy (GitHub)
         if: env.ACT != 'true'
         uses: giraffate/clippy-action@v1
@@ -68,16 +65,13 @@ jobs:
     # which is required for feature unification
     runs-on: ubuntu-latest
     name: ubuntu / stable / features
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
       - name: cargo hack
@@ -86,16 +80,13 @@ jobs:
     # check that we can build using the declared minimum rust version
     runs-on: ubuntu-latest
     name: ubuntu / msrv
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: Verify workspace MSRV
         run: |
           # cargo-msrv doesn't resolve [workspace.package].rust-version from

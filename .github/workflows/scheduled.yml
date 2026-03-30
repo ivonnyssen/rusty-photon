@@ -20,9 +20,6 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / nightly
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -31,7 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -107,9 +104,6 @@ jobs:
     # to).
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / beta / updated
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     # There's no point running this if no Cargo.lock was checked in in the first place, since we'd
     # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
     # steps, so we repeat it.
@@ -123,7 +117,7 @@ jobs:
       - name: Install cargo-nextest
         if: hashFiles('Cargo.lock') != ''
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
@@ -146,9 +140,6 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / beta
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -157,7 +148,7 @@ jobs:
         uses: dtolnay/rust-toolchain@beta
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile

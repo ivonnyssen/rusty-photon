@@ -15,12 +15,26 @@ concurrency:
   cancel-in-progress: true
 name: test
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    name: plan
+    outputs:
+      test: ${{ steps.rail.outputs.test }}
+      infra: ${{ steps.rail.outputs.infra }}
+      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: loadingalias/cargo-rail-action@v3
+        id: rail
+        with:
+          since: ${{ github.event.pull_request.base.sha || github.event.before }}
   required:
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
     runs-on: ubuntu-latest
     name: ubuntu / stable
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -29,31 +43,30 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Pre-build all targets (bins + test/bench/example targets) so nextest
       # and BDD tests find cached binaries without recompilation
-      - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features --all-targets
+      - name: cargo build
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
-        run: cargo nextest run --locked --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
-        run: cargo test --locked --all-features --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
-        run: cargo test --locked --all-features --doc
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
   os-check:
     # Run cargo test on mac and windows at the workspace level
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }}
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -66,24 +79,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features --all-targets
+      - name: cargo build
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo test --test bdd
-        run: cargo test --locked --all-features --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
   coverage:
     # use llvm-cov to build and collect coverage and upload to codecov.io
     # with per-package flags for README badges.
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
     runs-on: ubuntu-latest
     name: coverage
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -94,7 +106,7 @@ jobs:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -108,18 +120,18 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked --workspace --all-features --all-targets
+          cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo test --locked --workspace --all-features --all-targets
+          cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Generate per-package coverage reports
         run: |
           source <(cargo llvm-cov show-env --sh)
           PACKAGES=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name')
           for pkg in $PACKAGES; do
             cargo llvm-cov report --locked --package "$pkg" --lcov \
-              --output-path "lcov-${pkg}.info"
+              --output-path "lcov-${pkg}.info" 2>/dev/null || true
           done
       - name: Upload to codecov.io
         if: env.ACT != 'true'
@@ -132,6 +144,7 @@ jobs:
           chmod +x ./codecov
           # Upload per-package reports with flags to preserve per-service badges
           for f in lcov-*.info; do
+            [ -f "$f" ] || continue
             pkg="${f#lcov-}"
             pkg="${pkg%.info}"
             echo "Uploading coverage for $pkg"

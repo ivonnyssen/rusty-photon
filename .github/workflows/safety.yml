@@ -14,7 +14,24 @@ concurrency:
   cancel-in-progress: true
 name: safety
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    name: plan
+    outputs:
+      test: ${{ steps.rail.outputs.test }}
+      infra: ${{ steps.rail.outputs.infra }}
+      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: loadingalias/cargo-rail-action@v3
+        id: rail
+        with:
+          since: ${{ github.event.pull_request.base.sha || github.event.before }}
   sanitizers:
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
     runs-on: ubuntu-latest
     name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
@@ -30,15 +47,12 @@ jobs:
     # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - run: |
           # to get the symbolizer for debug symbol resolution
           sudo apt install -y llvm
@@ -57,8 +71,8 @@ jobs:
         name: Enable debug symbols
       # Build the entire workspace once so all tests (and BDD child processes)
       # reuse the same sanitizer-instrumented artifacts.
-      - name: cargo build --workspace
-        run: cargo build --workspace --all-features --all-targets
+      - name: cargo build
+        run: cargo build ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
@@ -67,9 +81,9 @@ jobs:
         # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
+            cargo test ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --exclude bdd-infra --lib --tests --all-features
           else
-            cargo test --workspace --exclude bdd-infra --all-features --all-targets
+            cargo test ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --exclude bdd-infra --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"

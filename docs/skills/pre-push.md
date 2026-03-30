@@ -27,6 +27,7 @@
 | miri component | `rustup +nightly component add miri` | Miri checks |
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
 | cargo-llvm-cov | `cargo install cargo-llvm-cov` | Coverage |
+| cargo-rail | `cargo install cargo-rail` | Change detection |
 | ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
 | jq | `sudo apt install jq` / `brew install jq` | ConformU & miri discovery |
 | llvm | `sudo apt install llvm` | Address sanitizer symbolization |
@@ -46,13 +47,13 @@ act -W .github/workflows/check.yml -j fmt &
 act -W .github/workflows/check.yml -j clippy &
 act -W .github/workflows/check.yml -j hack &
 act -W .github/workflows/check.yml -j msrv &
-act -W .github/workflows/test.yml -j required &
-act -W .github/workflows/test.yml -j coverage &
-act -W .github/workflows/safety.yml -j sanitizers &
+act -W .github/workflows/test.yml -j plan -j required &
+act -W .github/workflows/test.yml -j plan -j coverage &
+act -W .github/workflows/safety.yml -j plan -j sanitizers &
 wait
 
 # Then run jobs with dependencies
-act -W .github/workflows/conformu.yml -j discover -j conformu
+act -W .github/workflows/conformu.yml -j plan -j conformu
 
 # Optional: rolling jobs (these only run on main/scheduled, not PRs)
 act -W .github/workflows/scheduled.yml -j nightly &
@@ -93,6 +94,30 @@ cargo test --locked --all-features --doc
 
 ---
 
+## Change Detection with cargo-rail
+
+CI uses [cargo-rail](https://github.com/loadingalias/cargo-rail) to detect
+which packages are affected by changes and skip unrelated tests. On PRs,
+the `plan` job runs `cargo rail plan` to determine:
+
+- **Which crates changed** (direct + transitive reverse dependencies)
+- **Which CI surfaces are active** (test, build, infra)
+
+When `infra=true` (workflow files, root Cargo.toml changed), all tests run
+with `--workspace`. Otherwise, only affected packages are tested via
+targeted `-p <package>` flags.
+
+To check locally which packages would be affected:
+
+```bash
+cargo rail plan --merge-base -f text
+```
+
+Scheduled and push-to-main runs always test the full workspace regardless
+of change detection.
+
+---
+
 ## Detailed Workflow Breakdown
 
 ### check.yml
@@ -113,6 +138,7 @@ The workspace uses a single MSRV (currently 1.94.1) declared in the root
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
+| **plan** | `cargo rail plan --merge-base` | cargo-rail | Yes (gates other jobs) |
 | **required (stable)** | `cargo nextest run --locked --all-features --all-targets` + `cargo test --locked --all-features --test bdd` | stable, cargo-nextest | Yes |
 | **required (stable, doc)** | `cargo test --locked --all-features --doc` | stable | Yes |
 | **os-check** | N/A (cross-platform, workspace-level) | -- | CI-only |
@@ -122,10 +148,12 @@ The workspace uses a single MSRV (currently 1.94.1) declared in the root
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
+| **plan** | `cargo rail plan --merge-base` | cargo-rail | Yes (gates other jobs) |
 | **address sanitizer** | See below | nightly, llvm | Optional |
 | **leak sanitizer** | See below | nightly | Optional |
 
-Both sanitizers run at the workspace level (2 jobs total).
+Both sanitizers run at the workspace level (2 jobs total), gated by cargo-rail
+change detection.
 
 Address sanitizer:
 
@@ -139,7 +167,7 @@ Leak sanitizer:
 
 ```bash
 RUSTFLAGS="-Z sanitizer=leak" \
-  cargo +nightly test --workspace --all-features --target x86_64-unknown-linux-gnu
+  cargo +nightly test --workspace --all-features --all-targets --target x86_64-unknown-linux-gnu
 ```
 
 > **Note:** The sanitizers modify `Cargo.toml` in CI to set `[profile.dev] opt-level = 1`.
@@ -150,7 +178,7 @@ RUSTFLAGS="-Z sanitizer=leak" \
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **discover** | `cargo metadata` + jq | jq | -- |
+| **plan** | `cargo rail plan --merge-base` | cargo-rail | Yes (gates other jobs) |
 | **conformu** | Per-service command (see below) | ConformU | Optional |
 
 ConformU services are discovered dynamically via `[package.metadata.conformu]`
@@ -169,6 +197,7 @@ Current services and their commands:
 ### scheduled.yml (rolling)
 
 These jobs only run on push to main, on schedule, or manually -- **not on PRs**.
+No change detection is used; everything runs against the full workspace.
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
@@ -289,3 +318,4 @@ sudo mv ./bin/act /usr/local/bin/
 - [Testing skill](testing.md) -- Writing and organizing tests
 - `.github/workflows/` -- Workflow YAML files
 - [GitHub Actions act](https://github.com/nektos/act) -- Local CI runner
+- [cargo-rail](https://github.com/loadingalias/cargo-rail) -- Change detection for CI

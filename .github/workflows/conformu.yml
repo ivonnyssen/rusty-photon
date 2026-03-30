@@ -9,12 +9,26 @@ on:
   pull_request:
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    name: plan
+    outputs:
+      test: ${{ steps.rail.outputs.test }}
+      infra: ${{ steps.rail.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: loadingalias/cargo-rail-action@v3
+        id: rail
+        with:
+          since: ${{ github.event.pull_request.base.sha || github.event.before }}
+
   conformu:
     name: ${{ matrix.os }}
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
     runs-on: ${{ matrix.os }}
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     concurrency:
       group: ${{ github.workflow }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
       cancel-in-progress: true
@@ -29,7 +43,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install ConformU
         uses: ivonnyssen/conformu-install@v3
