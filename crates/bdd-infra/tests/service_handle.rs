@@ -28,6 +28,7 @@ env_var = "{env_var_name}"
 /// Create a temp manifest dir with no env var set, so find_binary falls back
 /// to cargo run. Uses the real bdd-infra package name so `cargo run --package
 /// bdd-infra` resolves to the test_service binary.
+#[cfg(not(windows))]
 fn setup_manifest_no_binary(env_var_name: &str) -> tempfile::TempDir {
     std::env::remove_var(env_var_name);
     let dir = tempfile::tempdir().unwrap();

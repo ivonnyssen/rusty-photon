@@ -33,7 +33,7 @@ jobs:
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
@@ -122,7 +122,7 @@ jobs:
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
         if: hashFiles('Cargo.lock') != ''
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         if: hashFiles('Cargo.lock') != ''
         run: cargo nextest run --locked --all-features --all-targets
@@ -151,7 +151,7 @@ jobs:
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest

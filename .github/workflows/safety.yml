@@ -55,7 +55,7 @@ jobs:
       # Build the entire workspace once so all tests (and BDD child processes)
       # reuse the same sanitizer-instrumented artifacts.
       - name: cargo build --workspace
-        run: cargo build --workspace --all-features
+        run: cargo build --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test

@@ -31,9 +31,10 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build all service binaries so BDD tests find cached binaries
+      # Pre-build all targets (bins + test/bench/example targets) so nextest
+      # and BDD tests find cached binaries without recompilation
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
         run: cargo nextest run --locked --all-features --all-targets
@@ -64,7 +65,7 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --all-features --all-targets
       - name: cargo test --test bdd
@@ -97,7 +98,7 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked --workspace --all-features
+          cargo build --locked --workspace --all-features --all-targets
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
