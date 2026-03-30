@@ -29,6 +29,8 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-nightly
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -118,6 +120,8 @@ jobs:
         if: hashFiles('Cargo.lock') != ''
         uses: taiki-e/install-action@cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-beta
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
@@ -149,6 +153,8 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-beta
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile

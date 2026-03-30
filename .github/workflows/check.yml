@@ -51,6 +51,9 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-${{ matrix.toolchain }}
+          save-if: ${{ matrix.toolchain == 'beta' }}
       - name: cargo clippy (GitHub)
         if: env.ACT != 'true'
         uses: giraffate/clippy-action@v1
@@ -72,6 +75,9 @@ jobs:
       - name: cargo install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-stable
+          save-if: false
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
       - name: cargo hack
@@ -87,6 +93,9 @@ jobs:
         with:
           tool: cargo-msrv
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-stable
+          save-if: false
       - name: Verify workspace MSRV
         run: |
           # cargo-msrv doesn't resolve [workspace.package].rust-version from

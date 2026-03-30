@@ -44,6 +44,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os == 'Linux' && 'linux-stable' || runner.os == 'macOS' && 'macos-stable' || 'windows-stable' }}
+          save-if: false
 
       - name: Install ConformU
         uses: ivonnyssen/conformu-install@v3
