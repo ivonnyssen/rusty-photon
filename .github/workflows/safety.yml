@@ -30,6 +30,7 @@ jobs:
     # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5

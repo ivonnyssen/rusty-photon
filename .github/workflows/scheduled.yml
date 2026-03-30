@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / nightly
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
@@ -107,6 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / beta / updated
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     # There's no point running this if no Cargo.lock was checked in in the first place, since we'd
     # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
@@ -145,6 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / beta
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5

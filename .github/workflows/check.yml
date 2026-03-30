@@ -44,6 +44,7 @@ jobs:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
@@ -68,6 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / stable / features
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
@@ -85,6 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / msrv
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5

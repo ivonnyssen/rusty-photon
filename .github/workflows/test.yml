@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / stable
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
@@ -51,6 +52,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }}
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
@@ -80,6 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     name: coverage
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5

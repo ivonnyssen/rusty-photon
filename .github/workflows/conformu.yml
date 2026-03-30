@@ -13,6 +13,7 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     env:
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     concurrency:
       group: ${{ github.workflow }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
