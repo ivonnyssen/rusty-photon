@@ -31,6 +31,10 @@ jobs:
       - name: Install ConformU
         uses: ivonnyssen/conformu-install@v3
 
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
