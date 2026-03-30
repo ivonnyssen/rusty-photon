@@ -45,19 +45,21 @@ the actual GitHub Actions workflows in Docker containers.
 act -W .github/workflows/check.yml -j fmt &
 act -W .github/workflows/check.yml -j clippy &
 act -W .github/workflows/check.yml -j hack &
+act -W .github/workflows/check.yml -j msrv &
 act -W .github/workflows/test.yml -j required &
 act -W .github/workflows/test.yml -j coverage &
 act -W .github/workflows/safety.yml -j sanitizers &
-act -W .github/workflows/scheduled.yml -j nightly &
-act -W .github/workflows/scheduled.yml -j update &
 wait
 
 # Then run jobs with dependencies
-act -W .github/workflows/check.yml -j discover-msrv -j msrv
 act -W .github/workflows/conformu.yml -j discover -j conformu
 
-# Optional: miri (slow, per-package via discover)
-act -W .github/workflows/scheduled.yml -j discover-miri -j miri
+# Optional: rolling jobs (these only run on main/scheduled, not PRs)
+act -W .github/workflows/scheduled.yml -j nightly &
+act -W .github/workflows/scheduled.yml -j beta &
+act -W .github/workflows/scheduled.yml -j update &
+wait
+act -W .github/workflows/scheduled.yml -j discover-miri -j miri  # slow
 ```
 
 > **Note:** `act` runs Linux Docker containers, so the `os-check` job
@@ -101,23 +103,11 @@ cargo test --locked --all-features --doc
 | **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | Yes |
 | **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain | Optional |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Yes |
-| **msrv** | `cargo msrv verify --manifest-path services/<name>/Cargo.toml` | cargo-msrv | Optional |
+| **msrv** | `cargo msrv verify` | cargo-msrv | Optional |
 
-MSRV services are discovered dynamically. Current services with MSRV:
-- filemonitor (1.88.0)
-- phd2-guider (1.85.0)
-- ppba-driver (1.88.0)
-- qhy-focuser (1.88.0)
-
-To check all at once:
-
-```bash
-for svc in $(cargo metadata --format-version 1 --no-deps | \
-  jq -r '.packages[] | select(.rust_version) | .name'); do
-  echo "--- Checking MSRV for $svc ---"
-  cargo msrv verify --manifest-path "services/$svc/Cargo.toml"
-done
-```
+The workspace uses a single MSRV (currently 1.94.1) declared in the root
+`Cargo.toml` via `[workspace.package]`. All members inherit it with
+`rust-version.workspace = true`.
 
 ### test.yml
 
@@ -125,8 +115,7 @@ done
 |--------|---------------|---------------|-----------|
 | **required (stable)** | `cargo nextest run --locked --all-features --all-targets` + `cargo test --locked --all-features --test bdd` | stable, cargo-nextest | Yes |
 | **required (stable, doc)** | `cargo test --locked --all-features --doc` | stable | Yes |
-| **required (beta)** | Same commands with `+beta` | beta toolchain | Optional |
-| **os-check** | N/A (cross-platform) | -- | CI-only |
+| **os-check** | N/A (cross-platform, workspace-level) | -- | CI-only |
 | **coverage** | `cargo llvm-cov --locked --all-features --lcov` | cargo-llvm-cov, llvm-tools-preview | Optional |
 
 ### safety.yml
@@ -136,20 +125,21 @@ done
 | **address sanitizer** | See below | nightly, llvm | Optional |
 | **leak sanitizer** | See below | nightly | Optional |
 
+Both sanitizers run at the workspace level (2 jobs total).
+
 Address sanitizer:
 
 ```bash
 ASAN_OPTIONS="detect_odr_violation=0:detect_leaks=0" \
 RUSTFLAGS="-Z sanitizer=address" \
-  cargo +nightly test --lib --tests --all-features --target x86_64-unknown-linux-gnu
+  cargo +nightly test --workspace --lib --tests --all-features --target x86_64-unknown-linux-gnu
 ```
 
 Leak sanitizer:
 
 ```bash
-LSAN_OPTIONS="suppressions=lsan-suppressions.txt" \
 RUSTFLAGS="-Z sanitizer=leak" \
-  cargo +nightly test --all-features --target x86_64-unknown-linux-gnu
+  cargo +nightly test --workspace --all-features --target x86_64-unknown-linux-gnu
 ```
 
 > **Note:** The sanitizers modify `Cargo.toml` in CI to set `[profile.dev] opt-level = 1`.
@@ -178,9 +168,12 @@ Current services and their commands:
 
 ### scheduled.yml (rolling)
 
+These jobs only run on push to main, on schedule, or manually -- **not on PRs**.
+
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
 | **nightly** | `cargo +nightly nextest run --locked --all-features` + `cargo +nightly test --locked --all-features --test bdd` | nightly, cargo-nextest | Optional |
+| **beta** | Same commands with `+beta` | beta toolchain | Optional |
 | **discover-miri** | `cargo metadata` + jq | jq | -- |
 | **miri** | Per-service command (see below) | nightly + miri component | Optional |
 | **update** | `cargo +beta update && cargo +beta nextest run --locked --all-features` + `cargo +beta test --locked --all-features --test bdd` | beta, cargo-nextest | Optional |

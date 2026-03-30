@@ -4,7 +4,7 @@
 # - clippy: checks that the code does not contain any clippy warnings
 # - doc: checks that the code can be documented without errors
 # - hack: check combinations of feature flags
-# - msrv: check that the msrv specified in the crate is correct
+# - msrv: check that the msrv specified in the workspace is correct
 permissions:
   contents: read
 # This configuration allows maintainers of this repo to create a branch and pull request based on
@@ -50,6 +50,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - name: cargo clippy (GitHub)
         if: env.ACT != 'true'
         uses: giraffate/clippy-action@v1
@@ -70,53 +71,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
         uses: taiki-e/install-action@cargo-hack
+      - uses: Swatinem/rust-cache@v2
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
       - name: cargo hack
         run: cargo hack --feature-powerset check
-  discover-msrv:
-    # Discover all packages with rust-version (MSRV) specified
-    runs-on: ubuntu-latest
-    outputs:
-      packages: ${{ steps.find.outputs.packages }}
-      has_packages: ${{ steps.find.outputs.has_packages }}
-    steps:
-      - uses: actions/checkout@v5
-      - name: Find packages with MSRV
-        id: find
-        run: |
-          # Find all packages with rust-version specified, emit name and manifest path
-          PACKAGES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -c '[.packages[] | select(.rust_version) | {name: .name, manifest: .manifest_path}]')
-
-          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
-
-          COUNT=$(echo "$PACKAGES" | jq 'length')
-          if [ "$COUNT" -gt 0 ]; then
-            echo "has_packages=true" >> $GITHUB_OUTPUT
-            echo "Found $COUNT packages with MSRV:"
-            echo "$PACKAGES" | jq -r '.[].name'
-          else
-            echo "has_packages=false" >> $GITHUB_OUTPUT
-            echo "No packages with MSRV found"
-          fi
-
   msrv:
-    # check that we can build each package using its declared minimum rust version
-    needs: discover-msrv
-    if: needs.discover-msrv.outputs.has_packages == 'true'
+    # check that we can build using the declared minimum rust version
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package: ${{ fromJson(needs.discover-msrv.outputs.packages) }}
-    name: ubuntu / msrv / ${{ matrix.package.name }}
+    name: ubuntu / msrv
     steps:
       - uses: actions/checkout@v5
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv
-      - name: Verify MSRV for ${{ matrix.package.name }}
-        run: cargo msrv verify --manifest-path ${{ matrix.package.manifest }}
-
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify workspace MSRV
+        run: cargo msrv verify

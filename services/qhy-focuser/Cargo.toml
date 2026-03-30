@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.88.0"
+rust-version.workspace = true
 description = "ASCOM Alpaca driver for QHY Q-Focuser (EAF)"
 
 [package.metadata.bdd]

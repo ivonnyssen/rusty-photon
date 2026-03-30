@@ -1,10 +1,8 @@
 # This is the main CI workflow that runs the test suite on all pushes to main and all pull requests.
 # It runs the following jobs:
-# - required: runs the test suite on ubuntu with stable and beta rust toolchains
-# - minimal: runs the test suite with the minimal versions of the dependencies that satisfy the
-#   requirements of this crate, and its dependencies
-# - os-check: runs the test suite on mac and windows
-# - coverage: runs the test suite and collects coverage information
+# - required: runs the test suite on ubuntu with the stable rust toolchain
+# - os-check: runs the test suite on mac and windows (workspace-level)
+# - coverage: runs the test suite and collects per-package coverage information
 # See check.yml for information about how the concurrency cancellation and workflow triggering works
 permissions:
   contents: read
@@ -19,22 +17,16 @@ name: test
 jobs:
   required:
     runs-on: ubuntu-latest
-    name: ubuntu / ${{ matrix.toolchain }}
-    strategy:
-      matrix:
-        # run on stable and beta to ensure that tests won't break on the next version of the rust
-        # toolchain
-        toolchain: [stable, beta]
+    name: ubuntu / stable
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      - name: Install ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.toolchain }}
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
@@ -51,31 +43,14 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
-  discover:
-    # Discover all workspace packages once; consumed by os-check and coverage
-    runs-on: ubuntu-latest
-    name: discover packages
-    outputs:
-      packages: ${{ steps.find.outputs.packages }}
-    steps:
-      - uses: actions/checkout@v5
-      - name: Find workspace packages
-        id: find
-        run: |
-          META=$(cargo metadata --format-version 1 --no-deps)
-          PACKAGES=$(echo "$META" | jq -c '[.packages[].name]')
-          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
-          echo "Found packages: $PACKAGES"
   os-check:
-    # Run cargo test per service on mac and windows in parallel
-    needs: discover
+    # Run cargo test on mac and windows at the workspace level
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.package }} (${{ matrix.os }})
+    name: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-        package: ${{ fromJson(needs.discover.outputs.packages) }}
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -84,60 +59,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - name: Cache cargo
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      - name: cargo build
-        run: cargo build --locked --package ${{ matrix.package }} --all-features
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features
       - name: cargo nextest run
-        run: cargo nextest run --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
+        run: cargo nextest run --locked --all-features --all-targets
       - name: cargo test --test bdd
-        shell: bash
-        run: |
-          PKG_DIR=$(cargo metadata --format-version 1 --no-deps -q | \
-            jq -r --arg pkg "${{ matrix.package }}" \
-            '.packages[] | select(.name == $pkg) | .manifest_path' | xargs dirname)
-          if [ -f "$PKG_DIR/tests/bdd.rs" ]; then
-            cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
-          fi
+        run: cargo test --locked --all-features --test bdd
   coverage:
-    needs: discover
-    # use llvm-cov to build and collect coverage per workspace package and
-    # upload to codecov.io with per-package flags for README badges.
-    #
-    # note that codecov as of v4 requires that CODECOV_TOKEN from
-    #
-    #   https://app.codecov.io/gh/<user or org>/<project>/settings
-    #
-    # is set in two places on your repo:
-    #
-    # - https://github.com/jonhoo/guardian/settings/secrets/actions
-    # - https://github.com/jonhoo/guardian/settings/secrets/dependabot
-    #
-    # (the former is needed for codecov uploads to work with Dependabot PRs)
-    #
-    # PRs coming from forks of your repo will not have access to the token, but
-    # for those, codecov allows uploading coverage reports without a token.
-    # it's all a little weird and inconvenient. see
-    #
-    #   https://github.com/codecov/feedback/issues/112
-    #
-    # for lots of more discussion
+    # use llvm-cov to build and collect coverage and upload to codecov.io
+    # with per-package flags for README badges.
     runs-on: ubuntu-latest
-    name: coverage / ${{ matrix.package }}
-    strategy:
-      fail-fast: false
-      matrix:
-        package: ${{ fromJson(needs.discover.outputs.packages) }}
+    name: coverage
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -161,21 +97,37 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked --package ${{ matrix.package }} --all-features
+          cargo build --locked --workspace --all-features
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
-      - name: Generate coverage report
+          cargo test --locked --workspace --all-features --all-targets
+      - name: Generate per-package coverage reports
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
-            --output-path lcov.info
+          PACKAGES=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name')
+          for pkg in $PACKAGES; do
+            cargo llvm-cov report --locked --package "$pkg" --lcov \
+              --output-path "lcov-${pkg}.info"
+          done
       - name: Upload to codecov.io
         if: env.ACT != 'true'
-        uses: codecov/codecov-action@v6
-        with:
-          files: lcov.info
-          flags: ${{ matrix.package }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+        shell: bash
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          # Download the codecov CLI uploader
+          curl -Os https://cli.codecov.io/latest/linux/codecov
+          chmod +x ./codecov
+          # Upload per-package reports with flags to preserve per-service badges
+          for f in lcov-*.info; do
+            pkg="${f#lcov-}"
+            pkg="${pkg%.info}"
+            echo "Uploading coverage for $pkg"
+            ./codecov upload-process \
+              --file "$f" \
+              --flag "$pkg" \
+              --token "$CODECOV_TOKEN" \
+              --git-service github \
+              || echo "Warning: upload failed for $pkg"
+          done
