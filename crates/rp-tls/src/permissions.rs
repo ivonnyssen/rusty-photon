@@ -29,6 +29,7 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
