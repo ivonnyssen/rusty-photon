@@ -9,58 +9,54 @@ on:
   pull_request:
 
 jobs:
-  discover:
-    name: Discover ConformU Services
+  plan:
     runs-on: ubuntu-latest
+    name: plan
     outputs:
-      services: ${{ steps.find.outputs.services }}
-      has_services: ${{ steps.find.outputs.has_services }}
-      os: ${{ steps.os.outputs.os }}
+      services: ${{ steps.discover.outputs.services }}
+      has_services: ${{ steps.discover.outputs.has_services }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Find ConformU services
-        id: find
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: loadingalias/cargo-rail-action@v3
+        id: rail
+        with:
+          since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Discover affected ConformU services
+        id: discover
         run: |
-          # Get all packages with conformu metadata and build JSON array
-          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+          # Find all packages with conformu metadata
+          ALL_SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          # If infra changed or no rail filtering, test all; otherwise intersect with affected
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ] || [ "${{ steps.rail.outputs.test }}" != "true" ]; then
+            SERVICES="$ALL_SERVICES"
+          else
+            AFFECTED='${{ steps.rail.outputs.crates }}'
+            SERVICES=$(echo "$ALL_SERVICES" | jq -c --arg affected "$AFFECTED" \
+              '[.[] | select(.name as $n | ($affected | split(" ") | index($n)))]')
+          fi
 
-          # Check if we have any services
           COUNT=$(echo "$SERVICES" | jq 'length')
-          if [ "$COUNT" -gt 0 ]; then
-            echo "has_services=true" >> $GITHUB_OUTPUT
-            echo "Found $COUNT ConformU services:"
-            echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
-          else
-            echo "has_services=false" >> $GITHUB_OUTPUT
-            echo "No ConformU services found"
-          fi
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "has_services=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "ConformU services ($COUNT): $(echo "$SERVICES" | jq -r '[.[].name] | join(", ")')"
 
-      - name: Determine OS matrix
-        id: os
-        run: |
-          if [ "$ACT" = "true" ]; then
-            echo 'os=["ubuntu-latest"]' >> $GITHUB_OUTPUT
-          else
-            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> $GITHUB_OUTPUT
-          fi
-
+  # Ubuntu and macOS: run all affected conformu tests in parallel within a single job.
   conformu:
-    name: ${{ matrix.service.name }} (${{ matrix.os }})
-    needs: discover
-    if: needs.discover.outputs.has_services == 'true'
+    name: ${{ matrix.os }}
+    needs: plan
+    if: needs.plan.outputs.has_services == 'true'
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ github.workflow }}-${{ matrix.service.name }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
+      group: ${{ github.workflow }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(needs.discover.outputs.os) }}
-        service: ${{ fromJson(needs.discover.outputs.services) }}
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v6
@@ -68,23 +64,92 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # tag=v5.0.3
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: ${{ runner.os == 'Linux' && 'linux-stable' || 'macos-stable' }}
+          save-if: false
 
       - name: Install ConformU
         uses: ivonnyssen/conformu-install@v3
 
-      - name: Run ConformU tests
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+
+      - name: Pre-build workspace
+        run: cargo build --locked --workspace --all-features --all-targets
+
+      - name: Run ConformU tests (parallel)
         shell: bash
         timeout-minutes: 30
         run: |
-          echo "::group::ConformU Compliance Test: ${{ matrix.service.name }}"
+          SERVICES='${{ needs.plan.outputs.services }}'
+          COUNT=$(echo "$SERVICES" | jq 'length')
+
+          echo "Running $COUNT ConformU services"
+          pids=()
+          cmds=()
+          for i in $(seq 0 $((COUNT - 1))); do
+            name=$(echo "$SERVICES" | jq -r ".[$i].name")
+            cmd=$(echo "$SERVICES" | jq -r ".[$i].command")
+            echo "::group::Starting $name"
+            echo "Command: $cmd"
+            echo "::endgroup::"
+            eval "$cmd" 2>&1 | sed "s/^/[$name] /" &
+            pids+=($!)
+            cmds+=("$name")
+          done
+
+          failed=0
+          for i in "${!pids[@]}"; do
+            if ! wait "${pids[$i]}"; then
+              echo "::error::${cmds[$i]} failed"
+              failed=1
+            else
+              echo "${cmds[$i]} passed"
+            fi
+          done
+          exit $failed
+
+  # Windows: per-service jobs to avoid cargo lock contention.
+  conformu-windows:
+    name: windows / ${{ matrix.service.name }}
+    needs: plan
+    if: needs.plan.outputs.has_services == 'true'
+    runs-on: windows-latest
+    concurrency:
+      group: ${{ github.workflow }}-windows-${{ matrix.service.name }}-${{ github.head_ref || github.run_id }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.plan.outputs.services) }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-stable
+          save-if: false
+
+      - name: Install ConformU
+        uses: ivonnyssen/conformu-install@v3
+
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+
+      - name: Pre-build
+        run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets
+
+      - name: Run ConformU test
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          echo "::group::ConformU: ${{ matrix.service.name }}"
           ${{ matrix.service.command }}
           echo "::endgroup::"

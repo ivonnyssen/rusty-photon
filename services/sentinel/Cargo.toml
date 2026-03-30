@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.88.0"
+rust-version.workspace = true
 description = "Observatory monitoring and notification service"
 
 [package.metadata.bdd]

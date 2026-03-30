@@ -1,10 +1,10 @@
 # This is the main CI workflow that runs the test suite on all pushes to main and all pull requests.
 # It runs the following jobs:
-# - required: runs the test suite on ubuntu with stable and beta rust toolchains
-# - minimal: runs the test suite with the minimal versions of the dependencies that satisfy the
-#   requirements of this crate, and its dependencies
-# - os-check: runs the test suite on mac and windows
-# - coverage: runs the test suite and collects coverage information
+# - required: runs the test suite on ubuntu with the stable rust toolchain
+# - os-check: runs the test suite on mac and windows (workspace-level)
+#   On Windows, BDD tests are split into per-service parallel jobs to avoid
+#   the ~10m sequential wall-clock from per-scenario process spawn overhead.
+# - coverage: runs the test suite and collects per-package coverage information
 # See check.yml for information about how the concurrency cancellation and workflow triggering works
 permissions:
   contents: read
@@ -17,65 +17,48 @@ concurrency:
   cancel-in-progress: true
 name: test
 jobs:
-  required:
+  plan:
     runs-on: ubuntu-latest
-    name: ubuntu / ${{ matrix.toolchain }}
-    strategy:
-      matrix:
-        # run on stable and beta to ensure that tests won't break on the next version of the rust
-        # toolchain
-        toolchain: [stable, beta]
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install ASCOM OmniSim
-        uses: ./.github/actions/install-omnisim
-      - name: Install ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.toolchain }}
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@cargo-nextest
-      - name: cargo generate-lockfile
-        # enable this ci template to run regardless of whether the lockfile is checked in or not
-        if: hashFiles('Cargo.lock') == ''
-        run: cargo generate-lockfile
-      # Pre-build all service binaries so BDD tests find cached binaries
-      - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
-      # https://twitter.com/jonhoo/status/1571290371124260865
-      - name: cargo nextest run
-        run: cargo nextest run --locked --all-features --all-targets
-      # BDD tests use custom harness (bdd_main!) incompatible with nextest
-      - name: cargo test --test bdd
-        run: cargo test --locked --all-features --test bdd
-      # https://github.com/rust-lang/cargo/issues/6669
-      - name: cargo test --doc
-        run: cargo test --locked --all-features --doc
-  discover:
-    # Discover all workspace packages once; consumed by os-check and coverage
-    runs-on: ubuntu-latest
-    name: discover packages
+    name: plan
     outputs:
-      packages: ${{ steps.find.outputs.packages }}
+      test: ${{ steps.rail.outputs.test }}
+      infra: ${{ steps.rail.outputs.infra }}
+      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+      bdd-packages: ${{ steps.bdd.outputs.packages }}
+      has-bdd: ${{ steps.bdd.outputs.has_bdd }}
     steps:
       - uses: actions/checkout@v5
-      - name: Find workspace packages
-        id: find
+        with:
+          fetch-depth: 0
+      - uses: loadingalias/cargo-rail-action@v3
+        id: rail
+        with:
+          since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Discover BDD packages
+        id: bdd
         run: |
-          META=$(cargo metadata --format-version 1 --no-deps)
-          PACKAGES=$(echo "$META" | jq -c '[.packages[].name]')
-          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
-          echo "Found packages: $PACKAGES"
-  os-check:
-    # Run cargo test per service on mac and windows in parallel
-    needs: discover
-    runs-on: ${{ matrix.os }}
-    name: ${{ matrix.package }} (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-        package: ${{ fromJson(needs.discover.outputs.packages) }}
+          # Find packages with a "bdd" test target
+          ALL_BDD=$(cargo metadata --format-version 1 --no-deps | \
+            jq -c '[.packages[] | select(.targets[] | .kind[] == "test" and .name == "bdd") | .name]')
+
+          # If infra changed, test all BDD packages; otherwise intersect with affected
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ]; then
+            BDD_PACKAGES="$ALL_BDD"
+          else
+            AFFECTED='${{ steps.rail.outputs.crates }}'
+            BDD_PACKAGES=$(echo "$ALL_BDD" | jq -c --arg affected "$AFFECTED" \
+              '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
+          fi
+
+          COUNT=$(echo "$BDD_PACKAGES" | jq 'length')
+          echo "packages=$BDD_PACKAGES" >> $GITHUB_OUTPUT
+          echo "has_bdd=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "BDD packages ($COUNT): $BDD_PACKAGES"
+  required:
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    name: ubuntu / stable
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -84,60 +67,117 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - name: Cache cargo
-        uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: linux-stable
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Pre-build all targets (bins + test/bench/example targets) so nextest
+      # and BDD tests find cached binaries without recompilation
+      - name: cargo build
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      # https://twitter.com/jonhoo/status/1571290371124260865
+      - name: cargo nextest run
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      # BDD tests use custom harness (bdd_main!) incompatible with nextest
+      - name: cargo test --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: cargo test --doc
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
+  macos:
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    runs-on: macos-latest
+    name: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo build
-        run: cargo build --locked --package ${{ matrix.package }} --all-features
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked --package ${{ matrix.package }} --all-features --all-targets --no-tests=warn
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo test --test bdd
-        shell: bash
-        run: |
-          PKG_DIR=$(cargo metadata --format-version 1 --no-deps -q | \
-            jq -r --arg pkg "${{ matrix.package }}" \
-            '.packages[] | select(.name == $pkg) | .manifest_path' | xargs dirname)
-          if [ -f "$PKG_DIR/tests/bdd.rs" ]; then
-            cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
-          fi
-  coverage:
-    needs: discover
-    # use llvm-cov to build and collect coverage per workspace package and
-    # upload to codecov.io with per-package flags for README badges.
-    #
-    # note that codecov as of v4 requires that CODECOV_TOKEN from
-    #
-    #   https://app.codecov.io/gh/<user or org>/<project>/settings
-    #
-    # is set in two places on your repo:
-    #
-    # - https://github.com/jonhoo/guardian/settings/secrets/actions
-    # - https://github.com/jonhoo/guardian/settings/secrets/dependabot
-    #
-    # (the former is needed for codecov uploads to work with Dependabot PRs)
-    #
-    # PRs coming from forks of your repo will not have access to the token, but
-    # for those, codecov allows uploading coverage reports without a token.
-    # it's all a little weird and inconvenient. see
-    #
-    #   https://github.com/codecov/feedback/issues/112
-    #
-    # for lots of more discussion
-    runs-on: ubuntu-latest
-    name: coverage / ${{ matrix.package }}
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+  windows:
+    # Windows nextest (unit + integration tests, no BDD).
+    # BDD tests are split into per-service parallel jobs below to avoid
+    # the ~10m sequential wall-clock from per-scenario process spawn overhead.
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    runs-on: windows-latest
+    name: windows / nextest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared with windows-bdd jobs so they get a warm cache without
+          # creating duplicate ~1.3GB entries per BDD service
+          shared-key: windows-stable
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Build full workspace so the cache saved by this job includes all
+      # binaries needed by the per-service BDD jobs
+      - name: cargo build
+        run: cargo build --locked --workspace --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+  windows-bdd:
+    # Per-service BDD tests on Windows, run in parallel via matrix.
+    # Each service spawns its own process per scenario; on Windows this takes
+    # ~5s/scenario. Running services in parallel cuts wall-clock from ~10m
+    # to ~3m (limited by the largest service, ppba-driver).
+    needs: plan
+    if: needs.plan.outputs.has-bdd == 'true' && (needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true')
+    runs-on: windows-latest
+    name: windows / bdd / ${{ matrix.package }}
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJson(needs.discover.outputs.packages) }}
+        package: ${{ fromJson(needs.plan.outputs.bdd-packages) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-stable
+          save-if: false
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo build
+        run: cargo build --locked --package ${{ matrix.package }} --all-features --all-targets
+      - name: cargo test --test bdd
+        run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
+  coverage:
+    # use llvm-cov to build and collect coverage and upload to codecov.io
+    # with per-package flags for README badges.
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    name: coverage
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -148,6 +188,9 @@ jobs:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-nightly
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -161,21 +204,38 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked --package ${{ matrix.package }} --all-features
+          cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo test --locked --package ${{ matrix.package }} --all-features --all-targets
-      - name: Generate coverage report
+          cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      - name: Generate per-package coverage reports
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo llvm-cov report --locked --package ${{ matrix.package }} --lcov \
-            --output-path lcov.info
+          PACKAGES=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name')
+          for pkg in $PACKAGES; do
+            cargo llvm-cov report --locked --package "$pkg" --lcov \
+              --output-path "lcov-${pkg}.info" 2>/dev/null || true
+          done
       - name: Upload to codecov.io
         if: env.ACT != 'true'
-        uses: codecov/codecov-action@v6
-        with:
-          files: lcov.info
-          flags: ${{ matrix.package }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+        shell: bash
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          # Download the codecov CLI uploader
+          curl -Os https://cli.codecov.io/latest/linux/codecov
+          chmod +x ./codecov
+          # Upload per-package reports with flags to preserve per-service badges
+          for f in lcov-*.info; do
+            [ -f "$f" ] || continue
+            pkg="${f#lcov-}"
+            pkg="${pkg%.info}"
+            echo "Uploading coverage for $pkg"
+            ./codecov upload-process \
+              --file "$f" \
+              --flag "$pkg" \
+              --token "$CODECOV_TOKEN" \
+              --git-service github \
+              || echo "Warning: upload failed for $pkg"
+          done

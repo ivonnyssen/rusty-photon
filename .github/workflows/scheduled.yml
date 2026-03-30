@@ -17,6 +17,7 @@ name: rolling
 jobs:
   # https://twitter.com/mycoliza/status/1571295690063753218
   nightly:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: scheduled / ubuntu / nightly
     steps:
@@ -27,18 +28,22 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-nightly
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked --all-features --test bdd
   discover-miri:
+    if: github.event_name != 'pull_request'
     name: Discover Miri Services
     runs-on: ubuntu-latest
     outputs:
@@ -93,6 +98,7 @@ jobs:
           MIRIFLAGS: "-Zmiri-disable-isolation"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
+    if: github.event_name != 'pull_request'
     # This action checks that updating the dependencies of this crate to the latest available that
     # satisfy the versions in Cargo.toml does not break this crate. This is important as consumers
     # of this crate will generally use the latest available crates. This is subject to the standard
@@ -113,13 +119,16 @@ jobs:
       - name: Install cargo-nextest
         if: hashFiles('Cargo.lock') != ''
         uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-beta
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
       # Pre-build all service binaries so BDD tests find cached binaries
       - name: cargo build --workspace
         if: hashFiles('Cargo.lock') != ''
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         if: hashFiles('Cargo.lock') != ''
         run: cargo nextest run --locked --all-features --all-targets
@@ -131,3 +140,32 @@ jobs:
         run: cargo test --locked --all-features --test bdd
         env:
           RUSTFLAGS: -D deprecated
+  beta:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    name: scheduled / ubuntu / beta
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install beta
+        uses: dtolnay/rust-toolchain@beta
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-beta
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Pre-build all service binaries so BDD tests find cached binaries
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked --all-features --all-targets
+      # BDD tests use custom harness (bdd_main!) incompatible with nextest
+      - name: cargo test --test bdd
+        run: cargo test --locked --all-features --test bdd
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc

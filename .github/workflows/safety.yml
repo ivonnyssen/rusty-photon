@@ -1,39 +1,33 @@
-# This workflow runs checks for unsafe code. In crates that don't have any unsafe code, this can be
-# removed. Runs:
+# This workflow runs checks for unsafe code. Runs:
 # - address sanitizer - detects memory errors
 # - leak sanitizer - detects memory leaks
 # Note: miri has been moved to the scheduled (rolling) workflow to avoid slow CI on every push
-# See check.yml for information about how the concurrency cancellation and workflow triggering works
+#
+# Sanitizers run nightly + on push to main (not on PRs). The project uses
+# minimal unsafe code, so nightly coverage is sufficient to catch regressions
+# before they reach a release.
 permissions:
   contents: read
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 name: safety
 jobs:
   sanitizers:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    name: ${{ matrix.package }} / ${{ matrix.sanitizer }}
+    name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
       matrix:
-        package: [filemonitor, phd2-guider, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app]
         sanitizer: [address, leak]
-    # CARGO_BUILD_TARGET makes every cargo invocation (including `cargo run`
-    # spawned by BDD tests) implicitly use --target. This is critical because
-    # when --target is set, RUSTFLAGS only applies to the target compilation
-    # and not to proc-macros / build scripts, which would otherwise fail with
-    # sanitizer flags (e.g. "can't find crate for `core`"). It also ensures
-    # the pre-build and BDD `cargo run` share the same artifact directory
-    # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
-    #
-    # Each package × sanitizer combination runs in its own job to prevent
-    # orphaned child processes (OmniSim, rp) from one sanitizer run
-    # interfering with the next.
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -42,36 +36,31 @@ jobs:
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
-      - run: |
-          # to get the symbolizer for debug symbol resolution
-          sudo apt install -y llvm
-          # to fix buggy leak analyzer:
+      - run: sudo apt install -y llvm
+        name: Install llvm (symbolizer for debug symbols)
+      - name: Enable opt-level 1 for sanitizers
+        run: |
           # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
-          # ensure there's a profile.dev section
-          if ! grep -qE '^[ \t]*[profile.dev]' Cargo.toml; then
+          if ! grep -qE '^\s*\[profile.dev\]' Cargo.toml; then
               echo >> Cargo.toml
               echo '[profile.dev]' >> Cargo.toml
           fi
-          # remove pre-existing opt-levels in profile.dev
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
-          # now set opt-level to 1
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
-          cat Cargo.toml
-        name: Enable debug symbols
-      # Pre-build the package so `cargo run` during BDD tests reuses cached artifacts.
       - name: cargo build
-        run: cargo build --package ${{ matrix.package }} --all-features
+        run: cargo build --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        # exclude bdd-infra: its unit tests look for binaries in target/debug/
+        # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --package ${{ matrix.package }} --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
           else
-            cargo test --package ${{ matrix.package }} --all-features
+            cargo test --workspace --exclude bdd-infra --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"

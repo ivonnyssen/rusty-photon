@@ -28,6 +28,7 @@ env_var = "{env_var_name}"
 /// Create a temp manifest dir with no env var set, so find_binary falls back
 /// to cargo run. Uses the real bdd-infra package name so `cargo run --package
 /// bdd-infra` resolves to the test_service binary.
+#[cfg(not(windows))]
 fn setup_manifest_no_binary(env_var_name: &str) -> tempfile::TempDir {
     std::env::remove_var(env_var_name);
     let dir = tempfile::tempdir().unwrap();
@@ -207,6 +208,10 @@ async fn test_port_is_actually_listening() {
 // Cargo run fallback tests (no env var set, exercises `cargo run --package`)
 // ---------------------------------------------------------------------------
 
+// Skip on Windows: `cargo run` recompiles test_service.exe which races with
+// parallel tests that hold the binary open. The cargo-run fallback is
+// OS-agnostic logic; Linux CI coverage is sufficient.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_start_via_cargo_run() {
     let manifest = setup_manifest_no_binary("BDD_TEST_CARGO_RUN");

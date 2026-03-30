@@ -17,7 +17,7 @@ pub fn default_test_config() -> serde_json::Value {
             "polling_interval_ms": 200,
             "timeout_seconds": 2
         },
-        "server": { "port": 0 },
+        "server": { "port": 0, "discovery_port": null },
         "switch": {
             "enabled": true,
             "name": "Pegasus PPBA Switch",
