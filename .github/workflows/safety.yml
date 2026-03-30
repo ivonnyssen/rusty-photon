@@ -69,6 +69,9 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
           cat Cargo.toml
         name: Enable debug symbols
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: safety-${{ matrix.sanitizer }}
       # Build the entire workspace once so all tests (and BDD child processes)
       # reuse the same sanitizer-instrumented artifacts.
       - name: cargo build
