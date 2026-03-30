@@ -53,9 +53,13 @@ jobs:
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
-      - run: |
-          # to get the symbolizer for debug symbol resolution
-          sudo apt install -y llvm
+      - run: sudo apt install -y llvm
+        name: Install llvm (symbolizer for debug symbols)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: safety-${{ matrix.sanitizer }}
+      - name: Enable opt-level 1 for sanitizers
+        run: |
           # to fix buggy leak analyzer:
           # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
           # ensure there's a profile.dev section
@@ -67,11 +71,8 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           # now set opt-level to 1
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
-          cat Cargo.toml
-        name: Enable debug symbols
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: safety-${{ matrix.sanitizer }}
+          # Reset mtime so cargo doesn't invalidate cached artifacts
+          touch -r Cargo.lock Cargo.toml
       # Build the entire workspace once so all tests (and BDD child processes)
       # reuse the same sanitizer-instrumented artifacts.
       - name: cargo build
