@@ -28,10 +28,16 @@ pub struct SerialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
+    #[serde(default = "default_discovery_port")]
+    pub discovery_port: Option<u16>,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
     #[serde(default)]
     pub auth: Option<rp_auth::config::AuthConfig>,
+}
+
+fn default_discovery_port() -> Option<u16> {
+    Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
 /// Switch device configuration
@@ -95,6 +101,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             port: 11112,
+            discovery_port: default_discovery_port(),
             tls: None,
             auth: None,
         }

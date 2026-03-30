@@ -70,6 +70,7 @@ impl ServerBuilder {
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        server.discovery_port = self.config.server.discovery_port;
 
         let serial_manager = Arc::new(SerialManager::new(self.config.clone(), self.factory));
 
