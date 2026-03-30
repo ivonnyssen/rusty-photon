@@ -64,9 +64,6 @@ cargo-husky = { version = "1", default-features = false, features = [
   "user-hooks",
 ] }
 
-[profile.dev]
-opt-level = 1
-
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"
 bin-package = "sentinel"

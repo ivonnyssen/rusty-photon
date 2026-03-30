@@ -55,6 +55,18 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
       - run: sudo apt install -y llvm
         name: Install llvm (symbolizer for debug symbols)
+      - name: Enable opt-level 1 for sanitizers
+        run: |
+          # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
+          if ! grep -qE '^\s*\[profile.dev\]' Cargo.toml; then
+              echo >> Cargo.toml
+              echo '[profile.dev]' >> Cargo.toml
+          fi
+          sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
+          sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
+      # Cache placed after Cargo.toml modification. The cache will always
+      # recompile workspace crates (cargo fingerprints include Cargo.toml
+      # content hash), but external dependencies are still cached.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: safety-${{ matrix.sanitizer }}
