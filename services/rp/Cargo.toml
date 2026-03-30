@@ -25,7 +25,10 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
+rp-auth = { workspace = true }
 rp-tls = { workspace = true }
+rpassword = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel"] }
 

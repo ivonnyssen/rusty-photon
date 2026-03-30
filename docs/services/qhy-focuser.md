@@ -76,7 +76,11 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
     "timeout_seconds": 2
   },
   "server": {
-    "port": 11113
+    "port": 11113,
+    "auth": {
+      "username": "observatory",
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
+    }
   },
   "focuser": {
     "name": "QHY Q-Focuser",

@@ -645,6 +645,7 @@ mod mock_tests {
                 port: 0,
                 discovery_port: None,
                 tls: None,
+                auth: None,
             },
             focuser: FocuserConfig::default(),
         }

@@ -178,7 +178,7 @@ impl ServiceHandle {
             .take()
             .ok_or_else(|| format!("failed to capture {} stdout", package_name))?;
 
-        match tokio::time::timeout(Duration::from_secs(10), parse_bound_port(stdout)).await {
+        match tokio::time::timeout(Duration::from_secs(30), parse_bound_port(stdout)).await {
             Ok(Some((port, stdout_drain))) => Ok(Self {
                 child: Some(child),
                 port,
@@ -255,16 +255,23 @@ impl Drop for ServiceHandle {
 ///
 /// Use this for one-shot commands like `rp init-tls` that are not
 /// long-running servers.
-pub fn run_once(manifest_dir: &str, package_name: &str, args: &[&str]) -> std::process::Output {
+/// Run a service binary once and return its output.
+///
+/// When `stdin_data` is `Some`, the data is piped to the process's stdin.
+pub fn run_once(
+    manifest_dir: &str,
+    package_name: &str,
+    args: &[&str],
+    stdin_data: Option<&[u8]>,
+) -> std::process::Output {
     let config = load_config(manifest_dir);
     let binary = find_binary(&config.env_var, package_name);
 
-    if let Some(binary) = &binary {
+    let mut cmd = if let Some(binary) = &binary {
         debug!(binary = %binary, "running {} from pre-built binary", package_name);
-        std::process::Command::new(binary)
-            .args(args)
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run {} binary '{}': {}", package_name, binary, e))
+        let mut cmd = std::process::Command::new(binary);
+        cmd.args(args);
+        cmd
     } else {
         debug!("running {} via cargo run", package_name);
         let mut full_args = vec!["run", "--package", package_name];
@@ -276,10 +283,34 @@ pub fn run_once(manifest_dir: &str, package_name: &str, args: &[&str]) -> std::p
         full_args.push("--");
         full_args.extend_from_slice(args);
 
-        std::process::Command::new("cargo")
-            .args(&full_args)
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run {} via cargo run: {}", package_name, e))
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.args(&full_args);
+        cmd
+    };
+
+    if let Some(data) = stdin_data {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("failed to spawn {}: {}", package_name, e));
+
+        use std::io::Write;
+        if let Some(ref mut stdin) = child.stdin {
+            stdin
+                .write_all(data)
+                .unwrap_or_else(|e| panic!("failed to write stdin for {}: {}", package_name, e));
+        }
+        drop(child.stdin.take());
+
+        child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("failed to wait on {}: {}", package_name, e))
+    } else {
+        cmd.output()
+            .unwrap_or_else(|e| panic!("failed to run {}: {}", package_name, e))
     }
 }
 
@@ -684,6 +715,7 @@ features = ["mock"]
             &rp_manifest_dir(),
             "rp",
             &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+            None,
         );
         assert!(output.status.success(), "init-tls should succeed");
         assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
@@ -691,10 +723,90 @@ features = ["mock"]
 
     #[test]
     fn test_run_once_captures_stderr_on_failure() {
-        let output = run_once(&rp_manifest_dir(), "rp", &["serve"]);
+        let output = run_once(&rp_manifest_dir(), "rp", &["serve"], None);
         // serve without --config should fail
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.is_empty(), "stderr should contain error message");
+    }
+
+    /// Resolve the absolute path to the rp binary in target/debug.
+    /// Builds it first if necessary.
+    fn rp_binary_path() -> String {
+        let build = std::process::Command::new("cargo")
+            .args(["build", "--package", "rp", "--quiet"])
+            .status()
+            .expect("cargo build failed");
+        assert!(build.success(), "cargo build --package rp failed");
+
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+
+        let target_dir = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| workspace_root.join("target"));
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "rp.exe"
+        } else {
+            "rp"
+        };
+        let binary = target_dir.join("debug").join(binary_name);
+        assert!(
+            binary.exists(),
+            "rp binary not found at {}",
+            binary.display()
+        );
+        binary.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn test_run_once_uses_prebuilt_binary_via_env_var() {
+        let binary = rp_binary_path();
+        std::env::set_var("RP_BINARY", &binary);
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+            None,
+        );
+
+        std::env::remove_var("RP_BINARY");
+
+        assert!(
+            output.status.success(),
+            "init-tls via pre-built binary should succeed"
+        );
+        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
+    }
+
+    #[test]
+    fn test_run_once_with_stdin_via_prebuilt_binary() {
+        let binary = rp_binary_path();
+        std::env::set_var("RP_BINARY", &binary);
+
+        let output = run_once(
+            &rp_manifest_dir(),
+            "rp",
+            &["hash-password", "--stdin"],
+            Some(b"test-password\n"),
+        );
+
+        std::env::remove_var("RP_BINARY");
+
+        assert!(
+            output.status.success(),
+            "hash-password via pre-built binary should succeed"
+        );
+        let hash = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            hash.trim().starts_with("$argon2id$"),
+            "expected Argon2id hash, got: {hash}"
+        );
     }
 }

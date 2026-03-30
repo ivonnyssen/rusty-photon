@@ -29,6 +29,16 @@ enum Commands {
         #[arg(long, default_value = "info")]
         log_level: String,
     },
+    /// Hash a password for use in service auth configuration
+    HashPassword {
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(long, default_value = "info")]
+        log_level: String,
+
+        /// Read password from stdin (no prompt, no confirmation)
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Generate TLS certificates for all services
     InitTls {
         /// Output directory (default: ~/.rusty-photon/pki)
@@ -81,6 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Serve { config, log_level }) => {
             init_tracing(&log_level);
             run_serve(&config).await
+        }
+        Some(Commands::HashPassword { log_level, stdin }) => {
+            init_tracing(&log_level);
+            rp::hash_password_cmd::run(stdin)
         }
         Some(Commands::InitTls {
             output_dir,

@@ -47,6 +47,7 @@ impl AlpacaSafetyMonitor {
             device_number,
             polling_interval_seconds,
             scheme,
+            auth: _,
         } = config;
 
         let base_url = format!("{scheme}://{host}:{port}/api/v1/safetymonitor/{device_number}");
@@ -153,6 +154,7 @@ mod tests {
             device_number: 0,
             polling_interval_seconds: 30,
             scheme: "http".to_string(),
+            auth: None,
         }
     }
 

@@ -46,6 +46,7 @@ fn test_config(focuser_enabled: bool) -> Config {
             port: 0,
             discovery_port: None,
             tls: None,
+            auth: None,
         },
         focuser: FocuserConfig {
             enabled: focuser_enabled,

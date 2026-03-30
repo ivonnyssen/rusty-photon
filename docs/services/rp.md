@@ -1264,12 +1264,16 @@ connection details. Plugins register their webhook URLs and command endpoints.
       {
         "id": "main-cam",
         "name": "Main Imaging Camera",
-        "alpaca_url": "http://localhost:11120",
+        "alpaca_url": "https://localhost:11120",
         "device_type": "camera",
         "device_number": 0,
         "cooler_target_c": -10,
         "gain": 100,
-        "offset": 50
+        "offset": 50,
+        "auth": {
+          "username": "observatory",
+          "password": "secret"
+        }
       },
       {
         "id": "guide-cam",
@@ -1403,7 +1407,11 @@ connection details. Plugins register their webhook URLs and command endpoints.
   },
   "server": {
     "port": 11115,
-    "bind_address": "0.0.0.0"
+    "bind_address": "0.0.0.0",
+    "auth": {
+      "username": "observatory",
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
+    }
   }
 }
 ```

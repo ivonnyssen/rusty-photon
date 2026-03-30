@@ -36,6 +36,8 @@ belong in any single service design doc.
 | Crate | Location | Purpose |
 |-------|----------|---------|
 | [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. Config read from each service's `[package.metadata.bdd]` in Cargo.toml. See [testing.md](skills/testing.md) Section 5.1. |
+| [rp-tls](../crates/rp-tls/) | `crates/rp-tls` | Opt-in TLS for inter-service communication: certificate generation, dual-stack TCP binding, TLS/plain serving, and client CA trust. See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
+| [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
 
 ## Shared Architecture Patterns
 

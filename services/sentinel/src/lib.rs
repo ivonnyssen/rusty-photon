@@ -35,13 +35,36 @@ use crate::pushover::PushoverNotifier;
 /// concrete types (`AlpacaSafetyMonitor`, `PushoverNotifier`) that are defined
 /// in sibling modules.
 impl Config {
-    pub fn build_monitors(&self, http: &Arc<dyn io::HttpClient>) -> Vec<Arc<dyn Monitor>> {
+    pub fn build_monitors(
+        &self,
+        http: &Arc<dyn io::HttpClient>,
+        ca_path: Option<&std::path::Path>,
+    ) -> Vec<Arc<dyn Monitor>> {
         self.monitors
             .iter()
             .map(|monitor_config| -> Arc<dyn Monitor> {
                 match monitor_config {
-                    config::MonitorConfig::AlpacaSafetyMonitor { .. } => {
-                        Arc::new(AlpacaSafetyMonitor::new(monitor_config, Arc::clone(http)))
+                    config::MonitorConfig::AlpacaSafetyMonitor { auth, .. } => {
+                        let client: Arc<dyn io::HttpClient> = match auth {
+                            Some(a) => {
+                                match ReqwestHttpClient::with_auth(
+                                    ca_path,
+                                    a.username.clone(),
+                                    a.password.clone(),
+                                ) {
+                                    Ok(c) => Arc::new(c),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to build auth HTTP client: {e}. \
+                                             Falling back to shared client."
+                                        );
+                                        Arc::clone(http)
+                                    }
+                                }
+                            }
+                            None => Arc::clone(http),
+                        };
+                        Arc::new(AlpacaSafetyMonitor::new(monitor_config, client))
                     }
                 }
             })
@@ -126,9 +149,10 @@ impl SentinelBuilder {
         let config = self.config;
 
         // Use injected monitors/notifiers or fall back to config factories
+        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
         let monitors = self
             .monitors
-            .unwrap_or_else(|| config.build_monitors(&http));
+            .unwrap_or_else(|| config.build_monitors(&http, ca_path.as_deref()));
         let notifiers = self
             .notifiers
             .unwrap_or_else(|| config.build_notifiers(&http));
@@ -179,6 +203,7 @@ impl SentinelBuilder {
         };
 
         let dashboard_tls = config.dashboard.tls.clone();
+        let dashboard_auth = config.dashboard.auth.clone();
 
         Ok(Sentinel {
             engine,
@@ -186,6 +211,7 @@ impl SentinelBuilder {
             cancel,
             dashboard_listener,
             dashboard_tls,
+            dashboard_auth,
         })
     }
 }
@@ -197,6 +223,7 @@ pub struct Sentinel {
     cancel: CancellationToken,
     dashboard_listener: Option<tokio::net::TcpListener>,
     dashboard_tls: Option<rp_tls::config::TlsConfig>,
+    dashboard_auth: Option<rp_auth::config::AuthConfig>,
 }
 
 impl Sentinel {
@@ -241,6 +268,7 @@ impl Sentinel {
             let dashboard_state = Arc::clone(&self.state);
             let cancel_for_dashboard = cancel.clone();
             let dashboard_tls = self.dashboard_tls;
+            let dashboard_auth = self.dashboard_auth;
 
             let addr = listener.local_addr().unwrap();
             let scheme = if dashboard_tls.is_some() {
@@ -253,6 +281,21 @@ impl Sentinel {
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state);
+
+                // Layer authentication if configured
+                let router = match &dashboard_auth {
+                    Some(auth) => {
+                        if dashboard_tls.is_none() {
+                            tracing::warn!(
+                                "Authentication is enabled but TLS is not. \
+                                 Credentials will be transmitted in cleartext. \
+                                 Consider enabling TLS (see `rp init-tls`)."
+                            );
+                        }
+                        rp_auth::layer(router, auth)
+                    }
+                    None => router,
+                };
 
                 match dashboard_tls {
                     Some(ref tls_config) => {
@@ -327,13 +370,14 @@ mod tests {
                 device_number: 0,
                 polling_interval_seconds: 30,
                 scheme: "http".to_string(),
+                auth: None,
             }],
             ..Config::default()
         };
         let mock = MockHttpClient::new();
         let http: Arc<dyn io::HttpClient> = Arc::new(mock);
 
-        let monitors = config.build_monitors(&http);
+        let monitors = config.build_monitors(&http, None);
 
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].name(), "Test Monitor");
@@ -369,6 +413,7 @@ mod tests {
                 device_number: 0,
                 polling_interval_seconds: 30,
                 scheme: "http".to_string(),
+                auth: None,
             }],
             ..Config::default()
         };

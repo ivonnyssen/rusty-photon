@@ -98,6 +98,9 @@ pub enum MonitorConfig {
         /// URL scheme: "http" (default) or "https" for TLS-enabled services
         #[serde(default = "default_scheme")]
         scheme: String,
+        /// Optional HTTP Basic Auth credentials for connecting to auth-enabled services
+        #[serde(default)]
+        auth: Option<rp_auth::config::ClientAuthConfig>,
     },
 }
 
@@ -179,6 +182,8 @@ pub struct DashboardConfig {
     pub history_size: usize,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 impl Default for DashboardConfig {
@@ -188,6 +193,7 @@ impl Default for DashboardConfig {
             port: default_dashboard_port(),
             history_size: default_history_size(),
             tls: None,
+            auth: None,
         }
     }
 }

@@ -27,6 +27,7 @@ pub trait HttpClient: Send + Sync {
 #[derive(Default)]
 pub struct ReqwestHttpClient {
     client: reqwest::Client,
+    auth: Option<(String, String)>,
 }
 
 impl ReqwestHttpClient {
@@ -39,7 +40,21 @@ impl ReqwestHttpClient {
         let client = rp_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
             crate::SentinelError::Config(format!("failed to build HTTP client: {e}"))
         })?;
-        Ok(Self { client })
+        Ok(Self { client, auth: None })
+    }
+
+    /// Create a new HTTP client with CA trust and HTTP Basic Auth credentials.
+    ///
+    /// The credentials are sent with every request via the `Authorization: Basic`
+    /// header, enabling connections to auth-enabled services.
+    pub fn with_auth(
+        ca_cert_path: Option<&std::path::Path>,
+        username: String,
+        password: String,
+    ) -> crate::Result<Self> {
+        let mut client = Self::new(ca_cert_path)?;
+        client.auth = Some((username, password));
+        Ok(client)
     }
 }
 
@@ -47,9 +62,11 @@ impl ReqwestHttpClient {
 impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str) -> crate::Result<HttpResponse> {
         tracing::debug!("GET {}", url);
-        let response = self
-            .client
-            .get(url)
+        let mut request = self.client.get(url);
+        if let Some((ref user, ref pass)) = self.auth {
+            request = request.basic_auth(user, Some(pass));
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| crate::SentinelError::Http(format!("GET {} failed: {}", url, e)))?;
@@ -66,10 +83,11 @@ impl HttpClient for ReqwestHttpClient {
 
     async fn put_form(&self, url: &str, params: &[(&str, &str)]) -> crate::Result<HttpResponse> {
         tracing::debug!("PUT {}", url);
-        let response = self
-            .client
-            .put(url)
-            .form(params)
+        let mut request = self.client.put(url).form(params);
+        if let Some((ref user, ref pass)) = self.auth {
+            request = request.basic_auth(user, Some(pass));
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| crate::SentinelError::Http(format!("PUT {} failed: {}", url, e)))?;
@@ -86,10 +104,11 @@ impl HttpClient for ReqwestHttpClient {
 
     async fn post_form(&self, url: &str, params: &[(&str, &str)]) -> crate::Result<HttpResponse> {
         tracing::debug!("POST {}", url);
-        let response = self
-            .client
-            .post(url)
-            .form(params)
+        let mut request = self.client.post(url).form(params);
+        if let Some((ref user, ref pass)) = self.auth {
+            request = request.basic_auth(user, Some(pass));
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| crate::SentinelError::Http(format!("POST {} failed: {}", url, e)))?;

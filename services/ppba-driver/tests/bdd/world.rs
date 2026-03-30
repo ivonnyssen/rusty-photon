@@ -31,6 +31,9 @@ pub struct PpbaWorld {
 
     /// TLS test state
     pub tls_pki_dir: Option<tempfile::TempDir>,
+
+    /// Auth test password (plaintext, for building requests)
+    pub auth_password: Option<String>,
 }
 
 impl PpbaWorld {

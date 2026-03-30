@@ -98,6 +98,12 @@ pub struct RpWorld {
     // --- ACME test state ---
     /// Last command output (for ACME CLI tests)
     pub last_command_output: Option<std::process::Output>,
+
+    // --- Auth test state ---
+    /// Plaintext password used for test auth
+    pub auth_password: Option<String>,
+    /// Hash output from rp hash-password CLI
+    pub auth_hash_output: Option<String>,
 }
 
 /// Camera configuration for test setup
