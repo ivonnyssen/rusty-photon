@@ -20,7 +20,8 @@ jobs:
     outputs:
       test: ${{ steps.rail.outputs.test }}
       infra: ${{ steps.rail.outputs.infra }}
-      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+      packages: ${{ steps.packages.outputs.packages }}
+      has_packages: ${{ steps.packages.outputs.has_packages }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -29,14 +30,36 @@ jobs:
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Discover sanitizer packages
+        id: packages
+        run: |
+          # All workspace packages except bdd-infra (its tests look for
+          # binaries in target/debug/ which doesn't exist with CARGO_BUILD_TARGET)
+          ALL_PKGS=$(cargo metadata --format-version 1 --no-deps | \
+            jq -c '[.packages[].name | select(. != "bdd-infra")]')
+
+          # If infra changed, test all packages; otherwise intersect with affected
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ]; then
+            PACKAGES="$ALL_PKGS"
+          else
+            AFFECTED='${{ steps.rail.outputs.crates }}'
+            PACKAGES=$(echo "$ALL_PKGS" | jq -c --arg affected "$AFFECTED" \
+              '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
+          fi
+
+          COUNT=$(echo "$PACKAGES" | jq 'length')
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "has_packages=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "Sanitizer packages ($COUNT): $PACKAGES"
   sanitizers:
     needs: plan
-    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    if: needs.plan.outputs.has_packages == 'true' && (needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true')
     runs-on: ubuntu-latest
-    name: ubuntu / nightly / ${{ matrix.sanitizer }}
+    name: ${{ matrix.package }} / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
       matrix:
+        package: ${{ fromJson(needs.plan.outputs.packages) }}
         sanitizer: [address, leak]
     # CARGO_BUILD_TARGET makes every cargo invocation (including `cargo run`
     # spawned by BDD tests) implicitly use --target. This is critical because
@@ -64,27 +87,17 @@ jobs:
           fi
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
-      # Cache placed after Cargo.toml modification. The cache will always
-      # recompile workspace crates (cargo fingerprints include Cargo.toml
-      # content hash), but external dependencies are still cached.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: safety-${{ matrix.sanitizer }}
-      # Build the entire workspace once so all tests (and BDD child processes)
-      # reuse the same sanitizer-instrumented artifacts.
       - name: cargo build
-        run: cargo build ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --package ${{ matrix.package }} --all-features
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
-        # exclude bdd-infra: its unit tests look for binaries in target/debug/
-        # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --exclude bdd-infra --lib --tests --all-features
+            cargo test --package ${{ matrix.package }} --lib --tests --all-features
           else
-            cargo test ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --exclude bdd-infra --all-features --all-targets
+            cargo test --package ${{ matrix.package }} --all-features
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
