@@ -31,7 +31,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -123,7 +123,7 @@ jobs:
       - name: Install cargo-nextest
         if: hashFiles('Cargo.lock') != ''
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
@@ -157,7 +157,7 @@ jobs:
         uses: dtolnay/rust-toolchain@beta
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile

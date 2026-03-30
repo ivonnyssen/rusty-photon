@@ -53,7 +53,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: cargo clippy (GitHub)
         if: env.ACT != 'true'
         uses: giraffate/clippy-action@v1
@@ -77,7 +77,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
       - name: cargo hack
@@ -95,7 +95,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Verify workspace MSRV
         run: |
           # cargo-msrv doesn't resolve [workspace.package].rust-version from
