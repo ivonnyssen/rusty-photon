@@ -60,11 +60,13 @@ jobs:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        # exclude bdd-infra: its unit tests look for binaries in target/debug/
+        # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
           else
-            cargo test --workspace --all-features
+            cargo test --workspace --exclude bdd-infra --all-features
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
