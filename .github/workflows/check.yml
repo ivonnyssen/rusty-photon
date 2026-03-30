@@ -88,4 +88,13 @@ jobs:
           tool: cargo-msrv
       - uses: Swatinem/rust-cache@v2
       - name: Verify workspace MSRV
-        run: cargo msrv verify
+        run: |
+          # cargo-msrv doesn't resolve [workspace.package].rust-version from
+          # virtual workspace roots, so verify each member individually.
+          cargo metadata --format-version 1 --no-deps | \
+            jq -r '.packages[] | select(.rust_version) | .manifest_path' | \
+          while read manifest; do
+            echo "::group::$(basename $(dirname $manifest))"
+            cargo msrv verify --manifest-path "$manifest"
+            echo "::endgroup::"
+          done
