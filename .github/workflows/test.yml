@@ -2,6 +2,8 @@
 # It runs the following jobs:
 # - required: runs the test suite on ubuntu with the stable rust toolchain
 # - os-check: runs the test suite on mac and windows (workspace-level)
+#   On Windows, BDD tests are split into per-service parallel jobs to avoid
+#   the ~10m sequential wall-clock from per-scenario process spawn overhead.
 # - coverage: runs the test suite and collects per-package coverage information
 # See check.yml for information about how the concurrency cancellation and workflow triggering works
 permissions:
@@ -22,6 +24,8 @@ jobs:
       test: ${{ steps.rail.outputs.test }}
       infra: ${{ steps.rail.outputs.infra }}
       cargo-args: ${{ steps.rail.outputs.cargo-args }}
+      bdd-packages: ${{ steps.bdd.outputs.packages }}
+      has-bdd: ${{ steps.bdd.outputs.has_bdd }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -30,6 +34,26 @@ jobs:
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Discover BDD packages
+        id: bdd
+        run: |
+          # Find packages with a "bdd" test target
+          ALL_BDD=$(cargo metadata --format-version 1 --no-deps | \
+            jq -c '[.packages[] | select(.targets[] | .kind[] == "test" and .name == "bdd") | .name]')
+
+          # If infra changed, test all BDD packages; otherwise intersect with affected
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ]; then
+            BDD_PACKAGES="$ALL_BDD"
+          else
+            AFFECTED='${{ steps.rail.outputs.crates }}'
+            BDD_PACKAGES=$(echo "$ALL_BDD" | jq -c --arg affected "$AFFECTED" \
+              '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
+          fi
+
+          COUNT=$(echo "$BDD_PACKAGES" | jq 'length')
+          echo "packages=$BDD_PACKAGES" >> $GITHUB_OUTPUT
+          echo "has_bdd=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "BDD packages ($COUNT): $BDD_PACKAGES"
   required:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
@@ -45,7 +69,6 @@ jobs:
         uses: taiki-e/install-action@cargo-nextest
       - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
-        # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Pre-build all targets (bins + test/bench/example targets) so nextest
@@ -61,16 +84,11 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
-  os-check:
-    # Run cargo test on mac and windows at the workspace level
+  macos:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
-    runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
+    runs-on: macos-latest
+    name: macos-latest
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -89,6 +107,57 @@ jobs:
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+  windows:
+    # Windows nextest (unit + integration tests, no BDD).
+    # BDD tests are split into per-service parallel jobs below to avoid
+    # the ~10m sequential wall-clock from per-scenario process spawn overhead.
+    needs: plan
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    runs-on: windows-latest
+    name: windows / nextest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo build
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      - name: cargo nextest run
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+  windows-bdd:
+    # Per-service BDD tests on Windows, run in parallel via matrix.
+    # Each service spawns its own process per scenario; on Windows this takes
+    # ~5s/scenario. Running services in parallel cuts wall-clock from ~10m
+    # to ~3m (limited by the largest service, ppba-driver).
+    needs: plan
+    if: needs.plan.outputs.has-bdd == 'true' && (needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true')
+    runs-on: windows-latest
+    name: windows / bdd / ${{ matrix.package }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.plan.outputs.bdd-packages) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo build
+        run: cargo build --locked --package ${{ matrix.package }} --all-features --all-targets
+      - name: cargo test --test bdd
+        run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
   coverage:
     # use llvm-cov to build and collect coverage and upload to codecov.io
     # with per-package flags for README badges.
