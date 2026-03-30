@@ -18,6 +18,8 @@ jobs:
   required:
     runs-on: ubuntu-latest
     name: ubuntu / stable
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -26,7 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.7
       - name: cargo generate-lockfile
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
@@ -48,6 +50,8 @@ jobs:
     # Run cargo test on mac and windows at the workspace level
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }}
+    env:
+      RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +64,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.7
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -75,6 +79,8 @@ jobs:
     # with per-package flags for README badges.
     runs-on: ubuntu-latest
     name: coverage
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -85,6 +91,7 @@ jobs:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: mozilla-actions/sccache-action@v0.0.7
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile

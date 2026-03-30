@@ -30,12 +30,14 @@ jobs:
     # (target/x86_64-unknown-linux-gnu/), so the pre-built binary is reused.
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
+      - uses: mozilla-actions/sccache-action@v0.0.7
       - run: |
           # to get the symbolizer for debug symbol resolution
           sudo apt install -y llvm
