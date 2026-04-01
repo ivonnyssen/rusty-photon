@@ -220,6 +220,7 @@ Current services and their commands:
 - **phd2-guider**: `cargo miri test -p phd2-guider`
 - **ppba-driver**: `cargo miri test -p ppba-driver`
 - **qhy-focuser**: `cargo miri test -p qhy-focuser`
+- **rp-auth**: `cargo miri test -p rp-auth`
 
 > **Note:** Miri only runs on push to main (not on PRs) and requires
 > `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build (`cargo clean`) is
