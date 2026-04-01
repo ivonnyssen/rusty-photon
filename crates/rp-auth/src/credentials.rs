@@ -34,18 +34,21 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing is too slow under Miri
     fn hash_then_verify_succeeds() {
         let hash = hash_password("test-password").unwrap();
         assert!(verify_password("test-password", &hash));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing is too slow under Miri
     fn verify_with_wrong_password_fails() {
         let hash = hash_password("correct-password").unwrap();
         assert!(!verify_password("wrong-password", &hash));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing is too slow under Miri
     fn hash_produces_argon2id_format() {
         let hash = hash_password("test").unwrap();
         assert!(hash.starts_with("$argon2id$"), "hash: {hash}");
@@ -62,6 +65,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing is too slow under Miri
     fn different_hashes_for_same_password() {
         let hash1 = hash_password("same").unwrap();
         let hash2 = hash_password("same").unwrap();

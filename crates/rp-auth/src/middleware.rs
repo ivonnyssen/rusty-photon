@@ -103,6 +103,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn valid_credentials_returns_200() {
         let app = test_router();
         let request = Request::builder()
@@ -119,6 +120,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn wrong_password_returns_401() {
         let app = test_router();
         let request = Request::builder()
@@ -132,6 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn wrong_username_returns_401() {
         let app = test_router();
         let request = Request::builder()
@@ -148,6 +151,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn missing_auth_header_returns_401() {
         let app = test_router();
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
@@ -157,6 +161,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn malformed_auth_header_returns_401() {
         let app = test_router();
         let request = Request::builder()
@@ -170,6 +175,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn response_401_includes_www_authenticate_header() {
         let app = test_router();
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
@@ -186,6 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn invalid_base64_returns_401() {
         let app = test_router();
         let request = Request::builder()
@@ -199,6 +206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // argon2 hashing in test_config() is too slow under Miri
     async fn missing_colon_separator_returns_401() {
         let encoded = BASE64.encode("no-colon-here");
         let app = test_router();
