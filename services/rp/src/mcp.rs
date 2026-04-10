@@ -498,8 +498,8 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to close cover: {}", e));
         }
 
-        // Poll until closed (2 minute wall-clock timeout)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        // Poll until closed (5 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
@@ -529,8 +529,8 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to open cover: {}", e));
         }
 
-        // Poll until open (2 minute wall-clock timeout)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        // Poll until open (5 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
@@ -572,8 +572,8 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator on: {}", e));
         }
 
-        // Poll until ready (2 minute wall-clock timeout)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        // Poll until ready (5 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
@@ -606,8 +606,8 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator off: {}", e));
         }
 
-        // Poll until off (2 minute wall-clock timeout)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        // Poll until off (5 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
