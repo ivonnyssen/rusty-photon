@@ -499,7 +499,7 @@ impl McpHandler {
         }
 
         // Poll until closed
-        for _ in 0..300 {
+        for _ in 0..600 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
@@ -528,7 +528,7 @@ impl McpHandler {
         }
 
         // Poll until open
-        for _ in 0..300 {
+        for _ in 0..600 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
@@ -569,7 +569,7 @@ impl McpHandler {
         }
 
         // Poll until ready
-        for _ in 0..300 {
+        for _ in 0..600 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
@@ -601,7 +601,7 @@ impl McpHandler {
         }
 
         // Poll until off
-        for _ in 0..300 {
+        for _ in 0..600 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
