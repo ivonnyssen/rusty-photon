@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: loadingalias/cargo-rail-action@v3
+      - uses: loadingalias/cargo-rail-action@v4
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
