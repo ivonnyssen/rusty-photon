@@ -7,6 +7,7 @@ members = [
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",
+  "services/panel-flat",
   "services/rp",
   "services/sentinel",
   "services/sentinel-app",
