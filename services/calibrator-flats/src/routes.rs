@@ -18,7 +18,7 @@ pub fn build_router(plan: FlatPlan) -> Router {
 }
 
 async fn health() -> &'static str {
-    "panel-flat healthy"
+    "calibrator-flats healthy"
 }
 
 async fn invoke_handler(

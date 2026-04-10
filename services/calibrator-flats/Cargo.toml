@@ -1,15 +1,15 @@
 [package]
-name = "panel-flat"
+name = "calibrator-flats"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Panel flat calibration orchestrator - iterative exposure optimization with CoverCalibrator control"
+description = "Calibrator flat field orchestrator - iterative exposure optimization with CoverCalibrator control"
 rust-version.workspace = true
 
 [package.metadata.bdd]
-env_var = "PANEL_FLAT_BINARY"
+env_var = "CALIBRATOR_FLATS_BINARY"
 
 [lints]
 workspace = true

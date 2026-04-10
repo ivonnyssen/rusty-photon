@@ -3,7 +3,7 @@
 use tracing::{debug, info, warn};
 
 use crate::config::FlatPlan;
-use crate::error::{PanelFlatError, Result};
+use crate::error::{CalibratorFlatsError, Result};
 use crate::mcp_client::McpClient;
 
 /// Result of the flat calibration workflow.
@@ -39,7 +39,7 @@ pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
         max_adu = camera_info.max_adu,
         target_adu = target_adu,
         filters = plan.filters.len(),
-        "starting panel flat calibration"
+        "starting calibrator flats calibration"
     );
 
     // 2. Prepare flat panel
@@ -146,7 +146,7 @@ async fn find_optimal_duration(
         let deviation = if target_adu > 0 {
             (last_median as f64 - target_adu as f64).abs() / target_adu as f64
         } else {
-            return Err(PanelFlatError::Workflow(
+            return Err(CalibratorFlatsError::Workflow(
                 "target_adu is 0 (max_adu * fraction = 0)".into(),
             ));
         };

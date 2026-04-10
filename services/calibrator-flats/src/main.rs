@@ -4,8 +4,8 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "panel-flat",
-    about = "Panel flat calibration orchestrator - iterative exposure optimization"
+    name = "calibrator-flats",
+    about = "Calibrator flat field orchestrator - iterative exposure optimization"
 )]
 struct Cli {
     /// Path to configuration file
@@ -37,9 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     debug!(config_path = %cli.config, "loading configuration");
     let contents = std::fs::read_to_string(&cli.config)?;
-    let plan: panel_flat::config::FlatPlan = serde_json::from_str(&contents)?;
+    let plan: calibrator_flats::config::FlatPlan = serde_json::from_str(&contents)?;
 
-    panel_flat::ServerBuilder::new()
+    calibrator_flats::ServerBuilder::new()
         .with_plan(plan)
         .with_port(cli.port)
         .with_bind_address(cli.bind_address)

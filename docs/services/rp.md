@@ -912,7 +912,7 @@ Different imaging types use different orchestrators:
 |-------------|----------|
 | `deep-sky-orchestrator` | slew → center → focus → guide → capture loop, with dithering, meridian flips, target switching |
 | `planetary-orchestrator` | slew → focus → high-fps capture, no guiding or plate solving |
-| `panel-flat` | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover |
+| `calibrator-flats` | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover |
 | `sky-flat` | point at clear sky → per-filter during twilight: capture with per-frame exposure adjustment → handle changing sky brightness |
 
 ### What `rp` Owns vs. What the Orchestrator Owns

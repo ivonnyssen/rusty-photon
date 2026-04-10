@@ -1,9 +1,9 @@
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, PanelFlatError>;
+pub type Result<T> = std::result::Result<T, CalibratorFlatsError>;
 
 #[derive(Debug, Error)]
-pub enum PanelFlatError {
+pub enum CalibratorFlatsError {
     #[error("config error: {0}")]
     Config(String),
 

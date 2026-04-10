@@ -13,7 +13,7 @@ use tracing::{debug, info};
 use crate::config::FlatPlan;
 use crate::error::Result;
 
-/// Builder for the panel-flat server.
+/// Builder for the calibrator-flats server.
 pub struct ServerBuilder {
     plan: Option<FlatPlan>,
     port: u16,
@@ -54,8 +54,8 @@ impl ServerBuilder {
         let local_addr = listener.local_addr()?;
 
         // This println is parsed by BDD tests to discover the bound port.
-        println!("Bound panel-flat server bound_addr={}", local_addr);
-        info!("panel-flat service bound on {}", local_addr);
+        println!("Bound calibrator-flats server bound_addr={}", local_addr);
+        info!("calibrator-flats service bound on {}", local_addr);
 
         Ok(BoundServer {
             listener,
@@ -71,7 +71,7 @@ impl Default for ServerBuilder {
     }
 }
 
-/// A fully bound panel-flat server ready to accept connections.
+/// A fully bound calibrator-flats server ready to accept connections.
 pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
@@ -84,14 +84,14 @@ impl BoundServer {
     }
 
     pub async fn start(self) -> Result<()> {
-        info!("panel-flat service started on {}", self.local_addr);
+        info!("calibrator-flats service started on {}", self.local_addr);
 
         axum::serve(self.listener, self.router)
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .map_err(|e| crate::error::PanelFlatError::Server(e.to_string()))?;
+            .map_err(|e| crate::error::CalibratorFlatsError::Server(e.to_string()))?;
 
-        debug!("panel-flat service shut down");
+        debug!("calibrator-flats service shut down");
         Ok(())
     }
 }

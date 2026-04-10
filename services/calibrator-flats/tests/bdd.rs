@@ -1,4 +1,4 @@
-//! BDD test entry point for panel-flat service
+//! BDD test entry point for calibrator-flats service
 
 #[path = "bdd/world.rs"]
 mod world;
@@ -8,9 +8,9 @@ mod steps;
 
 bdd_infra::bdd_main! {
     use cucumber::World as _;
-    use world::PanelFlatWorld;
+    use world::CalibratorFlatsWorld;
 
-    PanelFlatWorld::cucumber()
+    CalibratorFlatsWorld::cucumber()
         .run_and_exit("tests/features")
         .await;
 }

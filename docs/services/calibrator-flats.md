@@ -1,8 +1,8 @@
-# panel-flat -- Panel Flat Calibration Orchestrator
+# calibrator-flats -- Calibrator Flat Calibration Orchestrator
 
 ## Overview
 
-`panel-flat` is an orchestrator plugin that captures flat field correction
+`calibrator-flats` is an orchestrator plugin that captures flat field correction
 frames using a stable light source (flat panel, electroluminescent panel,
 or light box) controlled via an ASCOM CoverCalibrator device. It connects
 to `rp` as an MCP client, iteratively determines the correct exposure
@@ -25,12 +25,12 @@ requested number of flat frames at that duration.
 
 ## Architecture
 
-`panel-flat` is a standalone HTTP service. `rp` invokes it as an
-orchestrator plugin when a panel flat session starts. The plugin connects
+`calibrator-flats` is a standalone HTTP service. `rp` invokes it as an
+orchestrator plugin when a calibrator flats session starts. The plugin connects
 back to `rp`'s MCP server and calls primitive tools.
 
 ```
-  rp (equipment gateway)            panel-flat (orchestrator)
+  rp (equipment gateway)            calibrator-flats (orchestrator)
   ┌───────────────────┐             ┌───────────────────────┐
   │                   │ POST /invoke│                       │
   │  session start ───┼────────────►│  1. close_cover       │
@@ -199,7 +199,7 @@ its own config file. The plan is part of `rp`'s plugin configuration:
 
 ```json
 {
-  "name": "panel-flat",
+  "name": "calibrator-flats",
   "type": "orchestrator",
   "invoke_url": "http://localhost:11170/invoke",
   "requires_tools": [
@@ -244,7 +244,7 @@ its own config file. The plan is part of `rp`'s plugin configuration:
 ## Module Structure
 
 ```
-services/panel-flat/src/
+services/calibrator-flats/src/
   main.rs            CLI entry point (clap + tracing)
   lib.rs             Public API, ServerBuilder, module declarations
   config.rs          Configuration types (FlatPlan, FilterPlan)

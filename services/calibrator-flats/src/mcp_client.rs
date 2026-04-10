@@ -3,7 +3,7 @@
 use serde_json::Value;
 use tracing::debug;
 
-use crate::error::{PanelFlatError, Result};
+use crate::error::{CalibratorFlatsError, Result};
 
 /// Thin JSON-RPC client that POSTs to rp's `/mcp` endpoint.
 pub struct McpClient {
@@ -56,13 +56,13 @@ impl McpClient {
             image_path: result["image_path"]
                 .as_str()
                 .ok_or_else(|| {
-                    PanelFlatError::ToolCall("missing image_path in capture result".into())
+                    CalibratorFlatsError::ToolCall("missing image_path in capture result".into())
                 })?
                 .to_string(),
             document_id: result["document_id"]
                 .as_str()
                 .ok_or_else(|| {
-                    PanelFlatError::ToolCall("missing document_id in capture result".into())
+                    CalibratorFlatsError::ToolCall("missing document_id in capture result".into())
                 })?
                 .to_string(),
         })
@@ -79,14 +79,14 @@ impl McpClient {
         Ok(CameraInfo {
             max_adu: result["max_adu"]
                 .as_u64()
-                .ok_or_else(|| PanelFlatError::ToolCall("missing max_adu".into()))?
+                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing max_adu".into()))?
                 as u32,
             exposure_min_ms: result["exposure_min_ms"]
                 .as_u64()
-                .ok_or_else(|| PanelFlatError::ToolCall("missing exposure_min_ms".into()))?,
+                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing exposure_min_ms".into()))?,
             exposure_max_ms: result["exposure_max_ms"]
                 .as_u64()
-                .ok_or_else(|| PanelFlatError::ToolCall("missing exposure_max_ms".into()))?,
+                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing exposure_max_ms".into()))?,
         })
     }
 
@@ -105,11 +105,11 @@ impl McpClient {
         Ok(ImageStats {
             median_adu: result["median_adu"]
                 .as_u64()
-                .ok_or_else(|| PanelFlatError::ToolCall("missing median_adu".into()))?
+                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing median_adu".into()))?
                 as u32,
             mean_adu: result["mean_adu"]
                 .as_f64()
-                .ok_or_else(|| PanelFlatError::ToolCall("missing mean_adu".into()))?,
+                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing mean_adu".into()))?,
         })
     }
 
@@ -181,19 +181,25 @@ impl McpClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| PanelFlatError::ToolCall(format!("{}: {}", tool_name, e)))?;
+            .map_err(|e| CalibratorFlatsError::ToolCall(format!("{}: {}", tool_name, e)))?;
 
         let json: Value = resp.json().await.map_err(|e| {
-            PanelFlatError::ToolCall(format!("{}: failed to parse response: {}", tool_name, e))
+            CalibratorFlatsError::ToolCall(format!(
+                "{}: failed to parse response: {}",
+                tool_name, e
+            ))
         })?;
 
         if let Some(err) = json.get("error") {
             let msg = err["message"].as_str().unwrap_or("unknown error");
-            return Err(PanelFlatError::ToolCall(format!("{}: {}", tool_name, msg)));
+            return Err(CalibratorFlatsError::ToolCall(format!(
+                "{}: {}",
+                tool_name, msg
+            )));
         }
 
         json.get("result").cloned().ok_or_else(|| {
-            PanelFlatError::ToolCall(format!("{}: no result in response", tool_name))
+            CalibratorFlatsError::ToolCall(format!("{}: no result in response", tool_name))
         })
     }
 }
