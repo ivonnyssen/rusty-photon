@@ -38,8 +38,8 @@ async fn mcp_client_connected(_world: &mut RpWorld) {
 
 // --- When steps ---
 
-#[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} second")]
-async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs: i32) {
+#[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} ms")]
+async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i32) {
     let client = reqwest::Client::new();
     let url = world.rp_mcp_url();
 
@@ -53,7 +53,7 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs:
                 "name": "capture",
                 "arguments": {
                     "camera_id": camera_id,
-                    "duration_secs": duration_secs
+                    "duration_ms": duration_ms
                 }
             }
         }))

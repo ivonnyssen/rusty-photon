@@ -93,7 +93,7 @@ pub struct RpWorld {
 
     // --- Flat calibration orchestrator config ---
     /// Filter name → count for the test flat-calibration orchestrator
-    pub flat_plan: Vec<(String, u32, f64)>,
+    pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS test state ---
     /// Temp directory holding generated PKI (CA + service certs)

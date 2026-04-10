@@ -14,6 +14,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 | [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | [![coverage][cov-qhy-focuser]][cov-qhy-focuser-link] | Driver for QHY Q-Focuser (EAF) |
 | [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
+| [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | | Flat field calibration with CoverCalibrator device |
 
 ### RP (Main Application)
 
@@ -50,6 +51,12 @@ See [docs/services/phd2-guider.md](docs/services/phd2-guider.md) for design docu
 Observatory monitoring and notification service. Polls ASCOM Alpaca SafetyMonitor devices, detects safe/unsafe state transitions, sends push notifications via Pushover, and serves a live web dashboard. Unlike the other services, sentinel is a **client/consumer** of ASCOM devices, not a server.
 
 See [services/sentinel/README.md](services/sentinel/README.md) for usage and [docs/services/sentinel.md](docs/services/sentinel.md) for design documentation.
+
+### Calibrator Flats
+
+Orchestrator plugin for flat field calibration using a CoverCalibrator device (flat panel / light box). Connects to `rp` as an MCP client, iteratively determines the correct exposure time per filter to achieve 50% of the camera's well depth, then captures the requested number of flat frames. Manages the full CoverCalibrator lifecycle (close cover, turn on light, capture, turn off, open cover).
+
+See [docs/services/calibrator-flats.md](docs/services/calibrator-flats.md) for design documentation.
 
 ## Getting Started
 
@@ -130,6 +137,7 @@ rusty-photon/
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     sentinel-app/          Leptos web frontend for sentinel dashboard
+    calibrator-flats/      Flat field calibration orchestrator (CoverCalibrator)
   docs/
     services/              Per-service design documentation
     skills/                How-to playbooks for agents and operators

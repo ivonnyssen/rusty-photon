@@ -20,7 +20,7 @@ async fn orchestrator_waits_for_stop(world: &mut RpWorld) {
 }
 
 #[given(
-    expr = "a test flat-calibration orchestrator configured for {int} {string} flats and {int} {string} flats of {int} second"
+    expr = "a test flat-calibration orchestrator configured for {int} {string} flats and {int} {string} flats"
 )]
 async fn flat_calibration_orchestrator(
     world: &mut RpWorld,
@@ -28,12 +28,8 @@ async fn flat_calibration_orchestrator(
     filter1: String,
     count2: i32,
     filter2: String,
-    duration: i32,
 ) {
-    let plan = vec![
-        (filter1, count1 as u32, duration as f64),
-        (filter2, count2 as u32, duration as f64),
-    ];
+    let plan = vec![(filter1, count1 as u32), (filter2, count2 as u32)];
     world.flat_plan = plan.clone();
     setup_orchestrator(world, OrchestratorBehavior::FlatCalibration(plan)).await;
     add_orchestrator_plugin(world);
@@ -198,7 +194,7 @@ async fn workflow_complete_unknown_id(world: &mut RpWorld) {
 async fn orchestrator_runs_to_completion(world: &mut RpWorld) {
     // The flat calibration orchestrator runs asynchronously after invocation.
     // Wait for it to complete by checking for the expected number of events.
-    let expected_exposures: u32 = world.flat_plan.iter().map(|(_, count, _)| count).sum();
+    let expected_exposures: u32 = world.flat_plan.iter().map(|(_, count)| count).sum();
 
     assert!(
         world
