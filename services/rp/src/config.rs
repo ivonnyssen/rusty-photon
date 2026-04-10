@@ -38,6 +38,8 @@ pub struct EquipmentConfig {
     #[serde(default)]
     pub filter_wheels: Vec<FilterWheelConfig>,
     #[serde(default)]
+    pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    #[serde(default)]
     pub safety_monitors: Vec<Value>,
 }
 
@@ -72,6 +74,17 @@ pub struct FilterWheelConfig {
     pub device_number: u32,
     #[serde(default)]
     pub filters: Vec<String>,
+    /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoverCalibratorConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    #[serde(default)]
+    pub device_number: u32,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,

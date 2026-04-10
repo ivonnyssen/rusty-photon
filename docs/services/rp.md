@@ -152,6 +152,13 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
       "temperature_c": -5.2,
       "humidity_pct": 42,
       "dewpoint_c": -15.1
+    },
+    "image_stats": {
+      "median_adu": 32768,
+      "mean_adu": 32450.7,
+      "min_adu": 28000,
+      "max_adu": 38000,
+      "pixel_count": 16777216
     }
   }
 }
@@ -515,7 +522,8 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id, duration_secs, binning | image_path, document_id | Take an exposure and save the FITS file |
+| `capture` | camera_id, duration_ms, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
+| `get_camera_info` | camera_id | max_adu, exposure_min_ms, exposure_max_ms, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
@@ -523,6 +531,10 @@ the exact parameter types and return structure.
 | `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
 | `set_filter` | filter_wheel_id, filter_name | — | Change filter wheel position |
 | `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
+| `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
+| `open_cover` | calibrator_id | — | Open the dust cover (blocks until open) |
+| `calibrator_on` | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
+| `calibrator_off` | calibrator_id | — | Turn off flat panel. Blocks until off |
 
 **Guider**
 
@@ -541,6 +553,7 @@ the exact parameter types and return structure.
 |--------|-----------|---------|-------------|
 | `plate_solve` | image_path, hint (optional) | ra, dec, rotation, scale | Solve an image via the configured plate solver service |
 | `measure_basic` | image_path | hfr, star_count, background_mean, background_stddev | Compute basic image statistics |
+| `compute_image_stats` | image_path, document_id (optional) | median_adu, mean_adu, min_adu, max_adu, pixel_count | Read FITS file, compute pixel statistics, update exposure document |
 
 **Planner**
 
@@ -563,6 +576,31 @@ All built-in tools validate parameters before execution. `move_focuser`
 checks position bounds. `capture` checks that the camera is connected and
 idle. Invalid requests return an MCP error — they never reach the
 hardware.
+
+#### Capture Tool Details
+
+The `capture` tool takes exposure time in milliseconds (`duration_ms`).
+After the exposure completes and `image_ready` returns true, `capture`
+downloads the camera's `image_array`, writes it as a FITS file (using the
+`fitrs` crate with BITPIX=32), and creates a sidecar exposure document
+JSON alongside it. The FITS file and document are written atomically
+(write to temp, rename).
+
+#### CoverCalibrator Tool Details
+
+The CoverCalibrator tools control flat panel devices. `calibrator_on`
+accepts an optional `brightness` parameter (0 to `max_brightness`). When
+omitted, the calibrator is turned on at maximum brightness. All four
+tools block until the operation completes by polling the device state
+(same pattern as `set_filter`).
+
+#### Image Statistics Tool Details
+
+`compute_image_stats` reads a FITS file by path, flattens the pixel
+data, and computes median, mean, min, and max ADU values. If a
+`document_id` is provided, the stats are written into the exposure
+document as an `"image_stats"` section. This tool does not access the
+camera — it operates on saved image files.
 
 ### Plugin-Provided Tools
 
@@ -822,6 +860,7 @@ Supported ASCOM device types:
 | Focuser | Absolute/relative move, temperature readout |
 | FilterWheel | Filter selection by position |
 | SafetyMonitor | Safety state polling |
+| CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness) |
 
 ### Guider Service
 
@@ -873,7 +912,8 @@ Different imaging types use different orchestrators:
 |-------------|----------|
 | `deep-sky-orchestrator` | slew → center → focus → guide → capture loop, with dithering, meridian flips, target switching |
 | `planetary-orchestrator` | slew → focus → high-fps capture, no guiding or plate solving |
-| `flat-calibration` | panel or sky flats with auto-exposure, rotator-aware sequencing |
+| `panel-flat` | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover |
+| `sky-flat` | point at clear sky → per-filter during twilight: capture with per-frame exposure adjustment → handle changing sky brightness |
 
 ### What `rp` Owns vs. What the Orchestrator Owns
 
@@ -1320,6 +1360,13 @@ connection details. Plugins register their webhook URLs and command endpoints.
         "device_number": 0,
         "polling_interval_secs": 10
       }
+    ],
+    "cover_calibrators": [
+      {
+        "id": "flat-panel",
+        "alpaca_url": "http://localhost:11125",
+        "device_number": 0
+      }
     ]
   },
   "guider": {
@@ -1439,6 +1486,7 @@ services/rp/src/
     focuser.rs          Focuser wrapper (move, temperature)
     filter_wheel.rs     Filter wheel wrapper (set/get position)
     safety_monitor.rs   SafetyMonitor wrapper (poll is_safe)
+    cover_calibrator.rs CoverCalibrator wrapper (cover open/close, calibrator on/off)
 
   # Services (non-Alpaca integrations, backing built-in MCP tools)
   services/
@@ -1465,6 +1513,9 @@ services/rp/src/
     mod.rs              MCP server setup, tool registry, config-time validation
     built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
     aggregator.rs       Connects to plugin MCP servers, proxies their tools
+
+  # Imaging (FITS I/O and image statistics)
+  imaging.rs            FITS read/write (fitrs crate), pixel statistics (median, mean, min, max)
 
   # Post-capture pipeline
   pipeline/

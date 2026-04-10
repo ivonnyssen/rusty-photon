@@ -3391,6 +3391,7 @@ dependencies = [
  "cargo-husky",
  "clap",
  "cucumber",
+ "fitrs",
  "libc",
  "mockall",
  "reqwest 0.13.2",

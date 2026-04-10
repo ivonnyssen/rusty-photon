@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ascom_alpaca::api::{Camera, FilterWheel, TypedDevice};
+use ascom_alpaca::api::{Camera, CoverCalibrator, FilterWheel, TypedDevice};
 use ascom_alpaca::Client;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -25,15 +25,24 @@ pub struct FilterWheelEntry {
     pub device: Option<Arc<dyn FilterWheel>>,
 }
 
+pub struct CoverCalibratorEntry {
+    pub id: String,
+    pub connected: bool,
+    pub config: config::CoverCalibratorConfig,
+    pub device: Option<Arc<dyn CoverCalibrator>>,
+}
+
 pub struct EquipmentRegistry {
     pub cameras: Vec<CameraEntry>,
     pub filter_wheels: Vec<FilterWheelEntry>,
+    pub cover_calibrators: Vec<CoverCalibratorEntry>,
 }
 
 #[derive(Serialize)]
 pub struct EquipmentStatus {
     pub cameras: Vec<DeviceStatus>,
     pub filter_wheels: Vec<DeviceStatus>,
+    pub cover_calibrators: Vec<DeviceStatus>,
 }
 
 #[derive(Serialize)]
@@ -46,6 +55,7 @@ impl EquipmentRegistry {
     pub async fn new(equipment_config: &config::EquipmentConfig) -> Self {
         let mut cameras = Vec::new();
         let mut filter_wheels = Vec::new();
+        let mut cover_calibrators = Vec::new();
 
         for cam_config in &equipment_config.cameras {
             let entry = connect_camera(cam_config).await;
@@ -57,9 +67,15 @@ impl EquipmentRegistry {
             filter_wheels.push(entry);
         }
 
+        for cc_config in &equipment_config.cover_calibrators {
+            let entry = connect_cover_calibrator(cc_config).await;
+            cover_calibrators.push(entry);
+        }
+
         Self {
             cameras,
             filter_wheels,
+            cover_calibrators,
         }
     }
 
@@ -81,6 +97,14 @@ impl EquipmentRegistry {
                     connected: fw.connected,
                 })
                 .collect(),
+            cover_calibrators: self
+                .cover_calibrators
+                .iter()
+                .map(|cc| DeviceStatus {
+                    id: cc.id.clone(),
+                    connected: cc.connected,
+                })
+                .collect(),
         }
     }
 
@@ -90,6 +114,10 @@ impl EquipmentRegistry {
 
     pub fn find_filter_wheel(&self, id: &str) -> Option<&FilterWheelEntry> {
         self.filter_wheels.iter().find(|fw| fw.id == id)
+    }
+
+    pub fn find_cover_calibrator(&self, id: &str) -> Option<&CoverCalibratorEntry> {
+        self.cover_calibrators.iter().find(|cc| cc.id == id)
     }
 }
 
@@ -280,6 +308,92 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
         Err(e) => {
             debug!(fw_id = %config.id, error = %e, "failed to connect filter wheel");
             FilterWheelEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            }
+        }
+    }
+}
+
+async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> CoverCalibratorEntry {
+    debug!(cc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to cover calibrator");
+
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            debug!(cc_id = %config.id, error = %e, "failed to create Alpaca client for cover calibrator");
+            return CoverCalibratorEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => {
+            debug!(cc_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            return CoverCalibratorEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+        Err(_) => {
+            debug!(cc_id = %config.id, "timeout connecting to Alpaca server");
+            return CoverCalibratorEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let mut cc_index = 0u32;
+    let mut found_cc: Option<Arc<dyn CoverCalibrator>> = None;
+
+    for device in devices {
+        if let TypedDevice::CoverCalibrator(cc) = device {
+            if cc_index == config.device_number {
+                found_cc = Some(cc);
+                break;
+            }
+            cc_index += 1;
+        }
+    }
+
+    let cc = match found_cc {
+        Some(c) => c,
+        None => {
+            debug!(cc_id = %config.id, device_number = config.device_number, "cover calibrator not found on Alpaca server");
+            return CoverCalibratorEntry {
+                id: config.id.clone(),
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    match cc.set_connected(true).await {
+        Ok(()) => {
+            debug!(cc_id = %config.id, "cover calibrator connected successfully");
+            CoverCalibratorEntry {
+                id: config.id.clone(),
+                connected: true,
+                config: config.clone(),
+                device: Some(cc),
+            }
+        }
+        Err(e) => {
+            debug!(cc_id = %config.id, error = %e, "failed to connect cover calibrator");
+            CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
                 config: config.clone(),
