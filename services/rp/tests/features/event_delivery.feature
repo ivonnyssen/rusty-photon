@@ -9,7 +9,7 @@ Feature: Event delivery to webhook subscribers
     And a test webhook receiver subscribed to "exposure_complete"
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should receive an "exposure_complete" event
     And the event payload should contain the document id
     And the event payload should contain the file path
@@ -19,7 +19,7 @@ Feature: Event delivery to webhook subscribers
     And a test webhook receiver subscribed to "exposure_started" and "exposure_complete"
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should receive an "exposure_started" event
     And the test webhook receiver should receive an "exposure_complete" event
     And "exposure_started" should have been received before "exposure_complete"
@@ -39,7 +39,7 @@ Feature: Event delivery to webhook subscribers
     And the test webhook receiver acknowledges with estimated 5 seconds and max 10 seconds
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should receive an "exposure_complete" event
     And rp should have recorded the plugin timing estimates
 
@@ -48,7 +48,7 @@ Feature: Event delivery to webhook subscribers
     And a test webhook receiver subscribed to "session_started"
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should not have received any events
 
   Scenario: Unreachable plugin does not block capture
@@ -56,7 +56,7 @@ Feature: Event delivery to webhook subscribers
     And a plugin configured with webhook URL "http://localhost:1/webhook" subscribed to "exposure_complete"
     And rp is running with a camera on the simulator and the unreachable plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the tool result should contain an image path
 
   Scenario: Multiple plugins receive the same event independently
@@ -65,7 +65,7 @@ Feature: Event delivery to webhook subscribers
     And a plugin configured with webhook URL "http://localhost:1/webhook" subscribed to "exposure_complete"
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should receive an "exposure_complete" event
     And the tool result should contain an image path
 
