@@ -7,9 +7,7 @@ use std::path::Path;
 
 use fitrs::{Fits, Hdu};
 use ndarray::Array1;
-use ndarray_stats::interpolate::Lower;
 use ndarray_stats::QuantileExt;
-use noisy_float::types::n64;
 use tracing::debug;
 
 use crate::error::{Result, RpError};
@@ -126,10 +124,11 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
     }
 }
 
-/// Compute pixel statistics from a slice of pixel values using `ndarray-stats`.
+/// Compute pixel statistics from a slice of pixel values.
 ///
-/// Uses `QuantileExt` for min, max, and median (quantile at 0.5 with `Lower`
-/// interpolation). Mean is computed as f64 to avoid integer truncation.
+/// Uses `ndarray-stats` `QuantileExt` for min/max. Median is computed via
+/// `select_nth_unstable` (stdlib iterative quickselect, O(n), no recursion
+/// depth issues). Mean is computed as f64 to avoid integer truncation.
 ///
 /// Returns `None` if the pixel slice is empty.
 pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
@@ -138,17 +137,24 @@ pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
     }
 
     let pixel_count = pixels.len() as u64;
-    let mut arr = Array1::from(pixels.to_vec());
+    let arr = Array1::from(pixels.to_vec());
 
     let min = *arr.min().expect("non-empty array");
     let max = *arr.max().expect("non-empty array");
 
-    // Median via quantile at 0.5. Lower interpolation returns the lower of
-    // two middle values for even-length arrays (no fractional ADU values).
-    let median = arr
-        .quantile_axis_mut(ndarray::Axis(0), n64(0.5), &Lower)
-        .expect("non-empty array")
-        .into_scalar();
+    // Median via stdlib select_nth_unstable (iterative, heap-allocated,
+    // safe for arbitrarily large images). For even-length arrays, average
+    // the two middle values.
+    let mut buf = pixels.to_vec();
+    let mid = buf.len() / 2;
+    let median = if buf.len().is_multiple_of(2) {
+        let (_, &mut upper, _) = buf.select_nth_unstable(mid);
+        let (_, &mut lower, _) = buf[..mid].select_nth_unstable(mid - 1);
+        ((lower as i64 + upper as i64) / 2) as i32
+    } else {
+        let (_, &mut m, _) = buf.select_nth_unstable(mid);
+        m
+    };
 
     // Mean as f64 for precision (integer mean would truncate)
     let mean_adu = pixels.iter().map(|&p| p as f64).sum::<f64>() / pixel_count as f64;
@@ -185,8 +191,8 @@ mod tests {
     fn compute_stats_even_count() {
         let pixels = vec![10, 20, 30, 40];
         let stats = compute_stats(&pixels).unwrap();
-        // Median with Lower interpolation: lower of two middle values = 20
-        assert_eq!(stats.median_adu, 20);
+        // Median of [10, 20, 30, 40] = (20 + 30) / 2 = 25
+        assert_eq!(stats.median_adu, 25);
         assert_eq!(stats.min_adu, 10);
         assert_eq!(stats.max_adu, 40);
         assert_eq!(stats.pixel_count, 4);

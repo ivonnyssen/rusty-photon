@@ -69,7 +69,16 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i
                     .unwrap_or("")
                     .to_string()));
             } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
+                let result = &body["result"];
+                world.last_image_path = result
+                    .get("image_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                world.last_document_id = result
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                world.last_tool_result = Some(Ok(result.clone()));
             }
         }
         Err(e) => {

@@ -1,59 +1,13 @@
 //! BDD step definitions for compute_image_stats MCP tool
+//!
+//! The capture step is defined in tool_steps.rs (shared across features).
+//! It stores last_image_path and last_document_id on the world for chaining.
 
 use cucumber::{then, when};
 
 use crate::world::RpWorld;
 
 // --- When steps ---
-
-#[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} ms")]
-async fn mcp_call_capture_ms(world: &mut RpWorld, camera_id: String, duration_ms: i32) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "capture",
-                "arguments": {
-                    "camera_id": camera_id,
-                    "duration_ms": duration_ms
-                }
-            }
-        }))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                let result = &body["result"];
-                world.last_image_path = result
-                    .get("image_path")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                world.last_document_id = result
-                    .get("document_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                world.last_tool_result = Some(Ok(result.clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
-}
 
 #[when("the MCP client calls \"compute_image_stats\" with the captured image path")]
 async fn mcp_call_compute_stats_with_last_path(world: &mut RpWorld) {

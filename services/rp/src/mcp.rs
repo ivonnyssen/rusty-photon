@@ -338,19 +338,18 @@ impl McpHandler {
 
         let _document_id = args.get("document_id").and_then(|v| v.as_str());
 
-        // Read FITS in a blocking task
+        // Read FITS and compute stats in a blocking task (file I/O).
         let path_clone = image_path.clone();
-        let pixels =
-            match tokio::task::spawn_blocking(move || imaging::read_fits_pixels(&path_clone)).await
-            {
-                Ok(Ok(p)) => p,
-                Ok(Err(e)) => return jsonrpc_error(id, &format!("failed to read FITS: {}", e)),
-                Err(e) => return jsonrpc_error(id, &format!("task error: {}", e)),
-            };
-
-        let stats = match imaging::compute_stats(&pixels) {
-            Some(s) => s,
-            None => return jsonrpc_error(id, "image has no pixels"),
+        let stats = match tokio::task::spawn_blocking(move || {
+            let pixels = imaging::read_fits_pixels(&path_clone)?;
+            imaging::compute_stats(&pixels)
+                .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
+        })
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return jsonrpc_error(id, &format!("failed to compute stats: {}", e)),
+            Err(e) => return jsonrpc_error(id, &format!("task error: {}", e)),
         };
 
         debug!(
