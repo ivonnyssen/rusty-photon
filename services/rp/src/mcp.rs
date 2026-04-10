@@ -498,15 +498,17 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to close cover: {}", e));
         }
 
-        // Poll until closed
-        for _ in 0..600 {
+        // Poll until closed (2 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
                     debug!(calibrator_id = %cc_id, "cover closed");
                     return jsonrpc_success(id, serde_json::json!({"status": "closed"}));
                 }
-                Ok(_) => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) => break,
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling cover state: {}", e));
                 }
@@ -527,15 +529,17 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to open cover: {}", e));
         }
 
-        // Poll until open
-        for _ in 0..600 {
+        // Poll until open (2 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
                     debug!(calibrator_id = %cc_id, "cover opened");
                     return jsonrpc_success(id, serde_json::json!({"status": "open"}));
                 }
-                Ok(_) => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) => break,
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling cover state: {}", e));
                 }
@@ -568,8 +572,9 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator on: {}", e));
         }
 
-        // Poll until ready
-        for _ in 0..600 {
+        // Poll until ready (2 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
@@ -579,7 +584,8 @@ impl McpHandler {
                         serde_json::json!({"status": "ready", "brightness": brightness}),
                     );
                 }
-                Ok(_) => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) => break,
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling calibrator state: {}", e));
                 }
@@ -600,15 +606,17 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator off: {}", e));
         }
 
-        // Poll until off
-        for _ in 0..600 {
+        // Poll until off (2 minute wall-clock timeout)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
                     debug!(calibrator_id = %cc_id, "calibrator off");
                     return jsonrpc_success(id, serde_json::json!({"status": "off"}));
                 }
-                Ok(_) => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) => break,
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling calibrator state: {}", e));
                 }
