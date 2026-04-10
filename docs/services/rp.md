@@ -602,6 +602,44 @@ data, and computes median, mean, min, and max ADU values. If a
 document as an `"image_stats"` section. This tool does not access the
 camera — it operates on saved image files.
 
+### Image Analysis Strategy
+
+Image analysis in `rp` follows a **pure Rust on ndarray** approach.
+All algorithms are implemented as custom code on top of well-established
+building blocks — no single crate covers the full range of astronomical
+image analysis needed.
+
+#### Current Capabilities
+
+- **Pixel statistics** (median, mean, min, max ADU) — stdlib iterators
+  and `select_nth_unstable` for median (iterative O(n) quickselect).
+  Used by `compute_image_stats` for flat calibration exposure targeting.
+- **FITS I/O** — `fitrs` crate for reading and writing FITS images.
+
+#### Planned Capabilities and Crate Strategy
+
+| Capability | Approach | Crates |
+|------------|----------|--------|
+| Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
+| FITS I/O | Crate | `fitrs` |
+| 2D image operations | Crate | `ndarray` (already transitive via ascom-alpaca) |
+| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, connected components, dilation/erosion) |
+| Star detection | Custom | Threshold + connected components (`ndarray-ndimage` or `lutz`) + shape filtering |
+| Centroiding | Custom | Intensity-weighted center of mass on ndarray subframes |
+| HFR / HFD | Custom | Radial flux accumulation (~20 lines of math) |
+| FWHM | Custom + crate | Gaussian fitting via `levenberg-marquardt` or `rmpfit` |
+| Eccentricity / elongation | Custom | Second central moments from detected star pixels |
+| Background estimation | Custom | Sigma-clipped mesh statistics on ndarray |
+| Noise / SNR | Custom | Sigma-clipped statistics |
+
+#### Design Rationale
+
+This approach follows what N.I.N.A. does: custom astronomical algorithms
+on top of general-purpose image processing primitives. The algorithms
+(HFR, centroiding, eccentricity) are well-documented and not complex.
+SEP (Source Extractor as a library) was considered via `sep-sys` but
+rejected due to LGPL license constraints and C FFI maintenance burden.
+
 ### Plugin-Provided Tools
 
 A plugin can provide additional tools by running its own MCP server. At
@@ -1514,8 +1552,8 @@ services/rp/src/
     built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
     aggregator.rs       Connects to plugin MCP servers, proxies their tools
 
-  # Imaging (FITS I/O and image statistics)
-  imaging.rs            FITS read/write (fitrs crate), pixel statistics (median, mean, min, max)
+  # Imaging (FITS I/O and image analysis)
+  imaging.rs            FITS read/write (fitrs), pixel statistics (stdlib), future: HFR, star detection
 
   # Post-capture pipeline
   pipeline/

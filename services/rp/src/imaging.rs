@@ -1,13 +1,11 @@
 //! FITS file I/O and image statistics.
 //!
 //! Provides functions for writing and reading FITS images (via the `fitrs` crate)
-//! and computing pixel statistics via `ndarray-stats` (median, mean, min, max ADU).
+//! and computing pixel statistics (stdlib iterators + `select_nth_unstable`).
 
 use std::path::Path;
 
 use fitrs::{Fits, Hdu};
-use ndarray::Array1;
-use ndarray_stats::QuantileExt;
 use tracing::debug;
 
 use crate::error::{Result, RpError};
@@ -126,9 +124,9 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
 
 /// Compute pixel statistics from a slice of pixel values.
 ///
-/// Uses `ndarray-stats` `QuantileExt` for min/max. Median is computed via
-/// `select_nth_unstable` (stdlib iterative quickselect, O(n), no recursion
-/// depth issues). Mean is computed as f64 to avoid integer truncation.
+/// Uses stdlib iterators for min/max and `select_nth_unstable` for median
+/// (iterative O(n) quickselect, safe for arbitrarily large images). Mean is
+/// computed as f64 to avoid integer truncation.
 ///
 /// Returns `None` if the pixel slice is empty.
 pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
@@ -137,10 +135,9 @@ pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
     }
 
     let pixel_count = pixels.len() as u64;
-    let arr = Array1::from(pixels.to_vec());
 
-    let min = *arr.min().expect("non-empty array");
-    let max = *arr.max().expect("non-empty array");
+    let min = *pixels.iter().min().expect("non-empty slice");
+    let max = *pixels.iter().max().expect("non-empty slice");
 
     // Median via stdlib select_nth_unstable (iterative, heap-allocated,
     // safe for arbitrarily large images). For even-length arrays, average
