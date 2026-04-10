@@ -469,11 +469,8 @@ name = "calibrator-flats"
 version = "0.1.0"
 dependencies = [
  "axum",
- "bdd-infra",
  "cargo-husky",
  "clap",
- "cucumber",
- "libc",
  "reqwest 0.13.2",
  "serde",
  "serde_json",

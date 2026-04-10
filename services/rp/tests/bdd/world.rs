@@ -12,6 +12,7 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::steps::flat_calibration_steps::CalibratorFlatsHandle;
 use crate::steps::infrastructure::{
     OmniSimHandle, ServiceHandle, TestOrchestrator, WebhookReceiver,
 };
@@ -46,6 +47,8 @@ pub struct RpWorld {
     pub webhook_receiver: Option<WebhookReceiver>,
     /// Test orchestrator (in-process HTTP server acting as an orchestrator plugin)
     pub orchestrator: Option<TestOrchestrator>,
+    /// Running calibrator-flats service (real orchestrator process)
+    pub calibrator_flats: Option<CalibratorFlatsHandle>,
 
     // --- Configuration building ---
     /// Camera configs accumulated via Given steps
