@@ -98,10 +98,6 @@ pub struct RpWorld {
     /// Filter name → count for the test flat-calibration orchestrator
     pub flat_plan: Vec<(String, u32)>,
 
-    // --- Diagnostic state ---
-    /// Duration of the direct OmniSim cover calibrator diagnostic
-    pub diag_cover_duration: Option<std::time::Duration>,
-
     // --- TLS test state ---
     /// Temp directory holding generated PKI (CA + service certs)
     pub tls_pki_dir: Option<tempfile::TempDir>,
