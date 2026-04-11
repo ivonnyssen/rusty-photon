@@ -4,6 +4,11 @@ Feature: CoverCalibrator tools
   manage the dust cover. calibrator_on and calibrator_off manage the light
   source. All operations block until the device reaches the target state.
 
+  Scenario: OmniSim cover calibrator direct timing diagnostic
+    Given a running Alpaca simulator
+    When the cover calibrator is exercised directly against OmniSim with timing
+    Then the direct cover operation should have completed within 30 seconds
+
   Scenario: close_cover closes the cover successfully
     Given a running Alpaca simulator
     And rp is running with a cover calibrator on the simulator
