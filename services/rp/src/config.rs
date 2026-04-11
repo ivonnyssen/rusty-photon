@@ -38,6 +38,8 @@ pub struct EquipmentConfig {
     #[serde(default)]
     pub filter_wheels: Vec<FilterWheelConfig>,
     #[serde(default)]
+    pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    #[serde(default)]
     pub safety_monitors: Vec<Value>,
 }
 
@@ -75,6 +77,24 @@ pub struct FilterWheelConfig {
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoverCalibratorConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    #[serde(default)]
+    pub device_number: u32,
+    /// Poll interval in seconds when waiting for cover/calibrator state changes (default 3)
+    #[serde(default = "default_cover_calibrator_poll_secs")]
+    pub poll_interval_secs: u64,
+    /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
+}
+
+fn default_cover_calibrator_poll_secs() -> u64 {
+    3
 }
 
 #[derive(Debug, Clone, Deserialize)]

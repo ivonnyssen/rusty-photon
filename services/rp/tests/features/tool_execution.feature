@@ -7,7 +7,7 @@ Feature: MCP tool execution against equipment
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the tool result should contain an image path
     And the tool result should contain a document id
 
@@ -24,7 +24,7 @@ Feature: MCP tool execution against equipment
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "nonexistent" for 1 second
+    When the MCP client calls "capture" with camera "nonexistent" for 1000 ms
     Then the tool call should return an error
 
   Scenario: Tool catalog includes capture and filter tools
@@ -50,7 +50,7 @@ Feature: MCP tool execution against equipment
     And an MCP client connected to rp
     When the MCP client calls "capture" with camera "main-cam" but no duration
     Then the tool call should return an error
-    And the error message should contain "missing duration_secs"
+    And the error message should contain "missing duration_ms"
 
   Scenario: Set filter with nonexistent filter wheel returns an error
     Given a running Alpaca simulator
@@ -79,7 +79,7 @@ Feature: MCP tool execution against equipment
   Scenario: Capture with disconnected camera returns an error
     Given rp is running with a camera at "http://localhost:1" device 0
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1 second
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the tool call should return an error
     And the error message should contain "camera not connected"
 

@@ -27,4 +27,7 @@ pub enum RpError {
 
     #[error("server error: {0}")]
     Server(String),
+
+    #[error("imaging error: {0}")]
+    Imaging(String),
 }

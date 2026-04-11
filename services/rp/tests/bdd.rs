@@ -14,6 +14,9 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    if let Some(cf) = world.calibrator_flats.as_mut() {
+                        cf.handle.stop().await;
+                    }
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }

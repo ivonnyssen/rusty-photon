@@ -38,8 +38,8 @@ async fn mcp_client_connected(_world: &mut RpWorld) {
 
 // --- When steps ---
 
-#[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} second")]
-async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs: i32) {
+#[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} ms")]
+async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i32) {
     let client = reqwest::Client::new();
     let url = world.rp_mcp_url();
 
@@ -53,7 +53,7 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs:
                 "name": "capture",
                 "arguments": {
                     "camera_id": camera_id,
-                    "duration_secs": duration_secs
+                    "duration_ms": duration_ms
                 }
             }
         }))
@@ -69,7 +69,16 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_secs:
                     .unwrap_or("")
                     .to_string()));
             } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
+                let result = &body["result"];
+                world.last_image_path = result
+                    .get("image_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                world.last_document_id = result
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                world.last_tool_result = Some(Ok(result.clone()));
             }
         }
         Err(e) => {

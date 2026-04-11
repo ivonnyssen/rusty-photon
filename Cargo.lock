@@ -465,6 +465,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "calibrator-flats"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cargo-husky",
+ "clap",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "camino"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3391,8 +3409,10 @@ dependencies = [
  "cargo-husky",
  "clap",
  "cucumber",
+ "fitrs",
  "libc",
  "mockall",
+ "ndarray",
  "reqwest 0.13.2",
  "rp-auth",
  "rp-tls",

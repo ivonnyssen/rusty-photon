@@ -57,7 +57,7 @@ Feature: Session lifecycle with flat calibration orchestrator
   @serial
   Scenario: Flat calibration orchestrator captures flats across filters
     Given a running Alpaca simulator
-    And a test flat-calibration orchestrator configured for 2 "Luminance" flats and 2 "Red" flats of 1 second
+    And a test flat-calibration orchestrator configured for 2 "Luminance" flats and 2 "Red" flats
     And a test webhook receiver subscribed to "exposure_complete" and "filter_switch"
     And rp is running with equipment and both plugins configured
     When a session is started via the REST API

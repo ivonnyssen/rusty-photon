@@ -12,6 +12,7 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::steps::flat_calibration_steps::CalibratorFlatsHandle;
 use crate::steps::infrastructure::{
     OmniSimHandle, ServiceHandle, TestOrchestrator, WebhookReceiver,
 };
@@ -46,12 +47,16 @@ pub struct RpWorld {
     pub webhook_receiver: Option<WebhookReceiver>,
     /// Test orchestrator (in-process HTTP server acting as an orchestrator plugin)
     pub orchestrator: Option<TestOrchestrator>,
+    /// Running calibrator-flats service (real orchestrator process)
+    pub calibrator_flats: Option<CalibratorFlatsHandle>,
 
     // --- Configuration building ---
     /// Camera configs accumulated via Given steps
     pub cameras: Vec<CameraConfig>,
     /// Filter wheel configs accumulated via Given steps
     pub filter_wheels: Vec<FilterWheelConfig>,
+    /// CoverCalibrator configs accumulated via Given steps
+    pub cover_calibrators: Vec<CoverCalibratorConfig>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -68,6 +73,12 @@ pub struct RpWorld {
     pub orchestrator_cancelled: Arc<RwLock<bool>>,
 
     // --- MCP client state ---
+    /// Last captured image path (for compute_image_stats chaining)
+    pub last_image_path: Option<String>,
+    /// Last captured document id (for compute_image_stats chaining)
+    pub last_document_id: Option<String>,
+    /// Last image stats result
+    pub last_image_stats: Option<Value>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
     /// Last tool list result
@@ -85,7 +96,7 @@ pub struct RpWorld {
 
     // --- Flat calibration orchestrator config ---
     /// Filter name → count for the test flat-calibration orchestrator
-    pub flat_plan: Vec<(String, u32, f64)>,
+    pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS test state ---
     /// Temp directory holding generated PKI (CA + service certs)
@@ -121,6 +132,14 @@ pub struct FilterWheelConfig {
     pub alpaca_url: String,
     pub device_number: u32,
     pub filters: Vec<String>,
+}
+
+/// CoverCalibrator configuration for test setup
+#[derive(Debug, Clone)]
+pub struct CoverCalibratorConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
 }
 
 impl RpWorld {
@@ -180,6 +199,18 @@ impl RpWorld {
             })
             .collect();
 
+        let cover_calibrators: Vec<Value> = self
+            .cover_calibrators
+            .iter()
+            .map(|cc| {
+                serde_json::json!({
+                    "id": cc.id,
+                    "alpaca_url": cc.alpaca_url,
+                    "device_number": cc.device_number
+                })
+            })
+            .collect();
+
         let _webhook_url = self
             .webhook_receiver
             .as_ref()
@@ -203,6 +234,7 @@ impl RpWorld {
                 "mount": null,
                 "focusers": [],
                 "filter_wheels": filter_wheels,
+                "cover_calibrators": cover_calibrators,
                 "safety_monitors": []
             },
             "plugins": self.plugin_configs,

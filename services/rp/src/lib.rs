@@ -4,6 +4,7 @@ pub mod equipment;
 pub mod error;
 pub mod events;
 pub mod hash_password_cmd;
+pub mod imaging;
 pub mod mcp;
 pub mod routes;
 pub mod session;

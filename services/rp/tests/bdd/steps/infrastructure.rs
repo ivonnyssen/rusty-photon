@@ -289,8 +289,8 @@ pub enum OrchestratorBehavior {
     CompleteImmediately,
     /// Wait until explicitly stopped (via cancellation)
     WaitForStop,
-    /// Run a flat calibration plan: Vec<(filter, count, duration_secs)>
-    FlatCalibration(Vec<(String, u32, f64)>),
+    /// Run a flat calibration plan: Vec<(filter, count)>
+    FlatCalibration(Vec<(String, u32)>),
 }
 
 /// In-process HTTP server that acts as an orchestrator plugin
@@ -439,23 +439,15 @@ async fn post_completion(mcp_server_url: &str, workflow_id: &str) {
     let _ = client.post(&url).json(&body).send().await;
 }
 
-/// Drive a flat calibration workflow via MCP tool calls
-async fn run_flat_calibration(
-    mcp_server_url: &str,
-    workflow_id: &str,
-    plan: &[(String, u32, f64)],
-) {
-    // TODO: Connect as MCP client to mcp_server_url and call tools:
-    //   - set_filter for each filter
-    //   - capture for each flat frame
-    // For now, this is a placeholder that will be implemented when
-    // the MCP client integration is available.
-
+/// Drive a flat calibration workflow via MCP tool calls.
+///
+/// Uses `duration_ms` for exposure times. The test uses a fixed 100ms
+/// duration since OmniSim produces instant images regardless of duration.
+async fn run_flat_calibration(mcp_server_url: &str, workflow_id: &str, plan: &[(String, u32)]) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
-
-    // Placeholder: use REST API to simulate tool calls until MCP client is wired
     let client = reqwest::Client::new();
-    for (filter, count, duration_secs) in plan {
+
+    for (filter, count) in plan {
         // Set filter
         let _set_filter = client
             .post(format!("{}/mcp", base_url))
@@ -486,7 +478,7 @@ async fn run_flat_calibration(
                         "name": "capture",
                         "arguments": {
                             "camera_id": "main-cam",
-                            "duration_secs": duration_secs
+                            "duration_ms": 100
                         }
                     }
                 }))
