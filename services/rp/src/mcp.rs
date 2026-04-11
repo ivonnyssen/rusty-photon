@@ -502,15 +502,23 @@ impl McpHandler {
         // (cover motors, lamp stabilization) so sub-second polling wastes
         // bandwidth. 3s aligns well with typical device timers (2-5s).
         let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+        let mut poll_count = 0u32;
         loop {
             tokio::time::sleep(poll_interval).await;
+            poll_count += 1;
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
-                    debug!(calibrator_id = %cc_id, "cover closed");
+                    debug!(calibrator_id = %cc_id, polls = poll_count, "cover closed");
                     return jsonrpc_success(id, serde_json::json!({"status": "closed"}));
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
-                Ok(_) => break,
+                Ok(state) if tokio::time::Instant::now() < deadline => {
+                    debug!(calibrator_id = %cc_id, ?state, polls = poll_count, "cover not closed yet");
+                    continue;
+                }
+                Ok(state) => {
+                    debug!(calibrator_id = %cc_id, ?state, polls = poll_count, "cover close timeout");
+                    break;
+                }
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling cover state: {}", e));
                 }
@@ -576,18 +584,26 @@ impl McpHandler {
 
         // Poll until ready
         let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+        let mut poll_count = 0u32;
         loop {
             tokio::time::sleep(poll_interval).await;
+            poll_count += 1;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
-                    debug!(calibrator_id = %cc_id, "calibrator ready");
+                    debug!(calibrator_id = %cc_id, polls = poll_count, "calibrator ready");
                     return jsonrpc_success(
                         id,
                         serde_json::json!({"status": "ready", "brightness": brightness}),
                     );
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
-                Ok(_) => break,
+                Ok(state) if tokio::time::Instant::now() < deadline => {
+                    debug!(calibrator_id = %cc_id, ?state, polls = poll_count, "calibrator not ready yet");
+                    continue;
+                }
+                Ok(state) => {
+                    debug!(calibrator_id = %cc_id, ?state, polls = poll_count, "calibrator timeout");
+                    break;
+                }
                 Err(e) => {
                     return jsonrpc_error(id, &format!("error polling calibrator state: {}", e));
                 }
