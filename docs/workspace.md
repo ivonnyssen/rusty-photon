@@ -86,6 +86,21 @@ The workspace uses `cargo-husky` as a dev-dependency with `precommit-hook`,
 automatically installs a git pre-commit hook that runs `cargo fmt` and
 `cargo clippy` on every commit.
 
+## Coding Conventions
+
+### Duration Units
+
+Use the unit that is natural for the magnitude and **always include
+the unit suffix in the field name**. This eliminates ambiguity without
+forcing unnatural values.
+
+- **`_ms`** for sub-second precision: `duration_ms`, `exposure_min_ms`,
+  `exposure_max_ms`, `initial_duration_ms`
+- **`_secs`** for human-facing config values: `poll_interval_secs`,
+  `polling_interval_secs`, `settle_time_secs`, `timeout_secs`
+
+Never use a bare `duration` or `timeout` field without a unit suffix.
+
 ## Feature Flags
 
 - **`mock`** — Enables `MockSerialPortFactory` with persistent state for
