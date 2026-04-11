@@ -498,10 +498,12 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to close cover: {}", e));
         }
 
-        // Poll until closed (5 minute wall-clock timeout)
+        // Poll until closed. Use 1s interval to avoid flooding OmniSim
+        // (a single-threaded .NET process that can't advance its internal
+        // timers while servicing HTTP requests on slow CI runners).
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
                     debug!(calibrator_id = %cc_id, "cover closed");
@@ -529,10 +531,10 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to open cover: {}", e));
         }
 
-        // Poll until open (5 minute wall-clock timeout)
+        // Poll until open
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
                     debug!(calibrator_id = %cc_id, "cover opened");
@@ -572,10 +574,10 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator on: {}", e));
         }
 
-        // Poll until ready (5 minute wall-clock timeout)
+        // Poll until ready
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
                     debug!(calibrator_id = %cc_id, "calibrator ready");
@@ -606,10 +608,10 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to turn calibrator off: {}", e));
         }
 
-        // Poll until off (5 minute wall-clock timeout)
+        // Poll until off
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
                     debug!(calibrator_id = %cc_id, "calibrator off");
