@@ -501,7 +501,7 @@ impl McpHandler {
         // Poll at 3s intervals. CoverCalibrator operations are physical
         // (cover motors, lamp stabilization) so sub-second polling wastes
         // bandwidth. 3s aligns well with typical device timers (2-5s).
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -532,7 +532,7 @@ impl McpHandler {
         }
 
         // Poll until open
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -575,7 +575,7 @@ impl McpHandler {
         }
 
         // Poll until ready
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
@@ -609,7 +609,7 @@ impl McpHandler {
         }
 
         // Poll until off
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
