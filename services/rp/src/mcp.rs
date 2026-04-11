@@ -488,7 +488,7 @@ impl McpHandler {
     // -----------------------------------------------------------------------
 
     async fn tool_close_cover(&self, id: Value, args: Value) -> Value {
-        let (cc_id, cc) = match self.resolve_calibrator(&id, &args) {
+        let (cc_id, cc, poll_interval) = match self.resolve_calibrator(&id, &args) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -498,12 +498,12 @@ impl McpHandler {
             return jsonrpc_error(id, &format!("failed to close cover: {}", e));
         }
 
-        // Poll until closed. Use 1s interval to avoid flooding OmniSim
-        // (a single-threaded .NET process that can't advance its internal
-        // timers while servicing HTTP requests on slow CI runners).
+        // Poll at 3s intervals. CoverCalibrator operations are physical
+        // (cover motors, lamp stabilization) so sub-second polling wastes
+        // bandwidth. 3s aligns well with typical device timers (2-5s).
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
                     debug!(calibrator_id = %cc_id, "cover closed");
@@ -521,7 +521,7 @@ impl McpHandler {
     }
 
     async fn tool_open_cover(&self, id: Value, args: Value) -> Value {
-        let (cc_id, cc) = match self.resolve_calibrator(&id, &args) {
+        let (cc_id, cc, poll_interval) = match self.resolve_calibrator(&id, &args) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -534,7 +534,7 @@ impl McpHandler {
         // Poll until open
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
                     debug!(calibrator_id = %cc_id, "cover opened");
@@ -552,7 +552,7 @@ impl McpHandler {
     }
 
     async fn tool_calibrator_on(&self, id: Value, args: Value) -> Value {
-        let (cc_id, cc) = match self.resolve_calibrator(&id, &args) {
+        let (cc_id, cc, poll_interval) = match self.resolve_calibrator(&id, &args) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -577,7 +577,7 @@ impl McpHandler {
         // Poll until ready
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
                     debug!(calibrator_id = %cc_id, "calibrator ready");
@@ -598,7 +598,7 @@ impl McpHandler {
     }
 
     async fn tool_calibrator_off(&self, id: Value, args: Value) -> Value {
-        let (cc_id, cc) = match self.resolve_calibrator(&id, &args) {
+        let (cc_id, cc, poll_interval) = match self.resolve_calibrator(&id, &args) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -611,7 +611,7 @@ impl McpHandler {
         // Poll until off
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
                     debug!(calibrator_id = %cc_id, "calibrator off");
@@ -628,12 +628,12 @@ impl McpHandler {
         jsonrpc_error(id, "timeout waiting for calibrator to turn off")
     }
 
-    /// Helper: resolve calibrator_id from args, look up device.
+    /// Helper: resolve calibrator_id from args, look up device and poll interval.
     fn resolve_calibrator(
         &self,
         id: &Value,
         args: &Value,
-    ) -> Result<(String, Arc<dyn CoverCalibrator>), Value> {
+    ) -> Result<(String, Arc<dyn CoverCalibrator>, Duration), Value> {
         let cc_id = match args.get("calibrator_id").and_then(|v| v.as_str()) {
             Some(id) => id.to_string(),
             None => return Err(jsonrpc_error(id.clone(), "missing calibrator_id")),
@@ -659,7 +659,9 @@ impl McpHandler {
             }
         };
 
-        Ok((cc_id, cc))
+        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+
+        Ok((cc_id, cc, poll_interval))
     }
 }
 
