@@ -1369,4 +1369,89 @@ mod tests {
             .await;
         assert_tool_error(result, "error polling calibrator state");
     }
+
+    // -----------------------------------------------------------------------
+    // compute_image_stats error paths
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_compute_image_stats_bad_fits() {
+        // Write a non-FITS file so read_fits_pixels fails inside spawn_blocking
+        let dir = tempfile::tempdir().unwrap();
+        let bad_file = dir.path().join("bad.fits");
+        std::fs::write(&bad_file, b"not a fits file").unwrap();
+
+        let handler = test_handler(crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+        });
+        let result = handler
+            .compute_image_stats(Parameters(ComputeImageStatsParams {
+                image_path: bad_file.to_string_lossy().to_string(),
+                document_id: None,
+            }))
+            .await;
+        assert_tool_error(result, "failed to compute stats");
+    }
+
+    // -----------------------------------------------------------------------
+    // set_filter — filter not found
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_set_filter_filter_not_found() {
+        let fw = MockFilterWheel::default();
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .set_filter(Parameters(SetFilterParams {
+                filter_wheel_id: "fw".into(),
+                filter_name: "Ultraviolet".into(), // not in mock's filter list
+            }))
+            .await;
+        assert_tool_error(result, "filter not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_filter — success path (covers lines 387-391)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_filter_success() {
+        let fw = MockFilterWheel::default(); // position() returns Some(0)
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .get_filter(Parameters(FilterWheelIdParams {
+                filter_wheel_id: "fw".into(),
+            }))
+            .await;
+        let call_result = result.unwrap();
+        assert!(!call_result.is_error.unwrap_or(false));
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.as_str())
+            .unwrap_or("");
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(json["filter_name"], "Lum");
+        assert_eq!(json["position"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // CoverCalibrator success paths (covers resolve_device! macro lines)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_close_cover_success() {
+        let cc = MockCoverCalibrator::default(); // cover_state returns Closed
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .close_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        let call_result = result.unwrap();
+        assert!(!call_result.is_error.unwrap_or(false));
+    }
 }
