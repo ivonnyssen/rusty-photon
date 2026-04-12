@@ -24,6 +24,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

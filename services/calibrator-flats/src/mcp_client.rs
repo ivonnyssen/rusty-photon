@@ -1,25 +1,31 @@
-//! MCP client for calling rp's built-in tools via JSON-RPC over HTTP.
+//! MCP client for calling rp's built-in tools via rmcp.
 
+use rmcp::model::CallToolRequestParams;
+use rmcp::service::RunningService;
+use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::ServiceExt;
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
 
 use crate::error::{CalibratorFlatsError, Result};
 
-/// Thin JSON-RPC client that POSTs to rp's `/mcp` endpoint.
+/// MCP client backed by rmcp's Streamable HTTP transport.
 pub struct McpClient {
-    http: reqwest::Client,
-    mcp_url: String,
+    peer: rmcp::Peer<rmcp::RoleClient>,
+    // Keep the running service alive so the connection isn't dropped.
+    _service: RunningService<rmcp::RoleClient, ()>,
 }
 
 /// Result from the `capture` tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CaptureResult {
     pub image_path: String,
     pub document_id: String,
 }
 
 /// Result from the `get_camera_info` tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CameraInfo {
     pub max_adu: u32,
     pub exposure_min_ms: u64,
@@ -27,67 +33,42 @@ pub struct CameraInfo {
 }
 
 /// Result from the `compute_image_stats` tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ImageStats {
     pub median_adu: u32,
     pub mean_adu: f64,
 }
 
 impl McpClient {
-    pub fn new(mcp_url: &str) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            mcp_url: mcp_url.to_string(),
-        }
+    /// Connect to an MCP server at the given URL.
+    pub async fn new(mcp_url: &str) -> Result<Self> {
+        debug!(url = %mcp_url, "connecting MCP client");
+        let transport = StreamableHttpClientTransport::from_uri(mcp_url);
+        let service = ()
+            .serve(transport)
+            .await
+            .map_err(|e| CalibratorFlatsError::ToolCall(format!("MCP connect: {}", e)))?;
+        let peer = service.peer().clone();
+        Ok(Self {
+            peer,
+            _service: service,
+        })
     }
 
     pub async fn capture(&self, camera_id: &str, duration_ms: u32) -> Result<CaptureResult> {
-        let result = self
-            .call_tool(
-                "capture",
-                serde_json::json!({
-                    "camera_id": camera_id,
-                    "duration_ms": duration_ms,
-                }),
-            )
-            .await?;
-
-        Ok(CaptureResult {
-            image_path: result["image_path"]
-                .as_str()
-                .ok_or_else(|| {
-                    CalibratorFlatsError::ToolCall("missing image_path in capture result".into())
-                })?
-                .to_string(),
-            document_id: result["document_id"]
-                .as_str()
-                .ok_or_else(|| {
-                    CalibratorFlatsError::ToolCall("missing document_id in capture result".into())
-                })?
-                .to_string(),
-        })
+        self.call_tool(
+            "capture",
+            serde_json::json!({"camera_id": camera_id, "duration_ms": duration_ms}),
+        )
+        .await
     }
 
     pub async fn get_camera_info(&self, camera_id: &str) -> Result<CameraInfo> {
-        let result = self
-            .call_tool(
-                "get_camera_info",
-                serde_json::json!({ "camera_id": camera_id }),
-            )
-            .await?;
-
-        Ok(CameraInfo {
-            max_adu: result["max_adu"]
-                .as_u64()
-                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing max_adu".into()))?
-                as u32,
-            exposure_min_ms: result["exposure_min_ms"]
-                .as_u64()
-                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing exposure_min_ms".into()))?,
-            exposure_max_ms: result["exposure_max_ms"]
-                .as_u64()
-                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing exposure_max_ms".into()))?,
-        })
+        self.call_tool(
+            "get_camera_info",
+            serde_json::json!({"camera_id": camera_id}),
+        )
+        .await
     }
 
     pub async fn compute_image_stats(
@@ -95,111 +76,105 @@ impl McpClient {
         image_path: &str,
         document_id: Option<&str>,
     ) -> Result<ImageStats> {
-        let mut args = serde_json::json!({ "image_path": image_path });
+        let mut args = serde_json::json!({"image_path": image_path});
         if let Some(doc_id) = document_id {
             args["document_id"] = serde_json::json!(doc_id);
         }
-
-        let result = self.call_tool("compute_image_stats", args).await?;
-
-        Ok(ImageStats {
-            median_adu: result["median_adu"]
-                .as_u64()
-                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing median_adu".into()))?
-                as u32,
-            mean_adu: result["mean_adu"]
-                .as_f64()
-                .ok_or_else(|| CalibratorFlatsError::ToolCall("missing mean_adu".into()))?,
-        })
+        self.call_tool("compute_image_stats", args).await
     }
 
     pub async fn set_filter(&self, filter_wheel_id: &str, filter_name: &str) -> Result<()> {
-        self.call_tool(
-            "set_filter",
-            serde_json::json!({
-                "filter_wheel_id": filter_wheel_id,
-                "filter_name": filter_name,
-            }),
-        )
-        .await?;
+        let _: Value = self
+            .call_tool(
+                "set_filter",
+                serde_json::json!({"filter_wheel_id": filter_wheel_id, "filter_name": filter_name}),
+            )
+            .await?;
         Ok(())
     }
 
     pub async fn close_cover(&self, calibrator_id: &str) -> Result<()> {
-        self.call_tool(
-            "close_cover",
-            serde_json::json!({ "calibrator_id": calibrator_id }),
-        )
-        .await?;
+        let _: Value = self
+            .call_tool(
+                "close_cover",
+                serde_json::json!({"calibrator_id": calibrator_id}),
+            )
+            .await?;
         Ok(())
     }
 
     pub async fn open_cover(&self, calibrator_id: &str) -> Result<()> {
-        self.call_tool(
-            "open_cover",
-            serde_json::json!({ "calibrator_id": calibrator_id }),
-        )
-        .await?;
+        let _: Value = self
+            .call_tool(
+                "open_cover",
+                serde_json::json!({"calibrator_id": calibrator_id}),
+            )
+            .await?;
         Ok(())
     }
 
     pub async fn calibrator_on(&self, calibrator_id: &str, brightness: Option<u32>) -> Result<()> {
-        let mut args = serde_json::json!({ "calibrator_id": calibrator_id });
+        let mut args = serde_json::json!({"calibrator_id": calibrator_id});
         if let Some(b) = brightness {
             args["brightness"] = serde_json::json!(b);
         }
-        self.call_tool("calibrator_on", args).await?;
+        let _: Value = self.call_tool("calibrator_on", args).await?;
         Ok(())
     }
 
     pub async fn calibrator_off(&self, calibrator_id: &str) -> Result<()> {
-        self.call_tool(
-            "calibrator_off",
-            serde_json::json!({ "calibrator_id": calibrator_id }),
-        )
-        .await?;
+        let _: Value = self
+            .call_tool(
+                "calibrator_off",
+                serde_json::json!({"calibrator_id": calibrator_id}),
+            )
+            .await?;
         Ok(())
     }
 
-    /// Send a JSON-RPC tools/call request and return the result.
-    async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value> {
-        debug!(tool = %tool_name, url = %self.mcp_url, "calling MCP tool");
+    /// Generic helper: call tool, check for errors, deserialize result.
+    async fn call_tool<T: serde::de::DeserializeOwned>(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<T> {
+        debug!(tool = %tool_name, "calling MCP tool");
 
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            }
-        });
+        let mut params = CallToolRequestParams::new(tool_name.to_string());
+        if let Some(obj) = arguments.as_object() {
+            params.arguments = Some(obj.clone());
+        }
 
-        let resp = self
-            .http
-            .post(&self.mcp_url)
-            .json(&body)
-            .send()
+        let result = self
+            .peer
+            .call_tool(params)
             .await
             .map_err(|e| CalibratorFlatsError::ToolCall(format!("{}: {}", tool_name, e)))?;
 
-        let json: Value = resp.json().await.map_err(|e| {
-            CalibratorFlatsError::ToolCall(format!(
-                "{}: failed to parse response: {}",
-                tool_name, e
-            ))
-        })?;
-
-        if let Some(err) = json.get("error") {
-            let msg = err["message"].as_str().unwrap_or("unknown error");
+        if result.is_error.unwrap_or(false) {
+            let msg = result
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .map(|tc| tc.text.clone())
+                .unwrap_or_else(|| "unknown error".to_string());
             return Err(CalibratorFlatsError::ToolCall(format!(
                 "{}: {}",
                 tool_name, msg
             )));
         }
 
-        json.get("result").cloned().ok_or_else(|| {
-            CalibratorFlatsError::ToolCall(format!("{}: no result in response", tool_name))
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.clone())
+            .ok_or_else(|| {
+                CalibratorFlatsError::ToolCall(format!("{}: no content in response", tool_name))
+            })?;
+
+        serde_json::from_str(&text).map_err(|e| {
+            CalibratorFlatsError::ToolCall(format!("{}: failed to parse result: {}", tool_name, e))
         })
     }
 }

@@ -3,6 +3,7 @@
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::{OmniSimHandle, ServiceHandle};
+use crate::steps::mcp_test_client::McpTestClient;
 use crate::world::{CameraConfig, FilterWheelConfig, RpWorld};
 
 // --- Given steps ---
@@ -30,179 +31,84 @@ async fn rp_running_with_camera_and_filter_wheel(world: &mut RpWorld) {
 }
 
 #[given("an MCP client connected to rp")]
-async fn mcp_client_connected(_world: &mut RpWorld) {
-    // The MCP client is implicit — tool steps use HTTP POST to /mcp
-    // with JSON-RPC payloads. No persistent connection needed for
-    // the streamable HTTP transport.
+async fn mcp_client_connected(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
 }
 
 // --- When steps ---
 
 #[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} ms")]
 async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i32) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "capture",
-                "arguments": {
-                    "camera_id": camera_id,
-                    "duration_ms": duration_ms
-                }
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "capture",
+            serde_json::json!({
+                "camera_id": camera_id,
+                "duration_ms": duration_ms
+            }),
+        )
         .await;
 
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                let result = &body["result"];
-                world.last_image_path = result
-                    .get("image_path")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                world.last_document_id = result
-                    .get("document_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                world.last_tool_result = Some(Ok(result.clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
+    if let Ok(ref v) = result {
+        world.last_image_path = v
+            .get("image_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        world.last_document_id = v
+            .get("document_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
     }
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls \"set_filter\" with filter wheel {string} and filter {string}")]
 async fn mcp_call_set_filter(world: &mut RpWorld, fw_id: String, filter_name: String) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "set_filter",
-                "arguments": {
-                    "filter_wheel_id": fw_id,
-                    "filter_name": filter_name
-                }
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "set_filter",
+            serde_json::json!({
+                "filter_wheel_id": fw_id,
+                "filter_name": filter_name
+            }),
+        )
         .await;
 
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls \"get_filter\" with filter wheel {string}")]
 async fn mcp_call_get_filter(world: &mut RpWorld, fw_id: String) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "get_filter",
-                "arguments": {
-                    "filter_wheel_id": fw_id
-                }
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "get_filter",
+            serde_json::json!({
+                "filter_wheel_id": fw_id
+            }),
+        )
         .await;
 
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                let result = &body["result"];
-                world.current_filter = result
-                    .get("filter_name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                world.last_tool_result = Some(Ok(result.clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
+    if let Ok(ref v) = result {
+        world.current_filter = v
+            .get("filter_name")
+            .and_then(|v| v.as_str())
+            .map(String::from);
     }
+    world.last_tool_result = Some(result);
 }
 
 #[when("the MCP client lists available tools")]
 async fn mcp_list_tools(world: &mut RpWorld) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list",
-            "params": {}
-        }))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            let tools = body["result"]["tools"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            world.last_tool_list = Some(tools);
-        }
-        Err(_) => {
-            world.last_tool_list = Some(vec![]);
-        }
+    ensure_mcp_client(world).await;
+    match world.mcp().list_tools().await {
+        Ok(tools) => world.last_tool_list = Some(tools),
+        Err(_) => world.last_tool_list = Some(vec![]),
     }
 }
 
@@ -234,151 +140,45 @@ async fn rp_running_with_fw_at(world: &mut RpWorld, url: String, device_number: 
 
 #[when("the MCP client calls \"capture\" with no camera_id")]
 async fn mcp_call_capture_no_camera_id(world: &mut RpWorld) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "capture",
-                "arguments": {
-                    "duration_secs": 1
-                }
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("capture", serde_json::json!({"duration_ms": 1000}))
         .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls \"capture\" with camera {string} but no duration")]
 async fn mcp_call_capture_no_duration(world: &mut RpWorld, camera_id: String) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "capture",
-                "arguments": {
-                    "camera_id": camera_id
-                }
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("capture", serde_json::json!({"camera_id": camera_id}))
         .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls an unknown method {string}")]
-async fn mcp_call_unknown_method(world: &mut RpWorld, method: String) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": {}
-        }))
-        .send()
+async fn mcp_call_unknown_method(world: &mut RpWorld, _method: String) {
+    // rmcp handles unknown methods at the protocol level.
+    // We simulate by calling a nonexistent tool, since the client
+    // API doesn't expose raw method calls.
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("__unknown_method__", serde_json::json!({}))
         .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls tool {string}")]
 async fn mcp_call_unknown_tool(world: &mut RpWorld, tool_name: String) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": {}
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(&tool_name, serde_json::json!({}))
         .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 // --- Then steps ---
@@ -465,6 +265,17 @@ fn tool_list_includes(world: &mut RpWorld, tool_name: String) {
 }
 
 // --- Helpers (pub for reuse in other step files) ---
+
+pub async fn ensure_mcp_client(world: &mut RpWorld) {
+    if world.mcp_client.is_none() {
+        let url = world.rp_mcp_url();
+        world.mcp_client = Some(
+            McpTestClient::connect(&url)
+                .await
+                .expect("failed to connect MCP test client"),
+        );
+    }
+}
 
 pub async fn ensure_omnisim(world: &mut RpWorld) {
     if world.omnisim.is_none() {

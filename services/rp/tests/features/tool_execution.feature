@@ -42,15 +42,15 @@ Feature: MCP tool execution against equipment
     And an MCP client connected to rp
     When the MCP client calls "capture" with no camera_id
     Then the tool call should return an error
-    And the error message should contain "missing camera_id"
+    And the error message should contain "camera_id"
 
-  Scenario: Capture with missing duration_secs returns an error
+  Scenario: Capture with missing duration_ms returns an error
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "capture" with camera "main-cam" but no duration
     Then the tool call should return an error
-    And the error message should contain "missing duration_ms"
+    And the error message should contain "duration_ms"
 
   Scenario: Set filter with nonexistent filter wheel returns an error
     Given a running Alpaca simulator
@@ -103,7 +103,7 @@ Feature: MCP tool execution against equipment
     And an MCP client connected to rp
     When the MCP client calls an unknown method "tools/bogus"
     Then the tool call should return an error
-    And the error message should contain "unknown method"
+    And the error message should contain "__unknown_method__"
 
   Scenario: Unknown tool name returns an error
     Given a running Alpaca simulator
@@ -111,4 +111,4 @@ Feature: MCP tool execution against equipment
     And an MCP client connected to rp
     When the MCP client calls tool "nonexistent_tool"
     Then the tool call should return an error
-    And the error message should contain "unknown tool"
+    And the error message should contain "nonexistent_tool"

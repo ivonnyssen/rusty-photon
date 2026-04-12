@@ -62,11 +62,7 @@ impl ServerBuilder {
             data_directory: config.session.data_directory.clone(),
         };
 
-        let mcp = Arc::new(McpHandler {
-            equipment: equipment.clone(),
-            event_bus: event_bus.clone(),
-            session_config,
-        });
+        let mcp = McpHandler::new(equipment.clone(), event_bus.clone(), session_config);
 
         let state = AppState {
             equipment,

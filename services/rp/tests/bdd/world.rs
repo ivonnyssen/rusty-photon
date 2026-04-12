@@ -16,6 +16,7 @@ use crate::steps::flat_calibration_steps::CalibratorFlatsHandle;
 use crate::steps::infrastructure::{
     OmniSimHandle, ServiceHandle, TestOrchestrator, WebhookReceiver,
 };
+use crate::steps::mcp_test_client::McpTestClient;
 
 /// Collected event received by the test webhook receiver
 #[derive(Debug, Clone)]
@@ -36,7 +37,13 @@ pub struct OrchestratorInvocation {
     pub recovery: Option<Value>,
 }
 
-#[derive(Debug, Default, World)]
+impl std::fmt::Debug for RpWorld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpWorld").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default, World)]
 pub struct RpWorld {
     // --- Infrastructure handles ---
     /// Running OmniSim process
@@ -49,6 +56,8 @@ pub struct RpWorld {
     pub orchestrator: Option<TestOrchestrator>,
     /// Running calibrator-flats service (real orchestrator process)
     pub calibrator_flats: Option<CalibratorFlatsHandle>,
+    /// Persistent MCP client for the current scenario
+    pub mcp_client: Option<McpTestClient>,
 
     // --- Configuration building ---
     /// Camera configs accumulated via Given steps
@@ -164,6 +173,13 @@ impl RpWorld {
     /// The MCP endpoint URL for rp
     pub fn rp_mcp_url(&self) -> String {
         format!("{}/mcp", self.rp_url())
+    }
+
+    /// Get the persistent MCP client, panicking if not connected.
+    pub fn mcp(&self) -> &McpTestClient {
+        self.mcp_client
+            .as_ref()
+            .expect("MCP client not connected — add 'Given an MCP client connected to rp' step")
     }
 
     /// Build the rp config JSON from accumulated Given steps

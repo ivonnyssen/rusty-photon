@@ -3,7 +3,7 @@
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::OmniSimHandle;
-use crate::steps::tool_steps::start_rp;
+use crate::steps::tool_steps::{ensure_mcp_client, start_rp};
 use crate::world::{CoverCalibratorConfig, RpWorld};
 
 // --- Given steps ---
@@ -68,39 +68,12 @@ async fn mcp_call_calibrator_off(world: &mut RpWorld, calibrator_id: String) {
 
 #[when("the MCP client calls \"close_cover\" with no calibrator_id")]
 async fn mcp_call_close_cover_no_id(world: &mut RpWorld) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "close_cover",
-                "arguments": {}
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("close_cover", serde_json::json!({}))
         .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 // --- Then steps ---
@@ -135,44 +108,11 @@ async fn call_calibrator_tool(
     calibrator_id: &str,
     brightness: Option<u32>,
 ) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let mut args = serde_json::json!({
-        "calibrator_id": calibrator_id
-    });
+    ensure_mcp_client(world).await;
+    let mut args = serde_json::json!({"calibrator_id": calibrator_id});
     if let Some(b) = brightness {
         args["brightness"] = serde_json::json!(b);
     }
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": args
-            }
-        }))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    let result = world.mcp().call_tool(tool_name, args).await;
+    world.last_tool_result = Some(result);
 }

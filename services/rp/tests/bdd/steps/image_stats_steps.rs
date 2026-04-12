@@ -5,6 +5,7 @@
 
 use cucumber::{then, when};
 
+use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
 // --- When steps ---
@@ -27,39 +28,17 @@ async fn mcp_call_compute_stats_with_path(world: &mut RpWorld, image_path: Strin
 
 #[when("the MCP client calls \"compute_image_stats\" with no image_path")]
 async fn mcp_call_compute_stats_no_path(world: &mut RpWorld) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "compute_image_stats",
-                "arguments": {}
-            }
-        }))
-        .send()
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("compute_image_stats", serde_json::json!({}))
         .await;
 
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
+    match &result {
+        Ok(v) => world.last_image_stats = Some(v.clone()),
+        Err(_) => world.last_image_stats = None,
     }
+    world.last_tool_result = Some(result);
 }
 
 // --- Then steps ---
@@ -147,48 +126,17 @@ async fn call_compute_image_stats(
     image_path: &str,
     document_id: Option<&str>,
 ) {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-
-    let mut args = serde_json::json!({
-        "image_path": image_path
-    });
+    ensure_mcp_client(world).await;
+    let mut args = serde_json::json!({"image_path": image_path});
     if let Some(doc_id) = document_id {
         args["document_id"] = serde_json::json!(doc_id);
     }
 
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "compute_image_stats",
-                "arguments": args
-            }
-        }))
-        .send()
-        .await;
+    let result = world.mcp().call_tool("compute_image_stats", args).await;
 
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-                world.last_image_stats = None;
-            } else {
-                let result = body["result"].clone();
-                world.last_image_stats = Some(result.clone());
-                world.last_tool_result = Some(Ok(result));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-            world.last_image_stats = None;
-        }
+    match &result {
+        Ok(v) => world.last_image_stats = Some(v.clone()),
+        Err(_) => world.last_image_stats = None,
     }
+    world.last_tool_result = Some(result);
 }

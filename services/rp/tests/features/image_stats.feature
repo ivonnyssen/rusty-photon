@@ -36,4 +36,4 @@ Feature: Image statistics tool
     And an MCP client connected to rp
     When the MCP client calls "compute_image_stats" with no image_path
     Then the tool call should return an error
-    And the error message should contain "missing image_path"
+    And the error message should contain "image_path"

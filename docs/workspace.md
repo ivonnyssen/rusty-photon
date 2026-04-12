@@ -40,6 +40,39 @@ belong in any single service design doc.
 | [rp-tls](../crates/rp-tls/) | `crates/rp-tls` | Opt-in TLS for inter-service communication: certificate generation, dual-stack TCP binding, TLS/plain serving, and client CA trust. See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
 
+## Inter-Service Communication: MCP via `rmcp`
+
+`rp` communicates with orchestrator plugins (e.g., `calibrator-flats`) using the
+[Model Context Protocol](https://modelcontextprotocol.io/) (MCP). MCP was chosen
+so that both the server (`rp`) and clients (plugins) can use standard,
+well-maintained crates instead of hand-rolling JSON-RPC.
+
+The workspace uses [`rmcp`](https://crates.io/crates/rmcp) (the official MCP Rust
+SDK from the modelcontextprotocol org). Key reasons for choosing `rmcp`:
+
+- **Official SDK** — maintained by the modelcontextprotocol org, tracks spec
+  changes first
+- **Both roles, one crate** — `"server"` and `"client"` feature flags on the
+  same crate, sharing types
+- **Composable HTTP** — `StreamableHttpService` implements Tower `Service`, so
+  it mounts on `rp`'s existing axum router via
+  `Router::nest_service("/mcp", ...)`
+- **Dependency alignment** — uses axum 0.8 and reqwest 0.13, matching the
+  workspace
+- **Ergonomic tool definitions** — `#[tool]` derive macro on impl methods
+
+Workspace dependency (in root `Cargo.toml`):
+```toml
+rmcp = { version = "1.4", default-features = false }
+```
+
+Service feature selections:
+- `rp`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
+- `calibrator-flats`: `features = ["client", "transport-streamable-http-client-reqwest"]`
+
+`schemars` 1.0 is also a workspace dependency — rmcp's `#[tool]` macro
+generates JSON Schema from parameter structs via `schemars::JsonSchema`.
+
 ## Shared Architecture Patterns
 
 ### Serial-based services (ppba-driver, qhy-focuser)
@@ -59,7 +92,7 @@ main.rs        — Entry point
 config.rs      — Configuration types and loading
 equipment.rs   — EquipmentRegistry, ASCOM Alpaca client
 events.rs      — EventBus, webhook delivery
-mcp.rs         — JSON-RPC 2.0 dispatcher, tool handlers
+mcp.rs         — rmcp tool_router: #[tool] methods, ServerHandler impl
 session.rs     — SessionManager, orchestrator invocation
 routes.rs      — Axum router (REST + MCP endpoints)
 lib.rs         — ServerBuilder (two-phase: build → start)
