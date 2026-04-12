@@ -2,31 +2,31 @@
 
 use cucumber::{then, when};
 
-use crate::steps::mcp_test_client;
+use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
 // --- When steps ---
 
 #[when(expr = "the MCP client calls \"get_camera_info\" with camera {string}")]
 async fn mcp_call_get_camera_info(world: &mut RpWorld, camera_id: String) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "get_camera_info",
-        serde_json::json!({
-            "camera_id": camera_id
-        }),
-    )
-    .await;
-
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "get_camera_info",
+            serde_json::json!({"camera_id": camera_id}),
+        )
+        .await;
     world.last_tool_result = Some(result);
 }
 
 #[when("the MCP client calls \"get_camera_info\" with no camera_id")]
 async fn mcp_call_get_camera_info_no_id(world: &mut RpWorld) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(&url, "get_camera_info", serde_json::json!({})).await;
-
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_camera_info", serde_json::json!({}))
+        .await;
     world.last_tool_result = Some(result);
 }
 

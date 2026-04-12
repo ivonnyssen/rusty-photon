@@ -3,8 +3,7 @@
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::OmniSimHandle;
-use crate::steps::mcp_test_client;
-use crate::steps::tool_steps::start_rp;
+use crate::steps::tool_steps::{ensure_mcp_client, start_rp};
 use crate::world::{CoverCalibratorConfig, RpWorld};
 
 // --- Given steps ---
@@ -69,8 +68,11 @@ async fn mcp_call_calibrator_off(world: &mut RpWorld, calibrator_id: String) {
 
 #[when("the MCP client calls \"close_cover\" with no calibrator_id")]
 async fn mcp_call_close_cover_no_id(world: &mut RpWorld) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(&url, "close_cover", serde_json::json!({})).await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("close_cover", serde_json::json!({}))
+        .await;
     world.last_tool_result = Some(result);
 }
 
@@ -106,14 +108,11 @@ async fn call_calibrator_tool(
     calibrator_id: &str,
     brightness: Option<u32>,
 ) {
-    let url = world.rp_mcp_url();
-    let mut args = serde_json::json!({
-        "calibrator_id": calibrator_id
-    });
+    ensure_mcp_client(world).await;
+    let mut args = serde_json::json!({"calibrator_id": calibrator_id});
     if let Some(b) = brightness {
         args["brightness"] = serde_json::json!(b);
     }
-
-    let result = mcp_test_client::call_tool(&url, tool_name, args).await;
+    let result = world.mcp().call_tool(tool_name, args).await;
     world.last_tool_result = Some(result);
 }

@@ -5,7 +5,7 @@
 
 use cucumber::{then, when};
 
-use crate::steps::mcp_test_client;
+use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
 // --- When steps ---
@@ -28,17 +28,15 @@ async fn mcp_call_compute_stats_with_path(world: &mut RpWorld, image_path: Strin
 
 #[when("the MCP client calls \"compute_image_stats\" with no image_path")]
 async fn mcp_call_compute_stats_no_path(world: &mut RpWorld) {
-    let url = world.rp_mcp_url();
-    let result =
-        mcp_test_client::call_tool(&url, "compute_image_stats", serde_json::json!({})).await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("compute_image_stats", serde_json::json!({}))
+        .await;
 
     match &result {
-        Ok(v) => {
-            world.last_image_stats = Some(v.clone());
-        }
-        Err(_) => {
-            world.last_image_stats = None;
-        }
+        Ok(v) => world.last_image_stats = Some(v.clone()),
+        Err(_) => world.last_image_stats = None,
     }
     world.last_tool_result = Some(result);
 }
@@ -128,23 +126,17 @@ async fn call_compute_image_stats(
     image_path: &str,
     document_id: Option<&str>,
 ) {
-    let url = world.rp_mcp_url();
-    let mut args = serde_json::json!({
-        "image_path": image_path
-    });
+    ensure_mcp_client(world).await;
+    let mut args = serde_json::json!({"image_path": image_path});
     if let Some(doc_id) = document_id {
         args["document_id"] = serde_json::json!(doc_id);
     }
 
-    let result = mcp_test_client::call_tool(&url, "compute_image_stats", args).await;
+    let result = world.mcp().call_tool("compute_image_stats", args).await;
 
     match &result {
-        Ok(v) => {
-            world.last_image_stats = Some(v.clone());
-        }
-        Err(_) => {
-            world.last_image_stats = None;
-        }
+        Ok(v) => world.last_image_stats = Some(v.clone()),
+        Err(_) => world.last_image_stats = None,
     }
     world.last_tool_result = Some(result);
 }

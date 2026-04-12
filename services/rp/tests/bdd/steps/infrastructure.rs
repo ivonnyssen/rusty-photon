@@ -444,31 +444,35 @@ async fn post_completion(mcp_server_url: &str, workflow_id: &str) {
 /// Uses `duration_ms` for exposure times. The test uses a fixed 100ms
 /// duration since OmniSim produces instant images regardless of duration.
 async fn run_flat_calibration(mcp_server_url: &str, workflow_id: &str, plan: &[(String, u32)]) {
-    use crate::steps::mcp_test_client;
+    use crate::steps::mcp_test_client::McpTestClient;
+
+    let client = McpTestClient::connect(mcp_server_url)
+        .await
+        .expect("failed to connect MCP client for flat calibration");
 
     for (filter, count) in plan {
         // Set filter
-        let _ = mcp_test_client::call_tool(
-            mcp_server_url,
-            "set_filter",
-            serde_json::json!({
-                "filter_wheel_id": "main-fw",
-                "filter_name": filter
-            }),
-        )
-        .await;
-
-        // Capture N flats
-        for _ in 0..*count {
-            let _ = mcp_test_client::call_tool(
-                mcp_server_url,
-                "capture",
+        let _ = client
+            .call_tool(
+                "set_filter",
                 serde_json::json!({
-                    "camera_id": "main-cam",
-                    "duration_ms": 100
+                    "filter_wheel_id": "main-fw",
+                    "filter_name": filter
                 }),
             )
             .await;
+
+        // Capture N flats
+        for _ in 0..*count {
+            let _ = client
+                .call_tool(
+                    "capture",
+                    serde_json::json!({
+                        "camera_id": "main-cam",
+                        "duration_ms": 100
+                    }),
+                )
+                .await;
         }
     }
 

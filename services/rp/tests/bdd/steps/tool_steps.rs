@@ -3,7 +3,7 @@
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::{OmniSimHandle, ServiceHandle};
-use crate::steps::mcp_test_client;
+use crate::steps::mcp_test_client::McpTestClient;
 use crate::world::{CameraConfig, FilterWheelConfig, RpWorld};
 
 // --- Given steps ---
@@ -31,24 +31,25 @@ async fn rp_running_with_camera_and_filter_wheel(world: &mut RpWorld) {
 }
 
 #[given("an MCP client connected to rp")]
-async fn mcp_client_connected(_world: &mut RpWorld) {
-    // The MCP client is created per tool call in mcp_test_client helpers.
+async fn mcp_client_connected(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
 }
 
 // --- When steps ---
 
 #[when(expr = "the MCP client calls \"capture\" with camera {string} for {int} ms")]
 async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i32) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "capture",
-        serde_json::json!({
-            "camera_id": camera_id,
-            "duration_ms": duration_ms
-        }),
-    )
-    .await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "capture",
+            serde_json::json!({
+                "camera_id": camera_id,
+                "duration_ms": duration_ms
+            }),
+        )
+        .await;
 
     if let Ok(ref v) = result {
         world.last_image_path = v
@@ -65,31 +66,33 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i
 
 #[when(expr = "the MCP client calls \"set_filter\" with filter wheel {string} and filter {string}")]
 async fn mcp_call_set_filter(world: &mut RpWorld, fw_id: String, filter_name: String) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "set_filter",
-        serde_json::json!({
-            "filter_wheel_id": fw_id,
-            "filter_name": filter_name
-        }),
-    )
-    .await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "set_filter",
+            serde_json::json!({
+                "filter_wheel_id": fw_id,
+                "filter_name": filter_name
+            }),
+        )
+        .await;
 
     world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls \"get_filter\" with filter wheel {string}")]
 async fn mcp_call_get_filter(world: &mut RpWorld, fw_id: String) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "get_filter",
-        serde_json::json!({
-            "filter_wheel_id": fw_id
-        }),
-    )
-    .await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "get_filter",
+            serde_json::json!({
+                "filter_wheel_id": fw_id
+            }),
+        )
+        .await;
 
     if let Ok(ref v) = result {
         world.current_filter = v
@@ -102,8 +105,8 @@ async fn mcp_call_get_filter(world: &mut RpWorld, fw_id: String) {
 
 #[when("the MCP client lists available tools")]
 async fn mcp_list_tools(world: &mut RpWorld) {
-    let url = world.rp_mcp_url();
-    match mcp_test_client::list_tools(&url).await {
+    ensure_mcp_client(world).await;
+    match world.mcp().list_tools().await {
         Ok(tools) => world.last_tool_list = Some(tools),
         Err(_) => world.last_tool_list = Some(vec![]),
     }
@@ -137,31 +140,21 @@ async fn rp_running_with_fw_at(world: &mut RpWorld, url: String, device_number: 
 
 #[when("the MCP client calls \"capture\" with no camera_id")]
 async fn mcp_call_capture_no_camera_id(world: &mut RpWorld) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "capture",
-        serde_json::json!({
-            "duration_ms": 1000
-        }),
-    )
-    .await;
-
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("capture", serde_json::json!({"duration_ms": 1000}))
+        .await;
     world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls \"capture\" with camera {string} but no duration")]
 async fn mcp_call_capture_no_duration(world: &mut RpWorld, camera_id: String) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(
-        &url,
-        "capture",
-        serde_json::json!({
-            "camera_id": camera_id
-        }),
-    )
-    .await;
-
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("capture", serde_json::json!({"camera_id": camera_id}))
+        .await;
     world.last_tool_result = Some(result);
 }
 
@@ -170,16 +163,21 @@ async fn mcp_call_unknown_method(world: &mut RpWorld, _method: String) {
     // rmcp handles unknown methods at the protocol level.
     // We simulate by calling a nonexistent tool, since the client
     // API doesn't expose raw method calls.
-    let url = world.rp_mcp_url();
-    let result =
-        mcp_test_client::call_tool(&url, "__unknown_method__", serde_json::json!({})).await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("__unknown_method__", serde_json::json!({}))
+        .await;
     world.last_tool_result = Some(result);
 }
 
 #[when(expr = "the MCP client calls tool {string}")]
 async fn mcp_call_unknown_tool(world: &mut RpWorld, tool_name: String) {
-    let url = world.rp_mcp_url();
-    let result = mcp_test_client::call_tool(&url, &tool_name, serde_json::json!({})).await;
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(&tool_name, serde_json::json!({}))
+        .await;
     world.last_tool_result = Some(result);
 }
 
@@ -267,6 +265,17 @@ fn tool_list_includes(world: &mut RpWorld, tool_name: String) {
 }
 
 // --- Helpers (pub for reuse in other step files) ---
+
+pub async fn ensure_mcp_client(world: &mut RpWorld) {
+    if world.mcp_client.is_none() {
+        let url = world.rp_mcp_url();
+        world.mcp_client = Some(
+            McpTestClient::connect(&url)
+                .await
+                .expect("failed to connect MCP test client"),
+        );
+    }
+}
 
 pub async fn ensure_omnisim(world: &mut RpWorld) {
     if world.omnisim.is_none() {
