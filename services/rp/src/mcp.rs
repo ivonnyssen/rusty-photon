@@ -12,6 +12,31 @@ use uuid::Uuid;
 
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
+use crate::imaging;
+use crate::session::SessionConfig;
+
+// ---------------------------------------------------------------------------
+// Macros
+// ---------------------------------------------------------------------------
+
+/// Build a successful `CallToolResult` from a `serde_json::json!(...)` value.
+macro_rules! tool_success {
+    ($($json:tt)+) => {
+        CallToolResult::success(vec![Content::text(
+            serde_json::json!($($json)+).to_string(),
+        )])
+    };
+}
+
+/// Build an error `CallToolResult` from a format string or literal.
+macro_rules! tool_error {
+    ($lit:literal) => {
+        CallToolResult::error(vec![Content::text($lit)])
+    };
+    ($($arg:tt)+) => {
+        CallToolResult::error(vec![Content::text(format!($($arg)+))])
+    };
+}
 
 /// Look up a device by ID and return the entry + connected device, or
 /// early-return a `tool_error` `CallToolResult` from the enclosing function.
@@ -30,8 +55,6 @@ macro_rules! resolve_device {
         (entry, device)
     }};
 }
-use crate::imaging;
-use crate::session::SessionConfig;
 
 // ---------------------------------------------------------------------------
 // Parameter structs
@@ -87,29 +110,6 @@ pub struct CalibratorOnParams {
     /// Brightness level (0..max_brightness). Defaults to max if omitted
     #[serde(default)]
     pub brightness: Option<u32>,
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Build a successful `CallToolResult` from a `serde_json::json!(...)` value.
-macro_rules! tool_success {
-    ($($json:tt)+) => {
-        CallToolResult::success(vec![Content::text(
-            serde_json::json!($($json)+).to_string(),
-        )])
-    };
-}
-
-/// Build an error `CallToolResult` from a format string or literal.
-macro_rules! tool_error {
-    ($lit:literal) => {
-        CallToolResult::error(vec![Content::text($lit)])
-    };
-    ($($arg:tt)+) => {
-        CallToolResult::error(vec![Content::text(format!($($arg)+))])
-    };
 }
 
 // ---------------------------------------------------------------------------
