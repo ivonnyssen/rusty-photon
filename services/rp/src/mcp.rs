@@ -108,6 +108,54 @@ impl McpHandler {
         }
     }
 
+    /// Resolve camera_id, look up device.
+    fn resolve_camera(
+        &self,
+        camera_id: &str,
+    ) -> Result<
+        (
+            &crate::equipment::CameraEntry,
+            Arc<dyn ascom_alpaca::api::Camera>,
+        ),
+        CallToolResult,
+    > {
+        let cam_entry = self
+            .equipment
+            .find_camera(camera_id)
+            .ok_or_else(|| tool_error(format!("camera not found: {}", camera_id)))?;
+
+        let cam = cam_entry
+            .device
+            .clone()
+            .ok_or_else(|| tool_error(format!("camera not connected: {}", camera_id)))?;
+
+        Ok((cam_entry, cam))
+    }
+
+    /// Resolve filter_wheel_id, look up entry and device.
+    fn resolve_filter_wheel(
+        &self,
+        fw_id: &str,
+    ) -> Result<
+        (
+            &crate::equipment::FilterWheelEntry,
+            Arc<dyn ascom_alpaca::api::FilterWheel>,
+        ),
+        CallToolResult,
+    > {
+        let fw_entry = self
+            .equipment
+            .find_filter_wheel(fw_id)
+            .ok_or_else(|| tool_error(format!("filter wheel not found: {}", fw_id)))?;
+
+        let fw = fw_entry
+            .device
+            .clone()
+            .ok_or_else(|| tool_error(format!("filter wheel not connected: {}", fw_id)))?;
+
+        Ok((fw_entry, fw))
+    }
+
     /// Resolve calibrator_id, look up device and poll interval.
     fn resolve_calibrator(
         &self,
@@ -141,24 +189,9 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let duration = Duration::from_millis(params.duration_ms);
 
-        let cam_entry = match self.equipment.find_camera(&params.camera_id) {
-            Some(e) => e,
-            None => {
-                return Ok(tool_error(format!(
-                    "camera not found: {}",
-                    params.camera_id
-                )))
-            }
-        };
-
-        let cam = match &cam_entry.device {
-            Some(d) => d.clone(),
-            None => {
-                return Ok(tool_error(format!(
-                    "camera not connected: {}",
-                    params.camera_id
-                )))
-            }
+        let (_cam_entry, cam) = match self.resolve_camera(&params.camera_id) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
         };
 
         let document_id = Uuid::new_v4().to_string();
@@ -225,24 +258,9 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CameraIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let cam_entry = match self.equipment.find_camera(&params.camera_id) {
-            Some(e) => e,
-            None => {
-                return Ok(tool_error(format!(
-                    "camera not found: {}",
-                    params.camera_id
-                )))
-            }
-        };
-
-        let cam = match &cam_entry.device {
-            Some(d) => d.clone(),
-            None => {
-                return Ok(tool_error(format!(
-                    "camera not connected: {}",
-                    params.camera_id
-                )))
-            }
+        let (_cam_entry, cam) = match self.resolve_camera(&params.camera_id) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
         };
 
         let max_adu = match cam.max_adu().await {
@@ -337,14 +355,9 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SetFilterParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let fw_entry = match self.equipment.find_filter_wheel(&params.filter_wheel_id) {
-            Some(e) => e,
-            None => {
-                return Ok(tool_error(format!(
-                    "filter wheel not found: {}",
-                    params.filter_wheel_id
-                )))
-            }
+        let (fw_entry, fw) = match self.resolve_filter_wheel(&params.filter_wheel_id) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
         };
 
         let position = match fw_entry
@@ -358,16 +371,6 @@ impl McpHandler {
                 return Ok(tool_error(format!(
                     "filter not found: {}",
                     params.filter_name
-                )))
-            }
-        };
-
-        let fw = match &fw_entry.device {
-            Some(d) => d.clone(),
-            None => {
-                return Ok(tool_error(format!(
-                    "filter wheel not connected: {}",
-                    params.filter_wheel_id
                 )))
             }
         };
@@ -407,24 +410,9 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<FilterWheelIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let fw_entry = match self.equipment.find_filter_wheel(&params.filter_wheel_id) {
-            Some(e) => e,
-            None => {
-                return Ok(tool_error(format!(
-                    "filter wheel not found: {}",
-                    params.filter_wheel_id
-                )))
-            }
-        };
-
-        let fw = match &fw_entry.device {
-            Some(d) => d.clone(),
-            None => {
-                return Ok(tool_error(format!(
-                    "filter wheel not connected: {}",
-                    params.filter_wheel_id
-                )))
-            }
+        let (fw_entry, fw) = match self.resolve_filter_wheel(&params.filter_wheel_id) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
         };
 
         let position = match fw.position().await {
