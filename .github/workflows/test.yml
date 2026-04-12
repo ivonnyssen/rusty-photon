@@ -226,6 +226,10 @@ jobs:
           # Download the codecov CLI uploader
           curl -Os https://cli.codecov.io/latest/linux/codecov
           chmod +x ./codecov
+          # On pull_request events, GitHub checks out an ephemeral merge commit.
+          # Override the commit SHA so Codecov maps the upload to the PR head.
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "Uploading coverage for commit $COMMIT_SHA"
           # Upload per-package reports with flags to preserve per-service badges
           for f in lcov-*.info; do
             [ -f "$f" ] || continue
@@ -237,5 +241,6 @@ jobs:
               --flag "$pkg" \
               --token "$CODECOV_TOKEN" \
               --git-service github \
+              --commit-sha "$COMMIT_SHA" \
               || echo "Warning: upload failed for $pkg"
           done
