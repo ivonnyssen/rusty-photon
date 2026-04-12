@@ -444,46 +444,31 @@ async fn post_completion(mcp_server_url: &str, workflow_id: &str) {
 /// Uses `duration_ms` for exposure times. The test uses a fixed 100ms
 /// duration since OmniSim produces instant images regardless of duration.
 async fn run_flat_calibration(mcp_server_url: &str, workflow_id: &str, plan: &[(String, u32)]) {
-    let base_url = mcp_server_url.trim_end_matches("/mcp");
-    let client = reqwest::Client::new();
+    use crate::steps::mcp_test_client;
 
     for (filter, count) in plan {
         // Set filter
-        let _set_filter = client
-            .post(format!("{}/mcp", base_url))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "set_filter",
-                    "arguments": {
-                        "filter_wheel_id": "main-fw",
-                        "filter_name": filter
-                    }
-                }
-            }))
-            .send()
-            .await;
+        let _ = mcp_test_client::call_tool(
+            mcp_server_url,
+            "set_filter",
+            serde_json::json!({
+                "filter_wheel_id": "main-fw",
+                "filter_name": filter
+            }),
+        )
+        .await;
 
         // Capture N flats
         for _ in 0..*count {
-            let _capture = client
-                .post(format!("{}/mcp", base_url))
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "capture",
-                        "arguments": {
-                            "camera_id": "main-cam",
-                            "duration_ms": 100
-                        }
-                    }
-                }))
-                .send()
-                .await;
+            let _ = mcp_test_client::call_tool(
+                mcp_server_url,
+                "capture",
+                serde_json::json!({
+                    "camera_id": "main-cam",
+                    "duration_ms": 100
+                }),
+            )
+            .await;
         }
     }
 

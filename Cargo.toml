@@ -61,6 +61,8 @@ tokio-rustls = "0.26"
 socket2 = "0.6"
 cucumber = "0.22.1"
 tempfile = "3.27.0"
+rmcp = { version = "1.4", default-features = false }
+schemars = "1.0"
 cargo-husky = { version = "1", default-features = false, features = [
   "precommit-hook",
   "user-hooks",

@@ -73,4 +73,4 @@ Feature: CoverCalibrator tools
     And an MCP client connected to rp
     When the MCP client calls "close_cover" with no calibrator_id
     Then the tool call should return an error
-    And the error message should contain "missing calibrator_id"
+    And the error message should contain "calibrator_id"

@@ -9,6 +9,7 @@ pub mod event_steps;
 pub mod flat_calibration_steps;
 pub mod image_stats_steps;
 pub mod infrastructure;
+pub mod mcp_test_client;
 pub mod session_steps;
 pub mod tls_steps;
 pub mod tool_steps;

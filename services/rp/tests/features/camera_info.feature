@@ -49,4 +49,4 @@ Feature: Camera info tool
     And an MCP client connected to rp
     When the MCP client calls "get_camera_info" with no camera_id
     Then the tool call should return an error
-    And the error message should contain "missing camera_id"
+    And the error message should contain "camera_id"

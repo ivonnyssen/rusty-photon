@@ -48,7 +48,14 @@ async fn invoke_handler(
     let plan_clone = plan.clone();
 
     tokio::spawn(async move {
-        let mcp = McpClient::new(&mcp_url);
+        let mcp = match McpClient::new(&mcp_url).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(workflow_id = %wf_id, error = %e, "failed to connect MCP client");
+                post_failure(&mcp_url, &wf_id, &e.to_string()).await;
+                return;
+            }
+        };
 
         match workflow::run(&mcp, &plan_clone).await {
             Ok(result) => {

@@ -2,84 +2,32 @@
 
 use cucumber::{then, when};
 
+use crate::steps::mcp_test_client;
 use crate::world::RpWorld;
 
 // --- When steps ---
 
 #[when(expr = "the MCP client calls \"get_camera_info\" with camera {string}")]
 async fn mcp_call_get_camera_info(world: &mut RpWorld, camera_id: String) {
-    let client = reqwest::Client::new();
     let url = world.rp_mcp_url();
+    let result = mcp_test_client::call_tool(
+        &url,
+        "get_camera_info",
+        serde_json::json!({
+            "camera_id": camera_id
+        }),
+    )
+    .await;
 
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "get_camera_info",
-                "arguments": {
-                    "camera_id": camera_id
-                }
-            }
-        }))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 #[when("the MCP client calls \"get_camera_info\" with no camera_id")]
 async fn mcp_call_get_camera_info_no_id(world: &mut RpWorld) {
-    let client = reqwest::Client::new();
     let url = world.rp_mcp_url();
+    let result = mcp_test_client::call_tool(&url, "get_camera_info", serde_json::json!({})).await;
 
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "get_camera_info",
-                "arguments": {}
-            }
-        }))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            if body.get("error").is_some() {
-                world.last_tool_result = Some(Err(body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string()));
-            } else {
-                world.last_tool_result = Some(Ok(body["result"].clone()));
-            }
-        }
-        Err(e) => {
-            world.last_tool_result = Some(Err(e.to_string()));
-        }
-    }
+    world.last_tool_result = Some(result);
 }
 
 // --- Then steps ---

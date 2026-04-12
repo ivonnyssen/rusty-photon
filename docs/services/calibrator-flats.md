@@ -251,7 +251,7 @@ services/calibrator-flats/src/
   error.rs           Error types (thiserror)
   routes.rs          Axum router: POST /invoke
   workflow.rs        Flat calibration algorithm (iterative exposure + batch capture)
-  mcp_client.rs      MCP client: JSON-RPC over HTTP to rp's /mcp endpoint
+  mcp_client.rs      MCP client: rmcp Streamable HTTP client to rp's /mcp endpoint
 ```
 
 ## Testing Strategy
@@ -271,7 +271,7 @@ Testing follows the conventions in `docs/skills/testing.md`.
 - Configuration deserialization and defaults
 - Exposure time adjustment calculation (proportional scaling, clamping,
   divide-by-zero guard)
-- MCP client JSON-RPC request/response serialization
+- MCP client tool call result deserialization
 
 ## Future Considerations
 

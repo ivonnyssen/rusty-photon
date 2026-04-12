@@ -33,6 +33,8 @@ fitrs = { workspace = true }
 ndarray = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel", "cover_calibrator"] }
+rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+schemars = { workspace = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true }
@@ -41,6 +43,8 @@ libc = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 cargo-husky = { workspace = true }
 
 [[test]]
