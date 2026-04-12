@@ -554,3 +554,568 @@ impl McpHandler {
         Ok(tool_error!("timeout waiting for calibrator to turn off"))
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use ascom_alpaca::ASCOMError;
+
+    // -----------------------------------------------------------------------
+    // Mock Device macro
+    // -----------------------------------------------------------------------
+
+    /// Generates Debug + Device impl with stubs for all required methods.
+    macro_rules! impl_mock_device {
+        ($name:ident) => {
+            impl std::fmt::Debug for $name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, stringify!($name))
+                }
+            }
+
+            #[async_trait::async_trait]
+            impl ascom_alpaca::api::Device for $name {
+                fn static_name(&self) -> &str {
+                    "mock"
+                }
+                fn unique_id(&self) -> &str {
+                    "mock-id"
+                }
+                async fn connected(&self) -> ascom_alpaca::ASCOMResult<bool> {
+                    Ok(true)
+                }
+                async fn set_connected(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+                    Ok(())
+                }
+                async fn description(&self) -> ascom_alpaca::ASCOMResult<String> {
+                    Ok("mock".into())
+                }
+                async fn driver_info(&self) -> ascom_alpaca::ASCOMResult<String> {
+                    Ok("mock".into())
+                }
+                async fn driver_version(&self) -> ascom_alpaca::ASCOMResult<String> {
+                    Ok("0.0".into())
+                }
+            }
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // MockCamera — single configurable mock for all Camera error-injection
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct MockCamera {
+        fail_start_exposure: bool,
+        fail_image_ready: bool,
+        fail_image_array: bool,
+        fail_max_adu: bool,
+        fail_camera_size: bool,
+    }
+
+    impl_mock_device!(MockCamera);
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::Camera for MockCamera {
+        async fn start_exposure(
+            &self,
+            _duration: Duration,
+            _light: bool,
+        ) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_start_exposure {
+                return Err(ASCOMError::invalid_operation("shutter jammed"));
+            }
+            Ok(())
+        }
+
+        async fn image_ready(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_image_ready {
+                return Err(ASCOMError::invalid_operation("readout failed"));
+            }
+            Ok(true)
+        }
+
+        async fn image_array(
+            &self,
+        ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::ImageArray> {
+            if self.fail_image_array {
+                return Err(ASCOMError::invalid_operation("download timeout"));
+            }
+            Ok(ndarray::Array3::<i32>::zeros((2, 2, 1)).into())
+        }
+
+        async fn max_adu(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            if self.fail_max_adu {
+                return Err(ASCOMError::invalid_operation("not available"));
+            }
+            Ok(65535)
+        }
+
+        async fn camera_x_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            if self.fail_camera_size {
+                return Err(ASCOMError::invalid_operation("sensor error"));
+            }
+            Ok(1024)
+        }
+
+        async fn camera_y_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            if self.fail_camera_size {
+                return Err(ASCOMError::invalid_operation("sensor error"));
+            }
+            Ok(1024)
+        }
+
+        async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
+            Ok(Duration::from_secs(3600))
+        }
+
+        async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
+            Ok(Duration::from_millis(1))
+        }
+
+        async fn exposure_resolution(&self) -> ascom_alpaca::ASCOMResult<Duration> {
+            Ok(Duration::from_millis(1))
+        }
+
+        async fn has_shutter(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(true)
+        }
+
+        async fn pixel_size_x(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Ok(3.76)
+        }
+
+        async fn pixel_size_y(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Ok(3.76)
+        }
+
+        async fn start_x(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            Ok(0)
+        }
+
+        async fn set_start_x(&self, _start_x: u32) -> ascom_alpaca::ASCOMResult<()> {
+            Ok(())
+        }
+
+        async fn start_y(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            Ok(0)
+        }
+
+        async fn set_start_y(&self, _start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
+            Ok(())
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MockFilterWheel — single configurable mock for FilterWheel errors
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct MockFilterWheel {
+        fail_set_position: bool,
+    }
+
+    impl_mock_device!(MockFilterWheel);
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
+        async fn set_position(&self, _position: usize) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_set_position {
+                return Err(ASCOMError::invalid_operation("wheel stuck"));
+            }
+            Ok(())
+        }
+
+        async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
+            Ok(Some(0))
+        }
+
+        async fn names(&self) -> ascom_alpaca::ASCOMResult<Vec<String>> {
+            Ok(vec!["Lum".into(), "Red".into()])
+        }
+
+        async fn focus_offsets(&self) -> ascom_alpaca::ASCOMResult<Vec<i32>> {
+            Ok(vec![0, 0])
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MockCoverCalibrator — single configurable mock for CoverCalibrator
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct MockCoverCalibrator {
+        fail_close_cover: bool,
+        fail_open_cover: bool,
+        fail_calibrator_on: bool,
+        fail_calibrator_off: bool,
+        fail_max_brightness: bool,
+        fail_cover_state_poll: bool,
+    }
+
+    impl_mock_device!(MockCoverCalibrator);
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::CoverCalibrator for MockCoverCalibrator {
+        async fn close_cover(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_close_cover {
+                return Err(ASCOMError::invalid_operation("motor fault"));
+            }
+            Ok(())
+        }
+
+        async fn open_cover(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_open_cover {
+                return Err(ASCOMError::invalid_operation("motor fault"));
+            }
+            Ok(())
+        }
+
+        async fn calibrator_on(&self, _brightness: u32) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_calibrator_on {
+                return Err(ASCOMError::invalid_operation("lamp failure"));
+            }
+            Ok(())
+        }
+
+        async fn calibrator_off(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_calibrator_off {
+                return Err(ASCOMError::invalid_operation("stuck on"));
+            }
+            Ok(())
+        }
+
+        async fn cover_state(&self) -> ascom_alpaca::ASCOMResult<CoverStatus> {
+            if self.fail_cover_state_poll {
+                return Err(ASCOMError::invalid_operation("device unreachable"));
+            }
+            Ok(CoverStatus::Closed)
+        }
+
+        async fn calibrator_state(&self) -> ascom_alpaca::ASCOMResult<CalibratorStatus> {
+            Ok(CalibratorStatus::Off)
+        }
+
+        async fn max_brightness(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            if self.fail_max_brightness {
+                return Err(ASCOMError::invalid_operation("not supported"));
+            }
+            Ok(255)
+        }
+
+        async fn brightness(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            Ok(0)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper functions
+    // -----------------------------------------------------------------------
+
+    fn test_handler(registry: crate::equipment::EquipmentRegistry) -> McpHandler {
+        McpHandler::new(
+            Arc::new(registry),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: std::env::temp_dir()
+                    .join("rp-unit-test")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+        )
+    }
+
+    fn assert_tool_error(result: Result<CallToolResult, rmcp::ErrorData>, expected_substr: &str) {
+        let call_result = result.expect("tool returned protocol error");
+        assert!(
+            call_result.is_error.unwrap_or(false),
+            "expected is_error=true"
+        );
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains(expected_substr),
+            "expected error containing '{}', got: '{}'",
+            expected_substr,
+            text
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Registry builders
+    // -----------------------------------------------------------------------
+
+    fn camera_registry(
+        cam: Arc<dyn ascom_alpaca::api::Camera>,
+    ) -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![crate::equipment::CameraEntry {
+                id: "cam".to_string(),
+                connected: true,
+                config: crate::config::CameraConfig {
+                    id: "cam".to_string(),
+                    name: "mock".to_string(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_type: String::new(),
+                    device_number: 0,
+                    cooler_target_c: None,
+                    gain: None,
+                    offset: None,
+                    auth: None,
+                },
+                device: Some(cam),
+            }],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+        }
+    }
+
+    fn filter_wheel_registry(
+        fw: Arc<dyn ascom_alpaca::api::FilterWheel>,
+    ) -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![crate::equipment::FilterWheelEntry {
+                id: "fw".to_string(),
+                connected: true,
+                config: crate::config::FilterWheelConfig {
+                    id: "fw".to_string(),
+                    camera_id: String::new(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    filters: vec!["Lum".to_string(), "Red".to_string()],
+                    auth: None,
+                },
+                device: Some(fw),
+            }],
+            cover_calibrators: vec![],
+        }
+    }
+
+    fn calibrator_registry(
+        cc: Arc<dyn ascom_alpaca::api::CoverCalibrator>,
+    ) -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![crate::equipment::CoverCalibratorEntry {
+                id: "cc".to_string(),
+                connected: true,
+                config: crate::config::CoverCalibratorConfig {
+                    id: "cc".to_string(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    poll_interval_secs: 0,
+                    auth: None,
+                },
+                device: Some(cc),
+            }],
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Capture tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_capture_start_exposure_fails() {
+        let cam = MockCamera {
+            fail_start_exposure: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration_ms: 100,
+            }))
+            .await;
+        assert_tool_error(result, "failed to start exposure");
+    }
+
+    #[tokio::test]
+    async fn test_capture_image_ready_error() {
+        let cam = MockCamera {
+            fail_image_ready: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration_ms: 100,
+            }))
+            .await;
+        assert_tool_error(result, "error checking image ready");
+    }
+
+    #[tokio::test]
+    async fn test_capture_image_array_fails() {
+        let cam = MockCamera {
+            fail_image_array: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration_ms: 100,
+            }))
+            .await;
+        assert_tool_error(result, "failed to download image array");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_camera_info tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_camera_info_max_adu_fails() {
+        let cam = MockCamera {
+            fail_max_adu: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .get_camera_info(Parameters(CameraIdParams {
+                camera_id: "cam".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to read max_adu");
+    }
+
+    #[tokio::test]
+    async fn test_get_camera_info_sensor_size_fails() {
+        let cam = MockCamera {
+            fail_camera_size: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .get_camera_info(Parameters(CameraIdParams {
+                camera_id: "cam".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to read sensor size");
+    }
+
+    // -----------------------------------------------------------------------
+    // set_filter tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_set_filter_set_position_fails() {
+        let fw = MockFilterWheel {
+            fail_set_position: true,
+        };
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .set_filter(Parameters(SetFilterParams {
+                filter_wheel_id: "fw".into(),
+                filter_name: "Lum".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to set filter position");
+    }
+
+    // -----------------------------------------------------------------------
+    // CoverCalibrator tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_close_cover_command_fails() {
+        let cc = MockCoverCalibrator {
+            fail_close_cover: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .close_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to close cover");
+    }
+
+    #[tokio::test]
+    async fn test_close_cover_polling_error() {
+        let cc = MockCoverCalibrator {
+            fail_cover_state_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .close_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "error polling cover state");
+    }
+
+    #[tokio::test]
+    async fn test_open_cover_command_fails() {
+        let cc = MockCoverCalibrator {
+            fail_open_cover: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .open_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to open cover");
+    }
+
+    #[tokio::test]
+    async fn test_calibrator_on_max_brightness_fails() {
+        let cc = MockCoverCalibrator {
+            fail_max_brightness: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_on(Parameters(CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: None,
+            }))
+            .await;
+        assert_tool_error(result, "failed to read max_brightness");
+    }
+
+    #[tokio::test]
+    async fn test_calibrator_on_command_fails() {
+        let cc = MockCoverCalibrator {
+            fail_calibrator_on: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_on(Parameters(CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: None,
+            }))
+            .await;
+        assert_tool_error(result, "failed to turn calibrator on");
+    }
+
+    #[tokio::test]
+    async fn test_calibrator_off_command_fails() {
+        let cc = MockCoverCalibrator {
+            fail_calibrator_off: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_off(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to turn calibrator off");
+    }
+}
