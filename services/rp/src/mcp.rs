@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
-use ascom_alpaca::api::CoverCalibrator;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
 use rmcp::{tool, tool_router};
@@ -13,6 +12,24 @@ use uuid::Uuid;
 
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
+
+/// Look up a device by ID and return the entry + connected device, or
+/// early-return a `tool_error` `CallToolResult` from the enclosing function.
+///
+/// Usage: `let (entry, device) = resolve_device!(self, find_camera, id, "camera");`
+macro_rules! resolve_device {
+    ($self:expr, $finder:ident, $id:expr, $kind:literal) => {{
+        let entry = match $self.equipment.$finder($id) {
+            Some(e) => e,
+            None => return Ok(tool_error!(concat!($kind, " not found: {}"), $id)),
+        };
+        let device = match &entry.device {
+            Some(d) => d.clone(),
+            None => return Ok(tool_error!(concat!($kind, " not connected: {}"), $id)),
+        };
+        (entry, device)
+    }};
+}
 use crate::imaging;
 use crate::session::SessionConfig;
 
@@ -76,12 +93,23 @@ pub struct CalibratorOnParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn tool_success(result: serde_json::Value) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(result.to_string())])
+/// Build a successful `CallToolResult` from a `serde_json::json!(...)` value.
+macro_rules! tool_success {
+    ($($json:tt)+) => {
+        CallToolResult::success(vec![Content::text(
+            serde_json::json!($($json)+).to_string(),
+        )])
+    };
 }
 
-fn tool_error(msg: impl std::fmt::Display) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(msg.to_string())])
+/// Build an error `CallToolResult` from a format string or literal.
+macro_rules! tool_error {
+    ($lit:literal) => {
+        CallToolResult::error(vec![Content::text($lit)])
+    };
+    ($($arg:tt)+) => {
+        CallToolResult::error(vec![Content::text(format!($($arg)+))])
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -107,73 +135,6 @@ impl McpHandler {
             session_config,
         }
     }
-
-    /// Resolve camera_id, look up device.
-    fn resolve_camera(
-        &self,
-        camera_id: &str,
-    ) -> Result<
-        (
-            &crate::equipment::CameraEntry,
-            Arc<dyn ascom_alpaca::api::Camera>,
-        ),
-        CallToolResult,
-    > {
-        let cam_entry = self
-            .equipment
-            .find_camera(camera_id)
-            .ok_or_else(|| tool_error(format!("camera not found: {}", camera_id)))?;
-
-        let cam = cam_entry
-            .device
-            .clone()
-            .ok_or_else(|| tool_error(format!("camera not connected: {}", camera_id)))?;
-
-        Ok((cam_entry, cam))
-    }
-
-    /// Resolve filter_wheel_id, look up entry and device.
-    fn resolve_filter_wheel(
-        &self,
-        fw_id: &str,
-    ) -> Result<
-        (
-            &crate::equipment::FilterWheelEntry,
-            Arc<dyn ascom_alpaca::api::FilterWheel>,
-        ),
-        CallToolResult,
-    > {
-        let fw_entry = self
-            .equipment
-            .find_filter_wheel(fw_id)
-            .ok_or_else(|| tool_error(format!("filter wheel not found: {}", fw_id)))?;
-
-        let fw = fw_entry
-            .device
-            .clone()
-            .ok_or_else(|| tool_error(format!("filter wheel not connected: {}", fw_id)))?;
-
-        Ok((fw_entry, fw))
-    }
-
-    /// Resolve calibrator_id, look up device and poll interval.
-    fn resolve_calibrator(
-        &self,
-        calibrator_id: &str,
-    ) -> Result<(Arc<dyn CoverCalibrator>, Duration), CallToolResult> {
-        let cc_entry = self
-            .equipment
-            .find_cover_calibrator(calibrator_id)
-            .ok_or_else(|| tool_error(format!("calibrator not found: {}", calibrator_id)))?;
-
-        let cc = cc_entry
-            .device
-            .clone()
-            .ok_or_else(|| tool_error(format!("calibrator not connected: {}", calibrator_id)))?;
-
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
-        Ok((cc, poll_interval))
-    }
 }
 
 #[tool_router(server_handler)]
@@ -189,10 +150,7 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let duration = Duration::from_millis(params.duration_ms);
 
-        let (_cam_entry, cam) = match self.resolve_camera(&params.camera_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
         let document_id = Uuid::new_v4().to_string();
         let image_path = format!(
@@ -209,7 +167,7 @@ impl McpHandler {
         );
 
         if let Err(e) = cam.start_exposure(duration, true).await {
-            return Ok(tool_error(format!("failed to start exposure: {}", e)));
+            return Ok(tool_error!("failed to start exposure: {}", e));
         }
 
         loop {
@@ -218,7 +176,7 @@ impl McpHandler {
                 Ok(true) => break,
                 Ok(false) => continue,
                 Err(e) => {
-                    return Ok(tool_error(format!("error checking image ready: {}", e)));
+                    return Ok(tool_error!("error checking image ready: {}", e));
                 }
             }
         }
@@ -226,7 +184,7 @@ impl McpHandler {
         let image_array = match cam.image_array().await {
             Ok(arr) => arr,
             Err(e) => {
-                return Ok(tool_error(format!("failed to download image array: {}", e)));
+                return Ok(tool_error!("failed to download image array: {}", e));
             }
         };
 
@@ -236,7 +194,7 @@ impl McpHandler {
         let pixels: Vec<i32> = image_array.iter().copied().collect();
 
         if let Err(e) = imaging::write_fits(&image_path, &pixels, width, height).await {
-            return Ok(tool_error(format!("failed to write FITS file: {}", e)));
+            return Ok(tool_error!("failed to write FITS file: {}", e));
         }
 
         self.event_bus.emit(
@@ -247,10 +205,10 @@ impl McpHandler {
             }),
         );
 
-        Ok(tool_success(serde_json::json!({
+        Ok(tool_success!({
             "image_path": image_path,
             "document_id": document_id,
-        })))
+        }))
     }
 
     #[tool(description = "Read camera capabilities: max_adu, exposure limits, sensor dimensions")]
@@ -258,19 +216,16 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CameraIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_cam_entry, cam) = match self.resolve_camera(&params.camera_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
         let max_adu = match cam.max_adu().await {
             Ok(v) => v,
-            Err(e) => return Ok(tool_error(format!("failed to read max_adu: {}", e))),
+            Err(e) => return Ok(tool_error!("failed to read max_adu: {}", e)),
         };
 
         let (sensor_x, sensor_y) = match cam.camera_size().await {
             Ok(size) => (size[0], size[1]),
-            Err(e) => return Ok(tool_error(format!("failed to read sensor size: {}", e))),
+            Err(e) => return Ok(tool_error!("failed to read sensor size: {}", e)),
         };
 
         let (bin_x, bin_y) = match cam.bin().await {
@@ -292,7 +247,7 @@ impl McpHandler {
             }
         };
 
-        Ok(tool_success(serde_json::json!({
+        Ok(tool_success!({
             "camera_id": params.camera_id,
             "max_adu": max_adu,
             "sensor_x": sensor_x,
@@ -301,7 +256,7 @@ impl McpHandler {
             "bin_y": bin_y,
             "exposure_min_ms": exposure_min_ms,
             "exposure_max_ms": exposure_max_ms,
-        })))
+        }))
     }
 
     // -------------------------------------------------------------------
@@ -326,8 +281,8 @@ impl McpHandler {
         .await
         {
             Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Ok(tool_error(format!("failed to compute stats: {}", e))),
-            Err(e) => return Ok(tool_error(format!("task error: {}", e))),
+            Ok(Err(e)) => return Ok(tool_error!("failed to compute stats: {}", e)),
+            Err(e) => return Ok(tool_error!("task error: {}", e)),
         };
 
         debug!(
@@ -337,13 +292,13 @@ impl McpHandler {
             "computed image stats"
         );
 
-        Ok(tool_success(serde_json::json!({
+        Ok(tool_success!({
             "median_adu": stats.median_adu,
             "mean_adu": stats.mean_adu,
             "min_adu": stats.min_adu,
             "max_adu": stats.max_adu,
             "pixel_count": stats.pixel_count,
-        })))
+        }))
     }
 
     // -------------------------------------------------------------------
@@ -355,10 +310,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SetFilterParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (fw_entry, fw) = match self.resolve_filter_wheel(&params.filter_wheel_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (fw_entry, fw) = resolve_device!(
+            self,
+            find_filter_wheel,
+            &params.filter_wheel_id,
+            "filter wheel"
+        );
 
         let position = match fw_entry
             .config
@@ -367,16 +324,11 @@ impl McpHandler {
             .position(|f| f == &params.filter_name)
         {
             Some(p) => p,
-            None => {
-                return Ok(tool_error(format!(
-                    "filter not found: {}",
-                    params.filter_name
-                )))
-            }
+            None => return Ok(tool_error!("filter not found: {}", params.filter_name)),
         };
 
         if let Err(e) = fw.set_position(position).await {
-            return Ok(tool_error(format!("failed to set filter position: {}", e)));
+            return Ok(tool_error!("failed to set filter position: {}", e));
         }
 
         loop {
@@ -385,7 +337,7 @@ impl McpHandler {
                 Ok(Some(p)) if p == position => break,
                 Ok(Some(_)) | Ok(None) => continue,
                 Err(e) => {
-                    return Ok(tool_error(format!("error waiting for filter wheel: {}", e)));
+                    return Ok(tool_error!("error waiting for filter wheel: {}", e));
                 }
             }
         }
@@ -398,11 +350,11 @@ impl McpHandler {
             }),
         );
 
-        Ok(tool_success(serde_json::json!({
+        Ok(tool_success!({
             "filter_wheel_id": params.filter_wheel_id,
             "filter_name": params.filter_name,
             "position": position,
-        })))
+        }))
     }
 
     #[tool(description = "Get the current filter on a filter wheel")]
@@ -410,16 +362,18 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<FilterWheelIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (fw_entry, fw) = match self.resolve_filter_wheel(&params.filter_wheel_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (fw_entry, fw) = resolve_device!(
+            self,
+            find_filter_wheel,
+            &params.filter_wheel_id,
+            "filter wheel"
+        );
 
         let position = match fw.position().await {
             Ok(Some(p)) => p,
-            Ok(None) => return Ok(tool_error("filter wheel is moving")),
+            Ok(None) => return Ok(tool_error!("filter wheel is moving")),
             Err(e) => {
-                return Ok(tool_error(format!("failed to get filter position: {}", e)));
+                return Ok(tool_error!("failed to get filter position: {}", e));
             }
         };
 
@@ -430,11 +384,11 @@ impl McpHandler {
             .cloned()
             .unwrap_or_else(|| format!("Filter {}", position));
 
-        Ok(tool_success(serde_json::json!({
+        Ok(tool_success!({
             "filter_wheel_id": params.filter_wheel_id,
             "filter_name": filter_name,
             "position": position,
-        })))
+        }))
     }
 
     // -------------------------------------------------------------------
@@ -446,14 +400,17 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (cc, poll_interval) = match self.resolve_calibrator(&params.calibrator_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (cc_entry, cc) = resolve_device!(
+            self,
+            find_cover_calibrator,
+            &params.calibrator_id,
+            "calibrator"
+        );
+        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
 
         debug!(calibrator_id = %params.calibrator_id, "closing cover");
         if let Err(e) = cc.close_cover().await {
-            return Ok(tool_error(format!("failed to close cover: {}", e)));
+            return Ok(tool_error!("failed to close cover: {}", e));
         }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -462,17 +419,17 @@ impl McpHandler {
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
                     debug!(calibrator_id = %params.calibrator_id, "cover closed");
-                    return Ok(tool_success(serde_json::json!({"status": "closed"})));
+                    return Ok(tool_success!({"status": "closed"}));
                 }
                 Ok(_) if tokio::time::Instant::now() < deadline => continue,
                 Ok(_) => break,
                 Err(e) => {
-                    return Ok(tool_error(format!("error polling cover state: {}", e)));
+                    return Ok(tool_error!("error polling cover state: {}", e));
                 }
             }
         }
 
-        Ok(tool_error("timeout waiting for cover to close"))
+        Ok(tool_error!("timeout waiting for cover to close"))
     }
 
     #[tool(description = "Open the dust cover (blocks until open)")]
@@ -480,14 +437,17 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (cc, poll_interval) = match self.resolve_calibrator(&params.calibrator_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (cc_entry, cc) = resolve_device!(
+            self,
+            find_cover_calibrator,
+            &params.calibrator_id,
+            "calibrator"
+        );
+        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
 
         debug!(calibrator_id = %params.calibrator_id, "opening cover");
         if let Err(e) = cc.open_cover().await {
-            return Ok(tool_error(format!("failed to open cover: {}", e)));
+            return Ok(tool_error!("failed to open cover: {}", e));
         }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -496,17 +456,17 @@ impl McpHandler {
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
                     debug!(calibrator_id = %params.calibrator_id, "cover opened");
-                    return Ok(tool_success(serde_json::json!({"status": "open"})));
+                    return Ok(tool_success!({"status": "open"}));
                 }
                 Ok(_) if tokio::time::Instant::now() < deadline => continue,
                 Ok(_) => break,
                 Err(e) => {
-                    return Ok(tool_error(format!("error polling cover state: {}", e)));
+                    return Ok(tool_error!("error polling cover state: {}", e));
                 }
             }
         }
 
-        Ok(tool_error("timeout waiting for cover to open"))
+        Ok(tool_error!("timeout waiting for cover to open"))
     }
 
     #[tool(description = "Turn on flat panel at brightness (default: max). Blocks until ready")]
@@ -514,23 +474,26 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CalibratorOnParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (cc, poll_interval) = match self.resolve_calibrator(&params.calibrator_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (cc_entry, cc) = resolve_device!(
+            self,
+            find_cover_calibrator,
+            &params.calibrator_id,
+            "calibrator"
+        );
+        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
 
         let brightness = if let Some(b) = params.brightness {
             b
         } else {
             match cc.max_brightness().await {
                 Ok(max) => max,
-                Err(e) => return Ok(tool_error(format!("failed to read max_brightness: {}", e))),
+                Err(e) => return Ok(tool_error!("failed to read max_brightness: {}", e)),
             }
         };
 
         debug!(calibrator_id = %params.calibrator_id, brightness = brightness, "turning calibrator on");
         if let Err(e) = cc.calibrator_on(brightness).await {
-            return Ok(tool_error(format!("failed to turn calibrator on: {}", e)));
+            return Ok(tool_error!("failed to turn calibrator on: {}", e));
         }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -539,19 +502,19 @@ impl McpHandler {
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator ready");
-                    return Ok(tool_success(
-                        serde_json::json!({"status": "ready", "brightness": brightness}),
-                    ));
+                    return Ok(tool_success!({"status": "ready", "brightness": brightness}));
                 }
                 Ok(_) if tokio::time::Instant::now() < deadline => continue,
                 Ok(_) => break,
                 Err(e) => {
-                    return Ok(tool_error(format!("error polling calibrator state: {}", e)));
+                    return Ok(tool_error!("error polling calibrator state: {}", e));
                 }
             }
         }
 
-        Ok(tool_error("timeout waiting for calibrator to become ready"))
+        Ok(tool_error!(
+            "timeout waiting for calibrator to become ready"
+        ))
     }
 
     #[tool(description = "Turn off flat panel. Blocks until off")]
@@ -559,14 +522,17 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (cc, poll_interval) = match self.resolve_calibrator(&params.calibrator_id) {
-            Ok(v) => v,
-            Err(e) => return Ok(e),
-        };
+        let (cc_entry, cc) = resolve_device!(
+            self,
+            find_cover_calibrator,
+            &params.calibrator_id,
+            "calibrator"
+        );
+        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
 
         debug!(calibrator_id = %params.calibrator_id, "turning calibrator off");
         if let Err(e) = cc.calibrator_off().await {
-            return Ok(tool_error(format!("failed to turn calibrator off: {}", e)));
+            return Ok(tool_error!("failed to turn calibrator off: {}", e));
         }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -575,16 +541,16 @@ impl McpHandler {
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator off");
-                    return Ok(tool_success(serde_json::json!({"status": "off"})));
+                    return Ok(tool_success!({"status": "off"}));
                 }
                 Ok(_) if tokio::time::Instant::now() < deadline => continue,
                 Ok(_) => break,
                 Err(e) => {
-                    return Ok(tool_error(format!("error polling calibrator state: {}", e)));
+                    return Ok(tool_error!("error polling calibrator state: {}", e));
                 }
             }
         }
 
-        Ok(tool_error("timeout waiting for calibrator to turn off"))
+        Ok(tool_error!("timeout waiting for calibrator to turn off"))
     }
 }
