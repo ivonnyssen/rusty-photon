@@ -612,6 +612,7 @@ mod tests {
         fail_image_array: bool,
         fail_max_adu: bool,
         fail_camera_size: bool,
+        fail_exposure_range: bool,
     }
 
     impl_mock_device!(MockCamera);
@@ -667,10 +668,16 @@ mod tests {
         }
 
         async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
+            if self.fail_exposure_range {
+                return Err(ASCOMError::invalid_operation("range unavailable"));
+            }
             Ok(Duration::from_secs(3600))
         }
 
         async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
+            if self.fail_exposure_range {
+                return Err(ASCOMError::invalid_operation("range unavailable"));
+            }
             Ok(Duration::from_millis(1))
         }
 
@@ -714,6 +721,8 @@ mod tests {
     #[derive(Default)]
     struct MockFilterWheel {
         fail_set_position: bool,
+        fail_position_poll: bool,
+        report_moving: bool,
     }
 
     impl_mock_device!(MockFilterWheel);
@@ -728,6 +737,12 @@ mod tests {
         }
 
         async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
+            if self.fail_position_poll {
+                return Err(ASCOMError::invalid_operation("encoder error"));
+            }
+            if self.report_moving {
+                return Ok(None);
+            }
             Ok(Some(0))
         }
 
@@ -752,6 +767,9 @@ mod tests {
         fail_calibrator_off: bool,
         fail_max_brightness: bool,
         fail_cover_state_poll: bool,
+        stuck_cover_moving: bool,
+        fail_calibrator_state_poll: bool,
+        stuck_calibrator_not_ready: bool,
     }
 
     impl_mock_device!(MockCoverCalibrator);
@@ -790,10 +808,19 @@ mod tests {
             if self.fail_cover_state_poll {
                 return Err(ASCOMError::invalid_operation("device unreachable"));
             }
+            if self.stuck_cover_moving {
+                return Ok(CoverStatus::Moving);
+            }
             Ok(CoverStatus::Closed)
         }
 
         async fn calibrator_state(&self) -> ascom_alpaca::ASCOMResult<CalibratorStatus> {
+            if self.fail_calibrator_state_poll {
+                return Err(ASCOMError::invalid_operation("device unreachable"));
+            }
+            if self.stuck_calibrator_not_ready {
+                return Ok(CalibratorStatus::NotReady);
+            }
             Ok(CalibratorStatus::Off)
         }
 
@@ -910,7 +937,7 @@ mod tests {
                     id: "cc".to_string(),
                     alpaca_url: "http://localhost:1".to_string(),
                     device_number: 0,
-                    poll_interval_secs: 0,
+                    poll_interval_secs: 1,
                     auth: None,
                 },
                 device: Some(cc),
@@ -1012,6 +1039,7 @@ mod tests {
     async fn test_set_filter_set_position_fails() {
         let fw = MockFilterWheel {
             fail_set_position: true,
+            ..Default::default()
         };
         let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
         let result = handler
@@ -1117,5 +1145,225 @@ mod tests {
             }))
             .await;
         assert_tool_error(result, "failed to turn calibrator off");
+    }
+
+    // -----------------------------------------------------------------------
+    // capture — write_fits failure
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_capture_write_fits_fails() {
+        let cam = MockCamera::default(); // succeeds through image_array
+        let registry = camera_registry(Arc::new(cam));
+        // Point data_directory at a path that doesn't exist so write_fits fails
+        let handler = McpHandler::new(
+            Arc::new(registry),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: "/nonexistent/path/that/cannot/be/written".into(),
+            },
+        );
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration_ms: 100,
+            }))
+            .await;
+        assert_tool_error(result, "failed to write FITS file");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_camera_info — exposure_range fallback
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_camera_info_exposure_range_fallback() {
+        let cam = MockCamera {
+            fail_exposure_range: true,
+            ..Default::default()
+        };
+        let handler = test_handler(camera_registry(Arc::new(cam)));
+        let result = handler
+            .get_camera_info(Parameters(CameraIdParams {
+                camera_id: "cam".into(),
+            }))
+            .await;
+        // This is a soft failure — it falls back to defaults, so the call succeeds
+        let call_result = result.unwrap();
+        assert!(!call_result.is_error.unwrap_or(false));
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.as_str())
+            .unwrap_or("");
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(json["exposure_min_ms"], 1);
+        assert_eq!(json["exposure_max_ms"], 3600000);
+    }
+
+    // -----------------------------------------------------------------------
+    // set_filter — polling error
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_set_filter_polling_error() {
+        let fw = MockFilterWheel {
+            fail_position_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .set_filter(Parameters(SetFilterParams {
+                filter_wheel_id: "fw".into(),
+                filter_name: "Lum".into(),
+            }))
+            .await;
+        assert_tool_error(result, "error waiting for filter wheel");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_filter — errors
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_filter_position_error() {
+        let fw = MockFilterWheel {
+            fail_position_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .get_filter(Parameters(FilterWheelIdParams {
+                filter_wheel_id: "fw".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to get filter position");
+    }
+
+    #[tokio::test]
+    async fn test_get_filter_wheel_moving() {
+        let fw = MockFilterWheel {
+            report_moving: true,
+            ..Default::default()
+        };
+        let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+        let result = handler
+            .get_filter(Parameters(FilterWheelIdParams {
+                filter_wheel_id: "fw".into(),
+            }))
+            .await;
+        assert_tool_error(result, "filter wheel is moving");
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeout tests (use tokio::time::pause to fast-forward)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn test_close_cover_timeout() {
+        let cc = MockCoverCalibrator {
+            stuck_cover_moving: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .close_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for cover to close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_open_cover_timeout() {
+        let cc = MockCoverCalibrator {
+            stuck_cover_moving: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .open_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for cover to open");
+    }
+
+    #[tokio::test]
+    async fn test_open_cover_polling_error() {
+        let cc = MockCoverCalibrator {
+            fail_cover_state_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .open_cover(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "error polling cover state");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_calibrator_on_timeout() {
+        let cc = MockCoverCalibrator {
+            stuck_calibrator_not_ready: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_on(Parameters(CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: Some(100),
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for calibrator to become ready");
+    }
+
+    #[tokio::test]
+    async fn test_calibrator_on_polling_error() {
+        let cc = MockCoverCalibrator {
+            fail_calibrator_state_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_on(Parameters(CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: Some(100),
+            }))
+            .await;
+        assert_tool_error(result, "error polling calibrator state");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_calibrator_off_timeout() {
+        let cc = MockCoverCalibrator {
+            stuck_calibrator_not_ready: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_off(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for calibrator to turn off");
+    }
+
+    #[tokio::test]
+    async fn test_calibrator_off_polling_error() {
+        let cc = MockCoverCalibrator {
+            fail_calibrator_state_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(calibrator_registry(Arc::new(cc)));
+        let result = handler
+            .calibrator_off(Parameters(CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "error polling calibrator state");
     }
 }
