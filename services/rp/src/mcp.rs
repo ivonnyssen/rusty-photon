@@ -1155,12 +1155,15 @@ mod tests {
     async fn test_capture_write_fits_fails() {
         let cam = MockCamera::default(); // succeeds through image_array
         let registry = camera_registry(Arc::new(cam));
-        // Point data_directory at a path that doesn't exist so write_fits fails
+        // Use an existing file as the "directory" so write_fits fails cross-platform.
+        // The capture tool appends /capture_{uuid}.fits — creating a file inside
+        // another file fails on all OSes.
+        let blocker = tempfile::NamedTempFile::new().unwrap();
         let handler = McpHandler::new(
             Arc::new(registry),
             Arc::new(crate::events::EventBus::from_config(&[])),
             SessionConfig {
-                data_directory: "/nonexistent/path/that/cannot/be/written".into(),
+                data_directory: blocker.path().to_string_lossy().to_string(),
             },
         );
         let result = handler
