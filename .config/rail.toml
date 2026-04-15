@@ -69,6 +69,13 @@ conservative_unclassified_owner_fallback = true
 confidence_profile = "balanced"
 bot_pr_confidence_profile = "strict"  # optional bot PR override
 
+# Intercept workspace Cargo.toml before cargo-rail's hardcoded
+# FILE_KIND_TOML_WORKSPACE classifier (custom patterns take priority).
+# This prevents blanket infra=true on dependency changes. The CI
+# workflow handles this surface with targeted dep-to-crate resolution.
+[change-detection.custom]
+workspace-manifest = ["Cargo.toml"]
+
 
 [run]
 default_profile = "local"
