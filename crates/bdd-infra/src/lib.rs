@@ -355,9 +355,14 @@ fn find_binary(env_var: &str, package_name: &str) -> Option<String> {
     None
 }
 
+/// Windows process creation flag: place the child in its own process group so
+/// that `CTRL_BREAK_EVENT` can target it without affecting the test runner.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 /// Spawn the service process, either from a pre-built binary or via `cargo run`.
 ///
-/// On Windows the child is spawned with `CREATE_NEW_PROCESS_GROUP` so that
+/// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
 fn spawn_process(
@@ -374,7 +379,6 @@ fn spawn_process(
             .kill_on_drop(true);
         #[cfg(windows)]
         {
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
         cmd.spawn().unwrap_or_else(|e| {
@@ -405,7 +409,6 @@ fn spawn_process(
         cmd.args(&args).stdout(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
         {
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
         cmd.spawn()
@@ -472,6 +475,7 @@ fn send_sigterm(pid: u32) {
         // SAFETY: GenerateConsoleCtrlEvent with CTRL_BREAK_EVENT and a valid
         // process-group id is the documented way to request graceful shutdown
         // of a console process on Windows.
+        #[allow(non_snake_case)]
         extern "system" {
             fn GenerateConsoleCtrlEvent(dw_ctrl_event: u32, dw_process_group_id: u32) -> i32;
         }
