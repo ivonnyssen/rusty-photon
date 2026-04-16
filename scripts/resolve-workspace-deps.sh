@@ -55,9 +55,12 @@ fi
 # --- Dep extraction ---
 # Only [workspace.dependencies] entries changed. Extract the dep names from
 # the old and new sections, then find which ones differ.
+# Filter to key lines only (start with dep-name followed by whitespace and =)
+# to skip multi-line continuation lines (e.g., features = [ ... ]).
 extract_ws_deps() {
   sed -n '/^\[workspace\.dependencies\]/,/^\[/{/^\[/d;/^$/d;/^#/d;p;}' | \
-    awk '{print $1}' | sort
+    grep -E '^[a-zA-Z0-9_][a-zA-Z0-9_.-]*[[:space:]]*=' | \
+    sed 's/[[:space:]]*=.*//' | sort
 }
 
 OLD_DEPS=$(echo "$OLD_TOML" | extract_ws_deps)
@@ -66,8 +69,8 @@ NEW_DEPS=$(echo "$NEW_TOML" | extract_ws_deps)
 # Find dep names that were added, removed, or whose value changed
 CHANGED_DEPS=""
 for dep in $(echo "$OLD_DEPS"$'\n'"$NEW_DEPS" | sort -u); do
-  OLD_LINE=$(echo "$OLD_TOML" | sed -n "/^\[workspace\.dependencies\]/,/^\[/{/^${dep} /p;}")
-  NEW_LINE=$(echo "$NEW_TOML" | sed -n "/^\[workspace\.dependencies\]/,/^\[/{/^${dep} /p;}")
+  OLD_LINE=$(echo "$OLD_TOML" | sed -n "/^\[workspace\.dependencies\]/,/^\[/{/^${dep}[[:space:]]*=/p;}")
+  NEW_LINE=$(echo "$NEW_TOML" | sed -n "/^\[workspace\.dependencies\]/,/^\[/{/^${dep}[[:space:]]*=/p;}")
   if [ "$OLD_LINE" != "$NEW_LINE" ]; then
     CHANGED_DEPS="$CHANGED_DEPS $dep"
   fi
@@ -114,26 +117,32 @@ fi
 
 echo "Directly affected crates: $AFFECTED"
 
-# --- Reverse dependency walk ---
+# --- Reverse dependency walk (transitive BFS) ---
 # Include workspace members that transitively depend on affected crates.
 # Uses --no-deps metadata + member Cargo.toml grep to avoid full resolution
 # (which would fail if a new dep version hasn't been published yet).
+# Iterates until fixpoint to catch multi-hop chains (A -> B -> C).
 
 ALL_AFFECTED="$AFFECTED"
-for crate in $AFFECTED; do
-  # Find workspace members whose Cargo.toml references this crate as a
-  # workspace dependency (internal path deps like rp-auth, rp-tls, bdd-infra)
-  while IFS= read -r pkg_line; do
-    other_name=$(echo "$pkg_line" | jq -r '.name')
-    other_manifest=$(echo "$pkg_line" | jq -r '.manifest_path')
+QUEUE="$AFFECTED"
 
-    # Skip self
-    [ "$other_name" = "$crate" ] && continue
+while [ -n "$QUEUE" ]; do
+  NEXT_QUEUE=""
+  for crate in $QUEUE; do
+    while IFS= read -r pkg_line; do
+      other_name=$(echo "$pkg_line" | jq -r '.name')
+      other_manifest=$(echo "$pkg_line" | jq -r '.manifest_path')
 
-    if grep -qE "^${crate}[[:space:]]*(=.*workspace|\.workspace)" "$other_manifest" 2>/dev/null; then
-      ALL_AFFECTED="$ALL_AFFECTED $other_name"
-    fi
-  done < <(echo "$METADATA" | jq -c '.packages[]') || true
+      # Skip self and already-known crates
+      echo " $ALL_AFFECTED " | grep -q " $other_name " && continue
+
+      if grep -qE "^${crate}[[:space:]]*(=.*workspace|\.workspace)" "$other_manifest" 2>/dev/null; then
+        ALL_AFFECTED="$ALL_AFFECTED $other_name"
+        NEXT_QUEUE="$NEXT_QUEUE $other_name"
+      fi
+    done < <(echo "$METADATA" | jq -c '.packages[]') || true
+  done
+  QUEUE=$(echo "$NEXT_QUEUE" | xargs echo 2>/dev/null)
 done
 
 ALL_AFFECTED=$(echo "$ALL_AFFECTED" | xargs -n1 2>/dev/null | sort -u | xargs echo 2>/dev/null)
