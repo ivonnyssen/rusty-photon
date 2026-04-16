@@ -104,11 +104,13 @@ fn load_config(manifest_dir: &str) -> BddConfig {
 /// Handle to a running service process.
 ///
 /// Manages the full lifecycle: binary discovery, spawning with stdout capture,
-/// port parsing, graceful SIGTERM shutdown, and stdout draining.
+/// port parsing, graceful shutdown signaling, and stdout draining.
 ///
 /// On [`Drop`], sends a best-effort graceful-shutdown signal (SIGTERM on Unix,
-/// `CTRL_BREAK_EVENT` on Windows) so the process is cleaned up even if
-/// [`stop`](ServiceHandle::stop) is not called explicitly.
+/// `CTRL_BREAK_EVENT` on Windows) before the child handle is dropped. Callers
+/// should use [`stop`](ServiceHandle::stop) when they need an explicit
+/// graceful shutdown path, because dropping the handle may still force the
+/// process to terminate if it has not already exited.
 #[derive(Debug)]
 pub struct ServiceHandle {
     child: Option<tokio::process::Child>,
@@ -456,9 +458,16 @@ pub async fn parse_bound_port(
 ///   event targets only its process group (see [`spawn_process`]).
 fn send_sigterm(pid: u32) {
     #[cfg(unix)]
-    // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+    {
+        // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if ret != 0 {
+            debug!(
+                "failed to send SIGTERM to pid {}: {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
+        }
     }
     #[cfg(windows)]
     {
@@ -469,8 +478,13 @@ fn send_sigterm(pid: u32) {
             fn GenerateConsoleCtrlEvent(dw_ctrl_event: u32, dw_process_group_id: u32) -> i32;
         }
         const CTRL_BREAK_EVENT: u32 = 1;
-        unsafe {
-            GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+        let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+        if ret == 0 {
+            debug!(
+                "failed to send CTRL_BREAK_EVENT to process group {}: {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
         }
     }
 }
