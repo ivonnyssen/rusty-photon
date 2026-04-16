@@ -204,6 +204,34 @@ async fn test_port_is_actually_listening() {
     handle.stop().await;
 }
 
+/// Graceful shutdown must complete well under the 5-second SIGKILL fallback
+/// timeout. If the shutdown signal is not delivered (e.g. a no-op
+/// `send_sigterm`), `stop()` would wait the full 5 seconds before hard-killing.
+/// A 2-second budget catches such regressions on any platform while leaving
+/// generous margin for slow CI runners.
+#[tokio::test]
+async fn test_stop_completes_via_graceful_signal() {
+    let manifest = setup_manifest("BDD_TEST_STOP_GRACEFUL", env!("CARGO_BIN_EXE_test_service"));
+    let config = empty_config();
+
+    let mut handle = ServiceHandle::start(
+        manifest.path().to_str().unwrap(),
+        "test-service",
+        config.path().to_str().unwrap(),
+    )
+    .await;
+
+    let start = std::time::Instant::now();
+    handle.stop().await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(2000),
+        "stop() took {:?}, expected < 2s — graceful shutdown signal may not be working",
+        elapsed
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Cargo run fallback tests (no env var set, exercises `cargo run --package`)
 // ---------------------------------------------------------------------------

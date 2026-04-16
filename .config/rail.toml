@@ -63,6 +63,7 @@ infrastructure = [
   "Cargo.lock",
   "rust-toolchain.toml",
   ".config/**",
+  "crates/bdd-infra/**",
   "scripts/**",
 ]
 conservative_unclassified_owner_fallback = true

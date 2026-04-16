@@ -104,10 +104,13 @@ fn load_config(manifest_dir: &str) -> BddConfig {
 /// Handle to a running service process.
 ///
 /// Manages the full lifecycle: binary discovery, spawning with stdout capture,
-/// port parsing, graceful SIGTERM shutdown, and stdout draining.
+/// port parsing, graceful shutdown signaling, and stdout draining.
 ///
-/// On [`Drop`], sends a best-effort SIGTERM so the process is cleaned up even
-/// if [`stop`](ServiceHandle::stop) is not called explicitly.
+/// On [`Drop`], sends a best-effort graceful-shutdown signal (SIGTERM on Unix,
+/// `CTRL_BREAK_EVENT` on Windows) before the child handle is dropped. Callers
+/// should use [`stop`](ServiceHandle::stop) when they need an explicit
+/// graceful shutdown path, because dropping the handle may still force the
+/// process to terminate if it has not already exited.
 #[derive(Debug)]
 pub struct ServiceHandle {
     child: Option<tokio::process::Child>,
@@ -352,7 +355,16 @@ fn find_binary(env_var: &str, package_name: &str) -> Option<String> {
     None
 }
 
+/// Windows process creation flag: place the child in its own process group so
+/// that `CTRL_BREAK_EVENT` can target it without affecting the test runner.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 /// Spawn the service process, either from a pre-built binary or via `cargo run`.
+///
+/// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
+/// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
+/// without affecting the test runner.
 fn spawn_process(
     binary: &Option<String>,
     package_name: &str,
@@ -361,17 +373,20 @@ fn spawn_process(
 ) -> tokio::process::Child {
     if let Some(binary) = binary {
         debug!(binary = %binary, "starting {} from pre-built binary", package_name);
-        tokio::process::Command::new(binary)
-            .args(["--config", config_path])
+        let mut cmd = tokio::process::Command::new(binary);
+        cmd.args(["--config", config_path])
             .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed to start {} binary '{}': {}",
-                    package_name, binary, e
-                )
-            })
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
+        cmd.spawn().unwrap_or_else(|e| {
+            panic!(
+                "failed to start {} binary '{}': {}",
+                package_name, binary, e
+            )
+        })
     } else {
         debug!("starting {} via cargo run", package_name);
         let mut args = vec![
@@ -390,11 +405,13 @@ fn spawn_process(
             config_path.to_string(),
         ]);
 
-        tokio::process::Command::new("cargo")
-            .args(&args)
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
+        let mut cmd = tokio::process::Command::new("cargo");
+        cmd.args(&args).stdout(Stdio::piped()).kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
+        cmd.spawn()
             .unwrap_or_else(|e| panic!("failed to start {} via cargo run: {}", package_name, e))
     }
 }
@@ -434,14 +451,44 @@ pub async fn parse_bound_port(
     None
 }
 
-/// Send SIGTERM to a process (Unix only). No-op on other platforms.
+/// Send a graceful-shutdown signal to a process.
+///
+/// * **Unix** — sends `SIGTERM`.
+/// * **Windows** — sends `CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`.
+///   The child must have been spawned with `CREATE_NEW_PROCESS_GROUP` so the
+///   event targets only its process group (see [`spawn_process`]).
 fn send_sigterm(pid: u32) {
     #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+    {
+        // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if ret != 0 {
+            debug!(
+                "failed to send SIGTERM to pid {}: {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
+        }
     }
-    #[cfg(not(unix))]
-    let _ = pid;
+    #[cfg(windows)]
+    {
+        // SAFETY: GenerateConsoleCtrlEvent with CTRL_BREAK_EVENT and a valid
+        // process-group id is the documented way to request graceful shutdown
+        // of a console process on Windows.
+        #[allow(non_snake_case)]
+        extern "system" {
+            fn GenerateConsoleCtrlEvent(dw_ctrl_event: u32, dw_process_group_id: u32) -> i32;
+        }
+        const CTRL_BREAK_EVENT: u32 = 1;
+        let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+        if ret == 0 {
+            debug!(
+                "failed to send CTRL_BREAK_EVENT to process group {}: {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
