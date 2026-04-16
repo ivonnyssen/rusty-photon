@@ -23,6 +23,20 @@ jobs:
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Resolve workspace manifest changes
+        id: manifest
+        if: steps.rail.outputs.infra != 'true'
+        run: |
+          SCOPE_JSON='${{ steps.rail.outputs.scope-json }}'
+          HAS_MANIFEST=$(echo "$SCOPE_JSON" | jq -r '.surfaces["custom:workspace-manifest"] // false')
+
+          if [ "$HAS_MANIFEST" != "true" ]; then
+            echo "mode=passthrough" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          BASE_REF=$(echo "$SCOPE_JSON" | jq -r '.resolved_base')
+          bash scripts/resolve-workspace-deps.sh "$BASE_REF"
       - name: Discover affected ConformU services
         id: discover
         run: |
@@ -30,11 +44,18 @@ jobs:
           ALL_SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
-          # If infra changed or no rail filtering, test all; otherwise intersect with affected
-          if [ "${{ steps.rail.outputs.infra }}" = "true" ] || [ "${{ steps.rail.outputs.test }}" != "true" ]; then
+          # If infra changed or workspace-wide manifest change, test all;
+          # otherwise intersect with affected crates from rail + manifest resolver
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ] || \
+             [ "${{ steps.manifest.outputs.mode }}" = "workspace" ]; then
             SERVICES="$ALL_SERVICES"
+          elif [ "${{ steps.rail.outputs.test }}" != "true" ] && \
+               [ "${{ steps.manifest.outputs.test }}" != "true" ]; then
+            SERVICES="[]"
           else
-            AFFECTED='${{ steps.rail.outputs.crates }}'
+            RAIL_CRATES='${{ steps.rail.outputs.crates }}'
+            MANIFEST_CRATES='${{ steps.manifest.outputs.crates }}'
+            AFFECTED=$(echo "$RAIL_CRATES $MANIFEST_CRATES" | xargs -n1 2>/dev/null | sort -u | xargs echo 2>/dev/null)
             SERVICES=$(echo "$ALL_SERVICES" | jq -c --arg affected "$AFFECTED" \
               '[.[] | select(.name as $n | ($affected | split(" ") | index($n)))]')
           fi

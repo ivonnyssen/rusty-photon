@@ -31,6 +31,7 @@ belong in any single service design doc.
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | **Decisions** | |
 | [docs/decisions/](decisions/) | Architecture Decision Records |
+| [docs/decisions/004-build-system-evaluation.md](decisions/004-build-system-evaluation.md) | ADR-004: Build system evaluation — cargo-rail vs Bazel vs Buck2 |
 
 ## Shared Crates
 

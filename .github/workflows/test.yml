@@ -21,9 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     name: plan
     outputs:
-      test: ${{ steps.rail.outputs.test }}
+      test: ${{ steps.manifest.outputs.test || steps.rail.outputs.test }}
       infra: ${{ steps.rail.outputs.infra }}
-      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+      manifest-mode: ${{ steps.manifest.outputs.mode }}
+      cargo-args: ${{ steps.manifest.outputs.cargo-args || steps.rail.outputs.cargo-args }}
+      crates: ${{ steps.manifest.outputs.crates || steps.rail.outputs.crates }}
       bdd-packages: ${{ steps.bdd.outputs.packages }}
       has-bdd: ${{ steps.bdd.outputs.has_bdd }}
     steps:
@@ -34,6 +36,20 @@ jobs:
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Resolve workspace manifest changes
+        id: manifest
+        if: steps.rail.outputs.infra != 'true'
+        run: |
+          SCOPE_JSON='${{ steps.rail.outputs.scope-json }}'
+          HAS_MANIFEST=$(echo "$SCOPE_JSON" | jq -r '.surfaces["custom:workspace-manifest"] // false')
+
+          if [ "$HAS_MANIFEST" != "true" ]; then
+            echo "mode=passthrough" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          BASE_REF=$(echo "$SCOPE_JSON" | jq -r '.resolved_base')
+          bash scripts/resolve-workspace-deps.sh "$BASE_REF"
       - name: Discover BDD packages
         id: bdd
         run: |
@@ -41,11 +57,15 @@ jobs:
           ALL_BDD=$(cargo metadata --format-version 1 --no-deps | \
             jq -c '[.packages[] | select(.targets[] | .kind[] == "test" and .name == "bdd") | .name]')
 
-          # If infra changed, test all BDD packages; otherwise intersect with affected
-          if [ "${{ steps.rail.outputs.infra }}" = "true" ]; then
+          # If infra changed or workspace-wide manifest change, test all BDD packages;
+          # otherwise intersect with affected crates from rail + manifest resolver
+          if [ "${{ steps.rail.outputs.infra }}" = "true" ] || \
+             [ "${{ steps.manifest.outputs.mode }}" = "workspace" ]; then
             BDD_PACKAGES="$ALL_BDD"
           else
-            AFFECTED='${{ steps.rail.outputs.crates }}'
+            RAIL_CRATES='${{ steps.rail.outputs.crates }}'
+            MANIFEST_CRATES='${{ steps.manifest.outputs.crates }}'
+            AFFECTED=$(echo "$RAIL_CRATES $MANIFEST_CRATES" | xargs -n1 2>/dev/null | sort -u | xargs echo 2>/dev/null)
             BDD_PACKAGES=$(echo "$ALL_BDD" | jq -c --arg affected "$AFFECTED" \
               '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
           fi
@@ -76,16 +96,16 @@ jobs:
       # Pre-build all targets (bins + test/bench/example targets) so nextest
       # and BDD tests find cached binaries without recompilation
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+        run: cargo test --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
+        run: cargo test --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
   macos:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
@@ -106,11 +126,11 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo test --test bdd
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+        run: cargo test --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
   windows:
     # Windows nextest (unit + integration tests, no BDD).
     # BDD tests are split into per-service parallel jobs below to avoid
@@ -140,7 +160,7 @@ jobs:
       - name: cargo build
         run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
     # Per-service BDD tests on Windows, run in parallel via matrix.
     # Each service spawns its own process per scenario; on Windows this takes
@@ -204,11 +224,11 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+          cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+          cargo test --locked ${{ (needs.plan.outputs.infra == 'true' || needs.plan.outputs.manifest-mode == 'workspace') && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Generate per-package coverage reports
         run: |
           source <(cargo llvm-cov show-env --sh)
