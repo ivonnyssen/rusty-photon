@@ -1,0 +1,72 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+rust_library(
+    name = "bdd-infra",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    aliases = aliases(),
+    crate_name = "bdd_infra",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+# Helper binary used by bdd-infra's own integration tests. Referenced via the
+# TEST_SERVICE_BINARY env var by tests/service_handle.rs.
+rust_binary(
+    name = "test_service",
+    srcs = ["src/bin/test_service.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":bdd-infra"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd-infra_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    # 4 of 18 tests exercise bdd-infra's own cargo-build machinery and cannot
+    # run hermetically. See docs/plans/bazel-migration.md "Known test gaps".
+    tags = ["requires-cargo"],
+    crate = ":bdd-infra",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "service_handle",
+    srcs = ["tests/service_handle.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # 1 of 9 tests (test_start_via_cargo_run) explicitly tests the cargo-run
+    # fallback path. See docs/plans/bazel-migration.md "Known test gaps".
+    tags = ["requires-cargo"],
+    data = [":test_service"],
+    edition = "2021",
+    env = {
+        "TEST_SERVICE_BINARY": "$(rootpath :test_service)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":bdd-infra"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

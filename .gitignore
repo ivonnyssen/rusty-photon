@@ -4,3 +4,11 @@ lcov.info
 *.profraw
 .vscode
 .env
+
+# Bazel
+# bazel-* are workspace symlinks at the repo root (bazel-bin, bazel-out, ...).
+# Anchored to root so it doesn't match e.g. docs/plans/bazel-migration.md.
+/bazel-*
+# user.bazelrc allows per-developer overrides without touching .bazelrc.
+user.bazelrc
+# MODULE.bazel.lock IS committed (like Cargo.lock) for reproducibility.

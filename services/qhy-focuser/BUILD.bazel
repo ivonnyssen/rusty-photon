@@ -1,0 +1,123 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-tls:rp-tls",
+]
+
+rust_library(
+    name = "qhy-focuser_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "qhy_focuser",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "qhy-focuser",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":qhy-focuser_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "qhy-focuser_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":qhy-focuser_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "test_lib",
+    srcs = ["tests/test_lib.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":qhy-focuser_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# conformu_integration: cfg(feature = "conformu"); deferred.
+
+# BDD cucumber tests require a mock-feature binary (see ppba-driver BUILD
+# for the same pattern).
+rust_library(
+    name = "qhy-focuser_lib_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "qhy_focuser",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "qhy-focuser_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":qhy-focuser_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":qhy-focuser_mock",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/qhy-focuser",
+        "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [":qhy-focuser_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

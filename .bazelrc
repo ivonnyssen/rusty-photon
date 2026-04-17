@@ -1,0 +1,73 @@
+# Bazel configuration for rusty-photon.
+# See docs/plans/bazel-migration.md for migration status and rationale.
+
+# --- Core behavior ---------------------------------------------------------
+
+# bzlmod is the default in Bazel 8+; set explicitly so an accidental downgrade
+# doesn't silently switch to the legacy WORKSPACE path.
+common --enable_bzlmod
+common --noenable_workspace
+
+# Enable platform-specific rc sections (for example `build:windows`) when
+# present. This does not itself change stdout/stderr encoding.
+common --enable_platform_specific_config
+
+# Fail the build if a rule silently uses undeclared env vars; keeps builds
+# reproducible and remote-cache-friendly.
+build --incompatible_strict_action_env
+
+# Emit full command lines when actions fail; tiny output otherwise.
+build --verbose_failures
+
+# Print test errors to the terminal instead of just logging them.
+test --test_output=errors
+
+# Don't bail on the first test failure -- report everything.
+test --keep_going
+
+# Tests tagged `requires-cargo` need a real Cargo invocation (they test
+# cargo-integration code in bdd-infra / phd2-guider). Tests tagged `bdd` spin
+# up service binaries and are slow (~150 s total). Both are excluded by
+# default; the existing Cargo CI still exercises `requires-cargo` tests, and
+# BDD tests can be run explicitly with `bazel test --test_tag_filters=bdd`.
+# Use `bazel test ... --test_tag_filters=''` to include everything.
+test --test_tag_filters=-requires-cargo,-bdd
+
+# --- Rust toolchain --------------------------------------------------------
+
+# Use the stable Rust toolchain channel for Bazel builds.
+build --@rules_rust//rust/toolchain/channel=stable
+
+# --- Disk cache ------------------------------------------------------------
+
+# Keep a local disk cache so repeated `bazel build` across branches reuses
+# work. Size is capped implicitly by free disk space; clean with
+# `bazel clean --expunge` or by deleting the directory.
+build --disk_cache=~/.cache/bazel-disk-cache
+
+# --- CI-specific config ----------------------------------------------------
+
+# Activate with `bazel build --config=ci` in GitHub Actions.
+# Remote cache credentials come from env (BUILDBUDDY_API_KEY) not checked-in.
+
+build:ci --color=yes
+build:ci --show_timestamps
+build:ci --announce_rc
+build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
+build:ci --remote_timeout=600
+build:ci --jobs=auto
+test:ci --test_output=errors
+test:ci --test_summary=terse
+
+# Remote cache is opt-in via a separate --config=remote-cache flag so local
+# developers don't accidentally upload to the shared cache with unvetted
+# credentials. CI jobs combine: --config=ci --config=remote-cache.
+build:remote-cache --bes_backend=grpcs://remote.buildbuddy.io
+build:remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
+build:remote-cache --remote_cache=grpcs://remote.buildbuddy.io
+build:remote-cache --remote_cache_compression
+
+# --- Local overrides -------------------------------------------------------
+
+# Developers may add personal overrides in user.bazelrc (gitignored).
+try-import %workspace%/user.bazelrc
