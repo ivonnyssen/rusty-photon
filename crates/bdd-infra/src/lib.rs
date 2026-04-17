@@ -147,8 +147,9 @@ impl StdoutWatcher {
             let mut buf = String::new();
             while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
                 if let Some(port) = parse_port_from_line(&buf) {
-                    // Best-effort: if the receiver is gone, just keep draining.
-                    let _ = port_tx.send(port).await;
+                    // Best-effort: drop on full or closed so the drain never
+                    // blocks and lets the child fill its stdout pipe.
+                    let _ = port_tx.try_send(port);
                 }
                 buf.clear();
             }
@@ -916,6 +917,39 @@ mod tests {
 
         let result = parse_bound_port(stdout).await;
         assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // StdoutWatcher tests
+    // -----------------------------------------------------------------------
+
+    /// Regression: when more `bound_addr=` lines are emitted than the port
+    /// channel capacity (4), the drain task must drop the overflow instead of
+    /// blocking. A blocking send would stall the drain and eventually
+    /// deadlock the child process once its stdout pipe filled.
+    #[tokio::test]
+    async fn test_stdout_watcher_drain_does_not_block_when_channel_fills() {
+        let mut child = tokio::process::Command::new("sh")
+            .args([
+                "-c",
+                "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"bound_addr=127.0.0.1:$i\"; done",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (initial, watcher) = StdoutWatcher::new(stdout).await.unwrap();
+        assert_eq!(initial, 1);
+
+        // Never consume next_port() — subsequent sends must not block even
+        // though the bounded channel (capacity 4) will fill.
+        tokio::time::timeout(Duration::from_secs(5), watcher.drain_handle)
+            .await
+            .expect("drain task blocked on full channel")
+            .expect("drain task panicked");
+
+        let _ = child.wait().await;
     }
 
     // -----------------------------------------------------------------------
