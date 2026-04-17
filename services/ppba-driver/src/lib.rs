@@ -172,6 +172,34 @@ impl BoundServer {
     }
 }
 
+/// Run the server in a loop, restarting on reload signal and exiting on stop.
+///
+/// On each iteration the config file is re-read, the server rebuilt, and a fresh
+/// listener bound. The `stop` and `reload` closures return futures that complete
+/// when the respective signal is received (e.g., SIGTERM for stop, SIGHUP for reload).
+pub async fn run_server_loop(
+    config_path: &std::path::Path,
+    factory: Arc<dyn SerialPortFactory>,
+    mut stop: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    mut reload: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let config = load_config(&config_path.to_path_buf())?;
+        info!("Starting ppba-driver server on port {}", config.server.port);
+        let server = ServerBuilder::new(config)
+            .with_factory(factory.clone())
+            .build()
+            .await?
+            .start();
+        tokio::select! {
+            result = server => return result,
+            _ = stop() => { info!("Received stop signal"); break; }
+            _ = reload() => { info!("Reloading configuration"); continue; }
+        }
+    }
+    Ok(())
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()

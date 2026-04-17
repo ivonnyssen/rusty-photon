@@ -232,6 +232,14 @@ impl Sentinel {
         self.dashboard_listener.is_some()
     }
 
+    /// Returns a clone of the cancellation token used by this sentinel instance.
+    ///
+    /// Cancelling this token stops the engine polling loop and dashboard server,
+    /// which is needed when the outer `run_server_loop` handles a reload signal.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     /// Start the sentinel service: runs the polling loop until cancelled, then disconnects.
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
@@ -330,6 +338,35 @@ impl Sentinel {
 
         Ok(())
     }
+}
+
+/// Run the sentinel in a loop, restarting on reload signal and exiting on stop.
+///
+/// On each iteration the config file is re-read, secrets resolved, the sentinel
+/// rebuilt, and a fresh dashboard listener bound. The `stop` and `reload` closures
+/// return futures that complete when the respective signal is received.
+///
+/// Because sentinel spawns background tasks (dashboard, engine polling) that use a
+/// [`CancellationToken`], both stop and reload cancel the token to ensure clean
+/// shutdown of all spawned work before the next iteration or exit.
+pub async fn run_server_loop(
+    config_path: &std::path::Path,
+    mut stop: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    mut reload: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let mut config = load_config(config_path)?;
+        config.resolve_secrets()?;
+        tracing::info!("Starting sentinel service");
+        let sentinel = SentinelBuilder::new(config).build().await?;
+        let cancel = sentinel.cancel_token();
+        tokio::select! {
+            result = sentinel.start() => return result.map_err(Into::into),
+            _ = stop() => { cancel.cancel(); tracing::info!("Received stop signal"); break; }
+            _ = reload() => { cancel.cancel(); tracing::info!("Reloading configuration"); continue; }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::Level;
 
+use ppba_driver::SerialPortFactory;
 #[cfg(feature = "mock")]
 use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
@@ -100,23 +101,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Server port: {}", config.server.port);
 
     #[cfg(feature = "mock")]
-    let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
-        ServerBuilder::new(config)
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(MockSerialPortFactory::default());
+    #[cfg(not(feature = "mock"))]
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(ppba_driver::serial::TokioSerialPortFactory::new());
+
+    if let Some(config_path) = &args.config {
+        ppba_driver::run_server_loop(
+            config_path.as_ref(),
+            factory,
+            || {
+                Box::pin(async {
+                    shutdown_signal().await;
+                })
+            },
+            || {
+                #[cfg(unix)]
+                {
+                    Box::pin(async {
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to register SIGHUP handler")
+                            .recv()
+                            .await;
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Box::pin(std::future::pending())
+                }
+            },
+        )
+        .await?;
+    } else {
+        // No config file — single run with the CLI-assembled config (no reload support).
+        let bound = ServerBuilder::new(config)
             .with_factory(factory)
             .build()
-            .await?
-    };
-
-    #[cfg(not(feature = "mock"))]
-    let bound = ServerBuilder::new(config).build().await?;
-
-    // Race the server with a shutdown signal so SIGTERM triggers a clean
-    // exit, allowing llvm-cov profraw data to be flushed.
-    tokio::select! {
-        result = bound.start() => { result?; },
-        () = shutdown_signal() => {
-            tracing::debug!("shutting down");
+            .await?;
+        tokio::select! {
+            result = bound.start() => { result?; },
+            () = shutdown_signal() => {
+                tracing::debug!("shutting down");
+            }
         }
     }
 

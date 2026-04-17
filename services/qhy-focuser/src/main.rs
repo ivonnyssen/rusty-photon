@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::{debug, info, Level};
 
+use qhy_focuser::SerialPortFactory;
 #[cfg(feature = "mock")]
 use qhy_focuser::{load_config, Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
@@ -104,21 +105,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Server port: {}", config.server.port);
 
     #[cfg(feature = "mock")]
-    let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
-        ServerBuilder::new()
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(MockSerialPortFactory::default());
+    #[cfg(not(feature = "mock"))]
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(qhy_focuser::serial::TokioSerialPortFactory::new());
+
+    if let Some(config_path) = &args.config {
+        qhy_focuser::run_server_loop(
+            config_path.as_ref(),
+            factory,
+            || {
+                Box::pin(async {
+                    shutdown_signal().await;
+                })
+            },
+            || {
+                #[cfg(unix)]
+                {
+                    Box::pin(async {
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to register SIGHUP handler")
+                            .recv()
+                            .await;
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Box::pin(std::future::pending())
+                }
+            },
+        )
+        .await?;
+    } else {
+        // No config file — single run with the CLI-assembled config (no reload support).
+        let bound = ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)
             .build()
-            .await?
-    };
-
-    #[cfg(not(feature = "mock"))]
-    let bound = ServerBuilder::new().with_config(config).build().await?;
-
-    tokio::select! {
-        result = bound.start() => { result?; }
-        () = shutdown_signal() => { info!("Shutting down"); }
+            .await?;
+        tokio::select! {
+            result = bound.start() => { result?; }
+            () = shutdown_signal() => { info!("Shutting down"); }
+        }
     }
 
     Ok(())
