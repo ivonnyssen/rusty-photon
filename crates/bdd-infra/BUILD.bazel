@@ -30,6 +30,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    size = "small",
     # 4 of 18 tests exercise bdd-infra's own cargo-build machinery and cannot
     # run hermetically. See docs/plans/bazel-migration.md "Known test gaps".
     tags = ["requires-cargo"],
@@ -47,6 +48,7 @@ rust_test(
 rust_test(
     name = "service_handle",
     srcs = ["tests/service_handle.rs"],
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

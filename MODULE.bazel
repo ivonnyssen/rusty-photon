@@ -23,6 +23,11 @@ bazel_dep(name = "platforms", version = "1.0.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    # `-fuse-ld=lld` silences rustc's "the gold linker is deprecated and
+    # has known bugs with Rust" warning. lld is preinstalled on GHA
+    # ubuntu-latest and available via `apt install lld` on Debian/Ubuntu;
+    # on macOS/Windows the host toolchain ignores this flag.
+    extra_rustc_flags = ["-Clink-arg=-fuse-ld=lld"],
     versions = ["1.94.1"],  # matches workspace.package.rust-version
 )
 use_repo(rust, "rust_toolchains")

@@ -35,6 +35,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    size = "small",
     crate = ":sentinel_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -49,6 +50,8 @@ rust_test(
 rust_test(
     name = "bdd",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # ~15 s locally; cross-spawns filemonitor. "small" gives 60 s headroom.
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

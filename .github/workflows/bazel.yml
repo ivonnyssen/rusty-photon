@@ -37,6 +37,11 @@ jobs:
           sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
           bazel --version
 
+      # rp's BDD scenarios spawn the ASCOM Alpaca simulator. The Cargo
+      # workflows install it via the same composite action.
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+
       # Bazel disk cache lives at ~/.cache/bazel-disk-cache per .bazelrc.
       # GHA cache has a 10 GB per-repo ceiling. We key on Bazel version,
       # Cargo.lock, and MODULE.bazel.lock so a dep bump invalidates cleanly.
@@ -61,5 +66,7 @@ jobs:
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
-        # run them explicitly in their own step.
-        run: bazel test --config=ci --test_tag_filters=bdd //...
+        # run them explicitly in their own step. --test_env=PATH forwards
+        # the runner PATH (extended by the OmniSim install step) into
+        # test sandboxes so rp's scenarios can spawn ascom.alpaca.simulators.
+        run: bazel test --config=ci --test_tag_filters=bdd --test_env=PATH //...

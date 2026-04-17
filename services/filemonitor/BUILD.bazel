@@ -35,6 +35,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    size = "small",
     crate = ":filemonitor_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -51,6 +52,7 @@ rust_test(
 rust_test(
     name = "test_cli",
     srcs = ["tests/test_cli.rs"],
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -70,6 +72,7 @@ rust_test(
 rust_test(
     name = "test_reload",
     srcs = ["tests/test_reload.rs"],
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -88,6 +91,7 @@ rust_test(
 rust_test(
     name = "test_server",
     srcs = ["tests/test_server.rs"],
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -114,6 +118,7 @@ rust_test(
 rust_test(
     name = "bdd",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

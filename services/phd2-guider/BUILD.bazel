@@ -28,6 +28,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    size = "small",
     # 8 of 213 tests spawn phd2 child processes via cargo-discovered paths.
     # See docs/plans/bazel-migration.md "Known test gaps".
     tags = ["requires-cargo"],

@@ -29,6 +29,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    size = "small",
     crate = ":sentinel-app",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
