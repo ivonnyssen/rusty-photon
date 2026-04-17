@@ -8,8 +8,8 @@
 common --enable_bzlmod
 common --noenable_workspace
 
-# Make stdout/stderr UTF-8 regardless of locale (Windows CI runners default to
-# cp1252 which mangles crate output).
+# Enable platform-specific rc sections (for example `build:windows`) when
+# present. This does not itself change stdout/stderr encoding.
 common --enable_platform_specific_config
 
 # Fail the build if a rule silently uses undeclared env vars; keeps builds
@@ -26,18 +26,16 @@ test --test_output=errors
 test --keep_going
 
 # Tests tagged `requires-cargo` need a real Cargo invocation (they test
-# cargo-integration code in bdd-infra / phd2-guider). Skip by default under
-# Bazel; the existing Cargo CI still exercises them. Use
-# `bazel test ... --test_tag_filters=''` to include them explicitly.
-test --test_tag_filters=-requires-cargo
-
-# Tests tagged `bdd` spin up service binaries and are not ready yet under
-# Bazel. Phase 3 of the migration plan will wire them up.
+# cargo-integration code in bdd-infra / phd2-guider). Tests tagged `bdd` spin
+# up service binaries and are slow (~150 s total). Both are excluded by
+# default; the existing Cargo CI still exercises `requires-cargo` tests, and
+# BDD tests can be run explicitly with `bazel test --test_tag_filters=bdd`.
+# Use `bazel test ... --test_tag_filters=''` to include everything.
 test --test_tag_filters=-requires-cargo,-bdd
 
 # --- Rust toolchain --------------------------------------------------------
 
-# Ensure rustc uses the same resolver behavior Cargo uses (resolver = 2).
+# Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
 # --- Disk cache ------------------------------------------------------------

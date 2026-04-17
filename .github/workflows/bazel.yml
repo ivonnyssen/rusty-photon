@@ -3,8 +3,8 @@
 #
 # This workflow is NOT required for merge. Its purpose is to build
 # confidence that Bazel produces parity results before cutting over.
-# Remove `if: false` and add to required checks once the migration plan's
-# phase-7 exit criteria are met.
+# Add it to required checks once the migration plan's phase-7 exit
+# criteria are met.
 permissions:
   contents: read
 on:

@@ -743,6 +743,10 @@ features = ["mock"]
         // The fallback to ./Cargo.toml would silently succeed if cwd were
         // the workspace root (which has a Cargo.toml). chdir into a temp
         // directory so neither the primary nor the fallback path exists.
+        //
+        // Note: set_current_dir is process-global, which would be unsafe
+        // with parallel tests. This is fine because we use cargo-nextest,
+        // which runs each test in its own process.
         let tmp = tempfile::tempdir().expect("tempdir");
         let previous = std::env::current_dir().expect("cwd");
         std::env::set_current_dir(tmp.path()).expect("chdir into tmp");

@@ -56,30 +56,30 @@ repo root/
 
 ## Phases
 
-### Phase 0 — Foundation (this session)
+### Phase 0 — Foundation (DONE)
 - [x] Migration plan doc (this file).
-- [ ] `.bazelversion`, `.bazelrc`, `MODULE.bazel`, `.bazelignore`.
-- [ ] `crate_universe` wired to root `Cargo.toml` + `Cargo.lock`.
-- [ ] `bazel mod tidy` succeeds; external crate index generated.
-- [ ] bazelisk installed locally and pinned via `.bazelversion`.
+- [x] `.bazelversion`, `.bazelrc`, `MODULE.bazel`, `.bazelignore`.
+- [x] `crate_universe` wired to root `Cargo.toml` + `Cargo.lock`.
+- [x] `bazel mod tidy` succeeds; external crate index generated.
+- [x] bazelisk installed locally and pinned via `.bazelversion`.
 
 **Exit criteria:** `bazel build @crates//...` resolves all crates.io deps without error.
 
-### Phase 1 — Leaf crates (this session)
-- [ ] `crates/rp-auth/BUILD.bazel` — `rust_library` + `rust_test`.
-- [ ] `crates/rp-tls/BUILD.bazel` — `rust_library` + `rust_test`.
-- [ ] `crates/bdd-infra/BUILD.bazel` — `rust_library` + `rust_test`. Note: `TEST_SERVICE_BINARY` env var for integration tests needs a `sh_test` wrapper.
-- [ ] `services/phd2-guider/BUILD.bazel` — `rust_library` + `rust_binary` (mock_phd2) + `rust_test`.
+### Phase 1 — Leaf crates (DONE)
+- [x] `crates/rp-auth/BUILD.bazel` — `rust_library` + `rust_test`.
+- [x] `crates/rp-tls/BUILD.bazel` — `rust_library` + `rust_test`.
+- [x] `crates/bdd-infra/BUILD.bazel` — `rust_library` + `rust_test`. Note: `TEST_SERVICE_BINARY` env var for integration tests needs a `sh_test` wrapper.
+- [x] `services/phd2-guider/BUILD.bazel` — `rust_library` + `rust_binary` (mock_phd2) + `rust_test`.
 
 **Exit criteria:** `bazel build //crates/... //services/phd2-guider/...` and `bazel test //crates/... //services/phd2-guider/... --test_tag_filters=-bdd` pass.
 
-### Phase 2 — Service binaries (next session)
-- [ ] `services/calibrator-flats/BUILD.bazel` — simplest service, rmcp client only.
-- [ ] `services/sentinel/BUILD.bazel` — adds tower/tower-http deps.
-- [ ] `services/filemonitor/BUILD.bazel` — Windows-conditional `windows-service`, conformu feature.
-- [ ] `services/qhy-focuser/BUILD.bazel` — mock + conformu features.
-- [ ] `services/ppba-driver/BUILD.bazel` — mock + conformu features.
-- [ ] `services/rp/BUILD.bazel` — largest binary; rmcp server + many ascom-alpaca features.
+### Phase 2 — Service binaries (DONE)
+- [x] `services/calibrator-flats/BUILD.bazel` — simplest service, rmcp client only.
+- [x] `services/sentinel/BUILD.bazel` — adds tower/tower-http deps.
+- [x] `services/filemonitor/BUILD.bazel` — Windows-conditional `windows-service`, conformu feature.
+- [x] `services/qhy-focuser/BUILD.bazel` — mock + conformu features.
+- [x] `services/ppba-driver/BUILD.bazel` — mock + conformu features.
+- [x] `services/rp/BUILD.bazel` — largest binary; rmcp server + many ascom-alpaca features.
 
 **Exit criteria:** all service binaries build; non-BDD unit tests pass.
 
