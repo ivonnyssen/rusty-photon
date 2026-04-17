@@ -720,18 +720,14 @@ mod tests {
         let target = tmp.path().join("pkg");
         std::fs::create_dir_all(&target).unwrap();
 
-        // Use a platform-appropriate absolute path: on Windows `/foo` is
-        // relative (no drive letter), so Path::is_relative() returns true
-        // and the function would absolutize it.
-        let abs_path = if cfg!(windows) {
-            r"C:\absolute\path\to\bin"
-        } else {
-            "/absolute/path/to/bin"
-        };
+        // Use the tempdir's own path as the absolute binary value — it's
+        // guaranteed absolute on every platform (including the correct
+        // drive letter on Windows).
+        let abs_path = tmp.path().join("bin").to_string_lossy().to_string();
 
         let previous = std::env::current_dir().unwrap();
         let unique_var = "TEST_CHDIR_SKIP_BINARY";
-        std::env::set_var(unique_var, abs_path);
+        std::env::set_var(unique_var, &abs_path);
         std::env::set_var("BDD_PACKAGE_DIR", &target);
 
         __bdd_bazel_chdir();
