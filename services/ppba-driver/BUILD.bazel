@@ -91,9 +91,11 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/ppba-driver",
         # The ppba-driver Cargo.toml [package.metadata.bdd] env_var is
-        # "PPBA_BINARY" (not the conventional PPBA_DRIVER_BINARY). We
-        # match that so Cargo and Bazel runs see the same contract.
+        # "PPBA_BINARY" (not the conventional PPBA_DRIVER_BINARY). Export
+        # both so resolve_bdd_config() can take the hermetic fast path via
+        # the conventional name while preserving the existing contract.
         "PPBA_BINARY": "$(rootpath :ppba-driver_mock)",
+        "PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

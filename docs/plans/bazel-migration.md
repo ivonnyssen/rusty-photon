@@ -1,6 +1,6 @@
 # Bazel Migration Plan
 
-**Status:** In progress (branch `worktree-explore-build-systems`)
+**Status:** In progress
 **Started:** 2026-04-16
 **Target cutover:** TBD (dependent on shadow-mode validation)
 
@@ -26,7 +26,7 @@ Bazel's remote cache is the structural fix for items 1 and 2 — the cache is co
 - Documentation (`CLAUDE.md`, `docs/skills/pre-push.md`) updated.
 
 **Out-of-scope (deferred):**
-- Removing Cargo entirely. `Cargo.toml` remains the source of truth for dependency versions via `crate_universe`'s `from_cargo_workspace`. Developers can still run `cargo` locally for IDE/rust-analyzer support.
+- Removing Cargo entirely. `Cargo.toml` remains the source of truth for dependency versions via `crate_universe`'s `from_cargo`. Developers can still run `cargo` locally for IDE/rust-analyzer support.
 - Miri under Bazel. rules_rust miri support is thin; keep the scheduled Cargo job.
 - ConformU runs. External ASCOM tool; keep the existing Cargo invocation.
 - Migrating `cargo-husky` pre-commit hooks. Bazel-native alternative would be a `sh_binary` hook installer, but out of scope here.
