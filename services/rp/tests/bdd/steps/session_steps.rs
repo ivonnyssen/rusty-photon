@@ -2,7 +2,8 @@
 
 use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::{OrchestratorBehavior, TestOrchestrator};
+use bdd_infra::rp_harness::{OrchestratorBehavior, TestOrchestrator};
+
 use crate::world::RpWorld;
 
 // --- Given steps ---

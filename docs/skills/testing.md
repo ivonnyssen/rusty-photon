@@ -306,12 +306,44 @@ The `crates/bdd-infra` crate provides shared process lifecycle management for al
 services' BDD and integration tests. It eliminates per-service duplication of
 binary discovery, spawning, port parsing, and graceful shutdown logic.
 
-**Key types:**
+**Key types (default feature set):**
 
 - `ServiceHandle` — spawns a service binary, parses its bound port from stdout,
   provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
   pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
 - `parse_bound_port()` — standalone function also usable by ConformU tests.
+
+**Optional `rp-harness` feature** — adds the higher-level helpers needed when a
+test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
+
+- `OmniSimHandle` — singleton Alpaca simulator shared across scenarios.
+- `RpConfigBuilder` + `CameraConfig` / `FilterWheelConfig` /
+  `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
+- `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
+  `sibling_service_dir` — launch helpers.
+- `WebhookReceiver`, `TestOrchestrator`, `OrchestratorBehavior` — in-process
+  plugin stand-ins.
+- `McpTestClient` — persistent rmcp client for calling rp's MCP tools.
+
+Turn the feature on **only** for tests that actually spawn rp. Services whose
+BDD tests only need `ServiceHandle` (filemonitor, qhy-focuser, ppba-driver,
+sentinel, …) should leave the default features so they don't compile axum,
+reqwest, and rmcp transitively.
+
+```toml
+# rp's own tests and any rp-client plugin's tests:
+bdd-infra = { workspace = true, features = ["rp-harness"] }
+
+# Services whose tests only spawn themselves:
+bdd-infra = { workspace = true }
+```
+
+**Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator
+or event plugin live in that plugin's own `services/<plugin>/tests/` tree, not
+in `services/rp/tests/`. Each plugin owns a small world type that embeds the
+handles it needs and uses `rp_harness::start_rp(sibling_service_dir(...), ...)`
+to spawn rp. This keeps rp's test run time bounded as more plugins land —
+`cargo-rail` only re-runs the plugin whose code changed.
 
 **Configuration** is stored in each service's `Cargo.toml`:
 
@@ -359,13 +391,16 @@ tests/
     world.rs                # World struct + helpers
     steps/
       mod.rs                # pub mod for each step file
-      infrastructure.rs     # ServiceHandle re-export + service-specific infra
       connection_steps.rs
       ...
   features/
     connection_lifecycle.feature
     ...
 ```
+
+Services that spawn rp (plugin workflows) import shared helpers from
+`bdd_infra::rp_harness` directly — there is no `steps/infrastructure.rs`
+re-export layer.
 
 The `bdd.rs` entry point uses `#[path = "..."]` imports because test crate roots see siblings, not children.
 

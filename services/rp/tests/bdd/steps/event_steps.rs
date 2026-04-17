@@ -2,7 +2,8 @@
 
 use cucumber::{given, then};
 
-use crate::steps::infrastructure::WebhookReceiver;
+use bdd_infra::rp_harness::WebhookReceiver;
+
 use crate::world::RpWorld;
 
 // --- Given steps ---

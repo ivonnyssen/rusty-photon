@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use cucumber::{given, then, when};
 use tempfile::TempDir;
 
-use crate::steps::infrastructure::ServiceHandle;
+use bdd_infra::ServiceHandle;
+
 use crate::world::RpWorld;
 
 // ---------------------------------------------------------------------------
