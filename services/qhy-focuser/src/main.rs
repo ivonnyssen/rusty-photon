@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::{debug, info, Level};
 
+use qhy_focuser::SerialPortFactory;
 #[cfg(feature = "mock")]
-use qhy_focuser::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+use qhy_focuser::{Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
-use qhy_focuser::{load_config, Config, ServerBuilder};
+use qhy_focuser::{Config, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "qhy-focuser")]
@@ -80,45 +81,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.config, args.port, args.server_port, args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
-    } else {
-        debug!("Using default configuration");
-        Config::default()
-    };
-
-    if let Some(port) = args.port {
-        config.serial.port = port;
-    }
-    if let Some(server_port) = args.server_port {
-        config.server.port = server_port;
-    }
-
     info!("Starting QHY Q-Focuser driver");
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
-    #[cfg(not(feature = "mock"))]
-    info!("Serial port: {}", config.serial.port);
-    info!("Baud rate: {}", config.serial.baud_rate);
-    info!("Server port: {}", config.server.port);
 
     #[cfg(feature = "mock")]
-    let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
-        ServerBuilder::new()
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(MockSerialPortFactory::default());
+    #[cfg(not(feature = "mock"))]
+    let factory: std::sync::Arc<dyn SerialPortFactory> =
+        std::sync::Arc::new(qhy_focuser::serial::TokioSerialPortFactory::new());
+
+    if let Some(config_path) = args.config.clone() {
+        debug!("Loading configuration from {:?}", config_path);
+        // Capture CLI overrides so they are re-applied after each reload.
+        let override_serial_port = args.port.clone();
+        let override_server_port = args.server_port;
+        qhy_focuser::run_server_loop(
+            config_path.as_ref(),
+            factory,
+            move |cfg: &mut Config| {
+                if let Some(p) = &override_serial_port {
+                    cfg.serial.port = p.clone();
+                }
+                if let Some(p) = override_server_port {
+                    cfg.server.port = p;
+                }
+            },
+            || {
+                Box::pin(async {
+                    shutdown_signal().await;
+                })
+            },
+            || {
+                #[cfg(unix)]
+                {
+                    Box::pin(async {
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to register SIGHUP handler")
+                            .recv()
+                            .await;
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Box::pin(std::future::pending())
+                }
+            },
+        )
+        .await?;
+    } else {
+        // No config file — single run with the CLI-assembled config (no reload support).
+        debug!("Using default configuration");
+        let mut config = Config::default();
+        if let Some(port) = args.port {
+            config.serial.port = port;
+        }
+        if let Some(server_port) = args.server_port {
+            config.server.port = server_port;
+        }
+
+        #[cfg(not(feature = "mock"))]
+        info!("Serial port: {}", config.serial.port);
+        info!("Baud rate: {}", config.serial.baud_rate);
+        info!("Server port: {}", config.server.port);
+
+        let bound = ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)
             .build()
-            .await?
-    };
-
-    #[cfg(not(feature = "mock"))]
-    let bound = ServerBuilder::new().with_config(config).build().await?;
-
-    tokio::select! {
-        result = bound.start() => { result?; }
-        () = shutdown_signal() => { info!("Shutting down"); }
+            .await?;
+        tokio::select! {
+            result = bound.start() => { result?; }
+            () = shutdown_signal() => { info!("Shutting down"); }
+        }
     }
 
     Ok(())

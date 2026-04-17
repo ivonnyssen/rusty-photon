@@ -72,6 +72,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
 use tracing::debug;
 
 /// BDD configuration read from `[package.metadata.bdd]` in a service's Cargo.toml.
@@ -101,6 +102,89 @@ fn load_config(manifest_dir: &str) -> BddConfig {
         .unwrap_or_else(|e| panic!("invalid [package.metadata.bdd] in {}: {}", path, e))
 }
 
+/// Watches a service's stdout for `bound_addr=` lines.
+///
+/// On each reload the service re-binds and prints a new `bound_addr=<host>:<port>`
+/// line. `StdoutWatcher` runs a background task that parses these lines and sends
+/// port values through an [`mpsc`] channel so the caller can track port changes.
+///
+/// All other stdout lines are consumed (drained) to prevent the child process
+/// from blocking on a full pipe buffer.
+pub struct StdoutWatcher {
+    port_rx: mpsc::Receiver<u16>,
+    drain_handle: tokio::task::JoinHandle<()>,
+}
+
+impl std::fmt::Debug for StdoutWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StdoutWatcher").finish_non_exhaustive()
+    }
+}
+
+impl StdoutWatcher {
+    /// Create a new watcher that reads from `stdout` and sends parsed ports on a channel.
+    ///
+    /// Returns `(initial_port, watcher)` after parsing the first `bound_addr=` line,
+    /// or `None` if stdout closes before a port is found.
+    pub async fn new(stdout: tokio::process::ChildStdout) -> Option<(u16, Self)> {
+        let (port_tx, port_rx) = mpsc::channel::<u16>(4);
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+
+        // Parse the initial port synchronously (before spawning the drain task).
+        let initial_port = loop {
+            if reader.read_line(&mut line).await.ok()? == 0 {
+                return None; // stdout closed
+            }
+            if let Some(port) = parse_port_from_line(&line) {
+                break port;
+            }
+            line.clear();
+        };
+
+        // Spawn background task to drain stdout and report subsequent ports.
+        let drain_handle = tokio::spawn(async move {
+            let mut buf = String::new();
+            while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
+                if let Some(port) = parse_port_from_line(&buf) {
+                    // Best-effort: drop on full or closed so the drain never
+                    // blocks and lets the child fill its stdout pipe.
+                    let _ = port_tx.try_send(port);
+                }
+                buf.clear();
+            }
+        });
+
+        Some((
+            initial_port,
+            Self {
+                port_rx,
+                drain_handle,
+            },
+        ))
+    }
+
+    /// Wait for the next `bound_addr=` port emission (e.g., after a reload signal).
+    ///
+    /// Returns `None` if the child process has exited (stdout closed).
+    pub async fn next_port(&mut self) -> Option<u16> {
+        self.port_rx.recv().await
+    }
+
+    /// Abort the background drain task.
+    pub fn abort(&self) {
+        self.drain_handle.abort();
+    }
+}
+
+/// Extract a port from a stdout line containing `bound_addr=<host>:<port>`.
+fn parse_port_from_line(line: &str) -> Option<u16> {
+    let idx = line.find("bound_addr=")?;
+    let addr_str = line[idx + "bound_addr=".len()..].trim();
+    let port_str = addr_str.split(':').next_back()?;
+    port_str.parse::<u16>().ok()
+}
+
 /// Handle to a running service process.
 ///
 /// Manages the full lifecycle: binary discovery, spawning with stdout capture,
@@ -118,7 +202,7 @@ pub struct ServiceHandle {
     pub port: u16,
     /// The base URL of the running service (e.g., `http://127.0.0.1:12345`).
     pub base_url: String,
-    stdout_drain: Option<tokio::task::JoinHandle<()>>,
+    stdout_watcher: Option<StdoutWatcher>,
     /// Service name (for log/error messages).
     name: String,
 }
@@ -150,7 +234,7 @@ impl ServiceHandle {
             .stdout
             .take()
             .unwrap_or_else(|| panic!("failed to capture {} stdout", package_name));
-        let (port, stdout_drain) = parse_bound_port(stdout)
+        let (port, watcher) = StdoutWatcher::new(stdout)
             .await
             .unwrap_or_else(|| panic!("failed to parse bound port from {} output", package_name));
 
@@ -158,7 +242,7 @@ impl ServiceHandle {
             child: Some(child),
             port,
             base_url: format!("http://127.0.0.1:{}", port),
-            stdout_drain: Some(stdout_drain),
+            stdout_watcher: Some(watcher),
             name: package_name.to_string(),
         }
     }
@@ -181,12 +265,12 @@ impl ServiceHandle {
             .take()
             .ok_or_else(|| format!("failed to capture {} stdout", package_name))?;
 
-        match tokio::time::timeout(Duration::from_secs(30), parse_bound_port(stdout)).await {
-            Ok(Some((port, stdout_drain))) => Ok(Self {
+        match tokio::time::timeout(Duration::from_secs(30), StdoutWatcher::new(stdout)).await {
+            Ok(Some((port, watcher))) => Ok(Self {
                 child: Some(child),
                 port,
                 base_url: format!("http://127.0.0.1:{}", port),
-                stdout_drain: Some(stdout_drain),
+                stdout_watcher: Some(watcher),
                 name: package_name.to_string(),
             }),
             Ok(None) => {
@@ -212,8 +296,8 @@ impl ServiceHandle {
     ///
     /// Graceful shutdown allows the process to flush coverage data (profraw files).
     pub async fn stop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
+        if let Some(watcher) = self.stdout_watcher.take() {
+            watcher.abort();
         }
         if let Some(mut child) = self.child.take() {
             if let Some(pid) = child.id() {
@@ -233,12 +317,50 @@ impl ServiceHandle {
             }
         }
     }
+
+    /// Send a reload signal (SIGHUP / named pipe) and wait for the service to
+    /// re-bind on a new port.
+    ///
+    /// The service's `run_server_loop` handles the signal by re-reading its
+    /// config file and restarting the HTTP server. Because the server binds to
+    /// port 0, it gets a fresh OS-assigned port on each reload. This method
+    /// waits for the new `bound_addr=` line on stdout and updates
+    /// [`port`](Self::port) and [`base_url`](Self::base_url) accordingly.
+    pub async fn reload(&mut self) -> Result<(), String> {
+        let pid = self
+            .child
+            .as_ref()
+            .and_then(|c| c.id())
+            .ok_or_else(|| format!("{}: no child process to reload", self.name))?;
+
+        send_reload(pid)
+            .map_err(|e| format!("{}: failed to send reload signal: {}", self.name, e))?;
+
+        let watcher = self
+            .stdout_watcher
+            .as_mut()
+            .ok_or_else(|| format!("{}: no stdout watcher", self.name))?;
+
+        match tokio::time::timeout(Duration::from_secs(30), watcher.next_port()).await {
+            Ok(Some(port)) => {
+                self.port = port;
+                self.base_url = format!("http://127.0.0.1:{}", port);
+                debug!("{} reloaded on port {}", self.name, port);
+                Ok(())
+            }
+            Ok(None) => Err(format!("{} exited during reload", self.name)),
+            Err(_) => Err(format!(
+                "{} did not re-bind within 30s after reload",
+                self.name
+            )),
+        }
+    }
 }
 
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
+        if let Some(watcher) = self.stdout_watcher.take() {
+            watcher.abort();
         }
         if let Some(ref mut child) = self.child {
             if let Some(pid) = child.id() {
@@ -422,33 +544,13 @@ fn spawn_process(
 /// After finding it, spawns a background task to drain remaining stdout so
 /// the service process never blocks on a full pipe buffer.
 ///
-/// This is a universal parser — it works regardless of what human-readable
-/// text precedes `bound_addr=` in the output line.
+/// This is a compatibility wrapper around [`StdoutWatcher`]. New code should
+/// use `StdoutWatcher::new` directly to also receive port updates after reloads.
 pub async fn parse_bound_port(
     stdout: tokio::process::ChildStdout,
 ) -> Option<(u16, tokio::task::JoinHandle<()>)> {
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-
-    while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some(idx) = line.find("bound_addr=") {
-            let addr_str = &line[idx + "bound_addr=".len()..];
-            let addr_str = addr_str.trim();
-            if let Some(port_str) = addr_str.split(':').next_back() {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    let drain_handle = tokio::spawn(async move {
-                        let mut buf = String::new();
-                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-                            buf.clear();
-                        }
-                    });
-                    return Some((port, drain_handle));
-                }
-            }
-        }
-        line.clear();
-    }
-    None
+    let (port, watcher) = StdoutWatcher::new(stdout).await?;
+    Some((port, watcher.drain_handle))
 }
 
 /// Send a graceful-shutdown signal to a process.
@@ -487,6 +589,240 @@ fn send_sigterm(pid: u32) {
                 pid,
                 std::io::Error::last_os_error()
             );
+        }
+    }
+}
+
+/// Send a reload signal to a process.
+///
+/// * **Unix** — sends `SIGHUP`, the standard "re-read configuration" signal.
+/// * **Windows** — writes to the named pipe `\\.\pipe\rusty-photon-reload-{pid}`.
+///   The service must create this pipe on startup (see each service's `main.rs`).
+///
+/// Returns an error when the signal transport fails so callers can fail fast
+/// instead of waiting for a port that will never arrive (e.g. Windows where
+/// the named-pipe reload is not yet implemented on the service side).
+fn send_reload(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        // SAFETY: libc::kill with a valid pid and SIGHUP is safe.
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGHUP) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let pipe_name = format!(r"\\.\pipe\rusty-photon-reload-{}", pid);
+        let mut pipe = std::fs::OpenOptions::new().write(true).open(&pipe_name)?;
+        use std::io::Write;
+        pipe.write_all(b"R")?;
+        Ok(())
+    }
+}
+
+/// A pool of running service processes, keyed by config hash.
+///
+/// Instead of spawning a fresh server for every BDD scenario, the pool keeps
+/// servers alive across scenarios. When a scenario needs a server with a
+/// particular config, the pool either reuses an existing one (sending a reload
+/// signal to reset state) or starts a new one.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// static POOL: LazyLock<Mutex<ServerPool>> = LazyLock::new(|| {
+///     Mutex::new(ServerPool::new(
+///         env!("CARGO_MANIFEST_DIR"),
+///         env!("CARGO_PKG_NAME"),
+///         vec![vec!["server".into(), "port".into()]],
+///     ))
+/// });
+/// ```
+/// Entry in the server pool: a running handle plus the stable config path
+/// the server was started with (so reloads re-read from the same location).
+struct PoolEntry {
+    handle: ServiceHandle,
+    config_path: std::path::PathBuf,
+}
+
+pub struct ServerPool {
+    pool: std::collections::HashMap<u64, PoolEntry>,
+    /// Pool-owned temp dir for stable config files that outlive individual scenarios.
+    config_dir: std::path::PathBuf,
+    manifest_dir: &'static str,
+    package_name: &'static str,
+    exclude_paths: Vec<Vec<String>>,
+}
+
+impl ServerPool {
+    /// Create a new empty pool.
+    ///
+    /// # Arguments
+    ///
+    /// * `manifest_dir` — pass `env!("CARGO_MANIFEST_DIR")`
+    /// * `package_name` — pass `env!("CARGO_PKG_NAME")`
+    /// * `exclude_paths` — JSON key paths to ignore when hashing configs
+    pub fn new(
+        manifest_dir: &'static str,
+        package_name: &'static str,
+        exclude_paths: Vec<Vec<String>>,
+    ) -> Self {
+        let config_dir =
+            std::env::temp_dir().join(format!("bdd-pool-{}-{}", package_name, std::process::id()));
+        std::fs::create_dir_all(&config_dir).expect("failed to create pool config dir");
+        Self {
+            pool: std::collections::HashMap::new(),
+            config_dir,
+            manifest_dir,
+            package_name,
+            exclude_paths,
+        }
+    }
+
+    /// Get a running server for this config, starting a new one if needed.
+    ///
+    /// If a server with a matching config hash already exists in the pool, its
+    /// config file is overwritten and a reload signal is sent so it picks up
+    /// any per-run artifacts (temp file paths, etc.) that differ between
+    /// scenarios but are excluded from the hash.
+    ///
+    /// Returns the port and base URL of the (re)started server.
+    pub async fn get_or_start(
+        &mut self,
+        config: &serde_json::Value,
+    ) -> Result<(u16, String), String> {
+        let refs: Vec<Vec<&str>> = self
+            .exclude_paths
+            .iter()
+            .map(|p| p.iter().map(String::as_str).collect())
+            .collect();
+        let slices: Vec<&[&str]> = refs.iter().map(|v| v.as_slice()).collect();
+        let hash = config_hash(config, &slices);
+
+        if let Some(entry) = self.pool.get_mut(&hash) {
+            if entry.handle.is_running() {
+                debug!(
+                    hash,
+                    old_port = entry.handle.port,
+                    "pool: reloading existing server"
+                );
+                // Overwrite the stable config file so the reloaded server
+                // picks up new per-scenario artifacts (temp file paths, etc.).
+                std::fs::write(
+                    &entry.config_path,
+                    serde_json::to_string_pretty(config).unwrap(),
+                )
+                .map_err(|e| format!("failed to write config: {}", e))?;
+                match entry.handle.reload().await {
+                    Ok(()) => {
+                        debug!(hash, new_port = entry.handle.port, "pool: reload succeeded");
+                        return Ok((entry.handle.port, entry.handle.base_url.clone()));
+                    }
+                    Err(e) => {
+                        debug!(hash, error = %e, "pool: reload failed, stopping stale entry");
+                        // Remove by value and explicitly stop() so the child
+                        // process is waited on before being discarded — Drop
+                        // only sends a best-effort SIGTERM without awaiting.
+                        if let Some(mut stale) = self.pool.remove(&hash) {
+                            stale.handle.stop().await;
+                        }
+                        // Fall through to start fresh below.
+                    }
+                }
+            } else {
+                debug!(hash, "pool: server no longer running, removing stale entry");
+                // Server died — remove stale entry and start fresh.
+                self.pool.remove(&hash);
+            }
+        }
+
+        // Create a stable config path owned by the pool (outlives scenarios).
+        debug!(hash, "pool: starting new server");
+        let config_path = self.config_dir.join(format!("pool-{}.json", hash));
+        std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
+            .map_err(|e| format!("failed to write config: {}", e))?;
+        let handle = ServiceHandle::start(
+            self.manifest_dir,
+            self.package_name,
+            config_path.to_str().unwrap(),
+        )
+        .await;
+        let port = handle.port;
+        let base_url = handle.base_url.clone();
+        self.pool.insert(
+            hash,
+            PoolEntry {
+                handle,
+                config_path,
+            },
+        );
+        Ok((port, base_url))
+    }
+
+    /// Compute the config hash for the given config value.
+    pub fn hash_config(&self, config: &serde_json::Value) -> u64 {
+        let refs: Vec<Vec<&str>> = self
+            .exclude_paths
+            .iter()
+            .map(|p| p.iter().map(String::as_str).collect())
+            .collect();
+        let slices: Vec<&[&str]> = refs.iter().map(|v| v.as_slice()).collect();
+        config_hash(config, &slices)
+    }
+
+    /// Stop all servers in the pool and clean up config files.
+    pub async fn stop_all(&mut self) {
+        for (_, entry) in self.pool.iter_mut() {
+            entry.handle.stop().await;
+        }
+        self.pool.clear();
+        let _ = std::fs::remove_dir_all(&self.config_dir);
+    }
+}
+
+/// Compute a deterministic hash of a JSON config, ignoring specified fields.
+///
+/// This is used by [`ServerPool`] to decide whether an existing server can be
+/// reused: if two configs produce the same hash (after excluding per-run
+/// artifacts like ports and temp paths), they are functionally equivalent.
+///
+/// # Arguments
+///
+/// * `config` — the full JSON config value
+/// * `exclude_paths` — list of JSON key paths to ignore (e.g., `&[&["server", "port"]]`)
+pub fn config_hash(config: &serde_json::Value, exclude_paths: &[&[&str]]) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut cleaned = config.clone();
+    for path in exclude_paths {
+        remove_json_path(&mut cleaned, path);
+    }
+
+    let canonical = serde_json::to_string(&cleaned).unwrap_or_default();
+    let mut hasher = std::hash::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Remove a nested key from a JSON value by following a path of keys.
+///
+/// For example, `remove_json_path(val, &["server", "port"])` removes
+/// `val["server"]["port"]` if it exists.
+fn remove_json_path(value: &mut serde_json::Value, path: &[&str]) {
+    if path.is_empty() {
+        return;
+    }
+    if path.len() == 1 {
+        if let serde_json::Value::Object(map) = value {
+            map.remove(path[0]);
+        }
+        return;
+    }
+    if let serde_json::Value::Object(map) = value {
+        if let Some(child) = map.get_mut(path[0]) {
+            remove_json_path(child, &path[1..]);
         }
     }
 }
@@ -581,6 +917,49 @@ mod tests {
 
         let result = parse_bound_port(stdout).await;
         assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // StdoutWatcher tests
+    // -----------------------------------------------------------------------
+
+    /// Regression: when more `bound_addr=` lines are emitted than the port
+    /// channel capacity (4), the drain task must drop the overflow instead of
+    /// blocking. A blocking send would stall the drain and eventually
+    /// deadlock the child process once its stdout pipe filled.
+    #[tokio::test]
+    async fn test_stdout_watcher_drain_does_not_block_when_channel_fills() {
+        // 10 bound_addr= lines, one printf call. Matches the portability
+        // approach of `test_parse_bound_port_with_preceding_lines`.
+        let mut child = tokio::process::Command::new("printf")
+            .arg(
+                "bound_addr=127.0.0.1:1\n\
+                 bound_addr=127.0.0.1:2\n\
+                 bound_addr=127.0.0.1:3\n\
+                 bound_addr=127.0.0.1:4\n\
+                 bound_addr=127.0.0.1:5\n\
+                 bound_addr=127.0.0.1:6\n\
+                 bound_addr=127.0.0.1:7\n\
+                 bound_addr=127.0.0.1:8\n\
+                 bound_addr=127.0.0.1:9\n\
+                 bound_addr=127.0.0.1:10\n",
+            )
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let (initial, watcher) = StdoutWatcher::new(stdout).await.unwrap();
+        assert_eq!(initial, 1);
+
+        // Never consume next_port() — subsequent sends must not block even
+        // though the bounded channel (capacity 4) will fill.
+        tokio::time::timeout(Duration::from_secs(5), watcher.drain_handle)
+            .await
+            .expect("drain task blocked on full channel")
+            .expect("drain task panicked");
+
+        let _ = child.wait().await;
     }
 
     // -----------------------------------------------------------------------

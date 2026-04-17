@@ -148,14 +148,48 @@ fn init_tracing(log_level: &str) {
 
 async fn run_serve(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     debug!(config_path = %config_path, "loading configuration");
-    let config = rp::config::load_config(config_path)?;
+    rp::run_server_loop(
+        std::path::Path::new(config_path),
+        || {
+            Box::pin(async {
+                let ctrl_c = async {
+                    tokio::signal::ctrl_c()
+                        .await
+                        .expect("failed to install Ctrl+C handler");
+                };
 
-    rp::ServerBuilder::new()
-        .with_config(config)
-        .build()
-        .await?
-        .start()
-        .await?;
+                #[cfg(unix)]
+                let terminate = async {
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to install SIGTERM handler")
+                        .recv()
+                        .await;
+                };
 
-    Ok(())
+                #[cfg(not(unix))]
+                let terminate = std::future::pending::<()>();
+
+                tokio::select! {
+                    () = ctrl_c => debug!("received Ctrl+C"),
+                    () = terminate => debug!("received SIGTERM"),
+                }
+            })
+        },
+        || {
+            #[cfg(unix)]
+            {
+                Box::pin(async {
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                        .expect("Failed to register SIGHUP handler")
+                        .recv()
+                        .await;
+                })
+            }
+            #[cfg(not(unix))]
+            {
+                Box::pin(std::future::pending())
+            }
+        },
+    )
+    .await
 }

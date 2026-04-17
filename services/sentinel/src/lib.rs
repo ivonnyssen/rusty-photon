@@ -232,6 +232,14 @@ impl Sentinel {
         self.dashboard_listener.is_some()
     }
 
+    /// Returns a clone of the cancellation token used by this sentinel instance.
+    ///
+    /// Cancelling this token stops the engine polling loop and dashboard server,
+    /// which is needed when the outer `run_server_loop` handles a reload signal.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     /// Start the sentinel service: runs the polling loop until cancelled, then disconnects.
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
@@ -330,6 +338,55 @@ impl Sentinel {
 
         Ok(())
     }
+}
+
+/// Run the sentinel in a loop, restarting on reload signal and exiting on stop.
+///
+/// On each iteration the config file is re-read, `apply_overrides` is invoked so
+/// CLI flags like `--dashboard-port` continue to shadow the config file across
+/// reloads, secrets are resolved, the sentinel is rebuilt, and a fresh dashboard
+/// listener is bound. The `stop` and `reload` closures return futures that
+/// complete when the respective signal is received.
+///
+/// Because sentinel spawns background tasks (dashboard, engine polling) that use a
+/// [`CancellationToken`], both stop and reload cancel the token and then await
+/// [`Sentinel::start`] to finish its shutdown path — draining the dashboard task
+/// and calling `engine.disconnect_all()` — before the next iteration or exit.
+pub async fn run_server_loop(
+    config_path: &std::path::Path,
+    mut apply_overrides: impl FnMut(&mut Config),
+    mut stop: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    mut reload: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let mut config = load_config(config_path)?;
+        apply_overrides(&mut config);
+        config.resolve_secrets()?;
+        tracing::info!("Starting sentinel service");
+        let sentinel = SentinelBuilder::new(config).build().await?;
+        let cancel = sentinel.cancel_token();
+        let mut start_fut = Box::pin(sentinel.start());
+        tokio::select! {
+            result = &mut start_fut => return result.map_err(Into::into),
+            _ = stop() => {
+                cancel.cancel();
+                tracing::info!("Received stop signal");
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("Sentinel shutdown returned error: {err}");
+                }
+                break;
+            }
+            _ = reload() => {
+                cancel.cancel();
+                tracing::info!("Reloading configuration");
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("Sentinel shutdown returned error: {err}");
+                }
+                continue;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

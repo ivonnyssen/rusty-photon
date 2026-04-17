@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use sentinel::{load_config, Config, SentinelBuilder};
+use sentinel::{Config, SentinelBuilder};
 use tracing::Level;
 
 #[derive(Parser)]
@@ -41,29 +41,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        tracing::debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
+    if let Some(config_path) = &args.config {
+        // Capture CLI overrides so they are re-applied after each reload.
+        let override_dashboard_port = args.dashboard_port;
+        sentinel::run_server_loop(
+            config_path.as_ref(),
+            move |cfg: &mut Config| {
+                if let Some(p) = override_dashboard_port {
+                    cfg.dashboard.port = p;
+                }
+            },
+            || {
+                Box::pin(async {
+                    let ctrl_c = async {
+                        tokio::signal::ctrl_c()
+                            .await
+                            .expect("Failed to listen for ctrl-c");
+                    };
+
+                    #[cfg(unix)]
+                    let terminate = async {
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                            .expect("Failed to install SIGTERM handler")
+                            .recv()
+                            .await;
+                    };
+
+                    #[cfg(not(unix))]
+                    let terminate = std::future::pending::<()>();
+
+                    tokio::select! {
+                        () = ctrl_c => tracing::info!("Received Ctrl+C"),
+                        () = terminate => tracing::info!("Received SIGTERM"),
+                    }
+                })
+            },
+            || {
+                #[cfg(unix)]
+                {
+                    Box::pin(async {
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to register SIGHUP handler")
+                            .recv()
+                            .await;
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Box::pin(std::future::pending())
+                }
+            },
+        )
+        .await?;
     } else {
-        tracing::debug!("Using default configuration");
-        Config::default()
-    };
+        // No config file — single run with default config (no reload support).
+        let mut config = Config::default();
+        config.resolve_secrets()?;
 
-    config.resolve_secrets()?;
+        if let Some(dashboard_port) = args.dashboard_port {
+            config.dashboard.port = dashboard_port;
+        }
 
-    if let Some(dashboard_port) = args.dashboard_port {
-        config.dashboard.port = dashboard_port;
+        tracing::info!("Starting sentinel service");
+        tracing::debug!(
+            "Monitors: {}, Notifiers: {}, Transitions: {}",
+            config.monitors.len(),
+            config.notifiers.len(),
+            config.transitions.len()
+        );
+
+        SentinelBuilder::new(config).build().await?.start().await?;
     }
-
-    tracing::info!("Starting sentinel service");
-    tracing::debug!(
-        "Monitors: {}, Notifiers: {}, Transitions: {}",
-        config.monitors.len(),
-        config.notifiers.len(),
-        config.transitions.len()
-    );
-
-    SentinelBuilder::new(config).build().await?.start().await?;
 
     Ok(())
 }

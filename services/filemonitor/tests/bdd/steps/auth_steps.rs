@@ -3,7 +3,6 @@
 use cucumber::{given, then, when};
 use tempfile::TempDir;
 
-use crate::steps::infrastructure::ServiceHandle;
 use crate::world::{FilemonitorWorld, ParsingRuleConfig};
 
 const AUTH_USERNAME: &str = "observatory";
@@ -74,30 +73,18 @@ fn filemonitor_configured_without_auth_and_rule(world: &mut FilemonitorWorld, pa
 async fn filemonitor_started_with_tls_and_auth(world: &mut FilemonitorWorld) {
     let dir = world.temp_dir.as_ref().expect("temp dir not created");
     let config_path = dir.path().join("filemonitor_auth_config.json");
-
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
-
-    world.filemonitor = Some(handle);
+    let content = std::fs::read_to_string(&config_path).expect("auth config not written");
+    let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+    world.start_filemonitor_direct(&config).await;
 }
 
 #[when("filemonitor is started without auth")]
 async fn filemonitor_started_without_auth(world: &mut FilemonitorWorld) {
     let dir = world.temp_dir.as_ref().expect("temp dir not created");
     let config_path = dir.path().join("filemonitor_noauth_config.json");
-
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
-
-    world.filemonitor = Some(handle);
+    let content = std::fs::read_to_string(&config_path).expect("noauth config not written");
+    let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+    world.start_filemonitor_direct(&config).await;
 }
 
 #[then("the Alpaca management endpoint should respond with valid credentials")]
@@ -110,11 +97,7 @@ async fn alpaca_management_responds_with_auth(world: &mut FilemonitorWorld) {
         .to_path_buf();
     let ca_path = pki_dir.join("ca.pem");
     let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("https://localhost:{}/management/v1/configureddevices", port);
 
     let mut ok = false;
@@ -148,11 +131,7 @@ async fn alpaca_rejects_wrong_credentials(world: &mut FilemonitorWorld) {
         .to_path_buf();
     let ca_path = pki_dir.join("ca.pem");
     let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("https://localhost:{}/management/v1/configureddevices", port);
 
     // First wait for the server to be ready with correct credentials
@@ -193,11 +172,7 @@ async fn alpaca_rejects_missing_credentials(world: &mut FilemonitorWorld) {
         .to_path_buf();
     let ca_path = pki_dir.join("ca.pem");
     let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("https://localhost:{}/management/v1/configureddevices", port);
 
     // First wait for server readiness
@@ -233,11 +208,7 @@ async fn response_includes_www_authenticate(world: &mut FilemonitorWorld) {
         .to_path_buf();
     let ca_path = pki_dir.join("ca.pem");
     let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("https://localhost:{}/management/v1/configureddevices", port);
 
     // Wait for server readiness
@@ -272,11 +243,7 @@ async fn response_includes_www_authenticate(world: &mut FilemonitorWorld) {
 #[then("the Alpaca management endpoint should respond without credentials")]
 async fn alpaca_responds_without_credentials(world: &mut FilemonitorWorld) {
     let client = reqwest::Client::new();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("http://127.0.0.1:{}/management/v1/configureddevices", port);
 
     let mut ok = false;
