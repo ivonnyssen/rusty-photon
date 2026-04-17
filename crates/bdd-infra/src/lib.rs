@@ -929,11 +929,21 @@ mod tests {
     /// deadlock the child process once its stdout pipe filled.
     #[tokio::test]
     async fn test_stdout_watcher_drain_does_not_block_when_channel_fills() {
-        let mut child = tokio::process::Command::new("sh")
-            .args([
-                "-c",
-                "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"bound_addr=127.0.0.1:$i\"; done",
-            ])
+        // 10 bound_addr= lines, one printf call. Matches the portability
+        // approach of `test_parse_bound_port_with_preceding_lines`.
+        let mut child = tokio::process::Command::new("printf")
+            .arg(
+                "bound_addr=127.0.0.1:1\n\
+                 bound_addr=127.0.0.1:2\n\
+                 bound_addr=127.0.0.1:3\n\
+                 bound_addr=127.0.0.1:4\n\
+                 bound_addr=127.0.0.1:5\n\
+                 bound_addr=127.0.0.1:6\n\
+                 bound_addr=127.0.0.1:7\n\
+                 bound_addr=127.0.0.1:8\n\
+                 bound_addr=127.0.0.1:9\n\
+                 bound_addr=127.0.0.1:10\n",
+            )
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
