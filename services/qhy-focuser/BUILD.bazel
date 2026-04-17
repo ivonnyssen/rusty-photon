@@ -55,12 +55,13 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":qhy-focuser_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [":qhy-focuser_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

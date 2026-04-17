@@ -114,7 +114,7 @@ struct BddConfig {
 ///
 /// 1. **Hermetic-build path (Bazel).** If the conventional env var
 ///    `{PACKAGE_UPPER_SNAKE}_BINARY` is already set (e.g. `FILEMONITOR_BINARY`
-///    for `filemonitor`, `PPBA_DRIVER_BINARY` for `ppba-driver`), use that
+///    for `filemonitor`, `PPBA_BINARY` for `ppba-driver`), use that
 ///    name and skip Cargo.toml entirely. Bazel tests take this path: they
 ///    cannot rely on `CARGO_MANIFEST_DIR` being valid at runtime, but they
 ///    can set the conventional env var to the pre-built binary path.
@@ -559,6 +559,12 @@ mod tests {
     use super::*;
     use std::process::Stdio;
 
+    /// Guard for tests that call `set_current_dir`. cargo-nextest runs each
+    /// test in its own process so this is a no-op there, but `cargo test`
+    /// (used by the coverage job) runs tests as threads in a single process.
+    /// The mutex serializes cwd-changing tests so they don't stomp each other.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // -----------------------------------------------------------------------
     // parse_bound_port tests
     // -----------------------------------------------------------------------
@@ -647,11 +653,14 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // __bdd_bazel_chdir tests
+    //
+    // All tests that call set_current_dir hold CWD_LOCK to prevent
+    // interference when `cargo test` runs them as threads (coverage job).
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_bdd_bazel_chdir_noop_when_env_unset() {
-        // When BDD_PACKAGE_DIR is not set, the function is a no-op.
+        let _lock = CWD_LOCK.lock().unwrap();
         std::env::remove_var("BDD_PACKAGE_DIR");
         let before = std::env::current_dir().unwrap();
         __bdd_bazel_chdir();
@@ -660,9 +669,7 @@ mod tests {
 
     #[test]
     fn test_bdd_bazel_chdir_changes_directory() {
-        // Note: set_current_dir is process-global, which would be unsafe
-        // with parallel tests. This is fine because we use cargo-nextest,
-        // which runs each test in its own process.
+        let _lock = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("subdir");
         std::fs::create_dir_all(&target).unwrap();
@@ -671,18 +678,19 @@ mod tests {
         std::env::set_var("BDD_PACKAGE_DIR", &target);
         __bdd_bazel_chdir();
         let after = std::env::current_dir().unwrap();
-        // Restore before asserting so later tests aren't affected.
         std::env::set_current_dir(&previous).unwrap();
         std::env::remove_var("BDD_PACKAGE_DIR");
 
-        assert_eq!(after, target);
+        // Canonicalize both sides: on macOS /var → /private/var.
+        assert_eq!(
+            after.canonicalize().unwrap(),
+            target.canonicalize().unwrap()
+        );
     }
 
     #[test]
     fn test_bdd_bazel_chdir_absolutizes_binary_env_vars() {
-        // Note: set_current_dir is process-global, which would be unsafe
-        // with parallel tests. This is fine because we use cargo-nextest,
-        // which runs each test in its own process.
+        let _lock = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("pkg");
         std::fs::create_dir_all(&target).unwrap();
@@ -695,7 +703,6 @@ mod tests {
         __bdd_bazel_chdir();
 
         let absolutized = std::env::var(unique_var).unwrap();
-        // Restore before asserting.
         std::env::set_current_dir(&previous).unwrap();
         std::env::remove_var("BDD_PACKAGE_DIR");
         std::env::remove_var(unique_var);
@@ -708,9 +715,7 @@ mod tests {
 
     #[test]
     fn test_bdd_bazel_chdir_skips_absolute_binary_env_vars() {
-        // Note: set_current_dir is process-global, which would be unsafe
-        // with parallel tests. This is fine because we use cargo-nextest,
-        // which runs each test in its own process.
+        let _lock = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("pkg");
         std::fs::create_dir_all(&target).unwrap();
@@ -723,7 +728,6 @@ mod tests {
         __bdd_bazel_chdir();
 
         let value = std::env::var(unique_var).unwrap();
-        // Restore before asserting.
         std::env::set_current_dir(&previous).unwrap();
         std::env::remove_var("BDD_PACKAGE_DIR");
         std::env::remove_var(unique_var);
@@ -733,9 +737,7 @@ mod tests {
 
     #[test]
     fn test_bdd_bazel_chdir_ignores_non_binary_env_vars() {
-        // Note: set_current_dir is process-global, which would be unsafe
-        // with parallel tests. This is fine because we use cargo-nextest,
-        // which runs each test in its own process.
+        let _lock = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("pkg");
         std::fs::create_dir_all(&target).unwrap();
@@ -748,7 +750,6 @@ mod tests {
         __bdd_bazel_chdir();
 
         let value = std::env::var(unique_var).unwrap();
-        // Restore before asserting.
         std::env::set_current_dir(&previous).unwrap();
         std::env::remove_var("BDD_PACKAGE_DIR");
         std::env::remove_var(unique_var);
@@ -855,10 +856,7 @@ features = ["mock"]
         // The fallback to ./Cargo.toml would silently succeed if cwd were
         // the workspace root (which has a Cargo.toml). chdir into a temp
         // directory so neither the primary nor the fallback path exists.
-        //
-        // Note: set_current_dir is process-global, which would be unsafe
-        // with parallel tests. This is fine because we use cargo-nextest,
-        // which runs each test in its own process.
+        let _lock = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().expect("tempdir");
         let previous = std::env::current_dir().expect("cwd");
         std::env::set_current_dir(tmp.path()).expect("chdir into tmp");
