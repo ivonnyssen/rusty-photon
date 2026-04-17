@@ -1,0 +1,43 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+rust_library(
+    name = "phd2-guider",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**", "src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "phd2_guider",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "mock_phd2",
+    srcs = ["src/bin/mock_phd2.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":phd2-guider"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "phd2-guider_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # 8 of 213 tests spawn phd2 child processes via cargo-discovered paths.
+    # See docs/plans/bazel-migration.md "Known test gaps".
+    tags = ["requires-cargo"],
+    crate = ":phd2-guider",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

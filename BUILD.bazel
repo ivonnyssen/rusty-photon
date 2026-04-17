@@ -1,0 +1,11 @@
+# Top-level package.
+# Exports Cargo.toml and Cargo.lock so crate_universe can read them from
+# MODULE.bazel, and provides a convenient `//:all` alias.
+
+exports_files(
+    [
+        "Cargo.toml",
+        "Cargo.lock",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,53 @@
+"""rusty-photon Bazel module.
+
+Cargo.toml remains the canonical source of dependency versions.
+crate_universe reads Cargo.toml + Cargo.lock to materialize an @crates repo
+that Bazel targets reference via @crates//:<name>.
+
+Adding a dep: edit the relevant Cargo.toml, run `cargo update` if needed,
+then `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel index.
+"""
+
+module(
+    name = "rusty_photon",
+    version = "0.1.0",
+)
+
+# --- Core Bazel rules ------------------------------------------------------
+
+bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# --- Rust toolchain --------------------------------------------------------
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.94.1"],  # matches workspace.package.rust-version
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# --- crate_universe: resolve crates.io + git deps from Cargo files ---------
+
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//crates/bdd-infra:Cargo.toml",
+        "//crates/rp-auth:Cargo.toml",
+        "//crates/rp-tls:Cargo.toml",
+        "//services/calibrator-flats:Cargo.toml",
+        "//services/filemonitor:Cargo.toml",
+        "//services/phd2-guider:Cargo.toml",
+        "//services/ppba-driver:Cargo.toml",
+        "//services/qhy-focuser:Cargo.toml",
+        "//services/rp:Cargo.toml",
+        "//services/sentinel:Cargo.toml",
+        "//services/sentinel-app:Cargo.toml",
+    ],
+)
+use_repo(crate, "crates")
