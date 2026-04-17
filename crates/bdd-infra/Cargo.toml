@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared BDD test infrastructure for spawning, managing, and stopping service binaries"
+description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, test orchestrator, MCP client) for plugin/workflow BDD tests"
 
 # Used by integration tests to exercise ServiceHandle against test_service binary
 [package.metadata.bdd]
@@ -14,12 +14,33 @@ env_var = "TEST_SERVICE_BINARY"
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enables the rp-ecosystem test harness: OmniSim, webhook receiver, test
+# orchestrator, MCP client, rp config builder, and rp launcher. Opt-in so that
+# services whose tests only need `ServiceHandle` don't compile axum/reqwest/rmcp.
+rp-harness = [
+    "dep:axum",
+    "dep:reqwest",
+    "dep:rmcp",
+    "dep:serde_json",
+]
+
 [dependencies]
 libc = { workspace = true }
 serde = { workspace = true }
 toml = "1.1.0"
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+# Optional — only pulled in when the rp-harness feature is enabled.
+axum = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rmcp = { workspace = true, optional = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -38,14 +38,12 @@ rmcp = { workspace = true, features = ["server", "macros", "transport-streamable
 schemars = { workspace = true }
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
-reqwest = { workspace = true }
-rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 cargo-husky = { workspace = true }
 
 [[test]]
