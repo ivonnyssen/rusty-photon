@@ -141,3 +141,54 @@ impl OmniSimProcess {
         panic!("OmniSim did not become healthy within 30 seconds");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use axum::Router;
+
+    async fn spawn_stub(status: StatusCode) -> (String, tokio::sync::oneshot::Sender<()>) {
+        let app = Router::new().route(
+            "/api/v1/camera/0/connected",
+            get(move || async move { status }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{}", port), tx)
+    }
+
+    #[tokio::test]
+    async fn is_healthy_returns_true_on_success() {
+        let (base_url, shutdown) = spawn_stub(StatusCode::OK).await;
+        assert!(OmniSimProcess::is_healthy(&base_url).await);
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn is_healthy_returns_false_on_server_error() {
+        let (base_url, shutdown) = spawn_stub(StatusCode::INTERNAL_SERVER_ERROR).await;
+        assert!(!OmniSimProcess::is_healthy(&base_url).await);
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn is_healthy_returns_false_when_connection_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let base_url = format!("http://127.0.0.1:{}", port);
+        assert!(!OmniSimProcess::is_healthy(&base_url).await);
+    }
+}
