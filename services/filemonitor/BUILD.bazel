@@ -105,4 +105,41 @@ rust_test(
 
 # conformu_integration: gated by cfg(feature = "conformu"), also needs an
 # external ConformU tool runtime. Deferred.
-# BDD cucumber tests (tests/bdd.rs): deferred to Phase 3.
+
+# BDD cucumber test. harness=false (custom cucumber main via bdd_main!) so
+# use_libtest_harness must be False. BDD_PACKAGE_DIR tells bdd_main! to
+# chdir from the Bazel runfiles root into the package dir so that
+# relative paths (`tests/features`, `./Cargo.toml`) behave the same way
+# they do under `cargo test`.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":filemonitor",
+        "Cargo.toml",
+    ] + glob([
+        "tests/features/**",
+        "tests/*.json",
+        "tests/*.txt",
+    ]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/filemonitor",
+        "FILEMONITOR_BINARY": "$(rootpath :filemonitor)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [":filemonitor_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

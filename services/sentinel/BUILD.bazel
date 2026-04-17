@@ -46,5 +46,33 @@ rust_test(
     ),
 )
 
-# BDD cucumber tests (tests/bdd.rs with harness=false) -- deferred to Phase 3.
-# See docs/plans/bazel-migration.md.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":sentinel",
+        "Cargo.toml",
+        "//services/filemonitor:filemonitor",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/sentinel",
+        "FILEMONITOR_BINARY": "$(rootpath //services/filemonitor:filemonitor)",
+        "SENTINEL_BINARY": "$(rootpath :sentinel)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [":sentinel_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

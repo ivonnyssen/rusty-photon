@@ -275,9 +275,17 @@ CARGO_BAZEL_REPIN=1 bazel mod tidy
 git add MODULE.bazel.lock
 ```
 
+BDD cucumber tests now build and run under Bazel (Phase 3 complete) but
+are still tagged `bdd` and excluded from the default test filter because
+the full suite takes ~150 s. Run them explicitly:
+
+```bash
+bazel test --test_tag_filters=bdd //...
+# Or a single service:
+bazel test //services/filemonitor:bdd
+```
+
 Known limitations during migration:
-- BDD cucumber tests (`harness = false`) are tagged `bdd` and skipped
-  under Bazel; Cargo continues to run them.
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
   `requires-cargo` and skipped under Bazel.

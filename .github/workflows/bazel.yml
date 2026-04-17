@@ -53,7 +53,13 @@ jobs:
       - name: bazel build
         run: bazel build --config=ci //...
 
-      - name: bazel test
-        # .bazelrc filters -requires-cargo,-bdd by default; those continue
-        # to run under the existing Cargo CI jobs.
+      - name: bazel test (fast)
+        # .bazelrc filters -requires-cargo,-bdd by default; keep fast
+        # unit + integration pass separate from BDD so log output stays
+        # useful when something breaks.
         run: bazel test --config=ci //...
+
+      - name: bazel test (BDD)
+        # BDD cucumber tests spawn service binaries and take 30-150s each;
+        # run them explicitly in their own step.
+        run: bazel test --config=ci --test_tag_filters=bdd //...

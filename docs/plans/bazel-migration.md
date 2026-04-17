@@ -83,12 +83,14 @@ repo root/
 
 **Exit criteria:** all service binaries build; non-BDD unit tests pass.
 
-### Phase 3 — BDD cucumber tests (next session)
-- [ ] Custom `rust_test` wrapper that sets `{SERVICE}_BINARY=$(location :bin)` and runs the `tests/bdd.rs` entry point with `harness = false`.
-- [ ] Tag all BDD tests `bdd` for selective execution.
-- [ ] Windows BDD: evaluate whether Bazel's test sharding reduces the 5 s/scenario spawn tax (likely no — it's OS-level — but Bazel's parallelism is better than cucumber's).
+### Phase 3 — BDD cucumber tests (DONE)
+- [x] `rust_test` with `use_libtest_harness = False` + `BDD_PACKAGE_DIR` env var and a new chdir helper in `bdd_main!` so relative paths (`tests/features`, `./Cargo.toml`) behave the same under Bazel as under `cargo test`.
+- [x] All five services wired up: filemonitor, sentinel (cross-spawns filemonitor), rp (cross-spawns calibrator-flats), ppba-driver (mock feature binary), qhy-focuser (mock feature binary). Tagged `bdd`.
+- [x] `bdd-infra` gained `resolve_bdd_config`: if the conventional `{PACKAGE_UPPER}_BINARY` env var is set, skip reading Cargo.toml. Lets hermetic builds provide the pre-built binary path directly.
+- [x] `load_config` falls back to `./Cargo.toml` when the compile-time `CARGO_MANIFEST_DIR` path is no longer valid at runtime (Bazel sandbox tear-down).
+- [ ] Windows BDD: not yet exercised under Bazel CI (Linux-only shadow runner for now).
 
-**Exit criteria:** `bazel test //... --test_tag_filters=bdd` passes on Linux.
+**Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, 150 s total wall on a warm cache — rp:bdd alone is 150 s with 84 scenarios).
 
 ### Phase 4 — `sentinel-app` WASM (later)
 - [ ] `rust_shared_library` with `crate_type = ["cdylib", "rlib"]`.
@@ -161,6 +163,18 @@ Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel'
 **Resolution plan (Phase 3 or later):** either mark these tests as `#[cfg(not(bazel))]` and set `rustc_flags = ["--cfg=bazel"]` on the Bazel `rust_test` targets, or refactor them to accept an explicit binary path via env var (which the non-cargo-code-paths already support). For now, tag them `requires-cargo` in BUILD files and run Bazel tests with `--test_tag_filters=-requires-cargo`.
 
 Not a migration blocker — 217 of 230 tests across these three targets pass; the failures are confined to code that tests cargo-integration machinery which is inherently Cargo-specific.
+
+### BDD conventions under Bazel (post Phase 3)
+
+Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:
+
+- `use_libtest_harness = False` (cucumber has its own main).
+- `BDD_PACKAGE_DIR = "services/<name>"` set in `env`; `bdd_main!` chdirs there at startup and absolutizes any `*_BINARY` env vars first so binary discovery still resolves relative to the runfiles root.
+- `<SERVICE>_BINARY = "$(rootpath :<binary>)"` for self-spawn. Cross-spawn services set additional binaries: sentinel sets `FILEMONITOR_BINARY`, rp sets `CALIBRATOR_FLATS_BINARY`.
+- `data` includes the service binary, `Cargo.toml`, `tests/features/**`, and any fixture JSON (`tests/config.json` etc.).
+- ppba-driver and qhy-focuser have a second mock-feature binary target (`_mock` suffix) because Bazel treats `crate_features` as compile-time; the BDD test points at the mock binary.
+
+Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention except ppba-driver which is `PPBA_BINARY` (matching the existing `[package.metadata.bdd]` contract).
 
 ## Open questions
 

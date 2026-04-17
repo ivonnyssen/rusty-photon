@@ -53,6 +53,14 @@
 /// Under Miri the macro expands to an empty `fn main() {}`, because Miri does
 /// not support `pidfd_spawnp` and other process-spawning FFI. Under normal
 /// compilation it expands to `#[tokio::main] async fn main() { ... }`.
+///
+/// If `BDD_PACKAGE_DIR` is set in the environment, the macro chdirs there
+/// before running the body. This lets Bazel run BDD tests where the cwd is
+/// the runfiles tree rather than the package directory so that relative
+/// paths like `"tests/features"` and `"./Cargo.toml"` behave the same way
+/// they do under `cargo test`. Any `*_BINARY` env vars that hold relative
+/// paths are rewritten to absolute paths before chdir so binary discovery
+/// still resolves against the runfiles root.
 #[macro_export]
 macro_rules! bdd_main {
     ($($body:tt)*) => {
@@ -62,9 +70,25 @@ macro_rules! bdd_main {
         #[cfg(not(miri))]
         #[tokio::main]
         async fn main() {
+            $crate::__bdd_bazel_chdir();
             $($body)*
         }
     };
+}
+
+#[doc(hidden)]
+pub fn __bdd_bazel_chdir() {
+    let Ok(dir) = std::env::var("BDD_PACKAGE_DIR") else {
+        return;
+    };
+    let cwd = std::env::current_dir().expect("bdd_main: current_dir");
+    let to_absolutize: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, v)| k.ends_with("_BINARY") && std::path::Path::new(v).is_relative())
+        .collect();
+    for (k, v) in to_absolutize {
+        std::env::set_var(&k, cwd.join(v));
+    }
+    std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {}: {}", dir, e));
 }
 
 use std::process::Stdio;
@@ -84,9 +108,47 @@ struct BddConfig {
     features: Vec<String>,
 }
 
+/// Resolve the binary-discovery env var and cargo-features for `package_name`.
+///
+/// Two paths:
+///
+/// 1. **Hermetic-build path (Bazel).** If the conventional env var
+///    `{PACKAGE_UPPER_SNAKE}_BINARY` is already set (e.g. `FILEMONITOR_BINARY`
+///    for `filemonitor`, `PPBA_DRIVER_BINARY` for `ppba-driver`), use that
+///    name and skip Cargo.toml entirely. Bazel tests take this path: they
+///    cannot rely on `CARGO_MANIFEST_DIR` being valid at runtime, but they
+///    can set the conventional env var to the pre-built binary path.
+/// 2. **Cargo path.** Otherwise, read `[package.metadata.bdd]` from
+///    `{manifest_dir}/Cargo.toml` (the traditional flow). `env_var` and
+///    `features` come from there.
+fn resolve_bdd_config(manifest_dir: &str, package_name: &str) -> (String, Vec<String>) {
+    let conventional = format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"));
+    if std::env::var_os(&conventional).is_some() {
+        return (conventional, Vec::new());
+    }
+    let config = load_config(manifest_dir);
+    (config.env_var, config.features)
+}
+
 /// Load [`BddConfig`] from `{manifest_dir}/Cargo.toml`.
+///
+/// Falls back to `./Cargo.toml` if the primary path doesn't exist — this
+/// covers Bazel, where `env!("CARGO_MANIFEST_DIR")` bakes in an ephemeral
+/// sandbox path that's torn down before the test runs. `bdd_main!` chdirs
+/// into the package directory under Bazel, so `./Cargo.toml` is the right
+/// fallback.
 fn load_config(manifest_dir: &str) -> BddConfig {
-    let path = format!("{}/Cargo.toml", manifest_dir);
+    let primary = format!("{}/Cargo.toml", manifest_dir);
+    let path = if std::path::Path::new(&primary).exists() {
+        primary
+    } else if std::path::Path::new("Cargo.toml").exists() {
+        "Cargo.toml".to_string()
+    } else {
+        panic!(
+            "bdd-infra: cannot locate Cargo.toml (tried {} and ./)",
+            primary
+        );
+    };
     let content =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
     let toml: toml::Table = content
@@ -141,10 +203,10 @@ impl ServiceHandle {
     /// 2. Pre-built binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
     /// 3. Fallback to `cargo run --package <name>`
     pub async fn start(manifest_dir: &str, package_name: &str, config_path: &str) -> Self {
-        let config = load_config(manifest_dir);
-        let binary = find_binary(&config.env_var, package_name);
+        let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
+        let binary = find_binary(&env_var, package_name);
 
-        let mut child = spawn_process(&binary, package_name, &config.features, config_path);
+        let mut child = spawn_process(&binary, package_name, &features, config_path);
 
         let stdout = child
             .stdout
@@ -171,10 +233,10 @@ impl ServiceHandle {
         package_name: &str,
         config_path: &str,
     ) -> Result<Self, String> {
-        let config = load_config(manifest_dir);
-        let binary = find_binary(&config.env_var, package_name);
+        let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
+        let binary = find_binary(&env_var, package_name);
 
-        let mut child = spawn_process(&binary, package_name, &config.features, config_path);
+        let mut child = spawn_process(&binary, package_name, &features, config_path);
 
         let stdout = child
             .stdout
@@ -267,8 +329,8 @@ pub fn run_once(
     args: &[&str],
     stdin_data: Option<&[u8]>,
 ) -> std::process::Output {
-    let config = load_config(manifest_dir);
-    let binary = find_binary(&config.env_var, package_name);
+    let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
+    let binary = find_binary(&env_var, package_name);
 
     let mut cmd = if let Some(binary) = &binary {
         debug!(binary = %binary, "running {} from pre-built binary", package_name);
@@ -278,7 +340,7 @@ pub fn run_once(
     } else {
         debug!("running {} via cargo run", package_name);
         let mut full_args = vec!["run", "--package", package_name];
-        for feat in &config.features {
+        for feat in &features {
             full_args.push("--features");
             full_args.push(feat);
         }
@@ -676,9 +738,20 @@ features = ["mock"]
     }
 
     #[test]
-    #[should_panic(expected = "failed to read")]
+    #[should_panic(expected = "cannot locate Cargo.toml")]
     fn test_load_config_nonexistent_dir() {
-        load_config("/nonexistent/path/to/nowhere");
+        // The fallback to ./Cargo.toml would silently succeed if cwd were
+        // the workspace root (which has a Cargo.toml). chdir into a temp
+        // directory so neither the primary nor the fallback path exists.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let previous = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir into tmp");
+        let result = std::panic::catch_unwind(|| load_config("/nonexistent/path/to/nowhere"));
+        std::env::set_current_dir(previous).expect("chdir back");
+        // Propagate the panic so the test's should_panic assertion fires.
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     // -----------------------------------------------------------------------

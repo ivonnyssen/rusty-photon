@@ -46,4 +46,33 @@ rust_test(
     ),
 )
 
-# BDD cucumber tests (tests/bdd.rs): deferred to Phase 3.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":rp",
+        "Cargo.toml",
+        "//services/calibrator-flats:calibrator-flats",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/rp",
+        "CALIBRATOR_FLATS_BINARY": "$(rootpath //services/calibrator-flats:calibrator-flats)",
+        "RP_BINARY": "$(rootpath :rp)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [":rp_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
