@@ -341,9 +341,11 @@ bdd-infra = { workspace = true }
 **Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator
 or event plugin live in that plugin's own `services/<plugin>/tests/` tree, not
 in `services/rp/tests/`. Each plugin owns a small world type that embeds the
-handles it needs and uses `rp_harness::start_rp(sibling_service_dir(...), ...)`
-to spawn rp. This keeps rp's test run time bounded as more plugins land —
-`cargo-rail` only re-runs the plugin whose code changed.
+handles it needs and calls `rp_harness::start_rp` with a path resolved via
+`rp_harness::sibling_service_dir(env!("CARGO_MANIFEST_DIR"), "rp")` (convert
+the returned `PathBuf` to `&str` via `.to_str()`). This keeps rp's test run
+time bounded as more plugins land — `cargo-rail` only re-runs the plugin
+whose code changed.
 
 **Configuration** is stored in each service's `Cargo.toml`:
 
