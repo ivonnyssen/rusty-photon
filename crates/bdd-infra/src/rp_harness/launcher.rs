@@ -1,28 +1,32 @@
 //! Helpers for launching rp (or any plugin) from a JSON config Value.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::ServiceHandle;
 
+/// Per-process counter so each call to [`write_temp_config_file`] produces a
+/// distinct path. Combined with the PID, this guarantees uniqueness across
+/// parallel scenarios and across test binaries spawned by the same
+/// `cargo test` invocation, matching the pattern used by
+/// [`RpConfigBuilder::build`](super::config::RpConfigBuilder::build) for
+/// `data_directory` / `session_state_file`.
+static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Write a `serde_json::Value` to a uniquely-named file in the system temp
 /// directory and return its path as a `String`.
 ///
 /// The `prefix` disambiguates configs across services (e.g. `"rp-test-config"`
-/// vs `"calibrator-flats-config"`) and the nanosecond timestamp ensures
-/// uniqueness across parallel scenarios.
+/// vs `"calibrator-flats-config"`); PID + monotonic sequence guarantee
+/// collision-free paths even under coarse system clocks or concurrent calls.
 pub async fn write_temp_config_file(prefix: &str, config: &Value) -> String {
+    let pid = std::process::id();
+    let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
     let config_path = std::env::temp_dir()
-        .join(format!(
-            "{}-{}.json",
-            prefix,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
+        .join(format!("{}-{}-{}.json", prefix, pid, seq))
         .to_string_lossy()
         .to_string();
     tokio::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
@@ -99,5 +103,15 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, config);
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn write_temp_config_file_paths_are_unique_across_calls() {
+        let config = serde_json::json!({ "k": 1 });
+        let a = write_temp_config_file("bdd-infra-unique", &config).await;
+        let b = write_temp_config_file("bdd-infra-unique", &config).await;
+        assert_ne!(a, b);
+        let _ = tokio::fs::remove_file(&a).await;
+        let _ = tokio::fs::remove_file(&b).await;
     }
 }
