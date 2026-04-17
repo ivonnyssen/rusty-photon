@@ -349,8 +349,9 @@ impl Sentinel {
 /// complete when the respective signal is received.
 ///
 /// Because sentinel spawns background tasks (dashboard, engine polling) that use a
-/// [`CancellationToken`], both stop and reload cancel the token to ensure clean
-/// shutdown of all spawned work before the next iteration or exit.
+/// [`CancellationToken`], both stop and reload cancel the token and then await
+/// [`Sentinel::start`] to finish its shutdown path — draining the dashboard task
+/// and calling `engine.disconnect_all()` — before the next iteration or exit.
 pub async fn run_server_loop(
     config_path: &std::path::Path,
     mut apply_overrides: impl FnMut(&mut Config),
@@ -364,10 +365,25 @@ pub async fn run_server_loop(
         tracing::info!("Starting sentinel service");
         let sentinel = SentinelBuilder::new(config).build().await?;
         let cancel = sentinel.cancel_token();
+        let mut start_fut = Box::pin(sentinel.start());
         tokio::select! {
-            result = sentinel.start() => return result.map_err(Into::into),
-            _ = stop() => { cancel.cancel(); tracing::info!("Received stop signal"); break; }
-            _ = reload() => { cancel.cancel(); tracing::info!("Reloading configuration"); continue; }
+            result = &mut start_fut => return result.map_err(Into::into),
+            _ = stop() => {
+                cancel.cancel();
+                tracing::info!("Received stop signal");
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("Sentinel shutdown returned error: {err}");
+                }
+                break;
+            }
+            _ = reload() => {
+                cancel.cancel();
+                tracing::info!("Reloading configuration");
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("Sentinel shutdown returned error: {err}");
+                }
+                continue;
+            }
         }
     }
     Ok(())
