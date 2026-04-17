@@ -167,7 +167,14 @@ pub async fn run_server_loop(
     mut reload: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     loop {
-        let config = config::load_config(config_path.to_str().unwrap_or_default())?;
+        // See #83 for the longer-term refactor to let `load_config` accept `&Path`.
+        let config_str = config_path.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("configuration path is not valid UTF-8: {:?}", config_path),
+            )
+        })?;
+        let config = config::load_config(config_str)?;
         tracing::info!("Starting rp server on port {}", config.server.port);
         let server = ServerBuilder::new()
             .with_config(config)

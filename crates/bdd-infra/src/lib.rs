@@ -333,7 +333,8 @@ impl ServiceHandle {
             .and_then(|c| c.id())
             .ok_or_else(|| format!("{}: no child process to reload", self.name))?;
 
-        send_reload(pid);
+        send_reload(pid)
+            .map_err(|e| format!("{}: failed to send reload signal: {}", self.name, e))?;
 
         let watcher = self
             .stdout_watcher
@@ -597,33 +598,27 @@ fn send_sigterm(pid: u32) {
 /// * **Unix** — sends `SIGHUP`, the standard "re-read configuration" signal.
 /// * **Windows** — writes to the named pipe `\\.\pipe\rusty-photon-reload-{pid}`.
 ///   The service must create this pipe on startup (see each service's `main.rs`).
-fn send_reload(pid: u32) {
+///
+/// Returns an error when the signal transport fails so callers can fail fast
+/// instead of waiting for a port that will never arrive (e.g. Windows where
+/// the named-pipe reload is not yet implemented on the service side).
+fn send_reload(pid: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         // SAFETY: libc::kill with a valid pid and SIGHUP is safe.
         let ret = unsafe { libc::kill(pid as i32, libc::SIGHUP) };
         if ret != 0 {
-            debug!(
-                "failed to send SIGHUP to pid {}: {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(())
     }
     #[cfg(windows)]
     {
         let pipe_name = format!(r"\\.\pipe\rusty-photon-reload-{}", pid);
-        match std::fs::OpenOptions::new().write(true).open(&pipe_name) {
-            Ok(mut pipe) => {
-                use std::io::Write;
-                if let Err(e) = pipe.write_all(b"R") {
-                    debug!("failed to write reload signal to {}: {}", pipe_name, e);
-                }
-            }
-            Err(e) => {
-                debug!("failed to open reload pipe {}: {}", pipe_name, e);
-            }
-        }
+        let mut pipe = std::fs::OpenOptions::new().write(true).open(&pipe_name)?;
+        use std::io::Write;
+        pipe.write_all(b"R")?;
+        Ok(())
     }
 }
 
@@ -726,8 +721,13 @@ impl ServerPool {
                         return Ok((entry.handle.port, entry.handle.base_url.clone()));
                     }
                     Err(e) => {
-                        debug!(hash, error = %e, "pool: reload failed, removing stale entry");
-                        self.pool.remove(&hash);
+                        debug!(hash, error = %e, "pool: reload failed, stopping stale entry");
+                        // Remove by value and explicitly stop() so the child
+                        // process is waited on before being discarded — Drop
+                        // only sends a best-effort SIGTERM without awaiting.
+                        if let Some(mut stale) = self.pool.remove(&hash) {
+                            stale.handle.stop().await;
+                        }
                         // Fall through to start fresh below.
                     }
                 }
