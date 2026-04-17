@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
+
       - name: Install bazelisk
         run: |
           set -euo pipefail
