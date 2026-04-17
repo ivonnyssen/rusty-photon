@@ -11,15 +11,19 @@ bdd_infra::bdd_main! {
     use world::FilemonitorWorld;
 
     FilemonitorWorld::cucumber()
+        .max_concurrent_scenarios(Some(1))
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // Stop only directly-started servers (TLS/auth scenarios).
+                    // Pool-managed servers are kept alive across scenarios.
                     if let Some(fm) = world.filemonitor.as_mut() {
                         fm.stop().await;
                     }
                 }
             })
         })
-        .run_and_exit("tests/features")
+        .run("tests/features")
         .await;
+    steps::infrastructure::stop_all_servers().await;
 }

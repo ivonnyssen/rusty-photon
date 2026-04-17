@@ -41,7 +41,10 @@ async fn try_start_with_config(world: &mut FilemonitorWorld) {
     match ServiceHandle::try_start(env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"), &path).await
     {
         Ok(handle) => {
-            let monitor = world.acquire_monitor(&handle).await;
+            let port = handle.port;
+            world.port = Some(port);
+            world.base_url = Some(handle.base_url.clone());
+            let monitor = world.acquire_monitor(port).await;
             world.monitor = Some(monitor);
             world.filemonitor = Some(handle);
             world.last_error = None;

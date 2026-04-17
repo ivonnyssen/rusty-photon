@@ -644,8 +644,17 @@ fn send_reload(pid: u32) {
 ///     ))
 /// });
 /// ```
+/// Entry in the server pool: a running handle plus the stable config path
+/// the server was started with (so reloads re-read from the same location).
+struct PoolEntry {
+    handle: ServiceHandle,
+    config_path: std::path::PathBuf,
+}
+
 pub struct ServerPool {
-    pool: std::collections::HashMap<u64, ServiceHandle>,
+    pool: std::collections::HashMap<u64, PoolEntry>,
+    /// Pool-owned temp dir for stable config files that outlive individual scenarios.
+    config_dir: std::path::PathBuf,
     manifest_dir: &'static str,
     package_name: &'static str,
     exclude_paths: Vec<Vec<String>>,
@@ -664,8 +673,12 @@ impl ServerPool {
         package_name: &'static str,
         exclude_paths: Vec<Vec<String>>,
     ) -> Self {
+        let config_dir =
+            std::env::temp_dir().join(format!("bdd-pool-{}-{}", package_name, std::process::id()));
+        std::fs::create_dir_all(&config_dir).expect("failed to create pool config dir");
         Self {
             pool: std::collections::HashMap::new(),
+            config_dir,
             manifest_dir,
             package_name,
             exclude_paths,
@@ -683,7 +696,6 @@ impl ServerPool {
     pub async fn get_or_start(
         &mut self,
         config: &serde_json::Value,
-        config_path: &str,
     ) -> Result<(u16, String), String> {
         let refs: Vec<Vec<&str>> = self
             .exclude_paths
@@ -693,25 +705,58 @@ impl ServerPool {
         let slices: Vec<&[&str]> = refs.iter().map(|v| v.as_slice()).collect();
         let hash = config_hash(config, &slices);
 
-        if let Some(handle) = self.pool.get_mut(&hash) {
-            if handle.is_running() {
-                // Overwrite config file so the reloaded server picks up new temp paths.
-                std::fs::write(config_path, serde_json::to_string_pretty(config).unwrap())
-                    .map_err(|e| format!("failed to write config: {}", e))?;
-                handle.reload().await?;
-                return Ok((handle.port, handle.base_url.clone()));
+        if let Some(entry) = self.pool.get_mut(&hash) {
+            if entry.handle.is_running() {
+                debug!(
+                    hash,
+                    old_port = entry.handle.port,
+                    "pool: reloading existing server"
+                );
+                // Overwrite the stable config file so the reloaded server
+                // picks up new per-scenario artifacts (temp file paths, etc.).
+                std::fs::write(
+                    &entry.config_path,
+                    serde_json::to_string_pretty(config).unwrap(),
+                )
+                .map_err(|e| format!("failed to write config: {}", e))?;
+                match entry.handle.reload().await {
+                    Ok(()) => {
+                        debug!(hash, new_port = entry.handle.port, "pool: reload succeeded");
+                        return Ok((entry.handle.port, entry.handle.base_url.clone()));
+                    }
+                    Err(e) => {
+                        debug!(hash, error = %e, "pool: reload failed, removing stale entry");
+                        self.pool.remove(&hash);
+                        // Fall through to start fresh below.
+                    }
+                }
+            } else {
+                debug!(hash, "pool: server no longer running, removing stale entry");
+                // Server died — remove stale entry and start fresh.
+                self.pool.remove(&hash);
             }
-            // Server died — remove stale entry and start fresh.
-            self.pool.remove(&hash);
         }
 
-        // Write config and start a new server.
-        std::fs::write(config_path, serde_json::to_string_pretty(config).unwrap())
+        // Create a stable config path owned by the pool (outlives scenarios).
+        debug!(hash, "pool: starting new server");
+        let config_path = self.config_dir.join(format!("pool-{}.json", hash));
+        std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
             .map_err(|e| format!("failed to write config: {}", e))?;
-        let handle = ServiceHandle::start(self.manifest_dir, self.package_name, config_path).await;
+        let handle = ServiceHandle::start(
+            self.manifest_dir,
+            self.package_name,
+            config_path.to_str().unwrap(),
+        )
+        .await;
         let port = handle.port;
         let base_url = handle.base_url.clone();
-        self.pool.insert(hash, handle);
+        self.pool.insert(
+            hash,
+            PoolEntry {
+                handle,
+                config_path,
+            },
+        );
         Ok((port, base_url))
     }
 
@@ -726,12 +771,13 @@ impl ServerPool {
         config_hash(config, &slices)
     }
 
-    /// Stop all servers in the pool.
+    /// Stop all servers in the pool and clean up config files.
     pub async fn stop_all(&mut self) {
-        for (_, handle) in self.pool.iter_mut() {
-            handle.stop().await;
+        for (_, entry) in self.pool.iter_mut() {
+            entry.handle.stop().await;
         }
         self.pool.clear();
+        let _ = std::fs::remove_dir_all(&self.config_dir);
     }
 }
 

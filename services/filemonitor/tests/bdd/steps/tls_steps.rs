@@ -3,7 +3,6 @@
 use cucumber::{given, then, when};
 use tempfile::TempDir;
 
-use crate::steps::infrastructure::ServiceHandle;
 use crate::world::FilemonitorWorld;
 
 #[given("generated TLS certificates for filemonitor")]
@@ -38,20 +37,7 @@ async fn filemonitor_started_with_tls(world: &mut FilemonitorWorld) {
         "key": certs_dir.join("filemonitor-key.pem").to_string_lossy().to_string()
     });
 
-    let dir = world
-        .temp_dir
-        .get_or_insert_with(|| TempDir::new().unwrap());
-    let config_path = dir.path().join("filemonitor_tls_config.json");
-    std::fs::write(&config_path, config.to_string()).unwrap();
-
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
-
-    world.filemonitor = Some(handle);
+    world.start_filemonitor_direct(&config).await;
 }
 
 #[then("the Alpaca management endpoint should respond over HTTPS")]
@@ -64,11 +50,7 @@ async fn alpaca_management_responds_https(world: &mut FilemonitorWorld) {
         .to_path_buf();
     let ca_path = pki_dir.join("ca.pem");
     let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
+    let port = world.port.expect("filemonitor not started");
     let url = format!("https://localhost:{}/management/v1/configureddevices", port);
 
     let mut ok = false;

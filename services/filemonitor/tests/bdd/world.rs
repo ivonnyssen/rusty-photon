@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::steps::infrastructure::ServiceHandle;
+use crate::steps::infrastructure::{ServiceHandle, POOL};
 
 /// Serializable rule config (no filemonitor lib imports).
 #[derive(Debug, Clone)]
@@ -20,7 +20,10 @@ pub struct ParsingRuleConfig {
 
 #[derive(Debug, Default, World)]
 pub struct FilemonitorWorld {
-    // Process handle
+    // Server connection (from pool or direct start)
+    pub port: Option<u16>,
+    pub base_url: Option<String>,
+    // Direct handle only for scenarios that bypass the pool (e.g. try_start failure tests)
     pub filemonitor: Option<ServiceHandle>,
     pub monitor: Option<Arc<dyn SafetyMonitor>>,
 
@@ -112,24 +115,19 @@ impl FilemonitorWorld {
         })
     }
 
-    /// Write config to temp dir, start the binary, acquire typed client.
+    /// Write config to pool, start or reuse server, acquire typed client.
     pub async fn start_filemonitor(&mut self) {
         let config_json = self.build_config_json();
-        let dir = self
-            .temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
-        let config_path = dir.path().join("config.json");
-        std::fs::write(&config_path, config_json.to_string()).expect("failed to write config");
-
-        let handle = ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            config_path.to_str().unwrap(),
-        )
-        .await;
-        let monitor = self.acquire_monitor(&handle).await;
+        let mut pool = POOL.lock().await;
+        let (port, base_url) = pool
+            .get_or_start(&config_json)
+            .await
+            .expect("failed to start filemonitor from pool");
+        drop(pool);
+        self.port = Some(port);
+        self.base_url = Some(base_url);
+        let monitor = self.acquire_monitor(port).await;
         self.monitor = Some(monitor);
-        self.filemonitor = Some(handle);
     }
 
     /// Start filemonitor from an external config file (modifying port to 0).
@@ -140,6 +138,21 @@ impl FilemonitorWorld {
         config["server"]["port"] = serde_json::json!(0);
         config["server"]["discovery_port"] = serde_json::json!(null);
 
+        let mut pool = POOL.lock().await;
+        let (port, base_url) = pool
+            .get_or_start(&config)
+            .await
+            .expect("failed to start filemonitor from pool");
+        drop(pool);
+        self.port = Some(port);
+        self.base_url = Some(base_url);
+        let monitor = self.acquire_monitor(port).await;
+        self.monitor = Some(monitor);
+    }
+
+    /// Start a server directly (not via pool) for cases like TLS/auth
+    /// where configs include per-scenario cert paths.
+    pub async fn start_filemonitor_direct(&mut self, config: &Value) {
         let dir = self
             .temp_dir
             .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
@@ -152,14 +165,14 @@ impl FilemonitorWorld {
             config_path.to_str().unwrap(),
         )
         .await;
-        let monitor = self.acquire_monitor(&handle).await;
-        self.monitor = Some(monitor);
+        self.port = Some(handle.port);
+        self.base_url = Some(handle.base_url.clone());
         self.filemonitor = Some(handle);
     }
 
     /// Poll until the server returns a SafetyMonitor device via the typed client.
-    pub async fn acquire_monitor(&self, handle: &ServiceHandle) -> Arc<dyn SafetyMonitor> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+    pub async fn acquire_monitor(&self, port: u16) -> Arc<dyn SafetyMonitor> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
