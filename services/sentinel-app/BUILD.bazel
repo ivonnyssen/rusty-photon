@@ -1,1 +1,41 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+# sentinel-app has two distinct build modes in Cargo:
+#   1. `ssr` feature -- compiled as native code, linked into the `sentinel`
+#      binary for server-side rendering.
+#   2. `hydrate` feature -- compiled to wasm32-unknown-unknown + wasm-bindgen
+#      post-processing, served to the browser for client-side hydration.
+# This BUILD covers the default-features path (an empty feature set) which
+# matches `cargo build -p sentinel-app`. Real SSR + hydrate integration
+# through the cargo-leptos flow is Phase 4 of the Bazel migration --
+# see docs/plans/bazel-migration.md.
+rust_library(
+    name = "sentinel-app",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "sentinel_app",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "sentinel-app_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":sentinel-app",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
