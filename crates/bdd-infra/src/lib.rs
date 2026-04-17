@@ -646,6 +646,118 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // __bdd_bazel_chdir tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bdd_bazel_chdir_noop_when_env_unset() {
+        // When BDD_PACKAGE_DIR is not set, the function is a no-op.
+        std::env::remove_var("BDD_PACKAGE_DIR");
+        let before = std::env::current_dir().unwrap();
+        __bdd_bazel_chdir();
+        assert_eq!(std::env::current_dir().unwrap(), before);
+    }
+
+    #[test]
+    fn test_bdd_bazel_chdir_changes_directory() {
+        // Note: set_current_dir is process-global, which would be unsafe
+        // with parallel tests. This is fine because we use cargo-nextest,
+        // which runs each test in its own process.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("subdir");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_var("BDD_PACKAGE_DIR", &target);
+        __bdd_bazel_chdir();
+        let after = std::env::current_dir().unwrap();
+        // Restore before asserting so later tests aren't affected.
+        std::env::set_current_dir(&previous).unwrap();
+        std::env::remove_var("BDD_PACKAGE_DIR");
+
+        assert_eq!(after, target);
+    }
+
+    #[test]
+    fn test_bdd_bazel_chdir_absolutizes_binary_env_vars() {
+        // Note: set_current_dir is process-global, which would be unsafe
+        // with parallel tests. This is fine because we use cargo-nextest,
+        // which runs each test in its own process.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pkg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        let unique_var = "TEST_CHDIR_ABS_BINARY";
+        std::env::set_var(unique_var, "relative/path/to/bin");
+        std::env::set_var("BDD_PACKAGE_DIR", &target);
+
+        __bdd_bazel_chdir();
+
+        let absolutized = std::env::var(unique_var).unwrap();
+        // Restore before asserting.
+        std::env::set_current_dir(&previous).unwrap();
+        std::env::remove_var("BDD_PACKAGE_DIR");
+        std::env::remove_var(unique_var);
+
+        assert_eq!(
+            std::path::PathBuf::from(&absolutized),
+            previous.join("relative/path/to/bin")
+        );
+    }
+
+    #[test]
+    fn test_bdd_bazel_chdir_skips_absolute_binary_env_vars() {
+        // Note: set_current_dir is process-global, which would be unsafe
+        // with parallel tests. This is fine because we use cargo-nextest,
+        // which runs each test in its own process.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pkg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        let unique_var = "TEST_CHDIR_SKIP_BINARY";
+        std::env::set_var(unique_var, "/absolute/path/to/bin");
+        std::env::set_var("BDD_PACKAGE_DIR", &target);
+
+        __bdd_bazel_chdir();
+
+        let value = std::env::var(unique_var).unwrap();
+        // Restore before asserting.
+        std::env::set_current_dir(&previous).unwrap();
+        std::env::remove_var("BDD_PACKAGE_DIR");
+        std::env::remove_var(unique_var);
+
+        assert_eq!(value, "/absolute/path/to/bin");
+    }
+
+    #[test]
+    fn test_bdd_bazel_chdir_ignores_non_binary_env_vars() {
+        // Note: set_current_dir is process-global, which would be unsafe
+        // with parallel tests. This is fine because we use cargo-nextest,
+        // which runs each test in its own process.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pkg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        let unique_var = "TEST_CHDIR_NOT_A_BINARY_SUFFIX";
+        std::env::set_var(unique_var, "relative/path");
+        std::env::set_var("BDD_PACKAGE_DIR", &target);
+
+        __bdd_bazel_chdir();
+
+        let value = std::env::var(unique_var).unwrap();
+        // Restore before asserting.
+        std::env::set_current_dir(&previous).unwrap();
+        std::env::remove_var("BDD_PACKAGE_DIR");
+        std::env::remove_var(unique_var);
+
+        // Var does NOT end with _BINARY, so it should not be absolutized.
+        assert_eq!(value, "relative/path");
+    }
+
+    // -----------------------------------------------------------------------
     // load_config tests
     // -----------------------------------------------------------------------
 
