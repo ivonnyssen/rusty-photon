@@ -8,7 +8,7 @@ Feature: Image statistics tool
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 100 ms
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     And the MCP client calls "compute_image_stats" with the captured image path
     Then the image stats result should contain "median_adu" as a non-negative integer
     And the image stats result should contain "mean_adu" as a non-negative number
