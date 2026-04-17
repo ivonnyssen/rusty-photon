@@ -203,7 +203,7 @@ async fn should_receive_n_events(world: &mut RpWorld, count: i32, event_type: St
     );
 }
 
-#[then(expr = "the test webhook receiver should have received at least {int} {string} event")]
+#[then(expr = "the test webhook receiver should have received at least {int} {string} event(s)")]
 async fn should_receive_at_least_n_events(world: &mut RpWorld, count: i32, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, count as usize).await,

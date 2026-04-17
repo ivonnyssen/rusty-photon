@@ -24,5 +24,5 @@ Feature: Calibrator flat field workflow (end-to-end)
     And rp is running with a camera, filter wheel, cover calibrator, webhook, and the calibrator-flats orchestrator
     When a session is started via the REST API
     And the calibrator-flats orchestrator runs to completion
-    Then the test webhook receiver should have received at least 4 "exposure_complete" event
+    Then the test webhook receiver should have received at least 4 "exposure_complete" events
     And the session status should be "idle"

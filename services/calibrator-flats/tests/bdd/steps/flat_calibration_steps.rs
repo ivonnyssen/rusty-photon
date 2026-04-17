@@ -139,7 +139,7 @@ async fn session_status_is(world: &mut CalibratorFlatsWorld, expected: String) {
     );
 }
 
-#[then(expr = "the test webhook receiver should have received at least {int} {string} event")]
+#[then(expr = "the test webhook receiver should have received at least {int} {string} event(s)")]
 async fn should_receive_at_least_n_events(
     world: &mut CalibratorFlatsWorld,
     count: i32,
