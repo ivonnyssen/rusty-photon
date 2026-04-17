@@ -255,6 +255,36 @@ cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
 ```
 
+## Bazel (shadow mode)
+
+A parallel Bazel build is being stood up per `docs/plans/bazel-migration.md`.
+It runs in shadow mode on every PR (`.github/workflows/bazel.yml`) and is
+not yet required for merge. Cargo remains the canonical build.
+
+Pre-push commands (optional, for parity checks):
+
+```bash
+bazel build //...
+bazel test //...           # filters out tagged `requires-cargo` and `bdd`
+```
+
+If you added a crates.io dependency, refresh the Bazel index:
+
+```bash
+CARGO_BAZEL_REPIN=1 bazel mod tidy
+git add MODULE.bazel.lock
+```
+
+Known limitations during migration:
+- BDD cucumber tests (`harness = false`) are tagged `bdd` and skipped
+  under Bazel; Cargo continues to run them.
+- A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
+  shell out to `cargo` or assume `target/debug` paths; they are tagged
+  `requires-cargo` and skipped under Bazel.
+- `sentinel-app` builds with default features only; the `ssr` and
+  `hydrate` (wasm-bindgen) build paths are Phase 4 work.
+- Conformu integration tests and Miri continue to run only under Cargo.
+
 ---
 
 ## Conditional Compilation Notes

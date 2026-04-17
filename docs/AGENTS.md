@@ -13,6 +13,8 @@
 
 4. You MUST ALWAYS run `cargo rail run --merge-base -q -- --color never` and `cargo fmt` before committing your work and fix all errors and warnings from the change you've made. This builds and tests only the packages affected by your changes. Use `cargo rail plan --merge-base` to preview which packages would be affected. If `cargo-rail` is not available, fall back to `cargo build --all --all-targets --all-features --quiet --color never` and `cargo test --all --all-features --quiet --color never`. The `--all-targets` flag compiles test, bench, and example targets, catching feature-unification errors that a plain `cargo build --all` misses. The `--all-features` flag is critical: it enables feature-gated test code (e.g. `#[cfg(feature = "mock")]`) that CI always compiles. See docs/skills/pre-push.md for the full CI quality-gate suite.
 
+   A Bazel build system is being introduced alongside Cargo (see `docs/plans/bazel-migration.md`). Cargo remains the canonical build during the migration; Bazel runs in shadow mode and is not a required pre-push step yet. If you want to exercise it, `bazel test //...` runs all non-`requires-cargo`, non-BDD targets.
+
 5. You MUST NEVER commit to the main branch of the git repository. ALL work MUST happen on a branch. Before making any code changes, verify you are on a feature branch. If on main, create and switch to an appropriate feature branch first. Use appropriate naming for branches such as `feature/new_feature_name` or `chore/update_dependency_x`.
 
 6. You MUST commit changes summarizing all the changes since the last commit. For the author of the commit, use the configured username in git with ' ($AI_AGENT_NAME)' appended and the user email. For example, `git commit --author="John Doe (Kiro CLI) <john@email.com>"` if you are Kiro or `git commit --author="John Doe (Claude Code) <john@email.com>"` if you are claude code.
@@ -23,6 +25,6 @@
 
 9. You MUST use `debug!()` log messages throughout. Only use `info!()` log messages where users will derive clear advantage from them when using the services, such as `Service started succesfully`.
 
-10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency.
+10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency. Cargo.toml and Cargo.lock remain the single source of truth for dependency versions; Bazel's `crate_universe` reads them. After adding a crates.io dep, run `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` before committing.
 
 11. You MUST persist project-wide knowledge (design decisions, motivations, conventions) in the repository documentation (docs/, README.md, ADRs) rather than in local agent memory. This ensures all operators and machines share the same context.

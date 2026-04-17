@@ -1,0 +1,59 @@
+# Shadow-mode Bazel build/test. Runs alongside the canonical Cargo jobs
+# during the migration described in docs/plans/bazel-migration.md.
+#
+# This workflow is NOT required for merge. Its purpose is to build
+# confidence that Bazel produces parity results before cutting over.
+# Remove `if: false` and add to required checks once the migration plan's
+# phase-7 exit criteria are met.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: bazel
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    name: bazel build + test (shadow)
+    # Action-graph change detection replaces cargo-rail. Bazel figures out
+    # which targets actually changed and only rebuilds those; everything
+    # else is a cache hit.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install bazelisk
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/bazelisk \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.28.1/bazelisk-linux-amd64
+          chmod +x /tmp/bazelisk
+          sudo mv /tmp/bazelisk /usr/local/bin/bazelisk
+          sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+          bazel --version
+
+      # Bazel disk cache lives at ~/.cache/bazel-disk-cache per .bazelrc.
+      # GHA cache has a 10 GB per-repo ceiling. We key on Bazel version,
+      # Cargo.lock, and MODULE.bazel.lock so a dep bump invalidates cleanly.
+      # Once BuildBuddy remote cache is wired up (phase 5), this local
+      # cache becomes a secondary accelerator -- remove it then.
+      - name: Cache Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('.bazelversion', 'Cargo.lock', 'MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: bazel build
+        run: bazel build --config=ci //...
+
+      - name: bazel test
+        # .bazelrc filters -requires-cargo,-bdd by default; those continue
+        # to run under the existing Cargo CI jobs.
+        run: bazel test --config=ci //...
