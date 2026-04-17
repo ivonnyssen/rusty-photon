@@ -9,9 +9,9 @@ use tracing::Level;
 
 use ppba_driver::SerialPortFactory;
 #[cfg(feature = "mock")]
-use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+use ppba_driver::{Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
-use ppba_driver::{load_config, Config, ServerBuilder};
+use ppba_driver::{Config, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "ppba-driver")]
@@ -69,36 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.log_level
     );
 
-    // Load configuration
-    let mut config = if let Some(config_path) = &args.config {
-        tracing::debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
-    } else {
-        tracing::debug!("Using default configuration");
-        Config::default()
-    };
-
-    // Apply CLI overrides
-    if let Some(port) = args.port {
-        config.serial.port = port;
-    }
-    if let Some(server_port) = args.server_port {
-        config.server.port = server_port;
-    }
-    if let Some(enable) = args.enable_switch {
-        config.switch.enabled = enable;
-    }
-    if let Some(enable) = args.enable_observingconditions {
-        config.observingconditions.enabled = enable;
-    }
-
     tracing::info!("Starting PPBA driver");
     #[cfg(feature = "mock")]
     tracing::info!("Running in MOCK MODE - no real hardware");
-    #[cfg(not(feature = "mock"))]
-    tracing::info!("Serial port: {}", config.serial.port);
-    tracing::info!("Baud rate: {}", config.serial.baud_rate);
-    tracing::info!("Server port: {}", config.server.port);
 
     #[cfg(feature = "mock")]
     let factory: std::sync::Arc<dyn SerialPortFactory> =
@@ -107,10 +80,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let factory: std::sync::Arc<dyn SerialPortFactory> =
         std::sync::Arc::new(ppba_driver::serial::TokioSerialPortFactory::new());
 
-    if let Some(config_path) = &args.config {
+    if let Some(config_path) = args.config.clone() {
+        tracing::debug!("Loading configuration from {:?}", config_path);
+        // Capture CLI overrides so they are re-applied after each reload.
+        let override_serial_port = args.port.clone();
+        let override_server_port = args.server_port;
+        let override_enable_switch = args.enable_switch;
+        let override_enable_obs = args.enable_observingconditions;
         ppba_driver::run_server_loop(
             config_path.as_ref(),
             factory,
+            move |cfg: &mut Config| {
+                if let Some(p) = &override_serial_port {
+                    cfg.serial.port = p.clone();
+                }
+                if let Some(p) = override_server_port {
+                    cfg.server.port = p;
+                }
+                if let Some(v) = override_enable_switch {
+                    cfg.switch.enabled = v;
+                }
+                if let Some(v) = override_enable_obs {
+                    cfg.observingconditions.enabled = v;
+                }
+            },
             || {
                 Box::pin(async {
                     shutdown_signal().await;
@@ -135,6 +128,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     } else {
         // No config file — single run with the CLI-assembled config (no reload support).
+        tracing::debug!("Using default configuration");
+        let mut config = Config::default();
+        if let Some(port) = args.port {
+            config.serial.port = port;
+        }
+        if let Some(server_port) = args.server_port {
+            config.server.port = server_port;
+        }
+        if let Some(enable) = args.enable_switch {
+            config.switch.enabled = enable;
+        }
+        if let Some(enable) = args.enable_observingconditions {
+            config.observingconditions.enabled = enable;
+        }
+
+        #[cfg(not(feature = "mock"))]
+        tracing::info!("Serial port: {}", config.serial.port);
+        tracing::info!("Baud rate: {}", config.serial.baud_rate);
+        tracing::info!("Server port: {}", config.server.port);
+
         let bound = ServerBuilder::new(config)
             .with_factory(factory)
             .build()

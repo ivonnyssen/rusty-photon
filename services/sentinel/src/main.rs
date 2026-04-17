@@ -42,8 +42,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if let Some(config_path) = &args.config {
+        // Capture CLI overrides so they are re-applied after each reload.
+        let override_dashboard_port = args.dashboard_port;
         sentinel::run_server_loop(
             config_path.as_ref(),
+            move |cfg: &mut Config| {
+                if let Some(p) = override_dashboard_port {
+                    cfg.dashboard.port = p;
+                }
+            },
             || {
                 Box::pin(async {
                     let ctrl_c = async {

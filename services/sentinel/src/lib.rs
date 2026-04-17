@@ -342,20 +342,24 @@ impl Sentinel {
 
 /// Run the sentinel in a loop, restarting on reload signal and exiting on stop.
 ///
-/// On each iteration the config file is re-read, secrets resolved, the sentinel
-/// rebuilt, and a fresh dashboard listener bound. The `stop` and `reload` closures
-/// return futures that complete when the respective signal is received.
+/// On each iteration the config file is re-read, `apply_overrides` is invoked so
+/// CLI flags like `--dashboard-port` continue to shadow the config file across
+/// reloads, secrets are resolved, the sentinel is rebuilt, and a fresh dashboard
+/// listener is bound. The `stop` and `reload` closures return futures that
+/// complete when the respective signal is received.
 ///
 /// Because sentinel spawns background tasks (dashboard, engine polling) that use a
 /// [`CancellationToken`], both stop and reload cancel the token to ensure clean
 /// shutdown of all spawned work before the next iteration or exit.
 pub async fn run_server_loop(
     config_path: &std::path::Path,
+    mut apply_overrides: impl FnMut(&mut Config),
     mut stop: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
     mut reload: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut config = load_config(config_path)?;
+        apply_overrides(&mut config);
         config.resolve_secrets()?;
         tracing::info!("Starting sentinel service");
         let sentinel = SentinelBuilder::new(config).build().await?;
