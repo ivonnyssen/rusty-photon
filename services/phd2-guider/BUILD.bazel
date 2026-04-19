@@ -15,6 +15,16 @@ rust_library(
 )
 
 rust_binary(
+    name = "phd2-guider_bin",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":phd2-guider"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
     name = "mock_phd2",
     srcs = ["src/bin/mock_phd2.rs"],
     edition = "2021",

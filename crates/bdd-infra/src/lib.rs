@@ -114,13 +114,14 @@ struct BddConfig {
 ///
 /// 1. **Hermetic-build path (Bazel).** If the conventional env var
 ///    `{PACKAGE_UPPER_SNAKE}_BINARY` is already set (e.g. `FILEMONITOR_BINARY`
-///    for `filemonitor`, `PPBA_BINARY` for `ppba-driver`), use that
+///    for `filemonitor`, `PPBA_DRIVER_BINARY` for `ppba-driver`), use that
 ///    name and skip Cargo.toml entirely. Bazel tests take this path: they
 ///    cannot rely on `CARGO_MANIFEST_DIR` being valid at runtime, but they
 ///    can set the conventional env var to the pre-built binary path.
 /// 2. **Cargo path.** Otherwise, read `[package.metadata.bdd]` from
 ///    `{manifest_dir}/Cargo.toml` (the traditional flow). `env_var` and
-///    `features` come from there.
+///    `features` come from there. Note: legacy metadata-driven names
+///    (e.g. `PPBA_BINARY`) may differ from the conventional name.
 fn resolve_bdd_config(manifest_dir: &str, package_name: &str) -> (String, Vec<String>) {
     let conventional = format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"));
     if std::env::var_os(&conventional).is_some() {
@@ -145,7 +146,7 @@ fn load_config(manifest_dir: &str) -> BddConfig {
         "Cargo.toml".to_string()
     } else {
         panic!(
-            "bdd-infra: cannot locate Cargo.toml (tried {} and ./)",
+            "bdd-infra: cannot locate Cargo.toml (tried {} and ./Cargo.toml)",
             primary
         );
     };
