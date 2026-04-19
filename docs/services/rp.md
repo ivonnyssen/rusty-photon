@@ -1334,7 +1334,6 @@ connection details. Plugins register their webhook URLs and command endpoints.
 {
   "session": {
     "data_directory": "/data/lights",
-    "session_state_file": "/data/session_state.json",
     "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
   },
   "equipment": {

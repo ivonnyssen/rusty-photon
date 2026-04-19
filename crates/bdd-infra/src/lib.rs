@@ -821,6 +821,87 @@ impl ServerPool {
         })
     }
 
+    /// Acquire a running server, returning `Err` if startup fails instead of
+    /// panicking. Intended for scenarios that intentionally drive an invalid
+    /// config to assert on the launch failure.
+    ///
+    /// On failure the hash slot is left empty (body = `None`), so a subsequent
+    /// [`acquire`](Self::acquire) or `try_acquire` with the same hash starts
+    /// fresh instead of observing a poisoned entry.
+    pub async fn try_acquire(&self, config: &serde_json::Value) -> Result<PoolGuard, String> {
+        let hash = self.hash_config(config);
+
+        let entry: Entry = {
+            let mut map = self
+                .entries
+                .lock()
+                .expect("ServerPool entries mutex poisoned");
+            map.entry(hash)
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(None)))
+                .clone()
+        };
+
+        let mut body_guard = entry.lock_owned().await;
+
+        let reuse = if let Some(body) = body_guard.as_mut() {
+            if body.handle.is_running() {
+                debug!(
+                    hash,
+                    old_port = body.handle.port,
+                    "pool: try_acquire reloading existing server"
+                );
+                std::fs::write(
+                    &body.config_path,
+                    serde_json::to_string_pretty(config).unwrap(),
+                )
+                .map_err(|e| format!("failed to write config: {}", e))?;
+                match body.handle.reload().await {
+                    Ok(()) => Some((body.handle.port, body.handle.base_url.clone())),
+                    Err(e) => {
+                        debug!(hash, error = %e, "pool: try_acquire reload failed, stopping stale entry");
+                        body.handle.stop().await;
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some((port, base_url)) = reuse {
+            return Ok(PoolGuard {
+                port,
+                base_url,
+                _lease: body_guard,
+            });
+        }
+
+        debug!(hash, "pool: try_acquire starting new server");
+        let config_path = self.config_dir.join(format!("pool-{}.json", hash));
+        std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
+            .map_err(|e| format!("failed to write config: {}", e))?;
+        let config_path_str = config_path
+            .to_str()
+            .ok_or_else(|| format!("config path is not valid UTF-8: {}", config_path.display()))?;
+        // On failure `body_guard` is dropped with `*body_guard = None`, leaving
+        // the slot empty for a future retry.
+        let handle =
+            ServiceHandle::try_start(self.manifest_dir, self.package_name, config_path_str).await?;
+        let port = handle.port;
+        let base_url = handle.base_url.clone();
+        *body_guard = Some(EntryBody {
+            handle,
+            config_path,
+        });
+        Ok(PoolGuard {
+            port,
+            base_url,
+            _lease: body_guard,
+        })
+    }
+
     /// Compute the config hash for the given config value.
     pub fn hash_config(&self, config: &serde_json::Value) -> u64 {
         let refs: Vec<Vec<&str>> = self
@@ -928,8 +1009,32 @@ fn hash_json_canonical<H: std::hash::Hasher>(value: &serde_json::Value, hasher: 
 ///
 /// For example, `remove_json_path(val, &["server", "port"])` removes
 /// `val["server"]["port"]` if it exists.
+///
+/// The literal segment `"*"` acts as a wildcard: it recurses into every
+/// element of an array (or every value of an object) with the remaining path.
+/// A trailing lone `"*"` is a no-op — removing every element would change
+/// array length and defeat the purpose of hash-stable exclusion.
 fn remove_json_path(value: &mut serde_json::Value, path: &[&str]) {
     if path.is_empty() {
+        return;
+    }
+    if path[0] == "*" {
+        if path.len() == 1 {
+            return;
+        }
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    remove_json_path(item, &path[1..]);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for child in map.values_mut() {
+                    remove_json_path(child, &path[1..]);
+                }
+            }
+            _ => {}
+        }
         return;
     }
     if path.len() == 1 {
@@ -1429,5 +1534,79 @@ features = ["mock"]
         let string_one = serde_json::json!({ "k": "1" });
         let num_one = serde_json::json!({ "k": 1 });
         assert_ne!(config_hash(&string_one, &[]), config_hash(&num_one, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_wildcard_strips_array_element_field() {
+        let a = serde_json::json!({
+            "monitors": [
+                { "port": 1, "kind": "alpaca" },
+                { "port": 2, "kind": "sentinel" }
+            ]
+        });
+        let b = serde_json::json!({
+            "monitors": [
+                { "port": 9, "kind": "alpaca" },
+                { "port": 8, "kind": "sentinel" }
+            ]
+        });
+        let exclude: &[&[&str]] = &[&["monitors", "*", "port"]];
+        assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_wildcard_preserves_array_order() {
+        // After wildcard exclusion, remaining fields still differ by position.
+        let a = serde_json::json!({
+            "xs": [{ "port": 1, "name": "a" }, { "port": 2, "name": "b" }]
+        });
+        let b = serde_json::json!({
+            "xs": [{ "port": 1, "name": "b" }, { "port": 2, "name": "a" }]
+        });
+        let exclude: &[&[&str]] = &[&["xs", "*", "port"]];
+        assert_ne!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_wildcard_nested_in_object_then_array() {
+        let a = serde_json::json!({
+            "equipment": {
+                "cameras": [{ "id": "cam1", "alpaca_url": "http://localhost:11120" }]
+            }
+        });
+        let b = serde_json::json!({
+            "equipment": {
+                "cameras": [{ "id": "cam1", "alpaca_url": "http://localhost:22220" }]
+            }
+        });
+        let exclude: &[&[&str]] = &[&["equipment", "cameras", "*", "alpaca_url"]];
+        assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_wildcard_missing_array_is_noop() {
+        // Wildcard over an absent or non-array key must not panic.
+        let cfg = serde_json::json!({ "name": "svc" });
+        let exclude: &[&[&str]] = &[&["monitors", "*", "port"]];
+        let _ = config_hash(&cfg, exclude);
+    }
+
+    #[test]
+    fn test_config_hash_trailing_wildcard_is_noop() {
+        // A path ending in "*" would mean "remove every element" which changes
+        // array length. Treat as no-op so such paths don't make unrelated
+        // configs collide.
+        let a = serde_json::json!({ "xs": [1, 2, 3] });
+        let b = serde_json::json!({ "xs": [9, 8, 7] });
+        let exclude: &[&[&str]] = &[&["xs", "*"]];
+        assert_ne!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_wildcard_on_empty_array() {
+        let a = serde_json::json!({ "xs": [] });
+        let b = serde_json::json!({ "xs": [] });
+        let exclude: &[&[&str]] = &[&["xs", "*", "port"]];
+        assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
     }
 }

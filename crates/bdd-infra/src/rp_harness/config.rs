@@ -9,12 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value;
 
 /// Per-process counter so each call to [`RpConfigBuilder::build`] produces a
-/// distinct `data_directory` and `session_state_file`. Combined with the PID,
-/// this prevents two test binaries (e.g. `cargo test -p rp` running alongside
-/// `cargo test -p calibrator-flats`) from clobbering each other's session
-/// state, and prevents a rp-test-binary's scenario N from inheriting stale
-/// session state from scenario N-1 when a prior scenario did not land cleanly
-/// on `idle`.
+/// distinct `data_directory`. Combined with the PID, this prevents two test
+/// binaries (e.g. `cargo test -p rp` running alongside `cargo test -p
+/// calibrator-flats`) from clobbering each other's session state, and prevents
+/// a rp-test-binary's scenario N from inheriting stale session state from
+/// scenario N-1 when a prior scenario did not land cleanly on `idle`.
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Camera equipment entry.
@@ -179,10 +178,6 @@ impl RpConfigBuilder {
             "session": {
                 "data_directory": std::env::temp_dir()
                     .join(format!("rp-test-data-{}-{}", pid, seq))
-                    .to_string_lossy()
-                    .to_string(),
-                "session_state_file": std::env::temp_dir()
-                    .join(format!("rp-test-session-{}-{}.json", pid, seq))
                     .to_string_lossy()
                     .to_string(),
                 "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"

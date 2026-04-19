@@ -13,7 +13,7 @@ use crate::ServiceHandle;
 /// parallel scenarios and across test binaries spawned by the same
 /// `cargo test` invocation, matching the pattern used by
 /// [`RpConfigBuilder::build`](super::config::RpConfigBuilder::build) for
-/// `data_directory` / `session_state_file`.
+/// `data_directory`.
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write a `serde_json::Value` to a uniquely-named file in the system temp

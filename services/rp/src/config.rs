@@ -22,8 +22,6 @@ pub struct Config {
 pub struct SessionConfig {
     pub data_directory: String,
     #[serde(default)]
-    pub session_state_file: String,
-    #[serde(default)]
     pub file_naming_pattern: String,
 }
 
