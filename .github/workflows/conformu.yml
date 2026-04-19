@@ -25,7 +25,10 @@ jobs:
       - uses: loadingalias/cargo-rail-action@v4
         id: rail
         with:
-          since: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          # github.sha is the final fallback for workflow_dispatch, where the
+          # other three are unset. It resolves to HEAD, so rail computes an
+          # empty diff and the shell below falls through to "run all services".
+          since: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || github.sha }}
       - name: Discover affected ConformU services
         id: discover
         run: |
