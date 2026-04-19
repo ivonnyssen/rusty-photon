@@ -50,4 +50,14 @@ crate.from_cargo(
         "//services/sentinel-app:Cargo.toml",
     ],
 )
+# aws-lc-sys's build script compiles C code from the vendored aws-lc tree.
+# On Windows, jitterentropy.h includes arch/jitterentropy-base-windows.h,
+# but crate_universe's default build_script_data glob does not expose the
+# arch/ directory in the sandbox.  Widening to ["**"] makes all source
+# files available to the build script.
+crate.annotation(
+    crate = "aws-lc-sys",
+    build_script_data_glob = ["**"],
+)
+
 use_repo(crate, "crates")

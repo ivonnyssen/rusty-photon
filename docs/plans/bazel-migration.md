@@ -142,6 +142,7 @@ After Phase 7: the Cargo nightly job remains as a safety net for 30 days. Rollba
 | rust-analyzer breaks under Bazel | Medium | Developers can still use Cargo locally (it's not removed). `rust-project.json` generator from rules_rust is also available. |
 | Team learning curve | Certain | This plan doc + pair programming on first few BUILD files. |
 | BuildBuddy free tier exceeded | Low | Self-host `bazel-remote` on a $5 VPS if we outgrow 100 GB/month transfer. |
+| `aws-lc-sys` build fails on Windows under Bazel | Hit | `crate.annotation(crate = "aws-lc-sys", build_script_data_glob = ["**"])` exposes the `arch/` headers to the build script sandbox. See MODULE.bazel. |
 
 ## Success metrics
 
