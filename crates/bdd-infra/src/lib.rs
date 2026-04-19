@@ -5,6 +5,15 @@
 //! binaries during BDD and integration tests. Configuration is read from each
 //! service's `Cargo.toml` under `[package.metadata.bdd]`.
 //!
+//! # `rp-harness` feature
+//!
+//! Enabling the `rp-harness` cargo feature exposes the [`rp_harness`] module
+//! with higher-level helpers for tests that spawn rp alongside OmniSim and/or
+//! an orchestrator plugin: `OmniSimHandle`, `RpConfigBuilder`, `start_rp`,
+//! `WebhookReceiver`, `TestOrchestrator`, and `McpTestClient`. Services whose
+//! tests only need `ServiceHandle` should leave the feature off so they don't
+//! pull in axum, reqwest, or rmcp transitively.
+//!
 //! # Cargo.toml metadata
 //!
 //! Each service that uses this crate should add:
@@ -90,6 +99,9 @@ pub fn __bdd_bazel_chdir() {
     }
     std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {}: {}", dir, e));
 }
+
+#[cfg(feature = "rp-harness")]
+pub mod rp_harness;
 
 use std::process::Stdio;
 use std::time::Duration;

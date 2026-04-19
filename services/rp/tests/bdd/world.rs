@@ -4,38 +4,22 @@
 //! Manages the lifecycle of external processes (OmniSim, rp) and
 //! in-process test doubles (webhook receiver, test orchestrator)
 //! needed for integration testing.
+//!
+//! The shared types (`OmniSimHandle`, `WebhookReceiver`, `TestOrchestrator`,
+//! `McpTestClient`, and the rp config builder) live in the `bdd-infra` crate
+//! under the `rp-harness` feature. See `bdd_infra::rp_harness`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use bdd_infra::rp_harness::{
+    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, McpTestClient, OmniSimHandle,
+    OrchestratorInvocation, ReceivedEvent, RpConfigBuilder, TestOrchestrator, WebhookReceiver,
+};
+use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
-
-use crate::steps::flat_calibration_steps::CalibratorFlatsHandle;
-use crate::steps::infrastructure::{
-    OmniSimHandle, ServiceHandle, TestOrchestrator, WebhookReceiver,
-};
-use crate::steps::mcp_test_client::McpTestClient;
-
-/// Collected event received by the test webhook receiver
-#[derive(Debug, Clone)]
-pub struct ReceivedEvent {
-    pub event_id: String,
-    pub event_type: String,
-    pub timestamp: String,
-    pub payload: Value,
-    pub received_at: std::time::Instant,
-}
-
-/// Orchestrator invocation received by the test orchestrator
-#[derive(Debug, Clone)]
-pub struct OrchestratorInvocation {
-    pub workflow_id: String,
-    pub session_id: String,
-    pub mcp_server_url: String,
-    pub recovery: Option<Value>,
-}
 
 impl std::fmt::Debug for RpWorld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,8 +38,6 @@ pub struct RpWorld {
     pub webhook_receiver: Option<WebhookReceiver>,
     /// Test orchestrator (in-process HTTP server acting as an orchestrator plugin)
     pub orchestrator: Option<TestOrchestrator>,
-    /// Running calibrator-flats service (real orchestrator process)
-    pub calibrator_flats: Option<CalibratorFlatsHandle>,
     /// Persistent MCP client for the current scenario
     pub mcp_client: Option<McpTestClient>,
 
@@ -103,8 +85,9 @@ pub struct RpWorld {
     /// Session status from GET /api/session/status
     pub session_status: Option<String>,
 
-    // --- Flat calibration orchestrator config ---
-    /// Filter name → count for the test flat-calibration orchestrator
+    // --- Test flat-calibration orchestrator config ---
+    /// Filter name → count, used by the in-process `TestOrchestrator` when
+    /// configured with `OrchestratorBehavior::FlatCalibration(...)`.
     pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS test state ---
@@ -124,31 +107,6 @@ pub struct RpWorld {
     pub auth_password: Option<String>,
     /// Hash output from rp hash-password CLI
     pub auth_hash_output: Option<String>,
-}
-
-/// Camera configuration for test setup
-#[derive(Debug, Clone)]
-pub struct CameraConfig {
-    pub id: String,
-    pub alpaca_url: String,
-    pub device_number: u32,
-}
-
-/// Filter wheel configuration for test setup
-#[derive(Debug, Clone)]
-pub struct FilterWheelConfig {
-    pub id: String,
-    pub alpaca_url: String,
-    pub device_number: u32,
-    pub filters: Vec<String>,
-}
-
-/// CoverCalibrator configuration for test setup
-#[derive(Debug, Clone)]
-pub struct CoverCalibratorConfig {
-    pub id: String,
-    pub alpaca_url: String,
-    pub device_number: u32,
 }
 
 impl RpWorld {
@@ -182,112 +140,28 @@ impl RpWorld {
             .expect("MCP client not connected — add 'Given an MCP client connected to rp' step")
     }
 
-    /// Build the rp config JSON from accumulated Given steps
+    /// Build the rp config JSON from accumulated Given steps via [`RpConfigBuilder`].
     pub fn build_config(&self) -> Value {
-        let cameras: Vec<Value> = self
-            .cameras
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "id": c.id,
-                    "name": c.id,
-                    "alpaca_url": c.alpaca_url,
-                    "device_type": "camera",
-                    "device_number": c.device_number,
-                    "cooler_target_c": -10,
-                    "gain": 100,
-                    "offset": 50
-                })
-            })
-            .collect();
-
-        let filter_wheels: Vec<Value> = self
-            .filter_wheels
-            .iter()
-            .map(|fw| {
-                serde_json::json!({
-                    "id": fw.id,
-                    "camera_id": self.cameras.first().map(|c| c.id.as_str()).unwrap_or("main-cam"),
-                    "alpaca_url": fw.alpaca_url,
-                    "device_number": fw.device_number,
-                    "filters": fw.filters
-                })
-            })
-            .collect();
-
-        let cover_calibrators: Vec<Value> = self
-            .cover_calibrators
-            .iter()
-            .map(|cc| {
-                serde_json::json!({
-                    "id": cc.id,
-                    "alpaca_url": cc.alpaca_url,
-                    "device_number": cc.device_number
-                })
-            })
-            .collect();
-
-        let _webhook_url = self
-            .webhook_receiver
-            .as_ref()
-            .map(|w| w.url.clone())
-            .unwrap_or_default();
-
-        let _orchestrator_url = self
-            .orchestrator
-            .as_ref()
-            .map(|o| o.invoke_url.clone())
-            .unwrap_or_default();
-
-        serde_json::json!({
-            "session": {
-                "data_directory": std::env::temp_dir().join("rp-test-data").to_string_lossy().to_string(),
-                "session_state_file": std::env::temp_dir().join("rp-test-session.json").to_string_lossy().to_string(),
-                "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
-            },
-            "equipment": {
-                "cameras": cameras,
-                "mount": null,
-                "focusers": [],
-                "filter_wheels": filter_wheels,
-                "cover_calibrators": cover_calibrators,
-                "safety_monitors": []
-            },
-            "plugins": self.plugin_configs,
-            "targets": [],
-            "planner": {
-                "min_altitude_degrees": 20,
-                "dawn_buffer_minutes": 30,
-                "prefer_transiting": true,
-                "minimize_filter_changes": true
-            },
-            "safety": {
-                "polling_interval_secs": 10,
-                "park_on_unsafe": true,
-                "resume_on_safe": true,
-                "resume_delay_secs": 300
-            },
-            "server": {
-                "port": 0,
-                "bind_address": "127.0.0.1"
-            }
-        })
+        let mut builder = RpConfigBuilder::new();
+        for camera in &self.cameras {
+            builder.add_camera(camera.clone());
+        }
+        for fw in &self.filter_wheels {
+            builder.add_filter_wheel(fw.clone());
+        }
+        for cc in &self.cover_calibrators {
+            builder.add_cover_calibrator(cc.clone());
+        }
+        for plugin in &self.plugin_configs {
+            builder.add_plugin(plugin.clone());
+        }
+        builder.build()
     }
 
     /// Wait for rp to become healthy (retry GET /health).
     /// Timeout: 120 × 250ms = 30s (sanitizer-instrumented binaries start slower).
     pub async fn wait_for_rp_healthy(&self) -> bool {
-        let client = reqwest::Client::new();
-        let url = format!("{}/health", self.rp_url());
-        for _ in 0..120 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().as_u16() == 200 {
-                    return true;
-                }
-            }
-        }
-        false
+        bdd_infra::rp_harness::wait_for_rp_healthy(&self.rp_url()).await
     }
 
     /// Wait for a specific number of events of a given type

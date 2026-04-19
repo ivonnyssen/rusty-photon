@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::ServiceHandle;
+use bdd_infra::ServiceHandle;
+
 use crate::world::RpWorld;
 
 const AUTH_USERNAME: &str = "observatory";
