@@ -1,8 +1,11 @@
 """rusty-photon Bazel module.
 
 Cargo.toml remains the canonical source of dependency versions.
-crate_universe reads Cargo.toml + Cargo.lock to materialize an @crates repo
-that Bazel targets reference via @crates//:<name>.
+crate_universe reads Cargo.toml + Cargo.lock to materialize an @cr repo
+that Bazel targets reference via @cr//:<name>.  The short repo name ("cr"
+instead of "crates") is intentional: rules_rust embeds the repo name twice
+in every build-script runfiles path, and aws-lc-sys's deeply nested vendored
+source tree hits the Windows MAX_PATH (260) limit with longer names.
 
 Adding a dep: edit the relevant Cargo.toml, run `cargo update` if needed,
 then `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel index.
@@ -33,7 +36,7 @@ register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
 crate.from_cargo(
-    name = "crates",
+    name = "cr",
     cargo_lockfile = "//:Cargo.lock",
     manifests = [
         "//:Cargo.toml",
@@ -50,14 +53,4 @@ crate.from_cargo(
         "//services/sentinel-app:Cargo.toml",
     ],
 )
-# aws-lc-sys's build script compiles C code from the vendored aws-lc tree.
-# On Windows, jitterentropy.h includes arch/jitterentropy-base-windows.h,
-# but crate_universe's default build_script_data glob does not expose the
-# arch/ directory in the sandbox.  Widening to ["**"] makes all source
-# files available to the build script.
-crate.annotation(
-    crate = "aws-lc-sys",
-    build_script_data_glob = ["**"],
-)
-
-use_repo(crate, "crates")
+use_repo(crate, "cr")

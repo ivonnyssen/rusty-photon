@@ -63,7 +63,7 @@ repo root/
 - [x] `bazel mod tidy` succeeds; external crate index generated.
 - [x] bazelisk installed locally and pinned via `.bazelversion`.
 
-**Exit criteria:** `bazel build @crates//...` resolves all crates.io deps without error.
+**Exit criteria:** `bazel build @cr//...` resolves all crates.io deps without error.
 
 ### Phase 1 — Leaf crates (DONE)
 - [x] `crates/rp-auth/BUILD.bazel` — `rust_library` + `rust_test`.
@@ -142,7 +142,7 @@ After Phase 7: the Cargo nightly job remains as a safety net for 30 days. Rollba
 | rust-analyzer breaks under Bazel | Medium | Developers can still use Cargo locally (it's not removed). `rust-project.json` generator from rules_rust is also available. |
 | Team learning curve | Certain | This plan doc + pair programming on first few BUILD files. |
 | BuildBuddy free tier exceeded | Low | Self-host `bazel-remote` on a $5 VPS if we outgrow 100 GB/month transfer. |
-| `aws-lc-sys` build fails on Windows under Bazel | Hit | `crate.annotation(crate = "aws-lc-sys", build_script_data_glob = ["**"])` exposes the `arch/` headers to the build script sandbox. See MODULE.bazel. |
+| `aws-lc-sys` build fails on Windows under Bazel (MAX_PATH) | Hit | Shortened `from_cargo` name from `"crates"` to `"cr"`. The repo name appears twice in every build-script runfiles path; `aws-lc-sys`'s `arch/jitterentropy-base-windows.h` hit exactly 260 chars with the longer name. |
 
 ## Success metrics
 
