@@ -755,12 +755,11 @@ impl ServerPool {
         let config_path = self.config_dir.join(format!("pool-{}.json", hash));
         std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
             .map_err(|e| format!("failed to write config: {}", e))?;
-        let handle = ServiceHandle::start(
-            self.manifest_dir,
-            self.package_name,
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let config_path_str = config_path
+            .to_str()
+            .ok_or_else(|| format!("config path is not valid UTF-8: {}", config_path.display()))?;
+        let handle =
+            ServiceHandle::start(self.manifest_dir, self.package_name, config_path_str).await;
         let port = handle.port;
         let base_url = handle.base_url.clone();
         self.pool.insert(
@@ -800,22 +799,68 @@ impl ServerPool {
 /// reused: if two configs produce the same hash (after excluding per-run
 /// artifacts like ports and temp paths), they are functionally equivalent.
 ///
+/// The hash walks the [`serde_json::Value`] tree directly and sorts object
+/// keys before folding them into the hasher, so it is independent of the
+/// backing map's iteration order (defensive against enabling serde_json's
+/// `preserve_order` feature via cargo feature unification).
+///
 /// # Arguments
 ///
 /// * `config` — the full JSON config value
 /// * `exclude_paths` — list of JSON key paths to ignore (e.g., `&[&["server", "port"]]`)
 pub fn config_hash(config: &serde_json::Value, exclude_paths: &[&[&str]]) -> u64 {
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
 
     let mut cleaned = config.clone();
     for path in exclude_paths {
         remove_json_path(&mut cleaned, path);
     }
 
-    let canonical = serde_json::to_string(&cleaned).unwrap_or_default();
     let mut hasher = std::hash::DefaultHasher::new();
-    canonical.hash(&mut hasher);
+    hash_json_canonical(&cleaned, &mut hasher);
     hasher.finish()
+}
+
+/// Recursively fold a JSON value into `hasher` in a canonical, order-independent
+/// way. Object keys are sorted; variant tags are prefixed so that e.g. the
+/// string `"null"` does not collide with `Value::Null`.
+fn hash_json_canonical<H: std::hash::Hasher>(value: &serde_json::Value, hasher: &mut H) {
+    use std::hash::Hash;
+
+    match value {
+        serde_json::Value::Null => 0u8.hash(hasher),
+        serde_json::Value::Bool(b) => {
+            1u8.hash(hasher);
+            b.hash(hasher);
+        }
+        serde_json::Value::Number(n) => {
+            2u8.hash(hasher);
+            n.to_string().hash(hasher);
+        }
+        serde_json::Value::String(s) => {
+            3u8.hash(hasher);
+            s.hash(hasher);
+        }
+        serde_json::Value::Array(items) => {
+            4u8.hash(hasher);
+            items.len().hash(hasher);
+            for item in items {
+                hash_json_canonical(item, hasher);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            5u8.hash(hasher);
+            map.len().hash(hasher);
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            for key in keys {
+                key.hash(hasher);
+                if let Some(child) = map.get(key) {
+                    hash_json_canonical(child, hasher);
+                }
+            }
+        }
+    }
 }
 
 /// Remove a nested key from a JSON value by following a path of keys.
@@ -1246,5 +1291,82 @@ features = ["mock"]
             hash.trim().starts_with("$argon2id$"),
             "expected Argon2id hash, got: {hash}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // config_hash tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_hash_is_stable_across_calls() {
+        let cfg = serde_json::json!({ "server": { "port": 1234 }, "name": "a" });
+        assert_eq!(config_hash(&cfg, &[]), config_hash(&cfg, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_distinguishes_different_configs() {
+        let a = serde_json::json!({ "name": "alpha" });
+        let b = serde_json::json!({ "name": "beta" });
+        assert_ne!(config_hash(&a, &[]), config_hash(&b, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_ignores_excluded_top_level_field() {
+        let a = serde_json::json!({ "server": { "port": 1 }, "name": "svc" });
+        let b = serde_json::json!({ "server": { "port": 9999 }, "name": "svc" });
+        let exclude: &[&[&str]] = &[&["server", "port"]];
+        assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_ignores_excluded_nested_field() {
+        let a = serde_json::json!({ "file": { "path": "/tmp/a", "mode": "ro" } });
+        let b = serde_json::json!({ "file": { "path": "/tmp/b", "mode": "ro" } });
+        let exclude: &[&[&str]] = &[&["file", "path"]];
+        assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_detects_changes_outside_excluded_paths() {
+        let a = serde_json::json!({ "server": { "port": 1 }, "name": "alpha" });
+        let b = serde_json::json!({ "server": { "port": 1 }, "name": "beta" });
+        let exclude: &[&[&str]] = &[&["server", "port"]];
+        assert_ne!(config_hash(&a, exclude), config_hash(&b, exclude));
+    }
+
+    #[test]
+    fn test_config_hash_handles_missing_excluded_path() {
+        // Excluding a path that isn't present should be a no-op, not a panic.
+        let cfg = serde_json::json!({ "name": "svc" });
+        let exclude: &[&[&str]] = &[&["missing", "nested", "key"]];
+        let _ = config_hash(&cfg, exclude);
+    }
+
+    #[test]
+    fn test_config_hash_distinguishes_array_order() {
+        // Arrays are order-sensitive; only object keys are canonicalized.
+        let a = serde_json::json!({ "items": [1, 2, 3] });
+        let b = serde_json::json!({ "items": [3, 2, 1] });
+        assert_ne!(config_hash(&a, &[]), config_hash(&b, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_distinguishes_null_from_missing_key() {
+        let a = serde_json::json!({ "k": null });
+        let b = serde_json::json!({});
+        assert_ne!(config_hash(&a, &[]), config_hash(&b, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_distinguishes_value_variants() {
+        // Ensure the variant tag prefixes prevent cross-type collisions
+        // (e.g. string "true" vs bool true).
+        let string_true = serde_json::json!({ "k": "true" });
+        let bool_true = serde_json::json!({ "k": true });
+        assert_ne!(config_hash(&string_true, &[]), config_hash(&bool_true, &[]));
+
+        let string_one = serde_json::json!({ "k": "1" });
+        let num_one = serde_json::json!({ "k": 1 });
+        assert_ne!(config_hash(&string_one, &[]), config_hash(&num_one, &[]));
     }
 }
