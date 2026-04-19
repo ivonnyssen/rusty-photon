@@ -4,10 +4,19 @@
 //! then blocks until terminated. Accepts `--config <path>` to match
 //! the interface expected by `ServiceHandle`.
 //!
+//! On SIGHUP the service rebinds to a fresh random port and prints a
+//! new `bound_addr=<addr>` line so `ServiceHandle::reload` can observe
+//! the re-bind. This lets `ServerPool` exercise its reload-reuse path
+//! against a live child.
+//!
 //! If the config file contains the text "fail", exits immediately
 //! with code 1 (simulates a service that fails to start).
 
-fn main() {
+use tokio::net::TcpListener;
+use tokio::signal::unix::{signal, SignalKind};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(idx) = args.iter().position(|a| a == "--config") {
         if let Some(path) = args.get(idx + 1) {
@@ -19,12 +28,18 @@ fn main() {
         }
     }
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    println!("bound_addr={}", addr);
+    let mut sighup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
 
-    // Block until killed (SIGTERM default handler terminates the process)
-    for stream in listener.incoming() {
-        drop(stream);
+    let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    println!("bound_addr={}", listener.local_addr().unwrap());
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => { drop(accepted); }
+            _ = sighup.recv() => {
+                listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                println!("bound_addr={}", listener.local_addr().unwrap());
+            }
+        }
     }
 }
