@@ -14,6 +14,21 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+# Variant with rp-harness feature enabled. rp's BDD tests use the
+# rp_harness module (OmniSim, rp config builder, webhook receiver,
+# test orchestrator, MCP client).
+rust_library(
+    name = "bdd-infra_rp_harness",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    aliases = aliases(),
+    crate_features = ["rp-harness"],
+    crate_name = "bdd_infra",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
 # Helper binary used by bdd-infra's own integration tests. Referenced via the
 # TEST_SERVICE_BINARY env var by tests/service_handle.rs.
 rust_binary(

@@ -76,7 +76,7 @@ rust_test(
     ),
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":rp_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [":rp_lib", "//crates/bdd-infra:bdd-infra_rp_harness"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
