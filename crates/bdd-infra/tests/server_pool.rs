@@ -80,6 +80,9 @@ async fn test_pool_try_acquire_succeeds_with_valid_config() {
     pool.stop_all().await;
 }
 
+// Windows reload uses a named pipe that `test_service` doesn't provide, so the
+// `is_running() == true` + reload-success branch is only reachable on Unix.
+#[cfg(unix)]
 #[tokio::test]
 async fn test_pool_try_acquire_reuses_running_server() {
     let (_dir, manifest_dir, package_name) = setup_pool_manifest("BDD_POOL_TRY_ACQUIRE_REUSE");

@@ -4,16 +4,16 @@
 //! then blocks until terminated. Accepts `--config <path>` to match
 //! the interface expected by `ServiceHandle`.
 //!
-//! On SIGHUP the service rebinds to a fresh random port and prints a
+//! On Unix, SIGHUP triggers a rebind to a fresh random port and emits a
 //! new `bound_addr=<addr>` line so `ServiceHandle::reload` can observe
-//! the re-bind. This lets `ServerPool` exercise its reload-reuse path
-//! against a live child.
+//! the rebind. On Windows, reload is implemented over named pipes which
+//! this minimal binary doesn't provide — callers should skip reload-path
+//! assertions there.
 //!
 //! If the config file contains the text "fail", exits immediately
 //! with code 1 (simulates a service that fails to start).
 
 use tokio::net::TcpListener;
-use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -28,18 +28,27 @@ async fn main() {
         }
     }
 
-    let mut sighup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
-
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     println!("bound_addr={}", listener.local_addr().unwrap());
 
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => { drop(accepted); }
-            _ = sighup.recv() => {
-                listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                println!("bound_addr={}", listener.local_addr().unwrap());
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sighup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => { drop(accepted); }
+                _ = sighup.recv() => {
+                    listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    println!("bound_addr={}", listener.local_addr().unwrap());
+                }
             }
         }
+    }
+
+    #[cfg(not(unix))]
+    loop {
+        drop(listener.accept().await);
     }
 }
