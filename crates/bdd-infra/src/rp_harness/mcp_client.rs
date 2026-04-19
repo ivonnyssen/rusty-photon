@@ -1,9 +1,9 @@
 //! Persistent MCP test client using rmcp.
 //!
-//! `McpTestClient` wraps a single rmcp session. It is created once per
-//! scenario (in the "an MCP client connected to rp" Given step) and
-//! reused for all tool calls within that scenario — mirroring how a
-//! real MCP client (e.g. calibrator-flats) works.
+//! [`McpTestClient`] wraps a single rmcp session. It is created once per
+//! scenario (typically in an "MCP client connected to rp" Given step) and
+//! reused for all tool calls within that scenario — mirroring how a real
+//! MCP client (e.g. calibrator-flats) works.
 
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
