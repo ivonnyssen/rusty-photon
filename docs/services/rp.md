@@ -1602,7 +1602,11 @@ Behavioral specifications for `rp`'s responsibilities:
 - Power failure recovery (re-invoke orchestrator with recovery context)
 
 Note: orchestration workflow tests (capture loops, target switching,
-meridian flips) belong to the orchestrator plugin, not to `rp`.
+meridian flips) belong to the orchestrator plugin, not to `rp`. For
+example, end-to-end flat calibration scenarios live in
+`services/calibrator-flats/tests/` and spawn `rp` via the `rp-harness`
+feature of `bdd-infra`. Each new workflow plugin owns its own BDD
+suite rather than adding scenarios here.
 
 #### Prerequisites
 

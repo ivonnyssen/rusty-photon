@@ -2,9 +2,10 @@
 
 use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::OmniSimHandle;
+use bdd_infra::rp_harness::{CoverCalibratorConfig, OmniSimHandle};
+
 use crate::steps::tool_steps::{ensure_mcp_client, start_rp};
-use crate::world::{CoverCalibratorConfig, RpWorld};
+use crate::world::RpWorld;
 
 // --- Given steps ---
 

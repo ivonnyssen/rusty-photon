@@ -2,9 +2,10 @@
 
 use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::{OmniSimHandle, ServiceHandle};
-use crate::steps::mcp_test_client::McpTestClient;
-use crate::world::{CameraConfig, FilterWheelConfig, RpWorld};
+use bdd_infra::rp_harness::{CameraConfig, FilterWheelConfig, McpTestClient, OmniSimHandle};
+use bdd_infra::ServiceHandle;
+
+use crate::world::RpWorld;
 
 // --- Given steps ---
 

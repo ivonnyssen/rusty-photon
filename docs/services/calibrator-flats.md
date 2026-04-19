@@ -260,9 +260,21 @@ Testing follows the conventions in `docs/skills/testing.md`.
 
 ### BDD Tests (Cucumber)
 
-- Full workflow with OmniSim + rp: cover lifecycle, per-filter exposure
-  convergence, frame capture, completion
-- Median ADU of captured flats is within tolerance of 50% max_adu
+BDD tests live in `services/calibrator-flats/tests/` and exercise the
+full three-process topology (OmniSim + rp + calibrator-flats) end-to-end
+via rp's REST API. The test harness comes from the `rp-harness` feature
+of the `bdd-infra` workspace crate (`bdd_infra::rp_harness`), which
+provides the OmniSim singleton, rp launcher, config builder, webhook
+receiver, and MCP client.
+
+Current scenarios (`tests/features/flat_calibration.feature`):
+
+- Orchestrator captures flats and returns the session to `idle`
+- Orchestrator emits an `exposure_complete` event per captured flat
+
+Planned scenarios (not yet implemented):
+
+- Median ADU of captured flats is within tolerance of 50% `max_adu`
 - Cleanup on error (calibrator off, cover open)
 - Graceful failure when camera or calibrator is unavailable
 
