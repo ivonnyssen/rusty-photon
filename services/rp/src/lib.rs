@@ -131,22 +131,30 @@ impl BoundServer {
     }
 
     pub async fn start(self) -> Result<()> {
+        self.start_with_shutdown(shutdown_signal()).await
+    }
+
+    /// Run the server until the `shutdown` future resolves, at which point axum's
+    /// graceful-shutdown path drains in-flight connections before returning.
+    ///
+    /// `run_server_loop` uses this to drive shutdown externally on reload/stop,
+    /// so the outer loop can `await` the in-flight future instead of dropping it
+    /// and rebinding the same port while requests are still resolving.
+    pub async fn start_with_shutdown<F>(self, shutdown: F) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
         match self.tls {
             Some(ref tls_config) => {
                 info!("rp service started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await
-                .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown)
+                    .await
+                    .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
             }
             None => {
                 info!("rp service started on {}", self.local_addr);
                 axum::serve(self.listener, self.router)
-                    .with_graceful_shutdown(shutdown_signal())
+                    .with_graceful_shutdown(shutdown)
                     .await?;
             }
         }
@@ -161,6 +169,11 @@ impl BoundServer {
 /// On each iteration the config file is re-read, the server rebuilt, and a fresh
 /// listener bound. The `stop` and `reload` closures return futures that complete
 /// when the respective signal is received (e.g., SIGTERM for stop, SIGHUP for reload).
+///
+/// When `stop` or `reload` fires, a oneshot triggers axum's graceful shutdown on
+/// the in-flight server and the loop awaits that future to completion before
+/// rebinding the same port. Dropping the running future instead would leave
+/// in-flight connections unresolved and race the new iteration's listener bind.
 pub async fn run_server_loop(
     config_path: &std::path::Path,
     mut stop: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
@@ -176,15 +189,30 @@ pub async fn run_server_loop(
         })?;
         let config = config::load_config(config_str)?;
         tracing::info!("Starting rp server on port {}", config.server.port);
-        let server = ServerBuilder::new()
-            .with_config(config)
-            .build()
-            .await?
-            .start();
+        let server = ServerBuilder::new().with_config(config).build().await?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown_fut = async move {
+            let _ = shutdown_rx.await;
+        };
+        let mut start_fut = Box::pin(server.start_with_shutdown(shutdown_fut));
         tokio::select! {
-            result = server => return result.map_err(Into::into),
-            _ = stop() => { tracing::info!("Received stop signal"); break; }
-            _ = reload() => { tracing::info!("Reloading configuration"); continue; }
+            result = &mut start_fut => return result.map_err(Into::into),
+            _ = stop() => {
+                tracing::info!("Received stop signal");
+                let _ = shutdown_tx.send(());
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("rp shutdown returned error: {err}");
+                }
+                break;
+            }
+            _ = reload() => {
+                tracing::info!("Reloading configuration");
+                let _ = shutdown_tx.send(());
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("rp shutdown returned error: {err}");
+                }
+                continue;
+            }
         }
     }
     Ok(())

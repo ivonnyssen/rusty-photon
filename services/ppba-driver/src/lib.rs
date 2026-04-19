@@ -151,20 +151,30 @@ impl BoundServer {
     }
 
     pub async fn start(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        self.start_with_shutdown(shutdown_signal()).await
+    }
+
+    /// Run the server until the `shutdown` future resolves, at which point
+    /// graceful shutdown drains in-flight connections before returning.
+    ///
+    /// `run_server_loop` uses this to drive shutdown externally on reload/stop
+    /// so the outer loop can await the in-flight future instead of dropping it
+    /// and rebinding the same port while requests are still resolving.
+    pub async fn start_with_shutdown<F>(
+        self,
+        shutdown: F,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
         match self.tls {
             Some(ref tls_config) => {
                 info!("ppba-driver started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
             }
             None => {
                 info!("ppba-driver started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
         }
         debug!("ppba-driver shut down");
@@ -180,6 +190,11 @@ impl BoundServer {
 /// listener is bound. The `stop` and `reload` closures return futures that
 /// complete when the respective signal is received (e.g., SIGTERM for stop,
 /// SIGHUP for reload).
+///
+/// When `stop` or `reload` fires, a oneshot triggers graceful shutdown on the
+/// in-flight server and the loop awaits that future to completion before
+/// rebinding the same port. Dropping the running future instead would leave
+/// in-flight connections unresolved and race the new iteration's listener bind.
 pub async fn run_server_loop(
     config_path: &std::path::Path,
     factory: Arc<dyn SerialPortFactory>,
@@ -194,12 +209,30 @@ pub async fn run_server_loop(
         let server = ServerBuilder::new(config)
             .with_factory(factory.clone())
             .build()
-            .await?
-            .start();
+            .await?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown_fut = async move {
+            let _ = shutdown_rx.await;
+        };
+        let mut start_fut = Box::pin(server.start_with_shutdown(shutdown_fut));
         tokio::select! {
-            result = server => return result,
-            _ = stop() => { info!("Received stop signal"); break; }
-            _ = reload() => { info!("Reloading configuration"); continue; }
+            result = &mut start_fut => return result,
+            _ = stop() => {
+                info!("Received stop signal");
+                let _ = shutdown_tx.send(());
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("ppba-driver shutdown returned error: {err}");
+                }
+                break;
+            }
+            _ = reload() => {
+                info!("Reloading configuration");
+                let _ = shutdown_tx.send(());
+                if let Err(err) = start_fut.await {
+                    tracing::warn!("ppba-driver shutdown returned error: {err}");
+                }
+                continue;
+            }
         }
     }
     Ok(())
