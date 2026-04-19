@@ -47,8 +47,9 @@ build --disk_cache=~/.cache/bazel-disk-cache
 
 # --- CI-specific config ----------------------------------------------------
 
-# Activate with `bazel build --config=ci` in GitHub Actions.
-# Remote cache credentials come from env (BUILDBUDDY_API_KEY) not checked-in.
+# Activate with `bazel build --config=ci --config=remote-cache` in GitHub
+# Actions. The API key is passed on the command line via --remote_header
+# (not checked in). See .github/workflows/bazel.yml.
 
 build:ci --color=yes
 build:ci --show_timestamps

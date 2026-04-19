@@ -24,6 +24,10 @@ jobs:
     # which targets actually changed and only rebuilds those; everything
     # else is a cache hit.
     timeout-minutes: 30
+    env:
+      # Read+write key on push to main populates the cache from trusted code.
+      # Read-only key on pull requests prevents cache poisoning from forks.
+      BUILDBUDDY_API_KEY: ${{ github.event_name == 'push' && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_API_KEY_READONLY }}
     steps:
       - uses: actions/checkout@v5
 
@@ -43,31 +47,18 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
-      # Bazel disk cache lives at ~/.cache/bazel-disk-cache per .bazelrc.
-      # GHA cache has a 10 GB per-repo ceiling. We key on Bazel version,
-      # Cargo.lock, and MODULE.bazel.lock so a dep bump invalidates cleanly.
-      # Once BuildBuddy remote cache is wired up (phase 5), this local
-      # cache becomes a secondary accelerator -- remove it then.
-      - name: Cache Bazel disk cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/bazel-disk-cache
-          key: bazel-disk-${{ runner.os }}-${{ hashFiles('.bazelversion', 'Cargo.lock', 'MODULE.bazel.lock') }}
-          restore-keys: |
-            bazel-disk-${{ runner.os }}-
-
       - name: bazel build
-        run: bazel build --config=ci //...
+        run: bazel build --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY //...
 
       - name: bazel test (fast)
         # .bazelrc filters -requires-cargo,-bdd by default; keep fast
         # unit + integration pass separate from BDD so log output stays
         # useful when something breaks.
-        run: bazel test --config=ci //...
+        run: bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY //...
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. --test_env=PATH forwards
         # the runner PATH (extended by the OmniSim install step) into
         # test sandboxes so rp's scenarios can spawn ascom.alpaca.simulators.
-        run: bazel test --config=ci --test_tag_filters=bdd --test_env=PATH //...
+        run: bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY --test_tag_filters=bdd --test_env=PATH //...
