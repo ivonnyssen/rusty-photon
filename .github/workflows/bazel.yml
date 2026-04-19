@@ -39,14 +39,14 @@ jobs:
       - uses: actions/checkout@v5
 
       # MSVC's link.exe cannot handle paths longer than 260 characters
-      # (MAX_PATH). Bazel's deep output tree pushes sysroot .rlib paths
-      # past that limit. Shortening output_user_root saves ~40 characters
-      # and avoids LNK1181 errors (rules_rust #1120). .bazelrc already
-      # imports user.bazelrc via try-import, so this takes effect on the
-      # next bazel invocation.
-      - name: Shorten Bazel output root (Windows MAX_PATH workaround)
+      # (MAX_PATH). Bazel's deep output tree pushes sysroot .rlib and .o
+      # paths past that limit. Using --output_base=C:/b eliminates the
+      # workspace-hash subdirectory and saves ~50 characters vs the default
+      # (rules_rust #1120). .bazelrc already imports user.bazelrc via
+      # try-import, so this takes effect on the next bazel invocation.
+      - name: Shorten Bazel output base (Windows MAX_PATH workaround)
         if: runner.os == 'Windows'
-        run: echo 'startup --output_user_root=C:/_bzl' > user.bazelrc
+        run: echo 'startup --output_base=C:/b' > user.bazelrc
 
       - name: Install lld
         if: runner.os == 'Linux'
@@ -79,4 +79,11 @@ jobs:
         # run them explicitly in their own step. --test_env=PATH forwards
         # the runner PATH (extended by the OmniSim install step) into
         # test sandboxes so rp's scenarios can spawn ascom.alpaca.simulators.
-        run: bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY --test_tag_filters=bdd --test_env=PATH //...
+        # On macOS, darwin-sandbox blocks OmniSim from binding network
+        # ports; --spawn_strategy=local bypasses the sandbox for tests.
+        run: |
+          EXTRA_FLAGS=""
+          if [[ "$RUNNER_OS" != "Linux" ]]; then
+            EXTRA_FLAGS="--spawn_strategy=local"
+          fi
+          bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY --test_tag_filters=bdd --test_env=PATH $EXTRA_FLAGS //...
