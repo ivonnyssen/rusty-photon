@@ -23,11 +23,6 @@ bazel_dep(name = "platforms", version = "1.0.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    # `-fuse-ld=lld` overrides rules_rust's default gold linker, which
-    # rustc 1.94+ warns about ("the gold linker is deprecated and has
-    # known bugs with Rust"). The Bazel CI workflow installs lld
-    # explicitly; on macOS/Windows the host toolchain ignores this flag.
-    extra_rustc_flags = ["-Clink-arg=-fuse-ld=lld"],
     versions = ["1.94.1"],  # matches workspace.package.rust-version
 )
 use_repo(rust, "rust_toolchains")

@@ -88,7 +88,7 @@ repo root/
 - [x] All five services wired up: filemonitor, sentinel (cross-spawns filemonitor), rp (cross-spawns calibrator-flats), ppba-driver (mock feature binary), qhy-focuser (mock feature binary). Tagged `bdd`.
 - [x] `bdd-infra` gained `resolve_bdd_config`: if the conventional `{PACKAGE_UPPER}_BINARY` env var is set, skip reading Cargo.toml. Lets hermetic builds provide the pre-built binary path directly.
 - [x] `load_config` falls back to `./Cargo.toml` when the compile-time `CARGO_MANIFEST_DIR` path is no longer valid at runtime (Bazel sandbox tear-down).
-- [ ] Windows BDD: not yet exercised under Bazel CI (Linux-only shadow runner for now).
+- [x] Cross-platform: Bazel CI now runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`. The `lld` linker flag is scoped to Linux via `.bazelrc` `build:linux`.
 
 **Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, 150 s total wall on a warm cache — rp:bdd alone is 150 s with 84 scenarios).
 

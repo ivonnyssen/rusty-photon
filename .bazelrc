@@ -38,6 +38,14 @@ test --test_tag_filters=-requires-cargo,-bdd
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
+# --- Platform-specific config -----------------------------------------------
+
+# Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
+# about gold ("the gold linker is deprecated and has known bugs with Rust").
+# The Bazel CI workflow installs lld explicitly. macOS and Windows use their
+# own host linkers, so this flag is scoped to Linux only.
+build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=lld
+
 # --- Disk cache ------------------------------------------------------------
 
 # Keep a local disk cache so repeated `bazel build` across branches reuses
