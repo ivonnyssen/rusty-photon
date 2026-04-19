@@ -38,6 +38,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # MSVC's link.exe cannot handle paths longer than 260 characters
+      # (MAX_PATH). Bazel's deep output tree pushes sysroot .rlib paths
+      # past that limit. Shortening output_user_root saves ~40 characters
+      # and avoids LNK1181 errors (rules_rust #1120). .bazelrc already
+      # imports user.bazelrc via try-import, so this takes effect on the
+      # next bazel invocation.
+      - name: Shorten Bazel output root (Windows MAX_PATH workaround)
+        if: runner.os == 'Windows'
+        run: echo 'startup --output_user_root=C:/_bzl' > user.bazelrc
+
       - name: Install lld
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
