@@ -21,7 +21,7 @@ Feature: Calibrator flat field workflow (end-to-end)
     Given a running Alpaca simulator
     And a test webhook receiver subscribed to "exposure_complete"
     And the calibrator-flats service is configured for 2 "Luminance" flats and 2 "Red" flats
-    And rp is running with a camera, filter wheel, cover calibrator, webhook, and the calibrator-flats orchestrator
+    And rp is running with a camera, filter wheel, cover calibrator, and the calibrator-flats orchestrator
     When a session is started via the REST API
     And the calibrator-flats orchestrator runs to completion
     Then the test webhook receiver should have received at least 4 "exposure_complete" events

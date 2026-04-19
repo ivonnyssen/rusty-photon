@@ -34,12 +34,12 @@ async fn running_alpaca_simulator(world: &mut CalibratorFlatsWorld) {
 )]
 async fn configure_calibrator_flats(
     world: &mut CalibratorFlatsWorld,
-    count1: i32,
+    count1: u32,
     filter1: String,
-    count2: i32,
+    count2: u32,
     filter2: String,
 ) {
-    world.flat_plan = vec![(filter1, count1 as u32), (filter2, count2 as u32)];
+    world.flat_plan = vec![(filter1, count1), (filter2, count2)];
 }
 
 #[given(expr = "a test webhook receiver subscribed to {string}")]
@@ -52,16 +52,6 @@ async fn webhook_receiver_subscribed_to(world: &mut CalibratorFlatsWorld, event_
     "rp is running with a camera, filter wheel, cover calibrator, and the calibrator-flats orchestrator"
 )]
 async fn rp_running_with_equipment_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
-    configure_default_equipment(world).await;
-    start_calibrator_flats_service(world).await;
-    register_calibrator_flats_plugin(world);
-    start_rp_service(world).await;
-}
-
-#[given(
-    "rp is running with a camera, filter wheel, cover calibrator, webhook, and the calibrator-flats orchestrator"
-)]
-async fn rp_running_with_equipment_webhook_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
     configure_default_equipment(world).await;
     start_calibrator_flats_service(world).await;
     register_calibrator_flats_plugin(world);
@@ -142,11 +132,11 @@ async fn session_status_is(world: &mut CalibratorFlatsWorld, expected: String) {
 #[then(expr = "the test webhook receiver should have received at least {int} {string} event(s)")]
 async fn should_receive_at_least_n_events(
     world: &mut CalibratorFlatsWorld,
-    count: i32,
+    count: usize,
     event_type: String,
 ) {
     assert!(
-        world.wait_for_events(&event_type, count as usize).await,
+        world.wait_for_events(&event_type, count).await,
         "expected at least {} '{}' event(s) within timeout",
         count,
         event_type
