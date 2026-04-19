@@ -639,33 +639,69 @@ fn send_reload(pid: u32) -> std::io::Result<()> {
 /// Instead of spawning a fresh server for every BDD scenario, the pool keeps
 /// servers alive across scenarios. When a scenario needs a server with a
 /// particular config, the pool either reuses an existing one (sending a reload
-/// signal to reset state) or starts a new one.
+/// signal to reset state) or starts a new one. All pool methods take `&self`
+/// and use interior mutability, so the pool itself can be stored directly in
+/// a `LazyLock` — no outer `Mutex` required.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// static POOL: LazyLock<Mutex<ServerPool>> = LazyLock::new(|| {
-///     Mutex::new(ServerPool::new(
+/// static POOL: LazyLock<ServerPool> = LazyLock::new(|| {
+///     ServerPool::new(
 ///         env!("CARGO_MANIFEST_DIR"),
 ///         env!("CARGO_PKG_NAME"),
 ///         vec![vec!["server".into(), "port".into()]],
-///     ))
+///     )
 /// });
+///
+/// // In a step definition:
+/// let guard = POOL.acquire(&config_json).await?;
+/// // ... use guard.port and guard.base_url for the scenario ...
+/// // guard drops at end of scenario, releasing the per-entry lease.
 /// ```
 /// Entry in the server pool: a running handle plus the stable config path
 /// the server was started with (so reloads re-read from the same location).
-struct PoolEntry {
+/// `None` means the slot has been reserved but not yet started (or was torn
+/// down after a failed reload and will be started fresh on the next acquire).
+struct EntryBody {
     handle: ServiceHandle,
     config_path: std::path::PathBuf,
 }
 
+type Entry = std::sync::Arc<tokio::sync::Mutex<Option<EntryBody>>>;
+
 pub struct ServerPool {
-    pool: std::collections::HashMap<u64, PoolEntry>,
+    /// Map from config hash to an `Arc<Mutex<Option<EntryBody>>>`. The outer
+    /// `std::sync::Mutex` only guards the hashmap itself — it's released
+    /// before awaiting the per-entry tokio mutex, so scenarios with different
+    /// hashes don't block each other.
+    entries: std::sync::Mutex<std::collections::HashMap<u64, Entry>>,
     /// Pool-owned temp dir for stable config files that outlive individual scenarios.
     config_dir: std::path::PathBuf,
     manifest_dir: &'static str,
     package_name: &'static str,
     exclude_paths: Vec<Vec<String>>,
+}
+
+/// Lease on a pooled server, held for the duration of a scenario.
+///
+/// Drop releases the underlying per-entry mutex so the next scenario with the
+/// same config hash can proceed (and trigger a reload if needed). Scenarios
+/// that share a hash serialise; scenarios with different hashes run
+/// concurrently.
+pub struct PoolGuard {
+    pub port: u16,
+    pub base_url: String,
+    _lease: tokio::sync::OwnedMutexGuard<Option<EntryBody>>,
+}
+
+impl std::fmt::Debug for PoolGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolGuard")
+            .field("port", &self.port)
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ServerPool {
@@ -685,7 +721,7 @@ impl ServerPool {
             std::env::temp_dir().join(format!("bdd-pool-{}-{}", package_name, std::process::id()));
         std::fs::create_dir_all(&config_dir).expect("failed to create pool config dir");
         Self {
-            pool: std::collections::HashMap::new(),
+            entries: std::sync::Mutex::new(std::collections::HashMap::new()),
             config_dir,
             manifest_dir,
             package_name,
@@ -693,64 +729,76 @@ impl ServerPool {
         }
     }
 
-    /// Get a running server for this config, starting a new one if needed.
+    /// Acquire a running server for this config, starting a new one if needed.
     ///
-    /// If a server with a matching config hash already exists in the pool, its
-    /// config file is overwritten and a reload signal is sent so it picks up
-    /// any per-run artifacts (temp file paths, etc.) that differ between
+    /// Returns a [`PoolGuard`] that holds a per-entry lease for the caller's
+    /// scenario. While the guard is alive, no other acquire call on the same
+    /// hash can proceed — this guarantees the port and base URL stay valid
+    /// until the guard drops. Scenarios with different hashes acquire
+    /// independently.
+    ///
+    /// If a server with a matching config hash already exists, its config
+    /// file is overwritten and a reload signal is sent so it picks up any
+    /// per-run artifacts (temp file paths, etc.) that differ between
     /// scenarios but are excluded from the hash.
-    ///
-    /// Returns the port and base URL of the (re)started server.
-    pub async fn get_or_start(
-        &mut self,
-        config: &serde_json::Value,
-    ) -> Result<(u16, String), String> {
-        let refs: Vec<Vec<&str>> = self
-            .exclude_paths
-            .iter()
-            .map(|p| p.iter().map(String::as_str).collect())
-            .collect();
-        let slices: Vec<&[&str]> = refs.iter().map(|v| v.as_slice()).collect();
-        let hash = config_hash(config, &slices);
+    pub async fn acquire(&self, config: &serde_json::Value) -> Result<PoolGuard, String> {
+        let hash = self.hash_config(config);
 
-        if let Some(entry) = self.pool.get_mut(&hash) {
-            if entry.handle.is_running() {
+        // Briefly hold the map lock to get-or-create the entry's Arc.
+        let entry: Entry = {
+            let mut map = self
+                .entries
+                .lock()
+                .expect("ServerPool entries mutex poisoned");
+            map.entry(hash)
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(None)))
+                .clone()
+        };
+
+        // Lock the entry — waits for any in-flight scenario with the same hash.
+        let mut body_guard = entry.lock_owned().await;
+
+        // Try to reuse an existing running handle.
+        let reuse = if let Some(body) = body_guard.as_mut() {
+            if body.handle.is_running() {
                 debug!(
                     hash,
-                    old_port = entry.handle.port,
+                    old_port = body.handle.port,
                     "pool: reloading existing server"
                 );
-                // Overwrite the stable config file so the reloaded server
-                // picks up new per-scenario artifacts (temp file paths, etc.).
                 std::fs::write(
-                    &entry.config_path,
+                    &body.config_path,
                     serde_json::to_string_pretty(config).unwrap(),
                 )
                 .map_err(|e| format!("failed to write config: {}", e))?;
-                match entry.handle.reload().await {
+                match body.handle.reload().await {
                     Ok(()) => {
-                        debug!(hash, new_port = entry.handle.port, "pool: reload succeeded");
-                        return Ok((entry.handle.port, entry.handle.base_url.clone()));
+                        debug!(hash, new_port = body.handle.port, "pool: reload succeeded");
+                        Some((body.handle.port, body.handle.base_url.clone()))
                     }
                     Err(e) => {
                         debug!(hash, error = %e, "pool: reload failed, stopping stale entry");
-                        // Remove by value and explicitly stop() so the child
-                        // process is waited on before being discarded — Drop
-                        // only sends a best-effort SIGTERM without awaiting.
-                        if let Some(mut stale) = self.pool.remove(&hash) {
-                            stale.handle.stop().await;
-                        }
-                        // Fall through to start fresh below.
+                        body.handle.stop().await;
+                        None
                     }
                 }
             } else {
-                debug!(hash, "pool: server no longer running, removing stale entry");
-                // Server died — remove stale entry and start fresh.
-                self.pool.remove(&hash);
+                debug!(hash, "pool: server no longer running, will restart");
+                None
             }
+        } else {
+            None
+        };
+
+        if let Some((port, base_url)) = reuse {
+            return Ok(PoolGuard {
+                port,
+                base_url,
+                _lease: body_guard,
+            });
         }
 
-        // Create a stable config path owned by the pool (outlives scenarios).
+        // Start fresh — may be replacing a dead or failed-reload body.
         debug!(hash, "pool: starting new server");
         let config_path = self.config_dir.join(format!("pool-{}.json", hash));
         std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
@@ -762,14 +810,15 @@ impl ServerPool {
             ServiceHandle::start(self.manifest_dir, self.package_name, config_path_str).await;
         let port = handle.port;
         let base_url = handle.base_url.clone();
-        self.pool.insert(
-            hash,
-            PoolEntry {
-                handle,
-                config_path,
-            },
-        );
-        Ok((port, base_url))
+        *body_guard = Some(EntryBody {
+            handle,
+            config_path,
+        });
+        Ok(PoolGuard {
+            port,
+            base_url,
+            _lease: body_guard,
+        })
     }
 
     /// Compute the config hash for the given config value.
@@ -784,11 +833,23 @@ impl ServerPool {
     }
 
     /// Stop all servers in the pool and clean up config files.
-    pub async fn stop_all(&mut self) {
-        for (_, entry) in self.pool.iter_mut() {
-            entry.handle.stop().await;
+    ///
+    /// Waits for any outstanding [`PoolGuard`]s to be released before stopping
+    /// the corresponding handles.
+    pub async fn stop_all(&self) {
+        let entries: Vec<Entry> = {
+            let mut map = self
+                .entries
+                .lock()
+                .expect("ServerPool entries mutex poisoned");
+            map.drain().map(|(_, e)| e).collect()
+        };
+        for entry in entries {
+            let mut body = entry.lock().await;
+            if let Some(body_inner) = body.as_mut() {
+                body_inner.handle.stop().await;
+            }
         }
-        self.pool.clear();
         let _ = std::fs::remove_dir_all(&self.config_dir);
     }
 }

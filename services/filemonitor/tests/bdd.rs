@@ -15,10 +15,12 @@ bdd_infra::bdd_main! {
     // be stopped after the suite. We replicate `run_and_exit`'s failure-panic
     // below so the binary still exits non-zero when scenarios fail.
     let writer = FilemonitorWorld::cucumber()
-        .max_concurrent_scenarios(Some(1))
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // Release the pool lease so the next scenario with the
+                    // same hash can proceed (and trigger a reload).
+                    world.pool_guard.take();
                     // Stop only directly-started servers (TLS/auth scenarios).
                     // Pool-managed servers are kept alive across scenarios.
                     if let Some(fm) = world.filemonitor.as_mut() {

@@ -1,5 +1,6 @@
 use ascom_alpaca::api::{SafetyMonitor, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::PoolGuard;
 use cucumber::World;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -23,6 +24,8 @@ pub struct FilemonitorWorld {
     // Server connection (from pool or direct start)
     pub port: Option<u16>,
     pub base_url: Option<String>,
+    // Pool lease — dropped at end of scenario to release the per-hash lock.
+    pub pool_guard: Option<PoolGuard>,
     // Direct handle only for scenarios that bypass the pool (e.g. try_start failure tests)
     pub filemonitor: Option<ServiceHandle>,
     pub monitor: Option<Arc<dyn SafetyMonitor>>,
@@ -118,16 +121,15 @@ impl FilemonitorWorld {
     /// Write config to pool, start or reuse server, acquire typed client.
     pub async fn start_filemonitor(&mut self) {
         let config_json = self.build_config_json();
-        let mut pool = POOL.lock().await;
-        let (port, base_url) = pool
-            .get_or_start(&config_json)
+        let guard = POOL
+            .acquire(&config_json)
             .await
-            .expect("failed to start filemonitor from pool");
-        drop(pool);
-        self.port = Some(port);
-        self.base_url = Some(base_url);
-        let monitor = self.acquire_monitor(port).await;
+            .expect("failed to acquire filemonitor from pool");
+        self.port = Some(guard.port);
+        self.base_url = Some(guard.base_url.clone());
+        let monitor = self.acquire_monitor(guard.port).await;
         self.monitor = Some(monitor);
+        self.pool_guard = Some(guard);
     }
 
     /// Start filemonitor from an external config file (modifying port to 0).
@@ -138,16 +140,15 @@ impl FilemonitorWorld {
         config["server"]["port"] = serde_json::json!(0);
         config["server"]["discovery_port"] = serde_json::json!(null);
 
-        let mut pool = POOL.lock().await;
-        let (port, base_url) = pool
-            .get_or_start(&config)
+        let guard = POOL
+            .acquire(&config)
             .await
-            .expect("failed to start filemonitor from pool");
-        drop(pool);
-        self.port = Some(port);
-        self.base_url = Some(base_url);
-        let monitor = self.acquire_monitor(port).await;
+            .expect("failed to acquire filemonitor from pool");
+        self.port = Some(guard.port);
+        self.base_url = Some(guard.base_url.clone());
+        let monitor = self.acquire_monitor(guard.port).await;
         self.monitor = Some(monitor);
+        self.pool_guard = Some(guard);
     }
 
     /// Start a server directly (not via pool) for cases like TLS/auth
