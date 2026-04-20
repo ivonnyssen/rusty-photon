@@ -53,10 +53,13 @@ build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=ll
 # sets /WX without raising the warning level above the default /W1, so
 # the warning is never emitted and the check "succeeds".  This causes
 # aws-lc to use __builtin_bswap* instead of MSVC's _byteswap_* intrinsics,
-# producing LNK2019 unresolved-external errors at link time.  /we4013
-# promotes just this one warning to an error, making the check fail
-# correctly without changing the overall warning level.
-build:windows --action_env=CFLAGS=/we4013
+# producing LNK2019 unresolved-external errors at link time.
+#
+# We use AWS_LC_SYS_CFLAGS (not plain CFLAGS) because rules_rust
+# overrides CFLAGS in the build-script environment with its own MSVC
+# flags.  The crate-specific variant is read first by get_crate_cflags()
+# and propagated to CFLAGS_<target> before the feature checks run.
+build:windows --action_env=AWS_LC_SYS_CFLAGS=/we4013
 
 # Disable CPU jitter entropy on Windows. aws-lc-sys's vendored C source
 # compiles tree_drbg_jitter_entropy.c which includes jitterentropy.h via a
