@@ -1154,9 +1154,11 @@ mod tests {
     use std::process::Stdio;
 
     // -----------------------------------------------------------------------
-    // parse_bound_port tests
+    // parse_bound_port tests — unix-only: `echo`, `printf`, and `true` are
+    // coreutils binaries and don't exist as standalone executables on Windows.
     // -----------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_alpaca_prefix() {
         let mut child = tokio::process::Command::new("echo")
@@ -1171,6 +1173,7 @@ mod tests {
         drain.abort();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_rp_prefix() {
         let mut child = tokio::process::Command::new("echo")
@@ -1185,6 +1188,7 @@ mod tests {
         drain.abort();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_arbitrary_prefix() {
         let mut child = tokio::process::Command::new("echo")
@@ -1199,6 +1203,7 @@ mod tests {
         drain.abort();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_with_preceding_lines() {
         // printf outputs multiple lines; the port line comes after noise
@@ -1214,6 +1219,7 @@ mod tests {
         drain.abort();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_no_match_returns_none() {
         let mut child = tokio::process::Command::new("echo")
@@ -1227,6 +1233,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_parse_bound_port_empty_output_returns_none() {
         let mut child = tokio::process::Command::new("true")
@@ -1247,6 +1254,9 @@ mod tests {
     /// channel capacity (4), the drain task must drop the overflow instead of
     /// blocking. A blocking send would stall the drain and eventually
     /// deadlock the child process once its stdout pipe filled.
+    ///
+    /// Unix-only: uses `printf`, which isn't a standalone executable on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_stdout_watcher_drain_does_not_block_when_channel_fills() {
         // 10 bound_addr= lines, one printf call. Matches the portability
