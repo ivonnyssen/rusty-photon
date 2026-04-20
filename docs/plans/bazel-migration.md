@@ -90,7 +90,7 @@ repo root/
 - [x] `load_config` falls back to `./Cargo.toml` when the compile-time `CARGO_MANIFEST_DIR` path is no longer valid at runtime (Bazel sandbox tear-down).
 - [x] Cross-platform: Bazel CI now runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`. The `lld` linker flag is scoped to Linux via `.bazelrc` `build:linux`.
 
-**Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, 150 s total wall on a warm cache — rp:bdd alone is 150 s with 84 scenarios).
+**Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, ~150 s wall on a warm cache — dominated by rp:bdd at ~150 s with 84 scenarios; the other four targets overlap in parallel and add negligible wall time).
 
 ### Phase 4 — `sentinel-app` WASM (later)
 - [ ] `rust_shared_library` with `crate_type = ["cdylib", "rlib"]`.
@@ -160,10 +160,11 @@ Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel'
 - `//crates/bdd-infra:bdd-infra_unit_test` — 4 of 18 tests: `test_run_once_*` variants that exercise `bdd-infra`'s internal cargo-build machinery.
 - `//crates/bdd-infra:service_handle` — 1 of 9 tests: `test_start_via_cargo_run` explicitly tests the cargo-run fallback path.
 - `//services/phd2-guider:phd2-guider_unit_test` — 8 of 213 tests: `test_start_phd2_*` variants that spawn a phd2 child process via cargo-discovered paths.
+- `//services/filemonitor:test_cli` — 4 of 4 tests: all spawn `cargo run --bin filemonitor` and depend on Cargo's `target/debug/` layout.
 
 **Resolution plan (Phase 3 or later):** either mark these tests as `#[cfg(not(bazel))]` and set `rustc_flags = ["--cfg=bazel"]` on the Bazel `rust_test` targets, or refactor them to accept an explicit binary path via env var (which the non-cargo-code-paths already support). For now, tag them `requires-cargo` in BUILD files and run Bazel tests with `--test_tag_filters=-requires-cargo`.
 
-Not a migration blocker — 217 of 230 tests across these three targets pass; the failures are confined to code that tests cargo-integration machinery which is inherently Cargo-specific.
+Not a migration blocker — 227 of 244 tests across these four targets pass; the failures are confined to code that tests cargo-integration machinery which is inherently Cargo-specific.
 
 ### BDD conventions under Bazel (post Phase 3)
 

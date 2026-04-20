@@ -2828,7 +2828,7 @@
     "@@rules_rust+//crate_universe:extension.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "rfE0u75zINNeKkkOlA4SVDGiXInBayQhrBpkJDrccp4=",
-        "usagesDigest": "7TE44tA06O6RL1zP0eYmH4q7/CuyiEXLoZEzSaEMqTY=",
+        "usagesDigest": "a2oup/LPdcoz64doK5PugiHyLJ7rDETXu/God8v6aaE=",
         "recordedFileInputs": {
           "@@//Cargo.lock": "3a1492cc40dc88a7a6da79da16e8163fde0242a0978f08f501bfddad4b982673",
           "@@//Cargo.toml": "4d3be49b2d54cbb8d4fdcf197b1adaa2c3db7b3647c8527de0c8a42b74a7190d",
@@ -2850,7 +2850,7 @@
           "CARGO_BAZEL_GENERATOR_SHA256": null,
           "CARGO_BAZEL_GENERATOR_URL": null,
           "CARGO_BAZEL_ISOLATED": null,
-          "CARGO_BAZEL_REPIN": "1",
+          "CARGO_BAZEL_REPIN": null,
           "CARGO_BAZEL_REPIN_ONLY": null,
           "CARGO_BAZEL_TIMEOUT": null,
           "REPIN": null

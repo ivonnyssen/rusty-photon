@@ -34,6 +34,8 @@ jobs:
     env:
       # Read+write key on push to main populates the cache from trusted code.
       # Read-only key on pull requests prevents cache poisoning from forks.
+      # Empty for fork PRs (secrets not exposed); steps below detect this and
+      # skip --config=remote-cache so the job still provides build signal.
       BUILDBUDDY_API_KEY: ${{ github.event_name == 'push' && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_API_KEY_READONLY }}
     steps:
       - uses: actions/checkout@v5
@@ -79,13 +81,23 @@ jobs:
         uses: ./.github/actions/install-omnisim
 
       - name: bazel build
-        run: bazel build --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY //...
+        run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
+          bazel build --config=ci $REMOTE_FLAGS //...
 
       - name: bazel test (fast)
         # .bazelrc filters -requires-cargo,-bdd by default; keep fast
         # unit + integration pass separate from BDD so log output stays
         # useful when something breaks.
-        run: bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY //...
+        run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
+          bazel test --config=ci $REMOTE_FLAGS //...
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
@@ -95,8 +107,12 @@ jobs:
         # On macOS, darwin-sandbox blocks OmniSim from binding network
         # ports; --spawn_strategy=local bypasses the sandbox for tests.
         run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
           EXTRA_FLAGS=""
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             EXTRA_FLAGS="--spawn_strategy=local"
           fi
-          bazel test --config=ci --config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY --test_tag_filters=bdd --test_env=PATH $EXTRA_FLAGS //...
+          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=PATH $EXTRA_FLAGS //...
