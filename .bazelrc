@@ -65,6 +65,7 @@ build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
 build:ci --remote_timeout=600
 build:ci --jobs=auto
+build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
 
