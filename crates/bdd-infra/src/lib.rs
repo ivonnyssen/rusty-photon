@@ -339,11 +339,25 @@ impl ServiceHandle {
     /// waits for the new `bound_addr=` line on stdout and updates
     /// [`port`](Self::port) and [`base_url`](Self::base_url) accordingly.
     pub async fn reload(&mut self) -> Result<(), String> {
+        // Guard against PID-reuse: if the child has already exited, reap it
+        // and fail fast instead of signalling an unrelated process that the
+        // OS may have assigned the same PID.
+        let status = self
+            .child
+            .as_mut()
+            .ok_or_else(|| format!("{}: no child process to reload", self.name))?
+            .try_wait()
+            .map_err(|e| format!("{}: failed to check child status: {}", self.name, e))?;
+        if status.is_some() {
+            self.child = None;
+            return Err(format!("{}: child exited before reload", self.name));
+        }
+
         let pid = self
             .child
             .as_ref()
             .and_then(|c| c.id())
-            .ok_or_else(|| format!("{}: no child process to reload", self.name))?;
+            .ok_or_else(|| format!("{}: child has no pid", self.name))?;
 
         send_reload(pid)
             .map_err(|e| format!("{}: failed to send reload signal: {}", self.name, e))?;
@@ -678,8 +692,8 @@ pub struct ServerPool {
     entries: std::sync::Mutex<std::collections::HashMap<u64, Entry>>,
     /// Pool-owned temp dir for stable config files that outlive individual scenarios.
     config_dir: std::path::PathBuf,
-    manifest_dir: &'static str,
-    package_name: &'static str,
+    manifest_dir: String,
+    package_name: String,
     exclude_paths: Vec<Vec<String>>,
 }
 
@@ -713,10 +727,12 @@ impl ServerPool {
     /// * `package_name` — pass `env!("CARGO_PKG_NAME")`
     /// * `exclude_paths` — JSON key paths to ignore when hashing configs
     pub fn new(
-        manifest_dir: &'static str,
-        package_name: &'static str,
+        manifest_dir: impl Into<String>,
+        package_name: impl Into<String>,
         exclude_paths: Vec<Vec<String>>,
     ) -> Self {
+        let manifest_dir = manifest_dir.into();
+        let package_name = package_name.into();
         let config_dir =
             std::env::temp_dir().join(format!("bdd-pool-{}-{}", package_name, std::process::id()));
         std::fs::create_dir_all(&config_dir).expect("failed to create pool config dir");
@@ -807,7 +823,7 @@ impl ServerPool {
             .to_str()
             .ok_or_else(|| format!("config path is not valid UTF-8: {}", config_path.display()))?;
         let handle =
-            ServiceHandle::start(self.manifest_dir, self.package_name, config_path_str).await;
+            ServiceHandle::start(&self.manifest_dir, &self.package_name, config_path_str).await;
         let port = handle.port;
         let base_url = handle.base_url.clone();
         *body_guard = Some(EntryBody {
@@ -885,10 +901,15 @@ impl ServerPool {
         let config_path_str = config_path
             .to_str()
             .ok_or_else(|| format!("config path is not valid UTF-8: {}", config_path.display()))?;
-        // On failure `body_guard` is dropped with `*body_guard = None`, leaving
-        // the slot empty for a future retry.
+        // Clear the slot before the fallible start so that on failure the guard
+        // drops with `None` inside. Stale handles from a prior failed-reload
+        // have already been stopped (see the reuse branch above), but any
+        // remaining `Some(..)` would otherwise linger in the slot until the
+        // next successful acquire replaces it.
+        *body_guard = None;
         let handle =
-            ServiceHandle::try_start(self.manifest_dir, self.package_name, config_path_str).await?;
+            ServiceHandle::try_start(&self.manifest_dir, &self.package_name, config_path_str)
+                .await?;
         let port = handle.port;
         let base_url = handle.base_url.clone();
         *body_guard = Some(EntryBody {

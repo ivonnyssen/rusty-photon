@@ -244,7 +244,12 @@ impl Sentinel {
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
 
-        // Setup shutdown handler (Ctrl+C and SIGTERM)
+        // Setup shutdown handler (Ctrl+C and SIGTERM).
+        //
+        // Also exits on external cancellation so that when `run_server_loop`
+        // cancels the token for a reload, this task exits instead of living
+        // on after `start()` returns. Without that branch each reload would
+        // leak another signal-listener task.
         let cancel_for_signal = cancel.clone();
         tokio::spawn(async move {
             let ctrl_c = async {
@@ -265,10 +270,19 @@ impl Sentinel {
             let terminate = std::future::pending::<()>();
 
             tokio::select! {
-                () = ctrl_c => tracing::info!("Received Ctrl+C"),
-                () = terminate => tracing::info!("Received SIGTERM"),
+                () = ctrl_c => {
+                    tracing::info!("Received Ctrl+C");
+                    cancel_for_signal.cancel();
+                }
+                () = terminate => {
+                    tracing::info!("Received SIGTERM");
+                    cancel_for_signal.cancel();
+                }
+                () = cancel_for_signal.cancelled() => {
+                    // Externally cancelled (e.g., run_server_loop reload);
+                    // the token is already cancelled, just exit.
+                }
             }
-            cancel_for_signal.cancel();
         });
 
         // Start dashboard if we have a bound listener

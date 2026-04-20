@@ -2,14 +2,10 @@
 
 use bdd_infra::ServerPool;
 
-fn leak_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
 /// Build a temp manifest dir with [package.metadata.bdd] pointing at a unique env var,
-/// and set that env var to the test_service binary path. Returns leaked `&'static str`
-/// handles for the manifest dir and package name (as required by `ServerPool::new`).
-fn setup_pool_manifest(env_var_name: &str) -> (tempfile::TempDir, &'static str, &'static str) {
+/// and set that env var to the test_service binary path. Returns owned `String`
+/// handles for the manifest dir and package name.
+fn setup_pool_manifest(env_var_name: &str) -> (tempfile::TempDir, String, String) {
     std::env::set_var(env_var_name, env!("CARGO_BIN_EXE_test_service"));
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -27,14 +23,14 @@ env_var = "{env_var_name}"
         ),
     )
     .unwrap();
-    let manifest_dir = leak_str(dir.path().to_string_lossy().into_owned());
+    let manifest_dir = dir.path().to_string_lossy().into_owned();
     // Namespace the package name per test so each pool gets its own
     // `config_dir` (keyed on package_name + PID). Without this, tests running
     // in parallel that exclude the same fields from hashing would collide on
     // the shared `pool-<hash>.json` file under the system temp dir. The env
     // var still resolves to the real binary via `CARGO_BIN_EXE_test_service`,
     // so binary discovery is unaffected.
-    let package_name = leak_str(format!("test-service-{}", env_var_name));
+    let package_name = format!("test-service-{}", env_var_name);
     (dir, manifest_dir, package_name)
 }
 
