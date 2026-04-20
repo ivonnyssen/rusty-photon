@@ -300,8 +300,24 @@ impl ServiceHandle {
     }
 
     /// Returns `true` if the service process is currently running.
-    pub fn is_running(&self) -> bool {
-        self.child.is_some()
+    ///
+    /// Calls `try_wait()` to reap an already-exited child so the pool's reuse
+    /// branch doesn't send a reload signal to a dead process and later log a
+    /// misleading "reload failed" error. If the child has exited since the
+    /// last check, this clears the internal handle and returns `false`.
+    pub fn is_running(&mut self) -> bool {
+        let status = self.child.as_mut().map(|c| c.try_wait());
+        match status {
+            None => false,
+            Some(Ok(Some(_))) => {
+                self.child = None;
+                false
+            }
+            // Still running, or try_wait errored — treat errors as "still
+            // running" so we don't prematurely drop a handle to a live
+            // process; a subsequent stop/reload will surface the real error.
+            Some(Ok(None)) | Some(Err(_)) => true,
+        }
     }
 
     /// Stop the service gracefully via SIGTERM, falling back to SIGKILL after 5 seconds.

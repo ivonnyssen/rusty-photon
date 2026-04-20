@@ -313,8 +313,10 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
 }
 
 pub async fn start_rp(world: &mut RpWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
-        return;
+    if let Some(h) = world.rp.as_mut() {
+        if h.is_running() {
+            return;
+        }
     }
 
     let config = world.build_config();

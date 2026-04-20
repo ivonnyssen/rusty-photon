@@ -377,6 +377,12 @@ pub async fn run_server_loop(
         apply_overrides(&mut config);
         config.resolve_secrets()?;
         tracing::info!("Starting sentinel service");
+        tracing::debug!(
+            "Monitors: {}, Notifiers: {}, Transitions: {}",
+            config.monitors.len(),
+            config.notifiers.len(),
+            config.transitions.len()
+        );
         let sentinel = SentinelBuilder::new(config).build().await?;
         let cancel = sentinel.cancel_token();
         let mut start_fut = Box::pin(sentinel.start());

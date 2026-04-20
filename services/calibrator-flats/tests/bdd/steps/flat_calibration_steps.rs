@@ -220,8 +220,10 @@ fn register_calibrator_flats_plugin(world: &mut CalibratorFlatsWorld) {
 }
 
 async fn start_rp_service(world: &mut CalibratorFlatsWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
-        return;
+    if let Some(h) = world.rp.as_mut() {
+        if h.is_running() {
+            return;
+        }
     }
 
     let config = world.build_rp_config();
