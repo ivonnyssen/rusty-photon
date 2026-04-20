@@ -46,6 +46,15 @@ build --@rules_rust//rust/toolchain/channel=stable
 # own host linkers, so this flag is scoped to Linux only.
 build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=lld
 
+# Disable CPU jitter entropy on Windows. aws-lc-sys's vendored C source
+# compiles tree_drbg_jitter_entropy.c which includes jitterentropy.h via a
+# deep relative path (../../../../third_party/…). Inside Bazel's runfiles
+# tree the un-normalised intermediate path exceeds MSVC's 260-char MAX_PATH
+# limit, causing cl.exe to fail with C1083. Disabling jitter entropy makes
+# aws-lc fall back to BCryptGenRandom, which is the standard Windows
+# entropy source and perfectly safe.
+build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
+
 # --- Disk cache ------------------------------------------------------------
 
 # Keep a local disk cache so repeated `bazel build` across branches reuses
