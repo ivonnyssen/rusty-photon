@@ -48,8 +48,9 @@ jobs:
       # unblocks cl.exe.
       - name: Enable long paths (Windows MAX_PATH workaround)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
           git config --system core.longpaths true
 
       # Using --output_base=C:/b eliminates the workspace-hash
