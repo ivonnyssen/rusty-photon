@@ -1,0 +1,67 @@
+"""rusty-photon Bazel module.
+
+Cargo.toml remains the canonical source of dependency versions.
+crate_universe reads Cargo.toml + Cargo.lock to materialize an @cr repo
+that Bazel targets reference via @cr//:<name>.  The short repo name ("cr"
+instead of "crates") is intentional: rules_rust embeds the repo name twice
+in every build-script runfiles path, and aws-lc-sys's deeply nested vendored
+source tree hits the Windows MAX_PATH (260) limit with longer names.
+
+Adding a dep: edit the relevant Cargo.toml, run `cargo update` if needed,
+then `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel index.
+"""
+
+module(
+    name = "rusty_photon",
+    version = "0.1.0",
+)
+
+# --- Core Bazel rules ------------------------------------------------------
+
+bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# --- Rust toolchain --------------------------------------------------------
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.94.1"],  # matches workspace.package.rust-version
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# --- crate_universe: resolve crates.io + git deps from Cargo files ---------
+
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate.from_cargo(
+    name = "cr",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//crates/bdd-infra:Cargo.toml",
+        "//crates/rp-auth:Cargo.toml",
+        "//crates/rp-tls:Cargo.toml",
+        "//services/calibrator-flats:Cargo.toml",
+        "//services/filemonitor:Cargo.toml",
+        "//services/phd2-guider:Cargo.toml",
+        "//services/ppba-driver:Cargo.toml",
+        "//services/qhy-focuser:Cargo.toml",
+        "//services/rp:Cargo.toml",
+        "//services/sentinel:Cargo.toml",
+        "//services/sentinel-app:Cargo.toml",
+    ],
+)
+
+# aws-lc-sys vendors a large C library (aws-lc/) and compiles it via the
+# `cc` crate.  Its C source uses deep relative #include paths (e.g.
+# ../../../../third_party/jitterentropy/...) that resolve across multiple
+# subdirectories.  The default build_script_data_glob does not materialise
+# every vendored file in the runfiles tree, so those includes fail with
+# "No such file or directory".  Glob everything.
+crate.annotation(
+    build_script_data_glob = ["**"],
+    crate = "aws-lc-sys",
+)
+use_repo(crate, "cr")

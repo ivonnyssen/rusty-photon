@@ -1,0 +1,115 @@
+# Bazel configuration for rusty-photon.
+# See docs/plans/bazel-migration.md for migration status and rationale.
+
+# --- Core behavior ---------------------------------------------------------
+
+# bzlmod is the default in Bazel 8+; set explicitly so an accidental downgrade
+# doesn't silently switch to the legacy WORKSPACE path.
+common --enable_bzlmod
+common --noenable_workspace
+
+# Enable platform-specific rc sections (for example `build:windows`) when
+# present. This does not itself change stdout/stderr encoding.
+common --enable_platform_specific_config
+
+# Fail the build if a rule silently uses undeclared env vars; keeps builds
+# reproducible and remote-cache-friendly.
+build --incompatible_strict_action_env
+
+# Emit full command lines when actions fail; tiny output otherwise.
+build --verbose_failures
+
+# Print test errors to the terminal instead of just logging them.
+test --test_output=errors
+
+# Don't bail on the first test failure -- report everything.
+test --keep_going
+
+# Tests tagged `requires-cargo` need a real Cargo invocation (they test
+# cargo-integration code in bdd-infra / phd2-guider). Tests tagged `bdd` spin
+# up service binaries and are slow (~150 s total). Both are excluded by
+# default; the existing Cargo CI still exercises `requires-cargo` tests, and
+# BDD tests can be run explicitly with `bazel test --test_tag_filters=bdd`.
+# Use `bazel test ... --test_tag_filters=''` to include everything.
+test --test_tag_filters=-requires-cargo,-bdd
+
+# --- Rust toolchain --------------------------------------------------------
+
+# Use the stable Rust toolchain channel for Bazel builds.
+build --@rules_rust//rust/toolchain/channel=stable
+
+# --- Platform-specific config -----------------------------------------------
+
+# Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
+# about gold ("the gold linker is deprecated and has known bugs with Rust").
+# The Bazel CI workflow installs lld explicitly. macOS and Windows use their
+# own host linkers, so this flag is scoped to Linux only.
+build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=lld
+
+# Promote MSVC C4013 (implicit function declaration) to an error.
+# aws-lc-sys's cc-crate feature check for __builtin_bswap* wrongly passes
+# on MSVC: cl.exe in C89 mode treats the GCC built-ins as implicit
+# function declarations (warning C4013, level 3) but the cc crate only
+# sets /WX without raising the warning level above the default /W1, so
+# the warning is never emitted and the check "succeeds".  This causes
+# aws-lc to use __builtin_bswap* instead of MSVC's _byteswap_* intrinsics,
+# producing LNK2019 unresolved-external errors at link time.
+#
+# We use AWS_LC_SYS_CFLAGS (not plain CFLAGS) because rules_rust
+# overrides CFLAGS in the build-script environment with its own MSVC
+# flags.  The crate-specific variant is read first by get_crate_cflags()
+# and propagated to CFLAGS_<target> before the feature checks run.
+build:windows --action_env=AWS_LC_SYS_CFLAGS=/we4013
+
+# Disable CPU jitter entropy on Windows. aws-lc-sys's vendored C source
+# compiles tree_drbg_jitter_entropy.c which includes jitterentropy.h via a
+# deep relative path (../../../../third_party/…). Inside Bazel's runfiles
+# tree the un-normalised intermediate path exceeds MSVC's 260-char MAX_PATH
+# limit, causing cl.exe to fail with C1083. Disabling jitter entropy makes
+# aws-lc fall back to BCryptGenRandom, which is the standard Windows
+# entropy source and perfectly safe.
+build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
+
+# Bazel 8 enables runfiles by default on Linux and macOS but not on
+# Windows. BDD cucumber tests rely on a real runfiles directory tree
+# (bdd_main! chdirs to BDD_PACKAGE_DIR which is relative to the runfiles
+# root). Enable runfiles so the source-tree layout is materialised.
+# Requires long-path support (enabled in bazel.yml via the Windows
+# registry key) and the short output base (C:/b) to stay within limits.
+build:windows --enable_runfiles
+
+# --- Disk cache ------------------------------------------------------------
+
+# Keep a local disk cache so repeated `bazel build` across branches reuses
+# work. Size is capped implicitly by free disk space; clean with
+# `bazel clean --expunge` or by deleting the directory.
+build --disk_cache=~/.cache/bazel-disk-cache
+
+# --- CI-specific config ----------------------------------------------------
+
+# Activate with `bazel build --config=ci --config=remote-cache` in GitHub
+# Actions. The API key is passed on the command line via --remote_header
+# (not checked in). See .github/workflows/bazel.yml.
+
+build:ci --color=yes
+build:ci --show_timestamps
+build:ci --announce_rc
+build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
+build:ci --remote_timeout=600
+build:ci --jobs=auto
+build:ci --experimental_ui_max_stdouterr_bytes=10485760
+test:ci --test_output=errors
+test:ci --test_summary=terse
+
+# Remote cache is opt-in via a separate --config=remote-cache flag so local
+# developers don't accidentally upload to the shared cache with unvetted
+# credentials. CI jobs combine: --config=ci --config=remote-cache.
+build:remote-cache --bes_backend=grpcs://remote.buildbuddy.io
+build:remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
+build:remote-cache --remote_cache=grpcs://remote.buildbuddy.io
+build:remote-cache --remote_cache_compression
+
+# --- Local overrides -------------------------------------------------------
+
+# Developers may add personal overrides in user.bazelrc (gitignored).
+try-import %workspace%/user.bazelrc

@@ -32,7 +32,9 @@ fn home_dir() -> Option<PathBuf> {
     }
     #[cfg(windows)]
     {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
     }
     #[cfg(not(any(unix, windows)))]
     {

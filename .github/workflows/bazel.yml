@@ -1,0 +1,118 @@
+# Shadow-mode Bazel build/test. Runs alongside the canonical Cargo jobs
+# during the migration described in docs/plans/bazel-migration.md.
+#
+# This workflow is NOT required for merge. Its purpose is to build
+# confidence that Bazel produces parity results before cutting over.
+# Add it to required checks once the migration plan's phase-7 exit
+# criteria are met.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: bazel
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: bazel build + test (shadow) / ${{ matrix.os }}
+    # Action-graph change detection replaces cargo-rail. Bazel figures out
+    # which targets actually changed and only rebuilds those; everything
+    # else is a cache hit.
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Read+write key on push to main populates the cache from trusted code.
+      # Read-only key on pull requests prevents cache poisoning from forks.
+      # Empty for fork PRs (secrets not exposed); steps below detect this and
+      # skip --config=remote-cache so the job still provides build signal.
+      BUILDBUDDY_API_KEY: ${{ github.event_name == 'push' && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_API_KEY_READONLY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
+      # registry key, removing the 260-char MAX_PATH ceiling for include
+      # resolution. aws-lc-sys's vendored C source uses deep relative
+      # includes (../../../../third_party/...) whose intermediate
+      # un-normalised paths exceed 260 chars inside Bazel's runfiles tree.
+      # The short --output_base below still helps because shorter paths
+      # are faster to normalise, but the registry key is what actually
+      # unblocks cl.exe.
+      - name: Enable long paths (Windows MAX_PATH workaround)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
+          git config --system core.longpaths true
+
+      # Using --output_base=C:/b eliminates the workspace-hash
+      # subdirectory and saves ~50 characters vs the default
+      # (rules_rust #1120). .bazelrc already imports user.bazelrc via
+      # try-import, so this takes effect on the next bazel invocation.
+      - name: Shorten Bazel output base (Windows)
+        if: runner.os == 'Windows'
+        run: echo 'startup --output_base=C:/b' > user.bazelrc
+
+      - name: Install lld
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
+
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+
+      - name: Verify bazel version
+        run: bazel --version
+
+      # rp's BDD scenarios spawn the ASCOM Alpaca simulator. The Cargo
+      # workflows install it via the same composite action.
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+
+      - name: bazel build
+        run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
+          bazel build --config=ci $REMOTE_FLAGS //...
+
+      - name: bazel test (fast)
+        # .bazelrc filters -requires-cargo,-bdd by default; keep fast
+        # unit + integration pass separate from BDD so log output stays
+        # useful when something breaks.
+        run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
+          bazel test --config=ci $REMOTE_FLAGS //...
+
+      - name: bazel test (BDD)
+        # BDD cucumber tests spawn service binaries and take 30-150s each;
+        # run them explicitly in their own step. --test_env=PATH forwards
+        # the runner PATH (extended by the OmniSim install step) into
+        # test sandboxes so rp's scenarios can spawn ascom.alpaca.simulators.
+        # On macOS, darwin-sandbox blocks OmniSim from binding network
+        # ports; --spawn_strategy=local bypasses the sandbox for tests.
+        run: |
+          REMOTE_FLAGS=""
+          if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
+            REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
+          fi
+          EXTRA_FLAGS=""
+          if [[ "$RUNNER_OS" != "Linux" ]]; then
+            EXTRA_FLAGS="--spawn_strategy=local"
+          fi
+          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=PATH $EXTRA_FLAGS //...
