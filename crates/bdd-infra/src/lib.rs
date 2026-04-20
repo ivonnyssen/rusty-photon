@@ -320,6 +320,47 @@ impl ServiceHandle {
         }
     }
 
+    /// Returns the OS PID of the service process, or `None` if the process has
+    /// been reaped. Intended for test code that needs to target the child with
+    /// a specific signal (e.g., `SIGINT` for Ctrl+C coverage).
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.id())
+    }
+
+    /// Wait up to `timeout` for the child to exit on its own — does NOT send
+    /// any signal. Useful after an external signal has been delivered (e.g. by
+    /// [`send_sigterm`] or [`send_sigint`]) to observe whether the service
+    /// honours graceful shutdown.
+    ///
+    /// On success, the child handle is cleared so the `Drop` impl won't send a
+    /// second signal. Returns an error if the child was already reaped or if
+    /// the timeout elapses before exit.
+    pub async fn wait_for_exit(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<std::process::ExitStatus, String> {
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| format!("{}: no child process to wait on", self.name))?;
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                if let Some(watcher) = self.stdout_watcher.take() {
+                    watcher.abort();
+                }
+                Ok(status)
+            }
+            Ok(Err(e)) => {
+                self.child = Some(child);
+                Err(format!("{}: wait failed: {}", self.name, e))
+            }
+            Err(_) => {
+                self.child = Some(child);
+                Err(format!("{}: did not exit within {:?}", self.name, timeout))
+            }
+        }
+    }
+
     /// Stop the service gracefully via SIGTERM, falling back to SIGKILL after 5 seconds.
     ///
     /// Graceful shutdown allows the process to flush coverage data (profraw files).
@@ -601,7 +642,7 @@ pub async fn parse_bound_port(
 /// * **Windows** — sends `CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`.
 ///   The child must have been spawned with `CREATE_NEW_PROCESS_GROUP` so the
 ///   event targets only its process group (see [`spawn_process`]).
-fn send_sigterm(pid: u32) {
+pub fn send_sigterm(pid: u32) {
     #[cfg(unix)]
     {
         // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
@@ -632,6 +673,25 @@ fn send_sigterm(pid: u32) {
                 std::io::Error::last_os_error()
             );
         }
+    }
+}
+
+/// Send `SIGINT` (Ctrl+C) to a Unix process.
+///
+/// Intended for test code that needs to exercise a service's `ctrl_c`
+/// shutdown arm. Unix-only: on Windows, `CTRL_C_EVENT` targets every process
+/// sharing the console and cannot be used to signal a single child without
+/// disrupting the test harness itself.
+#[cfg(unix)]
+pub fn send_sigint(pid: u32) {
+    // SAFETY: libc::kill with a valid pid and SIGINT is safe.
+    let ret = unsafe { libc::kill(pid as i32, libc::SIGINT) };
+    if ret != 0 {
+        debug!(
+            "failed to send SIGINT to pid {}: {}",
+            pid,
+            std::io::Error::last_os_error()
+        );
     }
 }
 
