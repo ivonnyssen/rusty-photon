@@ -38,13 +38,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # MSVC's link.exe cannot handle paths longer than 260 characters
-      # (MAX_PATH). Bazel's deep output tree pushes sysroot .rlib and .o
-      # paths past that limit. Using --output_base=C:/b eliminates the
-      # workspace-hash subdirectory and saves ~50 characters vs the default
+      # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
+      # registry key, removing the 260-char MAX_PATH ceiling for include
+      # resolution. aws-lc-sys's vendored C source uses deep relative
+      # includes (../../../../third_party/...) whose intermediate
+      # un-normalised paths exceed 260 chars inside Bazel's runfiles tree.
+      # The short --output_base below still helps because shorter paths
+      # are faster to normalise, but the registry key is what actually
+      # unblocks cl.exe.
+      - name: Enable long paths (Windows MAX_PATH workaround)
+        if: runner.os == 'Windows'
+        run: |
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          git config --system core.longpaths true
+
+      # Using --output_base=C:/b eliminates the workspace-hash
+      # subdirectory and saves ~50 characters vs the default
       # (rules_rust #1120). .bazelrc already imports user.bazelrc via
       # try-import, so this takes effect on the next bazel invocation.
-      - name: Shorten Bazel output base (Windows MAX_PATH workaround)
+      - name: Shorten Bazel output base (Windows)
         if: runner.os == 'Windows'
         run: echo 'startup --output_base=C:/b' > user.bazelrc
 
