@@ -53,4 +53,15 @@ crate.from_cargo(
         "//services/sentinel-app:Cargo.toml",
     ],
 )
+# aws-lc-sys vendors a large C library (aws-lc/) and compiles it via the
+# `cc` crate.  Its C source uses deep relative #include paths (e.g.
+# ../../../../third_party/jitterentropy/...) that resolve across multiple
+# subdirectories.  The default build_script_data_glob does not materialise
+# every vendored file in the runfiles tree, so those includes fail with
+# "No such file or directory".  Glob everything.
+crate.annotation(
+    crate = "aws-lc-sys",
+    build_script_data_glob = ["**"],
+)
+
 use_repo(crate, "cr")
