@@ -205,7 +205,7 @@ pub async fn run_server_loop(
     loop {
         let mut config = load_config(&config_path.to_path_buf())?;
         apply_overrides(&mut config);
-        info!("Starting ppba-driver server on port {}", config.server.port);
+        info!("Starting ppba-driver server");
         let server = ServerBuilder::new(config)
             .with_factory(factory.clone())
             .build()

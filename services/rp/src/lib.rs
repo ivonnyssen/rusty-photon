@@ -188,7 +188,7 @@ pub async fn run_server_loop(
             )
         })?;
         let config = config::load_config(config_str)?;
-        tracing::info!("Starting rp server on port {}", config.server.port);
+        tracing::info!("Starting rp server");
         let server = ServerBuilder::new().with_config(config).build().await?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_fut = async move {

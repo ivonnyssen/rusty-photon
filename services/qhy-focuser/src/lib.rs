@@ -192,7 +192,7 @@ pub async fn run_server_loop(
     loop {
         let mut config = load_config(&config_path.to_path_buf())?;
         apply_overrides(&mut config);
-        info!("Starting qhy-focuser server on port {}", config.server.port);
+        info!("Starting qhy-focuser server");
         let server = ServerBuilder::new()
             .with_config(config)
             .with_factory(factory.clone())
