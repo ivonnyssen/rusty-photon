@@ -70,6 +70,14 @@ build:windows --action_env=AWS_LC_SYS_CFLAGS=/we4013
 # entropy source and perfectly safe.
 build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 
+# Bazel 8 enables runfiles by default on Linux and macOS but not on
+# Windows. BDD cucumber tests rely on a real runfiles directory tree
+# (bdd_main! chdirs to BDD_PACKAGE_DIR which is relative to the runfiles
+# root). Enable runfiles so the source-tree layout is materialised.
+# Requires long-path support (enabled in bazel.yml via the Windows
+# registry key) and the short output base (C:/b) to stay within limits.
+build:windows --enable_runfiles
+
 # --- Disk cache ------------------------------------------------------------
 
 # Keep a local disk cache so repeated `bazel build` across branches reuses
