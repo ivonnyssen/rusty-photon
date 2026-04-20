@@ -1,4 +1,6 @@
-# This is the main CI workflow that runs the test suite on all pushes to main and all pull requests.
+# This is the main CI workflow that runs the test suite on all pull requests.
+# Pre-merge validation against the merged tree is handled by conformu.yml via
+# the GitHub merge queue; this workflow does not run on push: main.
 # It runs the following jobs:
 # - required: runs the test suite on ubuntu with the stable rust toolchain
 # - os-check: runs the test suite on mac and windows (workspace-level)
@@ -8,9 +10,10 @@
 # See check.yml for information about how the concurrency cancellation and workflow triggering works
 permissions:
   contents: read
+# Runs on PRs so unit/BDD/coverage signal is visible during iteration.
+# No push:main trigger — merge queue + conformu.yml handles pre-merge validation,
+# and re-running the full matrix on main after merge is duplicate spend.
 on:
-  push:
-    branches: [main]
   pull_request:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

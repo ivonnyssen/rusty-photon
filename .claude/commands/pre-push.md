@@ -69,7 +69,7 @@ Replace `{PREFIX}` with the worktree name from the Context section above:
 | sanitizers          | `act --container-name-prefix={PREFIX}- -W .github/workflows/safety.yml -j sanitizers`    |
 | nightly             | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j nightly`    |
 | update              | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j update`     |
-| conformu            | `act --container-name-prefix={PREFIX}- -W .github/workflows/conformu.yml -j discover -j conformu` |
+| conformu            | `act workflow_dispatch --container-name-prefix={PREFIX}- -W .github/workflows/conformu.yml -j plan -j conformu` |
 
 **Optional** — only when `$ARGUMENTS` contains `miri`:
 

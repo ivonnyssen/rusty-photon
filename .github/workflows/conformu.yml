@@ -3,10 +3,13 @@ name: ConformU
 permissions:
   contents: read
 
+# ConformU runs only at merge time via the GitHub merge queue, not on every PR
+# push. PR iteration is gated on fmt/clippy/unit/BDD/coverage (see check.yml and
+# test.yml); ConformU is the final pre-merge validation against the merged tree.
+# workflow_dispatch allows manual reruns when debugging conformance failures.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  merge_group:
+  workflow_dispatch:
 
 jobs:
   plan:
@@ -22,7 +25,10 @@ jobs:
       - uses: loadingalias/cargo-rail-action@v4
         id: rail
         with:
-          since: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # github.sha is the final fallback for workflow_dispatch, where the
+          # other three are unset. It resolves to HEAD, so rail computes an
+          # empty diff and the shell below falls through to "run all services".
+          since: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || github.sha }}
       - name: Discover affected ConformU services
         id: discover
         run: |

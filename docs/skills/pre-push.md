@@ -52,8 +52,10 @@ act -W .github/workflows/test.yml -j plan -j coverage &
 act -W .github/workflows/safety.yml -j plan -j sanitizers &
 wait
 
-# Then run jobs with dependencies
-act -W .github/workflows/conformu.yml -j plan -j conformu
+# Then run jobs with dependencies.
+# conformu.yml triggers on merge_group/workflow_dispatch only (not push),
+# so pass `workflow_dispatch` to simulate it locally.
+act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu
 
 # Optional: rolling jobs (these only run on main/scheduled, not PRs)
 act -W .github/workflows/scheduled.yml -j nightly &
@@ -176,10 +178,15 @@ RUSTFLAGS="-Z sanitizer=leak" \
 
 ### conformu.yml
 
+ConformU runs via the GitHub **merge queue** (`on: merge_group`), not on PR
+pushes. Unit/BDD/coverage gate PR iteration; ConformU is the final pre-merge
+validation against the merged tree when a PR is queued for merge. Use
+`workflow_dispatch` to rerun manually when debugging a queue failure.
+
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
 | **plan** | `cargo rail plan --merge-base` | cargo-rail | Yes (gates other jobs) |
-| **conformu** | Per-service command (see below) | ConformU | Optional |
+| **conformu** | Per-service command (see below) | ConformU | Yes (blocks merge) |
 
 ConformU services are discovered dynamically via `[package.metadata.conformu]`
 in each service's `Cargo.toml`. To list them:
