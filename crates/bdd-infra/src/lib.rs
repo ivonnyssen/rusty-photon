@@ -1630,4 +1630,23 @@ features = ["mock"]
         let exclude: &[&[&str]] = &[&["xs", "*", "port"]];
         assert_eq!(config_hash(&a, exclude), config_hash(&b, exclude));
     }
+
+    #[test]
+    fn test_config_hash_is_object_key_order_independent() {
+        // Hashes must be identical regardless of JSON object key insertion
+        // order. Guards against an accidental enable of serde_json's
+        // `preserve_order` feature via cargo feature unification — without
+        // canonicalization two semantically equal configs with different key
+        // orders would hash differently and prevent `ServerPool` reuse.
+        let a: serde_json::Value = serde_json::from_str(r#"{"a": 1, "b": 2, "c": 3}"#).unwrap();
+        let b: serde_json::Value = serde_json::from_str(r#"{"c": 3, "a": 1, "b": 2}"#).unwrap();
+        assert_eq!(config_hash(&a, &[]), config_hash(&b, &[]));
+    }
+
+    #[test]
+    fn test_config_hash_nested_object_key_order_independent() {
+        let a: serde_json::Value = serde_json::from_str(r#"{"outer": {"a": 1, "b": 2}}"#).unwrap();
+        let b: serde_json::Value = serde_json::from_str(r#"{"outer": {"b": 2, "a": 1}}"#).unwrap();
+        assert_eq!(config_hash(&a, &[]), config_hash(&b, &[]));
+    }
 }
