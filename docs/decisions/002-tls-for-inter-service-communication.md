@@ -2,7 +2,18 @@
 
 ## Status
 
-Proposed
+Accepted
+
+## Updates
+
+**2026-04-22** — Upstream `ascom-alpaca-rs` replaced the exposed
+`Server::into_router() -> axum::Router` with `Server::into_service() ->
+AlpacaService` (an opaque `tower::Service`). Services now wrap it back
+into an `axum::Router` via `Router::new().fallback_service(...)` to keep
+the rest of the integration (`rp-auth` layering, `rp-tls` binding)
+unchanged. The decision below still stands — router-level extension is
+owned by Rusty Photon; only the upstream adapter shape changed. See
+current service code in `services/*/src/lib.rs` for the live pattern.
 
 ## Context
 

@@ -278,7 +278,7 @@ impl ServerBuilder {
         info!("Monitoring file: {:?}", self.config.file.path);
 
         let tls = self.config.server.tls.clone();
-        let router = server.into_router();
+        let router = axum::Router::new().fallback_service(server.into_service());
 
         // Layer authentication if configured
         let router = match &self.config.server.auth {

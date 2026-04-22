@@ -4,6 +4,17 @@
 
 Accepted
 
+## Updates
+
+**2026-04-22** — Upstream `ascom-alpaca-rs` replaced
+`Server::into_router() -> axum::Router` with `Server::into_service() ->
+AlpacaService`. The code snippets below still illustrate the
+integration point; in current code each service wraps the returned
+service with `Router::new().fallback_service(server.into_service())`
+before calling `rp_auth::layer(router, auth)`. The authentication
+decision is unchanged — only the upstream adapter shape changed. See
+`services/*/src/lib.rs` for the live pattern.
+
 ## Context
 
 ADR-002 introduced opt-in TLS for inter-service communication, protecting
