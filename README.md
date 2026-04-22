@@ -14,7 +14,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 | [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | [![coverage][cov-qhy-focuser]][cov-qhy-focuser-link] | Driver for QHY Q-Focuser (EAF) |
 | [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
-| [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | | Flat field calibration with CoverCalibrator device |
+| [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
 
 ### RP (Main Application)
 
@@ -176,3 +176,5 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-phd2-guider-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=phd2-guider
 [cov-sentinel]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sentinel
 [cov-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sentinel
+[cov-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=calibrator-flats
+[cov-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=calibrator-flats
