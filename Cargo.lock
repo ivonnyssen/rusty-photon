@@ -102,18 +102,21 @@ dependencies = [
 [[package]]
 name = "ascom-alpaca"
 version = "1.0.0-beta.10"
-source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=feature%2Fclient-custom-reqwest#6e175fa9dac9fc6e46d0f64e683a561ce2bdcadf"
+source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=integration#63f93efbac18386890f48b7b09d6731e8aa4c548"
 dependencies = [
  "async-fn-stream",
  "async-trait",
  "axum",
  "bytemuck",
+ "bytes",
  "derive_more",
  "dtor",
  "eyre",
  "fnv",
  "futures",
  "http",
+ "http-body",
+ "http-body-util",
  "if-addrs",
  "impl_serialize",
  "indexmap 2.13.0",
@@ -128,13 +131,13 @@ dependencies = [
  "serde",
  "serde-ndim",
  "serde_json",
- "serde_plain",
  "serde_repr",
  "serdebug",
  "socket2",
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tower-service",
  "tracing",
  "tracing-futures",
  "windows-sys 0.61.2",
@@ -3980,15 +3983,6 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "serde_plain"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
-dependencies = [
- "serde",
 ]
 
 [[package]]

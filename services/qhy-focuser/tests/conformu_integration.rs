@@ -6,7 +6,7 @@
 #![allow(clippy::await_holding_lock)]
 
 use ascom_alpaca::api::Focuser;
-use ascom_alpaca::test::conformu_tests;
+use ascom_alpaca::test::ConformUTestBuilder;
 use std::process::Stdio;
 use std::sync::Mutex;
 use tokio::process::Command;
@@ -121,7 +121,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         port
     );
 
-    let result = conformu_tests::<dyn Focuser>(&format!("http://localhost:{}", port), 0)?
+    let result = ConformUTestBuilder::new::<dyn Focuser>(&format!("http://localhost:{}", port), 0)?
         .settings_file(&conformu_settings_path)
         .run()
         .await;

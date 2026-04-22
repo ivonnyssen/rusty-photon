@@ -7,7 +7,7 @@
 #![allow(clippy::await_holding_lock)]
 
 use ascom_alpaca::api::{ObservingConditions, Switch};
-use ascom_alpaca::test::conformu_tests;
+use ascom_alpaca::test::ConformUTestBuilder;
 use std::process::Stdio;
 use std::sync::Mutex;
 use tokio::process::Command;
@@ -144,7 +144,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Run ConformU tests with reduced delays for faster CI
-    let result = conformu_tests::<dyn Switch>(&format!("http://localhost:{}", port), 0)?
+    let result = ConformUTestBuilder::new::<dyn Switch>(&format!("http://localhost:{}", port), 0)?
         .settings_file(&conformu_settings_path)
         .run()
         .await;
@@ -293,11 +293,13 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
     );
 
     // Run ConformU tests
-    let result =
-        conformu_tests::<dyn ObservingConditions>(&format!("http://localhost:{}", port), 0)?
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await;
+    let result = ConformUTestBuilder::new::<dyn ObservingConditions>(
+        &format!("http://localhost:{}", port),
+        0,
+    )?
+    .settings_file(&conformu_settings_path)
+    .run()
+    .await;
 
     match &result {
         Ok(_) => {
