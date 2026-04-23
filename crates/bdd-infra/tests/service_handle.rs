@@ -5,17 +5,22 @@ use std::sync::Once;
 
 /// Point `TEST_SERVICE_BINARY` at the test_service binary exactly once.
 ///
-/// Under Cargo, `env!("CARGO_BIN_EXE_test_service")` resolves at compile time
-/// to the path of the test_service binary that Cargo builds alongside these
-/// integration tests. Under Bazel, the `env` attribute on the `rust_test`
-/// target sets `TEST_SERVICE_BINARY` to the runfiles path of `:test_service`;
-/// this init is then a no-op. `ServiceHandle::start("test-service", …)`
-/// derives `TEST_SERVICE_BINARY` from the package name in both cases.
+/// Under Cargo, `option_env!("CARGO_BIN_EXE_test_service")` resolves at
+/// compile time to the path of the test_service binary that Cargo builds
+/// alongside these integration tests. Under Bazel it may not be defined at
+/// compile time (depending on rules_rust's data-dep propagation) — that's
+/// why we use `option_env!` rather than `env!`. Bazel instead sets
+/// `TEST_SERVICE_BINARY` to the runfiles path of `:test_service` via the
+/// `rust_test.env` attribute, so the init is a no-op there.
+/// `ServiceHandle::start("test-service", …)` derives `TEST_SERVICE_BINARY`
+/// from the package name in both cases.
 fn init_test_binary_env() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         if std::env::var_os("TEST_SERVICE_BINARY").is_none() {
-            std::env::set_var("TEST_SERVICE_BINARY", env!("CARGO_BIN_EXE_test_service"));
+            if let Some(path) = option_env!("CARGO_BIN_EXE_test_service") {
+                std::env::set_var("TEST_SERVICE_BINARY", path);
+            }
         }
     });
 }

@@ -11,7 +11,12 @@
 //! 1. The conventional env var `{PACKAGE_UPPER_SNAKE}_BINARY`
 //!    (e.g. `RP_BINARY` for `rp`, `PPBA_DRIVER_BINARY` for `ppba-driver`).
 //!    Bazel sets this; Cargo tests can too for explicit overrides.
-//! 2. `$CARGO_TARGET_DIR/debug/<pkg>` when that env var is set.
+//! 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_LLVM_COV_TARGET_DIR/debug/<pkg>`
+//!    under `cargo llvm-cov`) when either env var is set. If `CARGO_BUILD_TARGET`
+//!    is also set, the triple segment is inserted: `.../<triple>/debug/<pkg>`.
+//!    When one of these env vars is set we look *only* there — falling through
+//!    to the ancestor walk below could silently pick up a stale, non-instrumented
+//!    binary and skip coverage data collection.
 //! 3. Walking up from the current directory looking for `target/debug/<pkg>`.
 //!    `cargo test -p <pkg>` runs tests with the cwd at the package dir, so
 //!    the workspace `target/` is typically one level up.
@@ -727,6 +732,10 @@ mod tests {
 
     #[test]
     fn test_find_binary_in_target_dir() {
+        // Mutates CARGO_TARGET_DIR; serialize with sibling tests that read
+        // it (e.g. `ensure_rp_binary`) via CWD_LOCK.
+        let _lock = CWD_LOCK.lock().unwrap();
+
         let dir = tempfile::tempdir().unwrap();
         let debug_dir = dir.path().join("debug");
         std::fs::create_dir_all(&debug_dir).unwrap();
@@ -868,6 +877,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "binary for package `bdd-infra-test-require-missing` not found")]
     fn test_require_binary_panics_with_diagnostic() {
+        // Mutates CARGO_TARGET_DIR; serialize with sibling tests via CWD_LOCK.
+        // `catch_unwind` below requires the lock to be released before the
+        // panic propagates, so we drop it explicitly at the end.
+        let lock = CWD_LOCK.lock().unwrap();
+
         std::env::remove_var("BDD_INFRA_TEST_REQUIRE_MISSING_BINARY");
         let old_target = std::env::var("CARGO_TARGET_DIR").ok();
         // Point at an empty dir so the target-dir branch misses too.
@@ -880,6 +894,7 @@ mod tests {
             Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
             None => std::env::remove_var("CARGO_TARGET_DIR"),
         }
+        drop(lock);
 
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
@@ -896,7 +911,12 @@ mod tests {
 
     /// Ensure `RP_BINARY` points at an `rp` binary. Builds it with Cargo if
     /// not already set (e.g. when running under `cargo test`).
+    ///
+    /// Reads `CARGO_TARGET_DIR` to locate the binary, so takes `CWD_LOCK`
+    /// to serialize against sibling tests that mutate that env var
+    /// (`test_find_binary_in_target_dir*`, `test_require_binary_*`).
     fn ensure_rp_binary() {
+        let _lock = CWD_LOCK.lock().unwrap();
         if std::env::var_os("RP_BINARY").is_some() {
             return;
         }
