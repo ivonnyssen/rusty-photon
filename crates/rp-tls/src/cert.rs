@@ -239,6 +239,8 @@ mod tests {
     fn generated_cert_chain_validates() {
         use rustls::pki_types::CertificateDer;
 
+        crate::install_default_crypto_provider();
+
         let ca_dir = tempfile::tempdir().unwrap();
         generate_ca(ca_dir.path()).unwrap();
 

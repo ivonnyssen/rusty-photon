@@ -12,6 +12,8 @@ use crate::error::{Result, TlsError};
 ///
 /// When `ca_cert_path` is `None`, returns a default client.
 pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Client> {
+    crate::install_default_crypto_provider();
+
     let mut builder = reqwest::Client::builder();
 
     if let Some(ca_path) = ca_cert_path {
