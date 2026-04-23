@@ -46,8 +46,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     size = "small",
-    # 4 of 18 tests exercise bdd-infra's own cargo-build machinery and cannot
-    # run hermetically. See docs/plans/bazel-migration.md "Known test gaps".
+    # 3 of the run_once_* tests shell out to `cargo build` when RP_BINARY
+    # isn't pre-set. See docs/plans/bazel-migration.md "Known test gaps".
     tags = ["requires-cargo"],
     crate = ":bdd-infra",
     proc_macro_deps = all_crate_deps(
@@ -68,9 +68,6 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    # 1 of 9 tests (test_start_via_cargo_run) explicitly tests the cargo-run
-    # fallback path. See docs/plans/bazel-migration.md "Known test gaps".
-    tags = ["requires-cargo"],
     data = [":test_service"],
     edition = "2021",
     env = {

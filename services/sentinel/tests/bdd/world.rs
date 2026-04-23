@@ -1,22 +1,11 @@
 //! BDD test world for sentinel service (binary-spawning pattern)
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
-
-const SENTINEL_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
-
-fn filemonitor_manifest_dir() -> String {
-    Path::new(SENTINEL_MANIFEST_DIR)
-        .parent()
-        .unwrap()
-        .join("filemonitor")
-        .to_string_lossy()
-        .to_string()
-}
 
 #[derive(Debug, Default, World)]
 pub struct SentinelWorld {
@@ -143,12 +132,7 @@ impl SentinelWorld {
         std::fs::write(&config_path, config_json.to_string())
             .expect("failed to write filemonitor config");
 
-        let handle = ServiceHandle::start(
-            &filemonitor_manifest_dir(),
-            "filemonitor",
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let handle = ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
         self.filemonitor = Some(handle);
     }
@@ -177,21 +161,15 @@ impl SentinelWorld {
         std::fs::write(&config_path, config_json.to_string())
             .expect("failed to write sentinel config");
 
-        let handle = ServiceHandle::start(
-            SENTINEL_MANIFEST_DIR,
-            env!("CARGO_PKG_NAME"),
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let handle =
+            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
         self.sentinel = Some(handle);
     }
 
     /// Try to start sentinel, capturing errors instead of panicking.
     pub async fn try_start_sentinel(&mut self, config_path: &str) {
-        match ServiceHandle::try_start(SENTINEL_MANIFEST_DIR, env!("CARGO_PKG_NAME"), config_path)
-            .await
-        {
+        match ServiceHandle::try_start(env!("CARGO_PKG_NAME"), config_path).await {
             Ok(handle) => {
                 self.sentinel = Some(handle);
                 self.last_error = None;

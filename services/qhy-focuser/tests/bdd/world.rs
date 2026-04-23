@@ -77,12 +77,7 @@ impl QhyFocuserWorld {
     pub async fn start_focuser(&mut self) {
         let config_path = self.write_config();
 
-        let handle = ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            &config_path,
-        )
-        .await;
+        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
         let focuser = self.acquire_focuser(&handle).await;
         self.focuser = Some(focuser);
         self.focuser_handle = Some(handle);

@@ -90,17 +90,16 @@ rust_test(
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/ppba-driver",
-        # The ppba-driver Cargo.toml [package.metadata.bdd] env_var is
-        # "PPBA_BINARY" (not the conventional PPBA_DRIVER_BINARY). Export
-        # both so resolve_bdd_config() can take the hermetic fast path via
-        # the conventional name while preserving the existing contract.
-        "PPBA_BINARY": "$(rootpath :ppba-driver_mock)",
         "PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
+    # service name.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     tags = ["bdd"],
     use_libtest_harness = False,
     deps = [":ppba-driver_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(

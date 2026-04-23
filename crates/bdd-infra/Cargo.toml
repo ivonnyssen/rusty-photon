@@ -7,10 +7,6 @@ license.workspace = true
 repository.workspace = true
 description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, test orchestrator, MCP client) for plugin/workflow BDD tests"
 
-# Used by integration tests to exercise ServiceHandle against test_service binary
-[package.metadata.bdd]
-env_var = "TEST_SERVICE_BINARY"
-
 [lints]
 workspace = true
 
@@ -28,8 +24,6 @@ rp-harness = [
 
 [dependencies]
 libc = { workspace = true }
-serde = { workspace = true }
-toml = "1.1.0"
 tokio = { workspace = true }
 tracing = { workspace = true }
 

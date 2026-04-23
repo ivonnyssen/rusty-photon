@@ -341,42 +341,51 @@ bdd-infra = { workspace = true }
 **Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator
 or event plugin live in that plugin's own `services/<plugin>/tests/` tree, not
 in `services/rp/tests/`. Each plugin owns a small world type that embeds the
-handles it needs and calls `rp_harness::start_rp` with a path resolved via
-`rp_harness::sibling_service_dir(env!("CARGO_MANIFEST_DIR"), "rp")` (convert
-the returned `PathBuf` to `&str` via `.to_str()`). This keeps rp's test run
-time bounded as more plugins land — `cargo-rail` only re-runs the plugin
-whose code changed.
-
-**Configuration** is stored in each service's `Cargo.toml`:
-
-```toml
-[package.metadata.bdd]
-env_var = "MY_SERVICE_BINARY"   # env var for explicit binary path
-# features = ["mock"]           # optional: cargo features for fallback `cargo run`
-```
+handles it needs and calls `rp_harness::start_rp(&config)` — the helper
+derives `RP_BINARY` from the package name, so nothing needs to know where
+`services/rp/` lives on disk. This keeps rp's test run time bounded as more
+plugins land — `cargo-rail` only re-runs the plugin whose code changed.
 
 **Usage in test code:**
 
 ```rust
 use bdd_infra::ServiceHandle;
 
-let handle = ServiceHandle::start(
-    env!("CARGO_MANIFEST_DIR"),
-    env!("CARGO_PKG_NAME"),
-    &config_path,
-).await;
+let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 // handle.port, handle.base_url are available
 handle.stop().await;
 ```
 
-The `env!()` macros resolve to the calling service's directory and package name
-at compile time, so the shared crate reads the correct `Cargo.toml` metadata.
+The `env!("CARGO_PKG_NAME")` macro resolves to the calling service's package
+name at compile time. `bdd-infra` derives the binary discovery env var from
+it: `rp` → `RP_BINARY`, `ppba-driver` → `PPBA_DRIVER_BINARY`, etc.
 
 **Binary discovery order:**
 
-1. Explicit env var (e.g., `FILEMONITOR_BINARY=/path/to/bin`)
-2. Pre-built binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
-3. Fallback to `cargo run --package <name>`
+1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_LLVM_COV_TARGET_DIR/debug/<pkg>` under
+   `cargo llvm-cov`) when either env var is set. If `CARGO_BUILD_TARGET` is also set,
+   the triple is inserted: `.../<triple>/debug/<pkg>`. When one of these env vars is
+   set we look **only** there — falling through to step 3 could silently pick up a
+   stale, non-instrumented binary and skip coverage data collection.
+3. Walking up from the current directory looking for `target/debug/<pkg>`.
+   `cargo test -p <pkg>` runs tests with the cwd at the package dir, so the
+   workspace `target/` is typically one level up.
+
+If none match, the call panics with a diagnostic pointing at the fix.
+
+**Pre-build requirement.** BDD tests do not compile the service binary
+themselves — that's the job of `cargo build`. Always build with
+`--all-features` (matching CI), so feature-gated paths like `ppba-driver`'s
+`mock` hardware compile in:
+
+```
+cargo build --all-features --all-targets -p <pkg>
+cargo test  --all-features --test bdd      -p <pkg>
+```
+
+`cargo rail run --merge-base` pre-builds the affected packages, as does
+`.github/workflows/test.yml`.
 
 **Port discovery:** All services print `bound_addr=<host>:<port>` to stdout when
 they bind. The parser looks for `bound_addr=` in any line (the human-readable
@@ -442,9 +451,6 @@ bdd_infra::bdd_main! {
 #### 5.3 Register in Cargo.toml
 
 ```toml
-[package.metadata.bdd]
-env_var = "MY_SERVICE_BINARY"
-
 [dev-dependencies]
 bdd-infra = { workspace = true }
 
@@ -452,6 +458,9 @@ bdd-infra = { workspace = true }
 name = "bdd"
 harness = false
 ```
+
+No per-service metadata is required — `bdd-infra` derives everything from the
+package name passed to `ServiceHandle::start`.
 
 ---
 

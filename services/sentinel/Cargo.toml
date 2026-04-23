@@ -8,9 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Observatory monitoring and notification service"
 
-[package.metadata.bdd]
-env_var = "SENTINEL_BINARY"
-
 [lints]
 workspace = true
 

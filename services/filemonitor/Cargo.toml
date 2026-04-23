@@ -8,9 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 description = "File monitoring service for Rusty Photon"
 
-[package.metadata.bdd]
-env_var = "FILEMONITOR_BINARY"
-
 [features]
 default = []
 conformu = ["ascom-alpaca/test"]

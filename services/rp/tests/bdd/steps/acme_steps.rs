@@ -11,12 +11,7 @@ use crate::world::RpWorld;
 
 /// Run `rp init-tls` with the given arguments and capture the output.
 fn run_init_tls_raw(args: &[&str]) -> std::process::Output {
-    bdd_infra::run_once(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        args,
-        None,
-    )
+    bdd_infra::run_once(env!("CARGO_PKG_NAME"), args, None)
 }
 
 // ---------------------------------------------------------------------------

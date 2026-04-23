@@ -75,12 +75,7 @@ async fn filemonitor_started_with_tls_and_auth(world: &mut FilemonitorWorld) {
     let dir = world.temp_dir.as_ref().expect("temp dir not created");
     let config_path = dir.path().join("filemonitor_auth_config.json");
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
     world.filemonitor = Some(handle);
 }
@@ -90,12 +85,7 @@ async fn filemonitor_started_without_auth(world: &mut FilemonitorWorld) {
     let dir = world.temp_dir.as_ref().expect("temp dir not created");
     let config_path = dir.path().join("filemonitor_noauth_config.json");
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
     world.filemonitor = Some(handle);
 }

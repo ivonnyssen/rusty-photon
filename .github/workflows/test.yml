@@ -80,6 +80,13 @@ jobs:
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      # BDD cross-spawn deps not visible to cargo-rail: sentinel's BDD
+      # spawns filemonitor; calibrator-flats's BDD spawns rp. Narrow
+      # cargo-args can miss them, so pre-build unconditionally whenever a
+      # BDD run is scheduled and we're not already building --workspace.
+      - name: cargo build BDD cross-spawn deps
+        if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
+        run: cargo build --locked --package filemonitor --package rp --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
@@ -109,6 +116,10 @@ jobs:
         run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      # BDD cross-spawn deps not visible to cargo-rail — see ubuntu job above.
+      - name: cargo build BDD cross-spawn deps
+        if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
+        run: cargo build --locked --package filemonitor --package rp --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
   windows:
@@ -169,6 +180,15 @@ jobs:
         run: cargo generate-lockfile
       - name: cargo build
         run: cargo build --locked --package ${{ matrix.package }} --all-features --all-targets
+      # Cross-spawn deps: sentinel BDD tests spawn filemonitor; calibrator-flats
+      # BDD tests spawn rp. bdd-infra no longer compiles missing binaries on the
+      # fly, so we pre-build them here.
+      - name: cargo build filemonitor (sentinel cross-spawn)
+        if: matrix.package == 'sentinel'
+        run: cargo build --locked --package filemonitor --all-features --all-targets
+      - name: cargo build rp (calibrator-flats cross-spawn)
+        if: matrix.package == 'calibrator-flats'
+        run: cargo build --locked --package rp --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
   coverage:

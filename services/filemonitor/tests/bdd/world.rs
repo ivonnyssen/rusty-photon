@@ -121,12 +121,8 @@ impl FilemonitorWorld {
         let config_path = dir.path().join("config.json");
         std::fs::write(&config_path, config_json.to_string()).expect("failed to write config");
 
-        let handle = ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let handle =
+            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
@@ -146,12 +142,8 @@ impl FilemonitorWorld {
         let config_path = dir.path().join("config.json");
         std::fs::write(&config_path, config.to_string()).expect("failed to write config");
 
-        let handle = ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let handle =
+            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);

@@ -95,12 +95,7 @@ async fn qhy_started_with_tls_and_auth(world: &mut QhyFocuserWorld) {
     let config_path = dir.path().join("qhy_auth_config.json");
     std::fs::write(&config_path, config_json.to_string()).unwrap();
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
     world.focuser_handle = Some(handle);
 }
@@ -114,12 +109,7 @@ async fn qhy_started_without_auth(world: &mut QhyFocuserWorld) {
     let config_path = dir.path().join("qhy_noauth_config.json");
     std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap()).unwrap();
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
     world.focuser_handle = Some(handle);
 }
