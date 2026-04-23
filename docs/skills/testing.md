@@ -341,11 +341,10 @@ bdd-infra = { workspace = true }
 **Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator
 or event plugin live in that plugin's own `services/<plugin>/tests/` tree, not
 in `services/rp/tests/`. Each plugin owns a small world type that embeds the
-handles it needs and calls `rp_harness::start_rp` with a path resolved via
-`rp_harness::sibling_service_dir(env!("CARGO_MANIFEST_DIR"), "rp")` (convert
-the returned `PathBuf` to `&str` via `.to_str()`). This keeps rp's test run
-time bounded as more plugins land — `cargo-rail` only re-runs the plugin
-whose code changed.
+handles it needs and calls `rp_harness::start_rp(&config)` — the helper
+derives `RP_BINARY` from the package name, so nothing needs to know where
+`services/rp/` lives on disk. This keeps rp's test run time bounded as more
+plugins land — `cargo-rail` only re-runs the plugin whose code changed.
 
 **Usage in test code:**
 
@@ -363,11 +362,17 @@ it: `rp` → `RP_BINARY`, `ppba-driver` → `PPBA_DRIVER_BINARY`, etc.
 
 **Binary discovery order:**
 
-1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`)
-2. Pre-built binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout (falls
-   back to `target/debug/<pkg>`).
+1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_LLVM_COV_TARGET_DIR/debug/<pkg>` under
+   `cargo llvm-cov`) when either env var is set. If `CARGO_BUILD_TARGET` is also set,
+   the triple is inserted: `.../<triple>/debug/<pkg>`. When one of these env vars is
+   set we look **only** there — falling through to step 3 could silently pick up a
+   stale, non-instrumented binary and skip coverage data collection.
+3. Walking up from the current directory looking for `target/debug/<pkg>`.
+   `cargo test -p <pkg>` runs tests with the cwd at the package dir, so the
+   workspace `target/` is typically one level up.
 
-If neither is found, the call panics with a diagnostic pointing at the fix.
+If none match, the call panics with a diagnostic pointing at the fix.
 
 **Pre-build requirement.** BDD tests do not compile the service binary
 themselves — that's the job of `cargo build`. Always build with

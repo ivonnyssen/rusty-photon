@@ -922,8 +922,18 @@ mod tests {
         if std::env::var_os("RP_BINARY").is_some() {
             return;
         }
+        // `--locked` so a local test run never silently touches Cargo.lock;
+        // `--all-features` to match CI so rp is built with the same feature
+        // set the rest of the suite expects.
         let build = std::process::Command::new("cargo")
-            .args(["build", "--package", "rp", "--quiet"])
+            .args([
+                "build",
+                "--package",
+                "rp",
+                "--locked",
+                "--all-features",
+                "--quiet",
+            ])
             .status()
             .expect("cargo build failed");
         assert!(build.success(), "cargo build --package rp failed");
