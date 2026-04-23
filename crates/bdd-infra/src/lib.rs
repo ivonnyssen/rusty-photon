@@ -912,9 +912,11 @@ mod tests {
     /// Ensure `RP_BINARY` points at an `rp` binary. Builds it with Cargo if
     /// not already set (e.g. when running under `cargo test`).
     ///
-    /// Reads `CARGO_TARGET_DIR` to locate the binary, so takes `CWD_LOCK`
-    /// to serialize against sibling tests that mutate that env var
-    /// (`test_find_binary_in_target_dir*`, `test_require_binary_*`).
+    /// Delegates to [`find_binary`] after the build so we share the same
+    /// target-dir / `CARGO_BUILD_TARGET` / ancestor-walk logic that real
+    /// callers hit — no hidden assumption that the binary lives at
+    /// `<target_dir>/debug/rp`. Takes `CWD_LOCK` to serialize against
+    /// sibling tests that mutate env vars [`find_binary`] reads.
     fn ensure_rp_binary() {
         let _lock = CWD_LOCK.lock().unwrap();
         if std::env::var_os("RP_BINARY").is_some() {
@@ -926,26 +928,8 @@ mod tests {
             .expect("cargo build failed");
         assert!(build.success(), "cargo build --package rp failed");
 
-        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
-
-        let target_dir = std::env::var("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| workspace_root.join("target"));
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "rp.exe"
-        } else {
-            "rp"
-        };
-        let binary = target_dir.join("debug").join(binary_name);
-        assert!(
-            binary.exists(),
-            "rp binary not found at {}",
-            binary.display()
+        let binary = find_binary("rp").expect(
+            "rp binary not found after `cargo build --package rp` — check target dir layout",
         );
         std::env::set_var("RP_BINARY", &binary);
     }
