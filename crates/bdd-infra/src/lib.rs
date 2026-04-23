@@ -909,38 +909,21 @@ mod tests {
     // set (Bazel path) or build it ourselves for the Cargo path.
     // -----------------------------------------------------------------------
 
-    /// Ensure `RP_BINARY` points at an `rp` binary. Builds it with Cargo if
-    /// not already set (e.g. when running under `cargo test`).
+    /// Ensure `RP_BINARY` points at a pre-built `rp` binary, caching the
+    /// result of [`find_binary`] in the env var so subsequent tests hit
+    /// the env-var fast path instead of re-walking the cwd ancestors.
     ///
-    /// Delegates to [`find_binary`] after the build so we share the same
-    /// target-dir / `CARGO_BUILD_TARGET` / ancestor-walk logic that real
-    /// callers hit — no hidden assumption that the binary lives at
-    /// `<target_dir>/debug/rp`. Takes `CWD_LOCK` to serialize against
-    /// sibling tests that mutate env vars [`find_binary`] reads.
+    /// Does NOT invoke `cargo build` — bdd-infra's contract is that
+    /// binaries are pre-built by the caller (see the module-level docs).
+    /// If rp is missing we panic with the same diagnostic the production
+    /// path emits. Takes `CWD_LOCK` to serialize with sibling tests that
+    /// mutate env vars [`find_binary`] reads.
     fn ensure_rp_binary() {
         let _lock = CWD_LOCK.lock().unwrap();
         if std::env::var_os("RP_BINARY").is_some() {
             return;
         }
-        // `--locked` so a local test run never silently touches Cargo.lock;
-        // `--all-features` to match CI so rp is built with the same feature
-        // set the rest of the suite expects.
-        let build = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "--package",
-                "rp",
-                "--locked",
-                "--all-features",
-                "--quiet",
-            ])
-            .status()
-            .expect("cargo build failed");
-        assert!(build.success(), "cargo build --package rp failed");
-
-        let binary = find_binary("rp").expect(
-            "rp binary not found after `cargo build --package rp` — check target dir layout",
-        );
+        let binary = require_binary("rp");
         std::env::set_var("RP_BINARY", &binary);
     }
 
