@@ -10,8 +10,7 @@
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    build_calibrator_flats_config, sibling_service_dir, start_rp, write_temp_config_file,
-    OmniSimHandle, WebhookReceiver,
+    build_calibrator_flats_config, start_rp, write_temp_config_file, OmniSimHandle, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::{given, then, when};
@@ -194,14 +193,7 @@ async fn start_calibrator_flats_service(world: &mut CalibratorFlatsWorld) {
     let config = build_calibrator_flats_config(&world.flat_plan);
     let config_path = write_temp_config_file("calibrator-flats-config", &config).await;
 
-    world.calibrator_flats = Some(
-        ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            &config_path,
-        )
-        .await,
-    );
+    world.calibrator_flats = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 }
 
 fn register_calibrator_flats_plugin(world: &mut CalibratorFlatsWorld) {
@@ -225,9 +217,7 @@ async fn start_rp_service(world: &mut CalibratorFlatsWorld) {
     }
 
     let config = world.build_rp_config();
-    let rp_manifest_dir = sibling_service_dir(env!("CARGO_MANIFEST_DIR"), "rp");
-    let rp_manifest_dir_str = rp_manifest_dir.to_str().expect("rp manifest path is utf-8");
-    world.rp = Some(start_rp(rp_manifest_dir_str, &config).await);
+    world.rp = Some(start_rp(&config).await);
 
     assert!(
         world.wait_for_rp_healthy().await,

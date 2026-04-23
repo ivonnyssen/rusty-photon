@@ -8,10 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 description = "ASCOM Alpaca driver for QHY Q-Focuser (EAF)"
 
-[package.metadata.bdd]
-env_var = "QHY_FOCUSER_BINARY"
-features = ["mock"]
-
 [features]
 default = []
 mock = []  # Enables mock hardware for testing without real serial port

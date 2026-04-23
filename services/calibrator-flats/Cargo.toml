@@ -8,9 +8,6 @@ repository.workspace = true
 description = "Calibrator flat field orchestrator - iterative exposure optimization with CoverCalibrator control"
 rust-version.workspace = true
 
-[package.metadata.bdd]
-env_var = "CALIBRATOR_FLATS_BINARY"
-
 [lints]
 workspace = true
 

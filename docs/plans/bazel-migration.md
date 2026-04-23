@@ -86,8 +86,7 @@ repo root/
 ### Phase 3 — BDD cucumber tests (DONE)
 - [x] `rust_test` with `use_libtest_harness = False` + `BDD_PACKAGE_DIR` env var and a new chdir helper in `bdd_main!` so relative paths (`tests/features`, `./Cargo.toml`) behave the same under Bazel as under `cargo test`.
 - [x] All five services wired up: filemonitor, sentinel (cross-spawns filemonitor), rp (cross-spawns calibrator-flats), ppba-driver (mock feature binary), qhy-focuser (mock feature binary). Tagged `bdd`.
-- [x] `bdd-infra` gained `resolve_bdd_config`: if the conventional `{PACKAGE_UPPER}_BINARY` env var is set, skip reading Cargo.toml. Lets hermetic builds provide the pre-built binary path directly.
-- [x] `load_config` falls back to `./Cargo.toml` when the compile-time `CARGO_MANIFEST_DIR` path is no longer valid at runtime (Bazel sandbox tear-down).
+- [x] `bdd-infra` discovers binaries via the conventional `{PACKAGE_UPPER}_BINARY` env var or `target/debug/<pkg>`; callers pass only the package name. No `[package.metadata.bdd]` or `cargo run` fallback — missing binaries panic with a clear diagnostic.
 - [x] Cross-platform: Bazel CI now runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`. The `lld` linker flag is scoped to Linux via `.bazelrc` `build:linux`.
 
 **Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, ~150 s wall on a warm cache — dominated by rp:bdd at ~150 s with 84 scenarios; the other four targets overlap in parallel and add negligible wall time).
@@ -157,8 +156,7 @@ Measured weekly in shadow mode, then post-cutover:
 
 Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel's sandbox because they shell out to `cargo` or read the workspace `Cargo.toml` at runtime:
 
-- `//crates/bdd-infra:bdd-infra_unit_test` — 4 of 18 tests: `test_run_once_*` variants that exercise `bdd-infra`'s internal cargo-build machinery.
-- `//crates/bdd-infra:service_handle` — 1 of 9 tests: `test_start_via_cargo_run` explicitly tests the cargo-run fallback path.
+- `//crates/bdd-infra:bdd-infra_unit_test` — 3 of 17 tests: `test_run_once_*` variants that shell out to `cargo build` to locate the `rp` binary when `RP_BINARY` isn't already set.
 - `//services/phd2-guider:phd2-guider_unit_test` — 8 of 213 tests: `test_start_phd2_*` variants that spawn a phd2 child process via cargo-discovered paths.
 - `//services/filemonitor:test_cli` — 4 of 4 tests: all spawn `cargo run --bin filemonitor` and depend on Cargo's `target/debug/` layout.
 
@@ -176,7 +174,7 @@ Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:
 - `data` includes the service binary, `Cargo.toml`, `tests/features/**`, and any fixture JSON (`tests/config.json` etc.).
 - ppba-driver and qhy-focuser have a second mock-feature binary target (`_mock` suffix) because Bazel treats `crate_features` as compile-time; the BDD test points at the mock binary.
 
-Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention except ppba-driver which is `PPBA_BINARY` (matching the existing `[package.metadata.bdd]` contract).
+Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention (e.g. `RP_BINARY`, `PPBA_DRIVER_BINARY`, `QHY_FOCUSER_BINARY`). `bdd-infra` derives the name from the package string passed to `ServiceHandle::start` — there is no per-service override.
 
 ## Open questions
 

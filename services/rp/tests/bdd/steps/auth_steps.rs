@@ -60,12 +60,7 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
         .await
         .unwrap();
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        &config_path,
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
     world.rp = Some(handle);
 
@@ -172,7 +167,6 @@ async fn rp_401_includes_www_authenticate(world: &mut RpWorld) {
 #[when("rp hash-password is executed with a test password via stdin")]
 fn hash_password_executed(world: &mut RpWorld) {
     let output = bdd_infra::run_once(
-        env!("CARGO_MANIFEST_DIR"),
         env!("CARGO_PKG_NAME"),
         &["hash-password", "--stdin"],
         Some(b"test-password\n"),

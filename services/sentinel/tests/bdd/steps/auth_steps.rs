@@ -45,12 +45,9 @@ async fn sentinel_started_with_dashboard_auth(world: &mut SentinelWorld) {
     let config_path = temp_dir.path().join("sentinel_auth_config.json");
     std::fs::write(&config_path, config.to_string()).unwrap();
 
-    let handle = bdd_infra::ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle =
+        bdd_infra::ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap())
+            .await;
 
     world.sentinel = Some(handle);
 }
@@ -65,12 +62,9 @@ async fn sentinel_started_without_dashboard_auth(world: &mut SentinelWorld) {
     let config_path = temp_dir.path().join("sentinel_noauth_config.json");
     std::fs::write(&config_path, config.to_string()).unwrap();
 
-    let handle = bdd_infra::ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle =
+        bdd_infra::ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap())
+            .await;
 
     world.sentinel = Some(handle);
 }
@@ -261,16 +255,8 @@ async fn filemonitor_running_with_tls_and_auth(world: &mut SentinelWorld, patter
     let config_path = temp_dir.path().join("filemonitor_auth_config.json");
     std::fs::write(&config_path, config.to_string()).unwrap();
 
-    let fm_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("filemonitor");
-    let handle = bdd_infra::ServiceHandle::start(
-        fm_manifest.to_str().unwrap(),
-        "filemonitor",
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle =
+        bdd_infra::ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
     world.filemonitor = Some(handle);
 }
@@ -310,12 +296,9 @@ async fn sentinel_started_with_ca_trust(world: &mut SentinelWorld) {
     let config_path = temp_dir.path().join("sentinel_auth_monitor_config.json");
     std::fs::write(&config_path, config.to_string()).unwrap();
 
-    let handle = bdd_infra::ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        config_path.to_str().unwrap(),
-    )
-    .await;
+    let handle =
+        bdd_infra::ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap())
+            .await;
 
     world.sentinel = Some(handle);
 }

@@ -17,8 +17,6 @@
 //!   [`OrchestratorInvocation`] — in-process orchestrator plugin with
 //!   configurable behavior.
 //! - [`McpTestClient`] — persistent rmcp session for calling rp's MCP tools.
-//! - [`sibling_service_dir`] — helper for locating a sibling service's
-//!   manifest directory from a caller's `env!("CARGO_MANIFEST_DIR")`.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
@@ -35,7 +33,7 @@ pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
     RpConfigBuilder,
 };
-pub use launcher::{sibling_service_dir, start_rp, wait_for_rp_healthy, write_temp_config_file};
+pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};

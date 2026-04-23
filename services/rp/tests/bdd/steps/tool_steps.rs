@@ -332,14 +332,7 @@ pub async fn start_rp(world: &mut RpWorld) {
         .await
         .expect("failed to write config");
 
-    world.rp = Some(
-        ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            &config_path,
-        )
-        .await,
-    );
+    world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
     assert!(
         world.wait_for_rp_healthy().await,

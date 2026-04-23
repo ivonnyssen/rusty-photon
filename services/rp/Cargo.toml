@@ -8,9 +8,6 @@ repository.workspace = true
 description = "Rusty Photon main application - equipment gateway, event bus, and safety enforcer"
 rust-version.workspace = true
 
-[package.metadata.bdd]
-env_var = "RP_BINARY"
-
 [lints]
 workspace = true
 

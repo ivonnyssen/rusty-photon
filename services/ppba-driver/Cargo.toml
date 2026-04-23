@@ -8,10 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 description = "ASCOM Alpaca driver for Pegasus Astro Pocket Powerbox Advance Gen2"
 
-[package.metadata.bdd]
-env_var = "PPBA_BINARY"
-features = ["mock"]
-
 [features]
 default = []
 mock = []    # Enables mock hardware for testing without real serial port

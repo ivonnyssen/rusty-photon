@@ -17,12 +17,7 @@ use crate::world::RpWorld;
 fn run_init_tls(output_dir: &str, extra_args: &[&str]) {
     let mut args = vec!["init-tls", "--output-dir", output_dir];
     args.extend_from_slice(extra_args);
-    let output = bdd_infra::run_once(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        &args,
-        None,
-    );
+    let output = bdd_infra::run_once(env!("CARGO_PKG_NAME"), &args, None);
     assert!(
         output.status.success(),
         "rp init-tls failed: {}",
@@ -211,14 +206,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
         .await
         .unwrap();
 
-    world.rp = Some(
-        ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            &config_path,
-        )
-        .await,
-    );
+    world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
     // Wait for healthy over HTTPS
     let ca_path = dir.join("ca.pem");
@@ -271,14 +259,7 @@ async fn rp_started_without_tls(world: &mut RpWorld) {
         .await
         .unwrap();
 
-    world.rp = Some(
-        ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            &config_path,
-        )
-        .await,
-    );
+    world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
     assert!(
         world.wait_for_rp_healthy().await,

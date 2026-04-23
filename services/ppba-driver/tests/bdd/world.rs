@@ -55,12 +55,8 @@ impl PpbaWorld {
         .await
         .expect("failed to write test config");
 
-        let handle = ServiceHandle::start(
-            env!("CARGO_MANIFEST_DIR"),
-            env!("CARGO_PKG_NAME"),
-            config_path.to_str().unwrap(),
-        )
-        .await;
+        let handle =
+            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         self.base_url = Some(handle.base_url.clone());
         self.ppba = Some(handle);
 

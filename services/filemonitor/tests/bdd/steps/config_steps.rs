@@ -38,8 +38,7 @@ async fn try_start_with_config(world: &mut FilemonitorWorld) {
         .as_ref()
         .expect("config path not set")
         .clone();
-    match ServiceHandle::try_start(env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"), &path).await
-    {
+    match ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &path).await {
         Ok(handle) => {
             let monitor = world.acquire_monitor(&handle).await;
             world.monitor = Some(monitor);

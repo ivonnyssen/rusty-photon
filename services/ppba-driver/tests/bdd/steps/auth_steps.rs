@@ -69,12 +69,7 @@ async fn ppba_started_with_tls_and_auth(world: &mut PpbaWorld) {
     .await
     .unwrap();
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        &config_path,
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
     world.base_url = Some(format!("https://localhost:{}", handle.port));
     world.ppba = Some(handle);
@@ -99,12 +94,7 @@ async fn ppba_started_without_auth(world: &mut PpbaWorld) {
     .await
     .unwrap();
 
-    let handle = ServiceHandle::start(
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_NAME"),
-        &config_path,
-    )
-    .await;
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
     world.base_url = Some(format!("http://127.0.0.1:{}", handle.port));
     world.ppba = Some(handle);

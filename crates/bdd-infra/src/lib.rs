@@ -2,8 +2,24 @@
 //! Shared BDD test infrastructure for rusty-photon services.
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service
-//! binaries during BDD and integration tests. Configuration is read from each
-//! service's `Cargo.toml` under `[package.metadata.bdd]`.
+//! binaries during BDD and integration tests.
+//!
+//! # Binary discovery
+//!
+//! BDD tests require a pre-built service binary. Discovery order:
+//!
+//! 1. The conventional env var `{PACKAGE_UPPER_SNAKE}_BINARY`
+//!    (e.g. `RP_BINARY` for `rp`, `PPBA_DRIVER_BINARY` for `ppba-driver`).
+//!    Bazel sets this; Cargo tests can too for explicit overrides.
+//! 2. `$CARGO_TARGET_DIR/debug/<pkg>` when that env var is set.
+//! 3. Walking up from the current directory looking for `target/debug/<pkg>`.
+//!    `cargo test -p <pkg>` runs tests with the cwd at the package dir, so
+//!    the workspace `target/` is typically one level up.
+//!
+//! If the binary is not found, the spawn call panics with a diagnostic.
+//! Services with feature-gated mock hardware (`ppba-driver`, `qhy-focuser`)
+//! must be built with `--all-features` — which is what CI does and what the
+//! Bazel `*_mock` binaries encode.
 //!
 //! # `rp-harness` feature
 //!
@@ -14,23 +30,12 @@
 //! tests only need `ServiceHandle` should leave the feature off so they don't
 //! pull in axum, reqwest, or rmcp transitively.
 //!
-//! # Cargo.toml metadata
-//!
-//! Each service that uses this crate should add:
-//!
-//! ```toml
-//! [package.metadata.bdd]
-//! env_var = "MY_SERVICE_BINARY"   # env var for explicit binary path
-//! # features = ["mock"]           # optional: cargo features for fallback `cargo run`
-//! ```
-//!
 //! # Usage
 //!
 //! ```rust,ignore
 //! use bdd_infra::ServiceHandle;
 //!
 //! let handle = ServiceHandle::start(
-//!     env!("CARGO_MANIFEST_DIR"),
 //!     env!("CARGO_PKG_NAME"),
 //!     "path/to/config.json",
 //! ).await;
@@ -106,74 +111,14 @@ pub mod rp_harness;
 use std::process::Stdio;
 use std::time::Duration;
 
-use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::debug;
 
-/// BDD configuration read from `[package.metadata.bdd]` in a service's Cargo.toml.
-#[derive(Debug, Deserialize)]
-struct BddConfig {
-    /// Environment variable name for an explicit binary path.
-    env_var: String,
-    /// Extra cargo features for the `cargo run` fallback (e.g., `["mock"]`).
-    #[serde(default)]
-    features: Vec<String>,
-}
-
-/// Resolve the binary-discovery env var and cargo-features for `package_name`.
+/// Derive the conventional env var name for a package's binary override.
 ///
-/// Two paths:
-///
-/// 1. **Hermetic-build path (Bazel).** If the conventional env var
-///    `{PACKAGE_UPPER_SNAKE}_BINARY` is already set (e.g. `FILEMONITOR_BINARY`
-///    for `filemonitor`, `PPBA_DRIVER_BINARY` for `ppba-driver`), use that
-///    name and skip Cargo.toml entirely. Bazel tests take this path: they
-///    cannot rely on `CARGO_MANIFEST_DIR` being valid at runtime, but they
-///    can set the conventional env var to the pre-built binary path.
-/// 2. **Cargo path.** Otherwise, read `[package.metadata.bdd]` from
-///    `{manifest_dir}/Cargo.toml` (the traditional flow). `env_var` and
-///    `features` come from there. Note: legacy metadata-driven names
-///    (e.g. `PPBA_BINARY`) may differ from the conventional name.
-fn resolve_bdd_config(manifest_dir: &str, package_name: &str) -> (String, Vec<String>) {
-    let conventional = format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"));
-    if std::env::var_os(&conventional).is_some() {
-        return (conventional, Vec::new());
-    }
-    let config = load_config(manifest_dir);
-    (config.env_var, config.features)
-}
-
-/// Load [`BddConfig`] from `{manifest_dir}/Cargo.toml`.
-///
-/// Falls back to `./Cargo.toml` if the primary path doesn't exist — this
-/// covers Bazel, where `env!("CARGO_MANIFEST_DIR")` bakes in an ephemeral
-/// sandbox path that's torn down before the test runs. `bdd_main!` chdirs
-/// into the package directory under Bazel, so `./Cargo.toml` is the right
-/// fallback.
-fn load_config(manifest_dir: &str) -> BddConfig {
-    let primary = format!("{}/Cargo.toml", manifest_dir);
-    let path = if std::path::Path::new(&primary).exists() {
-        primary
-    } else if std::path::Path::new("Cargo.toml").exists() {
-        "Cargo.toml".to_string()
-    } else {
-        panic!(
-            "bdd-infra: cannot locate Cargo.toml (tried {} and ./Cargo.toml)",
-            primary
-        );
-    };
-    let content =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
-    let toml: toml::Table = content
-        .parse()
-        .unwrap_or_else(|e| panic!("failed to parse {}: {}", path, e));
-    let bdd = toml
-        .get("package")
-        .and_then(|p| p.get("metadata"))
-        .and_then(|m| m.get("bdd"))
-        .unwrap_or_else(|| panic!("missing [package.metadata.bdd] in {}", path));
-    BddConfig::deserialize(bdd.clone())
-        .unwrap_or_else(|e| panic!("invalid [package.metadata.bdd] in {}: {}", path, e))
+/// `ppba-driver` → `PPBA_DRIVER_BINARY`, `rp` → `RP_BINARY`, and so on.
+fn binary_env_var(package_name: &str) -> String {
+    format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"))
 }
 
 /// Handle to a running service process.
@@ -201,25 +146,20 @@ pub struct ServiceHandle {
 impl ServiceHandle {
     /// Start a service binary with the given config file.
     ///
-    /// Reads `[package.metadata.bdd]` from the calling package's Cargo.toml to
-    /// determine binary discovery and cargo-run fallback settings.
-    ///
     /// # Arguments
     ///
-    /// * `manifest_dir` — pass `env!("CARGO_MANIFEST_DIR")` from the calling crate
     /// * `package_name` — pass `env!("CARGO_PKG_NAME")` from the calling crate
     /// * `config_path` — path to the service config file (typically a temp file)
     ///
-    /// # Binary discovery order
+    /// # Binary discovery
     ///
-    /// 1. Explicit env var (from `[package.metadata.bdd] env_var`)
-    /// 2. Pre-built binary in `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET` layout
-    /// 3. Fallback to `cargo run --package <name>`
-    pub async fn start(manifest_dir: &str, package_name: &str, config_path: &str) -> Self {
-        let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
-        let binary = find_binary(&env_var, package_name);
+    /// See the module-level docs. Panics with a clear diagnostic if the binary
+    /// is not found — BDD binaries must be pre-built (e.g.
+    /// `cargo build --all-features --all-targets`).
+    pub async fn start(package_name: &str, config_path: &str) -> Self {
+        let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, &features, config_path);
+        let mut child = spawn_process(&binary, package_name, config_path);
 
         let stdout = child
             .stdout
@@ -241,15 +181,12 @@ impl ServiceHandle {
     /// Try to start the service, returning an error instead of panicking on failure.
     ///
     /// Times out after 10 seconds if the service does not print its bound address.
-    pub async fn try_start(
-        manifest_dir: &str,
-        package_name: &str,
-        config_path: &str,
-    ) -> Result<Self, String> {
-        let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
-        let binary = find_binary(&env_var, package_name);
+    /// Still panics if the binary itself cannot be located — that's a setup
+    /// error, not a runtime condition to recover from.
+    pub async fn try_start(package_name: &str, config_path: &str) -> Result<Self, String> {
+        let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, &features, config_path);
+        let mut child = spawn_process(&binary, package_name, config_path);
 
         let stdout = child
             .stdout
@@ -327,44 +264,22 @@ impl Drop for ServiceHandle {
 
 /// Run a service binary once with the given arguments and wait for it to exit.
 ///
-/// Uses the same binary discovery logic as [`ServiceHandle::start`]:
-/// env var, `CARGO_TARGET_DIR`, or `cargo run` fallback. Returns the
-/// process output (stdout, stderr, exit status).
+/// Uses the same binary discovery as [`ServiceHandle::start`]. Panics if the
+/// binary cannot be found.
 ///
 /// Use this for one-shot commands like `rp init-tls` that are not
-/// long-running servers.
-/// Run a service binary once and return its output.
-///
-/// When `stdin_data` is `Some`, the data is piped to the process's stdin.
+/// long-running servers. When `stdin_data` is `Some`, the data is piped to the
+/// process's stdin.
 pub fn run_once(
-    manifest_dir: &str,
     package_name: &str,
     args: &[&str],
     stdin_data: Option<&[u8]>,
 ) -> std::process::Output {
-    let (env_var, features) = resolve_bdd_config(manifest_dir, package_name);
-    let binary = find_binary(&env_var, package_name);
+    let binary = require_binary(package_name);
+    debug!(binary = %binary, "running {} from pre-built binary", package_name);
 
-    let mut cmd = if let Some(binary) = &binary {
-        debug!(binary = %binary, "running {} from pre-built binary", package_name);
-        let mut cmd = std::process::Command::new(binary);
-        cmd.args(args);
-        cmd
-    } else {
-        debug!("running {} via cargo run", package_name);
-        let mut full_args = vec!["run", "--package", package_name];
-        for feat in &features {
-            full_args.push("--features");
-            full_args.push(feat);
-        }
-        full_args.push("--quiet");
-        full_args.push("--");
-        full_args.extend_from_slice(args);
-
-        let mut cmd = std::process::Command::new("cargo");
-        cmd.args(&full_args);
-        cmd
-    };
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.args(args);
 
     if let Some(data) = stdin_data {
         cmd.stdin(std::process::Stdio::piped());
@@ -392,42 +307,75 @@ pub fn run_once(
     }
 }
 
-/// Find a pre-built service binary, or return `None` to fall back to `cargo run`.
+/// Find a pre-built service binary, or return `None`.
 ///
 /// Discovery order:
-/// 1. Explicit env var (e.g., `FILEMONITOR_BINARY=/path/to/bin`)
-/// 2. `CARGO_TARGET_DIR` (or `CARGO_LLVM_COV_TARGET_DIR`) + optional `CARGO_BUILD_TARGET` triple
-/// 3. `target/debug/<binary_name>`
-fn find_binary(env_var: &str, package_name: &str) -> Option<String> {
-    if let Ok(path) = std::env::var(env_var) {
+/// 1. The conventional env var `{PACKAGE_UPPER_SNAKE}_BINARY`
+///    (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+/// 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_TARGET_DIR/$CARGO_BUILD_TARGET/debug/<pkg>`
+///    when the latter is set). `CARGO_LLVM_COV_TARGET_DIR` is also honored.
+/// 3. Walking up from the current directory, probe `<ancestor>/target/debug/<pkg>` (and
+///    the `CARGO_BUILD_TARGET`-qualified variant). Cargo's `cargo test -p <pkg>` sets
+///    the cwd to the package dir; the workspace `target/` is then one level up.
+fn find_binary(package_name: &str) -> Option<String> {
+    if let Ok(path) = std::env::var(binary_env_var(package_name)) {
         return Some(path);
     }
-
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .or_else(|_| std::env::var("CARGO_LLVM_COV_TARGET_DIR"))
-        .unwrap_or_else(|_| "target".to_string());
 
     let binary_name = if cfg!(target_os = "windows") {
         format!("{}.exe", package_name)
     } else {
         package_name.to_string()
     };
+    let triple = std::env::var("CARGO_BUILD_TARGET").ok();
 
-    // With CARGO_BUILD_TARGET: target/<triple>/debug/<binary>
-    if let Ok(triple) = std::env::var("CARGO_BUILD_TARGET") {
-        let path = format!("{}/{}/debug/{}", target_dir, triple, binary_name);
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
+    let candidate = |target_dir: &std::path::Path| -> Option<String> {
+        if let Some(triple) = triple.as_deref() {
+            let path = target_dir.join(triple).join("debug").join(&binary_name);
+            if path.exists() {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+        let path = target_dir.join("debug").join(&binary_name);
+        if path.exists() {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        None
+    };
+
+    // When `CARGO_TARGET_DIR` (or `CARGO_LLVM_COV_TARGET_DIR`) is set, honor
+    // it exclusively. Walking up afterwards could silently pick up a stale
+    // non-instrumented binary at `target/debug/<pkg>` and skip coverage
+    // data collection for it.
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR")
+        .or_else(|| std::env::var_os("CARGO_LLVM_COV_TARGET_DIR"))
+    {
+        return candidate(std::path::Path::new(&dir));
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            if let Some(path) = candidate(&ancestor.join("target")) {
+                return Some(path);
+            }
         }
     }
 
-    // Without target: target/debug/<binary>
-    let path = format!("{}/debug/{}", target_dir, binary_name);
-    if std::path::Path::new(&path).exists() {
-        return Some(path);
-    }
-
     None
+}
+
+/// [`find_binary`] or panic with a diagnostic pointing the user at the fix.
+fn require_binary(package_name: &str) -> String {
+    find_binary(package_name).unwrap_or_else(|| {
+        panic!(
+            "bdd-infra: binary for package `{pkg}` not found. \
+             BDD tests require a pre-built binary — run \
+             `cargo build -p {pkg} --all-features` (or `cargo build --all-features --all-targets` \
+             for the whole workspace), or set `{env}` to an explicit binary path.",
+            pkg = package_name,
+            env = binary_env_var(package_name),
+        )
+    })
 }
 
 /// Windows process creation flag: place the child in its own process group so
@@ -435,60 +383,27 @@ fn find_binary(env_var: &str, package_name: &str) -> Option<String> {
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
-/// Spawn the service process, either from a pre-built binary or via `cargo run`.
+/// Spawn the service process from a pre-built binary.
 ///
 /// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
-fn spawn_process(
-    binary: &Option<String>,
-    package_name: &str,
-    features: &[String],
-    config_path: &str,
-) -> tokio::process::Child {
-    if let Some(binary) = binary {
-        debug!(binary = %binary, "starting {} from pre-built binary", package_name);
-        let mut cmd = tokio::process::Command::new(binary);
-        cmd.args(["--config", config_path])
-            .stdout(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        {
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-        cmd.spawn().unwrap_or_else(|e| {
-            panic!(
-                "failed to start {} binary '{}': {}",
-                package_name, binary, e
-            )
-        })
-    } else {
-        debug!("starting {} via cargo run", package_name);
-        let mut args = vec![
-            "run".to_string(),
-            "--package".to_string(),
-            package_name.to_string(),
-        ];
-        for feat in features {
-            args.push("--features".to_string());
-            args.push(feat.clone());
-        }
-        args.extend([
-            "--quiet".to_string(),
-            "--".to_string(),
-            "--config".to_string(),
-            config_path.to_string(),
-        ]);
-
-        let mut cmd = tokio::process::Command::new("cargo");
-        cmd.args(&args).stdout(Stdio::piped()).kill_on_drop(true);
-        #[cfg(windows)]
-        {
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-        cmd.spawn()
-            .unwrap_or_else(|e| panic!("failed to start {} via cargo run: {}", package_name, e))
+fn spawn_process(binary: &str, package_name: &str, config_path: &str) -> tokio::process::Child {
+    debug!(binary = %binary, "starting {} from pre-built binary", package_name);
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(["--config", config_path])
+        .stdout(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
+    cmd.spawn().unwrap_or_else(|e| {
+        panic!(
+            "failed to start {} binary '{}': {}",
+            package_name, binary, e
+        )
+    })
 }
 
 /// Parse the bound port from a service's stdout.
@@ -777,113 +692,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // load_config tests
+    // binary_env_var tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_load_config_with_env_var_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let cargo_toml = dir.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            r#"
-[package]
-name = "test-service"
-version = "0.1.0"
-edition = "2021"
-
-[package.metadata.bdd]
-env_var = "TEST_SERVICE_BINARY"
-"#,
-        )
-        .unwrap();
-
-        let config = load_config(dir.path().to_str().unwrap());
-        assert_eq!(config.env_var, "TEST_SERVICE_BINARY");
-        assert!(config.features.is_empty());
-    }
-
-    #[test]
-    fn test_load_config_with_features() {
-        let dir = tempfile::tempdir().unwrap();
-        let cargo_toml = dir.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            r#"
-[package]
-name = "test-service"
-version = "0.1.0"
-edition = "2021"
-
-[package.metadata.bdd]
-env_var = "MY_BINARY"
-features = ["mock", "test-helpers"]
-"#,
-        )
-        .unwrap();
-
-        let config = load_config(dir.path().to_str().unwrap());
-        assert_eq!(config.env_var, "MY_BINARY");
-        assert_eq!(config.features, vec!["mock", "test-helpers"]);
-    }
-
-    #[test]
-    #[should_panic(expected = "missing [package.metadata.bdd]")]
-    fn test_load_config_missing_bdd_section() {
-        let dir = tempfile::tempdir().unwrap();
-        let cargo_toml = dir.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            r#"
-[package]
-name = "test-service"
-version = "0.1.0"
-edition = "2021"
-"#,
-        )
-        .unwrap();
-
-        load_config(dir.path().to_str().unwrap());
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid [package.metadata.bdd]")]
-    fn test_load_config_missing_required_field() {
-        let dir = tempfile::tempdir().unwrap();
-        let cargo_toml = dir.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            r#"
-[package]
-name = "test-service"
-version = "0.1.0"
-edition = "2021"
-
-[package.metadata.bdd]
-features = ["mock"]
-"#,
-        )
-        .unwrap();
-
-        load_config(dir.path().to_str().unwrap());
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot locate Cargo.toml")]
-    fn test_load_config_nonexistent_dir() {
-        // The fallback to ./Cargo.toml would silently succeed if cwd were
-        // the workspace root (which has a Cargo.toml). chdir into a temp
-        // directory so neither the primary nor the fallback path exists.
-        let _lock = CWD_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let previous = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(tmp.path()).expect("chdir into tmp");
-        let result = std::panic::catch_unwind(|| load_config("/nonexistent/path/to/nowhere"));
-        std::env::set_current_dir(previous).expect("chdir back");
-        // Propagate the panic so the test's should_panic assertion fires.
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
+    fn test_binary_env_var_uppercases_and_replaces_dashes() {
+        assert_eq!(binary_env_var("rp"), "RP_BINARY");
+        assert_eq!(binary_env_var("ppba-driver"), "PPBA_DRIVER_BINARY");
+        assert_eq!(binary_env_var("qhy-focuser"), "QHY_FOCUSER_BINARY");
     }
 
     // -----------------------------------------------------------------------
@@ -892,19 +708,20 @@ features = ["mock"]
 
     #[test]
     fn test_find_binary_from_env_var() {
-        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_12345";
-        std::env::set_var(unique_var, "/some/path/to/binary");
-        let result = find_binary(unique_var, "irrelevant");
-        std::env::remove_var(unique_var);
+        // Use a package name whose derived env var is unique to this test.
+        let package = "bdd-infra-test-find-env";
+        std::env::set_var("BDD_INFRA_TEST_FIND_ENV_BINARY", "/some/path/to/binary");
+        let result = find_binary(package);
+        std::env::remove_var("BDD_INFRA_TEST_FIND_ENV_BINARY");
 
         assert_eq!(result, Some("/some/path/to/binary".to_string()));
     }
 
     #[test]
     fn test_find_binary_returns_none_when_nothing_found() {
-        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_NONE";
-        std::env::remove_var(unique_var);
-        let result = find_binary(unique_var, "nonexistent-binary-xyz");
+        let package = "bdd-infra-test-find-none";
+        std::env::remove_var("BDD_INFRA_TEST_FIND_NONE_BINARY");
+        let result = find_binary(package);
         assert!(result.is_none());
     }
 
@@ -922,15 +739,14 @@ features = ["mock"]
         let binary_path = debug_dir.join(binary_name);
         std::fs::write(&binary_path, "fake binary").unwrap();
 
-        let unique_var = "BDD_INFRA_TEST_FIND_BINARY_TARGET";
-        std::env::remove_var(unique_var);
-        // Temporarily override CARGO_TARGET_DIR
+        // Make sure the derived env var isn't set, so we exercise the
+        // target-dir branch.
+        std::env::remove_var("MY_SERVICE_BINARY");
         let old_target = std::env::var("CARGO_TARGET_DIR").ok();
         std::env::set_var("CARGO_TARGET_DIR", dir.path());
 
-        let result = find_binary(unique_var, "my-service");
+        let result = find_binary("my-service");
 
-        // Restore
         match old_target {
             Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
             None => std::env::remove_var("CARGO_TARGET_DIR"),
@@ -942,49 +758,41 @@ features = ["mock"]
         );
     }
 
+    #[test]
+    #[should_panic(expected = "binary for package `bdd-infra-test-require-missing` not found")]
+    fn test_require_binary_panics_with_diagnostic() {
+        std::env::remove_var("BDD_INFRA_TEST_REQUIRE_MISSING_BINARY");
+        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+        // Point at an empty dir so the target-dir branch misses too.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CARGO_TARGET_DIR", tmp.path());
+
+        let result = std::panic::catch_unwind(|| require_binary("bdd-infra-test-require-missing"));
+
+        match old_target {
+            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+            None => std::env::remove_var("CARGO_TARGET_DIR"),
+        }
+
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // run_once tests
+    //
+    // These exercise rp's one-shot subcommands (`init-tls`, `hash-password`).
+    // rp must be pre-built — we either rely on the conventional env var being
+    // set (Bazel path) or build it ourselves for the Cargo path.
     // -----------------------------------------------------------------------
 
-    /// Use `rp` as the test subject since it has a one-shot `init-tls` subcommand.
-    /// The rp manifest dir is one level up from bdd-infra.
-    fn rp_manifest_dir() -> String {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("services")
-            .join("rp")
-            .to_string_lossy()
-            .to_string()
-    }
-
-    #[test]
-    fn test_run_once_successful_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = run_once(
-            &rp_manifest_dir(),
-            "rp",
-            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
-            None,
-        );
-        assert!(output.status.success(), "init-tls should succeed");
-        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
-    }
-
-    #[test]
-    fn test_run_once_captures_stderr_on_failure() {
-        let output = run_once(&rp_manifest_dir(), "rp", &["serve"], None);
-        // serve without --config should fail
-        assert!(!output.status.success());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!stderr.is_empty(), "stderr should contain error message");
-    }
-
-    /// Resolve the absolute path to the rp binary in target/debug.
-    /// Builds it first if necessary.
-    fn rp_binary_path() -> String {
+    /// Ensure `RP_BINARY` points at an `rp` binary. Builds it with Cargo if
+    /// not already set (e.g. when running under `cargo test`).
+    fn ensure_rp_binary() {
+        if std::env::var_os("RP_BINARY").is_some() {
+            return;
+        }
         let build = std::process::Command::new("cargo")
             .args(["build", "--package", "rp", "--quiet"])
             .status()
@@ -1012,48 +820,45 @@ features = ["mock"]
             "rp binary not found at {}",
             binary.display()
         );
-        binary.to_string_lossy().to_string()
+        std::env::set_var("RP_BINARY", &binary);
     }
 
     #[test]
-    fn test_run_once_uses_prebuilt_binary_via_env_var() {
-        let binary = rp_binary_path();
-        std::env::set_var("RP_BINARY", &binary);
-
+    fn test_run_once_successful_command() {
+        ensure_rp_binary();
         let dir = tempfile::tempdir().unwrap();
         let output = run_once(
-            &rp_manifest_dir(),
             "rp",
             &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
             None,
         );
-
-        std::env::remove_var("RP_BINARY");
-
-        assert!(
-            output.status.success(),
-            "init-tls via pre-built binary should succeed"
-        );
+        assert!(output.status.success(), "init-tls should succeed");
         assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
     }
 
     #[test]
-    fn test_run_once_with_stdin_via_prebuilt_binary() {
-        let binary = rp_binary_path();
-        std::env::set_var("RP_BINARY", &binary);
+    fn test_run_once_captures_stderr_on_failure() {
+        ensure_rp_binary();
+        let output = run_once("rp", &["serve"], None);
+        // serve without --config should fail
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.is_empty(), "stderr should contain error message");
+    }
 
+    #[test]
+    fn test_run_once_with_stdin() {
+        ensure_rp_binary();
         let output = run_once(
-            &rp_manifest_dir(),
             "rp",
             &["hash-password", "--stdin"],
             Some(b"test-password\n"),
         );
 
-        std::env::remove_var("RP_BINARY");
-
         assert!(
             output.status.success(),
-            "hash-password via pre-built binary should succeed"
+            "hash-password should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
         let hash = String::from_utf8(output.stdout).unwrap();
         assert!(
