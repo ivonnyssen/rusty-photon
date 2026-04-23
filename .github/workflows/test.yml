@@ -169,6 +169,15 @@ jobs:
         run: cargo generate-lockfile
       - name: cargo build
         run: cargo build --locked --package ${{ matrix.package }} --all-features --all-targets
+      # Cross-spawn deps: sentinel BDD tests spawn filemonitor; calibrator-flats
+      # BDD tests spawn rp. bdd-infra no longer compiles missing binaries on the
+      # fly, so we pre-build them here.
+      - name: cargo build filemonitor (sentinel cross-spawn)
+        if: matrix.package == 'sentinel'
+        run: cargo build --locked --package filemonitor --all-features --all-targets
+      - name: cargo build rp (calibrator-flats cross-spawn)
+        if: matrix.package == 'calibrator-flats'
+        run: cargo build --locked --package rp --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
   coverage:

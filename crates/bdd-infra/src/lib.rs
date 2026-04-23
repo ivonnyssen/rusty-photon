@@ -752,9 +752,13 @@ mod tests {
             None => std::env::remove_var("CARGO_TARGET_DIR"),
         }
 
+        // Compare as PathBuf so we don't trip on Windows' mixed separators
+        // (Path::join produces `C:\…\debug\my-service.exe`, but a
+        // `format!("{}/debug/…")` expected string would have a forward
+        // slash in the suffix).
         assert_eq!(
-            result,
-            Some(format!("{}/debug/{}", dir.path().display(), binary_name))
+            result.map(std::path::PathBuf::from),
+            Some(debug_dir.join(binary_name))
         );
     }
 

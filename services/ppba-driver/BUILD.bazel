@@ -96,6 +96,10 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
+    # service name.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     tags = ["bdd"],
     use_libtest_harness = False,
     deps = [":ppba-driver_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
