@@ -19,7 +19,20 @@ pub mod server;
 /// Required because both `aws-lc-rs` and `ring` end up feature-activated on
 /// `rustls` via our transitive deps (reqwest 0.13 + reqwest 0.12 via cloudflare
 /// rustls-tls), which defeats rustls's automatic provider selection.
-/// Idempotent: subsequent calls after the first one are no-ops.
+///
+/// The install is attempted exactly once per process via `Once`. If some other
+/// code path installed a different provider first, the failure is logged at
+/// `error!` level so the root cause is visible — downstream TLS operations
+/// will then use that pre-existing provider rather than aws-lc-rs.
 pub fn install_default_crypto_provider() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if let Err(existing) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
+            tracing::error!(
+                cipher_suites = existing.cipher_suites.len(),
+                kx_groups = existing.kx_groups.len(),
+                "rustls crypto provider was already installed before rp-tls could register aws-lc-rs; keeping existing provider"
+            );
+        }
+    });
 }
