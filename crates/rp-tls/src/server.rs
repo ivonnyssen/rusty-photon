@@ -39,6 +39,8 @@ pub async fn bind_dual_stack_tokio(addr: SocketAddr) -> Result<TcpListener> {
 
 /// Load TLS certificate and key from a `TlsConfig`, returning a `TlsAcceptor`.
 pub fn build_tls_acceptor(tls_config: &TlsConfig) -> Result<TlsAcceptor> {
+    crate::install_default_crypto_provider();
+
     let cert_path = tls_config.resolved_cert_path();
     let key_path = tls_config.resolved_key_path();
 
