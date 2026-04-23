@@ -762,6 +762,109 @@ mod tests {
         );
     }
 
+    /// Covers the `CARGO_BUILD_TARGET` triple branch of the `candidate`
+    /// closure in `find_binary`.
+    #[test]
+    fn test_find_binary_in_target_dir_with_triple() {
+        // CARGO_BUILD_TARGET is process-global; serialize with other tests
+        // that mutate cwd/env via CWD_LOCK so concurrent test threads don't
+        // stomp each other under `cargo test` (coverage job).
+        let _lock = CWD_LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        let debug_dir = dir.path().join(triple).join("debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "bdd-infra-test-triple.exe"
+        } else {
+            "bdd-infra-test-triple"
+        };
+        let binary_path = debug_dir.join(binary_name);
+        std::fs::write(&binary_path, "fake binary").unwrap();
+
+        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+        let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
+        std::env::remove_var("BDD_INFRA_TEST_TRIPLE_BINARY");
+        std::env::set_var("CARGO_TARGET_DIR", dir.path());
+        std::env::set_var("CARGO_BUILD_TARGET", triple);
+
+        let result = find_binary("bdd-infra-test-triple");
+
+        match old_target {
+            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+            None => std::env::remove_var("CARGO_TARGET_DIR"),
+        }
+        match old_triple {
+            Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
+            None => std::env::remove_var("CARGO_BUILD_TARGET"),
+        }
+
+        assert_eq!(
+            result.map(std::path::PathBuf::from),
+            Some(debug_dir.join(binary_name))
+        );
+    }
+
+    /// Covers the cwd-ancestors walk branch of `find_binary` — the path taken
+    /// when no `CARGO_TARGET_DIR` / `CARGO_LLVM_COV_TARGET_DIR` is set, which
+    /// is how `cargo test -p <pkg>` from a package directory finds the
+    /// workspace `target/`.
+    #[test]
+    fn test_find_binary_via_ancestor_walk() {
+        let _lock = CWD_LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let debug_dir = dir.path().join("target").join("debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "bdd-infra-test-walk.exe"
+        } else {
+            "bdd-infra-test-walk"
+        };
+        let binary_path = debug_dir.join(binary_name);
+        std::fs::write(&binary_path, "fake binary").unwrap();
+
+        let subdir = dir.path().join("pkg");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+        let old_llvm_cov = std::env::var("CARGO_LLVM_COV_TARGET_DIR").ok();
+        let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
+        std::env::remove_var("BDD_INFRA_TEST_WALK_BINARY");
+        std::env::remove_var("CARGO_TARGET_DIR");
+        std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR");
+        std::env::remove_var("CARGO_BUILD_TARGET");
+        std::env::set_current_dir(&subdir).unwrap();
+
+        let result = find_binary("bdd-infra-test-walk");
+
+        std::env::set_current_dir(&previous).unwrap();
+        match old_target {
+            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+            None => std::env::remove_var("CARGO_TARGET_DIR"),
+        }
+        match old_llvm_cov {
+            Some(v) => std::env::set_var("CARGO_LLVM_COV_TARGET_DIR", v),
+            None => std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR"),
+        }
+        match old_triple {
+            Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
+            None => std::env::remove_var("CARGO_BUILD_TARGET"),
+        }
+
+        // Canonicalize both sides: on macOS /var → /private/var.
+        assert_eq!(
+            result
+                .map(std::path::PathBuf::from)
+                .map(|p| p.canonicalize().unwrap()),
+            Some(binary_path.canonicalize().unwrap())
+        );
+    }
+
     #[test]
     #[should_panic(expected = "binary for package `bdd-infra-test-require-missing` not found")]
     fn test_require_binary_panics_with_diagnostic() {
