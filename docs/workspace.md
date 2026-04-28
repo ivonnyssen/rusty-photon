@@ -15,7 +15,7 @@ belong in any single service design doc.
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
-| sentinel-app | — (Leptos web frontend for sentinel) | — | — |
+| sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
 
@@ -29,8 +29,17 @@ belong in any single service design doc.
 | [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
-| **Decisions** | |
-| [docs/decisions/](decisions/) | Architecture Decision Records |
+| **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
+| [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
+| [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |
+| [ADR-003](decisions/003-authentication-for-device-access.md) | Authentication for device access |
+| **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
+| [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
+| [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
+| [duration-naming-convention.md](plans/duration-naming-convention.md) | Rename `_seconds` → `_secs` and bare duration fields |
+| [duration-type-migration.md](plans/duration-type-migration.md) | Follow-up: switch config duration fields to `std::time::Duration` |
+| [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
+| [migrate-test-harnesses-to-bdd-infra.md](plans/migrate-test-harnesses-to-bdd-infra.md) | Migrate per-service BDD harnesses to `bdd-infra` |
 
 ## Shared Crates
 
@@ -78,33 +87,99 @@ generates JSON Schema from parameter structs via `schemars::JsonSchema`.
 ### Serial-based services (ppba-driver, qhy-focuser)
 
 ```
+config.rs      — Configuration types and JSON loading
+error.rs       — Service-specific error enum (thiserror)
 io.rs          — Traits (SerialReader, SerialWriter, SerialPortFactory)
 serial.rs      — tokio-serial implementation of the traits
+mock.rs        — In-memory mock factory (cfg(feature = "mock"))
+protocol.rs    — Wire-format encode/decode for the device's serial protocol
 serial_manager.rs — Ref-counted connection + background polling
 *_device.rs    — ASCOM trait implementation
 lib.rs         — ServerBuilder (CLI args → server)
 main.rs        — Entry point
 ```
 
+ppba-driver additionally has `switches.rs` (Switch device wiring) and
+`mean.rs` (running-mean smoothing for ObservingConditions readings).
+
 ### HTTP gateway services (rp)
 
 ```
-config.rs      — Configuration types and loading
-equipment.rs   — EquipmentRegistry, ASCOM Alpaca client
-events.rs      — EventBus, webhook delivery
-mcp.rs         — rmcp tool_router: #[tool] methods, ServerHandler impl
-session.rs     — SessionManager, orchestrator invocation
-routes.rs      — Axum router (REST + MCP endpoints)
-lib.rs         — ServerBuilder (two-phase: build → start)
-main.rs        — Entry point
+config.rs            — Configuration types and loading
+error.rs             — RpError enum + Result alias (thiserror)
+equipment.rs         — EquipmentRegistry, ASCOM Alpaca client
+events.rs            — EventBus, webhook delivery
+imaging.rs           — FITS read/write and pixel statistics
+mcp.rs               — rmcp tool_router: #[tool] methods, ServerHandler impl
+session.rs           — SessionManager, orchestrator invocation
+routes.rs            — Axum router (REST + MCP endpoints)
+hash_password_cmd.rs — `rp hash-password` subcommand (Argon2id hashing)
+tls_cmd.rs           — `rp init-tls` subcommand (CA + per-service certs)
+lib.rs               — ServerBuilder (two-phase: build → start)
+main.rs              — Entry point
+```
+
+### Orchestrator plugins (calibrator-flats)
+
+Plugins act as MCP clients of `rp` and expose an HTTP `/invoke` endpoint that
+`rp` calls when a session is started.
+
+```
+config.rs    — Plugin config + FlatPlan request schema
+error.rs     — CalibratorFlatsError enum
+mcp_client.rs — rmcp StreamableHttpClient wrapper for calling rp's tools
+workflow.rs  — Iterative exposure optimization + batch capture state machine
+routes.rs    — Axum router: GET /health, POST /invoke
+lib.rs       — Plugin server bootstrap
+main.rs      — Entry point
+```
+
+### Monitoring service + Leptos frontend (sentinel, sentinel-app)
+
+`sentinel` is a standalone Axum + reqwest backend. The dashboard at
+`http://127.0.0.1:11114/` works today, but it is **not** Leptos: it's
+hand-rolled HTML built with `format!()` in
+`services/sentinel/src/dashboard.rs`, refreshed client-side by a vanilla
+`fetch()` loop hitting `/api/status` and `/api/history` every five seconds.
+
+`sentinel-app` is a separate Leptos crate (`cdylib + rlib`) intended to
+replace that hand-rolled UI in the future, via `cargo leptos` (build
+target `sentinel-dashboard`, declared in the workspace-root
+`[[workspace.metadata.leptos]]` block). At present the `sentinel` binary
+does **not** depend on `sentinel-app`, on `leptos`, on `leptos_axum`, or
+on any static-file middleware (`tower-http` is pulled with `["cors"]`
+only) — the integration is scaffolded in workspace metadata but not yet
+in code.
+
+```
+sentinel/src/
+  config.rs        — Config types: monitors, notifiers, dashboard
+  error.rs         — SentinelError enum
+  io.rs            — HTTP client trait abstraction (testability)
+  alpaca_client.rs — ASCOM Alpaca SafetyMonitor client
+  monitor.rs       — Monitor trait + state types
+  pushover.rs      — Pushover notifier
+  notifier.rs      — Notifier trait
+  state.rs         — Shared monitor status + notification history
+  engine.rs        — Orchestrates monitors, transitions, notifiers
+  dashboard.rs     — Axum routes for JSON API + dashboard HTML
+  lib.rs / main.rs — Server bootstrap and entry point
+
+sentinel-app/src/
+  lib.rs           — Crate root (re-exports App)
+  app.rs           — Root Leptos component
+  api.rs           — Client-side API helpers
+  components/      — monitor_table, history_table, status_badge
 ```
 
 ## MSRV
 
-| Service | rust-version |
-|---------|-------------|
-| phd2-guider | 1.85.0 |
-| filemonitor, ppba-driver, qhy-focuser, rp, sentinel, sentinel-app | 1.88.0 |
+The minimum supported Rust version is pinned in `[workspace.package]` of the
+root `Cargo.toml` (`rust-version = "1.94.1"`). All workspace members —
+services (`filemonitor`, `phd2-guider`, `ppba-driver`, `qhy-focuser`,
+`calibrator-flats`, `rp`, `sentinel`, `sentinel-app`) and shared crates
+(`bdd-infra`, `rp-auth`, `rp-tls`) — inherit it via
+`rust-version.workspace = true`.
 
 ## Workspace Dependencies
 
@@ -114,10 +189,19 @@ reference them with `dep.workspace = true`.
 
 ### Pre-commit hooks
 
-The workspace uses `cargo-husky` as a dev-dependency with `precommit-hook`,
-`run-cargo-fmt`, `run-cargo-clippy`, and `run-for-all` features. This
-automatically installs a git pre-commit hook that runs `cargo fmt` and
-`cargo clippy` on every commit.
+The workspace uses `cargo-husky` as a dev-dependency configured with
+`default-features = false` and the `precommit-hook` + `user-hooks` features
+(see root `Cargo.toml`). The `user-hooks` feature tells `cargo-husky` to
+install a custom hook script kept in the repo at
+`.cargo-husky/hooks/pre-commit`, which currently runs:
+
+```sh
+cargo clippy --all --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+```
+
+The hook is installed automatically the first time any test build pulls
+`cargo-husky` in as a dev-dependency.
 
 ## Coding Conventions
 
@@ -139,11 +223,31 @@ Never use a bare `duration` or `timeout` field without a unit suffix.
 - **`mock`** — Enables `MockSerialPortFactory` with persistent state for
   integration testing (ConformU, server tests). Used by ppba-driver and
   qhy-focuser. Not used for unit tests — those define inline mocks.
-- **`hydrate`** / **`ssr`** — Leptos rendering modes for sentinel-app.
-  `ssr` is used by the sentinel binary for server-side rendering; `hydrate`
-  is for future WASM-hydrated frontend builds.
+- **`hydrate`** / **`ssr`** — Leptos rendering modes for `sentinel-app`.
+  `ssr` is intended for native compilation linked into a server binary;
+  `hydrate` is intended for `wasm32-unknown-unknown` + wasm-bindgen
+  client-side hydration. The `sentinel` binary does not yet link
+  `sentinel-app` in either mode — `cargo build -p sentinel-app` exercises
+  the crate in isolation pending the integration work.
 
 ## Build Notes
 
 - The `ascom-alpaca` crate is a git dependency from
-  `ivonnyssen/ascom-alpaca-rs.git` (branch `fix/macos-trait-recursion-overflow`).
+  `ivonnyssen/ascom-alpaca-rs.git` (branch `integration`,
+  `default-features = false`).
+
+### Bazel (shadow mode)
+
+A Bazel build is being introduced alongside Cargo — see
+[docs/plans/bazel-migration.md](plans/bazel-migration.md). Cargo remains the
+canonical build system during the migration: `Cargo.toml` and `Cargo.lock`
+are the single source of truth for dependency versions, and Bazel's
+`crate_universe` reads them. The repo root holds `MODULE.bazel` and
+`BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`, non-BDD
+targets. Bazel is **not** a required pre-push gate yet — the canonical
+pre-push command is still `cargo rail run --merge-base` (see
+[docs/skills/pre-push.md](skills/pre-push.md)).
+
+After adding a crates.io dependency to the workspace, run
+`CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` before
+committing.
