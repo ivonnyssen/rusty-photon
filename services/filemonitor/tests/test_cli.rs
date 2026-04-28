@@ -36,9 +36,28 @@ fn test_cli_invalid_config() {
     assert!(!output.status.success());
 }
 
+/// Assert that a `Box<dyn Error>` reached main (config-load failure) and that
+/// clap did *not* reject the arguments — i.e., `--log-level <variant>` parsed
+/// successfully and the binary then failed opening the missing config.
+#[cfg(not(miri))]
+fn assert_config_not_found(output: &std::process::Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        !stderr.contains("error: invalid value") && !stderr.contains("error: unexpected argument"),
+        "clap rejected the arguments; stderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("NotFound") || stderr.contains("No such file"),
+        "expected config-not-found error; stderr:\n{}",
+        stderr
+    );
+}
+
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
-fn test_cli_valid_config_with_log_level() {
+fn test_cli_log_level_flag_accepted() {
     // Skip under sanitizers due to proc-macro compilation issues
     if std::env::var("RUSTFLAGS")
         .unwrap_or_default()
@@ -46,16 +65,15 @@ fn test_cli_valid_config_with_log_level() {
     {
         return;
     }
-    // Verify --log-level is accepted by clap. We use a nonexistent config so
-    // the binary fails fast after argument parsing rather than starting a
-    // server we'd have to shut down.
+    // Pass --log-level alongside a nonexistent config; the binary should
+    // accept the flag (clap parse OK) and then fail opening the config.
     let output = bdd_infra::run_once(
         "filemonitor",
         &["--config", "nonexistent.json", "--log-level", "debug"],
         None,
     );
 
-    assert!(!output.status.success());
+    assert_config_not_found(&output);
 }
 
 #[test]
@@ -77,6 +95,6 @@ fn test_cli_different_log_levels() {
             None,
         );
 
-        assert!(!output.status.success());
+        assert_config_not_found(&output);
     }
 }
