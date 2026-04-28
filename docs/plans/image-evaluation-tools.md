@@ -125,12 +125,45 @@ they exist for Phase 4 (`measure_basic`) and the future scientific
 camera hatch respectively. max_adu is fetched per-capture rather than
 stashed at connect time — see follow-up note below.
 
-**Deferred from Phase 3:** stashing `max_adu` on `CameraEntry` at
-connect time, as the design contemplates. Phase 3 fetches it during
-each capture; this is one ASCOM call against an in-process Alpaca
-client and does not measurably slow capture. The stash is a small
-follow-up that touches `equipment.rs`; track separately if it
-becomes a hot-path concern.
+#### Phase 3 follow-up: stash `max_adu` on `CameraEntry`
+
+**Status:** deferred — landed Phase 3 with per-capture fetch.
+
+**What the design says (`docs/services/rp.md` → Image Cache → Storage
+Type Selection):** "Read the camera's `max_adu` (ASCOM
+`ICameraVx::MaxADU`) at connect time and stash it in the camera's
+runtime state." Selection of `CachedPixels::U16` vs `I32` is
+"per-camera (driven by capabilities), not per-frame".
+
+**What Phase 3 does instead:** `mcp.rs:capture` calls
+`cam.max_adu().await` after every exposure, immediately before
+inserting into the cache. The result drives the U16/I32 narrowing
+for that frame.
+
+**Why this is fine for now:**
+- `max_adu` is one Alpaca request to an in-process client. It is
+  cheap relative to FITS write (which already happened) and
+  vanishingly small relative to exposure time (seconds to minutes).
+- Behavior is identical to the design intent — the same camera
+  always reports the same `max_adu`, so the variant choice is in
+  practice per-camera even though the lookup is per-frame.
+- If `max_adu` fails, cache insert is skipped and the FITS-on-disk
+  path absorbs the miss. No correctness regression.
+
+**Trigger to revisit:**
+- Profiling shows `max_adu` fetch on the capture hot path (unlikely
+  given the above).
+- A camera driver returns `max_adu` slowly or unreliably enough that
+  the per-frame fetch becomes a robustness issue.
+- We add a non-Alpaca camera path that does not expose `max_adu`
+  inline — at which point a stashed value is the natural seam.
+
+**Scope when picked up:** add a `max_adu: Option<u32>` field (or
+similar) to `CameraEntry` in `services/rp/src/equipment.rs`,
+populate it during `connect`, and replace the `cam.max_adu().await`
+call in `mcp.rs:capture` with a read from the entry. Small,
+self-contained, no test changes beyond updating the equipment
+mocks.
 
 ### Phase 4 — Implement `measure_basic`
 
