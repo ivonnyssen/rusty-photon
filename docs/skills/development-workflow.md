@@ -151,6 +151,21 @@ steps set up test state, When steps call the system under test, Then steps
 assert outcomes. At this point the When/Then steps will fail because there is
 no implementation — that is expected.
 
+##### Committing Phase 2 before Phase 3
+
+If you need to commit Phase 2 (feature files + step defs) before Phase 3
+implementation lands — for design review, to share progress on a feature
+branch, or to mark a clean phase boundary — tag the new feature(s) with
+`@wip` so the default test suite stays green. The `@wip` filter in
+`bdd.rs` skips tagged scenarios at runtime; remove the tag in the same
+commit that lands the implementation. See
+[testing.md §2.6](testing.md#26-use-wip-tag-for-scenarios-without-implementation-yet)
+for the exact convention and the runner snippet.
+
+This is the only sanctioned way to commit failing scenarios. Do not
+disable scenarios by commenting them out, prefixing with `#`, or
+deleting them — `@wip` keeps them visible and easy to re-enable.
+
 ---
 
 ### Phase 3: Implement Code to Pass the Tests

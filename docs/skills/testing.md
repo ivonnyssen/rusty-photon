@@ -156,7 +156,43 @@ Tag features or scenarios with `@serial` when they depend on timing, shared reso
 Feature: File content polling
 ```
 
-#### 2.6 Avoid Gherkin Parser Pitfalls
+#### 2.6 Use `@wip` Tag for Scenarios Without Implementation Yet
+
+This project's design-first / test-first workflow (see
+[development-workflow.md](development-workflow.md)) sometimes requires
+landing BDD scenarios on a feature branch *before* the production code
+that makes them pass exists. The `@wip` tag lets such scenarios live in
+the repo as durable design artifacts without breaking the green-suite
+invariant.
+
+```gherkin
+@wip
+Feature: Basic image measurement tool
+  ...
+```
+
+The runner in `bdd.rs` filters scenarios tagged `@wip` (at feature or
+scenario level) out of the default suite. Once the corresponding
+implementation lands, **remove the tag** in the same commit that turns
+the scenarios on for real.
+
+To enable this in a service's `bdd.rs`, swap `.run_and_exit("tests/features")`
+for `.filter_run("tests/features", filter_fn)`:
+
+```rust
+.filter_run("tests/features", |feat, _rule, sc| {
+    let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
+        || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
+    !is_wip
+})
+```
+
+Use `@wip` only for not-yet-implemented behavior. A scenario that fails
+intermittently belongs in an issue, not behind `@wip`. A scenario that
+documents a deferred feature you are not actively working on belongs in
+a follow-up ticket, not in the repo with `@wip`.
+
+#### 2.7 Avoid Gherkin Parser Pitfalls
 
 These are known issues with the Gherkin parser used by cucumber-rs:
 
