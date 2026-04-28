@@ -14,7 +14,7 @@ use tracing::debug;
 /// config uses humantime, which accepts sub-second values like `"500ms"`;
 /// without ceiling those would silently truncate to `0` on the wire.
 fn settle_secs_ceil(d: Duration) -> u64 {
-    d.as_secs() + u64::from(d.subsec_nanos() != 0)
+    d.as_secs().saturating_add(u64::from(d.subsec_nanos() != 0))
 }
 
 use crate::config::{Phd2Config, SettleParams};
@@ -936,6 +936,13 @@ mod tests {
     fn test_settle_secs_ceil_rounds_mixed_up() {
         assert_eq!(settle_secs_ceil(Duration::from_millis(1500)), 2);
         assert_eq!(settle_secs_ceil(Duration::from_millis(2001)), 3);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_saturates_on_overflow() {
+        // Duration::MAX has u64::MAX seconds AND 999_999_999 sub-second nanos,
+        // so the +1 ceiling adjustment would wrap without saturation.
+        assert_eq!(settle_secs_ceil(Duration::MAX), u64::MAX);
     }
 
     #[test]

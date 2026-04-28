@@ -95,8 +95,12 @@ splitting the struct:
   humantime + `Duration` like every other config struct.
 - The `json!` payload constructions in
   `services/phd2-guider/src/client.rs` (5 sites: `start_guiding`,
-  `dither`, plus 3 in unit tests) call `settle.time.as_secs()` and
-  `settle.timeout.as_secs()` to produce the integer values PHD2 needs.
+  `dither`, plus 3 in unit tests) route `settle.time` and
+  `settle.timeout` through the local `settle_secs_ceil` helper to
+  produce the integer values PHD2 needs. Ceil-rounding (with
+  saturation) preserves `"0s"` as `0`, lifts sub-second humantime
+  inputs like `"500ms"` to `1` second so they don't silently truncate
+  to `0` on the wire, and avoids `u64` overflow at extreme inputs.
 
 This gives us a clean operator config (`"time": "10s"`) while
 preserving PHD2 wire-protocol compatibility (`"time": 10`).
