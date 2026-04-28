@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
@@ -10,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 struct Cli {
     /// Path to configuration file
     #[arg(long)]
-    config: String,
+    config: PathBuf,
 
     /// Port to listen on
     #[arg(long, default_value = "11170")]
@@ -35,9 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    debug!(config_path = %cli.config, "loading configuration");
-    let contents = std::fs::read_to_string(&cli.config)?;
-    let plan: calibrator_flats::config::FlatPlan = serde_json::from_str(&contents)?;
+    debug!(config_path = %cli.config.display(), "loading configuration");
+    let plan = calibrator_flats::config::load_config(&cli.config)?;
 
     calibrator_flats::ServerBuilder::new()
         .with_plan(plan)

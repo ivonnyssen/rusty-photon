@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use serde::Deserialize;
+
+use crate::error::{CalibratorFlatsError, Result};
 
 /// Filter plan entry: which filter, how many frames.
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +50,23 @@ fn default_max_iterations() -> u32 {
 
 fn default_initial_duration_ms() -> u32 {
     1000
+}
+
+pub fn load_config(path: &Path) -> Result<FlatPlan> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        CalibratorFlatsError::Config(format!(
+            "failed to read config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    serde_json::from_str(&contents).map_err(|e| {
+        CalibratorFlatsError::Config(format!(
+            "failed to parse config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -96,5 +117,41 @@ mod tests {
         assert_eq!(plan.initial_duration_ms, 500);
         assert_eq!(plan.brightness, Some(80));
         assert_eq!(plan.filters.len(), 2);
+    }
+
+    #[test]
+    fn load_config_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "camera_id": "main-cam",
+                "filter_wheel_id": "main-fw",
+                "calibrator_id": "flat-panel",
+                "filters": [{"name": "Luminance", "count": 20}]
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_config(&path).unwrap();
+        assert_eq!(plan.camera_id, "main-cam");
+        assert_eq!(plan.filters.len(), 1);
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let err = load_config(Path::new("/nonexistent/calibrator-flats/plan.json")).unwrap_err();
+        assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn load_config_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("failed to parse config file"));
     }
 }
