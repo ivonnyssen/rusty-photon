@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use serde::Deserialize;
+
+use crate::error::{CalibratorFlatsError, Result};
 
 /// Filter plan entry: which filter, how many frames.
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +50,23 @@ fn default_max_iterations() -> u32 {
 
 fn default_initial_duration_ms() -> u32 {
     1000
+}
+
+pub fn load_config(path: &Path) -> Result<FlatPlan> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        CalibratorFlatsError::Config(format!(
+            "failed to read config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    serde_json::from_str(&contents).map_err(|e| {
+        CalibratorFlatsError::Config(format!(
+            "failed to parse config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }
 
 #[cfg(test)]

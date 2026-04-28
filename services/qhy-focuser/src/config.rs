@@ -1,7 +1,7 @@
 //! Configuration types for the QHY Q-Focuser driver
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -115,7 +115,7 @@ impl Default for FocuserConfig {
 }
 
 /// Load configuration from a JSON file
-pub fn load_config(path: &PathBuf) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn load_config_nonexistent_file() {
-        let path = PathBuf::from("/tmp/qhy_focuser_nonexistent_config_12345.json");
+        let path = std::path::PathBuf::from("/tmp/qhy_focuser_nonexistent_config_12345.json");
         let result = load_config(&path);
         assert!(result.is_err());
     }

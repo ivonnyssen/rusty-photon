@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -117,9 +119,19 @@ fn default_bind() -> String {
     "127.0.0.1".to_string()
 }
 
-pub fn load_config(path: &str) -> Result<Config> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| RpError::Config(format!("failed to read config file '{}': {}", path, e)))?;
-    serde_json::from_str(&contents)
-        .map_err(|e| RpError::Config(format!("failed to parse config file '{}': {}", path, e)))
+pub fn load_config(path: &Path) -> Result<Config> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        RpError::Config(format!(
+            "failed to read config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    serde_json::from_str(&contents).map_err(|e| {
+        RpError::Config(format!(
+            "failed to parse config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }
