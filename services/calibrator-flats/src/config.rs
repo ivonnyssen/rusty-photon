@@ -118,4 +118,40 @@ mod tests {
         assert_eq!(plan.brightness, Some(80));
         assert_eq!(plan.filters.len(), 2);
     }
+
+    #[test]
+    fn load_config_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "camera_id": "main-cam",
+                "filter_wheel_id": "main-fw",
+                "calibrator_id": "flat-panel",
+                "filters": [{"name": "Luminance", "count": 20}]
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_config(&path).unwrap();
+        assert_eq!(plan.camera_id, "main-cam");
+        assert_eq!(plan.filters.len(), 1);
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let err = load_config(Path::new("/nonexistent/calibrator-flats/plan.json")).unwrap_err();
+        assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn load_config_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("failed to parse config file"));
+    }
 }

@@ -135,3 +135,43 @@ pub fn load_config(path: &Path) -> Result<Config> {
         ))
     })
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    const MINIMAL_CONFIG_JSON: &str = r#"{
+        "session": {"data_directory": "/tmp/rp-test"},
+        "equipment": {},
+        "server": {}
+    }"#;
+
+    #[test]
+    fn load_config_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.session.data_directory, "/tmp/rp-test");
+        assert_eq!(config.server.port, 11115);
+        assert_eq!(config.server.bind_address, "127.0.0.1");
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let err = load_config(Path::new("/nonexistent/rp/config.json")).unwrap_err();
+        assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn load_config_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("failed to parse config file"));
+    }
+}
