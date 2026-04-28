@@ -99,7 +99,7 @@ Option 1 is preferable long-term. Pick one and update
 
 ## Inventory
 
-The same eight fields covered by the rename PR, post-rename:
+The same nine fields covered by the rename PR, post-rename:
 
 | File | Field (post-rename) | Adapter |
 |---|---|---|
@@ -154,20 +154,29 @@ the PR checklist.
      integers.
    - Sample config tests round-trip via `serde_json::from_str::<Config>`
      and back.
-7. Sample `config.json` files: no change needed if option 1 keeps wire
-   integers (which it does with `DurationSeconds<u64>`).
+7. Sample `config.json` files:
+   - `DurationSeconds<u64>` keeps the **integer values** unchanged in
+     JSON — no value rewrites.
+   - The **JSON key names** are decided by the naming choice above:
+     - Option 1 (drop suffix) → keys change in lockstep
+       (`connection_timeout_secs` → `connection_timeout`); update every
+       sample `config.json`.
+     - Option 2 (keep suffix) → keys stay identical to the rename PR;
+       sample configs untouched.
 8. Run `cargo rail run --merge-base -q -- --color never` and
    `cargo fmt --all`. Fix anything red.
 
 ## Acceptance
 
 - New workspace dep `serde_with` is in `[workspace.dependencies]`.
-- All eight target fields are typed `Duration`.
+- All nine target fields are typed `Duration`.
 - No `Duration::from_secs(cfg.<field>)` patterns remain — direct field
   access only.
 - `docs/workspace.md` § "Duration Units" reflects the new policy.
 - `cargo rail run --merge-base -q -- --color never` is green.
-- All sample `config.json` files still deserialise without modification.
+- All sample `config.json` files still deserialise — value formats are
+  unchanged; key names only change if Option 1 (drop suffix) is chosen,
+  in which case every sample is updated in the same PR.
 
 ## Out of scope
 

@@ -28,7 +28,7 @@ AlpacaSafetyMonitor   PushoverNotifier
 SharedState (Arc<RwLock>) <-- Engine updates
      |
      v
-Dashboard (axum + Leptos SSR) --- reactive web UI
+Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 ```
 
 ### Key Traits

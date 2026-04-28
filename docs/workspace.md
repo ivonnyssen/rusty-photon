@@ -15,7 +15,7 @@ belong in any single service design doc.
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
-| sentinel-app | — (Leptos frontend; `cargo leptos` build target `sentinel-dashboard`) | served by sentinel on 11114 | — |
+| sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
 
@@ -136,13 +136,20 @@ main.rs      — Entry point
 
 ### Monitoring service + Leptos frontend (sentinel, sentinel-app)
 
-`sentinel` is the standalone Axum + reqwest backend. `sentinel-app` is a
-separate Leptos crate (`cdylib + rlib`) wired to `sentinel` via the
-`[[workspace.metadata.leptos]]` block at the workspace root, intended to be
-built and served through `cargo leptos` (build target name
-`sentinel-dashboard`). At present the `sentinel` binary does not directly
-depend on the `sentinel-app` crate — the integration is declared but not
-yet wired into the `sentinel` Axum router.
+`sentinel` is a standalone Axum + reqwest backend. The dashboard at
+`http://127.0.0.1:11114/` works today, but it is **not** Leptos: it's
+hand-rolled HTML built with `format!()` in
+`services/sentinel/src/dashboard.rs`, refreshed client-side by a vanilla
+`fetch()` loop hitting `/api/status` and `/api/history` every five seconds.
+
+`sentinel-app` is a separate Leptos crate (`cdylib + rlib`) intended to
+replace that hand-rolled UI in the future, via `cargo leptos` (build
+target `sentinel-dashboard`, declared in the workspace-root
+`[[workspace.metadata.leptos]]` block). At present the `sentinel` binary
+does **not** depend on `sentinel-app`, on `leptos`, on `leptos_axum`, or
+on any static-file middleware (`tower-http` is pulled with `["cors"]`
+only) — the integration is scaffolded in workspace metadata but not yet
+in code.
 
 ```
 sentinel/src/

@@ -9,8 +9,9 @@
   `_seconds`).
 - Never use a bare `duration` or `timeout` field without a unit suffix.
 
-A grep across `services/*/src/**.rs` and `crates/*/src/**.rs` finds **8
-fields across 5 files** that violate the convention. All eight live in
+A grep across `services/*/src/**.rs` and `crates/*/src/**.rs` finds **9
+fields across 5 files** that violate the convention (7 use `_seconds`
+instead of `_secs`; 2 are bare). All nine live in
 `#[derive(Serialize, Deserialize)]` types, so the renames touch on-disk
 sample configs and one PHD2 wire-protocol call site. There are no external
 users yet, so straight renames with no compatibility shims are fine.

@@ -1,4 +1,4 @@
-//! Web dashboard with JSON API endpoints and Leptos SSR
+//! Web dashboard with JSON API endpoints (hand-rolled HTML + JS polling)
 
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
