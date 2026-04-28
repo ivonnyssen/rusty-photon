@@ -106,7 +106,8 @@ fn default_command_timeout() -> Duration {
 /// `std::time::Duration` and use humantime strings on the wire (`"10s"`).
 /// When sending settle parameters into PHD2's JSON-RPC payload, the call
 /// sites in `client.rs` convert `time` and `timeout` to integer seconds via
-/// `.as_secs()` because the PHD2 protocol requires integer values.
+/// `settle_secs_ceil`, because the PHD2 protocol requires integer values and
+/// ceil-rounding avoids truncating sub-second durations down to `0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettleParams {
     #[serde(default = "default_settle_pixels")]
