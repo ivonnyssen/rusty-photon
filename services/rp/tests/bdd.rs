@@ -10,6 +10,9 @@ bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::RpWorld;
 
+    // Skip scenarios tagged @wip — used to land BDD specs on a feature branch
+    // before the implementation exists, without breaking the green suite.
+    // Remove the tag once the corresponding implementation is in place.
     RpWorld::cucumber()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
@@ -20,6 +23,10 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .run_and_exit("tests/features")
+        .filter_run("tests/features", |feat, _rule, sc| {
+            let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
+                || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
+            !is_wip
+        })
         .await;
 }

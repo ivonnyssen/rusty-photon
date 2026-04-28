@@ -70,6 +70,10 @@ pub struct RpWorld {
     pub last_document_id: Option<String>,
     /// Last image stats result
     pub last_image_stats: Option<Value>,
+    /// Last measure_basic result
+    pub last_measure_basic_result: Option<Value>,
+    /// Last exposure document fetched via GET /api/documents/{id}
+    pub last_exposure_document: Option<Value>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
     /// Last tool list result

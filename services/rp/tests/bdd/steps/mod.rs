@@ -7,6 +7,7 @@ pub mod cover_calibrator_steps;
 pub mod equipment_steps;
 pub mod event_steps;
 pub mod image_stats_steps;
+pub mod measure_basic_steps;
 pub mod session_steps;
 pub mod tls_steps;
 pub mod tool_steps;
