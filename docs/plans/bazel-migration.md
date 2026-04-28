@@ -50,7 +50,7 @@ repo root/
     └── BUILD.bazel
 ```
 
-**Dependency resolution.** `MODULE.bazel` uses `crate.from_cargo(manifests = ["//:Cargo.toml", ...])`. Cargo.toml and Cargo.lock stay as single source of truth. Adding a dep is still `cargo add`, followed by `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel crate index.
+**Dependency resolution.** `MODULE.bazel` uses `crate.from_cargo(manifests = ["//:Cargo.toml"])` — only the workspace root manifest is listed; `crate_universe` follows the `members` field in `[workspace]` to discover the rest. Cargo.toml and Cargo.lock stay as single source of truth. Adding a dep is still `cargo add`, followed by `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel crate index. Adding a new workspace member does **not** require editing `MODULE.bazel`.
 
 **Known limitation.** rules_rust issue #1574: `workspace.dependencies` inheritance has edge cases in `crate_universe`. Mitigation: if repin fails on a specific crate, declare that crate directly in MODULE.bazel with `crate.spec(...)`. Track cases in this file as they arise.
 
