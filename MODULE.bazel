@@ -38,20 +38,7 @@ crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
 crate.from_cargo(
     name = "cr",
     cargo_lockfile = "//:Cargo.lock",
-    manifests = [
-        "//:Cargo.toml",
-        "//crates/bdd-infra:Cargo.toml",
-        "//crates/rp-auth:Cargo.toml",
-        "//crates/rp-tls:Cargo.toml",
-        "//services/calibrator-flats:Cargo.toml",
-        "//services/filemonitor:Cargo.toml",
-        "//services/phd2-guider:Cargo.toml",
-        "//services/ppba-driver:Cargo.toml",
-        "//services/qhy-focuser:Cargo.toml",
-        "//services/rp:Cargo.toml",
-        "//services/sentinel:Cargo.toml",
-        "//services/sentinel-app:Cargo.toml",
-    ],
+    manifests = ["//:Cargo.toml"],
 )
 
 # aws-lc-sys vendors a large C library (aws-lc/) and compiles it via the
