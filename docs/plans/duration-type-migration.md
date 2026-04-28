@@ -112,8 +112,8 @@ preserving PHD2 wire-protocol compatibility (`"time": 10`).
 | `services/phd2-guider/src/config.rs` | `Phd2Config::connection_timeout_secs: u64` | `connection_timeout: Duration` |
 | `services/phd2-guider/src/config.rs` | `Phd2Config::command_timeout_secs: u64` | `command_timeout: Duration` |
 | `services/phd2-guider/src/config.rs` | `ReconnectConfig::interval_secs: u64` | `interval: Duration` |
-| `services/phd2-guider/src/config.rs` | `SettleParams::time_secs: u32` | `time: Duration` (+ `.as_secs()` at PHD2 wire site) |
-| `services/phd2-guider/src/config.rs` | `SettleParams::timeout_secs: u32` | `timeout: Duration` (+ `.as_secs()` at PHD2 wire site) |
+| `services/phd2-guider/src/config.rs` | `SettleParams::time_secs: u32` | `time: Duration` (+ `settle_secs_ceil` at PHD2 wire site) |
+| `services/phd2-guider/src/config.rs` | `SettleParams::timeout_secs: u32` | `timeout: Duration` (+ `settle_secs_ceil` at PHD2 wire site) |
 | `services/filemonitor/src/lib.rs` | `FileConfig::polling_interval_secs: u64` | `polling_interval: Duration` |
 | `services/qhy-focuser/src/config.rs` | `SerialConfig::timeout_secs: u64` | `timeout: Duration` |
 | `services/qhy-focuser/src/config.rs` | `SerialConfig::polling_interval_ms: u64` | `polling_interval: Duration` |
