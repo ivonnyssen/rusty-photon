@@ -2,11 +2,10 @@
 
 ## Background
 
-This is a **follow-up** to
-[duration-naming-convention.md](duration-naming-convention.md). That plan
-normalises the names of `u64`/`u32` duration fields (`_seconds` → `_secs`,
-no bare `time` / `timeout`). This plan picks up after that lands and
-considers replacing the underlying type with `std::time::Duration`.
+The previous duration-naming-convention work normalised the names of
+`u64`/`u32` duration fields (`_seconds` → `_secs`, no bare `time` /
+`timeout`). This plan picks up from that point and considers replacing
+the underlying type with `std::time::Duration`.
 
 The codebase already uses `Duration` everywhere at runtime — any time we
 call `tokio::time::sleep`, set a `reqwest` timeout, or build a polling

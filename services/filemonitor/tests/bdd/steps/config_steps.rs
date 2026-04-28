@@ -65,7 +65,7 @@ fn unique_id_should_be(world: &mut FilemonitorWorld, expected: String) {
 fn polling_interval_should_be(world: &mut FilemonitorWorld, expected: u64) {
     let config = world.loaded_config.as_ref().expect("config not loaded");
     assert_eq!(
-        config["file"]["polling_interval_seconds"].as_u64().unwrap(),
+        config["file"]["polling_interval_secs"].as_u64().unwrap(),
         expected
     );
 }

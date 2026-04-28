@@ -73,7 +73,7 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
     "port": "/dev/ttyACM0",
     "baud_rate": 9600,
     "polling_interval_ms": 1000,
-    "timeout_seconds": 2
+    "timeout_secs": 2
   },
   "server": {
     "port": 11113,

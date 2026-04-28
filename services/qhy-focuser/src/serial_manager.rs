@@ -86,7 +86,7 @@ impl SerialManager {
         if count == 0 {
             debug!("First device connecting, opening serial port");
 
-            let timeout = Duration::from_secs(self.config.timeout_seconds);
+            let timeout = Duration::from_secs(self.config.timeout_secs);
 
             let pair: SerialPair = self
                 .serial_factory

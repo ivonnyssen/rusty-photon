@@ -124,7 +124,7 @@ impl SharedConnectionState {
 pub(crate) struct ConnectionConfig {
     pub host: String,
     pub port: u16,
-    pub connection_timeout_seconds: u64,
+    pub connection_timeout_secs: u64,
     pub reconnect: ReconnectConfig,
 }
 
@@ -141,8 +141,8 @@ pub(crate) fn spawn_reconnect_task(
         }
 
         let addr = format!("{}:{}", config.host, config.port);
-        let interval = std::time::Duration::from_secs(config.reconnect.interval_seconds);
-        let timeout_duration = std::time::Duration::from_secs(config.connection_timeout_seconds);
+        let interval = std::time::Duration::from_secs(config.reconnect.interval_secs);
+        let timeout_duration = std::time::Duration::from_secs(config.connection_timeout_secs);
         let max_retries = config.reconnect.max_retries;
         let mut attempt = 0u32;
 
@@ -576,7 +576,7 @@ mod mock_tests {
         factory.add_connection(vec![Some(version_event())]);
 
         let config = Phd2Config {
-            connection_timeout_seconds: 1,
+            connection_timeout_secs: 1,
             ..Default::default()
         };
         let client = Phd2Client::with_connection_factory(config, factory);
@@ -653,7 +653,7 @@ mod mock_tests {
         factory.set_fail_connect(true);
 
         let config = Phd2Config {
-            connection_timeout_seconds: 1,
+            connection_timeout_secs: 1,
             ..Default::default()
         };
         let client = Phd2Client::with_connection_factory(config, factory);
@@ -670,7 +670,7 @@ mod mock_tests {
         let factory_clone = factory.clone();
 
         let config = Phd2Config {
-            connection_timeout_seconds: 1,
+            connection_timeout_secs: 1,
             ..Default::default()
         };
         let client = Phd2Client::with_connection_factory(config, factory);

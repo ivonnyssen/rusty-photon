@@ -21,7 +21,7 @@ fn ppba_configured_with_tls_and_auth(world: &mut PpbaWorld) {
     let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
 
     world.config = serde_json::json!({
-        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval_ms": 60000, "timeout_seconds": 2 },
+        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval_ms": 60000, "timeout_secs": 2 },
         "server": {
             "port": 0,
             "tls": {
@@ -43,7 +43,7 @@ fn ppba_configured_with_tls_and_auth(world: &mut PpbaWorld) {
 #[given("ppba-driver is configured without auth and with mock serial")]
 fn ppba_configured_without_auth(world: &mut PpbaWorld) {
     world.config = serde_json::json!({
-        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval_ms": 60000, "timeout_seconds": 2 },
+        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval_ms": 60000, "timeout_secs": 2 },
         "server": { "port": 0 },
         "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "device_number": 0, "enabled": true },
         "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "device_number": 0, "enabled": false }

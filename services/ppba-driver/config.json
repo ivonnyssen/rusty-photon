@@ -3,7 +3,7 @@
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
     "polling_interval_ms": 5000,
-    "timeout_seconds": 2
+    "timeout_secs": 2
   },
   "server": {
     "port": 11112

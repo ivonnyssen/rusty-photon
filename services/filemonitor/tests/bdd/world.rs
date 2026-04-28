@@ -98,7 +98,7 @@ impl FilemonitorWorld {
             },
             "file": {
                 "path": file_path,
-                "polling_interval_seconds": polling_interval,
+                "polling_interval_secs": polling_interval,
             },
             "parsing": {
                 "rules": rules,

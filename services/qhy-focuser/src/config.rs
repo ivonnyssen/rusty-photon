@@ -19,8 +19,8 @@ pub struct SerialConfig {
     pub baud_rate: u32,
     #[serde(default = "default_polling_interval")]
     pub polling_interval_ms: u64,
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// Server configuration
@@ -65,7 +65,7 @@ fn default_polling_interval() -> u64 {
     1000
 }
 
-fn default_timeout() -> u64 {
+fn default_timeout_secs() -> u64 {
     2
 }
 
@@ -83,7 +83,7 @@ impl Default for SerialConfig {
             port: "/dev/ttyACM0".to_string(),
             baud_rate: default_baud_rate(),
             polling_interval_ms: default_polling_interval(),
-            timeout_seconds: default_timeout(),
+            timeout_secs: default_timeout_secs(),
         }
     }
 }
@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyACM0");
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.polling_interval_ms, 1000);
-        assert_eq!(config.serial.timeout_seconds, 2);
+        assert_eq!(config.serial.timeout_secs, 2);
 
         assert_eq!(config.server.port, 11113);
     }
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(config.port, "/dev/ttyACM0");
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.polling_interval_ms, 1000);
-        assert_eq!(config.timeout_seconds, 2);
+        assert_eq!(config.timeout_secs, 2);
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
                 "port": "/dev/ttyACM0",
                 "baud_rate": 115200,
                 "polling_interval_ms": 2000,
-                "timeout_seconds": 5
+                "timeout_secs": 5
             },
             "server": {
                 "port": 8080
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyUSB1");
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.polling_interval_ms, 1000);
-        assert_eq!(config.serial.timeout_seconds, 2);
+        assert_eq!(config.serial.timeout_secs, 2);
         assert_eq!(config.focuser.device_number, 0);
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 64_000);

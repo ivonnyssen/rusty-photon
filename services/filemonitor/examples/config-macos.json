@@ -6,7 +6,7 @@
   },
   "file": {
     "path": "/Users/username/Observatory/RoofStatusFile.txt",
-    "polling_interval_seconds": 60
+    "polling_interval_secs": 60
   },
   "parsing": {
     "rules": [

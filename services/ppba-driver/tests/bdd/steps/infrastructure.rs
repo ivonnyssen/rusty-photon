@@ -15,7 +15,7 @@ pub fn default_test_config() -> serde_json::Value {
             "port": "/dev/mock",
             "baud_rate": 9600,
             "polling_interval_ms": 200,
-            "timeout_seconds": 2
+            "timeout_secs": 2
         },
         "server": { "port": 0, "discovery_port": null },
         "switch": {

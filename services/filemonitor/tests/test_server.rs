@@ -18,7 +18,7 @@ async fn test_start_server_creation() {
         },
         file: FileConfig {
             path: PathBuf::from("test_server_file.txt"),
-            polling_interval_seconds: 1,
+            polling_interval_secs: 1,
         },
         parsing: ParsingConfig {
             rules: vec![],

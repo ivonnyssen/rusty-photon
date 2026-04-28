@@ -61,7 +61,7 @@ impl Phd2Client {
         ConnectionConfig {
             host: self.config.host.clone(),
             port: self.config.port,
-            connection_timeout_seconds: self.config.connection_timeout_seconds,
+            connection_timeout_secs: self.config.connection_timeout_secs,
             reconnect: self.config.reconnect.clone(),
         }
     }
@@ -80,8 +80,7 @@ impl Phd2Client {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         debug!("Connecting to PHD2 at {}", addr);
 
-        let timeout_duration =
-            std::time::Duration::from_secs(self.config.connection_timeout_seconds);
+        let timeout_duration = std::time::Duration::from_secs(self.config.connection_timeout_secs);
 
         let connection_pair = self
             .connection_factory
@@ -254,7 +253,7 @@ impl Phd2Client {
         }
 
         // Wait for response with timeout
-        let timeout_duration = std::time::Duration::from_secs(self.config.command_timeout_seconds);
+        let timeout_duration = std::time::Duration::from_secs(self.config.command_timeout_secs);
         tokio::time::timeout(timeout_duration, receiver)
             .await
             .map_err(|_| Phd2Error::Timeout(format!("Request '{}' timed out", method)))?
@@ -365,13 +364,13 @@ impl Phd2Client {
     ) -> Result<()> {
         debug!(
             "Starting guiding with settle: pixels={}, time={}, timeout={}, recalibrate={}",
-            settle.pixels, settle.time, settle.timeout, recalibrate
+            settle.pixels, settle.time_secs, settle.timeout_secs, recalibrate
         );
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time,
-            "timeout": settle.timeout
+            "time": settle.time_secs,
+            "timeout": settle.timeout_secs
         });
 
         let mut params = serde_json::json!({
@@ -458,13 +457,13 @@ impl Phd2Client {
     pub async fn dither(&self, amount: f64, ra_only: bool, settle: &SettleParams) -> Result<()> {
         debug!(
             "Dithering: amount={}, ra_only={}, settle: pixels={}, time={}, timeout={}",
-            amount, ra_only, settle.pixels, settle.time, settle.timeout
+            amount, ra_only, settle.pixels, settle.time_secs, settle.timeout_secs
         );
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time,
-            "timeout": settle.timeout
+            "time": settle.time_secs,
+            "timeout": settle.timeout_secs
         });
 
         let params = serde_json::json!({
@@ -914,8 +913,8 @@ mod tests {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time,
-            "timeout": settle.timeout
+            "time": settle.time_secs,
+            "timeout": settle.timeout_secs
         });
         let params = serde_json::json!({
             "settle": settle_obj,
@@ -935,8 +934,8 @@ mod tests {
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time,
-            "timeout": settle.timeout
+            "time": settle.time_secs,
+            "timeout": settle.timeout_secs
         });
         let mut params = serde_json::json!({
             "settle": settle_obj,
@@ -957,8 +956,8 @@ mod tests {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time,
-            "timeout": settle.timeout
+            "time": settle.time_secs,
+            "timeout": settle.timeout_secs
         });
         let params = serde_json::json!({
             "amount": 5.0,
@@ -1423,8 +1422,8 @@ mod mock_tests {
         let config = Phd2Config {
             host: "localhost".to_string(),
             port: 4400,
-            connection_timeout_seconds: 1,
-            command_timeout_seconds: 1,
+            connection_timeout_secs: 1,
+            command_timeout_secs: 1,
             ..Default::default()
         };
 
@@ -1673,8 +1672,8 @@ mod mock_tests {
         client.connect().await.unwrap();
         let settle = SettleParams {
             pixels: 0.5,
-            time: 10,
-            timeout: 60,
+            time_secs: 10,
+            timeout_secs: 60,
         };
         client.start_guiding(&settle, false, None).await.unwrap();
 
@@ -1845,8 +1844,8 @@ mod mock_tests {
         client.connect().await.unwrap();
         let settle = SettleParams {
             pixels: 0.5,
-            time: 10,
-            timeout: 60,
+            time_secs: 10,
+            timeout_secs: 60,
         };
         client.dither(5.0, false, &settle).await.unwrap();
 
