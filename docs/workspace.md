@@ -244,8 +244,11 @@ can tell the unit at the call site.
 Wire-format exceptions: when a config value also feeds a third-party
 JSON-RPC payload that requires a bare integer (e.g. PHD2's `time` and
 `timeout` settle keys), keep the operator-facing field as `Duration`
-with humantime in the config file and convert via `.as_secs()` /
-`.as_millis()` at the `json!` macro site only. See
+with humantime in the config file and convert at the `json!` macro
+site only, applying whatever rounding or validation the wire format
+requires (`.as_secs()` / `.as_millis()` when truncation is acceptable,
+or a boundary helper such as `settle_secs_ceil` when sub-second values
+must round up instead of truncating to `0`). See
 `services/phd2-guider/src/client.rs` for the worked example.
 
 ## Feature Flags
