@@ -562,8 +562,10 @@ Configuration sections:
 - **settling**: Default settling parameters for guiding operations.
   Note: PHD2's own JSON-RPC `guide`/`dither` payloads require integer
   seconds for `time` and `timeout`, so this struct is the operator
-  config representation; the wire payload is constructed in
-  `client.rs` via `time.as_secs()` / `timeout.as_secs()`.
+  config representation. When `client.rs` constructs the wire payload,
+  it rounds these durations up to whole seconds (ceil rounding) before
+  sending them to PHD2. For example, `"500ms"` is sent as `1` second,
+  and `"1.2s"` is sent as `2` seconds.
 
 ## PHD2 Process Management
 
