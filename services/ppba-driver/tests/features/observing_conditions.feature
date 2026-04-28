@@ -24,9 +24,9 @@ Feature: Observing Conditions
     Given a running PPBA server with the OC device connected
     Then the OC device driver version should not be empty
 
-  Scenario: Default average period matches polling interval heuristic
+  Scenario: Default average period reflects configured averaging_period
     Given a running PPBA server with the OC device connected
-    Then the average period should be approximately 0.0033 hours
+    Then the average period should be approximately 0.0833 hours
 
   Scenario: Set average period to 2 hours
     Given a running PPBA server with the OC device connected

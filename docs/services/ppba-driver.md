@@ -259,7 +259,7 @@ The driver caches device state to minimize serial communication overhead:
 - **After successful writes**: State is refreshed immediately to reflect the change
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
 
-For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1000ms) increase serial communication overhead.
+For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1s) increase serial communication overhead.
 
 ### Manual Dew Heater Control
 

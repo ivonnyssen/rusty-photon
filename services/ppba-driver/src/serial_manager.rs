@@ -63,7 +63,7 @@ impl SerialManager {
     pub fn new(config: Config, serial_factory: Arc<dyn SerialPortFactory>) -> Self {
         // Initialize sensor means with configured averaging period
         let mut cached_state = CachedState::default();
-        let window = config.serial.polling_interval * 60; // Default window
+        let window = config.observingconditions.averaging_period;
         cached_state.temp_mean.set_window(window);
         cached_state.humidity_mean.set_window(window);
         cached_state.dewpoint_mean.set_window(window);

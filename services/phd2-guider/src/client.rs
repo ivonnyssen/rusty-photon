@@ -2,9 +2,20 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use tracing::debug;
+
+/// Convert a `Duration` to whole seconds for PHD2's JSON-RPC settle payload,
+/// rounding any sub-second component up. Preserves `0s` as `0`.
+///
+/// PHD2's `time` and `timeout` keys require integer seconds. The operator
+/// config uses humantime, which accepts sub-second values like `"500ms"`;
+/// without ceiling those would silently truncate to `0` on the wire.
+fn settle_secs_ceil(d: Duration) -> u64 {
+    d.as_secs() + u64::from(d.subsec_nanos() != 0)
+}
 
 use crate::config::{Phd2Config, SettleParams};
 use crate::connection::{
@@ -366,8 +377,8 @@ impl Phd2Client {
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time.as_secs(),
-            "timeout": settle.timeout.as_secs()
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
 
         let mut params = serde_json::json!({
@@ -459,8 +470,8 @@ impl Phd2Client {
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time.as_secs(),
-            "timeout": settle.timeout.as_secs()
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
 
         let params = serde_json::json!({
@@ -906,12 +917,34 @@ mod tests {
     use crate::types::{CalibrationData, CalibrationTarget, Equipment, Rect};
 
     #[test]
+    fn test_settle_secs_ceil_preserves_zero() {
+        assert_eq!(settle_secs_ceil(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_passes_whole_seconds() {
+        assert_eq!(settle_secs_ceil(Duration::from_secs(10)), 10);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_rounds_sub_second_up() {
+        assert_eq!(settle_secs_ceil(Duration::from_millis(500)), 1);
+        assert_eq!(settle_secs_ceil(Duration::from_millis(1)), 1);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_rounds_mixed_up() {
+        assert_eq!(settle_secs_ceil(Duration::from_millis(1500)), 2);
+        assert_eq!(settle_secs_ceil(Duration::from_millis(2001)), 3);
+    }
+
+    #[test]
     fn test_guide_request_params_format() {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time.as_secs(),
-            "timeout": settle.timeout.as_secs()
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let params = serde_json::json!({
             "settle": settle_obj,
@@ -931,8 +964,8 @@ mod tests {
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time.as_secs(),
-            "timeout": settle.timeout.as_secs()
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let mut params = serde_json::json!({
             "settle": settle_obj,
@@ -953,8 +986,8 @@ mod tests {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time.as_secs(),
-            "timeout": settle.timeout.as_secs()
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let params = serde_json::json!({
             "amount": 5.0,
