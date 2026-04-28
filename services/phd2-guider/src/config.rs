@@ -1,7 +1,7 @@
 //! Configuration types for the PHD2 guider service
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// PHD2 service configuration
@@ -140,7 +140,7 @@ fn default_settle_timeout() -> Duration {
 }
 
 /// Load configuration from a JSON file
-pub fn load_config(path: &PathBuf) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)

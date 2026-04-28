@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use clap::{Parser, Subcommand};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
@@ -10,7 +12,7 @@ struct Cli {
 
     /// Path to configuration file (shorthand for `rp serve --config`)
     #[arg(long)]
-    config: Option<String>,
+    config: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
@@ -23,7 +25,7 @@ enum Commands {
     Serve {
         /// Path to configuration file
         #[arg(long)]
-        config: String,
+        config: PathBuf,
 
         /// Log level (trace, debug, info, warn, error)
         #[arg(long, default_value = "info")]
@@ -146,8 +148,8 @@ fn init_tracing(log_level: &str) {
         .init();
 }
 
-async fn run_serve(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    debug!(config_path = %config_path, "loading configuration");
+async fn run_serve(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    debug!(config_path = %config_path.display(), "loading configuration");
     let config = rp::config::load_config(config_path)?;
 
     rp::ServerBuilder::new()

@@ -241,7 +241,7 @@ impl SafetyMonitor for FileMonitorDevice {
     }
 }
 
-pub fn load_config(path: &PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -360,7 +360,7 @@ pub async fn run_server_loop(
     mut reload: impl FnMut() -> Pin<Box<dyn Future<Output = ()>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        let config = load_config(&config_path.to_path_buf())?;
+        let config = load_config(config_path)?;
         info!("Starting filemonitor server on port {}", config.server.port);
         tokio::select! {
             result = start_server(config) => return result,
