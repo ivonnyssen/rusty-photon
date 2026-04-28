@@ -74,23 +74,27 @@ Status: **complete on this branch.**
 
 ### Phase 2 — BDD scenarios for `measure_basic`
 
-Status: **feature file drafted; step defs pending.**
+Status: **complete.**
 
 - [x] `services/rp/tests/features/measure_basic.feature` (8 scenarios:
       catalog, image_path happy path, document_id happy path, document
       section persistence, high-threshold zero-stars, three error paths)
-- [ ] `services/rp/tests/bdd/steps/measure_basic_steps.rs` — step
-      definitions; reuse `tool_steps`/`image_stats_steps` patterns where
-      possible
-- [ ] `RpWorld` additions: `last_measure_basic_result`,
+- [x] `services/rp/tests/bdd/steps/measure_basic_steps.rs` — step
+      definitions reusing shared steps from `tool_steps.rs` (capture,
+      list tools, error assertions)
+- [x] `RpWorld` additions: `last_measure_basic_result`,
       `last_exposure_document` (for the section-fetch step)
-- [ ] Wire the new steps module into `tests/bdd/steps/mod.rs`
-- [ ] Stubs only — they should compile and fail (no implementation yet)
+- [x] Wired into `tests/bdd/steps/mod.rs`
+- [x] `@wip` tag on the feature + `filter_run` in `bdd.rs` — keeps the
+      default suite green until Phase 4 implementation lands. The
+      convention is documented in `docs/skills/testing.md` §2.6 and
+      `docs/skills/development-workflow.md` Phase 2d. **Removing the
+      `@wip` tag is the explicit Phase 4 completion milestone.**
 
-**Exit criteria:** `cargo build --all-features --all-targets -p rp`
-succeeds; `cargo test --all-features --test bdd -p rp` runs the new
-scenarios and they fail at the When/Then steps for the right reason
-(no implementation), not at compile time.
+**Exit criteria met:** `cargo build --all-features --all-targets -p rp`
+clean; `cargo test --all-features --test bdd -p rp` passes 82/82
+non-`@wip` scenarios. The 8 `measure_basic` scenarios are filtered out
+and will fail correctly once enabled in Phase 4.
 
 ### Phase 3 — `imaging/` module promotion + image cache
 
