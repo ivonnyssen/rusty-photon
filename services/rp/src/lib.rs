@@ -22,6 +22,7 @@ use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
+use crate::imaging::ImageCache;
 use crate::mcp::McpHandler;
 use crate::routes::{build_router, AppState};
 use crate::session::{SessionConfig, SessionManager};
@@ -62,7 +63,17 @@ impl ServerBuilder {
             data_directory: config.session.data_directory.clone(),
         };
 
-        let mcp = McpHandler::new(equipment.clone(), event_bus.clone(), session_config);
+        let image_cache = ImageCache::new(
+            config.imaging.cache_max_mib,
+            config.imaging.cache_max_images,
+        );
+
+        let mcp = McpHandler::new(
+            equipment.clone(),
+            event_bus.clone(),
+            session_config,
+            image_cache,
+        );
 
         let state = AppState {
             equipment,

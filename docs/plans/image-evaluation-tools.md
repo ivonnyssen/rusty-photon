@@ -98,23 +98,39 @@ and will fail correctly once enabled in Phase 4.
 
 ### Phase 3 — `imaging/` module promotion + image cache
 
-- [ ] Crate adds: `ndarray-ndimage` (workspace dep — used by stars,
+Status: **complete.**
+
+- [x] Crate adds: `ndarray-ndimage` (workspace dep — used by stars,
       background, smoothing). Update `Cargo.toml` (workspace + rp).
       Run `CARGO_BAZEL_REPIN=1 bazel mod tidy` per CLAUDE.md rule 10.
-- [ ] Promote `services/rp/src/imaging.rs` → `services/rp/src/imaging/`.
+- [x] Promote `services/rp/src/imaging.rs` → `services/rp/src/imaging/`.
       Move existing `compute_stats`, `write_fits`, `read_fits_pixels`
       into `stats.rs` / `fits.rs`. Keep public API stable.
-- [ ] `pixel.rs`: `Pixel` trait with `u16` and `i32` impls.
-- [ ] `cache.rs`: `CachedPixels` enum, `CachedImage` struct,
+- [x] `pixel.rs`: `Pixel` trait with `u16` and `i32` impls.
+- [x] `cache.rs`: `CachedPixels` enum, `CachedImage` struct,
       `ImageCache` with LRU and MiB-based eviction. Internal-only at
       this stage.
-- [ ] Capture path (`mcp.rs:capture`) inserts into the cache after FITS
-      write, narrowing to `u16` when `max_adu ≤ 65535`.
-- [ ] `imaging` config block: `cache_max_mib`, `cache_max_images`,
-      with sensible Pi-5 defaults.
+- [x] Capture path (`mcp.rs:capture`) inserts into the cache after FITS
+      write, narrowing to `u16` when `max_adu ≤ 65535`. If `max_adu`
+      can't be read, cache insert is skipped (FITS-on-disk fallback
+      still works).
+- [x] `imaging` config block: `cache_max_mib`, `cache_max_images`,
+      with sensible Pi-5 defaults (1024 MiB / 8 images).
 
-**Exit criteria:** capture populates the cache; `compute_image_stats`
-still passes its existing BDD; `cargo rail run --merge-base -q --` clean.
+**Exit criteria met:** capture populates the cache; `compute_image_stats`
+still passes its existing BDD (12 features / 82 scenarios green);
+`cargo rail run --merge-base -q --` clean; `cargo clippy -D warnings`
+clean. `Pixel` trait and `CachedPixels::I32` are wired but unused —
+they exist for Phase 4 (`measure_basic`) and the future scientific
+camera hatch respectively. max_adu is fetched per-capture rather than
+stashed at connect time — see follow-up note below.
+
+**Deferred from Phase 3:** stashing `max_adu` on `CameraEntry` at
+connect time, as the design contemplates. Phase 3 fetches it during
+each capture; this is one ASCOM call against an in-process Alpaca
+client and does not measurably slow capture. The stash is a small
+follow-up that touches `equipment.rs`; track separately if it
+becomes a hot-path concern.
 
 ### Phase 4 — Implement `measure_basic`
 

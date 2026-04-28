@@ -1,7 +1,8 @@
-//! FITS file I/O and image statistics.
+//! FITS file I/O via the `fitrs` crate.
 //!
-//! Provides functions for writing and reading FITS images (via the `fitrs` crate)
-//! and computing pixel statistics (stdlib iterators + `select_nth_unstable`).
+//! Pixels are written as BITPIX=32 (i32) because `fitrs` does not support u16.
+//! Internally the cache may hold `u16` (see `cache.rs`); FITS write widens to
+//! `i32` at this boundary, FITS read produces `i32`.
 
 use std::path::Path;
 
@@ -10,20 +11,7 @@ use tracing::debug;
 
 use crate::error::{Result, RpError};
 
-/// Pixel-level statistics for an image.
-#[derive(Debug, Clone)]
-pub struct ImageStats {
-    pub median_adu: u32,
-    pub mean_adu: f64,
-    pub min_adu: u32,
-    pub max_adu: u32,
-    pub pixel_count: u64,
-}
-
 /// Write i32 pixel data as a FITS file.
-///
-/// The image is stored as BITPIX=32 (i32) because `fitrs` does not support u16.
-/// This is the same approach used by `phd2-guider/src/fits.rs`.
 ///
 /// The file is written atomically: data goes to a temp file first, then renamed.
 pub async fn write_fits<P: AsRef<Path>>(
@@ -59,19 +47,16 @@ pub async fn write_fits<P: AsRef<Path>>(
 }
 
 fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Result<()> {
-    // Remove existing file if present (fitrs does not overwrite)
     if path.exists() {
         std::fs::remove_file(path)
             .map_err(|e| RpError::Imaging(format!("failed to remove existing file: {}", e)))?;
     }
 
-    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| RpError::Imaging(format!("failed to create directory: {}", e)))?;
     }
 
-    // FITS dimensions are [NAXIS1, NAXIS2] where NAXIS1 = width
     let hdu = Hdu::new(&[width as usize, height as usize], pixels.to_vec());
     Fits::create(path, hdu)
         .map_err(|e| RpError::Imaging(format!("failed to create FITS file: {}", e)))?;
@@ -122,123 +107,10 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
     }
 }
 
-/// Compute pixel statistics from a slice of pixel values.
-///
-/// Uses stdlib iterators for min/max and `select_nth_unstable` for median
-/// (iterative O(n) quickselect, safe for arbitrarily large images). Mean is
-/// computed as f64 to avoid integer truncation.
-///
-/// Returns `None` if the pixel slice is empty.
-pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
-    if pixels.is_empty() {
-        return None;
-    }
-
-    let pixel_count = pixels.len() as u64;
-
-    let min = *pixels.iter().min().expect("non-empty slice");
-    let max = *pixels.iter().max().expect("non-empty slice");
-
-    // Median via stdlib select_nth_unstable (iterative, heap-allocated,
-    // safe for arbitrarily large images). For even-length arrays, average
-    // the two middle values.
-    let mut buf = pixels.to_vec();
-    let mid = buf.len() / 2;
-    let median = if buf.len().is_multiple_of(2) {
-        let (_, &mut upper, _) = buf.select_nth_unstable(mid);
-        let (_, &mut lower, _) = buf[..mid].select_nth_unstable(mid - 1);
-        ((lower as i64 + upper as i64) / 2) as i32
-    } else {
-        let (_, &mut m, _) = buf.select_nth_unstable(mid);
-        m
-    };
-
-    // Mean as f64 for precision (integer mean would truncate)
-    let mean_adu = pixels.iter().map(|&p| p as f64).sum::<f64>() / pixel_count as f64;
-
-    // Clamp to u32 range (pixel values should be non-negative)
-    let clamp = |v: i32| -> u32 { v.max(0) as u32 };
-
-    Some(ImageStats {
-        median_adu: clamp(median),
-        mean_adu,
-        min_adu: clamp(min),
-        max_adu: clamp(max),
-        pixel_count,
-    })
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn compute_stats_odd_count() {
-        let pixels = vec![10, 20, 30, 40, 50];
-        let stats = compute_stats(&pixels).unwrap();
-        assert_eq!(stats.median_adu, 30);
-        assert_eq!(stats.min_adu, 10);
-        assert_eq!(stats.max_adu, 50);
-        assert_eq!(stats.pixel_count, 5);
-        assert!((stats.mean_adu - 30.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn compute_stats_even_count() {
-        let pixels = vec![10, 20, 30, 40];
-        let stats = compute_stats(&pixels).unwrap();
-        // Median of [10, 20, 30, 40] = (20 + 30) / 2 = 25
-        assert_eq!(stats.median_adu, 25);
-        assert_eq!(stats.min_adu, 10);
-        assert_eq!(stats.max_adu, 40);
-        assert_eq!(stats.pixel_count, 4);
-        assert!((stats.mean_adu - 25.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn compute_stats_single_pixel() {
-        let pixels = vec![42];
-        let stats = compute_stats(&pixels).unwrap();
-        assert_eq!(stats.median_adu, 42);
-        assert_eq!(stats.min_adu, 42);
-        assert_eq!(stats.max_adu, 42);
-        assert_eq!(stats.pixel_count, 1);
-    }
-
-    #[test]
-    fn compute_stats_empty() {
-        let pixels: Vec<i32> = vec![];
-        assert!(compute_stats(&pixels).is_none());
-    }
-
-    #[test]
-    fn compute_stats_all_same() {
-        let pixels = vec![1000; 100];
-        let stats = compute_stats(&pixels).unwrap();
-        assert_eq!(stats.median_adu, 1000);
-        assert_eq!(stats.min_adu, 1000);
-        assert_eq!(stats.max_adu, 1000);
-    }
-
-    #[test]
-    fn compute_stats_unsorted_input() {
-        let pixels = vec![50, 10, 40, 20, 30];
-        let stats = compute_stats(&pixels).unwrap();
-        assert_eq!(stats.median_adu, 30);
-        assert_eq!(stats.min_adu, 10);
-        assert_eq!(stats.max_adu, 50);
-    }
-
-    #[test]
-    fn compute_stats_large_values() {
-        // Typical 16-bit camera: values up to 65535
-        let pixels = vec![0, 32768, 65535];
-        let stats = compute_stats(&pixels).unwrap();
-        assert_eq!(stats.median_adu, 32768);
-        assert_eq!(stats.min_adu, 0);
-        assert_eq!(stats.max_adu, 65535);
-    }
 
     #[tokio::test]
     async fn write_and_read_fits_round_trip() {

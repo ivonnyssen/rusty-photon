@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
-use crate::imaging;
+use crate::imaging::{self, CachedImage, CachedPixels, ImageCache};
 use crate::session::SessionConfig;
 
 // ---------------------------------------------------------------------------
@@ -123,6 +123,7 @@ pub struct McpHandler {
     pub equipment: Arc<EquipmentRegistry>,
     pub event_bus: Arc<EventBus>,
     pub session_config: SessionConfig,
+    pub image_cache: ImageCache,
 }
 
 impl McpHandler {
@@ -130,11 +131,13 @@ impl McpHandler {
         equipment: Arc<EquipmentRegistry>,
         event_bus: Arc<EventBus>,
         session_config: SessionConfig,
+        image_cache: ImageCache,
     ) -> Self {
         Self {
             equipment,
             event_bus,
             session_config,
+            image_cache,
         }
     }
 }
@@ -195,6 +198,51 @@ impl McpHandler {
 
         if let Err(e) = imaging::write_fits(&image_path, &pixels, width, height).await {
             return Ok(tool_error!("failed to write FITS file: {}", e));
+        }
+
+        // Populate the image cache so subsequent tools (`measure_basic`,
+        // `auto_focus`, plugins) can analyze the pixels without re-decoding the
+        // FITS file. max_adu drives the storage variant: u16 for every
+        // consumer/prosumer astro camera (≤ 65535), i32 hatch for future
+        // scientific cameras. If max_adu can't be read we skip cache insertion
+        // — the FITS file on disk is the durable fallback.
+        match cam.max_adu().await {
+            Ok(max_adu) => {
+                let shape = (width as usize, height as usize);
+                let cached_pixels = if max_adu <= u16::MAX as u32 {
+                    let narrowed: Vec<u16> = pixels.iter().map(|&p| p as u16).collect();
+                    match ndarray::Array2::from_shape_vec(shape, narrowed) {
+                        Ok(arr) => Some(CachedPixels::U16(arr)),
+                        Err(e) => {
+                            debug!(error = %e, "cache: shape mismatch, skipping insert");
+                            None
+                        }
+                    }
+                } else {
+                    match ndarray::Array2::from_shape_vec(shape, pixels.clone()) {
+                        Ok(arr) => Some(CachedPixels::I32(arr)),
+                        Err(e) => {
+                            debug!(error = %e, "cache: shape mismatch, skipping insert");
+                            None
+                        }
+                    }
+                };
+                if let Some(cp) = cached_pixels {
+                    self.image_cache.insert(
+                        document_id.clone(),
+                        CachedImage {
+                            pixels: cp,
+                            width,
+                            height,
+                            fits_path: std::path::PathBuf::from(&image_path),
+                            max_adu,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                debug!(error = %e, "cache: max_adu unavailable, skipping insert");
+            }
         }
 
         self.event_bus.emit(
@@ -847,6 +895,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             },
+            ImageCache::new(64, 4),
         )
     }
 
@@ -1162,6 +1211,7 @@ mod tests {
             SessionConfig {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
+            ImageCache::new(64, 4),
         );
         let result = handler
             .capture(Parameters(CaptureParams {

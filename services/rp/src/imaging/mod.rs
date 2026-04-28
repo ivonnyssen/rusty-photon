@@ -1,0 +1,18 @@
+//! Imaging: FITS I/O, pixel statistics, image cache, and image-analysis tools.
+//!
+//! Submodules are organized by capability so each tool (`compute_image_stats`,
+//! `measure_basic`, future `detect_stars` / `measure_stars` / `estimate_background`
+//! / `compute_snr`) can be implemented in isolation. The image cache holds the
+//! pixel buffer that `capture` already decoded so subsequent tools don't
+//! re-read and re-decode the FITS file. See `docs/services/rp.md` (Image
+//! Analysis Strategy and Image Cache) for the design.
+
+pub mod cache;
+pub mod fits;
+pub mod pixel;
+pub mod stats;
+
+pub use cache::{CachedImage, CachedPixels, ImageCache};
+pub use fits::{read_fits_pixels, write_fits};
+pub use pixel::Pixel;
+pub use stats::{compute_stats, ImageStats};
