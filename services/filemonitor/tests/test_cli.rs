@@ -1,10 +1,3 @@
-#[cfg(not(miri))]
-use std::fs;
-#[cfg(not(miri))]
-use std::path::PathBuf;
-#[cfg(not(miri))]
-use std::process::Command;
-
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
 fn test_cli_help() {
@@ -15,24 +8,7 @@ fn test_cli_help() {
     {
         return;
     }
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "filemonitor", "--", "--help"])
-        .current_dir("../")
-        .output()
-        .expect("Failed to execute command");
-
-    // In sanitizer environments, the process might fail due to restrictions
-    // Check stderr for sanitizer-related issues and skip assertion if found
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer")
-            || stderr.contains("ASAN")
-            || stderr.contains("LeakSanitizer")
-        {
-            eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
-            return;
-        }
-    }
+    let output = bdd_infra::run_once("filemonitor", &["--help"], None);
 
     assert!(
         output.status.success(),
@@ -55,37 +31,33 @@ fn test_cli_invalid_config() {
     {
         return;
     }
-    let output = Command::new("cargo")
-        .args([
-            "run",
-            "--bin",
-            "filemonitor",
-            "--",
-            "--config",
-            "nonexistent.json",
-        ])
-        .current_dir("../")
-        .output()
-        .expect("Failed to execute command");
-
-    // In sanitizer environments, check for sanitizer-related failures
-    if output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer")
-            || stderr.contains("ASAN")
-            || stderr.contains("LeakSanitizer")
-        {
-            eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
-            return;
-        }
-    }
+    let output = bdd_infra::run_once("filemonitor", &["--config", "nonexistent.json"], None);
 
     assert!(!output.status.success());
 }
 
+/// Assert that a `Box<dyn Error>` reached main (config-load failure) and that
+/// clap did *not* reject the arguments — i.e., `--log-level <variant>` parsed
+/// successfully and the binary then failed opening the missing config.
+#[cfg(not(miri))]
+fn assert_config_not_found(output: &std::process::Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        !stderr.contains("error: invalid value") && !stderr.contains("error: unexpected argument"),
+        "clap rejected the arguments; stderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("NotFound"),
+        "expected config-not-found error; stderr:\n{}",
+        stderr
+    );
+}
+
 #[test]
 #[cfg(not(miri))] // Skip under miri - process spawning not supported
-fn test_cli_valid_config_with_log_level() {
+fn test_cli_log_level_flag_accepted() {
     // Skip under sanitizers due to proc-macro compilation issues
     if std::env::var("RUSTFLAGS")
         .unwrap_or_default()
@@ -93,68 +65,15 @@ fn test_cli_valid_config_with_log_level() {
     {
         return;
     }
-    // Create a temporary config file
-    let config_content = r#"{
-        "device": {
-            "name": "CLI Test Monitor",
-            "unique_id": "cli-test-001",
-            "description": "Test device for CLI"
-        },
-        "file": {
-            "path": "test_cli_file.txt",
-            "polling_interval_seconds": 1
-        },
-        "parsing": {
-            "rules": [],
-            "default_safe": true,
-            "case_sensitive": false
-        },
-        "server": {
-            "port": 0,
-            "device_number": 0
-        }
-    }"#;
+    // Pass --log-level alongside a nonexistent config; the binary should
+    // accept the flag (clap parse OK) and then fail opening the config.
+    let output = bdd_infra::run_once(
+        "filemonitor",
+        &["--config", "nonexistent.json", "--log-level", "debug"],
+        None,
+    );
 
-    let config_path = PathBuf::from("test_cli_config.json");
-    let test_file = PathBuf::from("test_cli_file.txt");
-
-    fs::write(&config_path, config_content).unwrap();
-    fs::write(&test_file, "test").unwrap();
-
-    let output = Command::new("cargo")
-        .args([
-            "run",
-            "--bin",
-            "filemonitor",
-            "--",
-            "--config",
-            "test_cli_config.json",
-            "--log-level",
-            "debug",
-        ])
-        .current_dir("../")
-        .output()
-        .expect("Failed to execute command");
-
-    // Clean up
-    fs::remove_file(&config_path).unwrap();
-    fs::remove_file(&test_file).unwrap();
-
-    // In sanitizer environments, check for sanitizer-related failures
-    if output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("sanitizer")
-            || stderr.contains("ASAN")
-            || stderr.contains("LeakSanitizer")
-        {
-            eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
-            return;
-        }
-    }
-
-    // We expect this to fail quickly since port 0 will cause an error
-    // Just verify the command executed and parsed arguments correctly
-    assert!(!output.status.success());
+    assert_config_not_found(&output);
 }
 
 #[test]
@@ -167,66 +86,15 @@ fn test_cli_different_log_levels() {
     {
         return;
     }
-    let config_content = r#"{
-        "device": {
-            "name": "Log Test Monitor",
-            "unique_id": "log-test-001", 
-            "description": "Test device for log levels"
-        },
-        "file": {
-            "path": "test_log_file.txt",
-            "polling_interval_seconds": 1
-        },
-        "parsing": {
-            "rules": [],
-            "default_safe": true,
-            "case_sensitive": false
-        },
-        "server": {
-            "port": 0,
-            "device_number": 0
-        }
-    }"#;
-
-    let config_path = PathBuf::from("test_log_config.json");
-    let test_file = PathBuf::from("test_log_file.txt");
-
-    fs::write(&config_path, config_content).unwrap();
-    fs::write(&test_file, "test").unwrap();
-
+    // Verify clap accepts each tracing Level variant. The nonexistent config
+    // makes the binary fail fast after argument parsing.
     for log_level in &["error", "warn", "info", "debug", "trace"] {
-        let output = Command::new("cargo")
-            .args([
-                "run",
-                "--bin",
-                "filemonitor",
-                "--",
-                "--config",
-                "test_log_config.json",
-                "--log-level",
-                log_level,
-            ])
-            .current_dir("../")
-            .output()
-            .expect("Failed to execute command");
+        let output = bdd_infra::run_once(
+            "filemonitor",
+            &["--config", "nonexistent.json", "--log-level", log_level],
+            None,
+        );
 
-        // In sanitizer environments, check for sanitizer-related failures
-        if output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("sanitizer")
-                || stderr.contains("ASAN")
-                || stderr.contains("LeakSanitizer")
-            {
-                eprintln!("Skipping CLI test due to sanitizer environment: {}", stderr);
-                break;
-            }
-        }
-
-        // Should fail quickly due to port 0, but not due to argument parsing
-        assert!(!output.status.success());
+        assert_config_not_found(&output);
     }
-
-    // Clean up
-    fs::remove_file(&config_path).unwrap();
-    fs::remove_file(&test_file).unwrap();
 }

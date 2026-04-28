@@ -158,7 +158,6 @@ Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel'
 
 - `//crates/bdd-infra:bdd-infra_unit_test` — 3 of 17 tests: `test_run_once_*` variants that shell out to `cargo build` to locate the `rp` binary when `RP_BINARY` isn't already set.
 - `//services/phd2-guider:phd2-guider_unit_test` — 8 of 213 tests: `test_start_phd2_*` variants that spawn a phd2 child process via cargo-discovered paths.
-- `//services/filemonitor:test_cli` — 4 of 4 tests: all spawn `cargo run --bin filemonitor` and depend on Cargo's `target/debug/` layout.
 
 **Resolution plan (Phase 3 or later):** either mark these tests as `#[cfg(not(bazel))]` and set `rustc_flags = ["--cfg=bazel"]` on the Bazel `rust_test` targets, or refactor them to accept an explicit binary path via env var (which the non-cargo-code-paths already support). For now, tag them `requires-cargo` in BUILD files and run Bazel tests with `--test_tag_filters=-requires-cargo`.
 

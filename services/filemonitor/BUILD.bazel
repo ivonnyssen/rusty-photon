@@ -47,8 +47,11 @@ rust_test(
     ),
 )
 
-# test_cli spawns the filemonitor binary via std::process::Command — depends on
-# Cargo's target/debug/ layout, cannot run hermetically under Bazel sandbox.
+# test_cli spawns the filemonitor binary via bdd_infra::run_once. The test
+# passes the package name ("filemonitor") as a string literal, which
+# bdd_infra uppercases into FILEMONITOR_BINARY for binary discovery — wire
+# that env var to the rootpath of the :filemonitor binary so the test runs
+# hermetically under the Bazel sandbox.
 rust_test(
     name = "test_cli",
     srcs = ["tests/test_cli.rs"],
@@ -57,13 +60,14 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    data = [":filemonitor"],
     edition = "2021",
-    tags = ["requires-cargo"],
+    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":filemonitor_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [":filemonitor_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
