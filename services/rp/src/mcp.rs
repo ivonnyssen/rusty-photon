@@ -406,7 +406,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "closing cover");
         if let Err(e) = cc.close_cover().await {
@@ -443,7 +443,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "opening cover");
         if let Err(e) = cc.open_cover().await {
@@ -480,7 +480,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         let brightness = if let Some(b) = params.brightness {
             b
@@ -528,7 +528,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "turning calibrator off");
         if let Err(e) = cc.calibrator_off().await {
@@ -937,7 +937,7 @@ mod tests {
                     id: "cc".to_string(),
                     alpaca_url: "http://localhost:1".to_string(),
                     device_number: 0,
-                    poll_interval_secs: 1,
+                    poll_interval: Duration::from_secs(1),
                     auth: None,
                 },
                 device: Some(cc),

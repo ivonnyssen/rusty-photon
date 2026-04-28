@@ -121,12 +121,15 @@ preserving PHD2 wire-protocol compatibility (`"time": 10`).
 | `services/ppba-driver/src/config.rs` | `SerialConfig::polling_interval_ms: u64` | `polling_interval: Duration` |
 | `services/ppba-driver/src/config.rs` | `ObservingConditionsConfig::averaging_period_ms: u64` | `averaging_period: Duration` |
 | `services/sentinel/src/config.rs` | `MonitorConfig::AlpacaSafetyMonitor::polling_interval_secs: u64` | `polling_interval: Duration` |
+| `services/rp/src/config.rs` | `CoverCalibratorConfig::poll_interval_secs: u64` | `poll_interval: Duration` |
 
 The original 9-field plan inventory expanded to **12** because we
 included the 3 `_ms`-suffixed fields (qhy-focuser polling, ppba-driver
 polling, ppba-driver averaging period) for consistency — leaving any
 config duration as a raw integer would have undermined the
-"all config durations are `Duration`" rule.
+"all config durations are `Duration`" rule. A 13th field —
+`CoverCalibratorConfig::poll_interval_secs` in `services/rp` — was
+missed during the original migration and added in a follow-up commit.
 
 The internal `MonitorStatus::polling_interval_ms` field in
 `services/sentinel/src/state.rs` is **not** a config field — it's
@@ -152,7 +155,7 @@ original plan).
 - New workspace dep `humantime-serde` is in `[workspace.dependencies]`,
   and `MODULE.bazel.lock` was refreshed via
   `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
-- All 12 target fields are typed `Duration`.
+- All 13 target fields are typed `Duration`.
 - No `Duration::from_secs(cfg.<field>)` / `Duration::from_millis(...)`
   patterns remain at the consumer sites — direct field access only.
 - `docs/workspace.md` § "Duration Units" reflects the new policy
