@@ -49,7 +49,7 @@ fn assert_config_not_found(output: &std::process::Output) {
         stderr
     );
     assert!(
-        stderr.contains("NotFound") || stderr.contains("No such file"),
+        stderr.contains("NotFound"),
         "expected config-not-found error; stderr:\n{}",
         stderr
     );
