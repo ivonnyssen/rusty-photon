@@ -100,8 +100,8 @@ repo root/
 **Exit criteria:** `bazel build //services/sentinel-app:sentinel_app_wasm` produces the same `.wasm` + JS bindings that `cargo leptos build` does today.
 
 ### Phase 5 — Remote cache + CI (DONE)
-- [x] `.github/workflows/bazel.yml` — triggers on PR + push to main, runs `bazel test //...` with remote cache.
-- [x] BuildBuddy free tier credentials in GHA secrets (`BUILDBUDDY_API_KEY` read+write for push to main, `BUILDBUDDY_API_KEY_READONLY` for PRs to prevent cache poisoning).
+- [x] `.github/workflows/bazel.yml` — triggers on PR, push to main, and a nightly schedule (07:07 UTC), runs `bazel test //...` with remote cache. The nightly run keeps the BuildBuddy LRU warm during quiet stretches on main: free-tier eviction is capacity-driven with no documented retention, and PR builds use a read-only key so they cannot repopulate the cache themselves.
+- [x] BuildBuddy free tier credentials in GHA secrets (`BUILDBUDDY_API_KEY` read+write for push to main and the nightly schedule, `BUILDBUDDY_API_KEY_READONLY` for PRs to prevent cache poisoning).
 - [x] Shadow mode: job is **not required** for merges; runs alongside Cargo jobs for 2+ weeks of parity validation.
 - [ ] Compare wall-clock and correctness against Cargo jobs weekly.
 

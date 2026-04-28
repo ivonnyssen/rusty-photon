@@ -11,6 +11,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly run from main keeps the BuildBuddy remote cache warm.
+  # BuildBuddy uses LRU eviction on a shared free-tier cache with no
+  # documented retention guarantee, so quiet stretches on main let
+  # action results age out and PRs pay the full uncached cost. A daily
+  # main-equivalent build refreshes last-used timestamps and re-uploads
+  # anything that did get evicted.
+  schedule:
+    - cron: "7 7 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -32,11 +40,13 @@ jobs:
       run:
         shell: bash
     env:
-      # Read+write key on push to main populates the cache from trusted code.
-      # Read-only key on pull requests prevents cache poisoning from forks.
-      # Empty for fork PRs (secrets not exposed); steps below detect this and
-      # skip --config=remote-cache so the job still provides build signal.
-      BUILDBUDDY_API_KEY: ${{ github.event_name == 'push' && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_API_KEY_READONLY }}
+      # Read+write key on push to main and on the nightly schedule populates
+      # the cache from trusted code (scheduled runs always execute against the
+      # default branch). Read-only key on pull requests prevents cache
+      # poisoning from forks. Empty for fork PRs (secrets not exposed); steps
+      # below detect this and skip --config=remote-cache so the job still
+      # provides build signal.
+      BUILDBUDDY_API_KEY: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_API_KEY_READONLY }}
     steps:
       - uses: actions/checkout@v5
 
