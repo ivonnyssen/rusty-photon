@@ -32,7 +32,7 @@ pub struct DeviceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileConfig {
     pub path: PathBuf,
-    pub polling_interval_seconds: u64,
+    pub polling_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,7 +134,7 @@ impl FileMonitorDevice {
         let connected = Arc::clone(&self.connected);
 
         let handle = tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(config.file.polling_interval_seconds));
+            let mut interval = interval(Duration::from_secs(config.file.polling_interval_secs));
 
             loop {
                 interval.tick().await;
@@ -411,7 +411,7 @@ mod property_tests {
             },
             file: FileConfig {
                 path: PathBuf::from("/tmp/test.txt"),
-                polling_interval_seconds: 1,
+                polling_interval_secs: 1,
             },
             parsing: ParsingConfig {
                 rules: vec![
@@ -447,7 +447,7 @@ mod property_tests {
             },
             file: FileConfig {
                 path: PathBuf::from("/tmp/test.txt"),
-                polling_interval_seconds: 1,
+                polling_interval_secs: 1,
             },
             parsing: ParsingConfig {
                 rules: vec![
@@ -517,7 +517,7 @@ mod property_tests {
                 },
                 file: FileConfig {
                     path: PathBuf::from("/tmp/test.txt"),
-                    polling_interval_seconds: 1,
+                    polling_interval_secs: 1,
                 },
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {
@@ -574,7 +574,7 @@ mod property_tests {
                 },
                 file: FileConfig {
                     path: PathBuf::from("/tmp/test.txt"),
-                    polling_interval_seconds: 1,
+                    polling_interval_secs: 1,
                 },
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {
@@ -616,7 +616,7 @@ mod property_tests {
                 },
                 file: FileConfig {
                     path: PathBuf::from("/tmp/test.txt"),
-                    polling_interval_seconds: polling,
+                    polling_interval_secs: polling,
                 },
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {
@@ -641,7 +641,7 @@ mod property_tests {
             prop_assert_eq!(config.device.name, deserialized.device.name);
             prop_assert_eq!(config.device.unique_id, deserialized.device.unique_id);
             prop_assert_eq!(config.server.port, deserialized.server.port);
-            prop_assert_eq!(config.file.polling_interval_seconds, deserialized.file.polling_interval_seconds);
+            prop_assert_eq!(config.file.polling_interval_secs, deserialized.file.polling_interval_secs);
             prop_assert_eq!(config.parsing.rules.len(), deserialized.parsing.rules.len());
         }
 
@@ -658,7 +658,7 @@ mod property_tests {
                 },
                 file: FileConfig {
                     path: PathBuf::from("/tmp/test.txt"),
-                    polling_interval_seconds: 1,
+                    polling_interval_secs: 1,
                 },
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {

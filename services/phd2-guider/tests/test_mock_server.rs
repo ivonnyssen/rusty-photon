@@ -160,8 +160,8 @@ fn create_test_config(port: u16) -> Phd2Config {
     Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_seconds: 5,
-        command_timeout_seconds: 5,
+        connection_timeout_secs: 5,
+        command_timeout_secs: 5,
         ..Default::default()
     }
 }
@@ -1419,9 +1419,9 @@ async fn test_reconnect_max_retries_exceeded() {
 
     let mut config = create_test_config(port);
     config.reconnect.enabled = true;
-    config.reconnect.interval_seconds = 1;
+    config.reconnect.interval_secs = 1;
     config.reconnect.max_retries = Some(2); // Only try twice
-    config.connection_timeout_seconds = 1;
+    config.connection_timeout_secs = 1;
 
     let client = Phd2Client::new(config);
 
@@ -1460,9 +1460,9 @@ async fn test_reconnect_disabled_during_reconnection() {
 
     let mut config = create_test_config(port);
     config.reconnect.enabled = true;
-    config.reconnect.interval_seconds = 2;
+    config.reconnect.interval_secs = 2;
     config.reconnect.max_retries = Some(10); // Many retries
-    config.connection_timeout_seconds = 1;
+    config.connection_timeout_secs = 1;
 
     let client = Phd2Client::new(config);
 
@@ -1495,7 +1495,7 @@ async fn test_server_disconnect_triggers_reconnection() {
 
     let mut config = create_test_config(port);
     config.reconnect.enabled = true;
-    config.reconnect.interval_seconds = 1;
+    config.reconnect.interval_secs = 1;
     config.reconnect.max_retries = Some(2);
 
     let client = Phd2Client::new(config);

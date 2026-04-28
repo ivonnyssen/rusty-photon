@@ -226,7 +226,7 @@ impl Phd2ProcessManager {
     /// Wait for PHD2 to be ready (TCP port accepting connections)
     async fn wait_for_ready(&self) -> Result<()> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        let timeout = std::time::Duration::from_secs(self.config.connection_timeout_seconds);
+        let timeout = std::time::Duration::from_secs(self.config.connection_timeout_secs);
         let start = std::time::Instant::now();
         let poll_interval = std::time::Duration::from_millis(500);
 
@@ -266,7 +266,7 @@ impl Phd2ProcessManager {
 
         Err(Phd2Error::Timeout(format!(
             "PHD2 did not become ready within {} seconds",
-            self.config.connection_timeout_seconds
+            self.config.connection_timeout_secs
         )))
     }
 
@@ -572,7 +572,7 @@ mod tests {
             host: "localhost".to_string(),
             port: 4400,
             executable_path: Some(dummy_executable_path()),
-            connection_timeout_seconds: 1,
+            connection_timeout_secs: 1,
             ..Default::default()
         }
     }
@@ -731,7 +731,7 @@ mod tests {
         let factory = Arc::new(MockConnectionFactory::never_connectable());
 
         let mut config = create_test_config();
-        config.connection_timeout_seconds = 1; // Short timeout for test
+        config.connection_timeout_secs = 1; // Short timeout for test
 
         let manager = Phd2ProcessManager::with_spawner(config, spawner, factory);
 

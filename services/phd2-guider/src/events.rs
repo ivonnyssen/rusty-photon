@@ -52,7 +52,8 @@ impl std::str::FromStr for AppState {
 #[serde(rename_all = "PascalCase")]
 pub struct GuideStepStats {
     pub frame: u64,
-    pub time: f64,
+    #[serde(rename = "Time")]
+    pub time_secs: f64,
     pub mount: String,
     #[serde(rename = "dx")]
     pub dx: f64,
@@ -248,9 +249,9 @@ pub enum Phd2Event {
         #[serde(rename = "Distance")]
         distance: f64,
         #[serde(rename = "Time")]
-        time: f64,
+        time_secs: f64,
         #[serde(rename = "SettleTime")]
-        settle_time: f64,
+        settle_time_secs: f64,
         #[serde(rename = "StarLocked")]
         star_locked: bool,
     },
@@ -403,13 +404,13 @@ mod tests {
         match event {
             Phd2Event::Settling {
                 distance,
-                time,
-                settle_time,
+                time_secs,
+                settle_time_secs,
                 star_locked,
             } => {
                 assert_eq!(distance, 1.2);
-                assert_eq!(time, 3.5);
-                assert_eq!(settle_time, 10.0);
+                assert_eq!(time_secs, 3.5);
+                assert_eq!(settle_time_secs, 10.0);
                 assert!(star_locked);
             }
             _ => panic!("Expected Settling event"),
@@ -725,7 +726,7 @@ mod tests {
         match event {
             Phd2Event::GuideStep(stats) => {
                 assert_eq!(stats.frame, 100);
-                assert_eq!(stats.time, 5.5);
+                assert_eq!(stats.time_secs, 5.5);
                 assert_eq!(stats.mount, "Mount");
                 assert_eq!(stats.dx, 0.5);
                 assert_eq!(stats.dy, -0.3);

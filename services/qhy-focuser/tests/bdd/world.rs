@@ -47,7 +47,7 @@ impl QhyFocuserWorld {
                 "port": config.serial.port,
                 "baud_rate": config.serial.baud_rate,
                 "polling_interval_ms": config.serial.polling_interval_ms,
-                "timeout_seconds": config.serial.timeout_seconds,
+                "timeout_secs": config.serial.timeout_secs,
             },
             "server": {
                 "port": 0,

@@ -6,7 +6,7 @@
       "host": "localhost",
       "port": 11111,
       "device_number": 0,
-      "polling_interval_seconds": 30
+      "polling_interval_secs": 30
     }
   ],
   "notifiers": [

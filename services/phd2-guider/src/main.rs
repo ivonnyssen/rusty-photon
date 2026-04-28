@@ -338,10 +338,14 @@ fn print_event(event: &Phd2Event) {
         Phd2Event::GuidingStopped => {
             info!("Event: GuidingStopped");
         }
-        Phd2Event::Settling { distance, time, .. } => {
+        Phd2Event::Settling {
+            distance,
+            time_secs,
+            ..
+        } => {
             info!(
                 "Event: Settling - distance={:.2} time={:.1}s",
-                distance, time
+                distance, time_secs
             );
         }
         _ => {
@@ -421,8 +425,8 @@ async fn run_guide(
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time: settle_time.unwrap_or(10),
-        timeout: settle_timeout.unwrap_or(60),
+        time_secs: settle_time.unwrap_or(10),
+        timeout_secs: settle_timeout.unwrap_or(60),
     };
 
     let roi_rect = match roi {
@@ -432,7 +436,7 @@ async fn run_guide(
 
     info!(
         "Starting guiding (recalibrate={}, settle: pixels={}, time={}, timeout={})",
-        recalibrate, settle.pixels, settle.time, settle.timeout
+        recalibrate, settle.pixels, settle.time_secs, settle.timeout_secs
     );
 
     client.start_guiding(&settle, recalibrate, roi_rect).await?;
@@ -526,13 +530,13 @@ async fn run_dither(
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time: settle_time.unwrap_or(10),
-        timeout: settle_timeout.unwrap_or(60),
+        time_secs: settle_time.unwrap_or(10),
+        timeout_secs: settle_timeout.unwrap_or(60),
     };
 
     info!(
         "Dithering (amount={}, ra_only={}, settle: pixels={}, time={}, timeout={})",
-        amount, ra_only, settle.pixels, settle.time, settle.timeout
+        amount, ra_only, settle.pixels, settle.time_secs, settle.timeout_secs
     );
 
     client.dither(amount, ra_only, &settle).await?;

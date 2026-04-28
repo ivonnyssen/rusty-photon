@@ -71,7 +71,7 @@ impl SentinelWorld {
             },
             "file": {
                 "path": file_path,
-                "polling_interval_seconds": polling
+                "polling_interval_secs": polling
             },
             "parsing": {
                 "rules": self.fm_rules,
@@ -115,7 +115,7 @@ impl SentinelWorld {
         // Set polling interval on all monitors
         if let Some(monitors) = config["monitors"].as_array_mut() {
             for m in monitors.iter_mut() {
-                m["polling_interval_seconds"] = serde_json::json!(polling);
+                m["polling_interval_secs"] = serde_json::json!(polling);
             }
         }
 
@@ -147,7 +147,7 @@ impl SentinelWorld {
             "host": "127.0.0.1",
             "port": fm.port,
             "device_number": 0,
-            "polling_interval_seconds": 1
+            "polling_interval_secs": 1
         }));
     }
 

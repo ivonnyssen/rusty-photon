@@ -77,7 +77,7 @@ Configuration is provided via a JSON file:
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
     "polling_interval_ms": 5000,
-    "timeout_seconds": 2
+    "timeout_secs": 2
   },
   "server": {
     "port": 11112,
@@ -100,7 +100,7 @@ Configuration is provided via a JSON file:
 | serial | port | Serial port path | "/dev/ttyUSB0" |
 | serial | baud_rate | Baud rate | 9600 |
 | serial | polling_interval_ms | Status poll interval (milliseconds) | 5000 |
-| serial | timeout_seconds | Serial timeout | 2 |
+| serial | timeout_secs | Serial timeout | 2 |
 | server | port | HTTP server port | 11112 |
 | server | device_number | ASCOM device number | 0 |
 | server.auth | username | HTTP Basic Auth username (optional) | — |

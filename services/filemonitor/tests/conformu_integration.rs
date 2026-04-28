@@ -33,7 +33,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         },
         "file": {
             "path": status_file,
-            "polling_interval_seconds": 1
+            "polling_interval_secs": 1
         },
         "parsing": {
             "rules": [

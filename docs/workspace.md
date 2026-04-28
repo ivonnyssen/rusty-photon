@@ -36,8 +36,7 @@ belong in any single service design doc.
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
-| [duration-naming-convention.md](plans/duration-naming-convention.md) | Rename `_seconds` → `_secs` and bare duration fields |
-| [duration-type-migration.md](plans/duration-type-migration.md) | Follow-up: switch config duration fields to `std::time::Duration` |
+| [duration-type-migration.md](plans/duration-type-migration.md) | Switch config duration fields to `std::time::Duration` |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [migrate-test-harnesses-to-bdd-infra.md](plans/migrate-test-harnesses-to-bdd-infra.md) | Migrate per-service BDD harnesses to `bdd-infra` |
 

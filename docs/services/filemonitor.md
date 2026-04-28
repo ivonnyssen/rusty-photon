@@ -30,7 +30,7 @@ The service uses a JSON configuration file with the following format:
   },
   "file": {
     "path": "/path/to/RoofStatusFile.txt",
-    "polling_interval_seconds": 60
+    "polling_interval_secs": 60
   },
   "parsing": {
     "rules": [
@@ -88,7 +88,7 @@ The `set_connected()` method controls the monitoring behavior:
 
 - **When set to `true`**:
   - Immediately reloads the monitored file to get current content
-  - Initiates background polling according to the configured `polling_interval_seconds`
+  - Initiates background polling according to the configured `polling_interval_secs`
   - Caches file content for use by `is_safe()` calls
   - Returns error if file cannot be read
 

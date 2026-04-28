@@ -45,7 +45,7 @@ impl AlpacaSafetyMonitor {
             host,
             port,
             device_number,
-            polling_interval_seconds,
+            polling_interval_secs,
             scheme,
             auth: _,
         } = config;
@@ -57,7 +57,7 @@ impl AlpacaSafetyMonitor {
         Self {
             name: name.clone(),
             base_url,
-            polling_interval: Duration::from_secs(*polling_interval_seconds),
+            polling_interval: Duration::from_secs(*polling_interval_secs),
             http,
         }
     }
@@ -152,7 +152,7 @@ mod tests {
             host: "localhost".to_string(),
             port: 11111,
             device_number: 0,
-            polling_interval_seconds: 30,
+            polling_interval_secs: 30,
             scheme: "http".to_string(),
             auth: None,
         }

@@ -523,20 +523,20 @@ async fn stop_reconnection(&self);
     "host": "localhost",
     "port": 4400,
     "executable_path": null,
-    "connection_timeout_seconds": 10,
-    "command_timeout_seconds": 30,
+    "connection_timeout_secs": 10,
+    "command_timeout_secs": 30,
     "auto_start": false,
     "auto_connect_equipment": false,
     "reconnect": {
       "enabled": true,
-      "interval_seconds": 5,
+      "interval_secs": 5,
       "max_retries": null
     }
   },
   "settling": {
     "pixels": 0.5,
-    "time": 10,
-    "timeout": 60
+    "time_secs": 10,
+    "timeout_secs": 60
   }
 }
 ```
@@ -547,13 +547,13 @@ Configuration sections:
   - `host`: PHD2 host address (default: localhost)
   - `port`: JSON RPC port (default: 4400)
   - `executable_path`: Path to PHD2 executable (null for system default)
-  - `connection_timeout_seconds`: TCP connection timeout
-  - `command_timeout_seconds`: RPC command timeout
+  - `connection_timeout_secs`: TCP connection timeout
+  - `command_timeout_secs`: RPC command timeout
   - `auto_start`: Automatically start PHD2 if not running
   - `auto_connect_equipment`: Automatically connect equipment after PHD2 starts
   - `reconnect`: Auto-reconnect settings
     - `enabled`: Enable automatic reconnection (default: true)
-    - `interval_seconds`: Delay between reconnection attempts (default: 5)
+    - `interval_secs`: Delay between reconnection attempts (default: 5)
     - `max_retries`: Maximum reconnection attempts, null for unlimited (default: null)
 - **settling**: Default settling parameters for guiding operations
 
