@@ -271,7 +271,7 @@ fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
         "host": "localhost",
         "port": fm.port,
         "device_number": 0,
-        "polling_interval_secs": 1,
+        "polling_interval": "1s",
         "scheme": "https",
         "auth": {
             "username": AUTH_USERNAME,

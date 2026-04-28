@@ -63,7 +63,7 @@ fn sentinel_configured_unreachable(world: &mut SentinelWorld) {
         "host": "127.0.0.1",
         "port": 1,
         "device_number": 0,
-        "polling_interval_secs": 1
+        "polling_interval": "1s"
     }));
 }
 

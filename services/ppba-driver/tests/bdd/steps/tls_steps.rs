@@ -28,7 +28,7 @@ fn ppba_configured_with_tls(world: &mut PpbaWorld) {
     let certs_dir = pki_dir.join("certs");
 
     world.config = serde_json::json!({
-        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval_ms": 60000, "timeout_secs": 2 },
+        "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval": "60s", "timeout": "2s" },
         "server": {
             "port": 0,
             "tls": {

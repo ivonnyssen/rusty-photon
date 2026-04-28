@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -18,10 +19,10 @@ pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
-    #[serde(default = "default_polling_interval")]
-    pub polling_interval_ms: u64,
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
+    #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    pub polling_interval: Duration,
+    #[serde(default = "default_timeout", with = "humantime_serde")]
+    pub timeout: Duration,
 }
 
 /// Server configuration
@@ -62,28 +63,28 @@ pub struct ObservingConditionsConfig {
     pub device_number: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_averaging_period")]
-    pub averaging_period_ms: u64,
+    #[serde(default = "default_averaging_period", with = "humantime_serde")]
+    pub averaging_period: Duration,
 }
 
 fn default_baud_rate() -> u32 {
     9600
 }
 
-fn default_polling_interval() -> u64 {
-    5000
+fn default_polling_interval() -> Duration {
+    Duration::from_millis(5000)
 }
 
-fn default_timeout_secs() -> u64 {
-    2
+fn default_timeout() -> Duration {
+    Duration::from_secs(2)
 }
 
 fn default_true() -> bool {
     true
 }
 
-fn default_averaging_period() -> u64 {
-    300_000 // 5 minutes in milliseconds
+fn default_averaging_period() -> Duration {
+    Duration::from_secs(300) // 5 minutes
 }
 
 impl Default for SerialConfig {
@@ -91,8 +92,8 @@ impl Default for SerialConfig {
         Self {
             port: "/dev/ttyUSB0".to_string(),
             baud_rate: default_baud_rate(),
-            polling_interval_ms: default_polling_interval(),
-            timeout_secs: default_timeout_secs(),
+            polling_interval: default_polling_interval(),
+            timeout: default_timeout(),
         }
     }
 }
@@ -128,7 +129,7 @@ impl Default for ObservingConditionsConfig {
             description: "Pegasus Astro PPBA Environmental Sensors".to_string(),
             device_number: 0,
             enabled: true,
-            averaging_period_ms: default_averaging_period(),
+            averaging_period: default_averaging_period(),
         }
     }
 }
@@ -165,8 +166,8 @@ mod tests {
 
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval_ms, 5000);
-        assert_eq!(config.serial.timeout_secs, 2);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11112);
     }
@@ -191,7 +192,7 @@ mod tests {
         assert!(!config.description.is_empty());
         assert_eq!(config.device_number, 0);
         assert!(config.enabled);
-        assert_eq!(config.averaging_period_ms, 300_000); // 5 minutes
+        assert_eq!(config.averaging_period, Duration::from_secs(300)); // 5 minutes
     }
 
     #[test]
@@ -200,8 +201,8 @@ mod tests {
 
         assert_eq!(config.port, "/dev/ttyUSB0");
         assert_eq!(config.baud_rate, 9600);
-        assert_eq!(config.polling_interval_ms, 5000);
-        assert_eq!(config.timeout_secs, 2);
+        assert_eq!(config.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.timeout, Duration::from_secs(2));
     }
 
     #[test]
@@ -228,8 +229,8 @@ mod tests {
             "serial": {
                 "port": "/dev/ttyACM0",
                 "baud_rate": 115200,
-                "polling_interval_ms": 10000,
-                "timeout_secs": 5
+                "polling_interval": "10s",
+                "timeout": "5s"
             },
             "server": {
                 "port": 8080
@@ -247,7 +248,7 @@ mod tests {
                 "description": "Test weather description",
                 "device_number": 2,
                 "enabled": false,
-                "averaging_period_ms": 120000
+                "averaging_period": "120s"
             }
         }"#;
 
@@ -261,11 +262,15 @@ mod tests {
         assert_eq!(config.observingconditions.name, "Test Weather");
         assert_eq!(config.observingconditions.device_number, 2);
         assert!(!config.observingconditions.enabled);
-        assert_eq!(config.observingconditions.averaging_period_ms, 120000);
+        assert_eq!(
+            config.observingconditions.averaging_period,
+            Duration::from_secs(120)
+        );
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
         assert_eq!(config.serial.baud_rate, 115200);
-        assert_eq!(config.serial.polling_interval_ms, 10000);
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(10));
+        assert_eq!(config.serial.timeout, Duration::from_secs(5));
         assert_eq!(config.server.port, 8080);
     }
 
@@ -297,13 +302,16 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyUSB1");
         // These should have defaults
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval_ms, 5000);
-        assert_eq!(config.serial.timeout_secs, 2);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
         assert_eq!(config.switch.device_number, 0);
         assert!(config.switch.enabled);
         assert_eq!(config.observingconditions.device_number, 0);
         assert!(config.observingconditions.enabled);
-        assert_eq!(config.observingconditions.averaging_period_ms, 300_000);
+        assert_eq!(
+            config.observingconditions.averaging_period,
+            Duration::from_secs(300)
+        );
     }
 
     #[test]

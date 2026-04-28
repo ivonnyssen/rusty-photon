@@ -2,9 +2,20 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use tracing::debug;
+
+/// Convert a `Duration` to whole seconds for PHD2's JSON-RPC settle payload,
+/// rounding any sub-second component up. Preserves `0s` as `0`.
+///
+/// PHD2's `time` and `timeout` keys require integer seconds. The operator
+/// config uses humantime, which accepts sub-second values like `"500ms"`;
+/// without ceiling those would silently truncate to `0` on the wire.
+fn settle_secs_ceil(d: Duration) -> u64 {
+    d.as_secs().saturating_add(u64::from(d.subsec_nanos() != 0))
+}
 
 use crate::config::{Phd2Config, SettleParams};
 use crate::connection::{
@@ -61,7 +72,7 @@ impl Phd2Client {
         ConnectionConfig {
             host: self.config.host.clone(),
             port: self.config.port,
-            connection_timeout_secs: self.config.connection_timeout_secs,
+            connection_timeout: self.config.connection_timeout,
             reconnect: self.config.reconnect.clone(),
         }
     }
@@ -80,11 +91,9 @@ impl Phd2Client {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         debug!("Connecting to PHD2 at {}", addr);
 
-        let timeout_duration = std::time::Duration::from_secs(self.config.connection_timeout_secs);
-
         let connection_pair = self
             .connection_factory
-            .connect(&addr, timeout_duration)
+            .connect(&addr, self.config.connection_timeout)
             .await?;
 
         debug!("Connection established to PHD2");
@@ -253,8 +262,7 @@ impl Phd2Client {
         }
 
         // Wait for response with timeout
-        let timeout_duration = std::time::Duration::from_secs(self.config.command_timeout_secs);
-        tokio::time::timeout(timeout_duration, receiver)
+        tokio::time::timeout(self.config.command_timeout, receiver)
             .await
             .map_err(|_| Phd2Error::Timeout(format!("Request '{}' timed out", method)))?
             .map_err(|_| Phd2Error::ReceiveError)?
@@ -363,14 +371,14 @@ impl Phd2Client {
         roi: Option<Rect>,
     ) -> Result<()> {
         debug!(
-            "Starting guiding with settle: pixels={}, time={}, timeout={}, recalibrate={}",
-            settle.pixels, settle.time_secs, settle.timeout_secs, recalibrate
+            "Starting guiding with settle: pixels={}, time={:?}, timeout={:?}, recalibrate={}",
+            settle.pixels, settle.time, settle.timeout, recalibrate
         );
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time_secs,
-            "timeout": settle.timeout_secs
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
 
         let mut params = serde_json::json!({
@@ -456,14 +464,14 @@ impl Phd2Client {
     /// * `settle` - Settling parameters to wait for after dither
     pub async fn dither(&self, amount: f64, ra_only: bool, settle: &SettleParams) -> Result<()> {
         debug!(
-            "Dithering: amount={}, ra_only={}, settle: pixels={}, time={}, timeout={}",
-            amount, ra_only, settle.pixels, settle.time_secs, settle.timeout_secs
+            "Dithering: amount={}, ra_only={}, settle: pixels={}, time={:?}, timeout={:?}",
+            amount, ra_only, settle.pixels, settle.time, settle.timeout
         );
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time_secs,
-            "timeout": settle.timeout_secs
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
 
         let params = serde_json::json!({
@@ -909,12 +917,41 @@ mod tests {
     use crate::types::{CalibrationData, CalibrationTarget, Equipment, Rect};
 
     #[test]
+    fn test_settle_secs_ceil_preserves_zero() {
+        assert_eq!(settle_secs_ceil(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_passes_whole_seconds() {
+        assert_eq!(settle_secs_ceil(Duration::from_secs(10)), 10);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_rounds_sub_second_up() {
+        assert_eq!(settle_secs_ceil(Duration::from_millis(500)), 1);
+        assert_eq!(settle_secs_ceil(Duration::from_millis(1)), 1);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_rounds_mixed_up() {
+        assert_eq!(settle_secs_ceil(Duration::from_millis(1500)), 2);
+        assert_eq!(settle_secs_ceil(Duration::from_millis(2001)), 3);
+    }
+
+    #[test]
+    fn test_settle_secs_ceil_saturates_on_overflow() {
+        // Duration::MAX has u64::MAX seconds AND 999_999_999 sub-second nanos,
+        // so the +1 ceiling adjustment would wrap without saturation.
+        assert_eq!(settle_secs_ceil(Duration::MAX), u64::MAX);
+    }
+
+    #[test]
     fn test_guide_request_params_format() {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time_secs,
-            "timeout": settle.timeout_secs
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let params = serde_json::json!({
             "settle": settle_obj,
@@ -934,8 +971,8 @@ mod tests {
 
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time_secs,
-            "timeout": settle.timeout_secs
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let mut params = serde_json::json!({
             "settle": settle_obj,
@@ -956,8 +993,8 @@ mod tests {
         let settle = SettleParams::default();
         let settle_obj = serde_json::json!({
             "pixels": settle.pixels,
-            "time": settle.time_secs,
-            "timeout": settle.timeout_secs
+            "time": settle_secs_ceil(settle.time),
+            "timeout": settle_secs_ceil(settle.timeout)
         });
         let params = serde_json::json!({
             "amount": 5.0,
@@ -1422,8 +1459,8 @@ mod mock_tests {
         let config = Phd2Config {
             host: "localhost".to_string(),
             port: 4400,
-            connection_timeout_secs: 1,
-            command_timeout_secs: 1,
+            connection_timeout: std::time::Duration::from_secs(1),
+            command_timeout: std::time::Duration::from_secs(1),
             ..Default::default()
         };
 
@@ -1672,8 +1709,8 @@ mod mock_tests {
         client.connect().await.unwrap();
         let settle = SettleParams {
             pixels: 0.5,
-            time_secs: 10,
-            timeout_secs: 60,
+            time: std::time::Duration::from_secs(10),
+            timeout: std::time::Duration::from_secs(60),
         };
         client.start_guiding(&settle, false, None).await.unwrap();
 
@@ -1844,8 +1881,8 @@ mod mock_tests {
         client.connect().await.unwrap();
         let settle = SettleParams {
             pixels: 0.5,
-            time_secs: 10,
-            timeout_secs: 60,
+            time: std::time::Duration::from_secs(10),
+            timeout: std::time::Duration::from_secs(60),
         };
         client.dither(5.0, false, &settle).await.unwrap();
 

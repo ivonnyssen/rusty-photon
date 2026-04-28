@@ -523,23 +523,27 @@ async fn stop_reconnection(&self);
     "host": "localhost",
     "port": 4400,
     "executable_path": null,
-    "connection_timeout_secs": 10,
-    "command_timeout_secs": 30,
+    "connection_timeout": "10s",
+    "command_timeout": "30s",
     "auto_start": false,
     "auto_connect_equipment": false,
     "reconnect": {
       "enabled": true,
-      "interval_secs": 5,
+      "interval": "5s",
       "max_retries": null
     }
   },
   "settling": {
     "pixels": 0.5,
-    "time_secs": 10,
-    "timeout_secs": 60
+    "time": "10s",
+    "timeout": "60s"
   }
 }
 ```
+
+All duration fields use the humantime string format (`"5s"`, `"500ms"`,
+`"1m30s"`). See `docs/workspace.md` § "Duration Units" for the
+convention.
 
 Configuration sections:
 
@@ -547,15 +551,21 @@ Configuration sections:
   - `host`: PHD2 host address (default: localhost)
   - `port`: JSON RPC port (default: 4400)
   - `executable_path`: Path to PHD2 executable (null for system default)
-  - `connection_timeout_secs`: TCP connection timeout
-  - `command_timeout_secs`: RPC command timeout
+  - `connection_timeout`: TCP connection timeout (default: `"10s"`)
+  - `command_timeout`: RPC command timeout (default: `"30s"`)
   - `auto_start`: Automatically start PHD2 if not running
   - `auto_connect_equipment`: Automatically connect equipment after PHD2 starts
   - `reconnect`: Auto-reconnect settings
     - `enabled`: Enable automatic reconnection (default: true)
-    - `interval_secs`: Delay between reconnection attempts (default: 5)
+    - `interval`: Delay between reconnection attempts (default: `"5s"`)
     - `max_retries`: Maximum reconnection attempts, null for unlimited (default: null)
-- **settling**: Default settling parameters for guiding operations
+- **settling**: Default settling parameters for guiding operations.
+  Note: PHD2's own JSON-RPC `guide`/`dither` payloads require integer
+  seconds for `time` and `timeout`, so this struct is the operator
+  config representation. When `client.rs` constructs the wire payload,
+  it rounds these durations up to whole seconds (ceil rounding) before
+  sending them to PHD2. For example, `"500ms"` is sent as `1` second,
+  and `"1.2s"` is sent as `2` seconds.
 
 ## PHD2 Process Management
 

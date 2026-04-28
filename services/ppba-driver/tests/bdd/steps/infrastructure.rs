@@ -14,8 +14,8 @@ pub fn default_test_config() -> serde_json::Value {
         "serial": {
             "port": "/dev/mock",
             "baud_rate": 9600,
-            "polling_interval_ms": 200,
-            "timeout_secs": 2
+            "polling_interval": "200ms",
+            "timeout": "2s"
         },
         "server": { "port": 0, "discovery_port": null },
         "switch": {
@@ -31,7 +31,7 @@ pub fn default_test_config() -> serde_json::Value {
             "unique_id": "ppba-observingconditions-001",
             "description": "Pegasus Astro PPBA Environmental Sensors",
             "device_number": 0,
-            "averaging_period_ms": 300000
+            "averaging_period": "5m"
         }
     })
 }

@@ -2,8 +2,8 @@
   "serial": {
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
-    "polling_interval_ms": 5000,
-    "timeout_secs": 2
+    "polling_interval": "5s",
+    "timeout": "2s"
   },
   "server": {
     "port": 11112
@@ -21,6 +21,6 @@
     "description": "Pegasus Astro PPBA Environmental Sensors",
     "device_number": 0,
     "enabled": true,
-    "averaging_period_ms": 300000
+    "averaging_period": "5m"
   }
 }

@@ -76,8 +76,8 @@ Configuration is provided via a JSON file:
   "serial": {
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
-    "polling_interval_ms": 5000,
-    "timeout_secs": 2
+    "polling_interval": "5s",
+    "timeout": "2s"
   },
   "server": {
     "port": 11112,
@@ -99,8 +99,8 @@ Configuration is provided via a JSON file:
 | device | description | Device description | (see above) |
 | serial | port | Serial port path | "/dev/ttyUSB0" |
 | serial | baud_rate | Baud rate | 9600 |
-| serial | polling_interval_ms | Status poll interval (milliseconds) | 5000 |
-| serial | timeout_secs | Serial timeout | 2 |
+| serial | polling_interval | Status poll interval (humantime, e.g. `"5s"`, `"500ms"`) | `"5s"` |
+| serial | timeout | Serial timeout (humantime) | `"2s"` |
 | server | port | HTTP server port | 11112 |
 | server | device_number | ASCOM device number | 0 |
 | server.auth | username | HTTP Basic Auth username (optional) | — |
@@ -253,13 +253,13 @@ This driver implements **dynamic write protection** for dew heater switches (2 &
 
 The driver caches device state to minimize serial communication overhead:
 
-- **Background polling**: Device state is refreshed every `polling_interval_ms` (default: 5000ms)
-- **CanWrite() queries**: Use cached state (may be up to `polling_interval_ms` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
+- **Background polling**: Device state is refreshed every `polling_interval` (default: `"5s"`)
+- **CanWrite() queries**: Use cached state (may be up to `polling_interval` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
 - **SetSwitchValue() for dew heaters**: Refreshes state immediately before validation (always validates against current device state)
 - **After successful writes**: State is refreshed immediately to reflect the change
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
 
-For tighter synchronization with external changes, reduce `polling_interval_ms` in the configuration. However, note that very short intervals (< 1000ms) increase serial communication overhead.
+For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1s) increase serial communication overhead.
 
 ### Manual Dew Heater Control
 

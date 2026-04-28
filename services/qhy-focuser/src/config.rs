@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -17,10 +18,10 @@ pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
-    #[serde(default = "default_polling_interval")]
-    pub polling_interval_ms: u64,
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
+    #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    pub polling_interval: Duration,
+    #[serde(default = "default_timeout", with = "humantime_serde")]
+    pub timeout: Duration,
 }
 
 /// Server configuration
@@ -61,12 +62,12 @@ fn default_baud_rate() -> u32 {
     9600
 }
 
-fn default_polling_interval() -> u64 {
-    1000
+fn default_polling_interval() -> Duration {
+    Duration::from_millis(1000)
 }
 
-fn default_timeout_secs() -> u64 {
-    2
+fn default_timeout() -> Duration {
+    Duration::from_secs(2)
 }
 
 fn default_true() -> bool {
@@ -82,8 +83,8 @@ impl Default for SerialConfig {
         Self {
             port: "/dev/ttyACM0".to_string(),
             baud_rate: default_baud_rate(),
-            polling_interval_ms: default_polling_interval(),
-            timeout_secs: default_timeout_secs(),
+            polling_interval: default_polling_interval(),
+            timeout: default_timeout(),
         }
     }
 }
@@ -138,8 +139,8 @@ mod tests {
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval_ms, 1000);
-        assert_eq!(config.serial.timeout_secs, 2);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11113);
     }
@@ -164,8 +165,8 @@ mod tests {
 
         assert_eq!(config.port, "/dev/ttyACM0");
         assert_eq!(config.baud_rate, 9600);
-        assert_eq!(config.polling_interval_ms, 1000);
-        assert_eq!(config.timeout_secs, 2);
+        assert_eq!(config.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.timeout, Duration::from_secs(2));
     }
 
     #[test]
@@ -192,8 +193,8 @@ mod tests {
             "serial": {
                 "port": "/dev/ttyACM0",
                 "baud_rate": 115200,
-                "polling_interval_ms": 2000,
-                "timeout_secs": 5
+                "polling_interval": "2s",
+                "timeout": "5s"
             },
             "server": {
                 "port": 8080
@@ -222,7 +223,8 @@ mod tests {
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
         assert_eq!(config.serial.baud_rate, 115200);
-        assert_eq!(config.serial.polling_interval_ms, 2000);
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(2));
+        assert_eq!(config.serial.timeout, Duration::from_secs(5));
         assert_eq!(config.server.port, 8080);
     }
 
@@ -247,8 +249,8 @@ mod tests {
         assert_eq!(config.focuser.name, "Minimal Focuser");
         assert_eq!(config.serial.port, "/dev/ttyUSB1");
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval_ms, 1000);
-        assert_eq!(config.serial.timeout_secs, 2);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
         assert_eq!(config.focuser.device_number, 0);
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 64_000);

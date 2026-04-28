@@ -1,50 +1,51 @@
-# Plan: Migrate config duration fields to `std::time::Duration`
+# Plan: Migrate config duration fields to `std::time::Duration` (humantime)
+
+## Status
+
+**Done.** Implemented on the `feature/duration-type-migration` branch.
+This document is kept as the record of what was decided and why.
 
 ## Background
 
-The previous duration-naming-convention work normalised the names of
-`u64`/`u32` duration fields (`_seconds` → `_secs`, no bare `time` /
-`timeout`). This plan picks up from that point and considers replacing
-the underlying type with `std::time::Duration`.
+Follow-up to the duration-naming-convention work (PR #96, normalising
+`_seconds` → `_secs`). Now that the renames have landed we follow up
+by replacing the underlying types with `std::time::Duration`.
 
-The codebase already uses `Duration` everywhere at runtime — any time we
-call `tokio::time::sleep`, set a `reqwest` timeout, or build a polling
-loop, we wrap the config integer in `Duration::from_secs(...)` /
-`Duration::from_millis(...)`. The only place `Duration` is *not* used is
-in serde-deserialised config structs, where the type is currently `u64` /
-`u32` plus a unit-suffixed name.
+The codebase already uses `Duration` everywhere at runtime — every
+`tokio::time::sleep`, `reqwest` timeout, and polling loop wraps the
+config integer in `Duration::from_secs(...)` /
+`Duration::from_millis(...)`. The only place `Duration` was *not* used
+was in the serde-deserialised config structs themselves, where the
+type was `u64` / `u32` plus a unit-suffixed name.
 
-The motivation for switching is type safety: a `Duration` field cannot be
-silently mixed with a different-unit integer at a call site, and the
-`Duration::from_secs()` wrap at every consumer goes away.
+The motivation for switching is type safety: a `Duration` field cannot
+be silently mixed with a different-unit integer at a call site, and
+the `Duration::from_secs()` wrap at every consumer goes away.
 
 ## Why a separate PR
 
-- It's a wider refactor (every call site that wraps these fields in
-  `Duration::from_*` gets simplified, plus tests need new assertion
+- It's a wider refactor (every call site that wrapped these fields in
+  `Duration::from_*` got simplified, plus tests needed new assertion
   shapes).
-- It introduces a new workspace dependency (`serde_with`).
+- It introduces a new workspace dependency (`humantime-serde`).
 - It changes the documented coding convention in `docs/workspace.md`
-  ("always include the unit suffix in the field name") — that rule
-  becomes either softened or scoped to "fields that aren't `Duration`".
-- The naming-only PR is small, mechanical, and reviewable; bundling
-  would obscure what's a rename and what's a real semantic change.
+  ("always include the unit suffix in the field name").
+- The naming-only rename PR was small and mechanical; bundling would
+  have obscured what's a rename and what's a real semantic change.
 
-## Approach
+## Approach (chosen: humantime + Option C for PHD2)
 
-Use `serde_with`'s `DurationSeconds<u64>` / `DurationMilliSeconds<u64>`
-adapters so the JSON wire format stays a bare integer (no breakage of
-existing sample configs, no new format for users to learn). Example:
+Use **`humantime-serde`** for every config duration field, so the wire
+format becomes a self-describing string (`"30s"`, `"500ms"`,
+`"1m30s"`, `"5m"`). Example:
 
 ```rust
-use serde_with::{serde_as, DurationSeconds};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Phd2Config {
-    #[serde_as(as = "DurationSeconds<u64>")]
-    #[serde(default = "default_connection_timeout")]
+    #[serde(default = "default_connection_timeout", with = "humantime_serde")]
     pub connection_timeout: Duration,
     // …
 }
@@ -54,132 +55,116 @@ fn default_connection_timeout() -> Duration {
 }
 ```
 
-The wire format remains `"connection_timeout": 10`. Internal call sites
-that previously wrote `Duration::from_secs(cfg.connection_timeout_secs)`
-become just `cfg.connection_timeout`.
+The wire format becomes `"connection_timeout": "10s"` (was
+`"connection_timeout_secs": 10`). Internal call sites that previously
+wrote `Duration::from_secs(cfg.connection_timeout_secs)` become just
+`cfg.connection_timeout`.
 
-### Alternative considered: `humantime-serde`
+Field names drop the unit suffix entirely (`connection_timeout` not
+`connection_timeout_secs`) — the type carries the unit, the JSON value
+also carries it, so the suffix is redundant.
 
-`humantime-serde` lets users write `"5m30s"` strings in JSON. Rejected
-because it changes the wire format (string instead of integer), which
-would break the PHD2 `SettleParams` use — PHD2's JSON-RPC protocol
-requires integer `"time"` / `"timeout"` keys. Sticking with
-`DurationSeconds<u64>` keeps PHD2 happy.
+### Why humantime (not `serde_with::DurationSeconds<u64>`)
 
-### Alternative considered: hand-rolled `#[serde(with = "...")]`
+The earlier draft of this plan picked `serde_with::DurationSeconds<u64>`
+because it kept the wire format as a bare integer and didn't break
+PHD2's JSON-RPC settle payload (which requires integer `time` /
+`timeout` keys). On reflection that was solving the wrong problem:
 
-Workable, ~10 lines of helper module per unit. Rejected as a small,
-consistent dep is preferable to maintaining serde glue ourselves.
+- The PHD2 settle payload is a wire format **we don't own** — it
+  belongs to PHD2's JSON-RPC protocol. The operator's config file is a
+  wire format **we do own** and should optimise for human editing.
+- Using one adapter (`DurationSeconds`) for "seconds in JSON" and
+  another (`DurationMilliSeconds`) for "milliseconds in JSON" reproduces
+  the same `_secs` vs `_ms` ambiguity in code that we were trying to
+  remove from field names.
+- `humantime` accepts `"30s"`, `"500ms"`, `"1m30s"`, `"2h"` — one
+  adapter for every magnitude, the value reads naturally, the unit is
+  visible at the operator's editing site.
 
-## Naming convention update
+### PHD2 SettleParams: Option C (config struct + manual wire conversion)
 
-Once fields are `Duration`, the unit suffix in the field name is no
-longer load-bearing — the type carries the unit. Two options:
+`SettleParams` is special because the same struct serves two roles:
+operator-facing config **and** the JSON-RPC payload sent to PHD2 (which
+requires integer `time` / `timeout`).
 
-1. **Drop the suffix** (`connection_timeout: Duration`,
-   `polling_interval: Duration`). Cleaner, but the JSON key changes
-   shape (e.g. `connection_timeout_secs` → `connection_timeout`). With
-   no external users today, that's safe.
-2. **Keep the suffix** to document the JSON representation
-   (`connection_timeout_secs: Duration` with `DurationSeconds<u64>`).
-   Slightly redundant but minimises churn — the JSON keys land at the
-   same names as the rename PR.
+We split the responsibilities at the JSON-RPC site rather than
+splitting the struct:
 
-Option 1 is preferable long-term. Pick one and update
-`docs/workspace.md` § "Duration Units" accordingly:
+- `SettleParams` itself (in `services/phd2-guider/src/config.rs`) uses
+  humantime + `Duration` like every other config struct.
+- The `json!` payload constructions in
+  `services/phd2-guider/src/client.rs` (5 sites: `start_guiding`,
+  `dither`, plus 3 in unit tests) route `settle.time` and
+  `settle.timeout` through the local `settle_secs_ceil` helper to
+  produce the integer values PHD2 needs. Ceil-rounding (with
+  saturation) preserves `"0s"` as `0`, lifts sub-second humantime
+  inputs like `"500ms"` to `1` second so they don't silently truncate
+  to `0` on the wire, and avoids `u64` overflow at extreme inputs.
 
-- The rule "always include the unit suffix in the field name" becomes
-  "include the unit suffix in the field name **when the field type is
-  not `Duration`**".
-- Add a paragraph: "For new code, prefer `std::time::Duration` with a
-  `serde_with::DurationSeconds<u64>` / `DurationMilliSeconds<u64>`
-  adapter. The unit suffix is then unnecessary — the type carries the
-  unit."
+This gives us a clean operator config (`"time": "10s"`) while
+preserving PHD2 wire-protocol compatibility (`"time": 10`).
 
-## Inventory
+## Inventory (post-rename → post-migration)
 
-The same nine fields covered by the rename PR, post-rename:
-
-| File | Field (post-rename) | Adapter |
+| File | Before | After |
 |---|---|---|
-| `services/phd2-guider/src/config.rs` | `Phd2Config::connection_timeout_secs` | `DurationSeconds<u64>` |
-| `services/phd2-guider/src/config.rs` | `Phd2Config::command_timeout_secs` | `DurationSeconds<u64>` |
-| `services/phd2-guider/src/config.rs` | `ReconnectConfig::interval_secs` | `DurationSeconds<u64>` |
-| `services/phd2-guider/src/config.rs` | `SettleParams::time_secs` | `DurationSeconds<u64>` |
-| `services/phd2-guider/src/config.rs` | `SettleParams::timeout_secs` | `DurationSeconds<u64>` |
-| `services/filemonitor/src/lib.rs` | `FileConfig::polling_interval_secs` | `DurationSeconds<u64>` |
-| `services/qhy-focuser/src/config.rs` | `SerialConfig::timeout_secs` | `DurationSeconds<u64>` |
-| `services/ppba-driver/src/config.rs` | `SerialConfig::timeout_secs` | `DurationSeconds<u64>` |
-| `services/sentinel/src/config.rs` | `MonitorConfig::AlpacaSafetyMonitor::polling_interval_secs` | `DurationSeconds<u64>` |
+| `services/phd2-guider/src/config.rs` | `Phd2Config::connection_timeout_secs: u64` | `connection_timeout: Duration` |
+| `services/phd2-guider/src/config.rs` | `Phd2Config::command_timeout_secs: u64` | `command_timeout: Duration` |
+| `services/phd2-guider/src/config.rs` | `ReconnectConfig::interval_secs: u64` | `interval: Duration` |
+| `services/phd2-guider/src/config.rs` | `SettleParams::time_secs: u32` | `time: Duration` (+ `settle_secs_ceil` at PHD2 wire site) |
+| `services/phd2-guider/src/config.rs` | `SettleParams::timeout_secs: u32` | `timeout: Duration` (+ `settle_secs_ceil` at PHD2 wire site) |
+| `services/filemonitor/src/lib.rs` | `FileConfig::polling_interval_secs: u64` | `polling_interval: Duration` |
+| `services/qhy-focuser/src/config.rs` | `SerialConfig::timeout_secs: u64` | `timeout: Duration` |
+| `services/qhy-focuser/src/config.rs` | `SerialConfig::polling_interval_ms: u64` | `polling_interval: Duration` |
+| `services/ppba-driver/src/config.rs` | `SerialConfig::timeout_secs: u64` | `timeout: Duration` |
+| `services/ppba-driver/src/config.rs` | `SerialConfig::polling_interval_ms: u64` | `polling_interval: Duration` |
+| `services/ppba-driver/src/config.rs` | `ObservingConditionsConfig::averaging_period_ms: u64` | `averaging_period: Duration` |
+| `services/sentinel/src/config.rs` | `MonitorConfig::AlpacaSafetyMonitor::polling_interval_secs: u64` | `polling_interval: Duration` |
 
-(One additional candidate exists today as `polling_interval_ms` in
-`qhy-focuser/src/config.rs:21`. It already uses `_ms` and complies, but
-when migrating to `Duration` it would use `DurationMilliSeconds<u64>`.)
+The original 9-field plan inventory expanded to **12** because we
+included the 3 `_ms`-suffixed fields (qhy-focuser polling, ppba-driver
+polling, ppba-driver averaging period) for consistency — leaving any
+config duration as a raw integer would have undermined the
+"all config durations are `Duration`" rule.
 
-## PHD2 wire-protocol check
+The internal `MonitorStatus::polling_interval_ms` field in
+`services/sentinel/src/state.rs` is **not** a config field — it's
+runtime dashboard state serialised for the dashboard's JS consumer,
+which uses it for display arithmetic. It stays as `u64` ms.
 
-`SettleParams::time_secs` and `SettleParams::timeout_secs` feed the
-`json!` macro at `services/phd2-guider/src/client.rs:373-374, 466-467,
-917-918` to construct the PHD2 settle payload. After migration, those
-calls need to convert back to integer seconds:
+## Sample config changes
 
-```rust
-"time": settle.time_secs.as_secs(),
-"timeout": settle.timeout_secs.as_secs(),
-```
+Every `services/*/{config.json, examples/*.json, tests/config.json,
+tests/bdd/...}` got the affected duration values rewritten in
+humantime form:
 
-That's a single-token edit at each site, but easy to miss — add it to
-the PR checklist.
+- `"polling_interval_secs": 60` → `"polling_interval": "60s"`
+- `"polling_interval_ms": 1000` → `"polling_interval": "1s"`
+- `"averaging_period_ms": 300000` → `"averaging_period": "5m"`
+- `"connection_timeout_secs": 10` → `"connection_timeout": "10s"`
 
-## Stepwise plan
-
-1. Add `serde_with` (latest stable 3.x) to `[workspace.dependencies]` in
-   the root `Cargo.toml` per CLAUDE.md rule 10. Re-run
-   `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock`.
-2. Decide naming policy (Option 1 — drop suffix — recommended) and
-   update `docs/workspace.md` § "Duration Units" in the same PR.
-3. For each service's config.rs:
-   - Pull in `use serde_with::{serde_as, DurationSeconds};` and
-     `use std::time::Duration;`.
-   - Annotate the struct with `#[serde_as]`, change the field type to
-     `Duration`, and add `#[serde_as(as = "DurationSeconds<u64>")]`.
-   - Update `default_*` fns to return `Duration::from_secs(N)`.
-4. Update all call sites that previously wrapped the field in
-   `Duration::from_secs(...)` — drop the wrap. A grep for
-   `Duration::from_secs.*\.connection_timeout` etc. will find them.
-5. Update the PHD2 `client.rs` `json!` calls per the section above.
-6. Update tests:
-   - Equality assertions need `Duration::from_secs(N)`, not bare
-     integers.
-   - Sample config tests round-trip via `serde_json::from_str::<Config>`
-     and back.
-7. Sample `config.json` files:
-   - `DurationSeconds<u64>` keeps the **integer values** unchanged in
-     JSON — no value rewrites.
-   - The **JSON key names** are decided by the naming choice above:
-     - Option 1 (drop suffix) → keys change in lockstep
-       (`connection_timeout_secs` → `connection_timeout`); update every
-       sample `config.json`.
-     - Option 2 (keep suffix) → keys stay identical to the rename PR;
-       sample configs untouched.
-8. Run `cargo rail run --merge-base -q -- --color never` and
-   `cargo fmt --all`. Fix anything red.
+JSON keys also lose the unit suffix (Option 1, "drop suffix" in the
+original plan).
 
 ## Acceptance
 
-- New workspace dep `serde_with` is in `[workspace.dependencies]`.
-- All nine target fields are typed `Duration`.
-- No `Duration::from_secs(cfg.<field>)` patterns remain — direct field
-  access only.
-- `docs/workspace.md` § "Duration Units" reflects the new policy.
+- New workspace dep `humantime-serde` is in `[workspace.dependencies]`,
+  and `MODULE.bazel.lock` was refreshed via
+  `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
+- All 12 target fields are typed `Duration`.
+- No `Duration::from_secs(cfg.<field>)` / `Duration::from_millis(...)`
+  patterns remain at the consumer sites — direct field access only.
+- `docs/workspace.md` § "Duration Units" reflects the new policy
+  (humantime, no suffix on `Duration` config fields).
 - `cargo rail run --merge-base -q -- --color never` is green.
-- All sample `config.json` files still deserialise — value formats are
-  unchanged; key names only change if Option 1 (drop suffix) is chosen,
-  in which case every sample is updated in the same PR.
+- All sample `config.json` files still deserialise; values were
+  rewritten to humantime strings.
 
 ## Out of scope
 
 - Migrating runtime-only `Duration` usages (already `Duration` today).
-- Adding a `humantime` representation as an opt-in alternative — punt
-  to a separate decision if user-facing string durations become
-  desirable.
+- Migrating non-config duration-like fields (epoch milliseconds,
+  dashboard state) — those keep their integer + unit-suffix form.
+- PHD2's outgoing JSON-RPC `time`/`timeout` integers — protocol-fixed,
+  handled at the call site.

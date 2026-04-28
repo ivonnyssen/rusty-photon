@@ -50,8 +50,8 @@ fn create_test_config() -> Phd2Config {
         host: "localhost".to_string(),
         port: 4400,
         executable_path: get_default_phd2_path(),
-        connection_timeout_secs: 30,
-        command_timeout_secs: 30,
+        connection_timeout: Duration::from_secs(30),
+        command_timeout: Duration::from_secs(30),
         auto_start: false,
         auto_connect_equipment: false,
         ..Default::default()
@@ -117,7 +117,7 @@ fn test_load_config_with_defaults() {
 
     let config = result.unwrap();
     // Defaults should be applied
-    assert_eq!(config.phd2.connection_timeout_secs, 10);
+    assert_eq!(config.phd2.connection_timeout, Duration::from_secs(10));
     assert_eq!(config.settling.pixels, 0.5);
 }
 
@@ -420,7 +420,7 @@ async fn test_connect_to_nonexistent_server() {
     let config = Phd2Config {
         host: "localhost".to_string(),
         port: 59999, // Unlikely to be in use
-        connection_timeout_secs: 2,
+        connection_timeout: Duration::from_secs(2),
         ..Default::default()
     };
 
@@ -619,8 +619,8 @@ async fn test_mock_phd2_connection() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -661,8 +661,8 @@ async fn test_mock_phd2_get_app_state() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -691,8 +691,8 @@ async fn test_mock_phd2_get_profiles() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -723,8 +723,8 @@ async fn test_mock_phd2_get_equipment() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -755,8 +755,8 @@ async fn test_mock_phd2_exposure_methods() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -794,8 +794,8 @@ async fn test_mock_phd2_calibration_methods() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -843,8 +843,8 @@ async fn test_mock_phd2_guiding_control() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -901,8 +901,8 @@ async fn test_mock_phd2_star_operations() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -942,8 +942,8 @@ async fn test_mock_phd2_cooling() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -976,8 +976,8 @@ async fn test_mock_phd2_star_image() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -1009,8 +1009,8 @@ async fn test_mock_phd2_event_subscription() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -1051,11 +1051,11 @@ async fn test_mock_phd2_reconnect_on_disconnect() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         reconnect: ReconnectConfig {
             enabled: true,
-            interval_secs: 1,
+            interval: Duration::from_secs(1),
             max_retries: Some(3),
         },
         ..Default::default()
@@ -1122,8 +1122,8 @@ async fn test_process_manager_start_stop_mock() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 10,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(5),
         spawn_env,
         ..Default::default()
     };
@@ -1210,8 +1210,8 @@ async fn test_process_manager_start_already_running() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -1266,8 +1266,8 @@ async fn test_process_manager_force_kill() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 10,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(5),
         spawn_env,
         ..Default::default()
     };
@@ -1320,8 +1320,8 @@ async fn test_process_manager_shutdown_via_rpc() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 10,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(5),
         spawn_env: spawn_env.clone(),
         ..Default::default()
     };
@@ -1379,8 +1379,8 @@ async fn test_process_manager_stop_without_client() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 10,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(5),
         spawn_env,
         ..Default::default()
     };
@@ -1423,8 +1423,8 @@ async fn test_process_manager_start_when_external_running() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
@@ -1489,8 +1489,8 @@ async fn test_process_exit_immediately() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 5,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
         spawn_env,
         ..Default::default()
     };
@@ -1532,8 +1532,8 @@ async fn test_process_connection_timeout() {
         host: "127.0.0.1".to_string(),
         port,
         executable_path: Some(binary_path),
-        connection_timeout_secs: 2, // Short timeout for faster test
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(2), // Short timeout for faster test
+        command_timeout: Duration::from_secs(5),
         spawn_env,
         ..Default::default()
     };
@@ -1568,8 +1568,8 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
     let config = Phd2Config {
         host: "127.0.0.1".to_string(),
         port,
-        connection_timeout_secs: 10,
-        command_timeout_secs: 5,
+        connection_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(5),
         ..Default::default()
     };
 
