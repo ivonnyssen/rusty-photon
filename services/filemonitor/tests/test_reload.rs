@@ -28,7 +28,7 @@ async fn test_server_loop_stop_and_reload() {
             },
             "file": {
                 "path": monitor_file.to_str().unwrap(),
-                "polling_interval_secs": 60
+                "polling_interval": "60s"
             },
             "parsing": {
                 "rules": [],
@@ -73,7 +73,7 @@ async fn test_server_loop_stop_and_reload() {
             },
             "file": {
                 "path": monitor_file.to_str().unwrap(),
-                "polling_interval_secs": 60
+                "polling_interval": "60s"
             },
             "parsing": {
                 "rules": [],

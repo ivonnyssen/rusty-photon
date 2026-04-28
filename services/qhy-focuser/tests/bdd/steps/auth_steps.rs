@@ -27,7 +27,7 @@ fn qhy_configured_with_tls_and_auth(world: &mut QhyFocuserWorld) {
     world.config = Some(qhy_focuser::Config {
         serial: qhy_focuser::SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval_ms: 60000,
+            polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
         server: qhy_focuser::ServerConfig {
@@ -59,7 +59,7 @@ fn qhy_configured_without_auth(world: &mut QhyFocuserWorld) {
     world.config = Some(qhy_focuser::Config {
         serial: qhy_focuser::SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval_ms: 60000,
+            polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
         server: qhy_focuser::ServerConfig {

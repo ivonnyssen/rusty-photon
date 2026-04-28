@@ -206,16 +206,47 @@ The hook is installed automatically the first time any test build pulls
 
 ### Duration Units
 
-Use the unit that is natural for the magnitude and **always include
-the unit suffix in the field name**. This eliminates ambiguity without
-forcing unnatural values.
+For **config types** (anything deserialised from a JSON config file),
+prefer `std::time::Duration` for any duration field, with the
+`humantime-serde` adapter and **no unit suffix in the field name**:
 
-- **`_ms`** for sub-second precision: `duration_ms`, `exposure_min_ms`,
-  `exposure_max_ms`, `initial_duration_ms`
-- **`_secs`** for human-facing config values: `poll_interval_secs`,
-  `polling_interval_secs`, `settle_time_secs`, `timeout_secs`
+```rust
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
-Never use a bare `duration` or `timeout` field without a unit suffix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileConfig {
+    pub path: PathBuf,
+    #[serde(with = "humantime_serde", default = "default_polling_interval")]
+    pub polling_interval: Duration,
+}
+
+fn default_polling_interval() -> Duration {
+    Duration::from_secs(60)
+}
+```
+
+The wire format is a humantime string (`"60s"`, `"500ms"`, `"1m30s"`,
+`"2h"`). The unit lives in the value, not the field name — the type
+already says `Duration` and the value already says the unit. This
+removes the previous `_ms` vs `_secs` ambiguity in field names.
+
+`humantime` accepts both compact forms (`"5m"`) and combinations
+(`"1m30s500ms"`). It rejects bare integers (`"30"` is invalid — must be
+`"30s"` or `"30ms"`).
+
+For raw integer fields that are still magnitudes of time but **not**
+config-loaded `Duration`s (e.g. internal state structs serialised for
+a dashboard, or u64 epoch milliseconds), keep the unit suffix on the
+field name (`last_poll_epoch_ms`, `polling_interval_ms`) so a reader
+can tell the unit at the call site.
+
+Wire-format exceptions: when a config value also feeds a third-party
+JSON-RPC payload that requires a bare integer (e.g. PHD2's `time` and
+`timeout` settle keys), keep the operator-facing field as `Duration`
+with humantime in the config file and convert via `.as_secs()` /
+`.as_millis()` at the `json!` macro site only. See
+`services/phd2-guider/src/client.rs` for the worked example.
 
 ## Feature Flags
 

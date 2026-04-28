@@ -86,11 +86,13 @@ impl SerialManager {
         if count == 0 {
             debug!("First device connecting, opening serial port");
 
-            let timeout = Duration::from_secs(self.config.timeout_secs);
-
             let pair: SerialPair = self
                 .serial_factory
-                .open(&self.config.port, self.config.baud_rate, timeout)
+                .open(
+                    &self.config.port,
+                    self.config.baud_rate,
+                    self.config.timeout,
+                )
                 .await?;
 
             *self.reader.lock().await = Some(pair.reader);
@@ -379,7 +381,7 @@ impl SerialManager {
 
     /// Start background polling for position and temperature
     async fn start_polling(&self) {
-        let polling_interval_ms = self.config.polling_interval_ms;
+        let polling_interval = self.config.polling_interval;
         let cached_state = Arc::clone(&self.cached_state);
         let serial_available = Arc::clone(&self.serial_available);
         let reader = Arc::clone(&self.reader);
@@ -388,7 +390,7 @@ impl SerialManager {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         let handle = tokio::spawn(async move {
-            let mut poll_interval = interval(Duration::from_millis(polling_interval_ms));
+            let mut poll_interval = interval(polling_interval);
 
             loop {
                 tokio::select! {
@@ -638,7 +640,7 @@ mod mock_tests {
         Config {
             serial: SerialConfig {
                 port: "/dev/mock".to_string(),
-                polling_interval_ms: 60_000,
+                polling_interval: Duration::from_secs(60),
                 ..Default::default()
             },
             server: ServerConfig {

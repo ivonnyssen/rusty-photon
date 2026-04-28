@@ -425,8 +425,8 @@ async fn run_guide(
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time_secs: settle_time.unwrap_or(10),
-        timeout_secs: settle_timeout.unwrap_or(60),
+        time: std::time::Duration::from_secs(settle_time.unwrap_or(10) as u64),
+        timeout: std::time::Duration::from_secs(settle_timeout.unwrap_or(60) as u64),
     };
 
     let roi_rect = match roi {
@@ -435,8 +435,8 @@ async fn run_guide(
     };
 
     info!(
-        "Starting guiding (recalibrate={}, settle: pixels={}, time={}, timeout={})",
-        recalibrate, settle.pixels, settle.time_secs, settle.timeout_secs
+        "Starting guiding (recalibrate={}, settle: pixels={}, time={:?}, timeout={:?})",
+        recalibrate, settle.pixels, settle.time, settle.timeout
     );
 
     client.start_guiding(&settle, recalibrate, roi_rect).await?;
@@ -530,13 +530,13 @@ async fn run_dither(
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time_secs: settle_time.unwrap_or(10),
-        timeout_secs: settle_timeout.unwrap_or(60),
+        time: std::time::Duration::from_secs(settle_time.unwrap_or(10) as u64),
+        timeout: std::time::Duration::from_secs(settle_timeout.unwrap_or(60) as u64),
     };
 
     info!(
-        "Dithering (amount={}, ra_only={}, settle: pixels={}, time={}, timeout={})",
-        amount, ra_only, settle.pixels, settle.time_secs, settle.timeout_secs
+        "Dithering (amount={}, ra_only={}, settle: pixels={}, time={:?}, timeout={:?})",
+        amount, ra_only, settle.pixels, settle.time, settle.timeout
     );
 
     client.dither(amount, ra_only, &settle).await?;

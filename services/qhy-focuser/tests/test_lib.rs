@@ -39,7 +39,7 @@ fn test_config(focuser_enabled: bool) -> Config {
     Config {
         serial: SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval_ms: 60000,
+            polling_interval: Duration::from_secs(60),
             ..Default::default()
         },
         server: ServerConfig {

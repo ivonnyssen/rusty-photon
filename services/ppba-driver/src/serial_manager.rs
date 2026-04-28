@@ -63,7 +63,7 @@ impl SerialManager {
     pub fn new(config: Config, serial_factory: Arc<dyn SerialPortFactory>) -> Self {
         // Initialize sensor means with configured averaging period
         let mut cached_state = CachedState::default();
-        let window = Duration::from_millis(config.serial.polling_interval_ms * 60); // Default window
+        let window = config.serial.polling_interval * 60; // Default window
         cached_state.temp_mean.set_window(window);
         cached_state.humidity_mean.set_window(window);
         cached_state.dewpoint_mean.set_window(window);
@@ -95,11 +95,13 @@ impl SerialManager {
             // First device connecting - open the port
             debug!("First device connecting, opening serial port");
 
-            let timeout = Duration::from_secs(self.config.timeout_secs);
-
             let pair: SerialPair = self
                 .serial_factory
-                .open(&self.config.port, self.config.baud_rate, timeout)
+                .open(
+                    &self.config.port,
+                    self.config.baud_rate,
+                    self.config.timeout,
+                )
                 .await?;
 
             // Store reader and writer
@@ -273,7 +275,7 @@ impl SerialManager {
 
     /// Start background polling for status updates
     async fn start_polling(&self) {
-        let polling_interval_ms = self.config.polling_interval_ms;
+        let polling_interval = self.config.polling_interval;
         let cached_state = Arc::clone(&self.cached_state);
         let serial_available = Arc::clone(&self.serial_available);
         let reader = Arc::clone(&self.reader);
@@ -282,7 +284,7 @@ impl SerialManager {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         let handle = tokio::spawn(async move {
-            let mut poll_interval = interval(Duration::from_millis(polling_interval_ms));
+            let mut poll_interval = interval(polling_interval);
 
             loop {
                 // Wait for the next tick or a shutdown signal, whichever comes first

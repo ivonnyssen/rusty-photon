@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 /// Environment variable name for overriding the Pushover API token
 const PUSHOVER_API_TOKEN_ENV: &str = "PUSHOVER_API_TOKEN";
@@ -93,8 +94,8 @@ pub enum MonitorConfig {
         port: u16,
         #[serde(default)]
         device_number: u32,
-        #[serde(default = "default_polling_interval_secs")]
-        polling_interval_secs: u64,
+        #[serde(default = "default_polling_interval", with = "humantime_serde")]
+        polling_interval: Duration,
         /// URL scheme: "http" (default) or "https" for TLS-enabled services
         #[serde(default = "default_scheme")]
         scheme: String,
@@ -111,12 +112,11 @@ impl MonitorConfig {
         }
     }
 
-    pub fn polling_interval_secs(&self) -> u64 {
+    pub fn polling_interval(&self) -> Duration {
         match self {
             MonitorConfig::AlpacaSafetyMonitor {
-                polling_interval_secs,
-                ..
-            } => *polling_interval_secs,
+                polling_interval, ..
+            } => *polling_interval,
         }
     }
 }
@@ -210,8 +210,8 @@ fn default_alpaca_port() -> u16 {
     11111
 }
 
-fn default_polling_interval_secs() -> u64 {
-    30
+fn default_polling_interval() -> Duration {
+    Duration::from_secs(30)
 }
 
 fn default_pushover_title() -> String {
@@ -279,7 +279,7 @@ mod tests {
                     "host": "localhost",
                     "port": 11111,
                     "device_number": 0,
-                    "polling_interval_secs": 30
+                    "polling_interval": "30s"
                 }
             ],
             "notifiers": [
@@ -319,7 +319,10 @@ mod tests {
 
         assert_eq!(config.monitors.len(), 1);
         assert_eq!(config.monitors[0].name(), "Roof Safety Monitor");
-        assert_eq!(config.monitors[0].polling_interval_secs(), 30);
+        assert_eq!(
+            config.monitors[0].polling_interval(),
+            Duration::from_secs(30)
+        );
 
         assert_eq!(config.notifiers.len(), 1);
         assert_eq!(config.notifiers[0].type_name(), "pushover");
@@ -370,13 +373,13 @@ mod tests {
                 host,
                 port,
                 device_number,
-                polling_interval_secs,
+                polling_interval,
                 ..
             } => {
                 assert_eq!(host, "localhost");
                 assert_eq!(*port, 11111);
                 assert_eq!(*device_number, 0);
-                assert_eq!(*polling_interval_secs, 30);
+                assert_eq!(*polling_interval, Duration::from_secs(30));
             }
         }
     }

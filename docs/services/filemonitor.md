@@ -30,7 +30,7 @@ The service uses a JSON configuration file with the following format:
   },
   "file": {
     "path": "/path/to/RoofStatusFile.txt",
-    "polling_interval_secs": 60
+    "polling_interval": "60s"
   },
   "parsing": {
     "rules": [
@@ -66,7 +66,7 @@ The service uses a JSON configuration file with the following format:
 Configuration sections:
 
 - **device**: ASCOM device metadata (name, unique ID, description)
-- **file**: Path to monitor and polling interval in seconds
+- **file**: Path to monitor and polling interval (humantime string, e.g. `"60s"`)
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
 - **server**: ASCOM Alpaca server configuration (port, device number)
 - **server.auth**: Optional HTTP Basic Auth credentials (username, Argon2id password_hash). See [ADR-003](../decisions/003-authentication-for-device-access.md).
@@ -88,7 +88,7 @@ The `set_connected()` method controls the monitoring behavior:
 
 - **When set to `true`**:
   - Immediately reloads the monitored file to get current content
-  - Initiates background polling according to the configured `polling_interval_secs`
+  - Initiates background polling according to the configured `polling_interval` (humantime string, e.g. `"60s"`)
   - Caches file content for use by `is_safe()` calls
   - Returns error if file cannot be read
 

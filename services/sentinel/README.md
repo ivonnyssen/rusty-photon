@@ -54,7 +54,7 @@ Monitors poll ASCOM Alpaca devices at a configured interval.
       "host": "localhost",
       "port": 11111,
       "device_number": 0,
-      "polling_interval_secs": 30
+      "polling_interval": "30s"
     }
   ]
 }
@@ -67,7 +67,7 @@ Monitors poll ASCOM Alpaca devices at a configured interval.
 | `host` | `localhost` | ASCOM Alpaca device hostname or IP. |
 | `port` | `11111` | ASCOM Alpaca device port. |
 | `device_number` | `0` | ASCOM device number. |
-| `polling_interval_secs` | `30` | How often to poll the device (seconds). |
+| `polling_interval` | `"30s"` | How often to poll the device (humantime: `"30s"`, `"500ms"`, `"1m"`, …). |
 
 ### Notifiers
 

@@ -20,6 +20,7 @@ ascom-alpaca = { workspace = true, features = ["server", "safety_monitor", "clie
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+humantime-serde = { workspace = true }
 clap = { workspace = true }
 regex = { workspace = true }
 async-trait = { workspace = true }

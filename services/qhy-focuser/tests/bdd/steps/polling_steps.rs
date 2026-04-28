@@ -12,7 +12,7 @@ use std::time::Duration;
 #[given("a focuser service with fast polling")]
 async fn focuser_with_fast_polling(world: &mut QhyFocuserWorld) {
     let mut config = Config::default();
-    config.serial.polling_interval_ms = 50;
+    config.serial.polling_interval = Duration::from_millis(50);
     world.config = Some(config);
     world.start_focuser().await;
 }
