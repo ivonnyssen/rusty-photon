@@ -522,7 +522,7 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id, duration_ms, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
+| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
 | `get_camera_info` | camera_id | max_adu, exposure_min_ms, exposure_max_ms, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
@@ -579,7 +579,8 @@ hardware.
 
 #### Capture Tool Details
 
-The `capture` tool takes exposure time in milliseconds (`duration_ms`).
+The `capture` tool takes exposure time as a humantime string (`duration`,
+e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
 downloads the camera's `image_array`, writes it as a FITS file (using the
 `fitrs` crate with BITPIX=32), and creates a sidecar exposure document
@@ -809,7 +810,7 @@ Orchestrator calls: tools/call auto_focus {camera_id: "main-cam", focuser_id: "m
   vcurve-focus connects to rp as MCP client and drives the V-curve:
     → tools/call  move_focuser {focuser_id: "main-focuser", position: 10000}
     ← {actual_position: 10000}
-    → tools/call  capture {camera_id: "main-cam", duration_secs: 2}
+    → tools/call  capture {camera_id: "main-cam", duration: "2s"}
     ← {image_path: "/tmp/focus_001.fits", document_id: "doc-001"}
     → tools/call  measure_basic {image_path: "/tmp/focus_001.fits"}
     ← {hfr: 5.2, star_count: 340}
@@ -833,7 +834,7 @@ Orchestrator calls: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tole
   → rp proxies to centering plugin's MCP server
 
   centering plugin connects to rp and drives the loop:
-    → tools/call  capture {camera_id: "main-cam", duration_secs: 5}
+    → tools/call  capture {camera_id: "main-cam", duration: "5s"}
     ← {image_path: "/tmp/center_001.fits"}
     → tools/call  plate_solve {image_path: "/tmp/center_001.fits"}
     ← {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
@@ -1035,7 +1036,7 @@ Loop:
   ← {rms_ra: 0.4, rms_dec: 0.3}
 
   Capture loop:
-    → tools/call capture {camera_id: "main-cam", duration_secs: 300}
+    → tools/call capture {camera_id: "main-cam", duration: "300s"}
     ← {image_path: "...", document_id: "doc-042"}
     → tools/call record_exposure {target: "M31", filter: "Luminance"}
     ← {completed: 13, goal: 40}

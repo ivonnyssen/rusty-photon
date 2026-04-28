@@ -47,7 +47,7 @@ async fn mcp_call_capture(world: &mut RpWorld, camera_id: String, duration_ms: i
             "capture",
             serde_json::json!({
                 "camera_id": camera_id,
-                "duration_ms": duration_ms
+                "duration": format!("{}ms", duration_ms),
             }),
         )
         .await;
@@ -144,7 +144,7 @@ async fn mcp_call_capture_no_camera_id(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
     let result = world
         .mcp()
-        .call_tool("capture", serde_json::json!({"duration_ms": 1000}))
+        .call_tool("capture", serde_json::json!({"duration": "1s"}))
         .await;
     world.last_tool_result = Some(result);
 }

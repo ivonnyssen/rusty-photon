@@ -1,5 +1,7 @@
 //! MCP client for calling rp's built-in tools via rmcp.
 
+use std::time::Duration;
+
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -55,10 +57,13 @@ impl McpClient {
         })
     }
 
-    pub async fn capture(&self, camera_id: &str, duration_ms: u32) -> Result<CaptureResult> {
+    pub async fn capture(&self, camera_id: &str, duration: Duration) -> Result<CaptureResult> {
         self.call_tool(
             "capture",
-            serde_json::json!({"camera_id": camera_id, "duration_ms": duration_ms}),
+            serde_json::json!({
+                "camera_id": camera_id,
+                "duration": format!("{}ms", duration.as_millis()),
+            }),
         )
         .await
     }

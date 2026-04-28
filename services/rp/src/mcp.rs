@@ -64,8 +64,10 @@ macro_rules! resolve_device {
 pub struct CaptureParams {
     /// Camera device ID
     pub camera_id: String,
-    /// Exposure time in milliseconds
-    pub duration_ms: u64,
+    /// Exposure time as a humantime string (e.g. `"500ms"`, `"30s"`, `"1m30s"`).
+    #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub duration: Duration,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -148,8 +150,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CaptureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let duration = Duration::from_millis(params.duration_ms);
-
         let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
         let document_id = Uuid::new_v4().to_string();
@@ -162,11 +162,11 @@ impl McpHandler {
             "exposure_started",
             serde_json::json!({
                 "camera_id": params.camera_id,
-                "duration_ms": duration.as_millis() as u64,
+                "duration_ms": params.duration.as_millis() as u64,
             }),
         );
 
-        if let Err(e) = cam.start_exposure(duration, true).await {
+        if let Err(e) = cam.start_exposure(params.duration, true).await {
             return Ok(tool_error!("failed to start exposure: {}", e));
         }
 
@@ -959,7 +959,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to start exposure");
@@ -975,7 +975,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "error checking image ready");
@@ -991,7 +991,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to download image array");
@@ -1169,7 +1169,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to write FITS file");

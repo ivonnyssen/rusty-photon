@@ -109,10 +109,10 @@ for each filter in plan.filters:
     set_filter(filter_wheel_id, filter.name)
 
     # 3a. Find optimal exposure time for this filter
-    duration_ms = initial_duration_ms
+    duration = initial_duration
     converged = false
     for iteration in 1..=max_iterations:
-        result = capture(camera_id, duration_ms)
+        result = capture(camera_id, duration)
         stats = compute_image_stats(result.image_path, result.document_id)
 
         deviation = |stats.median_adu - target_adu| / target_adu
@@ -122,19 +122,19 @@ for each filter in plan.filters:
 
         # Adjust proportionally
         if stats.median_adu == 0:
-            duration_ms = duration_ms * 2     # guard division by zero
+            duration = duration * 2           # guard division by zero
         else:
-            duration_ms = duration_ms * (target_adu / stats.median_adu)
+            duration = duration * (target_adu / stats.median_adu)
 
         # Clamp to camera limits
-        duration_ms = clamp(duration_ms, info.exposure_min_ms, info.exposure_max_ms)
+        duration = clamp(duration, info.exposure_min_ms, info.exposure_max_ms)
 
     if not converged:
         log warning "exposure did not converge for filter {filter.name}"
 
     # 3b. Capture the requested number of flat frames
     for i in 1..=filter.count:
-        capture(camera_id, duration_ms)
+        capture(camera_id, duration)
 
 # 4. Clean up
 calibrator_off(calibrator_id)
@@ -213,7 +213,7 @@ its own config file. The plan is part of `rp`'s plugin configuration:
     "target_adu_fraction": 0.5,
     "tolerance": 0.05,
     "max_iterations": 10,
-    "initial_duration_ms": 1000,
+    "initial_duration": "1s",
     "brightness": null,
     "filters": [
       { "name": "Luminance", "count": 20 },
@@ -235,7 +235,7 @@ its own config file. The plan is part of `rp`'s plugin configuration:
 | `target_adu_fraction` | float | 0.5 | Target median as fraction of max ADU |
 | `tolerance` | float | 0.05 | Acceptable deviation from target (5%) |
 | `max_iterations` | int | 10 | Max attempts to find correct exposure time per filter |
-| `initial_duration_ms` | int | 1000 | Starting exposure time in milliseconds |
+| `initial_duration` | humantime string | `"1s"` | Starting exposure time (e.g. `"500ms"`, `"1s"`) |
 | `brightness` | int or null | null | Calibrator brightness (null = max_brightness) |
 | `filters` | array | required | List of filters with frame counts |
 | `filters[].name` | string | required | Filter name (must match filter wheel config) |

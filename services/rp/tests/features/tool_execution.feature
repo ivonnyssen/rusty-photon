@@ -44,13 +44,13 @@ Feature: MCP tool execution against equipment
     Then the tool call should return an error
     And the error message should contain "camera_id"
 
-  Scenario: Capture with missing duration_ms returns an error
+  Scenario: Capture with missing duration returns an error
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "capture" with camera "main-cam" but no duration
     Then the tool call should return an error
-    And the error message should contain "duration_ms"
+    And the error message should contain "duration"
 
   Scenario: Set filter with nonexistent filter wheel returns an error
     Given a running Alpaca simulator

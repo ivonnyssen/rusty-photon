@@ -208,7 +208,7 @@ async fn run_flat_calibration(mcp_server_url: &str, workflow_id: &str, plan: &[(
                     "capture",
                     serde_json::json!({
                         "camera_id": "main-cam",
-                        "duration_ms": 100
+                        "duration": "100ms"
                     }),
                 )
                 .await;

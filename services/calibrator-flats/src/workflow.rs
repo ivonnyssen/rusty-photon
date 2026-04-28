@@ -1,5 +1,7 @@
 //! Flat calibration workflow: iterative exposure optimization + batch capture.
 
+use std::time::Duration;
+
 use tracing::{debug, info, warn};
 
 use crate::config::FlatPlan;
@@ -97,9 +99,10 @@ async fn run_capture_loop(
         }
 
         // Capture the requested number of flat frames
+        let capture_duration = Duration::from_millis(duration_ms as u64);
         for i in 1..=filter.count {
             debug!(filter = %filter.name, frame = i, total = filter.count, "capturing flat");
-            mcp.capture(&plan.camera_id, duration_ms).await?;
+            mcp.capture(&plan.camera_id, capture_duration).await?;
         }
 
         total_frames += filter.count;
@@ -129,11 +132,13 @@ async fn find_optimal_duration(
     target_adu: u32,
     camera_info: &crate::mcp_client::CameraInfo,
 ) -> Result<(u32, u32, u32, bool)> {
-    let mut duration_ms = plan.initial_duration_ms;
+    let mut duration_ms = plan.initial_duration.as_millis() as u32;
     let mut last_median = 0u32;
 
     for iteration in 1..=plan.max_iterations {
-        let capture_result = mcp.capture(&plan.camera_id, duration_ms).await?;
+        let capture_result = mcp
+            .capture(&plan.camera_id, Duration::from_millis(duration_ms as u64))
+            .await?;
         let stats = mcp
             .compute_image_stats(
                 &capture_result.image_path,

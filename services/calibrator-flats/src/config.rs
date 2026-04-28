@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -26,9 +27,9 @@ pub struct FlatPlan {
     /// Max iterations to find correct exposure time per filter
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
-    /// Starting exposure time in milliseconds
-    #[serde(default = "default_initial_duration_ms")]
-    pub initial_duration_ms: u32,
+    /// Starting exposure time (humantime, e.g. `"1s"`, `"500ms"`)
+    #[serde(default = "default_initial_duration", with = "humantime_serde")]
+    pub initial_duration: Duration,
     /// Calibrator brightness (null/absent = max_brightness)
     #[serde(default)]
     pub brightness: Option<u32>,
@@ -48,8 +49,8 @@ fn default_max_iterations() -> u32 {
     10
 }
 
-fn default_initial_duration_ms() -> u32 {
-    1000
+fn default_initial_duration() -> Duration {
+    Duration::from_secs(1)
 }
 
 pub fn load_config(path: &Path) -> Result<FlatPlan> {
@@ -89,7 +90,7 @@ mod tests {
         assert_eq!(plan.target_adu_fraction, 0.5);
         assert_eq!(plan.tolerance, 0.05);
         assert_eq!(plan.max_iterations, 10);
-        assert_eq!(plan.initial_duration_ms, 1000);
+        assert_eq!(plan.initial_duration, Duration::from_secs(1));
         assert!(plan.brightness.is_none());
         assert_eq!(plan.filters.len(), 1);
     }
@@ -103,7 +104,7 @@ mod tests {
             "target_adu_fraction": 0.4,
             "tolerance": 0.1,
             "max_iterations": 5,
-            "initial_duration_ms": 500,
+            "initial_duration": "500ms",
             "brightness": 80,
             "filters": [
                 {"name": "Red", "count": 10},
@@ -114,7 +115,7 @@ mod tests {
         assert_eq!(plan.target_adu_fraction, 0.4);
         assert_eq!(plan.tolerance, 0.1);
         assert_eq!(plan.max_iterations, 5);
-        assert_eq!(plan.initial_duration_ms, 500);
+        assert_eq!(plan.initial_duration, Duration::from_millis(500));
         assert_eq!(plan.brightness, Some(80));
         assert_eq!(plan.filters.len(), 2);
     }
