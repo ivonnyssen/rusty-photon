@@ -270,6 +270,12 @@ async fn call_measure_basic(
     if let Some(threshold) = threshold_sigma {
         args.insert("threshold_sigma".to_string(), serde_json::json!(threshold));
     }
+    // min_area and max_area are required parameters (no defaults — they encode
+    // pixel-scale assumptions per docs/services/rp.md). Bake test-fixture
+    // values: 5 admits any plausible PSF, 65536 admits even very large
+    // smoothed components on the OmniSim synthetic frame.
+    args.insert("min_area".to_string(), serde_json::json!(5));
+    args.insert("max_area".to_string(), serde_json::json!(65_536));
 
     let result = world
         .mcp()

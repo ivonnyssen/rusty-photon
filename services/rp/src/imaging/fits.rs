@@ -67,8 +67,9 @@ fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Resu
 
 /// Read pixel data from a FITS file.
 ///
-/// Returns the pixel values as a flat `Vec<i32>`.
-pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
+/// Returns `(pixels, width, height)`. The pixel vector is flat row-major;
+/// `width` is the first FITS axis, `height` the second.
+pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)> {
     let path = path.as_ref();
     debug!(path = %path.display(), "reading FITS pixels");
 
@@ -88,8 +89,12 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
     match primary.read_data() {
         fitrs::FitsData::IntegersI32(array) => {
             let pixels: Vec<i32> = array.data.iter().filter_map(|v| *v).collect();
-            debug!(pixel_count = pixels.len(), "read FITS pixels");
-            Ok(pixels)
+            let (width, height) = dims_from_shape(&array.shape)?;
+            debug!(
+                pixel_count = pixels.len(),
+                width, height, "read FITS pixels"
+            );
+            Ok((pixels, width, height))
         }
         fitrs::FitsData::IntegersU32(array) => {
             let pixels: Vec<i32> = array
@@ -97,12 +102,27 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<Vec<i32>> {
                 .iter()
                 .filter_map(|v| v.map(|u| u as i32))
                 .collect();
-            debug!(pixel_count = pixels.len(), "read FITS pixels (u32->i32)");
-            Ok(pixels)
+            let (width, height) = dims_from_shape(&array.shape)?;
+            debug!(
+                pixel_count = pixels.len(),
+                width, height, "read FITS pixels (u32->i32)"
+            );
+            Ok((pixels, width, height))
         }
         other => Err(RpError::Imaging(format!(
             "unsupported FITS data type (expected integer): {:?}",
             std::mem::discriminant(&other)
+        ))),
+    }
+}
+
+fn dims_from_shape(shape: &[usize]) -> Result<(u32, u32)> {
+    match shape {
+        [w, h] => Ok((*w as u32, *h as u32)),
+        [w, h, _planes] => Ok((*w as u32, *h as u32)),
+        other => Err(RpError::Imaging(format!(
+            "unexpected FITS shape (expected 2D or 3D with 1 plane): {:?}",
+            other
         ))),
     }
 }
@@ -122,8 +142,9 @@ mod tests {
 
         assert!(path.exists());
 
-        let read_back = read_fits_pixels(&path).unwrap();
+        let (read_back, w, h) = read_fits_pixels(&path).unwrap();
         assert_eq!(read_back, pixels);
+        assert_eq!((w, h), (2, 2));
     }
 
     #[tokio::test]

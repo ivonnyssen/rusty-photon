@@ -7,12 +7,20 @@
 //! re-read and re-decode the FITS file. See `docs/services/rp.md` (Image
 //! Analysis Strategy and Image Cache) for the design.
 
+pub mod background;
 pub mod cache;
 pub mod fits;
+pub mod hfr;
+pub mod measure_basic;
 pub mod pixel;
+pub mod stars;
 pub mod stats;
 
+pub use background::{estimate_background, sigma_clipped_stats, BackgroundStats};
 pub use cache::{CachedImage, CachedPixels, ImageCache};
 pub use fits::{read_fits_pixels, write_fits};
+pub use hfr::{aggregate_hfr, star_hfr};
+pub use measure_basic::{measure_basic, MeasureBasicResult};
 pub use pixel::Pixel;
+pub use stars::{detect_stars, DetectionParams, Star};
 pub use stats::{compute_stats, ImageStats};

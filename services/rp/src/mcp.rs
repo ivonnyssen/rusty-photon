@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::document::{DocumentStore, ExposureDocument};
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::imaging::{self, CachedImage, CachedPixels, ImageCache};
@@ -86,6 +87,35 @@ pub struct ComputeImageStatsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MeasureBasicParams {
+    /// Document ID of a previously-captured image. Resolved via the image
+    /// cache first, falling back to the FITS file recorded on the document.
+    /// Mutually exclusive with `image_path` (one is required).
+    #[serde(default)]
+    pub document_id: Option<String>,
+    /// Filesystem path to a FITS file. Used when no `document_id` is given.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// Detection threshold above sky in multiples of background stddev.
+    #[serde(default = "default_threshold_sigma")]
+    pub threshold_sigma: f64,
+    /// Minimum component pixel area to admit as a star. Required, but
+    /// modeled as `Option` so the tool body can validate input presence in
+    /// a deterministic order — `image_path`/`document_id` first, areas
+    /// second — and produce input-shaped error messages.
+    #[serde(default)]
+    pub min_area: Option<usize>,
+    /// Maximum component pixel area to admit as a star. Required (same
+    /// rationale as `min_area`).
+    #[serde(default)]
+    pub max_area: Option<usize>,
+}
+
+fn default_threshold_sigma() -> f64 {
+    5.0
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetFilterParams {
     /// Filter wheel device ID
     pub filter_wheel_id: String,
@@ -124,6 +154,7 @@ pub struct McpHandler {
     pub event_bus: Arc<EventBus>,
     pub session_config: SessionConfig,
     pub image_cache: ImageCache,
+    pub documents: DocumentStore,
 }
 
 impl McpHandler {
@@ -132,14 +163,79 @@ impl McpHandler {
         event_bus: Arc<EventBus>,
         session_config: SessionConfig,
         image_cache: ImageCache,
+        documents: DocumentStore,
     ) -> Self {
         Self {
             equipment,
             event_bus,
             session_config,
             image_cache,
+            documents,
         }
     }
+
+    async fn measure_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedParams,
+    ) -> crate::error::Result<imaging::MeasureBasicResult> {
+        if let Some(cached) = self.image_cache.get(doc_id) {
+            let max_adu = Some(cached.max_adu);
+            return match &cached.pixels {
+                CachedPixels::U16(arr) => imaging::measure_basic(
+                    arr.view(),
+                    params.threshold_sigma,
+                    params.min_area,
+                    params.max_area,
+                    max_adu,
+                ),
+                CachedPixels::I32(arr) => imaging::measure_basic(
+                    arr.view(),
+                    params.threshold_sigma,
+                    params.min_area,
+                    params.max_area,
+                    max_adu,
+                ),
+            };
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+        })?;
+        // No camera context here, so we can't reliably know max_adu — pass None
+        // (saturation flagging is best-effort; not a correctness issue).
+        self.measure_via_path(&doc.file_path, params).await
+    }
+
+    async fn measure_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedParams,
+    ) -> crate::error::Result<imaging::MeasureBasicResult> {
+        let path_owned = path.to_string();
+        let threshold = params.threshold_sigma;
+        let min_a = params.min_area;
+        let max_a = params.max_area;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            imaging::measure_basic(arr.view(), threshold, min_a, max_a, None)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+}
+
+/// `MeasureBasicParams` after schema-level optionals are validated by the
+/// tool body. Pure data, no `Option`s — passed to the imaging composer.
+struct ResolvedParams {
+    threshold_sigma: f64,
+    min_area: usize,
+    max_area: usize,
 }
 
 #[tool_router(server_handler)]
@@ -245,6 +341,20 @@ impl McpHandler {
             }
         }
 
+        let doc = ExposureDocument {
+            id: document_id.clone(),
+            captured_at: chrono::Utc::now().to_rfc3339(),
+            file_path: image_path.clone(),
+            width,
+            height,
+            camera_id: Some(params.camera_id.clone()),
+            duration_ms: Some(params.duration_ms),
+            sections: serde_json::Map::new(),
+        };
+        if let Err(e) = self.documents.create(doc).await {
+            debug!(error = %e, "document store: create failed, continuing without persistence");
+        }
+
         self.event_bus.emit(
             "exposure_complete",
             serde_json::json!({
@@ -319,7 +429,7 @@ impl McpHandler {
 
         let path_clone = image_path.clone();
         let stats = match tokio::task::spawn_blocking(move || {
-            let pixels = imaging::read_fits_pixels(&path_clone)?;
+            let (pixels, _w, _h) = imaging::read_fits_pixels(&path_clone)?;
             imaging::compute_stats(&pixels)
                 .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
         })
@@ -343,6 +453,70 @@ impl McpHandler {
             "min_adu": stats.min_adu,
             "max_adu": stats.max_adu,
             "pixel_count": stats.pixel_count,
+        }))
+    }
+
+    #[tool(
+        description = "Detect stars and compute HFR / sigma-clipped background statistics on a captured image"
+    )]
+    async fn measure_basic(
+        &self,
+        Parameters(params): Parameters<MeasureBasicParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
+        let min_area = match params.min_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: min_area"));
+            }
+        };
+        let max_area = match params.max_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: max_area"));
+            }
+        };
+        let resolved = ResolvedParams {
+            threshold_sigma: params.threshold_sigma,
+            min_area,
+            max_area,
+        };
+
+        let result = if let Some(doc_id) = params.document_id.as_deref() {
+            match self.measure_via_document(doc_id, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        } else {
+            let path = params.image_path.as_deref().expect("checked above");
+            match self.measure_via_path(path, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        };
+
+        if let Some(doc_id) = params.document_id.as_deref() {
+            let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+            if let Err(e) = self
+                .documents
+                .put_section(doc_id, "image_analysis", value)
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist image_analysis section");
+            }
+        }
+
+        Ok(tool_success!({
+            "hfr": result.hfr,
+            "star_count": result.star_count,
+            "saturated_star_count": result.saturated_star_count,
+            "background_mean": result.background_mean,
+            "background_stddev": result.background_stddev,
+            "pixel_count": result.pixel_count,
         }))
     }
 
@@ -896,6 +1070,7 @@ mod tests {
                     .to_string(),
             },
             ImageCache::new(64, 4),
+            DocumentStore::new(),
         )
     }
 
@@ -1212,6 +1387,7 @@ mod tests {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
             ImageCache::new(64, 4),
+            DocumentStore::new(),
         );
         let result = handler
             .capture(Parameters(CaptureParams {

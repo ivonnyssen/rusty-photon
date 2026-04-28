@@ -692,7 +692,7 @@ fast path because it avoids re-decoding the image just written.
 | Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
 | FITS I/O | Crate | `fitrs` |
 | 2D image operations | Crate | `ndarray` (already in workspace) |
-| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, connected components, dilation/erosion) |
+| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, dilation/erosion). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
 | Star detection | Custom | Threshold + connected components on background-subtracted image, then shape filtering |
 | Centroiding | Custom | Intensity-weighted center of mass on ndarray subframes |
 | HFR / HFD | Custom | Radial flux accumulation (~20 lines of math) |
@@ -708,13 +708,26 @@ The first analysis tool to implement. Behavioral contract:
 **Input**:
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
   (FITS file on disk).
+- `min_area` — minimum component pixel area to admit as a star. Required;
+  no default. The right value depends on the camera+optics pixel scale
+  (arcsec/px) and the seeing regime, neither of which the tool can infer
+  from the image alone. Callers (workflows, plugins) own that policy.
+- `max_area` — maximum component pixel area to admit. Required; no
+  default. Same rationale as `min_area`. Note: at extreme defocus,
+  donut-shaped PSFs from the secondary obstruction can span many hundreds
+  of pixels — auto-focus callers should set `max_area` accordingly so
+  the V-curve sweep can measure them.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold above
-  background.
+  background. Unit-free (multiples of the sigma-clipped background
+  stddev), so a default is meaningful here.
 
 **Output**:
 - `hfr` — half-flux radius in pixels, aggregated across detected stars
   (median of per-star HFRs). `null` if no stars detected.
 - `star_count` — number of valid stars after detection and filtering.
+- `saturated_star_count` — number of detected stars that contain at
+  least one pixel at `max_adu`. `0` when `max_adu` is unknown (e.g. when
+  called via `image_path` outside an exposure context).
 - `background_mean` — sigma-clipped background mean (ADU).
 - `background_stddev` — sigma-clipped background standard deviation (ADU).
 - `pixel_count` — total pixels analyzed.
@@ -725,22 +738,37 @@ The first analysis tool to implement. Behavioral contract:
 3. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 4. Threshold at `background_mean + threshold_sigma × background_stddev`.
 5. Connected-components labelling on the thresholded mask.
-6. Filter components: minimum pixel area (≥ 5 px), maximum (≤ 200 px to
-   reject galaxies/blobs), reject saturated (any pixel at the camera's
-   `max_adu`), reject components touching the image border.
+6. Filter components: pixel area in `[min_area, max_area]`; reject
+   components touching the image border. Saturated components are *not*
+   rejected — they are flagged (see `saturated_star_count`). Saturated
+   stars carry real signal: bright in-focus stars routinely clip at
+   long-enough exposures, and donut-shaped PSFs at extreme defocus are
+   usually saturated in their bright annulus. Filtering them out would
+   make HFR-vs-focus non-monotonic and break auto-focus, so the policy
+   is to measure them and let downstream consumers decide whether to
+   weight or warn.
 7. For each surviving component, compute intensity-weighted centroid and
    per-star HFR (radial flux accumulation to half of total flux).
-8. Return aggregate HFR (median of per-star HFRs), star count, background.
+   Centroiding uses background-subtracted flux to avoid bbox-center bias.
+8. Return aggregate HFR (median of per-star HFRs), star count,
+   saturated-star count, and background.
 
 **Error cases**:
+- Neither `document_id` nor `image_path` provided → MCP error mentioning
+  `image_path` (the most fundamental missing input).
 - `image_path` provided but file not found → MCP error.
 - `document_id` provided but neither cache nor FITS-on-disk fallback
   resolves → MCP error.
+- `min_area` or `max_area` missing → MCP error naming the missing field.
+  These parameters are deserialized as optional and validated by the tool
+  body in this order — `document_id`/`image_path` first, then `min_area`,
+  then `max_area` — so the error message tracks the first thing the user
+  needs to fix.
 - Background estimation fails (e.g. all pixels saturated) → MCP error.
 - No stars detected → return successfully with `hfr: null`,
-  `star_count: 0`, populated background fields. Not an error — the caller
-  decides whether that's a failure (focus run) or fine (cloudy frame
-  still useful for stats).
+  `star_count: 0`, `saturated_star_count: 0`, populated background fields.
+  Not an error — the caller decides whether that's a failure (focus run)
+  or fine (cloudy frame still useful for stats).
 
 **Persistence**: when called with `document_id`, results are written into
 the exposure document as the `image_analysis` section per the rule that

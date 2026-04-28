@@ -167,29 +167,110 @@ mocks.
 
 ### Phase 4 — Implement `measure_basic`
 
-- [ ] Crate add: `rmpfit` (workspace dep). *Not yet used by
-      `measure_basic` — `rmpfit` is for FWHM in Phase 5. Defer adding
-      until then if it keeps this PR smaller.*
-- [ ] `background.rs`: sigma-clipped mean/stddev/median.
-- [ ] `stars.rs`: Gaussian smoothing (via `ndarray-ndimage`) →
-      thresholding → connected components → component filtering
-      (area, saturation, border) → centroiding.
-- [ ] `hfr.rs`: per-star radial flux accumulation to half-max.
-- [ ] `measure_basic.rs`: compose the above; output the contract fields.
-- [ ] MCP tool wiring in `mcp.rs`: accept either `document_id` or
-      `image_path` plus optional `threshold_sigma`. Resolve via cache
-      first, fall back to FITS read on miss.
-- [ ] Document section persistence: write `image_analysis` section to
-      the exposure document when called with `document_id`.
-- [ ] HTTP cache endpoints: `GET /api/images/{document_id}` (JSON
-      metadata) and `/pixels` (Alpaca ImageBytes). Wire into `routes.rs`.
-- [ ] Unit tests on imaging primitives (synthetic in-test FITS with
-      controlled star list — exact-value assertions; per
-      `docs/skills/testing.md` §1.2).
+Status: **complete.**
 
-**Exit criteria:** all `measure_basic.feature` scenarios green; unit
-tests cover background/stars/hfr exact behavior; full `cargo rail run
---merge-base` clean; `cargo fmt`.
+#### Decisions resolved during Phase 4 planning
+
+These are now in `docs/services/rp.md` (MVP `measure_basic` Contract)
+and should not be re-litigated:
+
+- **Saturation: flag, don't reject.** Saturated stars carry real signal.
+  Bright in-focus stars routinely clip at long exposures, and donut PSFs
+  at extreme defocus saturate in their bright annulus. Rejecting them
+  would make HFR-vs-focus non-monotonic and break auto-focus. Output
+  carries `saturated_star_count` so downstream consumers (focus runs,
+  quality screens) apply their own policy.
+- **`min_area` / `max_area`: required parameters, no defaults.** Pixel
+  area encodes a pixel-scale (arcsec/px) assumption that the tool cannot
+  infer from the image alone. `threshold_sigma` keeps its default of
+  `5.0` — it's unit-free (multiples of background stddev) and so
+  scale-independent.
+- **Connected components: hand-rolled 4-connectivity BFS.**
+  `ndarray-ndimage` 0.6's `label` is 3D-only with a hard `assert!` on a
+  3×3×3 structuring element. Wrapping the 2D mask via `insert_axis` is
+  possible but yields a labels grid we'd then re-walk into per-component
+  pixel lists anyway — and per-component pixel lists are exactly what
+  centroiding and HFR want. A direct BFS producing
+  `Vec<Vec<(usize, usize)>>` is the smaller total diff. The crate is
+  still used for `gaussian_filter`.
+- **`ImageBytesMetadata` layout replicated locally.**
+  `ascom-alpaca`'s struct is `pub(crate)`. The 11×i32 LE header is
+  small and well-defined; we replicate it in `routes.rs` with a unit
+  test pinning the byte layout.
+- **Exposure document store does not exist yet.** Before Phase 4 there
+  is no `ExposureDocument` type, no in-memory store, no
+  `GET /api/documents/{id}`. The original Phase 4 sketch assumed
+  persistence existed; it does not. Phase 4 builds the foundation as
+  Step 1 so subsequent persistence work has a place to land. Reload
+  from sidecars on process restart is a Phase 5 follow-up.
+
+#### Work breakdown (in order)
+
+- [x] **Step 1 — Exposure document store.** New
+      `services/rp/src/document.rs` with `ExposureDocument`,
+      `DocumentStore::{create, get, put_section}`. Atomic sidecar JSON
+      write (`<fits>.json.tmp` → rename) next to each FITS file.
+      `mcp.rs:capture` constructs the document after FITS write +
+      cache insert. New route
+      `GET /api/documents/{document_id}` in `routes.rs` (the BDD
+      step at `measure_basic_steps.rs:79` fetches this).
+- [x] **Step 2 — `imaging/background.rs`.** Sigma-clipped
+      mean/stddev/median over a `Pixel`-generic `ArrayView2`. Iterative
+      clip (k=3, max_iters=5) with median via `select_nth_unstable` on
+      the surviving set.
+- [x] **Step 3 — `imaging/stars.rs`.**
+      `gaussian_filter` (σ ≈ 1.0 px) → threshold → 4-connectivity BFS
+      labelling → filter (area in `[min_area, max_area]`, border
+      rejection — *no* saturation rejection) → intensity-weighted
+      centroiding using background-subtracted flux. `Star` carries
+      `saturated_pixel_count: u32`.
+- [x] **Step 4 — `imaging/hfr.rs`.** Per-star radial flux accumulation
+      to half of total flux, with sub-pixel linear interpolation between
+      bracketing pixels. `aggregate_hfr` returns the median of per-star
+      HFRs; `None` when no stars.
+- [x] **Step 5 — `imaging/measure_basic.rs`.** Composes the above into
+      `MeasureBasicResult { hfr, star_count, saturated_star_count,
+      background_mean, background_stddev, pixel_count }`.
+- [x] **Step 6 — MCP tool wiring in `mcp.rs`.** `MeasureBasicParams`
+      with `min_area: Option<usize>` / `max_area: Option<usize>`
+      (`#[serde(default)]`), optional `threshold_sigma: f64` (default
+      5.0), and exclusive `document_id` / `image_path`. The area params
+      are required-but-validated-in-body so the tool can produce error
+      messages in deterministic input order: `document_id`/`image_path`
+      first (the "missing both" error mentions `image_path` per
+      `measure_basic.feature:78`), then `min_area`, then `max_area`. If
+      the area fields were strictly required at the serde level, serde
+      would error first on whichever it deserializes first, breaking
+      the error-message ordering. Resolution order: cache hit →
+      FITS-on-disk fallback via document `file_path` → error. After
+      successful analysis with `document_id`, write the `image_analysis`
+      section via `DocumentStore::put_section`.
+- [x] **Step 7 — HTTP image endpoints in `routes.rs`.**
+      `GET /api/images/{document_id}` (JSON metadata) and
+      `/pixels` (`application/imagebytes`: 44-byte header where
+      `transmission_element_type` = 8 for `U16`, 2 for `I32`; pixel
+      bytes serialized via per-element `to_le_bytes` rather than a
+      `bytemuck` cast — avoids adding a new workspace crate). Cache
+      miss falls back to FITS decode + serve. *Note: not exercised by
+      the 8 `measure_basic` BDD scenarios.*
+- [x] **Step 8 — Activate `measure_basic.feature` and round out tests.**
+      Remove `@wip` from line 1. Extend `read_fits_pixels` to also
+      return `(width, height)` (one caller — `compute_image_stats` —
+      updated alongside) so the FITS fallback path can reconstruct
+      `Array2`. Bake test-fixture `min_area` / `max_area` into the
+      step helper for the OmniSim image. Add unit tests on
+      background/stars/hfr/measure_basic with exact-value assertions
+      per `docs/skills/testing.md` §1.2.
+
+`rmpfit` is **not** added in this phase — it's deferred to Phase 5
+(`measure_stars` / FWHM).
+
+**Exit criteria met:** 90/90 BDD scenarios pass (was 82/82 + 8
+`@wip`); 33 new unit tests across `document`, `background`, `stars`,
+`hfr`, `measure_basic`, plus 2 in `routes` for ImageBytes header
+layout — 101 lib tests total, all green. `cargo rail run --merge-base`
+exits 0 with no warnings. `cargo fmt` clean. No new workspace deps,
+so no `bazel mod tidy` was needed.
 
 ### Phase 5 — Subsequent image-analysis tools
 
