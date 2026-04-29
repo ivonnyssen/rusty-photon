@@ -484,6 +484,10 @@ bdd_infra::bdd_main! {
 }
 ```
 
+If your `World` holds an `McpTestClient` (or any other long-lived
+streaming client), the `after` hook needs an extra step to avoid silently
+losing BDD coverage — see [§5.4](#54-drop-mcp--streaming-clients-before-stopping-the-service).
+
 #### 5.3 Register in Cargo.toml
 
 ```toml
@@ -497,6 +501,63 @@ harness = false
 
 No per-service metadata is required — `bdd-infra` derives everything from the
 package name passed to `ServiceHandle::start`.
+
+#### 5.4 Drop MCP / streaming clients before stopping the service
+
+**Critical for coverage.** If your `World` holds an `McpTestClient` (or any
+client that keeps a long-lived HTTP/streaming connection to a child service),
+you **must** drop it *before* calling `ServiceHandle::stop()` in the cucumber
+`after` hook. Otherwise the service hangs in graceful shutdown, gets SIGKILLed
+after `stop()`'s 5-second timeout, and skips its `atexit` handlers — which
+means **no `.profraw` is written and BDD coverage is silently lost**.
+
+The mechanism: `rmcp`'s `StreamableHttpClientTransport` opens a long-lived
+HTTP request to the server's `/mcp` endpoint. axum's
+`with_graceful_shutdown` waits for in-flight connections to close before
+returning. As long as the client is alive, the connection stays open, axum
+never returns, the service can't run `atexit`, and SIGKILL claims the process
+along with its in-memory LLVM coverage counters.
+
+```rust
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::MyWorld;
+
+    MyWorld::cucumber()
+        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+            Box::pin(async move {
+                if let Some(world) = maybe_world {
+                    // Drop streaming clients FIRST so the server's graceful
+                    // shutdown can complete. Skipping this turns BDD
+                    // subprocess coverage silently into 0%.
+                    world.mcp_client = None;
+                    if let Some(handle) = world.service_handle.as_mut() {
+                        handle.stop().await;
+                    }
+                }
+            })
+        })
+        .filter_run("tests/features", |_, _, _| true)
+        .await;
+}
+```
+
+The same applies to any other long-lived client connection (custom WebSocket
+transports, gRPC streams, etc.) — drop the client before stopping the
+service it talks to.
+
+**When this does NOT apply:** plugin BDD harnesses like `calibrator-flats`
+where the MCP client lives *inside* the plugin's child process (talking to
+rp), not in the BDD test process. Those harnesses just stop the plugin
+first, then rp — when the plugin shuts down it closes its own MCP client
+gracefully, freeing rp's connection.
+
+**How to spot a regression of this issue:** `mcp.rs` (or any tool-dispatch
+module) shows much higher coverage from unit tests than from BDD — e.g. a
+big gap between BDD-only coverage and combined coverage. Confirm by
+temporarily replacing `debug!("did not exit after SIGTERM, sending SIGKILL", ...)`
+in `bdd-infra` with `eprintln!` and re-running BDD with stderr captured. A
+SIGKILL count > 0 means the lifecycle ordering is wrong somewhere.
 
 ---
 
