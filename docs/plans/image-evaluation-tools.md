@@ -293,8 +293,23 @@ One PR per tool, in this order:
       (catalog, image_path / document_id happy paths, persistence,
       high-threshold empty list, five error paths). 110/110 BDD scenarios
       green.
-- [ ] `measure_stars` (per-star HFR, FWHM, eccentricity, flux). Adds
-      `fwhm.rs` via `rmpfit` — pull the crate in here if not already.
+- [x] `measure_stars` (per-star HFR, FWHM, eccentricity, flux + median
+      aggregates and the sigma-clipped background). Composes
+      `imaging/background.rs` + `imaging/stars.rs` + `imaging/hfr.rs` with
+      a new `imaging/fwhm.rs` (asymmetric 2D Gaussian fit, no rotation,
+      6 parameters via `rmpfit` Levenberg-Marquardt). FWHM = 2.3548·√(σx·σy);
+      eccentricity = √(1 − (σmin/σmax)²). Stars whose stamp would cross
+      the image edge keep their row with `fwhm`/`eccentricity` set to
+      `null` rather than being dropped. Persists into the exposure
+      document as a `measured_stars` section. The optional `stars` input
+      from the catalog row is deferred (always re-runs detection); it
+      will let callers pass back a previous `detect_stars` array to skip
+      detection. 10 BDD scenarios (catalog, image_path / document_id
+      happy paths, persistence, very-high-threshold empty list, five
+      error paths). 120/120 BDD scenarios green; cargo rail run
+      --merge-base clean. Adds `rmpfit = "1.0"` to workspace +
+      services/rp Cargo.toml; `CARGO_BAZEL_REPIN=1 bazel mod tidy`
+      refreshed `MODULE.bazel.lock`.
 - [ ] `compute_snr` (signal/noise summary).
 
 Each tool follows the same shape: design doc already covers it →

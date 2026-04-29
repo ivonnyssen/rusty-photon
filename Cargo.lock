@@ -3544,6 +3544,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmpfit"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "064408a837204baa51680b284408af56fde3ebeb5c2942f07c8e91213dbcd474"
+
+[[package]]
 name = "rp"
 version = "0.1.0"
 dependencies = [
@@ -3565,6 +3571,7 @@ dependencies = [
  "ndarray-ndimage",
  "reqwest 0.13.2",
  "rmcp",
+ "rmpfit",
  "rp-auth",
  "rp-tls",
  "rpassword",

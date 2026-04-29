@@ -599,7 +599,7 @@ precedence.
 | `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
 | `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
 | `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
-| `measure_stars` | document_id or image_path, stars (optional) | per-star \[{x, y, hfr, fwhm, eccentricity, flux}\] | Per-star metrics. If `stars` omitted, runs `detect_stars` first. *Planned.* |
+| `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
 | `compute_snr` | document_id or image_path | snr, signal, noise | Signal-to-noise summary. *Planned.* |
 
@@ -866,6 +866,75 @@ flagged, not rejected (same rationale as `measure_basic`).
 written to the `detected_stars` section. Separate from `image_analysis`
 (measure_basic) and `background` (estimate_background) so all three tools
 can run on the same exposure without overwriting each other.
+
+#### `measure_stars` Contract
+
+Per-star photometry and PSF metrics for callers that need FWHM and
+eccentricity (auto-focus, guider error budgeting, image-quality screens)
+in addition to the HFR / flux that `measure_basic` aggregates.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required (encode pixel-scale assumptions;
+  same rationale as `measure_basic` and `detect_stars`).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold.
+- Optional `stamp_half_size` (default `8`) — half-side of the postage
+  stamp used for the 2D Gaussian fit. The fit is rejected for any star
+  whose stamp would cross the image boundary.
+
+**Output**:
+- `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects:
+  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `hfr` — empirical half-flux radius (pixels), or `null` when no
+    positive flux above background (rare; `detect_stars` already filters
+    this out).
+  - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
+    fit (pixels), or `null` when the fit fails.
+  - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or
+    `null` when the fit fails.
+  - `flux` — sum of background-subtracted, non-negative flux (ADU).
+- `star_count` — total stars detected (including those whose fit failed).
+- `median_fwhm` — median across stars whose fit succeeded; `null` when
+  no fits converged.
+- `median_hfr` — median empirical HFR; `null` when no stars detected.
+- `background_mean` / `background_stddev` — sigma-clipped background.
+
+**Algorithm**:
+1. Sigma-clipped background → `detect_stars` (same pipeline as
+   `measure_basic` and `detect_stars`).
+2. For each detected star:
+   - Empirical HFR over the connected-component pixels (same kernel
+     `measure_basic` aggregates).
+   - 2D Gaussian fit on a `(2·stamp_half_size+1)²` postage stamp using
+     `rmpfit` (Levenberg-Marquardt). Model:
+     `I(x, y) = A · exp(−((x−x0)²/(2σx²) + (y−y0)²/(2σy²))) + B`.
+     6 free parameters; no rotation (rationale: amateur PSFs rarely
+     resolve a meaningful θ at typical pixel scales — geometric-mean
+     FWHM and eccentricity capture quality without it).
+3. Stars with failed fits keep their row with `fwhm`/`eccentricity` set
+   to `null`. They are *not* dropped — the caller decides whether the
+   frame is usable.
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter.
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `measured_stars` section. Distinct from `detected_stars`,
+`image_analysis`, and `background` so all four tools coexist on one
+document.
+
+**Deferred**: the optional `stars` input listed in the tool catalog row
+is not implemented in this MVP. When implemented it will let the caller
+pass back the array from a previous `detect_stars` call to skip
+re-detection; for now, every invocation re-runs detection.
 
 #### Design Rationale
 
