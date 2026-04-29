@@ -328,12 +328,111 @@ BDD feature file → step defs → unit tests → impl.
 
 ### Phase 6 — Compound built-in tools
 
-- [ ] `auto_focus` (V-curve). Drives `move_focuser` + `capture` +
-      `measure_basic` in-process. New BDD feature file.
-- [ ] `center_on_target` (iterative centering). Drives `capture` +
-      `plate_solve` + `sync_mount` + `slew`. Depends on plate-solver
-      rp-managed service (separate effort, ADR pending — see
-      `docs/services/rp.md` plate-solver note).
+`auto_focus` and `center_on_target` stay built-in (per design tenet —
+"batteries included"; pure Rust math, no external program to wrap).
+Pluggability is provided by **shadow semantics**: a tool-provider plugin
+that advertises the same tool name overrides the built-in at startup
+(logged). See `docs/services/rp.md` → Config-Time Validation and
+Third-party alternatives for the rule. The shadow-rule doc edit lands
+ahead of Phase 6a; nothing in `rp` itself needs to change to support it
+beyond the catalog-merge logic that will be written when the first
+plugin shadows a built-in (so far there is no caller, so no code yet).
+
+#### Phase 6a — Focuser primitives (prerequisite for `auto_focus`)
+
+`auto_focus` composes `move_focuser` + `capture` + `measure_basic`,
+but the focuser primitives don't exist yet. `services/rp/src/equipment.rs`
+has cameras, filter wheels, and cover calibrators only;
+`services/rp/src/config.rs:41` types focusers as `Vec<Value>` (untyped
+placeholder). The Built-in Tools tables in `rp.md` already list
+`move_focuser`, `get_focuser_position`, `get_focuser_temperature` and
+the Module Structure references a planned `focuser.rs`, so this is
+unimplemented work, not unscoped.
+
+Work breakdown:
+
+- [ ] `FocuserConfig` in `config.rs` (replace the `Vec<Value>`
+      placeholder — `id`, `alpaca_url`, `device_number`, optional
+      `auth: ClientAuthConfig`, optional `min_position` / `max_position`
+      bounds for parameter validation).
+- [ ] `FocuserEntry` in `equipment.rs` mirroring `CameraEntry` +
+      `connect_focuser` Alpaca client wiring.
+- [ ] `EquipmentRegistry::find_focuser`.
+- [ ] MCP tools in `mcp.rs`: `move_focuser` (absolute position,
+      bounds-checked, blocks until idle via Alpaca polling — same
+      pattern as `set_filter`), `get_focuser_position`,
+      `get_focuser_temperature` (returns `null` when the focuser
+      reports `TempCompAvailable=false`, per ASCOM convention).
+- [ ] `services/rp/tests/features/focuser.feature` — happy paths
+      (move, read position, read temperature), error paths (focuser
+      not found, not connected, position out of bounds, target equals
+      current — should still succeed), connectivity scenarios.
+- [ ] `services/rp/tests/bdd/steps/focuser_steps.rs` reusing
+      `tool_steps.rs` shared steps.
+- [ ] Update `docs/services/rp.md` Configuration example focuser
+      block (already shows `main-focuser` / `guide-focuser` at line
+      ~1918 — confirm the typed schema matches).
+- [ ] `CARGO_BAZEL_REPIN=1 bazel mod tidy` if any new workspace deps;
+      otherwise none expected (reuses `ascom-alpaca`, `rp-auth`).
+
+OmniSim coverage: OmniSim provides a focuser simulator. Feature file
+should drive the simulator the same way camera/cover-calibrator
+features already do — no new test infrastructure needed. (Confirm
+device type and number when picking this up.)
+
+#### Phase 6b — `auto_focus` design + BDD + impl
+
+Standard design→BDD→impl sequence. Blocked on Phase 6a.
+
+- [ ] **Design:** new `auto_focus` Contract section in `rp.md`
+      (parallel to `measure_basic` Contract, ~70 lines). Decide:
+      sweep range (absolute window vs. ± steps from current),
+      step size (fixed vs. adaptive), exposure duration (parameter
+      vs. derived from `measure_basic` star count), V-curve fit
+      (parabolic vs. piecewise-linear vs. asymmetric V),
+      abort policy on no-stars at extreme defocus, retry policy on
+      monotonic-not-V curve, output shape
+      (`{best_position, best_hfr, curve_points: [{position, hfr,
+      star_count}]}`), persistence section name in the exposure
+      document (probably `auto_focus` on the *final* document,
+      with intermediate captures linked by their own `image_analysis`
+      sections).
+- [ ] `services/rp/tests/features/auto_focus.feature` — catalog,
+      happy path (V-curve converges, returns best_position), each
+      error path (camera/focuser not found, not connected, all
+      captures starless, monotonic curve), persistence.
+- [ ] `services/rp/src/imaging/auto_focus.rs` — pure function on
+      `(focuser, camera, measure_basic_fn)` so it's unit-testable
+      without hardware. The MCP tool in `mcp.rs` is a thin wrapper.
+- [ ] Unit tests on the V-curve fit (synthetic HFR vs. position
+      data; assert `best_position` to ±1 step).
+- [ ] Document `auto_focus` shadow semantics in the contract (one
+      line — "a plugin may shadow this tool; see Config-Time
+      Validation").
+
+Open question for the contract: does `auto_focus` accept
+`min_area` / `max_area` (passed through to `measure_basic`) or pick
+defaults? Probably explicit, since pixel scale varies per-rig — but
+finalize during design.
+
+#### Phase 6c — `center_on_target` design + BDD + impl
+
+Blocked on the plate-solver rp-managed service ADR (ASTAP vs.
+astrometry.net). Once the `plate_solve` tool exists, work mirrors
+Phase 6b: design contract → BDD → impl in
+`services/rp/src/imaging/center_on_target.rs` (or possibly
+`services/rp/src/centering.rs` — it doesn't touch pixels, so the
+imaging module isn't necessarily the right home).
+
+#### Catalog-merge code change (small, deferred until first caller)
+
+The shadow rule is documented but the catalog-merge logic in `rp`
+that actually implements precedence (route by name to plugin when
+shadowed, log at startup) has no caller today — `rp` doesn't yet
+have any plugin tool-provider integration in code. When the first
+shadowing plugin is integrated (or when plugin tool aggregation
+lands in general), include the precedence + log line as part of
+that work.
 
 ## Out of scope / deferred
 

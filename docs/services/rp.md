@@ -1153,7 +1153,10 @@ ML-based analyzers, alternative implementations of an existing tool that
 a specific deployment wants to substitute alongside the built-in, or
 anything written in a non-Rust language. Stable astronomy primitives
 (HFR, FWHM, eccentricity, V-curve focus, iterative centering, plate-solve
-proxy) are built-in and not pluggable.
+proxy) ship as built-ins and are the default. A plugin may shadow any
+built-in tool by advertising the same tool name; see
+[Config-Time Validation](#config-time-validation) and
+[Third-party alternatives](#third-party-alternatives).
 
 (Orchestrator plugins like `calibrator-flats` are also "plugins" in the
 protocol sense, but they don't *provide* tools — they *consume* them.
@@ -1367,13 +1370,24 @@ At startup, `rp` validates the full plugin dependency graph:
 1. Connect to each tool-providing plugin's MCP server and discover
    their tools via `tools/list`.
 2. Build the unified tool catalog from built-in tools and all
-   discovered plugin-provided tools. Reject duplicate tool names —
-   no two providers (including built-ins) may expose the same tool
-   name.
+   discovered plugin-provided tools. If a plugin advertises a tool
+   whose name matches a built-in, the plugin **shadows** the built-in —
+   `rp` routes calls to the plugin and emits an `info!` log line at
+   startup naming the shadowed built-in and the shadowing plugin. Two
+   *plugins* advertising the same tool name is still a hard error
+   (`rp` refuses to start) — there's no deterministic precedence
+   between two plugins.
 3. For each plugin with `requires_tools`, verify that every listed
-   tool exists in the catalog.
+   tool exists in the catalog (post-shadow).
 4. If validation fails, `rp` refuses to start and reports the missing
-   or duplicate tools.
+   or conflicting tools.
+
+Shadowing exists so a deployment can swap any built-in algorithm
+(`auto_focus`, `center_on_target`, image-analysis tools) for a
+locally-developed alternative without forking `rp` or renaming the
+tool in the orchestrator's call sites. It is an opt-in: shadowing
+only happens when the plugin is configured. The default deployment
+runs the built-ins.
 
 This ensures the system is fully configured before the session begins.
 A missing dependency is a startup error, not a 3 AM surprise.
@@ -1615,12 +1629,20 @@ Orchestrator: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance_
 #### Third-party alternatives
 
 A site that wants a different algorithm (parabolic-fit focus, ML-based
-focus, plate-solve-driven centering with custom heuristics) can ship
-that as a third-party tool-provider plugin under a different tool name
-(e.g. `auto_focus_parabolic`). The orchestrator opts in by calling the
-plugin's tool name. Replacing `auto_focus` itself is rejected at config
-time — see Config-Time Validation (no two providers may expose the same
-tool name).
+focus, plate-solve-driven centering with custom heuristics) has two
+options:
+
+1. **Side-by-side** — ship the alternative under a *different* tool
+   name (e.g. `auto_focus_parabolic`). The orchestrator opts in by
+   calling the plugin's tool name. Both algorithms are reachable.
+2. **Drop-in replacement** — ship the alternative under the *same*
+   tool name (`auto_focus`). The plugin shadows the built-in per
+   [Config-Time Validation](#config-time-validation), and orchestrators
+   continue calling `auto_focus` unchanged. The shadow is logged at
+   startup so operators can tell which implementation is active.
+
+Two *plugins* both claiming `auto_focus` remains a startup error —
+there is no deterministic precedence between plugins.
 
 ## Dynamic Planner
 
