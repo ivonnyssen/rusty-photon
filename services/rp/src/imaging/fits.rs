@@ -13,7 +13,10 @@ use crate::error::{Result, RpError};
 
 /// Write i32 pixel data as a FITS file.
 ///
-/// The file is written atomically: data goes to a temp file first, then renamed.
+/// Not atomic: any existing file at `path` is removed first, then `fitrs`
+/// writes directly to the final path. Capture paths use uuid-derived
+/// filenames so concurrent writers / readers of the same path don't arise
+/// in practice; if that changes, switch to a tmp-write + rename here.
 pub async fn write_fits<P: AsRef<Path>>(
     path: P,
     pixels: &[i32],
@@ -111,7 +114,7 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)>
 fn dims_from_shape(shape: &[usize]) -> Result<(u32, u32)> {
     match shape {
         [w, h] => Ok((*w as u32, *h as u32)),
-        [w, h, _planes] => Ok((*w as u32, *h as u32)),
+        [w, h, planes] if *planes == 1 => Ok((*w as u32, *h as u32)),
         other => Err(RpError::Imaging(format!(
             "unexpected FITS shape (expected 2D or 3D with 1 plane): {:?}",
             other
@@ -172,5 +175,35 @@ mod tests {
         write_fits(&path, &pixels, 1, 1).await.unwrap();
 
         assert!(path.exists());
+    }
+
+    #[test]
+    fn dims_from_shape_2d() {
+        assert_eq!(dims_from_shape(&[64, 48]).unwrap(), (64, 48));
+    }
+
+    #[test]
+    fn dims_from_shape_3d_single_plane() {
+        assert_eq!(dims_from_shape(&[64, 48, 1]).unwrap(), (64, 48));
+    }
+
+    #[test]
+    fn dims_from_shape_rejects_multi_plane() {
+        let err = dims_from_shape(&[64, 48, 3]).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 2D or 3D with 1 plane"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn dims_from_shape_rejects_4d() {
+        let err = dims_from_shape(&[64, 48, 1, 1]).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 2D or 3D with 1 plane"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

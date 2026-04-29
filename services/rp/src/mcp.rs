@@ -707,7 +707,17 @@ impl McpHandler {
             Ok(max_adu) => {
                 let shape = (width as usize, height as usize);
                 let cached_pixels = if max_adu <= u16::MAX as u32 {
-                    let narrowed: Vec<u16> = pixels.iter().map(|&p| p as u16).collect();
+                    // Clamp to [0, max_adu] before narrowing — `as u16` would
+                    // otherwise wrap silently on negative or > 65535 values
+                    // from a buggy driver or unexpected pixel format. The
+                    // image-cache contract is "pixels in the camera's
+                    // declared range," so clamping is the correct policy
+                    // (vs. erroring and skipping the insert).
+                    let max_cached = max_adu as i32;
+                    let narrowed: Vec<u16> = pixels
+                        .iter()
+                        .map(|&p| p.clamp(0, max_cached) as u16)
+                        .collect();
                     match ndarray::Array2::from_shape_vec(shape, narrowed) {
                         Ok(arr) => Some(CachedPixels::U16(arr)),
                         Err(e) => {
