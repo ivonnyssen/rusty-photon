@@ -242,7 +242,7 @@ pub fn build_calibrator_flats_config(filters: &[(String, u32)]) -> Value {
         "target_adu_fraction": 0.5,
         "tolerance": 1.0,
         "max_iterations": 1,
-        "initial_duration_ms": 100,
+        "initial_duration": "100ms",
         "filters": filter_entries
     })
 }

@@ -64,8 +64,10 @@ macro_rules! resolve_device {
 pub struct CaptureParams {
     /// Camera device ID
     pub camera_id: String,
-    /// Exposure time in milliseconds
-    pub duration_ms: u64,
+    /// Exposure time as a humantime string (e.g. `"500ms"`, `"30s"`, `"1m30s"`).
+    #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub duration: Duration,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -148,8 +150,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CaptureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let duration = Duration::from_millis(params.duration_ms);
-
         let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
         let document_id = Uuid::new_v4().to_string();
@@ -162,11 +162,11 @@ impl McpHandler {
             "exposure_started",
             serde_json::json!({
                 "camera_id": params.camera_id,
-                "duration_ms": duration.as_millis() as u64,
+                "duration": humantime::format_duration(params.duration).to_string(),
             }),
         );
 
-        if let Err(e) = cam.start_exposure(duration, true).await {
+        if let Err(e) = cam.start_exposure(params.duration, true).await {
             return Ok(tool_error!("failed to start exposure: {}", e));
         }
 
@@ -236,14 +236,11 @@ impl McpHandler {
             }
         };
 
-        let (exposure_min_ms, exposure_max_ms) = match cam.exposure_range().await {
-            Ok(range) => (
-                range.start().as_millis() as u64,
-                range.end().as_millis() as u64,
-            ),
+        let (exposure_min, exposure_max) = match cam.exposure_range().await {
+            Ok(range) => (*range.start(), *range.end()),
             Err(e) => {
                 debug!(error = %e, "failed to read exposure range, using defaults");
-                (1u64, 3600000u64)
+                (Duration::from_millis(1), Duration::from_secs(3600))
             }
         };
 
@@ -254,8 +251,8 @@ impl McpHandler {
             "sensor_y": sensor_y,
             "bin_x": bin_x,
             "bin_y": bin_y,
-            "exposure_min_ms": exposure_min_ms,
-            "exposure_max_ms": exposure_max_ms,
+            "exposure_min": humantime::format_duration(exposure_min).to_string(),
+            "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))
     }
 
@@ -406,7 +403,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "closing cover");
         if let Err(e) = cc.close_cover().await {
@@ -443,7 +440,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "opening cover");
         if let Err(e) = cc.open_cover().await {
@@ -480,7 +477,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         let brightness = if let Some(b) = params.brightness {
             b
@@ -528,7 +525,7 @@ impl McpHandler {
             &params.calibrator_id,
             "calibrator"
         );
-        let poll_interval = Duration::from_secs(cc_entry.config.poll_interval_secs);
+        let poll_interval = cc_entry.config.poll_interval;
 
         debug!(calibrator_id = %params.calibrator_id, "turning calibrator off");
         if let Err(e) = cc.calibrator_off().await {
@@ -937,7 +934,7 @@ mod tests {
                     id: "cc".to_string(),
                     alpaca_url: "http://localhost:1".to_string(),
                     device_number: 0,
-                    poll_interval_secs: 1,
+                    poll_interval: Duration::from_secs(1),
                     auth: None,
                 },
                 device: Some(cc),
@@ -959,7 +956,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to start exposure");
@@ -975,7 +972,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "error checking image ready");
@@ -991,7 +988,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to download image array");
@@ -1169,7 +1166,7 @@ mod tests {
         let result = handler
             .capture(Parameters(CaptureParams {
                 camera_id: "cam".into(),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             }))
             .await;
         assert_tool_error(result, "failed to write FITS file");
@@ -1201,8 +1198,8 @@ mod tests {
             .map(|tc| tc.text.as_str())
             .unwrap_or("");
         let json: serde_json::Value = serde_json::from_str(text).unwrap();
-        assert_eq!(json["exposure_min_ms"], 1);
-        assert_eq!(json["exposure_max_ms"], 3600000);
+        assert_eq!(json["exposure_min"], "1ms");
+        assert_eq!(json["exposure_max"], "1h");
     }
 
     // -----------------------------------------------------------------------

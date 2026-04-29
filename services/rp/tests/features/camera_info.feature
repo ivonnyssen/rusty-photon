@@ -18,8 +18,8 @@ Feature: Camera info tool
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "get_camera_info" with camera "main-cam"
-    Then the tool result should contain "exposure_min_ms"
-    And the tool result should contain "exposure_max_ms"
+    Then the tool result should contain "exposure_min"
+    And the tool result should contain "exposure_max"
 
   Scenario: Tool catalog includes get_camera_info
     Given a running Alpaca simulator

@@ -206,9 +206,32 @@ The hook is installed automatically the first time any test build pulls
 
 ### Duration Units
 
+**Durations are `std::time::Duration` system-wide.** Any field, parameter,
+return value, or struct member that represents a time interval uses
+`Duration` end-to-end — config, internal state, MCP tool parameters,
+inter-service wire payloads, and (where types allow) telemetry. Integer
+representations of duration (`u32 ms`, `u64 ms`, `u64 secs`) do **not**
+appear in internal data structures; they exist only as transient values
+at boundaries that demand them (third-party SDKs, JSON-RPC payloads
+with a fixed wire schema, sentinel/dashboard JSON serialisation of
+already-elapsed magnitudes).
+
+**Precision floor: microseconds.** The system-wide precision contract
+is 1 µs. This is finer than what most observing workflows need but
+matches the actual minimum exposure of modern CMOS sensors (QHY174
+~50 µs, QHY600 ~10 µs, ZWO ASI line ~32 µs). It is required for **bias
+frames**, which use the camera's true minimum exposure to capture the
+read-noise floor — a 1 ms floor would expose 20–100× longer than the
+sensor's minimum and accumulate dark current that contaminates the
+bias. Sub-microsecond precision is not required: ASCOM Alpaca's
+`Camera.StartExposure` Duration is an `f64` in seconds (so the
+protocol can express it), but no current sensor honours it, and
+QHY's nanosecond-resolution SDK API offers no observable advantage
+at this precision.
+
 For **config types** (anything deserialised from a JSON config file),
-prefer `std::time::Duration` for any duration field, with the
-`humantime-serde` adapter and **no unit suffix in the field name**:
+use `std::time::Duration` with the `humantime-serde` adapter and **no
+unit suffix in the field name**:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -226,30 +249,34 @@ fn default_polling_interval() -> Duration {
 }
 ```
 
-The wire format is a humantime string (`"60s"`, `"500ms"`, `"1m30s"`,
-`"2h"`). The unit lives in the value, not the field name — the type
-already says `Duration` and the value already says the unit. This
-removes the previous `_ms` vs `_secs` ambiguity in field names.
+The wire format is a humantime string (`"60s"`, `"500ms"`, `"50us"`,
+`"1m30s"`, `"2h"`). The unit lives in the value, not the field name —
+the type already says `Duration` and the value already says the unit.
+This removes the previous `_ms` vs `_secs` ambiguity in field names.
 
 `humantime` accepts both compact forms (`"5m"`) and combinations
 (`"1m30s500ms"`). It rejects bare integers (`"30"` is invalid — must be
 `"30s"` or `"30ms"`).
 
 For raw integer fields that are still magnitudes of time but **not**
-config-loaded `Duration`s (e.g. internal state structs serialised for
-a dashboard, or u64 epoch milliseconds), keep the unit suffix on the
-field name (`last_poll_epoch_ms`, `polling_interval_ms`) so a reader
-can tell the unit at the call site.
+internal `Duration`s (e.g. dashboard JSON serialising an elapsed
+magnitude, or a `u64` epoch millisecond timestamp), keep the unit
+suffix on the field name (`last_poll_epoch_ms`, `elapsed_ms`) so a
+reader can tell the unit at the call site.
 
-Wire-format exceptions: when a config value also feeds a third-party
-JSON-RPC payload that requires a bare integer (e.g. PHD2's `time` and
-`timeout` settle keys), keep the operator-facing field as `Duration`
-with humantime in the config file and convert at the `json!` macro
-site only, applying whatever rounding or validation the wire format
-requires (`.as_secs()` / `.as_millis()` when truncation is acceptable,
-or a boundary helper such as `settle_secs_ceil` when sub-second values
-must round up instead of truncating to `0`). See
-`services/phd2-guider/src/client.rs` for the worked example.
+**Boundary conversions.** When a `Duration` must be flattened to an
+integer or string for a third-party wire format, do it at the boundary
+only — never store the integer back into an internal struct. Use
+`humantime::format_duration(d)` to render a `Duration` to a humantime
+string preserving µs precision (instead of `format!("{}ms",
+d.as_millis())`, which collapses sub-ms values to `"0ms"`). When the
+external schema demands a bare integer (e.g. PHD2's `time` and
+`timeout` settle keys), apply whatever rounding the wire format
+requires at the `json!` site — `.as_micros()` / `.as_millis()` /
+`.as_secs()` when truncation is acceptable, or a boundary helper such
+as `settle_secs_ceil` when sub-second values must round up instead of
+truncating to `0`. See `services/phd2-guider/src/client.rs` for the
+worked example.
 
 ## Feature Flags
 

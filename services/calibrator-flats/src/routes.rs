@@ -75,7 +75,8 @@ async fn invoke_handler(
 
     // Acknowledge with timing estimate
     let total_frames: u32 = plan.filters.iter().map(|f| f.count).sum();
-    let estimated_secs = (total_frames as u64 * plan.initial_duration_ms as u64) / 1000 + 60; // add margin for iterations
+    let estimated_secs =
+        (total_frames as u64 * plan.initial_duration.as_millis() as u64) / 1000 + 60; // add margin for iterations
 
     let ack = serde_json::json!({
         "estimated_duration_secs": estimated_secs,
@@ -99,7 +100,7 @@ async fn post_completion(
         .map(|f| {
             serde_json::json!({
                 "filter": f.filter_name,
-                "duration_ms": f.duration_ms,
+                "duration": humantime::format_duration(f.duration).to_string(),
                 "median_adu": f.median_adu,
                 "frames": f.frames_captured,
                 "converged": f.converged,
