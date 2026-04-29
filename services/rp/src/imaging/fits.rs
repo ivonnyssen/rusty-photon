@@ -86,6 +86,11 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)>
         .next()
         .ok_or_else(|| RpError::Imaging("FITS file has no HDUs".to_string()))?;
 
+    // `fitrs` always returns `IntegersI32` for any BITPIX=32 (and BITPIX=16)
+    // file — it does not inspect BZERO/BSCALE. Files written as "u32"
+    // (BITPIX=32 + BZERO=2147483648) would arrive here with values shifted by
+    // −2³¹; we don't support that encoding. Other variants
+    // (`Characters`, `FloatingPoint32/64`) are surfaced as an error.
     match primary.read_data() {
         fitrs::FitsData::IntegersI32(array) => {
             let pixels: Vec<i32> = array.data.iter().filter_map(|v| *v).collect();
@@ -93,19 +98,6 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)>
             debug!(
                 pixel_count = pixels.len(),
                 width, height, "read FITS pixels"
-            );
-            Ok((pixels, width, height))
-        }
-        fitrs::FitsData::IntegersU32(array) => {
-            let pixels: Vec<i32> = array
-                .data
-                .iter()
-                .filter_map(|v| v.map(|u| u as i32))
-                .collect();
-            let (width, height) = dims_from_shape(&array.shape)?;
-            debug!(
-                pixel_count = pixels.len(),
-                width, height, "read FITS pixels (u32->i32)"
             );
             Ok((pixels, width, height))
         }
