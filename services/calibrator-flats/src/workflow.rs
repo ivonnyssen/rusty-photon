@@ -2,11 +2,33 @@
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
 use crate::config::FlatPlan;
 use crate::error::{CalibratorFlatsError, Result};
-use crate::mcp_client::McpClient;
+use crate::mcp_client::{CameraInfo, McpClient};
+
+/// Single round-trip the proportional control loop needs: capture an
+/// exposure of the requested duration and return the resulting median
+/// ADU. Wraps the rp `capture` + `compute_image_stats` pair so the
+/// loop can be tested in isolation with `mockall`.
+#[async_trait]
+#[cfg_attr(test, mockall::automock)]
+trait ExposureMeasure: Send + Sync {
+    async fn measure(&self, camera_id: &str, duration: Duration) -> Result<u32>;
+}
+
+#[async_trait]
+impl ExposureMeasure for McpClient {
+    async fn measure(&self, camera_id: &str, duration: Duration) -> Result<u32> {
+        let cap = self.capture(camera_id, duration).await?;
+        let stats = self
+            .compute_image_stats(&cap.image_path, Some(&cap.document_id))
+            .await?;
+        Ok(stats.median_adu)
+    }
+}
 
 /// Result of the flat calibration workflow.
 #[derive(Debug)]
@@ -150,11 +172,11 @@ fn deviation(target_adu: u32, last_median: u32) -> f64 {
 /// Iteratively adjust exposure time to hit the target ADU.
 ///
 /// Returns `(duration, last_median_adu, iterations, converged)`.
-async fn find_optimal_duration(
-    mcp: &McpClient,
+async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
+    mcp: &M,
     plan: &FlatPlan,
     target_adu: u32,
-    camera_info: &crate::mcp_client::CameraInfo,
+    camera_info: &CameraInfo,
 ) -> Result<(Duration, u32, u32, bool)> {
     if target_adu == 0 {
         return Err(CalibratorFlatsError::Workflow(
@@ -166,15 +188,7 @@ async fn find_optimal_duration(
     let mut last_median = 0u32;
 
     for iteration in 1..=plan.max_iterations {
-        let capture_result = mcp.capture(&plan.camera_id, duration).await?;
-        let stats = mcp
-            .compute_image_stats(
-                &capture_result.image_path,
-                Some(&capture_result.document_id),
-            )
-            .await?;
-
-        last_median = stats.median_adu;
+        last_median = mcp.measure(&plan.camera_id, duration).await?;
         let dev = deviation(target_adu, last_median);
 
         debug!(
@@ -206,11 +220,38 @@ async fn find_optimal_duration(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{deviation, next_duration};
+    use super::{deviation, find_optimal_duration, next_duration, MockExposureMeasure};
+    use crate::config::{FilterPlan, FlatPlan};
+    use crate::mcp_client::CameraInfo;
     use std::time::Duration;
 
     const MIN: Duration = Duration::from_micros(10);
     const MAX: Duration = Duration::from_secs(3600);
+
+    fn camera_info() -> CameraInfo {
+        CameraInfo {
+            max_adu: 65_535,
+            exposure_min: MIN,
+            exposure_max: MAX,
+        }
+    }
+
+    fn plan(initial: Duration, max_iterations: u32, tolerance: f64) -> FlatPlan {
+        FlatPlan {
+            camera_id: "main-cam".into(),
+            filter_wheel_id: "fw".into(),
+            calibrator_id: "cc".into(),
+            target_adu_fraction: 0.5,
+            tolerance,
+            max_iterations,
+            initial_duration: initial,
+            brightness: None,
+            filters: vec![FilterPlan {
+                name: "L".into(),
+                count: 1,
+            }],
+        }
+    }
 
     #[test]
     fn next_duration_doubles_for_half_signal() {
@@ -274,5 +315,118 @@ mod tests {
     fn deviation_symmetric_above_and_below() {
         assert_eq!(deviation(32_000, 16_000), 0.5);
         assert_eq!(deviation(32_000, 48_000), 0.5);
+    }
+
+    #[tokio::test]
+    async fn find_optimal_duration_rejects_zero_target_adu() {
+        // Misconfigured plan: max_adu * fraction rounds down to 0.
+        let mock = MockExposureMeasure::new();
+        let err = find_optimal_duration(
+            &mock,
+            &plan(Duration::from_secs(1), 5, 0.05),
+            0,
+            &camera_info(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("target_adu is 0"));
+    }
+
+    #[tokio::test]
+    async fn find_optimal_duration_converges_on_first_iteration() {
+        let mut mock = MockExposureMeasure::new();
+        mock.expect_measure()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(32_000) }));
+        let (duration, median, iterations, converged) = find_optimal_duration(
+            &mock,
+            &plan(Duration::from_secs(1), 5, 0.05),
+            32_000,
+            &camera_info(),
+        )
+        .await
+        .unwrap();
+        assert!(converged);
+        assert_eq!(median, 32_000);
+        assert_eq!(iterations, 1);
+        assert_eq!(duration, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn find_optimal_duration_adjusts_then_converges() {
+        // First measurement is half the target; the loop should double the
+        // duration via `next_duration`, then converge on iteration 2.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let mut mock = MockExposureMeasure::new();
+        let call = Arc::new(AtomicU32::new(0));
+        let call_for_mock = call.clone();
+        mock.expect_measure().times(2).returning(move |_, d| {
+            let n = call_for_mock.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(async move {
+                match n {
+                    1 => {
+                        assert_eq!(d, Duration::from_secs(1));
+                        Ok(16_000) // half of target -> ratio 2x
+                    }
+                    _ => {
+                        assert_eq!(d, Duration::from_secs(2));
+                        Ok(32_000)
+                    }
+                }
+            })
+        });
+        let (duration, median, iterations, converged) = find_optimal_duration(
+            &mock,
+            &plan(Duration::from_secs(1), 5, 0.05),
+            32_000,
+            &camera_info(),
+        )
+        .await
+        .unwrap();
+        assert!(converged);
+        assert_eq!(iterations, 2);
+        assert_eq!(median, 32_000);
+        assert_eq!(duration, Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn find_optimal_duration_returns_best_effort_when_not_converged() {
+        // Always reports an off-target ADU outside tolerance, so no iteration
+        // ever converges and the loop exits via the `not converged` path.
+        let mut mock = MockExposureMeasure::new();
+        mock.expect_measure()
+            .times(3)
+            .returning(|_, _| Box::pin(async { Ok(1_000) }));
+        let (_duration, median, iterations, converged) = find_optimal_duration(
+            &mock,
+            &plan(Duration::from_secs(1), 3, 0.05),
+            32_000,
+            &camera_info(),
+        )
+        .await
+        .unwrap();
+        assert!(!converged);
+        assert_eq!(iterations, 3);
+        assert_eq!(median, 1_000);
+    }
+
+    #[tokio::test]
+    async fn find_optimal_duration_propagates_measure_error() {
+        use crate::error::CalibratorFlatsError;
+        let mut mock = MockExposureMeasure::new();
+        mock.expect_measure().times(1).returning(|_, _| {
+            Box::pin(async { Err(CalibratorFlatsError::ToolCall("boom".into())) })
+        });
+        let err = find_optimal_duration(
+            &mock,
+            &plan(Duration::from_secs(1), 3, 0.05),
+            32_000,
+            &camera_info(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("boom"));
     }
 }

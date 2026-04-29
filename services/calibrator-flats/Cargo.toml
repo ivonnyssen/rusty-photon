@@ -23,12 +23,14 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
+async-trait = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
 libc = { workspace = true }
+mockall = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }

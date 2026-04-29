@@ -473,6 +473,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 name = "calibrator-flats"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bdd-infra",
  "cargo-husky",
@@ -481,6 +482,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "libc",
+ "mockall",
  "reqwest 0.13.2",
  "rmcp",
  "serde",
