@@ -212,6 +212,46 @@ mod tests {
         assert!(r.noise.is_none());
     }
 
+    fn make_gaussian_i32_with_dither(
+        rows: usize,
+        cols: usize,
+        cx: f64,
+        cy: f64,
+        sigma: f64,
+        amplitude: f64,
+        background: f64,
+    ) -> Array2<i32> {
+        let mut arr = Array2::<i32>::zeros((rows, cols));
+        for r in 0..rows {
+            for c in 0..cols {
+                let dx = r as f64 - cx;
+                let dy = c as f64 - cy;
+                let star_v = amplitude * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
+                let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
+                arr[[r, c]] = (background + dither + star_v).round() as i32;
+            }
+        }
+        arr
+    }
+
+    #[test]
+    fn one_star_in_hdr_i32_yields_finite_snr() {
+        let arr = make_gaussian_i32_with_dither(64, 64, 32.0, 32.0, 2.0, 200_000.0, 1000.0);
+        let r = compute_snr(arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
+        assert_eq!(r.star_count, 1);
+        let snr = r.snr.expect("snr should be Some");
+        let signal = r.signal.expect("signal should be Some");
+        let noise = r.noise.expect("noise should be Some");
+        assert!(snr > 0.0 && snr.is_finite(), "snr = {}", snr);
+        // HDR signal must exceed u16::MAX — a stray `as u16` cast would clamp.
+        assert!(
+            signal > 65_535.0,
+            "signal = {} (expected HDR > u16::MAX)",
+            signal
+        );
+        assert!(noise > 0.0);
+    }
+
     #[test]
     fn json_field_names_match_contract() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);

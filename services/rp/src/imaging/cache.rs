@@ -240,6 +240,14 @@ mod tests {
     }
 
     #[test]
+    fn is_empty_tracks_population() {
+        let cache = ImageCache::new(100, 10);
+        assert!(cache.is_empty());
+        cache.insert("doc-1".to_string(), u16_image(4, 0));
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
     fn replacing_same_id_does_not_double_count_bytes() {
         let cache = ImageCache::new(100, 10);
         cache.insert("doc-1".to_string(), u16_image(4, 1));

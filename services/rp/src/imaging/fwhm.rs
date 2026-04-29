@@ -253,6 +253,45 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn make_gaussian_2d_i32(
+        rows: usize,
+        cols: usize,
+        cx: f64,
+        cy: f64,
+        sigma_x: f64,
+        sigma_y: f64,
+        amplitude: f64,
+        background: f64,
+    ) -> Array2<i32> {
+        let mut arr = Array2::<i32>::zeros((rows, cols));
+        for r in 0..rows {
+            for c in 0..cols {
+                let dx = r as f64 - cx;
+                let dy = c as f64 - cy;
+                let exponent =
+                    -(dx * dx / (2.0 * sigma_x * sigma_x) + dy * dy / (2.0 * sigma_y * sigma_y));
+                arr[[r, c]] = (background + amplitude * E.powf(exponent)).round() as i32;
+            }
+        }
+        arr
+    }
+
+    #[test]
+    fn fits_circular_gaussian_in_hdr_i32_recovers_sigma() {
+        // Amplitude > u16::MAX. A stray `as u16` cast in the residual eval
+        // would make the fit converge to a wrong sigma.
+        let arr = make_gaussian_2d_i32(64, 64, 32.0, 32.0, 2.0, 2.0, 200_000.0, 1000.0);
+        let fit = fit_2d_gaussian(arr.view(), 32.0, 32.0, 201_000.0, 1000.0, 1.5, 8).unwrap();
+        assert!((fit.sigma_x - 2.0).abs() < 0.1, "sigma_x = {}", fit.sigma_x);
+        assert!((fit.sigma_y - 2.0).abs() < 0.1, "sigma_y = {}", fit.sigma_y);
+        assert!(
+            fit.eccentricity < 0.05,
+            "eccentricity = {}",
+            fit.eccentricity
+        );
+    }
+
     #[test]
     fn rejects_centroid_too_close_to_edge() {
         let arr = make_gaussian_2d(20, 20, 2.0, 10.0, 1.5, 1.5, 10_000.0, 1000.0);

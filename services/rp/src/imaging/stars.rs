@@ -431,6 +431,60 @@ mod tests {
         );
     }
 
+    /// HDR-amplitude i32 Gaussian. Same shape as `make_gaussian` but builds
+    /// `Array2<i32>` so we exercise the I32 monomorphization with values
+    /// exceeding `u16::MAX`.
+    fn make_gaussian_i32(
+        rows: usize,
+        cols: usize,
+        cx: f64,
+        cy: f64,
+        sigma: f64,
+        peak: f64,
+        bg: f64,
+    ) -> Array2<i32> {
+        let mut arr = Array2::<i32>::zeros((rows, cols));
+        for r in 0..rows {
+            for c in 0..cols {
+                let dx = r as f64 - cx;
+                let dy = c as f64 - cy;
+                let exponent = -(dx * dx + dy * dy) / (2.0 * sigma * sigma);
+                arr[[r, c]] = (bg + peak * E.powf(exponent)).round() as i32;
+            }
+        }
+        arr
+    }
+
+    #[test]
+    fn detects_single_gaussian_in_hdr_i32_pixels() {
+        let arr = make_gaussian_i32(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
+        let bg = BackgroundStats {
+            mean: 1000.0,
+            stddev: 5.0,
+            median: 1000.0,
+            n_pixels: 4096,
+        };
+        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        assert_eq!(stars.len(), 1);
+        let s = &stars[0];
+        assert!(
+            (s.centroid_x - 32.5).abs() < 0.5,
+            "centroid_x = {}",
+            s.centroid_x
+        );
+        assert!(
+            (s.centroid_y - 32.5).abs() < 0.5,
+            "centroid_y = {}",
+            s.centroid_y
+        );
+        // Peak must retain HDR magnitude — a stray `as u16` cast would wrap.
+        assert!(
+            s.peak > 65_535.0,
+            "peak = {} (expected HDR > u16::MAX)",
+            s.peak
+        );
+    }
+
     #[test]
     fn empty_view_returns_empty() {
         let arr: Array2<u16> = Array2::zeros((0, 0));

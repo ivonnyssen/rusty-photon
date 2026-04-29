@@ -224,6 +224,35 @@ mod tests {
     }
 
     #[test]
+    fn hfr_constant_disc_in_hdr_i32_matches_geometric_expectation() {
+        // Same uniform-disc geometry as the u16 test, but with HDR pixel
+        // values (>u16::MAX) on i32 to exercise the I32 monomorphization.
+        let r_disc = 5_i32;
+        let mut arr: Array2<i32> = Array2::from_elem((20, 20), 0);
+        let cx = 10_i32;
+        let cy = 10_i32;
+        let mut pixels = Vec::new();
+        for r in 0..20_i32 {
+            for c in 0..20_i32 {
+                let d2 = (r - cx) * (r - cx) + (c - cy) * (c - cy);
+                if d2 <= r_disc * r_disc {
+                    arr[[r as usize, c as usize]] = 200_000;
+                    pixels.push((r as usize, c as usize));
+                }
+            }
+        }
+        let star = star_from_pixels(pixels, cx as f64, cy as f64);
+        let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
+        let expected = (r_disc as f64) / 2_f64.sqrt();
+        assert!(
+            (hfr - expected).abs() < 0.5,
+            "hfr = {}, expected ≈ {}",
+            hfr,
+            expected
+        );
+    }
+
+    #[test]
     fn aggregate_hfr_empty_returns_none() {
         let arr: Array2<u16> = Array2::zeros((5, 5));
         assert!(aggregate_hfr(arr.view(), &[], 0.0).is_none());

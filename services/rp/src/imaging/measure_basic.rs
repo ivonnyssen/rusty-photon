@@ -170,6 +170,41 @@ mod tests {
         assert_eq!(r.saturated_star_count, 0);
     }
 
+    /// HDR-amplitude i32 frame: peak > `u16::MAX`. Exercises the I32
+    /// monomorphization end-to-end and would catch a stray `as u16` cast in
+    /// the generic body (peak would wrap and detection would shift).
+    fn make_gaussian_i32(
+        rows: usize,
+        cols: usize,
+        cx: f64,
+        cy: f64,
+        sigma: f64,
+        peak: f64,
+        bg: f64,
+    ) -> Array2<i32> {
+        let mut arr = Array2::<i32>::zeros((rows, cols));
+        for r in 0..rows {
+            for c in 0..cols {
+                let dx = r as f64 - cx;
+                let dy = c as f64 - cy;
+                let star_v = peak * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
+                let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
+                arr[[r, c]] = (bg + dither + star_v).round() as i32;
+            }
+        }
+        arr
+    }
+
+    #[test]
+    fn one_star_in_hdr_i32_pixels() {
+        let arr = make_gaussian_i32(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
+        let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
+        assert_eq!(r.star_count, 1);
+        let hfr = r.hfr.expect("hfr should be Some");
+        assert!(hfr.is_finite() && hfr > 0.0, "hfr = {}", hfr);
+        assert_eq!(r.pixel_count, 64 * 64);
+    }
+
     #[test]
     fn saturation_is_flagged_when_max_adu_provided() {
         let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
