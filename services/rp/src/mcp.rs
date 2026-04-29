@@ -298,22 +298,13 @@ impl McpHandler {
     ) -> crate::error::Result<imaging::MeasureBasicResult> {
         if let Some(cached) = self.image_cache.get(doc_id) {
             let max_adu = Some(cached.max_adu);
-            return match &cached.pixels {
-                CachedPixels::U16(arr) => imaging::measure_basic(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                ),
-                CachedPixels::I32(arr) => imaging::measure_basic(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                ),
-            };
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_basic(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+            ));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -378,10 +369,7 @@ impl McpHandler {
         params: &ResolvedClipParams,
     ) -> crate::error::Result<BackgroundOutcome> {
         if let Some(cached) = self.image_cache.get(doc_id) {
-            return match &cached.pixels {
-                CachedPixels::U16(arr) => clip_outcome(arr.view(), params),
-                CachedPixels::I32(arr) => clip_outcome(arr.view(), params),
-            };
+            return crate::dispatch_pixels!(&cached.pixels, |arr| clip_outcome(arr, params));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -451,10 +439,9 @@ impl McpHandler {
     ) -> crate::error::Result<DetectStarsOutcome> {
         if let Some(cached) = self.image_cache.get(doc_id) {
             let max_adu = Some(cached.max_adu);
-            return match &cached.pixels {
-                CachedPixels::U16(arr) => detect_outcome(arr.view(), params, max_adu),
-                CachedPixels::I32(arr) => detect_outcome(arr.view(), params, max_adu),
-            };
+            return crate::dispatch_pixels!(&cached.pixels, |arr| detect_outcome(
+                arr, params, max_adu
+            ));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -536,24 +523,14 @@ impl McpHandler {
     ) -> crate::error::Result<imaging::MeasureStarsResult> {
         if let Some(cached) = self.image_cache.get(doc_id) {
             let max_adu = Some(cached.max_adu);
-            return match &cached.pixels {
-                CachedPixels::U16(arr) => imaging::measure_stars(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                    params.stamp_half_size,
-                ),
-                CachedPixels::I32(arr) => imaging::measure_stars(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                    params.stamp_half_size,
-                ),
-            };
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_stars(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+                params.stamp_half_size,
+            ));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -592,22 +569,13 @@ impl McpHandler {
     ) -> crate::error::Result<imaging::SnrResult> {
         if let Some(cached) = self.image_cache.get(doc_id) {
             let max_adu = Some(cached.max_adu);
-            return match &cached.pixels {
-                CachedPixels::U16(arr) => imaging::compute_snr(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                ),
-                CachedPixels::I32(arr) => imaging::compute_snr(
-                    arr.view(),
-                    params.threshold_sigma,
-                    params.min_area,
-                    params.max_area,
-                    max_adu,
-                ),
-            };
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::compute_snr(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+            ));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");

@@ -31,6 +31,33 @@ pub enum CachedPixels {
     I32(Array2<i32>),
 }
 
+/// Dispatch on a `&CachedPixels` and run the body once per pixel variant.
+///
+/// Generic image-analysis functions are statically dispatched, so the runtime
+/// tag in `CachedPixels` has to be unwrapped somewhere. This macro hides the
+/// two-arm match while still emitting a separate monomorphization per pixel
+/// type — the body is textually duplicated by the macro expander, then the
+/// compiler monomorphizes each arm with `T = u16` or `T = i32`.
+///
+/// Caveat: because the body is duplicated before expansion, any non-`Copy`
+/// value moved by the body would only compile in one arm. Capture by reference
+/// or by `Copy` value to keep both arms valid.
+#[macro_export]
+macro_rules! dispatch_pixels {
+    ($pixels:expr, |$arr:ident| $body:expr) => {
+        match $pixels {
+            $crate::imaging::CachedPixels::U16(__a) => {
+                let $arr = __a.view();
+                $body
+            }
+            $crate::imaging::CachedPixels::I32(__a) => {
+                let $arr = __a.view();
+                $body
+            }
+        }
+    };
+}
+
 impl CachedPixels {
     /// Memory footprint of this buffer, in bytes.
     pub fn nbytes(&self) -> usize {
