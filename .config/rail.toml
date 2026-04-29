@@ -79,11 +79,18 @@ default_profile = "local"
 # commit = "ci"
 # nightly = "nightly"
 
-# Optional user-defined run profiles:
-# [run.profile.ci]
-# surfaces = ["build", "test"]
-# merge_base = true
+# Pre-commit gate (referenced from docs/AGENTS.md rule 4). Mirrors CI's invocation:
+# cargo check --workspace + cargo nextest run, both with --locked --all-features --all-targets.
+# --all-features is required so feature-gated test code (e.g. #[cfg(feature = "mock")])
+# compiles. Requires cargo-nextest -- without it, rail's test surface falls back to
+# `cargo test ... -- <run_args>`, where the run_args land as test-binary args (a noop)
+# instead of cargo args, silently skipping mock-gated code.
+[run.profile.commit]
+surfaces = ["build", "test"]
+merge_base = true
+run_args = ["--locked", "--all-features", "--all-targets", "--color", "never"]
 
+# Optional user-defined run profiles:
 # [run.profile.docs_custom]
 # surfaces = ["docs"]
 # run_args = ["--workspace", "{cargo_args}"]
