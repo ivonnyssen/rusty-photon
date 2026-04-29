@@ -37,13 +37,13 @@ chrono = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel", "cover_calibrator"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
-tempfile = { workspace = true }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }
 

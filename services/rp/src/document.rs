@@ -15,7 +15,8 @@
 //! only persists writes — readers go through the in-memory map.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,14 +119,43 @@ fn sidecar_path(file_path: &str) -> PathBuf {
     p.with_extension("json")
 }
 
-async fn write_sidecar(path: &PathBuf, doc: &ExposureDocument) -> Result<()> {
+async fn write_sidecar(path: &Path, doc: &ExposureDocument) -> Result<()> {
     let body = serde_json::to_vec_pretty(doc)?;
-    let tmp = path.with_extension("json.tmp");
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    let path = path.to_path_buf();
+    // Run the whole stage-and-commit sequence on the blocking pool. Matches
+    // the `imaging::fits::write_fits` pattern: one task spawn per write rather
+    // than one per `tokio::fs::*` call, and lets us use sync-only crates like
+    // `tempfile` for the staging file.
+    tokio::task::spawn_blocking(move || write_sidecar_sync(&path, &body))
+        .await
+        .map_err(|e| RpError::Imaging(format!("sidecar write task join error: {e}")))?
+}
+
+fn write_sidecar_sync(final_path: &Path, body: &[u8]) -> Result<()> {
+    let parent = final_path.parent().ok_or_else(|| {
+        RpError::Imaging(format!(
+            "sidecar path has no parent: {}",
+            final_path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    // `NamedTempFile::new_in(parent)` gives us an OS-generated unique name
+    // (so two concurrent writers can't collide on the staging path) and a
+    // `Drop` guard that removes the staging file on panic or early return.
+    // `persist` disarms the guard on success.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(body)?;
+    // fsync the file data so a crash after rename cannot surface a renamed-
+    // but-zero-length sidecar.
+    tmp.as_file().sync_all()?;
+    tmp.persist(final_path).map_err(|e| RpError::Io(e.error))?;
+    // fsync the parent directory so the rename itself is durable. Windows
+    // can't open a directory as a regular file handle, so this is unix-only.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()?;
     }
-    tokio::fs::write(&tmp, &body).await?;
-    tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
 
@@ -292,6 +322,68 @@ mod tests {
         assert_eq!(
             got.sections["image_analysis"]["v"], 1,
             "in-memory section must roll back to the previous value when the sidecar write fails"
+        );
+    }
+
+    async fn entry_names(dir: &std::path::Path) -> Vec<String> {
+        let mut entries = tokio::fs::read_dir(dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names
+    }
+
+    #[tokio::test]
+    async fn successful_writes_leave_no_staging_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
+        let store = DocumentStore::new();
+
+        store
+            .create(doc_with_path("doc-1", &fits_path))
+            .await
+            .unwrap();
+        store
+            .put_section("doc-1", "image_analysis", json!({"v": 1}))
+            .await
+            .unwrap();
+
+        let names = entry_names(dir.path()).await;
+        assert_eq!(
+            names,
+            vec!["img.json"],
+            "directory should contain only the sidecar after successful writes"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_write_cleans_up_staging_file() {
+        // Same trick as put_section_rolls_back_on_write_failure: replace the
+        // sidecar file with a directory so persist(tmp, sidecar) fails. Verify
+        // that the orphaned NamedTempFile is cleaned up by its Drop guard.
+        let dir = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
+        let sidecar = dir.path().join("img.json");
+        let store = DocumentStore::new();
+
+        store
+            .create(doc_with_path("doc-1", &fits_path))
+            .await
+            .unwrap();
+
+        tokio::fs::remove_file(&sidecar).await.unwrap();
+        tokio::fs::create_dir(&sidecar).await.unwrap();
+
+        let _ = store
+            .put_section("doc-1", "image_analysis", json!({"v": 1}))
+            .await;
+
+        let names = entry_names(dir.path()).await;
+        assert_eq!(
+            names,
+            vec!["img.json"],
+            "failed write must not leave a staging file behind"
         );
     }
 
