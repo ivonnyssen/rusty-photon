@@ -79,8 +79,9 @@ default_profile = "local"
 # commit = "ci"
 # nightly = "nightly"
 
-# Pre-commit gate (referenced from docs/AGENTS.md rule 4). Mirrors CI's invocation:
-# cargo check --workspace + cargo nextest run, both with --locked --all-features --all-targets.
+# Pre-commit gate (referenced from docs/AGENTS.md rule 4). Runs `cargo check --workspace`
+# (a fast proxy -- CI itself uses `cargo build` for the same flags) and `cargo nextest run`
+# against only the affected crates, both with --locked --all-features --all-targets --color never.
 # --all-features is required so feature-gated test code (e.g. #[cfg(feature = "mock")])
 # compiles. Requires cargo-nextest -- without it, rail's test surface falls back to
 # `cargo test ... -- <run_args>`, where the run_args land as test-binary args (a noop)

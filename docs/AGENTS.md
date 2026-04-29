@@ -11,11 +11,11 @@
 
 3. You MUST use `cargo run` when you start any service for testing.
 
-4. You MUST ALWAYS run `cargo rail run --profile commit -q` and `cargo fmt` before committing your work and fix all errors and warnings from the change you've made. The `commit` profile (defined in `.config/rail.toml`) runs `cargo check` and `cargo nextest run` against only the packages affected by your changes vs. the merge base, with `--locked --all-features --all-targets` baked in so feature-gated test code (e.g. `#[cfg(feature = "mock")]`) is exercised and feature-unification errors on test/bench/example targets are caught. Use `cargo rail plan --merge-base` to preview which packages would be affected.
+4. You MUST ALWAYS run `cargo rail run --profile commit -q` and `cargo fmt` before committing your work and fix all errors and warnings from the change you've made. The `commit` profile (defined in `.config/rail.toml`) runs `cargo check` and `cargo nextest run` against only the packages affected by your changes vs. the merge base, with `--locked --all-features --all-targets` baked in so feature-gated test code (e.g. `#[cfg(feature = "mock")]`) is exercised and feature-unification errors on test/bench/example targets are caught. Use `cargo rail plan --merge-base` to preview which packages would be affected. Note: rail's `build` surface is hardcoded to `cargo check` (a faster proxy for codegen-free type-checking); CI itself runs `cargo build` for the same flags, so a final `cargo build` is still worth running before you push if your change touches linker-visible code.
 
    **Requires `cargo-nextest`** (`cargo install cargo-nextest --locked`). Without nextest, rail's test surface falls back to plain `cargo test` and the profile's `--all-features` flag silently lands in the test-binary args slot instead of cargo's — mock-gated code will not be compiled and you will pass locally but fail CI.
 
-   If `cargo-rail` is not available, fall back to `cargo build --all --all-targets --all-features --locked --quiet --color never` and `cargo nextest run --locked --all-features --all-targets`. See docs/skills/pre-push.md for the full CI quality-gate suite.
+   If `cargo-rail` is not available, fall back to `cargo build --all --all-targets --all-features --locked --quiet --color never` and `cargo nextest run --locked --all-features --all-targets --color never`. See docs/skills/pre-push.md for the full CI quality-gate suite.
 
    A Bazel build system is being introduced alongside Cargo (see `docs/plans/bazel-migration.md`). Cargo remains the canonical build during the migration; Bazel runs in shadow mode and is not a required pre-push step yet. If you want to exercise it, `bazel test //...` runs all non-`requires-cargo`, non-BDD targets.
 
