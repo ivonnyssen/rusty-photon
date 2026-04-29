@@ -598,7 +598,7 @@ precedence.
 |--------|-----------|---------|-------------|
 | `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
 | `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
-| `detect_stars` | document_id or image_path, threshold_sigma (optional) | stars: \[{x, y, flux, peak}\] | Locate stars via thresholded connected-components on background-subtracted pixels. *Planned.* |
+| `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
 | `measure_stars` | document_id or image_path, stars (optional) | per-star \[{x, y, hfr, fwhm, eccentricity, flux}\] | Per-star metrics. If `stars` omitted, runs `detect_stars` first. *Planned.* |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
 | `compute_snr` | document_id or image_path | snr, signal, noise | Signal-to-noise summary. *Planned.* |
@@ -812,6 +812,60 @@ is taken over the surviving set via `select_nth_unstable`.
 the exposure document as the `background` section. Separate from
 `measure_basic`'s `image_analysis` section so the two tools don't
 overwrite each other on the same document.
+
+#### `detect_stars` Contract
+
+Returns the per-star list `measure_basic` produces internally — useful for
+callers that want star coordinates and fluxes without HFR (centering,
+quality screens, custom plate-solver hints). Also persists the list so
+follow-up tools (`measure_stars`) can skip re-detection on the same
+exposure.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required. Pixel area encodes a pixel-scale
+  (arcsec/px) assumption that the tool cannot infer; same rationale as
+  `measure_basic` (no defaults).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold above
+  background, in stddev units.
+
+**Output**:
+- `stars` — array of `{x, y, flux, peak, saturated_pixel_count}` objects:
+  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `flux` — sum of background-subtracted, non-negative flux over the
+    component (ADU).
+  - `peak` — maximum *raw* pixel value over the component (ADU, not
+    background-subtracted). Useful for saturation awareness.
+  - `saturated_pixel_count` — pixels at or above the camera's `max_adu`.
+    Always `0` when `max_adu` is unknown (bare `image_path` mode).
+- `star_count` — convenience aggregate (`stars.length`).
+- `saturated_star_count` — count of stars with `saturated_pixel_count > 0`.
+- `background_mean` / `background_stddev` — sigma-clipped background used
+  to set the detection threshold; included so callers know what cut was
+  effectively applied.
+
+**Algorithm**: same pipeline `measure_basic` runs internally — sigma-
+clipped background → Gaussian smoothing (σ ≈ 1 px) → threshold at
+`mean + threshold_sigma × stddev` → 4-connectivity BFS → area / border
+filter → intensity-weighted centroiding. Saturated components are
+flagged, not rejected (same rationale as `measure_basic`).
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter (validated in body for deterministic error ordering, same as
+  `measure_basic`).
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `detected_stars` section. Separate from `image_analysis`
+(measure_basic) and `background` (estimate_background) so all three tools
+can run on the same exposure without overwriting each other.
 
 #### Design Rationale
 

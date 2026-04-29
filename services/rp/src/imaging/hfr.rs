@@ -111,6 +111,7 @@ mod tests {
             centroid_x: cx,
             centroid_y: cy,
             total_flux: 0.0,
+            peak: 0.0,
             pixels,
             bounding_box: bbox,
             saturated_pixel_count: 0,

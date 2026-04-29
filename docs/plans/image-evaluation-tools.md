@@ -283,7 +283,16 @@ One PR per tool, in this order:
       `measure_basic`'s `image_analysis`. 10 BDD scenarios (catalog,
       image_path / document_id happy paths, persistence, custom k+iters,
       five error paths). 100/100 BDD scenarios green.
-- [ ] `detect_stars` (extracted similarly; returns per-star list).
+- [x] `detect_stars` (per-star list with `{x, y, flux, peak,
+      saturated_pixel_count}` plus aggregate counts and the sigma-clipped
+      background used for the threshold). Reuses `imaging/stars.rs` and
+      `imaging/background.rs` kernels from Phase 4. `peak: f64` (raw, not
+      background-subtracted) was added to `Star` for this tool and to give
+      `measure_stars` an FWHM-fit initial guess. Persists into the
+      exposure document as a `detected_stars` section. 10 BDD scenarios
+      (catalog, image_path / document_id happy paths, persistence,
+      high-threshold empty list, five error paths). 110/110 BDD scenarios
+      green.
 - [ ] `measure_stars` (per-star HFR, FWHM, eccentricity, flux). Adds
       `fwhm.rs` via `rmpfit` — pull the crate in here if not already.
 - [ ] `compute_snr` (signal/noise summary).

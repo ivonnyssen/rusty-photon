@@ -32,6 +32,9 @@ pub struct Star {
     pub centroid_y: f64,
     /// Sum of background-subtracted, non-negative flux over the component.
     pub total_flux: f64,
+    /// Maximum *raw* pixel value over the component (not background-subtracted).
+    /// Useful for saturation awareness and as an FWHM-fit initial guess.
+    pub peak: f64,
     /// Pixel coordinates `(axis0, axis1)` belonging to this component.
     pub pixels: Vec<(usize, usize)>,
     /// Inclusive bounding box `(min_x, min_y, max_x, max_y)`.
@@ -132,12 +135,17 @@ fn build_star<T: Pixel>(
     let mut sum_wx = 0.0;
     let mut sum_wy = 0.0;
     let mut saturated = 0u32;
+    let mut peak = f64::NEG_INFINITY;
     for &(r, c) in &pixels {
         let raw = view[[r, c]];
-        let f = (raw.to_f64() - background_mean).max(0.0);
+        let raw_f = raw.to_f64();
+        let f = (raw_f - background_mean).max(0.0);
         total_flux += f;
         sum_wx += f * (r as f64);
         sum_wy += f * (c as f64);
+        if raw_f > peak {
+            peak = raw_f;
+        }
         if let Some(max_adu) = params.max_adu {
             if raw.to_u32() >= max_adu {
                 saturated += 1;
@@ -158,6 +166,7 @@ fn build_star<T: Pixel>(
         centroid_x: cx,
         centroid_y: cy,
         total_flux,
+        peak,
         pixels,
         bounding_box: (min_x, min_y, max_x, max_y),
         saturated_pixel_count: saturated,
@@ -399,6 +408,27 @@ mod tests {
         let stars = detect_stars(arr.view(), &bg, &params);
         assert_eq!(stars.len(), 1);
         assert_eq!(stars[0].saturated_pixel_count, 0);
+    }
+
+    #[test]
+    fn peak_is_raw_pixel_max_not_background_subtracted() {
+        // Centered on an integer grid so the (32, 32) cell hits the full peak:
+        // raw = bg + amplitude * exp(0) = 1000 + 20_000 = 21_000.
+        let arr = make_gaussian(64, 64, 32.0, 32.0, 1.5, 20_000.0, 1000.0);
+        let bg = BackgroundStats {
+            mean: 1000.0,
+            stddev: 5.0,
+            median: 1000.0,
+            n_pixels: 4096,
+        };
+        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        assert_eq!(stars.len(), 1);
+        let p = stars[0].peak;
+        assert!(
+            (p - 21_000.0).abs() < 1.0,
+            "peak should be raw pixel max (~21000), got {}",
+            p
+        );
     }
 
     #[test]

@@ -13,7 +13,9 @@ use uuid::Uuid;
 use crate::document::{DocumentStore, ExposureDocument};
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
-use crate::imaging::{self, BackgroundStats, CachedImage, CachedPixels, ImageCache};
+use crate::imaging::{
+    self, BackgroundStats, CachedImage, CachedPixels, DetectionParams, ImageCache, Star,
+};
 use crate::session::SessionConfig;
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,32 @@ fn default_clip_k() -> f64 {
 
 fn default_clip_max_iters() -> u32 {
     5
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DetectStarsParams {
+    /// Document ID of a previously-captured image. Resolved via the image
+    /// cache first, falling back to the FITS file recorded on the document.
+    /// Mutually exclusive with `image_path` (one is required).
+    #[serde(default)]
+    pub document_id: Option<String>,
+    /// Filesystem path to a FITS file. Used when no `document_id` is given.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// Detection threshold above sky in multiples of background stddev.
+    #[serde(default = "default_threshold_sigma")]
+    pub threshold_sigma: f64,
+    /// Minimum component pixel area to admit as a star. Required, but
+    /// modeled as `Option` so the tool body can validate input presence in
+    /// a deterministic order — `image_path`/`document_id` first, areas
+    /// second — and produce input-shaped error messages (same pattern as
+    /// `measure_basic`).
+    #[serde(default)]
+    pub min_area: Option<usize>,
+    /// Maximum component pixel area to admit as a star. Required (same
+    /// rationale as `min_area`).
+    #[serde(default)]
+    pub max_area: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -334,6 +362,97 @@ fn clip_outcome<T: imaging::Pixel>(
     Ok(BackgroundOutcome {
         stats,
         total_pixels,
+    })
+}
+
+/// `DetectStarsParams` after schema-level optionals are validated by the
+/// tool body. Pure data, no `Option`s — passed to the imaging composer.
+struct ResolvedDetectParams {
+    threshold_sigma: f64,
+    min_area: usize,
+    max_area: usize,
+}
+
+/// Detection outcome: the star list paired with the background stats used
+/// to set the threshold. The tool's JSON contract surfaces both.
+struct DetectStarsOutcome {
+    stars: Vec<Star>,
+    background: BackgroundStats,
+}
+
+impl McpHandler {
+    async fn detect_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<DetectStarsOutcome> {
+        if let Some(cached) = self.image_cache.get(doc_id) {
+            let max_adu = Some(cached.max_adu);
+            return match &cached.pixels {
+                CachedPixels::U16(arr) => detect_outcome(arr.view(), params, max_adu),
+                CachedPixels::I32(arr) => detect_outcome(arr.view(), params, max_adu),
+            };
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+        })?;
+        // No camera context here — pass max_adu = None (matches measure_basic).
+        self.detect_via_path(&doc.file_path, params).await
+    }
+
+    async fn detect_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<DetectStarsOutcome> {
+        let path_owned = path.to_string();
+        let resolved = ResolvedDetectParams {
+            threshold_sigma: params.threshold_sigma,
+            min_area: params.min_area,
+            max_area: params.max_area,
+        };
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            detect_outcome(arr.view(), &resolved, None)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+}
+
+fn detect_outcome<T: imaging::Pixel>(
+    view: ndarray::ArrayView2<T>,
+    params: &ResolvedDetectParams,
+    max_adu: Option<u32>,
+) -> crate::error::Result<DetectStarsOutcome> {
+    let background = imaging::estimate_background(view).ok_or_else(|| {
+        crate::error::RpError::Imaging("background estimation failed".to_string())
+    })?;
+
+    let detection = DetectionParams {
+        threshold_sigma: params.threshold_sigma,
+        smoothing_sigma: 1.0,
+        min_area: params.min_area,
+        max_area: params.max_area,
+        max_adu,
+    };
+    let stars = imaging::detect_stars(view, &background, &detection);
+    Ok(DetectStarsOutcome { stars, background })
+}
+
+fn star_to_json(s: &Star) -> serde_json::Value {
+    serde_json::json!({
+        "x": s.centroid_x,
+        "y": s.centroid_y,
+        "flux": s.total_flux,
+        "peak": s.peak,
+        "saturated_pixel_count": s.saturated_pixel_count,
     })
 }
 
@@ -667,6 +786,80 @@ impl McpHandler {
                 .await
             {
                 debug!(error = %e, document_id = %doc_id, "failed to persist background section");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
+        )]))
+    }
+
+    #[tool(
+        description = "Detect stars on a captured image and return per-star coordinates, flux, peak, and saturation flags"
+    )]
+    async fn detect_stars(
+        &self,
+        Parameters(params): Parameters<DetectStarsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
+        let min_area = match params.min_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: min_area"));
+            }
+        };
+        let max_area = match params.max_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: max_area"));
+            }
+        };
+        let resolved = ResolvedDetectParams {
+            threshold_sigma: params.threshold_sigma,
+            min_area,
+            max_area,
+        };
+
+        let outcome = if let Some(doc_id) = params.document_id.as_deref() {
+            match self.detect_via_document(doc_id, &resolved).await {
+                Ok(o) => o,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        } else {
+            let path = params.image_path.as_deref().expect("checked above");
+            match self.detect_via_path(path, &resolved).await {
+                Ok(o) => o,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        };
+
+        let stars_json: Vec<serde_json::Value> = outcome.stars.iter().map(star_to_json).collect();
+        let star_count = outcome.stars.len() as u32;
+        let saturated_star_count = outcome
+            .stars
+            .iter()
+            .filter(|s| s.saturated_pixel_count > 0)
+            .count() as u32;
+
+        let payload = serde_json::json!({
+            "stars": stars_json,
+            "star_count": star_count,
+            "saturated_star_count": saturated_star_count,
+            "background_mean": outcome.background.mean,
+            "background_stddev": outcome.background.stddev,
+        });
+
+        if let Some(doc_id) = params.document_id.as_deref() {
+            if let Err(e) = self
+                .documents
+                .put_section(doc_id, "detected_stars", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist detected_stars section");
             }
         }
 

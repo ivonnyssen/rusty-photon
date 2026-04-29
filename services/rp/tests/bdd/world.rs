@@ -74,6 +74,8 @@ pub struct RpWorld {
     pub last_measure_basic_result: Option<Value>,
     /// Last estimate_background result
     pub last_estimate_background_result: Option<Value>,
+    /// Last detect_stars result
+    pub last_detect_stars_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
     /// Last tool call result
