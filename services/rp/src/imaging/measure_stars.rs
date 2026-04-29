@@ -212,20 +212,26 @@ mod tests {
 
     #[test]
     fn fit_failure_keeps_row_with_null_fwhm() {
-        // Star at (4, 4) on a 16×16 frame with stamp_half_size=8 ⇒ stamp would
-        // require rows -4..=12, which falls off → fit fails. Star is still
-        // detected.
-        let arr = make_gaussian_with_dither(16, 16, 4.0, 4.0, 1.5, 20_000.0, 1000.0);
-        let r = measure_stars(arr.view(), 5.0, 5, 200, Some(65535), 8).unwrap();
-        // Border-touching components are rejected by detect_stars itself —
-        // verify the test setup actually produces a star to measure.
-        if r.star_count == 0 {
-            return;
-        }
+        // Detect a star comfortably inside the frame, then call
+        // `measure_stars` with a `stamp_half_size` larger than the image so
+        // the postage-stamp bounds check in `fit_2d_gaussian` rejects every
+        // candidate. This exercises the documented "fit failure → row kept
+        // with null fwhm/eccentricity" path deterministically; trying to
+        // engineer a centroid close enough to the edge to fail the stamp
+        // check while keeping the component's bbox off the border is
+        // brittle (the threshold-cross radius depends on smoothing + noise
+        // and easily makes detect_stars reject the component instead).
+        let arr = make_gaussian_with_dither(32, 32, 16.0, 16.0, 2.0, 20_000.0, 1000.0);
+        let r = measure_stars(arr.view(), 5.0, 5, 1024, Some(65535), 30).unwrap();
+        assert!(
+            r.star_count >= 1,
+            "test setup must detect at least one star so fit-failure behavior is exercised \
+             (got star_count = 0)"
+        );
         let s = &r.stars[0];
         assert!(
             s.fwhm.is_none(),
-            "expected fit to fail, got fwhm = {:?}",
+            "expected fit to fail for oversized stamp, got fwhm = {:?}",
             s.fwhm
         );
         assert!(s.eccentricity.is_none());

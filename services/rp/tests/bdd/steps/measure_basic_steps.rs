@@ -157,10 +157,12 @@ fn measure_basic_contains_positive_integer(world: &mut RpWorld, field: String) {
         )
     });
 
-    let num = value
-        .as_u64()
-        .or_else(|| value.as_i64().map(|v| v as u64))
-        .unwrap_or_else(|| panic!("expected '{}' to be an integer, got: {:?}", field, value));
+    let num = value.as_u64().unwrap_or_else(|| {
+        panic!(
+            "expected '{}' to be a non-negative integer, got: {:?}",
+            field, value
+        )
+    });
 
     assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
 }

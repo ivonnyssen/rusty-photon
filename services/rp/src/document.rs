@@ -83,19 +83,25 @@ impl DocumentStore {
     }
 
     /// Write `value` into `sections[name]` on the document. Persists the
-    /// updated sidecar JSON atomically. Returns an error if the document is
-    /// not in the store.
+    /// updated sidecar JSON atomically before committing the change to the
+    /// in-memory store, so a sidecar write failure leaves both on-disk and
+    /// in-memory state unchanged. Returns an error if the document is not in
+    /// the store.
+    ///
+    /// Concurrent `put_section` calls are serialized by holding the store's
+    /// write lock across the sidecar write — this prevents a slower writer
+    /// from overwriting the sidecar with an older snapshot after a faster
+    /// concurrent writer already persisted a newer one.
     pub async fn put_section(&self, id: &str, name: &str, value: Value) -> Result<()> {
-        let updated = {
-            let mut guard = self.inner.write().await;
-            let doc = guard
-                .get_mut(id)
-                .ok_or_else(|| RpError::Imaging(format!("document not found: {}", id)))?;
-            doc.sections.insert(name.to_string(), value);
-            doc.clone()
-        };
+        let mut guard = self.inner.write().await;
+        let mut updated = guard
+            .get(id)
+            .ok_or_else(|| RpError::Imaging(format!("document not found: {}", id)))?
+            .clone();
+        updated.sections.insert(name.to_string(), value);
         let sidecar_path = sidecar_path(&updated.file_path);
         write_sidecar(&sidecar_path, &updated).await?;
+        guard.insert(id.to_string(), updated);
         debug!(document_id = %id, section = %name, "DocumentStore put_section");
         Ok(())
     }
@@ -248,6 +254,45 @@ mod tests {
 
         let got = store.get("doc-1").await.unwrap();
         assert_eq!(got.sections["image_analysis"]["v"], 2);
+    }
+
+    #[tokio::test]
+    async fn put_section_rolls_back_on_write_failure() {
+        // If the sidecar write fails, neither in-memory state nor on-disk
+        // state should reflect the failed update. We force a write failure
+        // by replacing the sidecar file with a directory of the same name —
+        // `rename(tmp_file, sidecar_dir)` is rejected on Linux and Windows.
+        let dir = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
+        let sidecar = dir.path().join("img.json");
+        let store = DocumentStore::new();
+
+        store
+            .create(doc_with_path("doc-1", &fits_path))
+            .await
+            .unwrap();
+        store
+            .put_section("doc-1", "image_analysis", json!({"v": 1}))
+            .await
+            .unwrap();
+
+        tokio::fs::remove_file(&sidecar).await.unwrap();
+        tokio::fs::create_dir(&sidecar).await.unwrap();
+
+        let err = store
+            .put_section("doc-1", "image_analysis", json!({"v": 2}))
+            .await
+            .unwrap_err();
+        assert!(
+            !err.to_string().is_empty(),
+            "expected non-empty write failure error"
+        );
+
+        let got = store.get("doc-1").await.unwrap();
+        assert_eq!(
+            got.sections["image_analysis"]["v"], 1,
+            "in-memory section must roll back to the previous value when the sidecar write fails"
+        );
     }
 
     #[tokio::test]

@@ -129,11 +129,14 @@ async fn get_image_metadata(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let in_cache = state.image_cache.get(&document_id).is_some();
+    // Single cache lookup: `get` mutates LRU order, so calling it twice would
+    // double-bump this entry to MRU.
+    let cached = state.image_cache.get(&document_id);
+    let in_cache = cached.is_some();
     match state.documents.get(&document_id).await {
         Some(doc) => {
-            let bitpix = match state.image_cache.get(&document_id) {
-                Some(cached) => match cached.pixels {
+            let bitpix = match cached.as_ref() {
+                Some(c) => match c.pixels {
                     CachedPixels::U16(_) => 16,
                     CachedPixels::I32(_) => 32,
                 },
