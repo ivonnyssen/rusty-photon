@@ -141,11 +141,20 @@ config duration as a raw integer would have undermined the
 - `FlatPlan::initial_duration_ms` (`services/calibrator-flats`) —
   carries the same value through the orchestrator config end-to-end.
 
-For symmetry, `get_camera_info`'s `exposure_min_ms` / `exposure_max_ms`
-results were left as raw integers — those are camera capability
-*results* rather than operator-facing duration values, and changing
-them would cascade into the proportional-clamp arithmetic in
-`calibrator-flats::workflow` for no real win.
+**Update (2026-04-29, follow-up PR #99):** the µs precision floor
+was committed system-wide (motivated by bias frames on modern CMOS,
+where the camera minimum can be ~10–50 µs and a 1 ms floor would
+contaminate the read-noise frame with dark current). With that
+floor in place, `get_camera_info` was migrated too:
+`exposure_min_ms` / `exposure_max_ms` (raw integer ms) became
+`exposure_min` / `exposure_max` (humantime strings). The
+proportional-clamp arithmetic in `calibrator-flats::workflow` now
+operates on `Duration` end-to-end via `Duration::mul_f64` and
+`Duration::min` / `max`. The `exposure_started` event payload and
+the `post_completion` filter result also moved from `_ms` integers
+to humantime strings, so durations are `Duration` (or humantime
+strings at boundaries) system-wide. See `docs/workspace.md`
+§ "Duration Units" for the contract.
 
 The internal `MonitorStatus::polling_interval_ms` field in
 `services/sentinel/src/state.rs` is **not** a config field — it's

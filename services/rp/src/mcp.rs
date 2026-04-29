@@ -162,7 +162,7 @@ impl McpHandler {
             "exposure_started",
             serde_json::json!({
                 "camera_id": params.camera_id,
-                "duration_ms": params.duration.as_millis() as u64,
+                "duration": humantime::format_duration(params.duration).to_string(),
             }),
         );
 
@@ -236,14 +236,11 @@ impl McpHandler {
             }
         };
 
-        let (exposure_min_ms, exposure_max_ms) = match cam.exposure_range().await {
-            Ok(range) => (
-                range.start().as_millis() as u64,
-                range.end().as_millis() as u64,
-            ),
+        let (exposure_min, exposure_max) = match cam.exposure_range().await {
+            Ok(range) => (*range.start(), *range.end()),
             Err(e) => {
                 debug!(error = %e, "failed to read exposure range, using defaults");
-                (1u64, 3600000u64)
+                (Duration::from_millis(1), Duration::from_secs(3600))
             }
         };
 
@@ -254,8 +251,8 @@ impl McpHandler {
             "sensor_y": sensor_y,
             "bin_x": bin_x,
             "bin_y": bin_y,
-            "exposure_min_ms": exposure_min_ms,
-            "exposure_max_ms": exposure_max_ms,
+            "exposure_min": humantime::format_duration(exposure_min).to_string(),
+            "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))
     }
 
@@ -1201,8 +1198,8 @@ mod tests {
             .map(|tc| tc.text.as_str())
             .unwrap_or("");
         let json: serde_json::Value = serde_json::from_str(text).unwrap();
-        assert_eq!(json["exposure_min_ms"], 1);
-        assert_eq!(json["exposure_max_ms"], 3600000);
+        assert_eq!(json["exposure_min"], "1ms");
+        assert_eq!(json["exposure_max"], "1h");
     }
 
     // -----------------------------------------------------------------------

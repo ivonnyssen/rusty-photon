@@ -100,7 +100,7 @@ async fn post_completion(
         .map(|f| {
             serde_json::json!({
                 "filter": f.filter_name,
-                "duration_ms": f.duration_ms,
+                "duration": humantime::format_duration(f.duration).to_string(),
                 "median_adu": f.median_adu,
                 "frames": f.frames_captured,
                 "converged": f.converged,

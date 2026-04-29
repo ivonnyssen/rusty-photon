@@ -30,8 +30,10 @@ pub struct CaptureResult {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CameraInfo {
     pub max_adu: u32,
-    pub exposure_min_ms: u64,
-    pub exposure_max_ms: u64,
+    #[serde(with = "humantime_serde")]
+    pub exposure_min: Duration,
+    #[serde(with = "humantime_serde")]
+    pub exposure_max: Duration,
 }
 
 /// Result from the `compute_image_stats` tool.
@@ -62,7 +64,7 @@ impl McpClient {
             "capture",
             serde_json::json!({
                 "camera_id": camera_id,
-                "duration": format!("{}ms", duration.as_millis()),
+                "duration": humantime::format_duration(duration).to_string(),
             }),
         )
         .await

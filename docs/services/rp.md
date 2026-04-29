@@ -523,7 +523,7 @@ the exact parameter types and return structure.
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
-| `get_camera_info` | camera_id | max_adu, exposure_min_ms, exposure_max_ms, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
+| `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |

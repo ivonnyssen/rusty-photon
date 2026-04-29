@@ -19,7 +19,7 @@ pub struct WorkflowResult {
 #[derive(Debug)]
 pub struct FilterResult {
     pub filter_name: String,
-    pub duration_ms: u32,
+    pub duration: Duration,
     pub median_adu: u32,
     pub frames_captured: u32,
     pub iterations: u32,
@@ -77,13 +77,13 @@ async fn run_capture_loop(
         mcp.set_filter(&plan.filter_wheel_id, &filter.name).await?;
 
         // Find optimal exposure time
-        let (duration_ms, median_adu, iterations, converged) =
+        let (duration, median_adu, iterations, converged) =
             find_optimal_duration(mcp, plan, target_adu, camera_info).await?;
 
         if converged {
             info!(
                 filter = %filter.name,
-                duration_ms = duration_ms,
+                duration = %humantime::format_duration(duration),
                 median_adu = median_adu,
                 iterations = iterations,
                 "exposure converged"
@@ -91,7 +91,7 @@ async fn run_capture_loop(
         } else {
             warn!(
                 filter = %filter.name,
-                duration_ms = duration_ms,
+                duration = %humantime::format_duration(duration),
                 median_adu = median_adu,
                 iterations = iterations,
                 "exposure did not converge, using best duration"
@@ -99,16 +99,15 @@ async fn run_capture_loop(
         }
 
         // Capture the requested number of flat frames
-        let capture_duration = Duration::from_millis(duration_ms as u64);
         for i in 1..=filter.count {
             debug!(filter = %filter.name, frame = i, total = filter.count, "capturing flat");
-            mcp.capture(&plan.camera_id, capture_duration).await?;
+            mcp.capture(&plan.camera_id, duration).await?;
         }
 
         total_frames += filter.count;
         filters_completed.push(FilterResult {
             filter_name: filter.name.clone(),
-            duration_ms,
+            duration,
             median_adu,
             frames_captured: filter.count,
             iterations,
@@ -125,20 +124,18 @@ async fn run_capture_loop(
 /// Iteratively adjust exposure time to hit the target ADU.
 ///
 /// Uses proportional adjustment: `new_duration = old_duration * (target / measured)`.
-/// Returns `(duration_ms, last_median_adu, iterations, converged)`.
+/// Returns `(duration, last_median_adu, iterations, converged)`.
 async fn find_optimal_duration(
     mcp: &McpClient,
     plan: &FlatPlan,
     target_adu: u32,
     camera_info: &crate::mcp_client::CameraInfo,
-) -> Result<(u32, u32, u32, bool)> {
-    let mut duration_ms = plan.initial_duration.as_millis() as u32;
+) -> Result<(Duration, u32, u32, bool)> {
+    let mut duration = plan.initial_duration;
     let mut last_median = 0u32;
 
     for iteration in 1..=plan.max_iterations {
-        let capture_result = mcp
-            .capture(&plan.camera_id, Duration::from_millis(duration_ms as u64))
-            .await?;
+        let capture_result = mcp.capture(&plan.camera_id, duration).await?;
         let stats = mcp
             .compute_image_stats(
                 &capture_result.image_path,
@@ -158,7 +155,7 @@ async fn find_optimal_duration(
 
         debug!(
             iteration = iteration,
-            duration_ms = duration_ms,
+            duration = %humantime::format_duration(duration),
             median_adu = last_median,
             target_adu = target_adu,
             deviation = %format!("{:.1}%", deviation * 100.0),
@@ -166,55 +163,57 @@ async fn find_optimal_duration(
         );
 
         if deviation <= plan.tolerance {
-            return Ok((duration_ms, last_median, iteration, true));
+            return Ok((duration, last_median, iteration, true));
         }
 
         // Adjust proportionally
-        duration_ms = if last_median == 0 {
+        duration = if last_median == 0 {
             // Guard division by zero: double the duration
-            duration_ms.saturating_mul(2)
+            duration.saturating_mul(2)
         } else {
             let ratio = target_adu as f64 / last_median as f64;
-            (duration_ms as f64 * ratio) as u32
+            duration.mul_f64(ratio)
         };
 
         // Clamp to camera limits
-        duration_ms = duration_ms
-            .max(camera_info.exposure_min_ms as u32)
-            .min(camera_info.exposure_max_ms as u32);
+        duration = duration
+            .max(camera_info.exposure_min)
+            .min(camera_info.exposure_max);
     }
 
     // Did not converge, return best effort
-    Ok((duration_ms, last_median, plan.max_iterations, false))
+    Ok((duration, last_median, plan.max_iterations, false))
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::time::Duration;
+
     #[test]
     fn proportional_adjustment_doubles_for_half_signal() {
-        let current_ms = 1000u32;
+        let current = Duration::from_secs(1);
         let target = 32000u32;
         let measured = 16000u32;
         let ratio = target as f64 / measured as f64;
-        let new_ms = (current_ms as f64 * ratio) as u32;
-        assert_eq!(new_ms, 2000);
+        let new_duration = current.mul_f64(ratio);
+        assert_eq!(new_duration, Duration::from_secs(2));
     }
 
     #[test]
     fn proportional_adjustment_halves_for_double_signal() {
-        let current_ms = 1000u32;
+        let current = Duration::from_secs(1);
         let target = 32000u32;
         let measured = 64000u32;
         let ratio = target as f64 / measured as f64;
-        let new_ms = (current_ms as f64 * ratio) as u32;
-        assert_eq!(new_ms, 500);
+        let new_duration = current.mul_f64(ratio);
+        assert_eq!(new_duration, Duration::from_millis(500));
     }
 
     #[test]
     fn zero_measurement_doubles_duration() {
-        let duration_ms = 500u32;
-        let result = duration_ms.saturating_mul(2);
-        assert_eq!(result, 1000);
+        let duration = Duration::from_millis(500);
+        let result = duration.saturating_mul(2);
+        assert_eq!(result, Duration::from_secs(1));
     }
 }

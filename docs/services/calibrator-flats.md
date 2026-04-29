@@ -127,7 +127,7 @@ for each filter in plan.filters:
             duration = duration * (target_adu / stats.median_adu)
 
         # Clamp to camera limits
-        duration = clamp(duration, info.exposure_min_ms, info.exposure_max_ms)
+        duration = clamp(duration, info.exposure_min, info.exposure_max)
 
     if not converged:
         log warning "exposure did not converge for filter {filter.name}"
