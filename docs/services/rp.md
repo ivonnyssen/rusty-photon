@@ -600,7 +600,7 @@ precedence.
 | `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
 | `detect_stars` | document_id or image_path, threshold_sigma (optional) | stars: \[{x, y, flux, peak}\] | Locate stars via thresholded connected-components on background-subtracted pixels. *Planned.* |
 | `measure_stars` | document_id or image_path, stars (optional) | per-star \[{x, y, hfr, fwhm, eccentricity, flux}\] | Per-star metrics. If `stars` omitted, runs `detect_stars` first. *Planned.* |
-| `estimate_background` | document_id or image_path | mean, stddev, median (sigma-clipped) | Robust background estimation. *Planned.* |
+| `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
 | `compute_snr` | document_id or image_path | snr, signal, noise | Signal-to-noise summary. *Planned.* |
 
 **Compute (plate solving)**
@@ -774,6 +774,44 @@ The first analysis tool to implement. Behavioral contract:
 the exposure document as the `image_analysis` section per the rule that
 "all tool results that produce image metrics MUST be written into the
 exposure document as a section."
+
+#### `estimate_background` Contract
+
+A focused tool that returns sigma-clipped background statistics on their
+own — useful for flat-field analysis, sky-quality screening, and any
+caller that wants the background number without paying for star detection.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- Optional `k` (default `3.0`) — sigma-clip threshold in stddev units.
+- Optional `max_iters` (default `5`) — maximum clip iterations.
+
+**Output**:
+- `mean` — sigma-clipped background mean (ADU).
+- `stddev` — sigma-clipped background standard deviation (ADU).
+- `median` — median of the surviving (post-clip) pixel set (ADU).
+- `pixel_count` — total pixels analyzed (input area, not the surviving set).
+
+**Algorithm**: same iterative sigma-clip kernel `measure_basic` uses
+internally — clip pixels outside `mean ± k × stddev`, recompute, repeat
+until the surviving set stops shrinking or `max_iters` runs out. Median
+is taken over the surviving set via `select_nth_unstable`.
+
+**Error cases**:
+- Neither `document_id` nor `image_path` provided → MCP error mentioning
+  `image_path` (consistent with `measure_basic`).
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- `k <= 0` or `max_iters == 0` → MCP error naming the bad parameter.
+- Background estimation fails (e.g. all pixels clipped, empty image) →
+  MCP error.
+
+**Persistence**: when called with `document_id`, results are written into
+the exposure document as the `background` section. Separate from
+`measure_basic`'s `image_analysis` section so the two tools don't
+overwrite each other on the same document.
 
 #### Design Rationale
 

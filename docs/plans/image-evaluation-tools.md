@@ -276,8 +276,13 @@ so no `bazel mod tidy` was needed.
 
 One PR per tool, in this order:
 
-- [ ] `estimate_background` (extracted from `measure_basic`'s shared
-      code; adds median to the output).
+- [x] `estimate_background` (sigma-clipped mean / stddev / median; reuses
+      `imaging/background.rs` kernel from Phase 4). Optional `k` (default
+      3.0) and `max_iters` (default 5) clip parameters; persists into the
+      exposure document as a `background` section, separate from
+      `measure_basic`'s `image_analysis`. 10 BDD scenarios (catalog,
+      image_path / document_id happy paths, persistence, custom k+iters,
+      five error paths). 100/100 BDD scenarios green.
 - [ ] `detect_stars` (extracted similarly; returns per-star list).
 - [ ] `measure_stars` (per-star HFR, FWHM, eccentricity, flux). Adds
       `fwhm.rs` via `rmpfit` — pull the crate in here if not already.

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::document::{DocumentStore, ExposureDocument};
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
-use crate::imaging::{self, CachedImage, CachedPixels, ImageCache};
+use crate::imaging::{self, BackgroundStats, CachedImage, CachedPixels, ImageCache};
 use crate::session::SessionConfig;
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,32 @@ pub struct MeasureBasicParams {
 
 fn default_threshold_sigma() -> f64 {
     5.0
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EstimateBackgroundParams {
+    /// Document ID of a previously-captured image. Resolved via the image
+    /// cache first, falling back to the FITS file recorded on the document.
+    /// Mutually exclusive with `image_path` (one is required).
+    #[serde(default)]
+    pub document_id: Option<String>,
+    /// Filesystem path to a FITS file. Used when no `document_id` is given.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// Sigma-clip threshold in stddev units. Must be > 0.
+    #[serde(default = "default_clip_k")]
+    pub k: f64,
+    /// Maximum clip iterations. Must be >= 1.
+    #[serde(default = "default_clip_max_iters")]
+    pub max_iters: u32,
+}
+
+fn default_clip_k() -> f64 {
+    3.0
+}
+
+fn default_clip_max_iters() -> u32 {
+    5
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +262,79 @@ struct ResolvedParams {
     threshold_sigma: f64,
     min_area: usize,
     max_area: usize,
+}
+
+/// `EstimateBackgroundParams` after sign/range validation. Same pattern as
+/// `ResolvedParams`: schema-level optionals, validated in the tool body.
+struct ResolvedClipParams {
+    k: f64,
+    max_iters: usize,
+}
+
+/// Background stats paired with the input pixel area (rows × cols). The
+/// kernel's `BackgroundStats.n_pixels` is the *surviving* count after
+/// sigma-clipping; `total_pixels` is what we report as `pixel_count` in
+/// the tool's JSON contract — consistent with `measure_basic`.
+struct BackgroundOutcome {
+    stats: BackgroundStats,
+    total_pixels: u64,
+}
+
+impl McpHandler {
+    async fn estimate_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedClipParams,
+    ) -> crate::error::Result<BackgroundOutcome> {
+        if let Some(cached) = self.image_cache.get(doc_id) {
+            return match &cached.pixels {
+                CachedPixels::U16(arr) => clip_outcome(arr.view(), params),
+                CachedPixels::I32(arr) => clip_outcome(arr.view(), params),
+            };
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+        })?;
+        self.estimate_via_path(&doc.file_path, params).await
+    }
+
+    async fn estimate_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedClipParams,
+    ) -> crate::error::Result<BackgroundOutcome> {
+        let path_owned = path.to_string();
+        let k = params.k;
+        let max_iters = params.max_iters;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            clip_outcome(arr.view(), &ResolvedClipParams { k, max_iters })
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+}
+
+fn clip_outcome<T: imaging::Pixel>(
+    view: ndarray::ArrayView2<T>,
+    params: &ResolvedClipParams,
+) -> crate::error::Result<BackgroundOutcome> {
+    let (rows, cols) = view.dim();
+    let total_pixels = (rows as u64) * (cols as u64);
+    let stats =
+        imaging::sigma_clipped_stats(view, params.k, params.max_iters).ok_or_else(|| {
+            crate::error::RpError::Imaging("background estimation failed".to_string())
+        })?;
+    Ok(BackgroundOutcome {
+        stats,
+        total_pixels,
+    })
 }
 
 #[tool_router(server_handler)]
@@ -518,6 +617,62 @@ impl McpHandler {
             "background_stddev": result.background_stddev,
             "pixel_count": result.pixel_count,
         }))
+    }
+
+    #[tool(description = "Sigma-clipped background mean / stddev / median for a captured image")]
+    async fn estimate_background(
+        &self,
+        Parameters(params): Parameters<EstimateBackgroundParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
+        if !params.k.is_finite() || params.k <= 0.0 {
+            return Ok(tool_error!("invalid parameter: k must be > 0"));
+        }
+        if params.max_iters == 0 {
+            return Ok(tool_error!("invalid parameter: max_iters must be >= 1"));
+        }
+        let resolved = ResolvedClipParams {
+            k: params.k,
+            max_iters: params.max_iters as usize,
+        };
+
+        let outcome = if let Some(doc_id) = params.document_id.as_deref() {
+            match self.estimate_via_document(doc_id, &resolved).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        } else {
+            let path = params.image_path.as_deref().expect("checked above");
+            match self.estimate_via_path(path, &resolved).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        };
+
+        let payload = serde_json::json!({
+            "mean": outcome.stats.mean,
+            "stddev": outcome.stats.stddev,
+            "median": outcome.stats.median,
+            "pixel_count": outcome.total_pixels,
+        });
+
+        if let Some(doc_id) = params.document_id.as_deref() {
+            if let Err(e) = self
+                .documents
+                .put_section(doc_id, "background", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist background section");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
+        )]))
     }
 
     // -------------------------------------------------------------------
