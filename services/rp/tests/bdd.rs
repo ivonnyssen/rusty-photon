@@ -17,6 +17,11 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // Drop the MCP client first — its streaming HTTP
+                    // connection would otherwise keep axum's graceful
+                    // shutdown blocked, causing rp to time out and SIGKILL,
+                    // which loses LLVM coverage profraw data.
+                    world.mcp_client = None;
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }
