@@ -121,9 +121,34 @@ async fn run_capture_loop(
     })
 }
 
+/// Proportionally adjust exposure to hit `target_adu`, clamped to the
+/// camera's exposure range.
+///
+/// `new = current * (target_adu / last_median)`, with a doubling guard
+/// when `last_median == 0` to escape the division-by-zero case.
+fn next_duration(
+    current: Duration,
+    target_adu: u32,
+    last_median: u32,
+    exposure_min: Duration,
+    exposure_max: Duration,
+) -> Duration {
+    let adjusted = if last_median == 0 {
+        current.saturating_mul(2)
+    } else {
+        let ratio = target_adu as f64 / last_median as f64;
+        current.mul_f64(ratio)
+    };
+    adjusted.max(exposure_min).min(exposure_max)
+}
+
+/// Fractional deviation of a measured ADU from the target.
+fn deviation(target_adu: u32, last_median: u32) -> f64 {
+    (last_median as f64 - target_adu as f64).abs() / target_adu as f64
+}
+
 /// Iteratively adjust exposure time to hit the target ADU.
 ///
-/// Uses proportional adjustment: `new_duration = old_duration * (target / measured)`.
 /// Returns `(duration, last_median_adu, iterations, converged)`.
 async fn find_optimal_duration(
     mcp: &McpClient,
@@ -131,6 +156,12 @@ async fn find_optimal_duration(
     target_adu: u32,
     camera_info: &crate::mcp_client::CameraInfo,
 ) -> Result<(Duration, u32, u32, bool)> {
+    if target_adu == 0 {
+        return Err(CalibratorFlatsError::Workflow(
+            "target_adu is 0 (max_adu * fraction = 0)".into(),
+        ));
+    }
+
     let mut duration = plan.initial_duration;
     let mut last_median = 0u32;
 
@@ -144,41 +175,28 @@ async fn find_optimal_duration(
             .await?;
 
         last_median = stats.median_adu;
-
-        let deviation = if target_adu > 0 {
-            (last_median as f64 - target_adu as f64).abs() / target_adu as f64
-        } else {
-            return Err(CalibratorFlatsError::Workflow(
-                "target_adu is 0 (max_adu * fraction = 0)".into(),
-            ));
-        };
+        let dev = deviation(target_adu, last_median);
 
         debug!(
             iteration = iteration,
             duration = %humantime::format_duration(duration),
             median_adu = last_median,
             target_adu = target_adu,
-            deviation = %format!("{:.1}%", deviation * 100.0),
+            deviation = %format!("{:.1}%", dev * 100.0),
             "exposure iteration"
         );
 
-        if deviation <= plan.tolerance {
+        if dev <= plan.tolerance {
             return Ok((duration, last_median, iteration, true));
         }
 
-        // Adjust proportionally
-        duration = if last_median == 0 {
-            // Guard division by zero: double the duration
-            duration.saturating_mul(2)
-        } else {
-            let ratio = target_adu as f64 / last_median as f64;
-            duration.mul_f64(ratio)
-        };
-
-        // Clamp to camera limits
-        duration = duration
-            .max(camera_info.exposure_min)
-            .min(camera_info.exposure_max);
+        duration = next_duration(
+            duration,
+            target_adu,
+            last_median,
+            camera_info.exposure_min,
+            camera_info.exposure_max,
+        );
     }
 
     // Did not converge, return best effort
@@ -188,32 +206,73 @@ async fn find_optimal_duration(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use super::{deviation, next_duration};
     use std::time::Duration;
 
+    const MIN: Duration = Duration::from_micros(10);
+    const MAX: Duration = Duration::from_secs(3600);
+
     #[test]
-    fn proportional_adjustment_doubles_for_half_signal() {
-        let current = Duration::from_secs(1);
-        let target = 32000u32;
-        let measured = 16000u32;
-        let ratio = target as f64 / measured as f64;
-        let new_duration = current.mul_f64(ratio);
-        assert_eq!(new_duration, Duration::from_secs(2));
+    fn next_duration_doubles_for_half_signal() {
+        let next = next_duration(Duration::from_secs(1), 32_000, 16_000, MIN, MAX);
+        assert_eq!(next, Duration::from_secs(2));
     }
 
     #[test]
-    fn proportional_adjustment_halves_for_double_signal() {
-        let current = Duration::from_secs(1);
-        let target = 32000u32;
-        let measured = 64000u32;
-        let ratio = target as f64 / measured as f64;
-        let new_duration = current.mul_f64(ratio);
-        assert_eq!(new_duration, Duration::from_millis(500));
+    fn next_duration_halves_for_double_signal() {
+        let next = next_duration(Duration::from_secs(1), 32_000, 64_000, MIN, MAX);
+        assert_eq!(next, Duration::from_millis(500));
     }
 
     #[test]
-    fn zero_measurement_doubles_duration() {
-        let duration = Duration::from_millis(500);
-        let result = duration.saturating_mul(2);
-        assert_eq!(result, Duration::from_secs(1));
+    fn next_duration_doubles_when_zero_signal() {
+        let next = next_duration(Duration::from_millis(500), 32_000, 0, MIN, MAX);
+        assert_eq!(next, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn next_duration_clamps_to_exposure_min() {
+        // Heavily over-exposed: ratio drives adjustment far below MIN.
+        let next = next_duration(Duration::from_millis(1), 1_000, 1_000_000, MIN, MAX);
+        assert_eq!(next, MIN);
+    }
+
+    #[test]
+    fn next_duration_clamps_to_exposure_max() {
+        // Heavily under-exposed: ratio drives adjustment past MAX.
+        let next = next_duration(Duration::from_secs(1), 60_000, 1, MIN, MAX);
+        assert_eq!(next, MAX);
+    }
+
+    #[test]
+    fn next_duration_zero_signal_clamps_to_exposure_max() {
+        // Doubling guard would still exceed MAX.
+        let next = next_duration(Duration::from_secs(2400), 32_000, 0, MIN, MAX);
+        assert_eq!(next, MAX);
+    }
+
+    #[test]
+    fn next_duration_preserves_microsecond_precision() {
+        // 50 µs bias-class exposure — sub-ms input must produce sub-ms output.
+        let next = next_duration(Duration::from_micros(50), 32_000, 32_000, MIN, MAX);
+        assert_eq!(next, Duration::from_micros(50));
+    }
+
+    #[test]
+    fn next_duration_saturating_mul_does_not_overflow() {
+        // `Duration::MAX * 2` saturates rather than panicking.
+        let next = next_duration(Duration::MAX, 1, 0, MIN, MAX);
+        assert_eq!(next, MAX);
+    }
+
+    #[test]
+    fn deviation_zero_when_on_target() {
+        assert_eq!(deviation(32_000, 32_000), 0.0);
+    }
+
+    #[test]
+    fn deviation_symmetric_above_and_below() {
+        assert_eq!(deviation(32_000, 16_000), 0.5);
+        assert_eq!(deviation(32_000, 48_000), 0.5);
     }
 }
