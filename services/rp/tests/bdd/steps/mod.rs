@@ -3,6 +3,7 @@
 pub mod acme_steps;
 pub mod auth_steps;
 pub mod camera_info_steps;
+pub mod compute_snr_steps;
 pub mod cover_calibrator_steps;
 pub mod detect_stars_steps;
 pub mod equipment_steps;

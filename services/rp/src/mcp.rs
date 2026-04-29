@@ -175,6 +175,28 @@ fn default_stamp_half_size() -> usize {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ComputeSnrParams {
+    /// Document ID of a previously-captured image. Resolved via the image
+    /// cache first, falling back to the FITS file recorded on the document.
+    /// Mutually exclusive with `image_path` (one is required).
+    #[serde(default)]
+    pub document_id: Option<String>,
+    /// Filesystem path to a FITS file. Used when no `document_id` is given.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// Detection threshold above sky in multiples of background stddev.
+    #[serde(default = "default_threshold_sigma")]
+    pub threshold_sigma: f64,
+    /// Minimum component pixel area to admit as a star. Required (validated
+    /// in body, same pattern as the other imaging tools).
+    #[serde(default)]
+    pub min_area: Option<usize>,
+    /// Maximum component pixel area to admit as a star. Required.
+    #[serde(default)]
+    pub max_area: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DetectStarsParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
@@ -548,6 +570,59 @@ impl McpHandler {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
                 })?;
             imaging::measure_stars(arr.view(), threshold, min_a, max_a, None, stamp)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    async fn snr_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<imaging::SnrResult> {
+        if let Some(cached) = self.image_cache.get(doc_id) {
+            let max_adu = Some(cached.max_adu);
+            return match &cached.pixels {
+                CachedPixels::U16(arr) => imaging::compute_snr(
+                    arr.view(),
+                    params.threshold_sigma,
+                    params.min_area,
+                    params.max_area,
+                    max_adu,
+                ),
+                CachedPixels::I32(arr) => imaging::compute_snr(
+                    arr.view(),
+                    params.threshold_sigma,
+                    params.min_area,
+                    params.max_area,
+                    max_adu,
+                ),
+            };
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+        })?;
+        self.snr_via_path(&doc.file_path, params).await
+    }
+
+    async fn snr_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<imaging::SnrResult> {
+        let path_owned = path.to_string();
+        let threshold = params.threshold_sigma;
+        let min_a = params.min_area;
+        let max_a = params.max_area;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            imaging::compute_snr(arr.view(), threshold, min_a, max_a, None)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
@@ -1024,6 +1099,66 @@ impl McpHandler {
                 .await
             {
                 debug!(error = %e, document_id = %doc_id, "failed to persist measured_stars section");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
+        )]))
+    }
+
+    #[tool(
+        description = "Median per-star signal-to-noise ratio via the CCD-equation approximation"
+    )]
+    async fn compute_snr(
+        &self,
+        Parameters(params): Parameters<ComputeSnrParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
+        let min_area = match params.min_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: min_area"));
+            }
+        };
+        let max_area = match params.max_area {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!("missing required parameter: max_area"));
+            }
+        };
+        let resolved = ResolvedDetectParams {
+            threshold_sigma: params.threshold_sigma,
+            min_area,
+            max_area,
+        };
+
+        let result = if let Some(doc_id) = params.document_id.as_deref() {
+            match self.snr_via_document(doc_id, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        } else {
+            let path = params.image_path.as_deref().expect("checked above");
+            match self.snr_via_path(path, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        };
+
+        let payload = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+
+        if let Some(doc_id) = params.document_id.as_deref() {
+            if let Err(e) = self
+                .documents
+                .put_section(doc_id, "snr", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist snr section");
             }
         }
 

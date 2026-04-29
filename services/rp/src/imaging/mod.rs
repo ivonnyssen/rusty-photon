@@ -15,6 +15,7 @@ pub mod hfr;
 pub mod measure_basic;
 pub mod measure_stars;
 pub mod pixel;
+pub mod snr;
 pub mod stars;
 pub mod stats;
 
@@ -26,5 +27,6 @@ pub use hfr::{aggregate_hfr, star_hfr};
 pub use measure_basic::{measure_basic, MeasureBasicResult};
 pub use measure_stars::{measure_stars, MeasureStarsResult, StarMeasurement};
 pub use pixel::Pixel;
+pub use snr::{compute_snr, per_star_snr, SnrResult};
 pub use stars::{detect_stars, DetectionParams, Star};
 pub use stats::{compute_stats, ImageStats};

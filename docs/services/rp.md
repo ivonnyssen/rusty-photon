@@ -601,7 +601,7 @@ precedence.
 | `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
 | `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
-| `compute_snr` | document_id or image_path | snr, signal, noise | Signal-to-noise summary. *Planned.* |
+| `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. Implemented. |
 
 **Compute (plate solving)**
 
@@ -935,6 +935,61 @@ document.
 is not implemented in this MVP. When implemented it will let the caller
 pass back the array from a previous `detect_stars` call to skip
 re-detection; for now, every invocation re-runs detection.
+
+#### `compute_snr` Contract
+
+A signal-to-noise summary across detected stars — the headline number
+that quality-screening workflows use to decide whether to keep a frame.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required (encode pixel-scale assumptions;
+  same rationale as `measure_basic`, `detect_stars`, and `measure_stars`).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold.
+
+**Output**:
+- `snr` — median per-star signal-to-noise ratio. `null` when no stars
+  are detected.
+- `signal` — median per-star background-subtracted total flux (ADU).
+  `null` when no stars are detected.
+- `noise` — median per-star noise (ADU). `null` when no stars are
+  detected.
+- `star_count` — number of stars contributing to the medians.
+- `background_mean` / `background_stddev` — sigma-clipped background
+  used in the noise model.
+
+**Algorithm**: sigma-clipped background → `detect_stars` → for each
+star, `signal = total_flux`, `noise = √(signal + N_pix · σ_bg²)`,
+`snr = signal / noise`. The aggregate uses the median for robustness
+against outliers (saturated stars, hot-pixel spikes).
+
+**Caveats** (kept honest because SNR numbers are easy to misread):
+- The noise model collapses dark current and read-noise into the
+  background variance and assumes gain ≈ 1 ADU/electron. SNR values are
+  comparable across frames from the *same camera*, **not** absolute
+  photometric SNRs. Cross-camera comparisons need per-camera gain and
+  read-noise inputs that this MVP does not surface.
+- Saturated stars are *included* in the median, the same way
+  `measure_basic` includes them. Their effective signal is clipped, so
+  they bias the median low; aggressive callers can pre-filter via
+  `detect_stars` and call `compute_snr` on a subset (deferred — the
+  optional `stars` input from `measure_stars` will land here too).
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter.
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `snr` section. Distinct from `detected_stars`,
+`measured_stars`, `image_analysis`, and `background` so all five
+imaging tools coexist on one document.
 
 #### Design Rationale
 

@@ -310,7 +310,18 @@ One PR per tool, in this order:
       --merge-base clean. Adds `rmpfit = "1.0"` to workspace +
       services/rp Cargo.toml; `CARGO_BAZEL_REPIN=1 bazel mod tidy`
       refreshed `MODULE.bazel.lock`.
-- [ ] `compute_snr` (signal/noise summary).
+- [x] `compute_snr` (median per-star SNR via the CCD-equation
+      approximation: `noise = √(signal + N_pix · σ_bg²)`). Composes
+      `imaging/background.rs` + `imaging/stars.rs` from Phase 4 with a
+      new `imaging/snr.rs` (per-star + median aggregator). Persists
+      into the exposure document as an `snr` section. Documented
+      caveat: the noise model collapses dark + read noise into the
+      background variance and assumes gain ≈ 1 ADU/electron — values
+      are comparable across frames from the same camera, not absolute
+      photometric SNRs. 10 BDD scenarios (catalog,
+      image_path / document_id happy paths, persistence,
+      very-high-threshold null aggregates, five error paths). 130/130
+      BDD scenarios green; cargo rail run --merge-base clean.
 
 Each tool follows the same shape: design doc already covers it →
 BDD feature file → step defs → unit tests → impl.

@@ -78,6 +78,8 @@ pub struct RpWorld {
     pub last_detect_stars_result: Option<Value>,
     /// Last measure_stars result
     pub last_measure_stars_result: Option<Value>,
+    /// Last compute_snr result
+    pub last_compute_snr_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
     /// Last tool call result
