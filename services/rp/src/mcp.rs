@@ -739,7 +739,7 @@ impl McpHandler {
             width,
             height,
             camera_id: Some(params.camera_id.clone()),
-            duration_ms: Some(params.duration_ms),
+            duration: Some(params.duration),
             sections: serde_json::Map::new(),
         };
         if let Err(e) = self.documents.create(doc).await {

@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -41,8 +42,12 @@ pub struct ExposureDocument {
     pub height: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "humantime_serde"
+    )]
+    pub duration: Option<Duration>,
     #[serde(default)]
     pub sections: Map<String, Value>,
 }
@@ -132,7 +137,7 @@ mod tests {
             width: 16,
             height: 16,
             camera_id: Some("cam".to_string()),
-            duration_ms: Some(1000),
+            duration: Some(Duration::from_secs(1)),
             sections: Map::new(),
         }
     }
@@ -252,14 +257,14 @@ mod tests {
         let store = DocumentStore::new();
 
         let mut first = doc_with_path("doc-1", &fits_path);
-        first.duration_ms = Some(1000);
+        first.duration = Some(Duration::from_secs(1));
         store.create(first).await.unwrap();
 
         let mut second = doc_with_path("doc-1", &fits_path);
-        second.duration_ms = Some(2000);
+        second.duration = Some(Duration::from_secs(2));
         store.create(second).await.unwrap();
 
         let got = store.get("doc-1").await.unwrap();
-        assert_eq!(got.duration_ms, Some(2000));
+        assert_eq!(got.duration, Some(Duration::from_secs(2)));
     }
 }
