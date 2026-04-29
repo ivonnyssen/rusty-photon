@@ -446,8 +446,9 @@ mod tests {
 
     #[test]
     fn bfs_finds_4_connected_component() {
-        // Build a simple 5x5 mask: a plus sign. 4-connectivity should produce
-        // one component of 5 pixels.
+        // Build a 5x5 plus sign with arms of length 2 (full middle row + full
+        // middle column = 5 + 5 − 1 shared center = 9 true pixels).
+        // 4-connectivity should yield one component of 9 pixels.
         let mask = Array2::from_shape_vec(
             (5, 5),
             vec![

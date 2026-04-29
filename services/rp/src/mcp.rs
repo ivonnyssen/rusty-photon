@@ -92,7 +92,9 @@ pub struct ComputeImageStatsParams {
 pub struct MeasureBasicParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
-    /// Mutually exclusive with `image_path` (one is required).
+    /// One of `document_id` or `image_path` is required. If both are
+    /// supplied, `document_id` takes precedence and `image_path` is ignored
+    /// (per the design doc — the cache resolution path always wins).
     #[serde(default)]
     pub document_id: Option<String>,
     /// Filesystem path to a FITS file. Used when no `document_id` is given.
@@ -121,7 +123,9 @@ fn default_threshold_sigma() -> f64 {
 pub struct EstimateBackgroundParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
-    /// Mutually exclusive with `image_path` (one is required).
+    /// One of `document_id` or `image_path` is required. If both are
+    /// supplied, `document_id` takes precedence and `image_path` is ignored
+    /// (per the design doc — the cache resolution path always wins).
     #[serde(default)]
     pub document_id: Option<String>,
     /// Filesystem path to a FITS file. Used when no `document_id` is given.
@@ -147,7 +151,9 @@ fn default_clip_max_iters() -> u32 {
 pub struct MeasureStarsParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
-    /// Mutually exclusive with `image_path` (one is required).
+    /// One of `document_id` or `image_path` is required. If both are
+    /// supplied, `document_id` takes precedence and `image_path` is ignored
+    /// (per the design doc — the cache resolution path always wins).
     #[serde(default)]
     pub document_id: Option<String>,
     /// Filesystem path to a FITS file. Used when no `document_id` is given.
@@ -178,7 +184,9 @@ fn default_stamp_half_size() -> usize {
 pub struct ComputeSnrParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
-    /// Mutually exclusive with `image_path` (one is required).
+    /// One of `document_id` or `image_path` is required. If both are
+    /// supplied, `document_id` takes precedence and `image_path` is ignored
+    /// (per the design doc — the cache resolution path always wins).
     #[serde(default)]
     pub document_id: Option<String>,
     /// Filesystem path to a FITS file. Used when no `document_id` is given.
@@ -200,7 +208,9 @@ pub struct ComputeSnrParams {
 pub struct DetectStarsParams {
     /// Document ID of a previously-captured image. Resolved via the image
     /// cache first, falling back to the FITS file recorded on the document.
-    /// Mutually exclusive with `image_path` (one is required).
+    /// One of `document_id` or `image_path` is required. If both are
+    /// supplied, `document_id` takes precedence and `image_path` is ignored
+    /// (per the design doc — the cache resolution path always wins).
     #[serde(default)]
     pub document_id: Option<String>,
     /// Filesystem path to a FITS file. Used when no `document_id` is given.

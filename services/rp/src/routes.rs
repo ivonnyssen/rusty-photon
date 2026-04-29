@@ -206,7 +206,7 @@ async fn get_image_pixels(
             });
             imagebytes_response(body)
         }
-        Ok(Err(e)) => not_found(format!("failed to read FITS: {}", e)),
+        Ok(Err(e)) => server_error(format!("failed to read FITS: {}", e)),
         Err(e) => server_error(format!("task error: {}", e)),
     }
 }
