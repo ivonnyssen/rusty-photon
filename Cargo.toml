@@ -11,6 +11,7 @@ members = [
   "services/rp",
   "services/sentinel",
   "services/sentinel-app",
+  "services/sky-survey-camera",
 ]
 resolver = "2"
 

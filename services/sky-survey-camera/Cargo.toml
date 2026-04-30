@@ -1,0 +1,42 @@
+[package]
+name = "sky-survey-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Camera simulator backed by NASA SkyView"
+
+[features]
+default = []
+mock = []
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "camera", "client"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+humantime-serde = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+bdd-infra = { workspace = true }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+proptest = { workspace = true }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

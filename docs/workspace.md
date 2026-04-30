@@ -15,6 +15,7 @@ belong in any single service design doc.
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
+| [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
@@ -174,8 +175,8 @@ sentinel-app/src/
 The minimum supported Rust version is pinned in `[workspace.package]` of the
 root `Cargo.toml` (`rust-version = "1.94.1"`). All workspace members —
 services (`filemonitor`, `phd2-guider`, `ppba-driver`, `qhy-focuser`,
-`calibrator-flats`, `rp`, `sentinel`, `sentinel-app`) and shared crates
-(`bdd-infra`, `rp-auth`, `rp-tls`) — inherit it via
+`calibrator-flats`, `rp`, `sentinel`, `sentinel-app`, `sky-survey-camera`)
+and shared crates (`bdd-infra`, `rp-auth`, `rp-tls`) — inherit it via
 `rust-version.workspace = true`.
 
 ## Workspace Dependencies
