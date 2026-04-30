@@ -12,8 +12,8 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::equipment::EquipmentRegistry;
-use crate::imaging::{CachedPixels, ImageCache};
 use crate::mcp::McpHandler;
+use crate::persistence::{CachedPixels, ImageCache};
 use crate::session::SessionManager;
 
 /// ASCOM `TransmissionElementType` code for `u16` payloads.
@@ -244,9 +244,8 @@ fn not_found(msg: String) -> Response {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::document::ExposureDocument;
     use crate::events::EventBus;
-    use crate::imaging::CachedImage;
+    use crate::persistence::{CachedImage, ExposureDocument};
     use std::path::PathBuf;
 
     fn test_app_state(image_cache: ImageCache) -> AppState {
@@ -418,12 +417,12 @@ mod tests {
         // still returns 200 via the `resolve_document()` fallback. The
         // pixels-bearing fields (`bitpix`, `in_cache`) reflect that pixels
         // were not rehydrated. Mirrors the symmetric cache.rs test at
-        // imaging::cache::tests for `resolve_document` itself.
+        // persistence::cache::tests for `resolve_document` itself.
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "44444444-4444-4444-4444-444444444444";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{}.fits", uuid8));
-        crate::imaging::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
         let doc = ExposureDocument {

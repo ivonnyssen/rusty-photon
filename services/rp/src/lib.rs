@@ -1,12 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config;
-pub mod document;
 pub mod equipment;
 pub mod error;
 pub mod events;
 pub mod hash_password_cmd;
 pub mod imaging;
 pub mod mcp;
+pub mod persistence;
 pub mod routes;
 pub mod session;
 pub mod tls_cmd;
@@ -23,8 +23,8 @@ use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
-use crate::imaging::ImageCache;
 use crate::mcp::McpHandler;
+use crate::persistence::ImageCache;
 use crate::routes::{build_router, AppState};
 use crate::session::{SessionConfig, SessionManager};
 

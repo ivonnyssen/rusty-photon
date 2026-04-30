@@ -2215,10 +2215,6 @@ services/rp/src/
   error.rs              AppError enum (thiserror)
 
   # Core domain
-  document.rs           ExposureDocument, Section, atomic sidecar JSON
-                          persistence. Document storage and lookup are
-                          mediated by the unified Image and Document
-                          Cache (imaging/cache.rs).
   target.rs             Target definitions, progress tracking
   session.rs            Session state, persistence, recovery
 
@@ -2259,22 +2255,46 @@ services/rp/src/
     built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
     aggregator.rs       Connects to plugin MCP servers, proxies their tools
 
-  # Imaging (FITS I/O, image cache, and image analysis)
+  # Imaging (pure analysis kernels and the compositional tools that bind them)
+  # Async, I/O, and on-disk layout live in `persistence/` so the analysis
+  # path stays unit-testable without a runtime.
   imaging/
-    mod.rs              Module root: re-exports, shared types (ImageStats, ImageMetadata)
-    pixel.rs            Pixel trait (impls for u16 and i32) for generic analysis
-    fits.rs             FITS read/write via fitrs (widens to i32 at the boundary)
+    mod.rs              Module root: re-exports the flat `imaging::*` API
+                          shape that callers use, regardless of which
+                          submodule a symbol is defined in.
+    analysis/           Pure single-purpose kernels — generic over Pixel,
+                          take ArrayView2, no I/O, no async.
+      mod.rs
+      pixel.rs          Pixel trait (impls for u16 and i32) for generic analysis
+      stats.rs          Pixel statistics (median, mean, min, max ADU)
+      background.rs     Sigma-clipped background estimation
+      stars.rs          Star detection + centroiding (4-connectivity BFS)
+      hfr.rs            HFR / HFD radial flux accumulation
+      fwhm.rs           2D Gaussian fitting via rmpfit
+      snr.rs            Per-star + median SNR (CCD-equation approximation)
+    tools/              Compositional analyzers — bind multiple kernels
+                          together to answer one MCP-tool-shaped question.
+                          Pure functions; the MCP wrapper in `mcp.rs`
+                          resolves pixels and serializes results.
+      mod.rs
+      measure_basic.rs  measure_basic tool: background + stars + hfr
+      measure_stars.rs  measure_stars tool: per-star photometry + PSF fit
+
+  # Persistence (FITS I/O, image+document cache, exposure-document storage)
+  persistence/
+    mod.rs              Module root: re-exports CachedImage / ImageCache /
+                          ExposureDocument / write_fits etc.
+    document.rs         ExposureDocument struct, atomic sidecar JSON
+                          persistence (write_sidecar_at: stage to .tmp →
+                          rename). Document storage and lookup are
+                          mediated by the unified Image and Document
+                          Cache (`persistence/cache.rs`).
     cache.rs            ImageCache: CachedPixels enum (U16 | I32),
                           Arc<CachedImage> holding pixels + document
                           together, LRU eviction over combined memory
-                          footprint, readdir+DOC_ID disk fallback
-    stats.rs            Pixel statistics (median, mean, min, max ADU) — generic over Pixel
-    background.rs       Sigma-clipped background estimation — generic
-    stars.rs            Star detection + centroiding — generic
-    hfr.rs              HFR / HFD radial flux accumulation — generic
-    fwhm.rs             2D Gaussian fitting via rmpfit
-    snr.rs              Signal-to-noise computation
-    measure_basic.rs    measure_basic tool: compose background + stars + hfr
+                          footprint, readdir+DOC_ID disk fallback.
+    fits.rs             FITS read/write via fitrs (widens to i32 at the
+                          boundary, embeds the document UUID in DOC_ID).
 
   # Post-capture pipeline
   pipeline/

@@ -13,12 +13,12 @@
 use ndarray::ArrayView2;
 use serde::Serialize;
 
-use super::background::estimate_background;
-use super::fwhm::fit_2d_gaussian;
-use super::hfr::star_hfr;
-use super::pixel::Pixel;
-use super::stars::{detect_stars, DetectionParams};
 use crate::error::{Result, RpError};
+use crate::imaging::analysis::background::estimate_background;
+use crate::imaging::analysis::fwhm::fit_2d_gaussian;
+use crate::imaging::analysis::hfr::star_hfr;
+use crate::imaging::analysis::pixel::Pixel;
+use crate::imaging::analysis::stars::{detect_stars, DetectionParams};
 
 /// Default postage-stamp half-size (pixels). 8 ⇒ 17×17 stamp, comfortably
 /// captures a PSF with σ ≤ 4 px (FWHM ≤ ~9 px).
