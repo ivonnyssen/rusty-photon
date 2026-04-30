@@ -55,14 +55,16 @@ drain.abort();
 That's `ServiceHandle::start` open-coded, with `child.kill()` replacing the graceful SIGTERM that `handle.stop()` does. Replacing with the helper:
 
 ```rust
-let mut handle = ServiceHandle::start("filemonitor", cfg_path).await;
-run_conformu_tests(&format!("http://localhost:{}", handle.port), 0).await?;
+let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), cfg_path).await?;
+run_conformu_tests(&handle.base_url, 0).await?;
 handle.stop().await;
 ```
 
-- [x] Replace each manual spawn + `parse_bound_port` + `child.kill()` trio with `ServiceHandle::start` + `handle.stop()`.
+The conformu tests already return `Result<(), Box<dyn Error>>`, so `try_start` (which propagates spawn errors and times out on bind after 30 s) is a better fit than `start`'s panic-on-failure behavior.
+
+- [x] Replace each manual spawn + `parse_bound_port` + `child.kill()` trio with `ServiceHandle::try_start` + `handle.stop()`.
 - [x] The `-c <path>` short-form flag must survive — these binaries already use it. All three services already accept `--config` long form via clap's `#[arg(short, long)]` derivation, so no clap changes were needed.
-- [ ] Verify the scheduled conformu workflow (`.github/workflows/conformu.yml`) still passes. It's the only CI surface that runs these tests (they carry `#[ignore]`).
+- [x] Verify the scheduled conformu workflow (`.github/workflows/conformu.yml`) still passes. It's the only CI surface that runs these tests (they carry `#[ignore]`). Verified on the migration branch via `workflow_dispatch` — all six matrix slots green (ubuntu-latest, macos-latest, windows / {filemonitor, ppba-driver, qhy-focuser}).
 
 **Exit criteria:** `scheduled / conformu` workflow green on its next run; no `Command::new("cargo")` remains in any `conformu_integration.rs`; each test shrinks by ~15 lines.
 

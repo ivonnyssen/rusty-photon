@@ -116,8 +116,13 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Pre-built ppba-driver binary must include the `mock` feature
     // (CI builds with --all-features); the binary is launched with the
     // mock serial port driving /dev/mock from the config.
-    let config_path_str = config_path.to_string_lossy().into_owned();
-    let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path_str).await?;
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
 
     println!("::group::ConformU Compliance Test Results");
     println!(
@@ -125,10 +130,18 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         handle.port
     );
 
-    let result = ConformUTestBuilder::new::<dyn Switch>(&handle.base_url, 0)?
-        .settings_file(&conformu_settings_path)
-        .run()
-        .await;
+    // Capture both builder-construction and run-time errors so `handle.stop()`
+    // below is unconditional and the service gets a graceful SIGTERM with a
+    // chance to flush coverage data.
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let builder = ConformUTestBuilder::new::<dyn Switch>(&handle.base_url, 0)?;
+        builder
+            .settings_file(&conformu_settings_path)
+            .run()
+            .await
+            .map_err(Into::into)
+    }
+    .await;
 
     match &result {
         Ok(_) => {
@@ -241,8 +254,13 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    let config_path_str = config_path.to_string_lossy().into_owned();
-    let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path_str).await?;
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
 
     println!("::group::ConformU ObservingConditions Compliance Test Results");
     println!(
@@ -250,10 +268,18 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
         handle.port
     );
 
-    let result = ConformUTestBuilder::new::<dyn ObservingConditions>(&handle.base_url, 0)?
-        .settings_file(&conformu_settings_path)
-        .run()
-        .await;
+    // Capture both builder-construction and run-time errors so `handle.stop()`
+    // below is unconditional and the service gets a graceful SIGTERM with a
+    // chance to flush coverage data.
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let builder = ConformUTestBuilder::new::<dyn ObservingConditions>(&handle.base_url, 0)?;
+        builder
+            .settings_file(&conformu_settings_path)
+            .run()
+            .await
+            .map_err(Into::into)
+    }
+    .await;
 
     match &result {
         Ok(_) => {

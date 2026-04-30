@@ -54,8 +54,13 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
     std::fs::write(&status_file, "SAFE")?;
 
-    let config_path_str = config_path.to_string_lossy().into_owned();
-    let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path_str).await?;
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
 
     println!("::group::ConformU Compliance Test Results");
     println!(
