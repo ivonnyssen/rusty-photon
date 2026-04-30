@@ -2,7 +2,7 @@ use ascom_alpaca::api::camera::ImageArray;
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
@@ -22,13 +22,10 @@ const MAX_BIN: u8 = 4;
 const EXPOSURE_MIN: Duration = Duration::from_micros(1);
 const EXPOSURE_MAX: Duration = Duration::from_secs(3600);
 
-/// Shared state held by the [`SkySurveyCamera`] device and the custom
-/// `/sky-survey/*` HTTP routes. Cloning a [`SkySurveyCamera`] only
-/// clones the `Arc` — both views observe the same connection and
-/// pointing state.
-/// Builds the v0 cutout SurveyRequest for a snapshot of camera state:
-/// the cutout is always sized to the binned full sensor (the design
-/// doc cuts sub-frames out client-side after the FITS comes back).
+/// Builds the v0 cutout `SurveyRequest` for a snapshot of camera
+/// state: the cutout is always sized to the binned full sensor (the
+/// design doc crops sub-frames out client-side after the FITS comes
+/// back).
 pub fn build_full_sensor_request(
     config: &Config,
     pointing: PointingState,
@@ -66,6 +63,17 @@ pub struct ExposureOutcome {
     pub data: Vec<i32>,
 }
 
+/// Shared state held by the [`SkySurveyCamera`] device and the custom
+/// `/sky-survey/*` HTTP routes. Cloning a [`SkySurveyCamera`] only
+/// clones the `Arc` — both views observe the same connection and
+/// pointing state.
+///
+/// `exposure_generation` is bumped on every `start_exposure`, every
+/// `abort_exposure` / `stop_exposure`, and every `set_connected(false)`
+/// — the spawned exposure task captures the value at start and only
+/// commits its result if the captured value still matches when it
+/// finishes, so a late-completing task can never resurrect an image
+/// after Abort/Stop/disconnect.
 #[derive(Debug)]
 pub struct DeviceState {
     pub config: Config,
@@ -83,6 +91,7 @@ pub struct DeviceState {
     pub last_error: Mutex<Option<String>>,
     pub last_exposure_start: Mutex<Option<SystemTime>>,
     pub last_exposure_duration: Mutex<Option<Duration>>,
+    pub exposure_generation: AtomicU64,
     pub survey_client: Arc<SkyViewClient>,
 }
 
@@ -116,6 +125,7 @@ impl SkySurveyCamera {
             last_error: Mutex::new(None),
             last_exposure_start: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
+            exposure_generation: AtomicU64::new(0),
             survey_client,
         };
         Self {
@@ -136,8 +146,21 @@ impl SkySurveyCamera {
 /// fetch / parse / sub-frame crop; on any failure stores the message
 /// in `state.last_error` and clears `in_flight` so subsequent
 /// `image_array` calls can surface UNSPECIFIED_ERROR.
-async fn run_exposure(state: Arc<DeviceState>, light: bool) {
+///
+/// `gen` is the value of `exposure_generation` at the moment
+/// `start_exposure` spawned this task. Abort, Stop, and disconnect
+/// bump that counter, so a late-completing task whose generation
+/// no longer matches must NOT publish its outcome — that would
+/// resurrect a cancelled exposure.
+async fn run_exposure(state: Arc<DeviceState>, light: bool, gen: u64) {
     let result = run_exposure_inner(&state, light).await;
+    if state.exposure_generation.load(Ordering::Acquire) != gen {
+        debug!(
+            ?gen,
+            "exposure cancelled before completion; discarding outcome"
+        );
+        return;
+    }
     match result {
         Ok(outcome) => {
             *state.last_image.lock().expect("last_image poisoned") = Some(outcome);
@@ -177,14 +200,11 @@ async fn run_exposure_inner(
     let request = build_full_sensor_request(&state.config, pointing, bx, by);
     let cache_dir = &state.config.survey.cache_dir;
     let cache_key = request.cache_key();
-    let bytes = if let Some(b) = try_cache_load(cache_dir, &cache_key) {
-        b
+    let (bytes, from_cache) = if let Some(b) = try_cache_load(cache_dir, &cache_key) {
+        (b, true)
     } else {
         match state.survey_client.fetch(&request).await {
-            Ok(b) => {
-                try_cache_store(cache_dir, &cache_key, &b);
-                b
-            }
+            Ok(b) => (b, false),
             Err(SurveyError::Timeout) => return Err("survey request timed out".into()),
             Err(SurveyError::NonSuccess(code)) => {
                 return Err(format!("survey returned status {code}"))
@@ -194,6 +214,12 @@ async fn run_exposure_inner(
     };
 
     let img = parse_primary_hdu(&bytes).map_err(|e| format!("FITS parse error: {e}"))?;
+    // S6: only commit a network response to the cache after a
+    // successful FITS parse. Otherwise a malformed body could poison
+    // the cache and re-fail forever.
+    if !from_cache {
+        try_cache_store(cache_dir, &cache_key, &bytes);
+    }
     let cropped = crop_subframe(&img.data, img.width, img.height, sx, sy, nx, ny)?;
     Ok(ExposureOutcome {
         width: nx,
@@ -297,6 +323,20 @@ impl Device for SkySurveyCamera {
             }
         }
         self.state.connected.store(connected, Ordering::Release);
+        if !connected {
+            // C4: disconnect cancels any in-flight exposure. Bumping
+            // the generation makes the spawned task discard its
+            // outcome on completion.
+            self.state
+                .exposure_generation
+                .fetch_add(1, Ordering::AcqRel);
+            self.state
+                .exposure_in_flight
+                .store(false, Ordering::Release);
+            self.state.image_ready.store(false, Ordering::Release);
+            *self.state.last_image.lock().expect("last_image poisoned") = None;
+            *self.state.last_error.lock().expect("last_error poisoned") = None;
+        }
         Ok(())
     }
 
@@ -500,9 +540,17 @@ impl Camera for SkySurveyCamera {
             .lock()
             .expect("last_exposure_duration poisoned") = Some(duration);
 
-        debug!(?duration, light, "exposure started");
+        // Bump the generation so any *previous* spawned task that
+        // races to completion is ignored, and capture the new
+        // generation for *this* task to honour at finish time.
+        let gen = self
+            .state
+            .exposure_generation
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        debug!(?duration, light, gen, "exposure started");
         let state = Arc::clone(&self.state);
-        tokio::spawn(run_exposure(state, light));
+        tokio::spawn(run_exposure(state, light, gen));
         Ok(())
     }
 
@@ -517,9 +565,14 @@ impl Camera for SkySurveyCamera {
                 "no exposure in progress to abort",
             ));
         }
-        // The spawned task may still be in flight (e.g. a hung HTTP
-        // fetch); its eventual outcome is suppressed by the cleared
-        // readiness state here. A1 ("ImageReady is false") holds.
+        // Bump the generation so the in-flight task discards its
+        // outcome. The actual fetch task can't always be cancelled at
+        // the OS level (e.g. a Hold stub keeps the connection open
+        // until process exit) but it can no longer publish results.
+        // A1 ("ImageReady is false") holds.
+        self.state
+            .exposure_generation
+            .fetch_add(1, Ordering::AcqRel);
         self.state.image_ready.store(false, Ordering::Release);
         *self.state.last_error.lock().expect("last_error poisoned") = None;
         *self.state.last_image.lock().expect("last_image poisoned") = None;
@@ -537,6 +590,9 @@ impl Camera for SkySurveyCamera {
                 "no exposure in progress to stop",
             ));
         }
+        self.state
+            .exposure_generation
+            .fetch_add(1, Ordering::AcqRel);
         self.state.image_ready.store(false, Ordering::Release);
         *self.state.last_error.lock().expect("last_error poisoned") = None;
         *self.state.last_image.lock().expect("last_image poisoned") = None;

@@ -66,9 +66,9 @@ implements the V3 interface (`InterfaceVersion = 3`).
 For the survey backend the service uses **NASA SkyView** at
 `https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl`. SkyView accepts an
 exact pixel grid and angular size, returning a FITS cutout with WCS
-headers. The backend lives behind a `SurveyClient` trait so additional
-backends (e.g. CDS `hips2fits`) can be added later without changing the
-device implementation.
+headers. v0 ships with a single concrete `SkyViewClient` (in `src/
+survey.rs`) — a `SurveyClient` trait abstraction is deferred until a
+second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
 
 ## Configuration
 

@@ -36,8 +36,14 @@ pub struct SurveyRequest {
 }
 
 impl SurveyRequest {
-    /// Stable cache key: hex of a `DefaultHasher` over rounded values
-    /// (rounding masks fp drift as called out in the design doc).
+    /// Cache key for this request — hex of a `DefaultHasher` over
+    /// rounded fields (rounding masks fp drift as called out in the
+    /// design doc).
+    ///
+    /// Stable within a single binary execution; **not** stable across
+    /// Rust versions (`DefaultHasher` is documented as such). The
+    /// cache is local-only and operators clear `cache_dir` manually,
+    /// so cross-version stability is not a requirement.
     pub fn cache_key(&self) -> String {
         let mut h = DefaultHasher::new();
         self.survey.hash(&mut h);

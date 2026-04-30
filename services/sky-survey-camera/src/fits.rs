@@ -57,8 +57,11 @@ pub fn parse_primary_hdu(bytes: &[u8]) -> Result<FitsImage, FitsError> {
             let start = record_idx * RECORD_SIZE;
             let record = &block[start..start + RECORD_SIZE];
             let record_str = std::str::from_utf8(record).map_err(|_| FitsError::MalformedRecord)?;
+            // The FITS END record is the keyword "END" in columns 1–3
+            // followed by spaces. A loose `starts_with("END")` would
+            // also match real keywords like "ENDIAN" or "ENDLESS".
             let trimmed = record_str.trim_end();
-            if trimmed.starts_with("END") {
+            if trimmed == "END" {
                 header_end = Some(offset + BLOCK_SIZE);
                 break 'outer;
             }
@@ -68,8 +71,8 @@ pub fn parse_primary_hdu(bytes: &[u8]) -> Result<FitsImage, FitsError> {
                     "NAXIS" => naxis = Some(parse_int(raw_value, "NAXIS")? as u32),
                     "NAXIS1" => naxis1 = Some(parse_int(raw_value, "NAXIS1")? as u32),
                     "NAXIS2" => naxis2 = Some(parse_int(raw_value, "NAXIS2")? as u32),
-                    "BSCALE" => bscale = parse_float(raw_value),
-                    "BZERO" => bzero = parse_float(raw_value),
+                    "BSCALE" => bscale = parse_float(raw_value, "BSCALE")?,
+                    "BZERO" => bzero = parse_float(raw_value, "BZERO")?,
                     _ => {}
                 }
             }
@@ -182,8 +185,10 @@ fn parse_int(raw: &str, name: &'static str) -> Result<i32, FitsError> {
         .map_err(|_| FitsError::UnsupportedValue(name, raw.to_string()))
 }
 
-fn parse_float(raw: &str) -> f64 {
-    raw.trim().parse::<f64>().unwrap_or(0.0)
+fn parse_float(raw: &str, name: &'static str) -> Result<f64, FitsError> {
+    raw.trim()
+        .parse::<f64>()
+        .map_err(|_| FitsError::UnsupportedValue(name, raw.to_string()))
 }
 
 fn scale(value: f64, bscale: f64, bzero: f64) -> i32 {
