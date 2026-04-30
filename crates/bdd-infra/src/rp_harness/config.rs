@@ -49,6 +49,13 @@ pub struct RpConfigBuilder {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub plugin_configs: Vec<Value>,
+    /// Override `session.data_directory`. When `None`, the builder
+    /// generates a fresh per-call path. The cross-restart BDD scenarios
+    /// need to pin the same path across two `start_rp` calls.
+    pub data_directory: Option<String>,
+    /// Override `imaging.cache_max_mib` / `cache_max_images`. When `None`,
+    /// rp's defaults apply (1024 MiB / 8 images).
+    pub imaging_overrides: Option<(usize, usize)>,
 }
 
 impl RpConfigBuilder {
@@ -121,6 +128,23 @@ impl RpConfigBuilder {
         self
     }
 
+    /// Pin `session.data_directory` to an explicit path. Used by the
+    /// cross-restart BDD scenarios to keep two consecutive rp processes
+    /// pointing at the same on-disk archive.
+    pub fn with_data_directory(&mut self, path: impl Into<String>) -> &mut Self {
+        self.data_directory = Some(path.into());
+        self
+    }
+
+    /// Override the imaging-cache budgets (`cache_max_mib`,
+    /// `cache_max_images`). Used by tests that want to drive evictions
+    /// (e.g. setting `cache_max_images = 1` so the second capture evicts
+    /// the first).
+    pub fn with_imaging(&mut self, cache_max_mib: usize, cache_max_images: usize) -> &mut Self {
+        self.imaging_overrides = Some((cache_max_mib, cache_max_images));
+        self
+    }
+
     /// Serialize into the JSON shape rp's config loader expects.
     pub fn build(&self) -> Value {
         let cameras: Vec<Value> = self
@@ -175,12 +199,16 @@ impl RpConfigBuilder {
         let pid = std::process::id();
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
 
-        serde_json::json!({
+        let data_directory = self.data_directory.clone().unwrap_or_else(|| {
+            std::env::temp_dir()
+                .join(format!("rp-test-data-{}-{}", pid, seq))
+                .to_string_lossy()
+                .to_string()
+        });
+
+        let mut config = serde_json::json!({
             "session": {
-                "data_directory": std::env::temp_dir()
-                    .join(format!("rp-test-data-{}-{}", pid, seq))
-                    .to_string_lossy()
-                    .to_string(),
+                "data_directory": data_directory,
                 "session_state_file": std::env::temp_dir()
                     .join(format!("rp-test-session-{}-{}.json", pid, seq))
                     .to_string_lossy()
@@ -213,7 +241,16 @@ impl RpConfigBuilder {
                 "port": 0,
                 "bind_address": "127.0.0.1"
             }
-        })
+        });
+
+        if let Some((max_mib, max_images)) = self.imaging_overrides {
+            config["imaging"] = serde_json::json!({
+                "cache_max_mib": max_mib,
+                "cache_max_images": max_images,
+            });
+        }
+
+        config
     }
 }
 
