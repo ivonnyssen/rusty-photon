@@ -6,6 +6,7 @@ pub mod events;
 pub mod hash_password_cmd;
 pub mod imaging;
 pub mod mcp;
+pub mod persistence;
 pub mod routes;
 pub mod session;
 pub mod tls_cmd;
@@ -23,6 +24,7 @@ use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
 use crate::mcp::McpHandler;
+use crate::persistence::ImageCache;
 use crate::routes::{build_router, AppState};
 use crate::session::{SessionConfig, SessionManager};
 
@@ -62,12 +64,24 @@ impl ServerBuilder {
             data_directory: config.session.data_directory.clone(),
         };
 
-        let mcp = McpHandler::new(equipment.clone(), event_bus.clone(), session_config);
+        let image_cache = ImageCache::new(
+            config.imaging.cache_max_mib,
+            config.imaging.cache_max_images,
+            std::path::PathBuf::from(&config.session.data_directory),
+        );
+
+        let mcp = McpHandler::new(
+            equipment.clone(),
+            event_bus.clone(),
+            session_config,
+            image_cache.clone(),
+        );
 
         let state = AppState {
             equipment,
             mcp,
             session: session.clone(),
+            image_cache,
         };
 
         let router = build_router(state);
