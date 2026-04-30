@@ -327,14 +327,6 @@ impl ImageCache {
         }
     }
 
-    /// Test-only: replace the data directory at runtime so a single
-    /// cache instance can probe multiple fixtures. Production callers
-    /// build a new `ImageCache` per data directory.
-    #[cfg(test)]
-    pub fn set_data_directory(&mut self, dir: PathBuf) {
-        self.data_directory = dir;
-    }
-
     /// Apply a signed delta to the running cache `bytes` total under the
     /// cache mutex, then run eviction so the budget stays honored after
     /// document growth.

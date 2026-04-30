@@ -1,7 +1,7 @@
 Feature: Document HTTP API
   The /api/documents/{document_id} route exposes the exposure document --
   capture metadata plus any sections that image-analysis tools or plugins
-  have written. The route routes through the image cache, which on a miss
+  have written. The route goes through the image cache, which on a miss
   scans the configured data directory for the matching FITS+sidecar pair
   and rehydrates them. The contract operators see is "live as long as the
   files are on disk", not "live as long as rp is up": a document remains

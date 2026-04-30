@@ -347,9 +347,10 @@ mod tests {
 
     #[tokio::test]
     async fn pixels_returns_404_on_cache_miss() {
-        // Step 5 will reintroduce a disk-fallback that turns this into a
-        // 200; until then a cache miss is a 404. The FITS file stays on
-        // disk regardless of what the route returns.
+        // `ImageCache::resolve()` falls back to reloading from disk on an
+        // in-memory miss. This test still returns 404 because both the
+        // cache and the configured data directory (`/nonexistent`) miss
+        // for the requested document.
         let response = get_image_pixels(
             State(test_app_state(ImageCache::new(
                 64,
