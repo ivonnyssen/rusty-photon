@@ -116,7 +116,8 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Pre-built ppba-driver binary must include the `mock` feature
     // (CI builds with --all-features); the binary is launched with the
     // mock serial port driving /dev/mock from the config.
-    let mut handle = ServiceHandle::start("ppba-driver", config_path.to_str().unwrap()).await;
+    let config_path_str = config_path.to_string_lossy().into_owned();
+    let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path_str).await?;
 
     println!("::group::ConformU Compliance Test Results");
     println!(
@@ -240,7 +241,8 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    let mut handle = ServiceHandle::start("ppba-driver", config_path.to_str().unwrap()).await;
+    let config_path_str = config_path.to_string_lossy().into_owned();
+    let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path_str).await?;
 
     println!("::group::ConformU ObservingConditions Compliance Test Results");
     println!(
