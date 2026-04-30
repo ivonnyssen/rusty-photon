@@ -8,9 +8,8 @@
 
 use ascom_alpaca::api::{ObservingConditions, Switch};
 use ascom_alpaca::test::ConformUTestBuilder;
-use std::process::Stdio;
+use bdd_infra::ServiceHandle;
 use std::sync::Mutex;
-use tokio::process::Command;
 use tracing_subscriber::{fmt, EnvFilter};
 
 // Static mutex to ensure conformu tests run sequentially
@@ -114,40 +113,35 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // Start ppba-driver service with mock feature, capturing stdout to parse bound port
-    let mut child = Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "ppba-driver",
-            "--features",
-            "mock",
-            "--",
-            "-c",
-            config_path.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    // Parse the bound port from stdout - the server is ready once this message appears
-    // since the socket is already listening after bind()
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let (port, stdout_drain) = bdd_infra::parse_bound_port(stdout)
-        .await
-        .ok_or("Failed to parse bound port from service output")?;
+    // Pre-built ppba-driver binary must include the `mock` feature
+    // (CI builds with --all-features); the binary is launched with the
+    // mock serial port driving /dev/mock from the config.
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
 
     println!("::group::ConformU Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Switch compliance tests on port {}...",
-        port
+        handle.port
     );
 
-    // Run ConformU tests with reduced delays for faster CI
-    let result = ConformUTestBuilder::new::<dyn Switch>(&format!("http://localhost:{}", port), 0)?
-        .settings_file(&conformu_settings_path)
-        .run()
-        .await;
+    // Capture both builder-construction and run-time errors so `handle.stop()`
+    // below is unconditional and the service gets a graceful SIGTERM with a
+    // chance to flush coverage data.
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let builder = ConformUTestBuilder::new::<dyn Switch>(&handle.base_url, 0)?;
+        builder
+            .settings_file(&conformu_settings_path)
+            .run()
+            .await
+            .map_err(Into::into)
+    }
+    .await;
 
     match &result {
         Ok(_) => {
@@ -162,10 +156,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("::endgroup::");
 
-    // Cleanup - ensure process is properly terminated
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    stdout_drain.abort();
+    handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
@@ -263,42 +254,31 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // Start ppba-driver service with mock feature, capturing stdout to parse bound port
-    let mut child = Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "ppba-driver",
-            "--features",
-            "mock",
-            "--",
-            "-c",
-            config_path.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    // Parse the bound port from stdout - the server is ready once this message appears
-    // since the socket is already listening after bind()
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let (port, stdout_drain) = bdd_infra::parse_bound_port(stdout)
-        .await
-        .ok_or("Failed to parse bound port from service output")?;
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
 
     println!("::group::ConformU ObservingConditions Compliance Test Results");
     println!(
         "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
-        port
+        handle.port
     );
 
-    // Run ConformU tests
-    let result = ConformUTestBuilder::new::<dyn ObservingConditions>(
-        &format!("http://localhost:{}", port),
-        0,
-    )?
-    .settings_file(&conformu_settings_path)
-    .run()
+    // Capture both builder-construction and run-time errors so `handle.stop()`
+    // below is unconditional and the service gets a graceful SIGTERM with a
+    // chance to flush coverage data.
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let builder = ConformUTestBuilder::new::<dyn ObservingConditions>(&handle.base_url, 0)?;
+        builder
+            .settings_file(&conformu_settings_path)
+            .run()
+            .await
+            .map_err(Into::into)
+    }
     .await;
 
     match &result {
@@ -314,10 +294,7 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
 
     println!("::endgroup::");
 
-    // Cleanup - ensure process is properly terminated
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    stdout_drain.abort();
+    handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;

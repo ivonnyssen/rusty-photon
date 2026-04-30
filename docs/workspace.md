@@ -38,7 +38,6 @@ belong in any single service design doc.
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
 | [duration-type-migration.md](plans/duration-type-migration.md) | Switch config duration fields to `std::time::Duration` |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
-| [migrate-test-harnesses-to-bdd-infra.md](plans/migrate-test-harnesses-to-bdd-infra.md) | Migrate per-service BDD harnesses to `bdd-infra` |
 
 ## Shared Crates
 
