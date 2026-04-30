@@ -1467,6 +1467,9 @@ mod tests {
         fail_max_adu: bool,
         fail_camera_size: bool,
         fail_exposure_range: bool,
+        /// `0` ⇒ default 65535. Any other value is returned verbatim — set
+        /// to `> u16::MAX` to exercise the I32 cache-insert path.
+        max_adu_value: u32,
     }
 
     impl_mock_device!(MockCamera);
@@ -1504,7 +1507,11 @@ mod tests {
             if self.fail_max_adu {
                 return Err(ASCOMError::invalid_operation("not available"));
             }
-            Ok(65535)
+            Ok(if self.max_adu_value == 0 {
+                65535
+            } else {
+                self.max_adu_value
+            })
         }
 
         async fn camera_x_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
@@ -2031,6 +2038,54 @@ mod tests {
             }))
             .await;
         assert_tool_error(result, "failed to write FITS file");
+    }
+
+    // -----------------------------------------------------------------------
+    // capture — caches I32 variant when max_adu > u16::MAX
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
+        // Drives the scientific-camera (I32) cache-insert branch in
+        // `capture` — exercised by no other test, since OmniSim and the
+        // default MockCamera both report max_adu ≤ 65535.
+        let cam = MockCamera {
+            max_adu_value: 1 << 20,
+            ..Default::default()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4);
+        let handler = McpHandler::new(
+            Arc::new(camera_registry(Arc::new(cam))),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: temp.path().to_string_lossy().to_string(),
+            },
+            cache.clone(),
+            DocumentStore::new(),
+        );
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.clone())
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let doc_id = json["document_id"].as_str().unwrap();
+        let cached = cache.get(doc_id).expect("expected cache entry");
+        assert_eq!(cached.max_adu, 1 << 20);
+        assert!(
+            matches!(cached.pixels, CachedPixels::I32(_)),
+            "expected I32 variant for max_adu > u16::MAX"
+        );
     }
 
     // -----------------------------------------------------------------------
