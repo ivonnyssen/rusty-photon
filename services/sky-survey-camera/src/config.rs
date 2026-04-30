@@ -43,6 +43,14 @@ pub struct SurveyConfig {
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
     pub cache_dir: PathBuf,
+    /// Base URL the SurveyClient hits. Defaults to NASA SkyView; tests
+    /// override it with a stub server.
+    #[serde(default = "default_survey_endpoint")]
+    pub endpoint: String,
+}
+
+fn default_survey_endpoint() -> String {
+    "https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

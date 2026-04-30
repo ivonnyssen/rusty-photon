@@ -41,6 +41,9 @@ pub struct SkySurveyCameraWorld {
     /// connection-lifecycle scenarios a deliberately non-writable path.
     pub cache_dir_override: Option<PathBuf>,
 
+    /// Override for the survey endpoint URL injected into config.
+    pub survey_endpoint_override: Option<String>,
+
     /// Survey backend choice.
     pub survey_name: Option<String>,
 
@@ -81,6 +84,14 @@ impl SkySurveyCameraWorld {
 
     pub fn build_config_json(&mut self) -> Value {
         let cache_dir = self.cache_dir().to_string_lossy().to_string();
+        let mut survey = serde_json::json!({
+            "name": self.survey_name.clone().unwrap_or_else(|| "DSS2 Red".to_string()),
+            "request_timeout": "5s",
+            "cache_dir": cache_dir,
+        });
+        if let Some(endpoint) = &self.survey_endpoint_override {
+            survey["endpoint"] = Value::String(endpoint.clone());
+        }
         serde_json::json!({
             "device": {
                 "name": "Test Sky Survey Camera",
@@ -99,16 +110,45 @@ impl SkySurveyCameraWorld {
                 "initial_dec_deg": self.initial_dec_deg,
                 "initial_rotation_deg": self.initial_rotation_deg,
             },
-            "survey": {
-                "name": self.survey_name.clone().unwrap_or_else(|| "DSS2 Red".to_string()),
-                "request_timeout": "5s",
-                "cache_dir": cache_dir,
-            },
+            "survey": survey,
             "server": {
                 "port": 0,
                 "device_number": 0,
             },
         })
+    }
+
+    /// Spawn a tiny axum server on `127.0.0.1:0` that responds 200 to
+    /// every request, and point the survey endpoint at it. Used to
+    /// satisfy the SkyView reachability check (contract C1) without a
+    /// real network call.
+    pub async fn spawn_skyview_stub_ok(&mut self) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind stub listener");
+        let addr = listener.local_addr().expect("local_addr");
+        let app = axum::Router::new().fallback(|| async { axum::http::StatusCode::OK });
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        self.survey_endpoint_override = Some(format!("http://{addr}/"));
+    }
+
+    /// Point the survey endpoint at `127.0.0.1:1`, which is reserved
+    /// and almost certainly not bound — a connection attempt is
+    /// refused immediately.
+    pub fn set_unreachable_survey_endpoint(&mut self) {
+        self.survey_endpoint_override = Some("http://127.0.0.1:1/".to_string());
+    }
+
+    /// Build a `cache_dir` whose parent path is a regular file rather
+    /// than a directory, so that `mkdir -p` (a.k.a.
+    /// `std::fs::create_dir_all`) reliably fails on every supported
+    /// platform.
+    pub fn set_unwritable_cache_dir(&mut self) {
+        let blocker = self.temp_dir().path().join("blocker");
+        std::fs::write(&blocker, b"").expect("failed to write blocker file");
+        self.cache_dir_override = Some(blocker.join("cache"));
     }
 
     /// Write the accumulated config to `<temp_dir>/config.json` and

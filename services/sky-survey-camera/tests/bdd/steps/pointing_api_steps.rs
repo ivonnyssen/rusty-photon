@@ -8,8 +8,12 @@ use serde_json::Value;
 async fn connected_with_pointing(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
     world.initial_ra_deg = ra;
     world.initial_dec_deg = dec;
+    world.spawn_skyview_stub_ok().await;
     world.start_service().await;
     world.set_camera_connected(true).await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected connect to succeed in pointing_api setup, got ASCOM {code:#X}");
+    }
 }
 
 #[given("the camera is started but not connected")]

@@ -1,11 +1,18 @@
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::debug;
 
 use crate::config::Config;
 use crate::pointing::{PointingState, SharedPointing};
+
+/// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
+/// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
+/// "UNSPECIFIED_ERROR" for everything that isn't covered by a more
+/// precise standard code.
+const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 /// Shared state held by the [`SkySurveyCamera`] device and the custom
 /// `/sky-survey/*` HTTP routes. Cloning a [`SkySurveyCamera`] only
@@ -64,9 +71,49 @@ impl Device for SkySurveyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Slice 1: bare flip with no validation. Slice 2 wires in
-        // cache_dir writability and SkyView reachability checks per
-        // contracts C2 and C3.
+        if connected {
+            // C2: cache_dir must be creatable + writable.
+            let cache_dir = &self.state.config.survey.cache_dir;
+            if let Err(e) = std::fs::create_dir_all(cache_dir) {
+                debug!(?cache_dir, error = %e, "cache_dir not writable");
+                return Err(ASCOMError::new(
+                    UNSPECIFIED_ERROR,
+                    format!("cache_dir is not writable: {e}"),
+                ));
+            }
+            // C3: survey endpoint must respond to a HEAD request.
+            let endpoint = &self.state.config.survey.endpoint;
+            let timeout = self.state.config.survey.request_timeout;
+            let client = match reqwest::Client::builder().timeout(timeout).build() {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        format!("HTTP client build failed: {e}"),
+                    ));
+                }
+            };
+            match client.head(endpoint).send().await {
+                Ok(resp) if resp.status().is_success() => {}
+                Ok(resp) => {
+                    debug!(status = %resp.status(), "survey endpoint HEAD non-success");
+                    return Err(ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        format!(
+                            "survey endpoint {endpoint} returned status {}",
+                            resp.status()
+                        ),
+                    ));
+                }
+                Err(e) => {
+                    debug!(error = %e, "survey endpoint unreachable");
+                    return Err(ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        format!("survey endpoint {endpoint} unreachable: {e}"),
+                    ));
+                }
+            }
+        }
         self.state.connected.store(connected, Ordering::Release);
         Ok(())
     }
