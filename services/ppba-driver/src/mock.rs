@@ -41,7 +41,7 @@ struct MockDeviceState {
     average_amps: f64,
     amp_hours: f64,
     watt_hours: f64,
-    uptime_ms: u64,
+    uptime: Duration,
 }
 
 impl Default for MockDeviceState {
@@ -62,7 +62,7 @@ impl Default for MockDeviceState {
             average_amps: 2.5,
             amp_hours: 10.5,
             watt_hours: 126.0,
-            uptime_ms: 3600000,
+            uptime: Duration::from_secs(3600),
         }
     }
 }
@@ -91,7 +91,10 @@ impl MockDeviceState {
     fn power_stats_response(&self) -> String {
         format!(
             "PS:{}:{}:{}:{}",
-            self.average_amps, self.amp_hours, self.watt_hours, self.uptime_ms
+            self.average_amps,
+            self.amp_hours,
+            self.watt_hours,
+            self.uptime.as_millis()
         )
     }
 }

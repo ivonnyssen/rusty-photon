@@ -333,9 +333,9 @@ fn test_guide_with_settle_params() {
             "--settle-pixels",
             "1.0",
             "--settle-time",
-            "15",
+            "15s",
             "--settle-timeout",
-            "120",
+            "2m",
         ],
         port,
     );
@@ -538,9 +538,9 @@ fn test_dither_with_settle_params() {
             "--settle-pixels",
             "0.3",
             "--settle-time",
-            "5",
+            "5s",
             "--settle-timeout",
-            "30",
+            "30s",
         ],
         port,
     );

@@ -1,8 +1,22 @@
 //! PHD2 event types and application state
 
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::Phd2Error;
+
+/// Deserialize an `f64` of seconds (the PHD2 wire format) into a [`Duration`].
+/// `try_from_secs_f64` rejects NaN, infinity, negative, and out-of-range
+/// values — all surfaced as a serde error rather than a panic.
+fn duration_from_secs_f64<'de, D>(de: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs = f64::deserialize(de)?;
+    Duration::try_from_secs_f64(secs)
+        .map_err(|e| serde::de::Error::custom(format!("invalid seconds {secs}: {e}")))
+}
 
 /// PHD2 application state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,8 +66,8 @@ impl std::str::FromStr for AppState {
 #[serde(rename_all = "PascalCase")]
 pub struct GuideStepStats {
     pub frame: u64,
-    #[serde(rename = "Time")]
-    pub time_secs: f64,
+    #[serde(rename = "Time", deserialize_with = "duration_from_secs_f64")]
+    pub time: Duration,
     pub mount: String,
     #[serde(rename = "dx")]
     pub dx: f64,
@@ -248,10 +262,10 @@ pub enum Phd2Event {
     Settling {
         #[serde(rename = "Distance")]
         distance: f64,
-        #[serde(rename = "Time")]
-        time_secs: f64,
-        #[serde(rename = "SettleTime")]
-        settle_time_secs: f64,
+        #[serde(rename = "Time", deserialize_with = "duration_from_secs_f64")]
+        time: Duration,
+        #[serde(rename = "SettleTime", deserialize_with = "duration_from_secs_f64")]
+        settle_time: Duration,
         #[serde(rename = "StarLocked")]
         star_locked: bool,
     },
@@ -397,6 +411,28 @@ mod tests {
     }
 
     #[test]
+    fn test_settling_event_negative_time_is_serde_error() {
+        let json = r#"{"Event":"Settling","Distance":1.2,"Time":-1.0,"SettleTime":10.0,"StarLocked":true}"#;
+        let err = serde_json::from_str::<Phd2Event>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid seconds"),
+            "expected boundary error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_settling_event_overflow_time_is_serde_error() {
+        // 1e308 seconds is far beyond Duration::MAX. Without try_from_secs_f64
+        // this would panic; the deserializer must surface a serde error.
+        let json = r#"{"Event":"Settling","Distance":1.2,"Time":1e308,"SettleTime":10.0,"StarLocked":true}"#;
+        let err = serde_json::from_str::<Phd2Event>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid seconds"),
+            "expected boundary error, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_settling_event() {
         let json =
             r#"{"Event":"Settling","Distance":1.2,"Time":3.5,"SettleTime":10.0,"StarLocked":true}"#;
@@ -404,13 +440,13 @@ mod tests {
         match event {
             Phd2Event::Settling {
                 distance,
-                time_secs,
-                settle_time_secs,
+                time,
+                settle_time,
                 star_locked,
             } => {
                 assert_eq!(distance, 1.2);
-                assert_eq!(time_secs, 3.5);
-                assert_eq!(settle_time_secs, 10.0);
+                assert_eq!(time, Duration::from_millis(3500));
+                assert_eq!(settle_time, Duration::from_secs(10));
                 assert!(star_locked);
             }
             _ => panic!("Expected Settling event"),
@@ -726,7 +762,7 @@ mod tests {
         match event {
             Phd2Event::GuideStep(stats) => {
                 assert_eq!(stats.frame, 100);
-                assert_eq!(stats.time_secs, 5.5);
+                assert_eq!(stats.time, Duration::from_millis(5500));
                 assert_eq!(stats.mount, "Mount");
                 assert_eq!(stats.dx, 0.5);
                 assert_eq!(stats.dy, -0.3);

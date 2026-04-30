@@ -1,7 +1,12 @@
 use clap::{Parser, Subcommand};
 use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event, Rect, SettleParams};
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{debug, info, Level};
+
+fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {
+    humantime::parse_duration(s)
+}
 
 #[derive(Parser)]
 #[command(name = "phd2-guider")]
@@ -54,13 +59,13 @@ enum Commands {
         #[arg(long)]
         settle_pixels: Option<f64>,
 
-        /// Settling time in seconds (default: 10)
-        #[arg(long)]
-        settle_time: Option<u32>,
+        /// Settling time, e.g. "10s", "500ms" (default: 10s)
+        #[arg(long, value_parser = parse_duration)]
+        settle_time: Option<Duration>,
 
-        /// Settling timeout in seconds (default: 60)
-        #[arg(long)]
-        settle_timeout: Option<u32>,
+        /// Settling timeout, e.g. "60s", "1m30s" (default: 60s)
+        #[arg(long, value_parser = parse_duration)]
+        settle_timeout: Option<Duration>,
 
         /// Region of interest: x,y,width,height (e.g., "100,100,200,200")
         #[arg(long)]
@@ -103,13 +108,13 @@ enum Commands {
         #[arg(long)]
         settle_pixels: Option<f64>,
 
-        /// Settling time in seconds (default: 10)
-        #[arg(long)]
-        settle_time: Option<u32>,
+        /// Settling time, e.g. "10s", "500ms" (default: 10s)
+        #[arg(long, value_parser = parse_duration)]
+        settle_time: Option<Duration>,
 
-        /// Settling timeout in seconds (default: 60)
-        #[arg(long)]
-        settle_timeout: Option<u32>,
+        /// Settling timeout, e.g. "60s", "1m30s" (default: 60s)
+        #[arg(long, value_parser = parse_duration)]
+        settle_timeout: Option<Duration>,
     },
 }
 
@@ -338,14 +343,11 @@ fn print_event(event: &Phd2Event) {
         Phd2Event::GuidingStopped => {
             info!("Event: GuidingStopped");
         }
-        Phd2Event::Settling {
-            distance,
-            time_secs,
-            ..
-        } => {
+        Phd2Event::Settling { distance, time, .. } => {
             info!(
                 "Event: Settling - distance={:.2} time={:.1}s",
-                distance, time_secs
+                distance,
+                time.as_secs_f64()
             );
         }
         _ => {
@@ -416,8 +418,8 @@ async fn run_guide(
     client: &Phd2Client,
     recalibrate: bool,
     settle_pixels: Option<f64>,
-    settle_time: Option<u32>,
-    settle_timeout: Option<u32>,
+    settle_time: Option<Duration>,
+    settle_timeout: Option<Duration>,
     roi: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to PHD2...");
@@ -425,8 +427,8 @@ async fn run_guide(
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time: std::time::Duration::from_secs(settle_time.unwrap_or(10) as u64),
-        timeout: std::time::Duration::from_secs(settle_timeout.unwrap_or(60) as u64),
+        time: settle_time.unwrap_or(Duration::from_secs(10)),
+        timeout: settle_timeout.unwrap_or(Duration::from_secs(60)),
     };
 
     let roi_rect = match roi {
@@ -522,16 +524,16 @@ async fn run_dither(
     amount: f64,
     ra_only: bool,
     settle_pixels: Option<f64>,
-    settle_time: Option<u32>,
-    settle_timeout: Option<u32>,
+    settle_time: Option<Duration>,
+    settle_timeout: Option<Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
-        time: std::time::Duration::from_secs(settle_time.unwrap_or(10) as u64),
-        timeout: std::time::Duration::from_secs(settle_timeout.unwrap_or(60) as u64),
+        time: settle_time.unwrap_or(Duration::from_secs(10)),
+        timeout: settle_timeout.unwrap_or(Duration::from_secs(60)),
     };
 
     info!(

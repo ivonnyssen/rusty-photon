@@ -1,5 +1,7 @@
 //! BDD step definitions for event delivery feature
 
+use std::time::Duration;
+
 use cucumber::{given, then};
 
 use bdd_infra::rp_harness::WebhookReceiver;
@@ -24,7 +26,10 @@ async fn webhook_receiver_subscribed_to_two(world: &mut RpWorld, event1: String,
     expr = "the test webhook receiver acknowledges with estimated {int} seconds and max {int} seconds"
 )]
 fn webhook_ack_config(world: &mut RpWorld, estimated: i32, max: i32) {
-    world.webhook_ack_config = Some((estimated as u64, max as u64));
+    world.webhook_ack_config = Some((
+        Duration::from_secs(estimated as u64),
+        Duration::from_secs(max as u64),
+    ));
 }
 
 #[given(expr = "a plugin configured with webhook URL {string} subscribed to {string}")]
@@ -220,7 +225,9 @@ async fn setup_webhook_receiver(world: &mut RpWorld) {
         return;
     }
 
-    let (estimated, max) = world.webhook_ack_config.unwrap_or((5, 10));
+    let (estimated, max) = world
+        .webhook_ack_config
+        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
 
     let events = world.received_events.clone();
     world.webhook_receiver = Some(WebhookReceiver::start(events, estimated, max).await);

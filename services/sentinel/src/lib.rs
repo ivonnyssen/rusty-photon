@@ -158,14 +158,9 @@ impl SentinelBuilder {
             .unwrap_or_else(|| config.build_notifiers(&http));
 
         // Build shared state
-        let monitors_with_intervals: Vec<(String, u64)> = monitors
+        let monitors_with_intervals: Vec<(String, std::time::Duration)> = monitors
             .iter()
-            .map(|m| {
-                (
-                    m.name().to_string(),
-                    m.polling_interval().as_millis() as u64,
-                )
-            })
+            .map(|m| (m.name().to_string(), m.polling_interval()))
             .collect();
         let state = state::new_state_handle(monitors_with_intervals, config.dashboard.history_size);
 

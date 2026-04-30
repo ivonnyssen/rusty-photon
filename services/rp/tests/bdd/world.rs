@@ -55,7 +55,7 @@ pub struct RpWorld {
     /// Events collected by the test webhook receiver
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
     /// Webhook acknowledgment config (estimated_duration, max_duration)
-    pub webhook_ack_config: Option<(u64, u64)>,
+    pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- Orchestrator state ---
     /// Invocations received by the test orchestrator

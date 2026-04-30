@@ -36,7 +36,6 @@ belong in any single service design doc.
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
-| [duration-type-migration.md](plans/duration-type-migration.md) | Switch config duration fields to `std::time::Duration` |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 
 ## Shared Crates
