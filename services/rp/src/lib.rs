@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config;
+pub mod document;
 pub mod equipment;
 pub mod error;
 pub mod events;
@@ -22,6 +23,7 @@ use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
+use crate::imaging::ImageCache;
 use crate::mcp::McpHandler;
 use crate::routes::{build_router, AppState};
 use crate::session::{SessionConfig, SessionManager};
@@ -62,12 +64,24 @@ impl ServerBuilder {
             data_directory: config.session.data_directory.clone(),
         };
 
-        let mcp = McpHandler::new(equipment.clone(), event_bus.clone(), session_config);
+        let image_cache = ImageCache::new(
+            config.imaging.cache_max_mib,
+            config.imaging.cache_max_images,
+            std::path::PathBuf::from(&config.session.data_directory),
+        );
+
+        let mcp = McpHandler::new(
+            equipment.clone(),
+            event_bus.clone(),
+            session_config,
+            image_cache.clone(),
+        );
 
         let state = AppState {
             equipment,
             mcp,
             session: session.clone(),
+            image_cache,
         };
 
         let router = build_router(state);

@@ -24,6 +24,17 @@ The project uses four testing layers. Each serves a distinct purpose.
 
 **Purpose:** Living specifications. These are the primary test type for service behavior.
 
+**Why this matters:** Feature files are the canonical contract for
+everyone outside the service team -- plugin authors, frontend developers,
+reviewers, integrators. When someone asks "what does this endpoint
+return?" or "what is the wire format for X?", the answer should be a
+feature file, not the Rust source. This is what makes BDD primary, not
+optional: the test suite **is** the spec, and a reader should be able
+to learn the system's behavior from `tests/features/` alone. Every
+assertion in a scenario is also documentation -- write the scenarios
+with that in mind (see §2.5 on keeping contract constants visible in
+the feature file rather than buried in step code).
+
 **Use BDD tests for:**
 - All observable device behavior (connect, disconnect, read values, evaluate state)
 - Configuration loading and validation
@@ -147,7 +158,48 @@ Scenario Outline: Contains rule evaluation
 
 Use individual scenarios (not outlines) when different inputs need different setup or tell different stories.
 
-#### 2.5 Use `@serial` Tag for Tests With Side Effects
+#### 2.5 Make Contract Constants Explicit in Steps
+
+Step expressions should expose the values being checked, not hide them
+behind opaque adjectives. A reader of the feature file should learn the
+contract -- specific numbers, field names, status codes, wire-format
+positions -- without opening any Rust code. This is what makes feature
+files documentation; an opaque `should be valid` step is a hole in the
+spec.
+
+**Bad -- the contract lives in the step implementation, invisible to a reader:**
+```gherkin
+Then the response should have a valid ImageBytes header
+```
+
+**Good -- the constants live in the feature file, where plugin authors and reviewers can see them:**
+```gherkin
+Then the image pixels header should match these constants (i32 little-endian):
+  | field                     | offset | value |
+  | metadata_version          | 0      | 1     |
+  | data_start                | 16     | 44    |
+  | image_element_type        | 20     | 2     |
+  | transmission_element_type | 24     | 8     |
+  | rank                      | 28     | 2     |
+```
+
+A single step definition iterates the table, parses each value at the
+declared offset, and asserts equality. The spec is now legible to a
+plugin or frontend author without `cargo doc` or grepping the source.
+
+**When to use a Gherkin data table:**
+- Validating a wire-format header, status-code matrix, or any structured
+  output where the relationship between fields is the contract.
+- Parameterizing the same assertion shape across many fields.
+
+**When literal step text is enough:** for one or two values, a plain
+step is more readable than a one-row table -- `Then the response status
+should be 200` is already explicit. The same principle applies:
+`Then bitpix should be 16` beats `Then bitpix should be valid for U16`,
+because "valid" forces the reader into the step source to recover the
+meaning.
+
+#### 2.6 Use `@serial` Tag for Tests With Side Effects
 
 Tag features or scenarios with `@serial` when they depend on timing, shared resources, or file I/O that cannot safely run in parallel.
 
@@ -156,7 +208,43 @@ Tag features or scenarios with `@serial` when they depend on timing, shared reso
 Feature: File content polling
 ```
 
-#### 2.6 Avoid Gherkin Parser Pitfalls
+#### 2.7 Use `@wip` Tag for Scenarios Without Implementation Yet
+
+This project's design-first / test-first workflow (see
+[development-workflow.md](development-workflow.md)) sometimes requires
+landing BDD scenarios on a feature branch *before* the production code
+that makes them pass exists. The `@wip` tag lets such scenarios live in
+the repo as durable design artifacts without breaking the green-suite
+invariant.
+
+```gherkin
+@wip
+Feature: Basic image measurement tool
+  ...
+```
+
+The runner in `bdd.rs` filters scenarios tagged `@wip` (at feature or
+scenario level) out of the default suite. Once the corresponding
+implementation lands, **remove the tag** in the same commit that turns
+the scenarios on for real.
+
+To enable this in a service's `bdd.rs`, swap `.run_and_exit("tests/features")`
+for `.filter_run("tests/features", filter_fn)`:
+
+```rust
+.filter_run("tests/features", |feat, _rule, sc| {
+    let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
+        || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
+    !is_wip
+})
+```
+
+Use `@wip` only for not-yet-implemented behavior. A scenario that fails
+intermittently belongs in an issue, not behind `@wip`. A scenario that
+documents a deferred feature you are not actively working on belongs in
+a follow-up ticket, not in the repo with `@wip`.
+
+#### 2.8 Avoid Gherkin Parser Pitfalls
 
 These are known issues with the Gherkin parser used by cucumber-rs:
 
@@ -448,6 +536,10 @@ bdd_infra::bdd_main! {
 }
 ```
 
+If your `World` holds an `McpTestClient` (or any other long-lived
+streaming client), the `after` hook needs an extra step to avoid silently
+losing BDD coverage — see [§5.4](#54-drop-mcp--streaming-clients-before-stopping-the-service).
+
 #### 5.3 Register in Cargo.toml
 
 ```toml
@@ -461,6 +553,63 @@ harness = false
 
 No per-service metadata is required — `bdd-infra` derives everything from the
 package name passed to `ServiceHandle::start`.
+
+#### 5.4 Drop MCP / streaming clients before stopping the service
+
+**Critical for coverage.** If your `World` holds an `McpTestClient` (or any
+client that keeps a long-lived HTTP/streaming connection to a child service),
+you **must** drop it *before* calling `ServiceHandle::stop()` in the cucumber
+`after` hook. Otherwise the service hangs in graceful shutdown, gets SIGKILLed
+after `stop()`'s 5-second timeout, and skips its `atexit` handlers — which
+means **no `.profraw` is written and BDD coverage is silently lost**.
+
+The mechanism: `rmcp`'s `StreamableHttpClientTransport` opens a long-lived
+HTTP request to the server's `/mcp` endpoint. axum's
+`with_graceful_shutdown` waits for in-flight connections to close before
+returning. As long as the client is alive, the connection stays open, axum
+never returns, the service can't run `atexit`, and SIGKILL claims the process
+along with its in-memory LLVM coverage counters.
+
+```rust
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::MyWorld;
+
+    MyWorld::cucumber()
+        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+            Box::pin(async move {
+                if let Some(world) = maybe_world {
+                    // Drop streaming clients FIRST so the server's graceful
+                    // shutdown can complete. Skipping this turns BDD
+                    // subprocess coverage silently into 0%.
+                    world.mcp_client = None;
+                    if let Some(handle) = world.service_handle.as_mut() {
+                        handle.stop().await;
+                    }
+                }
+            })
+        })
+        .filter_run("tests/features", |_, _, _| true)
+        .await;
+}
+```
+
+The same applies to any other long-lived client connection (custom WebSocket
+transports, gRPC streams, etc.) — drop the client before stopping the
+service it talks to.
+
+**When this does NOT apply:** plugin BDD harnesses like `calibrator-flats`
+where the MCP client lives *inside* the plugin's child process (talking to
+rp), not in the BDD test process. Those harnesses just stop the plugin
+first, then rp — when the plugin shuts down it closes its own MCP client
+gracefully, freeing rp's connection.
+
+**How to spot a regression of this issue:** `mcp.rs` (or any tool-dispatch
+module) shows much higher coverage from unit tests than from BDD — e.g. a
+big gap between BDD-only coverage and combined coverage. Confirm by
+temporarily replacing `debug!("did not exit after SIGTERM, sending SIGKILL", ...)`
+in `bdd-infra` with `eprintln!` and re-running BDD with stderr captured. A
+SIGKILL count > 0 means the lifecycle ordering is wrong somewhere.
 
 ---
 

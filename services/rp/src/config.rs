@@ -18,6 +18,8 @@ pub struct Config {
     pub planner: Value,
     #[serde(default)]
     pub safety: Value,
+    #[serde(default)]
+    pub imaging: ImagingConfig,
     pub server: ServerConfig,
 }
 
@@ -26,8 +28,17 @@ pub struct SessionConfig {
     pub data_directory: String,
     #[serde(default)]
     pub session_state_file: String,
+    /// Optional template for capture filenames. `None` is the default and
+    /// produces filenames of the form `<doc_uuid_8>.fits` plus a matching
+    /// `.json` sidecar — fully self-identifying via the UUID-8 suffix that
+    /// drives the disk-fallback resolution path. When set, the template is
+    /// reserved for a future token resolver (planner/capture context feeding
+    /// `{target}` / `{filter}` / etc.); until that lands `capture` ignores
+    /// the value and writes `<doc_uuid_8>.fits` regardless. See
+    /// `docs/services/rp.md` (Persistence) and Phase 7 of
+    /// `docs/plans/image-evaluation-tools.md`.
     #[serde(default)]
-    pub file_naming_pattern: String,
+    pub file_naming_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +114,32 @@ fn default_cover_calibrator_poll_interval() -> Duration {
     Duration::from_secs(3)
 }
 
+/// Image cache + future analysis-tool tuning. Pi-5-friendly defaults.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImagingConfig {
+    #[serde(default = "default_cache_max_mib")]
+    pub cache_max_mib: usize,
+    #[serde(default = "default_cache_max_images")]
+    pub cache_max_images: usize,
+}
+
+impl Default for ImagingConfig {
+    fn default() -> Self {
+        Self {
+            cache_max_mib: default_cache_max_mib(),
+            cache_max_images: default_cache_max_images(),
+        }
+    }
+}
+
+fn default_cache_max_mib() -> usize {
+    1024
+}
+
+fn default_cache_max_images() -> usize {
+    8
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "default_port")]
@@ -161,12 +198,71 @@ mod tests {
         assert_eq!(config.session.data_directory, "/tmp/rp-test");
         assert_eq!(config.server.port, 11115);
         assert_eq!(config.server.bind_address, "127.0.0.1");
+        assert_eq!(config.imaging.cache_max_mib, 1024);
+        assert_eq!(config.imaging.cache_max_images, 8);
+    }
+
+    #[test]
+    fn imaging_config_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "imaging": {"cache_max_mib": 256, "cache_max_images": 4},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.imaging.cache_max_mib, 256);
+        assert_eq!(config.imaging.cache_max_images, 4);
     }
 
     #[test]
     fn load_config_missing_file() {
         let err = load_config(Path::new("/nonexistent/rp/config.json")).unwrap_err();
         assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn file_naming_pattern_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(
+            config.session.file_naming_pattern.is_none(),
+            "omitted file_naming_pattern must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn file_naming_pattern_round_trips_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "file_naming_pattern": "{target}_{filter}"
+                },
+                "equipment": {},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.session.file_naming_pattern.as_deref(),
+            Some("{target}_{filter}")
+        );
     }
 
     #[test]

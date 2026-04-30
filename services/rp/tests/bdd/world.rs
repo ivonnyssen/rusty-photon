@@ -70,6 +70,28 @@ pub struct RpWorld {
     pub last_document_id: Option<String>,
     /// Last image stats result
     pub last_image_stats: Option<Value>,
+    /// Last measure_basic result
+    pub last_measure_basic_result: Option<Value>,
+    /// Last estimate_background result
+    pub last_estimate_background_result: Option<Value>,
+    /// Last detect_stars result
+    pub last_detect_stars_result: Option<Value>,
+    /// Last measure_stars result
+    pub last_measure_stars_result: Option<Value>,
+    /// Last compute_snr result
+    pub last_compute_snr_result: Option<Value>,
+    /// Last exposure document fetched via GET /api/documents/{id}
+    pub last_exposure_document: Option<Value>,
+    /// Last response status from GET /api/images/{id}
+    pub last_image_metadata_status: Option<u16>,
+    /// Last JSON body from GET /api/images/{id}
+    pub last_image_metadata: Option<Value>,
+    /// Last response status from GET /api/images/{id}/pixels
+    pub last_image_pixels_status: Option<u16>,
+    /// Last content-type header from GET /api/images/{id}/pixels
+    pub last_image_pixels_content_type: Option<String>,
+    /// Last raw body from GET /api/images/{id}/pixels
+    pub last_image_pixels_body: Option<Vec<u8>>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
     /// Last tool list result
@@ -107,6 +129,26 @@ pub struct RpWorld {
     pub auth_password: Option<String>,
     /// Hash output from rp hash-password CLI
     pub auth_hash_output: Option<String>,
+
+    // --- Document HTTP API test state (Phase 7 Step 6) ---
+    /// Pinned data directory across rp lifecycle. The cross-restart
+    /// scenarios need both rp processes pointing at the same on-disk
+    /// archive. The `TempDir` is held by `pinned_data_dir_holder` to
+    /// keep it alive for the scenario's duration.
+    pub pinned_data_directory: Option<String>,
+    pub pinned_data_dir_holder: Option<tempfile::TempDir>,
+    /// Override the imaging cache budgets via `RpConfigBuilder::with_imaging`.
+    /// `(cache_max_mib, cache_max_images)`.
+    pub pinned_imaging_overrides: Option<(usize, usize)>,
+    /// Last response status from `GET /api/documents/{id}`.
+    pub last_document_response_status: Option<u16>,
+    /// Last JSON body from `GET /api/documents/{id}`.
+    pub last_document_response_body: Option<Value>,
+    /// Named document_ids the test wants to refer back to later (e.g.
+    /// "first" → the document_id from the first capture). Used by
+    /// the eviction and cross-restart scenarios that need to reference
+    /// a doc captured several steps ago.
+    pub remembered_document_ids: std::collections::HashMap<String, String>,
 }
 
 impl RpWorld {
@@ -154,6 +196,12 @@ impl RpWorld {
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
+        }
+        if let Some(dir) = &self.pinned_data_directory {
+            builder.with_data_directory(dir.clone());
+        }
+        if let Some((mib, images)) = self.pinned_imaging_overrides {
+            builder.with_imaging(mib, images);
         }
         builder.build()
     }

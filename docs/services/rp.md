@@ -89,6 +89,41 @@ the guider service, Sentinel, and UIs are all independent processes. This
 follows naturally from the Alpaca-only integration tenet — the device drivers
 are already separate services.
 
+### Component Categories
+
+`rp` is "batteries included" — it owns the full set of tools and capabilities
+that observatory automation routinely needs. Three distinct categories
+contribute tools to the MCP catalog, each with its own supervision model and
+process boundary:
+
+| Category | What | Examples | Process boundary | Supervised by |
+|----------|------|----------|------------------|---------------|
+| **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net) | one process per service | Sentinel restarts on hang/crash |
+| **Plugins (workflow & extension)** | Separate processes that follow the plugin protocol (event, tool provider, orchestrator). Includes first-party workflow logic kept out of `rp` by design tenet 7, and third-party extensions. | First-party: `calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`. Third-party: custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and MCP session termination; Sentinel may restart configurable plugins |
+
+The category boundary is **process supervision and lifecycle role**, not
+authorship. Algorithms that are pure Rust math (auto-focus, centering) live
+as built-in tools even though they could in principle be plugins. They become
+rp-managed services only when they must wrap an external program (PHD2 the
+application, ASTAP the binary) that has its own crash and restart behavior.
+
+The plugin mechanism serves two purposes:
+
+1. **Workflow logic stays out of `rp`** (design tenet 7). Orchestrators of any
+   imaging type are plugins because workflow is per-session-type and should be
+   swappable without changing the gateway. `calibrator-flats` is the first
+   such orchestrator and ships in this workspace.
+2. **Third-party extensibility** — external developers can add tools, event
+   consumers, or alternative orchestrators without forking `rp`.
+
+A plugin can be first-party (in the rusty-photon workspace) or third-party
+(installed and configured by the operator). Both follow the same protocol.
+
+From the perspective of an MCP client (the orchestrator, a workflow plugin),
+all three categories look identical — they are all just tools in the unified
+catalog discovered via `tools/list`.
+
 ### Port
 
 11115 (configurable)
@@ -116,9 +151,19 @@ The document accumulates data as it flows through the system.
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_300s_001.fits",
   "session_id": "session-2026-03-01",
-  "sequence_number": 42
+  "sequence_number": 42,
+  "max_adu": 65535
 }
 ```
+
+`max_adu` carries the camera's `MaxADU` capability at the time of
+capture. Read once per exposure from `cam.max_adu()` and persisted in
+the sidecar so the file is self-describing — the disk-fallback
+rehydration path in [Image and Document Cache](#image-and-document-cache)
+uses it to choose the `CachedPixels::U16` vs `I32` variant without
+needing the originating camera to be connected. `null` (omitted on
+serialize) when the read failed at capture time; in that case the
+cache insert is skipped and the entry serves from disk on demand.
 
 ### Plugin Sections (contributed via API)
 
@@ -166,16 +211,49 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
 
 ### Persistence
 
-The document is persisted as a sidecar JSON file next to the FITS file:
+Each capture produces a FITS file and a sidecar JSON document sharing
+the same base filename. The base is the first 8 hex characters of the
+document's full UUID v4 (`<doc_uuid_8>`):
 
 ```
 /data/lights/M31/
-  M31_L_300s_001.fits
-  M31_L_300s_001.json    <-- exposure document
+  550e8400.fits
+  550e8400.json    <-- exposure document
 ```
 
-The document is written after capture completes and updated as plugins
-contribute sections. Updates are atomic (write to temp file, rename).
+The optional `session.file_naming_pattern` config is reserved for a
+future operator-controlled template (`{target}`, `{filter}`,
+`{duration}`, `{sequence}`, etc.). Until a token resolver lands that
+can supply that context to `capture`, the field is parsed but not
+rendered — capture writes `<doc_uuid_8>.fits` regardless of the
+configured value. When a resolver lands, the rendered base will be
+prefixed before the UUID-8 suffix (e.g. `M31_L_300s_001_550e8400.fits`)
+so existing files stay reachable.
+
+The full UUID is the canonical document identifier — used by the API,
+the FITS header, and the sidecar's `id` field. The 8-char suffix
+exists only on disk, as the reverse-lookup key for finding a
+document's files when given its id. See
+[Image and Document Cache](#image-and-document-cache) and
+[Document Resolution](#document-resolution) for the rules.
+
+The FITS file's primary HDU header carries `DOC_ID = '<full-uuid>'`,
+making each FITS self-describing for lineage, downstream tools, and
+disambiguation when multiple files in the data directory happen to
+share an 8-char suffix. The sidecar's `id` field carries the same
+full UUID as a fallback authority.
+
+Both the FITS file and the sidecar JSON are written atomically:
+staged to a sibling temp file, fsynced, renamed into place, parent
+directory fsynced. A crash mid-write cannot leave a torn file. The
+document is updated as plugins and tools contribute sections; each
+section update re-serializes the full sidecar atomically.
+
+The disk pair is durable beyond `rp`'s runtime. After eviction from
+the in-memory cache (or after `rp` restart), a document remains
+accessible via the API as long as its FITS+sidecar pair sits in
+`<data_directory>`. The contract is "live as long as the file is on
+disk", not "live as long as `rp` is up".
 
 ## Event System
 
@@ -210,6 +288,7 @@ The application does not know or care what subscribers do with events.
 | `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
 | `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
+| `document_persistence_failed` | document_id, file_path, error | Sidecar write failed during capture. The FITS file is on disk but the cache is not populated and no sidecar exists; `document_id`-keyed lookups return 404 (disk fallback requires the sidecar). Recover by reading the FITS via `file_path` from the payload. See [Capture Tool Details](#capture-tool-details). |
 
 ### Delivery: Webhooks
 
@@ -505,12 +584,17 @@ implementations internally.
 
 ### Tool Catalog
 
-The catalog is built at startup from two sources:
+The catalog is built at startup from three sources, all of which appear
+identical to MCP clients:
 
-1. **Built-in tools** — hardware primitives, guider operations, and basic
-   compute provided by `rp` itself.
-2. **Plugin-provided tools** — compute or analysis tools aggregated from
-   plugins that run their own MCP servers.
+1. **Built-in tools** — implemented directly in `rp` (hardware primitives,
+   image analysis, planner, V-curve auto-focus, iterative centering).
+2. **rp-managed service tools** — built-in tool surface that proxies to a
+   separate process `rp` supervises (guider, plate solver). The MCP tool
+   itself lives in `rp`; the wrapped logic runs in the supervised service.
+3. **Third-party plugin tools** — aggregated from plugins running their own
+   MCP servers. Discovered at startup via `tools/list` and proxied through
+   `rp`'s server.
 
 Workflow plugins discover available tools via the standard MCP
 `tools/list` call. Each tool includes its JSON Schema, so plugins know
@@ -547,13 +631,38 @@ the exact parameter types and return structure.
 | `resume_guiding` | — | — | Resume paused guiding |
 | `get_guiding_stats` | — | rms_ra, rms_dec, total_rms | Read current guiding statistics |
 
-**Compute**
+**Compute (image analysis)**
+
+All image analysis tools accept either `document_id` (resolved via the
+[Image and Document Cache](#image-and-document-cache), avoiding FITS
+decode) or `image_path` (read from disk via `fitrs`). Where both are
+accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `plate_solve` | image_path, hint (optional) | ra, dec, rotation, scale | Solve an image via the configured plate solver service |
-| `measure_basic` | image_path | hfr, star_count, background_mean, background_stddev | Compute basic image statistics |
-| `compute_image_stats` | image_path, document_id (optional) | median_adu, mean_adu, min_adu, max_adu, pixel_count | Read FITS file, compute pixel statistics, update exposure document |
+| `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
+| `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
+| `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
+| `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
+| `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
+| `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. Implemented. |
+
+**Compute (plate solving)**
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `plate_solve` | image_path or document_id, hint (optional) | ra, dec, rotation, scale | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP / astrometry.net). |
+
+**Compound (built-in)**
+
+Compound tools drive a multi-step workflow internally using the primitive
+built-in tools. They live in `rp`'s process — no MCP hop, no plugin
+boundary — but expose the same MCP tool surface as any other tool.
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `auto_focus` | camera_id, focuser_id | best_position, best_hfr, curve_points | V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. *Planned.* |
+| `center_on_target` | ra, dec, tolerance_arcsec | final_error_arcsec, attempts | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until tolerance reached. *Planned.* |
 
 **Planner**
 
@@ -582,10 +691,28 @@ hardware.
 The `capture` tool takes exposure time as a humantime string (`duration`,
 e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
-downloads the camera's `image_array`, writes it as a FITS file (using the
-`fitrs` crate with BITPIX=32), and creates a sidecar exposure document
-JSON alongside it. The FITS file and document are written atomically
-(write to temp, rename).
+downloads the camera's `image_array`, writes it as a FITS file (using
+the `fitrs` crate with BITPIX=32) with `DOC_ID = '<full-uuid>'` in the
+primary HDU header, and creates a sidecar exposure document JSON
+alongside it. The base filename is `<doc_uuid_8>`; both files share
+that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
+written atomically (stage to a sibling temp file, fsync, rename, fsync
+parent directory). See
+[Persistence](#persistence) for the full rule set.
+
+**Sidecar failure contract.** If the sidecar write fails after a
+successful FITS write, `capture` still returns success with
+`image_path` and `document_id` — the FITS file remains on disk and is
+the durable record. The cache insert is gated on sidecar success, so
+no in-memory entry is created; the disk-fallback resolver also cannot
+rehydrate (it requires the sidecar to recover `max_adu` and other
+document fields), so subsequent `document_id`-keyed lookups
+(`/api/documents/{id}`, `/api/images/{id}`, `/pixels`, image-analysis
+tools called with `document_id`) return 404. `rp` emits a
+`document_persistence_failed` event carrying `document_id`,
+`file_path`, and the error. Subscribers and operators recover by
+reading the FITS directly via `file_path` (e.g. image-analysis tools
+called with `image_path` instead of `document_id`).
 
 #### CoverCalibrator Tool Details
 
@@ -608,7 +735,11 @@ camera — it operates on saved image files.
 Image analysis in `rp` follows a **pure Rust on ndarray** approach.
 All algorithms are implemented as custom code on top of well-established
 building blocks — no single crate covers the full range of astronomical
-image analysis needed.
+image analysis needed. Tools accept either a `document_id` (resolved
+via the [Image and Document Cache](#image-and-document-cache)) or an
+`image_path` (FITS file on disk read via `fitrs`); `document_id` is
+preferred for the post-capture fast path because it avoids re-decoding
+the image just written.
 
 #### Current Capabilities
 
@@ -623,15 +754,305 @@ image analysis needed.
 |------------|----------|--------|
 | Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
 | FITS I/O | Crate | `fitrs` |
-| 2D image operations | Crate | `ndarray` (already transitive via ascom-alpaca) |
-| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, connected components, dilation/erosion) |
-| Star detection | Custom | Threshold + connected components (`ndarray-ndimage` or `lutz`) + shape filtering |
+| 2D image operations | Crate | `ndarray` (already in workspace) |
+| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, dilation/erosion). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
+| Star detection | Custom | Threshold + connected components on background-subtracted image, then shape filtering |
 | Centroiding | Custom | Intensity-weighted center of mass on ndarray subframes |
 | HFR / HFD | Custom | Radial flux accumulation (~20 lines of math) |
-| FWHM | Custom + crate | Gaussian fitting via `levenberg-marquardt` or `rmpfit` |
+| FWHM | Custom + crate | 2D Gaussian fitting via `rmpfit` (chosen over `levenberg-marquardt` for native parameter bounds — σ > 0, amplitude > 0 — and lighter dependency footprint: no `nalgebra`. `rmpfit` is also a Rust port of MPFIT, the de-facto astronomy fitting library) |
 | Eccentricity / elongation | Custom | Second central moments from detected star pixels |
 | Background estimation | Custom | Sigma-clipped mesh statistics on ndarray |
 | Noise / SNR | Custom | Sigma-clipped statistics |
+
+#### MVP: `measure_basic` Contract
+
+The first analysis tool to implement. Behavioral contract:
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` — minimum component pixel area to admit as a star. Required;
+  no default. The right value depends on the camera+optics pixel scale
+  (arcsec/px) and the seeing regime, neither of which the tool can infer
+  from the image alone. Callers (workflows, plugins) own that policy.
+- `max_area` — maximum component pixel area to admit. Required; no
+  default. Same rationale as `min_area`. Note: at extreme defocus,
+  donut-shaped PSFs from the secondary obstruction can span many hundreds
+  of pixels — auto-focus callers should set `max_area` accordingly so
+  the V-curve sweep can measure them.
+- Optional `threshold_sigma` (default `5.0`) — detection threshold above
+  background. Unit-free (multiples of the sigma-clipped background
+  stddev), so a default is meaningful here.
+
+**Output**:
+- `hfr` — half-flux radius in pixels, aggregated across detected stars
+  (median of per-star HFRs). `null` if no stars detected.
+- `star_count` — number of valid stars after detection and filtering.
+- `saturated_star_count` — number of detected stars that contain at
+  least one pixel at `max_adu`. `0` when `max_adu` is unknown (e.g. when
+  called via `image_path` outside an exposure context).
+- `background_mean` — sigma-clipped background mean (ADU).
+- `background_stddev` — sigma-clipped background standard deviation (ADU).
+- `pixel_count` — total pixels analyzed.
+
+**Algorithm (in order)**:
+1. Load pixels (image-cache hit or `fitrs` read).
+2. Estimate background via sigma-clipped mean/stddev.
+3. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
+4. Threshold at `background_mean + threshold_sigma × background_stddev`.
+5. Connected-components labelling on the thresholded mask.
+6. Filter components: pixel area in `[min_area, max_area]`; reject
+   components touching the image border. Saturated components are *not*
+   rejected — they are flagged (see `saturated_star_count`). Saturated
+   stars carry real signal: bright in-focus stars routinely clip at
+   long-enough exposures, and donut-shaped PSFs at extreme defocus are
+   usually saturated in their bright annulus. Filtering them out would
+   make HFR-vs-focus non-monotonic and break auto-focus, so the policy
+   is to measure them and let downstream consumers decide whether to
+   weight or warn.
+7. For each surviving component, compute intensity-weighted centroid and
+   per-star HFR (radial flux accumulation to half of total flux).
+   Centroiding uses background-subtracted flux to avoid bbox-center bias.
+8. Return aggregate HFR (median of per-star HFRs), star count,
+   saturated-star count, and background.
+
+**Error cases**:
+- Neither `document_id` nor `image_path` provided → MCP error mentioning
+  `image_path` (the most fundamental missing input).
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS-on-disk fallback
+  resolves → MCP error.
+- `min_area` or `max_area` missing → MCP error naming the missing field.
+  These parameters are deserialized as optional and validated by the tool
+  body in this order — `document_id`/`image_path` first, then `min_area`,
+  then `max_area` — so the error message tracks the first thing the user
+  needs to fix.
+- Background estimation fails (e.g. all pixels saturated) → MCP error.
+- No stars detected → return successfully with `hfr: null`,
+  `star_count: 0`, `saturated_star_count: 0`, populated background fields.
+  Not an error — the caller decides whether that's a failure (focus run)
+  or fine (cloudy frame still useful for stats).
+
+**Persistence**: when called with `document_id`, results are written into
+the exposure document as the `image_analysis` section per the rule that
+"all tool results that produce image metrics MUST be written into the
+exposure document as a section."
+
+#### `estimate_background` Contract
+
+A focused tool that returns sigma-clipped background statistics on their
+own — useful for flat-field analysis, sky-quality screening, and any
+caller that wants the background number without paying for star detection.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- Optional `k` (default `3.0`) — sigma-clip threshold in stddev units.
+- Optional `max_iters` (default `5`) — maximum clip iterations.
+
+**Output**:
+- `mean` — sigma-clipped background mean (ADU).
+- `stddev` — sigma-clipped background standard deviation (ADU).
+- `median` — median of the surviving (post-clip) pixel set (ADU).
+- `pixel_count` — total pixels analyzed (input area, not the surviving set).
+
+**Algorithm**: same iterative sigma-clip kernel `measure_basic` uses
+internally — clip pixels outside `mean ± k × stddev`, recompute, repeat
+until the surviving set stops shrinking or `max_iters` runs out. Median
+is taken over the surviving set via `select_nth_unstable`.
+
+**Error cases**:
+- Neither `document_id` nor `image_path` provided → MCP error mentioning
+  `image_path` (consistent with `measure_basic`).
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- `k <= 0` or `max_iters == 0` → MCP error naming the bad parameter.
+- Background estimation fails (e.g. all pixels clipped, empty image) →
+  MCP error.
+
+**Persistence**: when called with `document_id`, results are written into
+the exposure document as the `background` section. Separate from
+`measure_basic`'s `image_analysis` section so the two tools don't
+overwrite each other on the same document.
+
+#### `detect_stars` Contract
+
+Returns the per-star list `measure_basic` produces internally — useful for
+callers that want star coordinates and fluxes without HFR (centering,
+quality screens, custom plate-solver hints). Also persists the list so
+follow-up tools (`measure_stars`) can skip re-detection on the same
+exposure.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required. Pixel area encodes a pixel-scale
+  (arcsec/px) assumption that the tool cannot infer; same rationale as
+  `measure_basic` (no defaults).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold above
+  background, in stddev units.
+
+**Output**:
+- `stars` — array of `{x, y, flux, peak, saturated_pixel_count}` objects:
+  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `flux` — sum of background-subtracted, non-negative flux over the
+    component (ADU).
+  - `peak` — maximum *raw* pixel value over the component (ADU, not
+    background-subtracted). Useful for saturation awareness.
+  - `saturated_pixel_count` — pixels at or above the camera's `max_adu`.
+    Always `0` when `max_adu` is unknown (bare `image_path` mode).
+- `star_count` — convenience aggregate (`stars.length`).
+- `saturated_star_count` — count of stars with `saturated_pixel_count > 0`.
+- `background_mean` / `background_stddev` — sigma-clipped background used
+  to set the detection threshold; included so callers know what cut was
+  effectively applied.
+
+**Algorithm**: same pipeline `measure_basic` runs internally — sigma-
+clipped background → Gaussian smoothing (σ ≈ 1 px) → threshold at
+`mean + threshold_sigma × stddev` → 4-connectivity BFS → area / border
+filter → intensity-weighted centroiding. Saturated components are
+flagged, not rejected (same rationale as `measure_basic`).
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter (validated in body for deterministic error ordering, same as
+  `measure_basic`).
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `detected_stars` section. Separate from `image_analysis`
+(measure_basic) and `background` (estimate_background) so all three tools
+can run on the same exposure without overwriting each other.
+
+#### `measure_stars` Contract
+
+Per-star photometry and PSF metrics for callers that need FWHM and
+eccentricity (auto-focus, guider error budgeting, image-quality screens)
+in addition to the HFR / flux that `measure_basic` aggregates.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required (encode pixel-scale assumptions;
+  same rationale as `measure_basic` and `detect_stars`).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold.
+- Optional `stamp_half_size` (default `8`) — half-side of the postage
+  stamp used for the 2D Gaussian fit. The fit is rejected for any star
+  whose stamp would cross the image boundary.
+
+**Output**:
+- `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects:
+  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `hfr` — empirical half-flux radius (pixels), or `null` when no
+    positive flux above background (rare; `detect_stars` already filters
+    this out).
+  - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
+    fit (pixels), or `null` when the fit fails.
+  - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or
+    `null` when the fit fails.
+  - `flux` — sum of background-subtracted, non-negative flux (ADU).
+- `star_count` — total stars detected (including those whose fit failed).
+- `median_fwhm` — median across stars whose fit succeeded; `null` when
+  no fits converged.
+- `median_hfr` — median empirical HFR; `null` when no stars detected.
+- `background_mean` / `background_stddev` — sigma-clipped background.
+
+**Algorithm**:
+1. Sigma-clipped background → `detect_stars` (same pipeline as
+   `measure_basic` and `detect_stars`).
+2. For each detected star:
+   - Empirical HFR over the connected-component pixels (same kernel
+     `measure_basic` aggregates).
+   - 2D Gaussian fit on a `(2·stamp_half_size+1)²` postage stamp using
+     `rmpfit` (Levenberg-Marquardt). Model:
+     `I(x, y) = A · exp(−((x−x0)²/(2σx²) + (y−y0)²/(2σy²))) + B`.
+     6 free parameters; no rotation (rationale: amateur PSFs rarely
+     resolve a meaningful θ at typical pixel scales — geometric-mean
+     FWHM and eccentricity capture quality without it).
+3. Stars with failed fits keep their row with `fwhm`/`eccentricity` set
+   to `null`. They are *not* dropped — the caller decides whether the
+   frame is usable.
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter.
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `measured_stars` section. Distinct from `detected_stars`,
+`image_analysis`, and `background` so all four tools coexist on one
+document.
+
+**Deferred**: the optional `stars` input listed in the tool catalog row
+is not implemented in this MVP. When implemented it will let the caller
+pass back the array from a previous `detect_stars` call to skip
+re-detection; for now, every invocation re-runs detection.
+
+#### `compute_snr` Contract
+
+A signal-to-noise summary across detected stars — the headline number
+that quality-screening workflows use to decide whether to keep a frame.
+
+**Input**:
+- `document_id` (preferred — resolves to cached pixels) **or** `image_path`
+  (FITS file on disk).
+- `min_area` and `max_area` — required (encode pixel-scale assumptions;
+  same rationale as `measure_basic`, `detect_stars`, and `measure_stars`).
+- Optional `threshold_sigma` (default `5.0`) — detection threshold.
+
+**Output**:
+- `snr` — median per-star signal-to-noise ratio. `null` when no stars
+  are detected.
+- `signal` — median per-star background-subtracted total flux (ADU).
+  `null` when no stars are detected.
+- `noise` — median per-star noise (ADU). `null` when no stars are
+  detected.
+- `star_count` — number of stars contributing to the medians.
+- `background_mean` / `background_stddev` — sigma-clipped background
+  used in the noise model.
+
+**Algorithm**: sigma-clipped background → `detect_stars` → for each
+star, `signal = total_flux`, `noise = √(signal + N_pix · σ_bg²)`,
+`snr = signal / noise`. The aggregate uses the median for robustness
+against outliers (saturated stars, hot-pixel spikes).
+
+**Caveats** (kept honest because SNR numbers are easy to misread):
+- The noise model collapses dark current and read-noise into the
+  background variance and assumes gain ≈ 1 ADU/electron. SNR values are
+  comparable across frames from the *same camera*, **not** absolute
+  photometric SNRs. Cross-camera comparisons need per-camera gain and
+  read-noise inputs that this MVP does not surface.
+- Saturated stars are *included* in the median, the same way
+  `measure_basic` includes them. Their effective signal is clipped, so
+  they bias the median low; aggressive callers can pre-filter via
+  `detect_stars` and call `compute_snr` on a subset (deferred — the
+  optional `stars` input from `measure_stars` will land here too).
+
+**Error cases**:
+- Neither `document_id` nor `image_path` → MCP error mentioning
+  `image_path`.
+- `min_area` or `max_area` missing → MCP error naming the missing
+  parameter.
+- `image_path` provided but file not found → MCP error.
+- `document_id` provided but neither cache nor FITS fallback resolves →
+  MCP error.
+- Background estimation fails (e.g. empty image) → MCP error.
+
+**Persistence**: when called with `document_id`, the JSON payload is
+written to the `snr` section. Distinct from `detected_stars`,
+`measured_stars`, `image_analysis`, and `background` so all five
+imaging tools coexist on one document.
 
 #### Design Rationale
 
@@ -641,13 +1062,235 @@ on top of general-purpose image processing primitives. The algorithms
 SEP (Source Extractor as a library) was considered via `sep-sys` but
 rejected due to LGPL license constraints and C FFI maintenance burden.
 
+### Image and Document Cache
+
+The cache is a **first-class API** holding both pixel data and the
+exposure document for each capture, evicted as a unit. It serves
+built-in tools (in-process, zero-copy), rp-managed services, and
+third-party plugins (over HTTP), and eliminates redundant FITS or
+sidecar reads for the common post-capture flow where a tool wants to
+analyze the image just captured.
+
+When `capture` completes, the camera's pixel array is already decoded
+in memory and the document has just been constructed. The cache holds
+both so subsequent tools (`measure_basic`, the next iteration of
+`auto_focus`, an external analyzer plugin) and document-API consumers
+don't re-read from disk. The on-disk FITS+sidecar pair remains the
+durable source of truth — the cache is strictly a hot-path
+optimization, with the disk as fallback on miss.
+
+Pixels and document share one cache entry. They evict together. Tool
+calls that mutate the document (e.g. `measure_basic` writing the
+`image_analysis` section) update the cached document under a per-entry
+lock and persist the sidecar atomically. After eviction, both the
+pixels and the document are gone from memory; either can be rehydrated
+from disk on the next access — see
+[Document Resolution](#document-resolution).
+
+#### Internal API (built-in tools)
+
+```rust
+pub enum CachedPixels {
+    U16(Array2<u16>),
+    I32(Array2<i32>),
+}
+
+pub struct CachedImage {
+    pub pixels: CachedPixels,
+    pub width: u32,
+    pub height: u32,
+    pub fits_path: PathBuf,
+    pub max_adu: u32,
+    pub document: RwLock<ExposureDocument>,
+}
+
+ImageCache::insert(document_id: &str, image: CachedImage);
+ImageCache::get(document_id: &str) -> Option<Arc<CachedImage>>;
+ImageCache::put_section(document_id: &str, name: &str, value: Value)
+    -> Result<()>;  // mutates the cached document AND persists sidecar
+```
+
+Built-in tools and HTTP handlers that accept a `document_id` resolve
+through the cache. On miss, the cache attempts to rehydrate from disk
+before returning `None`. Cache misses are logged at `debug!` for
+tuning visibility.
+
+#### Document Resolution
+
+A `document_id` (the full UUID) resolves through this order:
+
+1. **Cache hit.** Return the cached entry. O(1).
+2. **Disk fallback.** `readdir` `<data_directory>` filtering for
+   filenames matching `*_<uuid[..8]>.fits`. For each candidate, verify
+   by reading the FITS header `DOC_ID` against the requested full
+   UUID. The sidecar's `id` field is the fallback authority if the
+   FITS is unreadable. On match, read both files, populate the cache,
+   and return the entry.
+3. **Not found.** Return `None`. The HTTP API returns `404`.
+
+Ghost-match disambiguation runs only when multiple files in the data
+directory share an 8-char suffix. With UUID v4 entropy, the expected
+number of ghost matches per query is `k/N` where `k` is the total
+captures on disk and `N = 2^32`. At 100,000 captures, that's ~2·10⁻⁵
+— the disambiguation path exists for correctness but in practice
+essentially never fires.
+
+If `<data_directory>` is changed at runtime (rare), entries captured
+under the old directory become unreachable by id even though their
+files remain on disk. This is intentional — the data directory is a
+contract, not an indexed pool. Operators wanting to bring old captures
+back into reach copy or move the relevant FITS+sidecar pairs into the
+current `<data_directory>`.
+
+#### Storage Type Selection (u16 vs i32)
+
+The cache primarily stores **`u16`**. All current consumer/prosumer
+astro cameras (ZWO ASI series, QHY, Atik, Moravian, SBIG) emit
+non-negative pixel values within the 16-bit range — CCDs are uniformly
+16-bit; CMOS is 12-, 14-, or 16-bit ADC; sensor output is a
+photoelectron count, physically non-negative. Storing `u16` halves
+cache memory and `/pixels` bandwidth versus `i32` at no information
+loss for any camera in this category.
+
+The `CachedPixels::I32` variant exists so the structure can accept
+future scientific cameras (Andor, Hamamatsu sCMOS HDR modes, etc.)
+that genuinely emit values outside `u16` range, without a refactor.
+
+Selection policy at `capture` time:
+
+- Read the camera's `max_adu` (ASCOM `ICameraVx::MaxADU`) once per
+  capture, immediately after pixel download. The result drives both
+  the cache variant choice and the `max_adu` field on the resulting
+  `ExposureDocument` — one Alpaca call, two consumers.
+- If `max_adu ≤ 65535`: narrow the i32 array returned by
+  `ascom-alpaca` to `u16` and store as `CachedPixels::U16`. The
+  narrow clamps to `[0, max_adu]` before casting — guards against a
+  buggy driver returning out-of-range values.
+- Otherwise: store as `CachedPixels::I32` unchanged.
+- If `max_adu` cannot be read: skip the cache insert and persist
+  `max_adu: None` on the document. The FITS file plus the sidecar
+  remain the durable record; the next capture re-reads independently.
+
+The decision is per-frame in mechanism (one read per capture) and
+per-camera in effect (the same camera always reports the same value).
+The per-frame call also localizes transient Alpaca failures to a
+single capture rather than denying the whole session — a connect-time
+stash would have a session-wide blast radius on connect-time read
+failure.
+
+On disk-fallback rehydration (cache miss, document/pixels read from
+the FITS+sidecar pair), the variant choice comes from the sidecar's
+`max_adu` field — no live camera required. If the sidecar's
+`max_adu` is null (capture-time read failed), the rehydration falls
+back to serving from disk for each request rather than caching.
+
+Analysis code is generic over the pixel type via a small trait
+(e.g. `Pixel: Copy + Into<i64> + ...`) implemented for both `u16` and
+`i32`. Each algorithm is written once, monomorphized for both types.
+Tools dispatch:
+
+```rust
+match &cached.pixels {
+    CachedPixels::U16(arr) => measure_basic_impl(arr.view()),
+    CachedPixels::I32(arr) => measure_basic_impl(arr.view()),
+}
+```
+
+FITS write widens to `i32` at the boundary (fitrs requires it). The
+ASCOM `ImageArray` interface contract — which mandates `Int32` — is
+honored at any point we surface pixels through that API; internally
+we use `u16` whenever possible.
+
+#### HTTP API (services and plugins)
+
+| Endpoint | Returns | Description |
+|----------|---------|-------------|
+| `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
+| `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. |
+| `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. |
+| `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes. |
+
+Symmetry: `/pixels` serves the same wire format Alpaca cameras produce
+upstream. A plugin that already speaks Alpaca can reuse its existing
+ImageBytes parser unchanged.
+
+There is deliberately **no FITS endpoint**. Consumers that genuinely
+need FITS-formatted bytes (typically the plate-solver service, since
+ASTAP and astrometry.net are FITS-native) read the file directly from
+the path in the exposure document — `rp` and its plugins/services are
+assumed to share a filesystem (see [File Accessibility](#file-accessibility)).
+HTTP-proxying a file consumers can already open is unnecessary overhead.
+
+#### Lifetime and Eviction
+
+- **Insertion**: on `capture` completion, after the FITS+sidecar pair
+  is written. The cache holds the pixel buffer that came from the
+  camera plus the freshly-constructed document — no re-decode or
+  re-parse at insert time.
+- **Eviction**: LRU. Pixels and document are evicted together as a
+  unit. Two configurable budgets, whichever trips first:
+  ```json
+  "imaging": {
+    "cache_max_mib": 1024,
+    "cache_max_images": 8
+  }
+  ```
+  `cache_max_mib` bounds the **combined** memory footprint of pixels
+  and serialized document JSON for each entry. Document size is not
+  negligible — analysis sections like `detect_stars` and
+  `measure_stars` carry per-star arrays that can run into tens of KB
+  per section. `cache_max_images` is a safety net against
+  misconfiguration. Defaults are sized for an 8 GB Pi 5; tune for
+  larger hosts.
+- **Fallback**: cache miss is not an error. Tools and the
+  document/image HTTP endpoints fall back to the on-disk pair via
+  [Document Resolution](#document-resolution). After successful
+  rehydration the entry is re-inserted into the cache.
+- **Durability**: a document remains accessible by id as long as its
+  FITS+sidecar pair sits in `<data_directory>`, regardless of cache
+  state or `rp` restart history. The contract is "live as long as the
+  file is on disk", not "live as long as `rp` is up".
+
+#### Wire Format Choice
+
+ImageBytes was chosen over a custom format or NumPy `.npy` because:
+- It's the format the camera already produced; same parser code is
+  reusable by plugins that already consume Alpaca devices directly.
+- The 44-byte header carries everything we need (rank, dimensions,
+  element type) without ad-hoc HTTP headers.
+- It's a published ASCOM standard — no rp-specific format to document.
+- It's **type-tagged**, which lets the `/pixels` endpoint honestly
+  reflect the cached storage type in the header
+  (`ImageElementType=UInt16` for `CachedPixels::U16`,
+  `ImageElementType=Int32` for `CachedPixels::I32`). Consumers parse
+  the header and handle the type — no client-side assumption baked
+  in. This means a future Andor / Hamamatsu integration that bumps
+  the cache to `I32` for those frames is a transparent wire change,
+  not an API break.
+
 ### Plugin-Provided Tools
 
-A plugin can provide additional tools by running its own MCP server. At
-startup, `rp` connects to each tool-providing plugin as an MCP client,
-discovers their tools via `tools/list`, and proxies them through its own
-MCP server. Workflow plugins see a single unified catalog — they don't
-know or care whether a tool is built-in or provided by another plugin.
+Tool-provider plugins extend the catalog with tools `rp` does not ship
+built-in. A plugin runs its own MCP server. At startup, `rp` connects to
+each tool-providing plugin as an MCP client, discovers their tools via
+`tools/list`, and proxies them through its own MCP server. Orchestrators
+and other clients see a single unified catalog — they don't know or care
+whether a tool is built-in, an rp-managed service proxy, or a plugin
+contribution.
+
+Tool-provider plugins are typically third-party: experimental algorithms,
+ML-based analyzers, alternative implementations of an existing tool that
+a specific deployment wants to substitute alongside the built-in, or
+anything written in a non-Rust language. Stable astronomy primitives
+(HFR, FWHM, eccentricity, V-curve focus, iterative centering, plate-solve
+proxy) ship as built-ins and are the default. A plugin may shadow any
+built-in tool by advertising the same tool name; see
+[Config-Time Validation](#config-time-validation) and
+[Third-party alternatives](#third-party-alternatives).
+
+(Orchestrator plugins like `calibrator-flats` are also "plugins" in the
+protocol sense, but they don't *provide* tools — they *consume* them.
+They are covered separately under [Plugin Types](#plugin-types).)
 
 ```
 ┌─────────────────┐  tools/list   ┌──────────────────┐
@@ -663,13 +1306,15 @@ know or care whether a tool is built-in or provided by another plugin.
 └─────────────────┘  tools/call   └──────────────────┘
 ```
 
-Example: a specialized measurement plugin provides tools that a focus
-plugin can use:
+Examples of genuinely third-party-shaped plugins (none of these ship
+with `rp`):
 
 | Tool | Provider | Description |
 |------|----------|-------------|
-| `measure_eccentricity` | star-analyzer | Measure star eccentricity across the field |
-| `measure_wavefront` | wavefront-analyzer | Wavefront error analysis |
+| `classify_image_quality` | ml-quality-classifier | ML model that scores frames as keep/reject |
+| `detect_diffraction_pattern` | bahtinov-mask-helper | Specialized analyzer for Bahtinov / tri-Bahtinov focus aids |
+| `measure_wavefront` | wavefront-analyzer | Optical aberration analysis from defocused star images |
+| `score_field_flatness` | tilt-analyzer | Detect sensor tilt by per-quadrant HFR comparison |
 
 **All tool results that produce image metrics MUST be written into the
 exposure document as a section.** This is the one rule — the document is
@@ -678,13 +1323,16 @@ into the document before being returned to the caller.
 
 ### Plugin Types
 
-There are three plugin types:
+Plugins are separate processes following the plugin protocol. Some are
+first-party (workflow plugins shipping in this workspace, like
+`calibrator-flats`); others are third-party extensions. Three plugin
+types by role:
 
-| Type | Role | Interface |
-|------|------|-----------|
-| **Event** | React to events asynchronously | Webhook (receive events, post completion) |
-| **Tool provider** | Provide compound tools for other plugins | MCP server (rp aggregates their tools) |
-| **Orchestrator** | Drive the imaging session | MCP client (calls tools on rp) |
+| Type | Role | Interface | Typical authorship |
+|------|------|-----------|-------------------|
+| **Event** | React to events asynchronously | Webhook (receive events, post completion) | Either |
+| **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
+| **Orchestrator** | Drive the imaging session | MCP client (calls tools on rp) | Mostly first-party (`calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`) |
 
 A plugin can combine types. For example, a focus plugin can be a
 **tool provider** (exposes `auto_focus` tool) and also an **event
@@ -697,10 +1345,10 @@ discovers their tools, and proxies them through its own MCP server:
 
 ```json
 {
-  "name": "vcurve-focus",
+  "name": "ml-quality-classifier",
   "type": "tool_provider",
   "mcp_server_url": "http://localhost:11150/mcp",
-  "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"]
+  "requires_tools": ["compute_image_stats"]
 }
 ```
 
@@ -798,53 +1446,34 @@ Content-Type: application/json
 }
 ```
 
-#### Example: V-Curve Focus Tool Provider
+#### Example: ML Quality Classifier (third-party tool provider)
 
-The `vcurve-focus` plugin exposes an `auto_focus` tool. When called by
-the orchestrator (via rp's proxy), it drives the V-curve internally:
+A third party ships an ML model that scores frames as keep/reject. It
+runs as a separate process, exposes one tool, and reads pixels from
+the image cache:
 
 ```
-Orchestrator calls: tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
-  → rp proxies to vcurve-focus plugin's MCP server
+Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
+  → rp proxies to ml-quality-classifier's MCP server
 
-  vcurve-focus connects to rp as MCP client and drives the V-curve:
-    → tools/call  move_focuser {focuser_id: "main-focuser", position: 10000}
-    ← {actual_position: 10000}
-    → tools/call  capture {camera_id: "main-cam", duration: "2s"}
-    ← {image_path: "/tmp/focus_001.fits", document_id: "doc-001"}
-    → tools/call  measure_basic {image_path: "/tmp/focus_001.fits"}
-    ← {hfr: 5.2, star_count: 340}
-    → tools/call  move_focuser {focuser_id: "main-focuser", position: 10200}
-    ... 12 more iterations ...
-    → tools/call  move_focuser {focuser_id: "main-focuser", position: 12450}
+  ml-quality-classifier (in its own process):
+    → GET /api/images/doc-042/pixels  (Alpaca ImageBytes)
+    ← raw pixel bytes
+    → runs inference locally
+    → POST /api/documents/doc-042/sections {section_name: "ml_quality", data: {...}}
 
-  vcurve-focus returns to rp:
-    ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
+  ml-quality-classifier returns to rp:
+    ← {score: 0.87, classification: "keep", model: "psf-cnn-v3"}
 
   rp returns to orchestrator:
-    ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
+    ← {score: 0.87, classification: "keep", model: "psf-cnn-v3"}
 ```
 
-#### Example: Iterative Centering Tool Provider
-
-The `iterative-centering` plugin exposes a `center_on_target` tool:
-
-```
-Orchestrator calls: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance: 5}
-  → rp proxies to centering plugin's MCP server
-
-  centering plugin connects to rp and drives the loop:
-    → tools/call  capture {camera_id: "main-cam", duration: "5s"}
-    ← {image_path: "/tmp/center_001.fits"}
-    → tools/call  plate_solve {image_path: "/tmp/center_001.fits"}
-    ← {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
-    → tools/call  sync_mount {ra: 10.6820, dec: 41.2650}
-    → tools/call  slew {ra: 10.6847, dec: 41.2689}
-    → repeat until error < tolerance ...
-
-  centering plugin returns:
-    ← {final_error_arcsec: 2.1, attempts: 3}
-```
+The plugin reuses `rp`'s image cache HTTP API for pixel access (no FITS
+re-decode), and writes its results back into the exposure document via
+the section endpoint. Built-in compound tools (`auto_focus`,
+`center_on_target`) follow the same orchestration pattern but without
+the MCP-over-HTTP hop — see [Compound Tools](#compound-tools).
 
 ### Safety Guardrails
 
@@ -871,13 +1500,24 @@ At startup, `rp` validates the full plugin dependency graph:
 1. Connect to each tool-providing plugin's MCP server and discover
    their tools via `tools/list`.
 2. Build the unified tool catalog from built-in tools and all
-   discovered plugin-provided tools. Reject duplicate tool names —
-   no two providers (including built-ins) may expose the same tool
-   name.
+   discovered plugin-provided tools. If a plugin advertises a tool
+   whose name matches a built-in, the plugin **shadows** the built-in —
+   `rp` routes calls to the plugin and emits an `info!` log line at
+   startup naming the shadowed built-in and the shadowing plugin. Two
+   *plugins* advertising the same tool name is still a hard error
+   (`rp` refuses to start) — there's no deterministic precedence
+   between two plugins.
 3. For each plugin with `requires_tools`, verify that every listed
-   tool exists in the catalog.
+   tool exists in the catalog (post-shadow).
 4. If validation fails, `rp` refuses to start and reports the missing
-   or duplicate tools.
+   or conflicting tools.
+
+Shadowing exists so a deployment can swap any built-in algorithm
+(`auto_focus`, `center_on_target`, image-analysis tools) for a
+locally-developed alternative without forking `rp` or renaming the
+tool in the orchestrator's call sites. It is an opt-in: shadowing
+only happens when the plugin is configured. The default deployment
+runs the built-ins.
 
 This ensures the system is fully configured before the session begins.
 A missing dependency is a startup error, not a 3 AM surprise.
@@ -903,9 +1543,13 @@ Supported ASCOM device types:
 
 ### Guider Service
 
-The guider service wraps PHD2 and exposes an HTTP API. The existing
-`phd2-guider` library provides the PHD2 JSON-RPC integration and will be
-reworked to run as an HTTP service.
+The guider service is an **rp-managed service** that wraps PHD2 and
+exposes an HTTP API to `rp`. The existing `phd2-guider` library provides
+the PHD2 JSON-RPC integration and will be reworked to run as an HTTP
+service. Like the plate solver, it is a separate process because PHD2
+itself is an external program with its own crash/restart behavior;
+Sentinel can supervise and restart it via the standard rp-managed-service
+flow.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
@@ -921,11 +1565,19 @@ service that implements the same HTTP endpoints.
 
 ### Plate Solver
 
-The plate solver is a plugin service that accepts FITS files and returns
-solved coordinates. It is exposed as a built-in MCP tool (`plate_solve`)
-so that workflow plugins (e.g., centering) can use it. `rp` proxies the
-call to the configured plate solver service. The plate solver can also
-subscribe to `exposure_complete` events for background solving.
+The plate solver is an **rp-managed service** — a separate process that
+wraps an external solver binary (ASTAP or astrometry.net). The MCP tool
+surface (`plate_solve`) is a built-in tool that proxies to the service;
+the wrapped binary lives in the supervised process.
+
+This shape (service rather than built-in Rust code) is chosen because:
+- The solvers are external programs `rp` cannot link against.
+- They can hang or crash independently of `rp`.
+- Sentinel can restart them via the standard rp-managed-service
+  supervision flow (see [Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
+
+The plate solver can also subscribe to `exposure_complete` events for
+background solving.
 
 > **Note:** The choice of plate solving engine requires further research.
 > The first implementation should wrap an open-source, cross-platform, locally
@@ -1049,40 +1701,78 @@ Loop:
   → continue outer loop with new target
 ```
 
-### Compound Tools (Sub-Workflow Plugins)
+### Compound Tools
 
-Sub-workflows like focusing and centering are implemented as
-**tool-provider plugins**. They run their own MCP servers and expose
-high-level compound tools. Internally, they call back to `rp`'s MCP
-server to use primitive tools.
+Sub-workflows like `auto_focus` and `center_on_target` are **built-in
+compound tools** — they live in `rp`'s process, drive a multi-step
+loop using primitive built-in tools, and expose a single high-level
+tool to the orchestrator. The orchestrator does not need to know the
+focus algorithm or the centering algorithm; it calls one tool and
+gets a result.
 
 ```
-Orchestrator                    rp                     Focus Plugin
-    │                           │                           │
-    │  tools/call auto_focus    │                           │
-    ├──────────────────────────►│  tools/call auto_focus    │
-    │                           ├──────────────────────────►│
-    │                           │                           │
-    │                           │  tools/call move_focuser  │
-    │                           │◄──────────────────────────┤
-    │                           │  ← {actual_position}      │
-    │                           ├──────────────────────────►│
-    │                           │                           │
-    │                           │  tools/call capture       │
-    │                           │◄──────────────────────────┤
-    │                           │  ← {image_path}           │
-    │                           ├──────────────────────────►│
-    │                           │                           │
-    │                           │  ... repeat ...           │
-    │                           │                           │
-    │                           │  ← {best_position, hfr}   │
-    │  ← {best_position, hfr}  │◄──────────────────────────┤
-    │◄──────────────────────────┤                           │
+Orchestrator                    rp (single process)
+    │                           ┌───────────────────────────────┐
+    │  tools/call auto_focus    │                               │
+    ├──────────────────────────►│  auto_focus impl (Rust)       │
+    │                           │   ├─ move_focuser             │
+    │                           │   ├─ capture                  │
+    │                           │   ├─ measure_basic            │
+    │                           │   │   (cache hit, no decode)  │
+    │                           │   ├─ ... 12 more iterations   │
+    │                           │   └─ pick best_position       │
+    │  ← {best_position, hfr}  │                               │
+    │◄──────────────────────────│                               │
+    │                           └───────────────────────────────┘
 ```
 
-This keeps the orchestrator simple — it calls `auto_focus` without
-knowing the focus algorithm. The focus plugin can be swapped (V-curve,
-quadratic, FWHM-based) without changing the orchestrator.
+No MCP-over-HTTP hop, no FITS re-decode (the in-process call resolves
+each capture's pixels via the image cache).
+
+#### Example: `auto_focus` (V-curve)
+
+```
+Orchestrator: tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
+  rp's auto_focus implementation:
+    move_focuser(position=10000) → 10000
+    capture(camera_id="main-cam", duration_ms=2000) → {document_id: "doc-001", ...}
+    measure_basic(document_id="doc-001")           → {hfr: 5.2, star_count: 340}
+    move_focuser(position=10200) → 10200
+    ... 12 more iterations on the V-curve ...
+    move_focuser(position=12450) → 12450
+  ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
+```
+
+#### Example: `center_on_target`
+
+```
+Orchestrator: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance_arcsec: 5}
+  rp's center_on_target implementation:
+    capture(camera_id="main-cam", duration_ms=5000)  → {document_id: "doc-c01"}
+    plate_solve(document_id="doc-c01")               → {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
+    sync_mount(ra=10.6820, dec=41.2650)
+    slew(ra=10.6847, dec=41.2689)
+    ... repeat until error < tolerance ...
+  ← {final_error_arcsec: 2.1, attempts: 3}
+```
+
+#### Third-party alternatives
+
+A site that wants a different algorithm (parabolic-fit focus, ML-based
+focus, plate-solve-driven centering with custom heuristics) has two
+options:
+
+1. **Side-by-side** — ship the alternative under a *different* tool
+   name (e.g. `auto_focus_parabolic`). The orchestrator opts in by
+   calling the plugin's tool name. Both algorithms are reachable.
+2. **Drop-in replacement** — ship the alternative under the *same*
+   tool name (`auto_focus`). The plugin shadows the built-in per
+   [Config-Time Validation](#config-time-validation), and orchestrators
+   continue calling `auto_focus` unchanged. The shadow is logged at
+   startup so operators can tell which implementation is active.
+
+Two *plugins* both claiming `auto_focus` remains a startup error —
+there is no deterministic precedence between plugins.
 
 ## Dynamic Planner
 
@@ -1297,8 +1987,23 @@ application logic.
 
 #### Documents
 - `GET /api/documents` — list recent exposure documents
-- `GET /api/documents/{id}` — full document with all sections
-- `POST /api/documents/{id}/sections` — add/update a section (plugin endpoint)
+- `GET /api/documents/{id}` — full document with all sections. Returns
+  the same JSON written to the sidecar. Resolves through the cache with
+  on-disk fallback; returns `404` only when neither cache nor disk has
+  the document. See
+  [Document Resolution](#document-resolution).
+- `POST /api/documents/{id}/sections` — add/update a section (plugin
+  endpoint). Requires the document be resolvable; persists the sidecar
+  atomically.
+
+#### Images
+- `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
+  FITS path, exposure document link, in-cache flag)
+- `GET /api/images/{document_id}/pixels` — raw pixel data in
+  `application/imagebytes` (ASCOM Alpaca ImageBytes wire format). See
+  [Image and Document Cache](#image-and-document-cache). Consumers
+  wanting FITS read the file directly from the path in the exposure
+  document.
 
 #### Plugins
 - `POST /api/plugins/{id}/complete` — plugin completion callback
@@ -1419,6 +2124,10 @@ connection details. Plugins register their webhook URLs and command endpoints.
     "url": "http://localhost:11131",
     "timeout_secs": 60
   },
+  "imaging": {
+    "cache_max_mib": 1024,
+    "cache_max_images": 8
+  },
   "plugins": [
     {
       "name": "image-analyzer",
@@ -1434,16 +2143,10 @@ connection details. Plugins register their webhook URLs and command endpoints.
       "subscribes_to": ["exposure_complete", "session_stopped"]
     },
     {
-      "name": "vcurve-focus",
+      "name": "ml-quality-classifier",
       "type": "tool_provider",
       "mcp_server_url": "http://localhost:11150/mcp",
-      "requires_tools": ["capture", "move_focuser", "get_focuser_position", "measure_basic"]
-    },
-    {
-      "name": "iterative-centering",
-      "type": "tool_provider",
-      "mcp_server_url": "http://localhost:11151/mcp",
-      "requires_tools": ["capture", "slew", "sync_mount", "plate_solve"]
+      "requires_tools": ["compute_image_stats"]
     },
     {
       "name": "deep-sky-orchestrator",
@@ -1512,7 +2215,10 @@ services/rp/src/
   error.rs              AppError enum (thiserror)
 
   # Core domain
-  document.rs           ExposureDocument, Section, persistence (sidecar JSON)
+  document.rs           ExposureDocument, Section, atomic sidecar JSON
+                          persistence. Document storage and lookup are
+                          mediated by the unified Image and Document
+                          Cache (imaging/cache.rs).
   target.rs             Target definitions, progress tracking
   session.rs            Session state, persistence, recovery
 
@@ -1553,8 +2259,22 @@ services/rp/src/
     built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
     aggregator.rs       Connects to plugin MCP servers, proxies their tools
 
-  # Imaging (FITS I/O and image analysis)
-  imaging.rs            FITS read/write (fitrs), pixel statistics (stdlib), future: HFR, star detection
+  # Imaging (FITS I/O, image cache, and image analysis)
+  imaging/
+    mod.rs              Module root: re-exports, shared types (ImageStats, ImageMetadata)
+    pixel.rs            Pixel trait (impls for u16 and i32) for generic analysis
+    fits.rs             FITS read/write via fitrs (widens to i32 at the boundary)
+    cache.rs            ImageCache: CachedPixels enum (U16 | I32),
+                          Arc<CachedImage> holding pixels + document
+                          together, LRU eviction over combined memory
+                          footprint, readdir+DOC_ID disk fallback
+    stats.rs            Pixel statistics (median, mean, min, max ADU) — generic over Pixel
+    background.rs       Sigma-clipped background estimation — generic
+    stars.rs            Star detection + centroiding — generic
+    hfr.rs              HFR / HFD radial flux accumulation — generic
+    fwhm.rs             2D Gaussian fitting via rmpfit
+    snr.rs              Signal-to-noise computation
+    measure_basic.rs    measure_basic tool: compose background + stars + hfr
 
   # Post-capture pipeline
   pipeline/

@@ -88,6 +88,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "approx"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -865,7 +874,7 @@ dependencies = [
  "globwalk",
  "humantime",
  "inventory",
- "itertools",
+ "itertools 0.14.0",
  "linked-hash-map",
  "pin-project",
  "ref-cast",
@@ -882,7 +891,7 @@ checksum = "5a1afaf9c422380861111c6be56f39b324e351fd9efc07a1486268798bf79cfd"
 dependencies = [
  "cucumber-expressions",
  "inflections",
- "itertools",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -1952,6 +1961,15 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -2185,7 +2203,7 @@ dependencies = [
  "convert_case 0.11.0",
  "convert_case_extras",
  "html-escape",
- "itertools",
+ "itertools 0.14.0",
  "leptos_hot_reload",
  "prettyplease",
  "proc-macro-error2",
@@ -2479,6 +2497,7 @@ version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d"
 dependencies = [
+ "approx",
  "matrixmultiply",
  "num-complex",
  "num-integer",
@@ -2486,6 +2505,32 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+]
+
+[[package]]
+name = "ndarray-ndimage"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "467eb07fa67483ae5690d7940409e225f170607fd6058650cccfa6111953e803"
+dependencies = [
+ "ndarray",
+ "ndarray-stats",
+ "num-traits",
+]
+
+[[package]]
+name = "ndarray-stats"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b6e54a8b65764f71827a90ca1d56965ec0c67f069f996477bd493402a901d1f"
+dependencies = [
+ "indexmap 2.14.0",
+ "itertools 0.13.0",
+ "ndarray",
+ "noisy_float",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -2515,6 +2560,15 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "noisy_float"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c16843be85dd410c6a12251c4eca0dd1d3ee8c5725f746c4d5e0fdcec0a864b2"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -2990,7 +3044,7 @@ dependencies = [
  "bitflags 2.11.1",
  "num-traits",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
@@ -3133,11 +3187,22 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_core 0.9.5",
 ]
 
@@ -3150,6 +3215,16 @@ dependencies = [
  "chacha20",
  "getrandom 0.4.2",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -3248,7 +3323,7 @@ checksum = "c30fd35b7d299c591293bb69fed47a703eb2703b1cff0493e78b16ed007e5382"
 dependencies = [
  "guardian",
  "indexmap 2.14.0",
- "itertools",
+ "itertools 0.14.0",
  "or_poisoned",
  "paste",
  "reactive_graph",
@@ -3471,6 +3546,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmpfit"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "064408a837204baa51680b284408af56fde3ebeb5c2942f07c8e91213dbcd474"
+
+[[package]]
 name = "rp"
 version = "0.1.0"
 dependencies = [
@@ -3489,8 +3570,10 @@ dependencies = [
  "libc",
  "mockall",
  "ndarray",
+ "ndarray-ndimage",
  "reqwest 0.13.2",
  "rmcp",
+ "rmpfit",
  "rp-auth",
  "rp-tls",
  "rpassword",
@@ -4396,7 +4479,7 @@ dependencies = [
  "futures",
  "html-escape",
  "indexmap 2.14.0",
- "itertools",
+ "itertools 0.14.0",
  "js-sys",
  "next_tuple",
  "oco_ref",
