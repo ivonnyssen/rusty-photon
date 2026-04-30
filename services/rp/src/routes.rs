@@ -126,24 +126,41 @@ async fn get_image_metadata(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let Some(cached) = state.image_cache.resolve(&document_id).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("document not found: {}", document_id)})),
-        );
-    };
-    let bitpix = match &cached.pixels {
+    // `resolve` and `resolve_document` have asymmetric semantics: `resolve`
+    // declines when the sidecar's `max_adu` is null because the cache
+    // can't pick a `CachedPixels` variant, while `resolve_document` still
+    // returns the document so callers can read the FITS via `file_path`.
+    // Metadata must be reachable for any document on disk, so try the
+    // pixel-bearing path first (gives us `bitpix` and `in_cache=true`) and
+    // fall back to a doc-only resolve when the cache cannot rehydrate
+    // pixels.
+    let cached = state.image_cache.resolve(&document_id).await;
+    let in_cache = cached.is_some();
+    let bitpix = cached.as_ref().map(|c| match &c.pixels {
         CachedPixels::U16(_) => 16,
         CachedPixels::I32(_) => 32,
+    });
+    let doc = match cached {
+        Some(c) => c.document.read().await.clone(),
+        None => match state.image_cache.resolve_document(&document_id).await {
+            Some(d) => d,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": format!("document not found: {}", document_id)
+                    })),
+                );
+            }
+        },
     };
-    let doc = cached.document.read().await;
     let body = serde_json::json!({
         "document_id": document_id,
         "width": doc.width,
         "height": doc.height,
         "bitpix": bitpix,
         "fits_path": doc.file_path,
-        "in_cache": true,
+        "in_cache": in_cache,
         "document_url": format!("/api/documents/{}", document_id),
     });
     (StatusCode::OK, Json(body))
@@ -391,6 +408,53 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["bitpix"], 32);
         assert_eq!(body["in_cache"], true);
+    }
+
+    #[tokio::test]
+    async fn metadata_returns_doc_with_null_bitpix_when_max_adu_null() {
+        // Pins the contract: when a sidecar+FITS pair exists on disk but
+        // the sidecar has `max_adu: null`, `resolve()` declines (the cache
+        // can't pick a CachedPixels variant), yet the metadata route
+        // still returns 200 via the `resolve_document()` fallback. The
+        // pixels-bearing fields (`bitpix`, `in_cache`) reflect that pixels
+        // were not rehydrated. Mirrors the symmetric cache.rs test at
+        // imaging::cache::tests for `resolve_document` itself.
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "44444444-4444-4444-4444-444444444444";
+        let uuid8 = &doc_uuid[..8];
+        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        crate::imaging::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+            .await
+            .unwrap();
+        let doc = ExposureDocument {
+            id: doc_uuid.to_string(),
+            captured_at: "2026-04-30T00:00:00Z".to_string(),
+            file_path: fits_path.to_string_lossy().into_owned(),
+            width: 2,
+            height: 2,
+            camera_id: None,
+            duration: None,
+            max_adu: None,
+            sections: serde_json::Map::new(),
+        };
+        std::fs::write(
+            dir.path().join(format!("{}.json", uuid8)),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let (status, Json(body)) =
+            get_image_metadata(State(test_app_state(cache)), Path(doc_uuid.to_string())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["bitpix"].is_null(),
+            "bitpix must be null for max_adu=null docs, got {:?}",
+            body["bitpix"]
+        );
+        assert_eq!(body["in_cache"], false);
+        assert_eq!(body["width"], 2);
+        assert_eq!(body["height"], 2);
     }
 
     #[tokio::test]

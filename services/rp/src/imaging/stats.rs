@@ -37,9 +37,14 @@ pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
         m
     };
 
-    let mean_adu = pixels.iter().map(|&p| p as f64).sum::<f64>() / pixel_count as f64;
-
+    // Clamp negatives to 0 across all four fields so the reported stats
+    // are internally consistent. Production cameras today are u16-only;
+    // negatives only arise on the i32 deferred-scientific-camera path
+    // (over-subtraction during dark correction, electronic offsets), and
+    // when they do, callers see a uniform "negatives become zero" rather
+    // than a min/max/median of 0 alongside a negative mean.
     let clamp = |v: i32| -> u32 { v.max(0) as u32 };
+    let mean_adu = pixels.iter().map(|&p| p.max(0) as f64).sum::<f64>() / pixel_count as f64;
 
     Some(ImageStats {
         median_adu: clamp(median),
@@ -118,5 +123,24 @@ mod tests {
         assert_eq!(stats.median_adu, 32768);
         assert_eq!(stats.min_adu, 0);
         assert_eq!(stats.max_adu, 65535);
+    }
+
+    #[test]
+    fn compute_stats_clamps_negatives_uniformly() {
+        // Pins the contract that all four reported fields treat negative
+        // pixels as zero. Without uniform clamping, mean_adu could be
+        // negative while min_adu/max_adu/median_adu sit at 0 (their u32
+        // floor), producing internally inconsistent stats.
+        let pixels = vec![-100i32, 0, 50];
+        let stats = compute_stats(&pixels).unwrap();
+        assert_eq!(stats.min_adu, 0);
+        assert_eq!(stats.max_adu, 50);
+        assert_eq!(stats.median_adu, 0);
+        // mean = (clamp(-100) + 0 + 50) / 3 = 50/3
+        assert!(
+            (stats.mean_adu - 50.0 / 3.0).abs() < 1e-9,
+            "expected clamped mean ≈ 16.667, got {}",
+            stats.mean_adu
+        );
     }
 }
