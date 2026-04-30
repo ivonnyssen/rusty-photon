@@ -337,6 +337,7 @@ mod tests {
             height: 2,
             camera_id: None,
             duration: None,
+            max_adu: None,
             sections: serde_json::Map::new(),
         }
     }

@@ -125,45 +125,36 @@ they exist for Phase 4 (`measure_basic`) and the future scientific
 camera hatch respectively. max_adu is fetched per-capture rather than
 stashed at connect time — see follow-up note below.
 
-#### Phase 3 follow-up: stash `max_adu` on `CameraEntry`
+#### Phase 3 follow-up: stash `max_adu` on `CameraEntry` — superseded
 
-**Status:** deferred — landed Phase 3 with per-capture fetch.
+**Status:** **superseded** by the document-side `max_adu` field added
+ahead of Phase 7.
 
-**What the design says (`docs/services/rp.md` → Image and Document
-Cache → Storage Type Selection):** "Read the camera's `max_adu` (ASCOM
-`ICameraVx::MaxADU`) at connect time and stash it in the camera's
-runtime state." Selection of `CachedPixels::U16` vs `I32` is
-"per-camera (driven by capabilities), not per-frame".
+**What changed.** `ExposureDocument` now carries `max_adu: Option<u32>`,
+populated at capture time from a single `cam.max_adu().await` whose
+result also drives the U16/I32 cache variant choice. The sidecar JSON
+preserves the value across eviction and `rp` restart, so Phase 7's
+disk-fallback rehydration is self-describing without needing the
+originating camera to be connected.
 
-**What Phase 3 does instead:** `mcp.rs:capture` calls
-`cam.max_adu().await` after every exposure, immediately before
-inserting into the cache. The result drives the U16/I32 narrowing
-for that frame.
+**Why no `CameraEntry` stash.** With `max_adu` on the document, a
+connect-time stash adds no value:
 
-**Why this is fine for now:**
-- `max_adu` is one Alpaca request to an in-process client. It is
-  cheap relative to FITS write (which already happened) and
-  vanishingly small relative to exposure time (seconds to minutes).
-- Behavior is identical to the design intent — the same camera
-  always reports the same `max_adu`, so the variant choice is in
-  practice per-camera even though the lookup is per-frame.
-- If `max_adu` fails, cache insert is skipped and the FITS-on-disk
-  path absorbs the miss. No correctness regression.
+- **Capture path:** the live per-frame fetch already feeds both the
+  cache variant decision and the doc field. One Alpaca call, one
+  source of truth for that capture.
+- **`get_camera_info`:** a pure capability query with no document
+  context — its live fetch is appropriate and was never a hot-path
+  concern.
+- **Robustness is actually better the live way.** A connect-time read
+  failure in a stashed model would force `max_adu = None` on every
+  capture for the rest of the session. The live model isolates
+  transient failures to the single affected capture; the next capture
+  re-reads independently.
 
-**Trigger to revisit:**
-- Profiling shows `max_adu` fetch on the capture hot path (unlikely
-  given the above).
-- A camera driver returns `max_adu` slowly or unreliably enough that
-  the per-frame fetch becomes a robustness issue.
-- We add a non-Alpaca camera path that does not expose `max_adu`
-  inline — at which point a stashed value is the natural seam.
-
-**Scope when picked up:** add a `max_adu: Option<u32>` field (or
-similar) to `CameraEntry` in `services/rp/src/equipment.rs`,
-populate it during `connect`, and replace the `cam.max_adu().await`
-call in `mcp.rs:capture` with a read from the entry. Small,
-self-contained, no test changes beyond updating the equipment
-mocks.
+The original design statement in `docs/services/rp.md` ("read at
+connect time and stash") is updated to reflect the per-capture +
+sidecar pattern.
 
 ### Phase 4 — Implement `measure_basic`
 

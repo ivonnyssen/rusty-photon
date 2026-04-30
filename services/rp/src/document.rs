@@ -49,6 +49,14 @@ pub struct ExposureDocument {
         with = "humantime_serde"
     )]
     pub duration: Option<Duration>,
+    /// Camera's `MaxADU` at the time of capture. The sidecar carries it
+    /// forward so a disk-fallback rehydration of the image cache can
+    /// pick the correct `CachedPixels` variant without needing the
+    /// originating camera to still be connected — see Phase 7
+    /// (`docs/plans/image-evaluation-tools.md`) and the Image and
+    /// Document Cache section of `docs/services/rp.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_adu: Option<u32>,
     #[serde(default)]
     pub sections: Map<String, Value>,
 }
@@ -166,6 +174,7 @@ mod tests {
             height: 16,
             camera_id: Some("cam".to_string()),
             duration: Some(Duration::from_secs(1)),
+            max_adu: Some(65535),
             sections: Map::new(),
         }
     }
@@ -214,6 +223,7 @@ mod tests {
         let body = tokio::fs::read_to_string(&sidecar).await.unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.id, "doc-1");
+        assert_eq!(parsed.max_adu, Some(65535));
     }
 
     #[tokio::test]

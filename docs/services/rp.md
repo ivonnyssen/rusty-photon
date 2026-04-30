@@ -151,9 +151,19 @@ The document accumulates data as it flows through the system.
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_300s_001.fits",
   "session_id": "session-2026-03-01",
-  "sequence_number": 42
+  "sequence_number": 42,
+  "max_adu": 65535
 }
 ```
+
+`max_adu` carries the camera's `MaxADU` capability at the time of
+capture. Read once per exposure from `cam.max_adu()` and persisted in
+the sidecar so the file is self-describing — the disk-fallback
+rehydration path in [Image and Document Cache](#image-and-document-cache)
+uses it to choose the `CachedPixels::U16` vs `I32` variant without
+needing the originating camera to be connected. `null` (omitted on
+serialize) when the read failed at capture time; in that case the
+cache insert is skipped and the entry serves from disk on demand.
 
 ### Plugin Sections (contributed via API)
 
@@ -1125,15 +1135,31 @@ that genuinely emit values outside `u16` range, without a refactor.
 
 Selection policy at `capture` time:
 
-- Read the camera's `max_adu` (ASCOM `ICameraVx::MaxADU`) at connect
-  time and stash it in the camera's runtime state.
+- Read the camera's `max_adu` (ASCOM `ICameraVx::MaxADU`) once per
+  capture, immediately after pixel download. The result drives both
+  the cache variant choice and the `max_adu` field on the resulting
+  `ExposureDocument` — one Alpaca call, two consumers.
 - If `max_adu ≤ 65535`: narrow the i32 array returned by
-  `ascom-alpaca` to `u16` and store as `CachedPixels::U16`. The narrow
-  is a simple `as u16` cast — safe given the bound check.
+  `ascom-alpaca` to `u16` and store as `CachedPixels::U16`. The
+  narrow clamps to `[0, max_adu]` before casting — guards against a
+  buggy driver returning out-of-range values.
 - Otherwise: store as `CachedPixels::I32` unchanged.
+- If `max_adu` cannot be read: skip the cache insert and persist
+  `max_adu: None` on the document. The FITS file plus the sidecar
+  remain the durable record; the next capture re-reads independently.
 
-The decision is per-camera (driven by capabilities), not per-frame —
-no per-frame range scan.
+The decision is per-frame in mechanism (one read per capture) and
+per-camera in effect (the same camera always reports the same value).
+The per-frame call also localizes transient Alpaca failures to a
+single capture rather than denying the whole session — a connect-time
+stash would have a session-wide blast radius on connect-time read
+failure.
+
+On disk-fallback rehydration (cache miss, document/pixels read from
+the FITS+sidecar pair), the variant choice comes from the sidecar's
+`max_adu` field — no live camera required. If the sidecar's
+`max_adu` is null (capture-time read failed), the rehydration falls
+back to serving from disk for each request rather than caching.
 
 Analysis code is generic over the pixel type via a small trait
 (e.g. `Pixel: Copy + Into<i64> + ...`) implemented for both `u16` and
