@@ -410,7 +410,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let pixels = vec![10i32, 20, 30, 40];
-        crate::imaging::write_fits(&fits_path, &pixels, 2, 2)
+        crate::imaging::write_fits(&fits_path, &pixels, 2, 2, "test-doc-id")
             .await
             .unwrap();
         let store = store_with_doc_at(&fits_path).await;

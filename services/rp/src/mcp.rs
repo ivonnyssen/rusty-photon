@@ -665,7 +665,8 @@ impl McpHandler {
         let height = dim_y as u32;
         let pixels: Vec<i32> = image_array.iter().copied().collect();
 
-        if let Err(e) = imaging::write_fits(&image_path, &pixels, width, height).await {
+        if let Err(e) = imaging::write_fits(&image_path, &pixels, width, height, &document_id).await
+        {
             return Ok(tool_error!("failed to write FITS file: {}", e));
         }
 

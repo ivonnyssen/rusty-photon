@@ -21,7 +21,7 @@ pub mod stats;
 
 pub use background::{estimate_background, sigma_clipped_stats, BackgroundStats};
 pub use cache::{CachedImage, CachedPixels, ImageCache};
-pub use fits::{read_fits_pixels, write_fits};
+pub use fits::{read_fits_doc_id, read_fits_pixels, write_fits};
 pub use fwhm::{fit_2d_gaussian, GaussianFit2D};
 pub use hfr::{aggregate_hfr, star_hfr};
 pub use measure_basic::{measure_basic, MeasureBasicResult};

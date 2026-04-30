@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use fitrs::{Fits, Hdu};
+use fitrs::{Fits, Hdu, HeaderValue};
 use tracing::debug;
 
 use crate::error::{Result, RpError};
@@ -23,11 +23,18 @@ use crate::error::{Result, RpError};
 /// cannot leave a torn file at `path` — readers either see the old contents
 /// or the new ones, never a partial mix. The staging file is removed by a
 /// Drop guard if anything before the rename fails.
+///
+/// `doc_id` is written into the primary HDU header as `DOC_ID = '<full-uuid>'`,
+/// making each FITS file self-describing for the disk-fallback resolution
+/// path (Phase 7 of `docs/plans/image-evaluation-tools.md`). When two files
+/// in the data directory share an 8-char filename suffix, the resolver
+/// reads `DOC_ID` to disambiguate.
 pub async fn write_fits<P: AsRef<Path>>(
     path: P,
     pixels: &[i32],
     width: u32,
     height: u32,
+    doc_id: &str,
 ) -> Result<()> {
     let expected = (width as usize) * (height as usize);
     if pixels.len() != expected {
@@ -42,23 +49,31 @@ pub async fn write_fits<P: AsRef<Path>>(
 
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
+    let doc_id = doc_id.to_string();
 
     debug!(
         width = width,
         height = height,
         path = %path.display(),
+        doc_id = %doc_id,
         "writing FITS image"
     );
 
     // Run the whole stage-and-commit sequence on the blocking pool: fitrs and
     // tempfile are sync-only, and one task spawn per write is cheaper than
     // one per fs syscall.
-    tokio::task::spawn_blocking(move || write_fits_sync(&path, &pixels, width, height))
+    tokio::task::spawn_blocking(move || write_fits_sync(&path, &pixels, width, height, &doc_id))
         .await
         .map_err(|e| RpError::Imaging(format!("task join error: {}", e)))?
 }
 
-fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Result<()> {
+fn write_fits_sync(
+    path: &Path,
+    pixels: &[i32],
+    width: u32,
+    height: u32,
+    doc_id: &str,
+) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| RpError::Imaging(format!("FITS path has no parent: {}", path.display())))?;
@@ -77,7 +92,11 @@ fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Resu
     std::fs::remove_file(&tmp_path)
         .map_err(|e| RpError::Imaging(format!("failed to clear staging file: {}", e)))?;
 
-    let hdu = Hdu::new(&[width as usize, height as usize], pixels.to_vec());
+    let mut hdu = Hdu::new(&[width as usize, height as usize], pixels.to_vec());
+    // Phase 7: stamp the document UUID into the primary HDU header so each
+    // FITS is self-describing. The disk-fallback resolver reads this to
+    // disambiguate ghost matches when two files share an 8-char suffix.
+    hdu.insert("DOC_ID", doc_id);
     Fits::create(&tmp_path, hdu)
         .map_err(|e| RpError::Imaging(format!("failed to create FITS file: {}", e)))?;
 
@@ -155,6 +174,37 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)>
     }
 }
 
+/// Read the `DOC_ID` keyword from a FITS file's primary HDU.
+///
+/// Returns `Ok(Some(uuid))` when the header is present and is a character
+/// string, `Ok(None)` when the header is absent (e.g. files written before
+/// Phase 7 landed). Surface I/O and FITS-parse failures as `Err`.
+///
+/// Used by the disk-fallback resolution path to disambiguate ghost matches
+/// when multiple files in the data directory share an 8-char filename suffix.
+/// Sync (no `tokio::task::spawn_blocking`) — callers wrap as needed.
+pub fn read_fits_doc_id<P: AsRef<Path>>(path: P) -> Result<Option<String>> {
+    let path = path.as_ref();
+    let fits = Fits::open(path).map_err(|e| {
+        RpError::Imaging(format!(
+            "failed to open FITS file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let primary = fits
+        .into_iter()
+        .next()
+        .ok_or_else(|| RpError::Imaging("FITS file has no HDUs".to_string()))?;
+    match primary.value("DOC_ID") {
+        Some(HeaderValue::CharacterString(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(RpError::Imaging(
+            "DOC_ID header has non-string value".to_string(),
+        )),
+        None => Ok(None),
+    }
+}
+
 fn dims_from_shape(shape: &[usize]) -> Result<(u32, u32)> {
     match shape {
         [w, h] => Ok((*w as u32, *h as u32)),
@@ -177,7 +227,7 @@ mod tests {
         let path = dir.path().join("test.fits");
 
         let pixels = vec![100, 200, 300, 400];
-        write_fits(&path, &pixels, 2, 2).await.unwrap();
+        write_fits(&path, &pixels, 2, 2, "test-doc").await.unwrap();
 
         assert!(path.exists());
 
@@ -192,7 +242,9 @@ mod tests {
         let path = dir.path().join("bad.fits");
 
         let pixels = vec![1, 2, 3, 4];
-        let err = write_fits(&path, &pixels, 2, 3).await.unwrap_err();
+        let err = write_fits(&path, &pixels, 2, 3, "test-doc")
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("does not match dimensions"),
             "unexpected error: {}",
@@ -211,12 +263,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn doc_id_round_trips_through_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+        let doc_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        write_fits(&path, &[1, 2, 3, 4], 2, 2, doc_id)
+            .await
+            .unwrap();
+
+        let read_back = read_fits_doc_id(&path).unwrap();
+        assert_eq!(read_back.as_deref(), Some(doc_id));
+    }
+
+    #[test]
+    fn read_fits_doc_id_nonexistent() {
+        let err = read_fits_doc_id("/nonexistent/path.fits").unwrap_err();
+        assert!(
+            err.to_string().contains("failed to open FITS"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn read_fits_doc_id_returns_none_when_header_absent() {
+        // Files written before Phase 7 lacked DOC_ID. Bypass `write_fits`
+        // and emit a raw fitrs HDU without the keyword to simulate them.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.fits");
+        let hdu = fitrs::Hdu::new(&[2usize, 2usize], vec![1i32, 2, 3, 4]);
+        fitrs::Fits::create(&path, hdu).unwrap();
+
+        let read_back = read_fits_doc_id(&path).unwrap();
+        assert!(
+            read_back.is_none(),
+            "expected None for FITS without DOC_ID, got {:?}",
+            read_back
+        );
+    }
+
+    #[tokio::test]
     async fn write_fits_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("dir").join("image.fits");
 
         let pixels = vec![42];
-        write_fits(&path, &pixels, 1, 1).await.unwrap();
+        write_fits(&path, &pixels, 1, 1, "test-doc").await.unwrap();
 
         assert!(path.exists());
     }
@@ -265,8 +358,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
-        write_fits(&path, &[10, 20, 30, 40], 2, 2).await.unwrap();
+        write_fits(&path, &[1, 2, 3, 4], 2, 2, "test-doc")
+            .await
+            .unwrap();
+        write_fits(&path, &[10, 20, 30, 40], 2, 2, "test-doc")
+            .await
+            .unwrap();
 
         let (pixels, w, h) = read_fits_pixels(&path).unwrap();
         assert_eq!(pixels, vec![10, 20, 30, 40]);
@@ -278,7 +375,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
+        write_fits(&path, &[1, 2, 3, 4], 2, 2, "test-doc")
+            .await
+            .unwrap();
 
         assert_eq!(
             entry_names(dir.path()),
@@ -296,7 +395,9 @@ mod tests {
         let path = dir.path().join("img.fits");
         std::fs::create_dir(&path).unwrap();
 
-        let err = write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap_err();
+        let err = write_fits(&path, &[1, 2, 3, 4], 2, 2, "test-doc")
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("failed to persist FITS file"),
             "unexpected error: {}",
@@ -325,14 +426,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
+        write_fits(&path, &[1, 2, 3, 4], 2, 2, "test-doc")
+            .await
+            .unwrap();
 
         let original_perms = std::fs::metadata(dir.path()).unwrap().permissions();
         let mut readonly = original_perms.clone();
         readonly.set_mode(0o555);
         std::fs::set_permissions(dir.path(), readonly).unwrap();
 
-        let err = write_fits(&path, &[9, 9, 9, 9], 2, 2).await.unwrap_err();
+        let err = write_fits(&path, &[9, 9, 9, 9], 2, 2, "test-doc")
+            .await
+            .unwrap_err();
 
         // Restore so tempdir can clean up regardless of assertion outcomes.
         std::fs::set_permissions(dir.path(), original_perms).unwrap();
