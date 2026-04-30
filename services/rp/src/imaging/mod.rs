@@ -24,4 +24,6 @@ pub use analysis::snr::{compute_snr, per_star_snr, SnrResult};
 pub use analysis::stars::{detect_stars, DetectionParams, Star};
 pub use analysis::stats::{compute_stats, ImageStats};
 pub use tools::measure_basic::{measure_basic, MeasureBasicResult};
-pub use tools::measure_stars::{measure_stars, MeasureStarsResult, StarMeasurement};
+pub use tools::measure_stars::{
+    measure_stars, MeasureStarsResult, StarMeasurement, DEFAULT_STAMP_HALF_SIZE,
+};

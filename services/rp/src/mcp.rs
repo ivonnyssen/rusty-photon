@@ -175,7 +175,7 @@ pub struct MeasureStarsParams {
 }
 
 fn default_stamp_half_size() -> usize {
-    imaging::tools::measure_stars::DEFAULT_STAMP_HALF_SIZE
+    imaging::DEFAULT_STAMP_HALF_SIZE
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
