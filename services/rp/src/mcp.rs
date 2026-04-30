@@ -670,10 +670,9 @@ impl McpHandler {
         // `max_adu` field, which makes the sidecar self-describing for
         // downstream rehydration (Phase 7) and archival lineage. A
         // transient Alpaca failure here is localized to this capture —
-        // the next capture re-reads independently. On failure we skip
-        // the cache insert and persist `max_adu: None` on the document;
-        // the FITS file on disk plus the sidecar remain the durable
-        // record.
+        // the next capture re-reads independently. On failure we persist
+        // `max_adu: None` on the document and skip the cache insert; the
+        // FITS file on disk plus the sidecar remain the durable record.
         let captured_max_adu: Option<u32> = match cam.max_adu().await {
             Ok(v) => Some(v),
             Err(e) => {
@@ -682,50 +681,12 @@ impl McpHandler {
             }
         };
 
-        if let Some(max_adu) = captured_max_adu {
-            let shape = (width as usize, height as usize);
-            let cached_pixels = if max_adu <= u16::MAX as u32 {
-                // Clamp to [0, max_adu] before narrowing — `as u16` would
-                // otherwise wrap silently on negative or > 65535 values
-                // from a buggy driver or unexpected pixel format. The
-                // image-cache contract is "pixels in the camera's
-                // declared range," so clamping is the correct policy
-                // (vs. erroring and skipping the insert).
-                let max_cached = max_adu as i32;
-                let narrowed: Vec<u16> = pixels
-                    .iter()
-                    .map(|&p| p.clamp(0, max_cached) as u16)
-                    .collect();
-                match ndarray::Array2::from_shape_vec(shape, narrowed) {
-                    Ok(arr) => Some(CachedPixels::U16(arr)),
-                    Err(e) => {
-                        debug!(error = %e, "cache: shape mismatch, skipping insert");
-                        None
-                    }
-                }
-            } else {
-                match ndarray::Array2::from_shape_vec(shape, pixels.clone()) {
-                    Ok(arr) => Some(CachedPixels::I32(arr)),
-                    Err(e) => {
-                        debug!(error = %e, "cache: shape mismatch, skipping insert");
-                        None
-                    }
-                }
-            };
-            if let Some(cp) = cached_pixels {
-                self.image_cache.insert(
-                    document_id.clone(),
-                    CachedImage {
-                        pixels: cp,
-                        width,
-                        height,
-                        fits_path: std::path::PathBuf::from(&image_path),
-                        max_adu,
-                    },
-                );
-            }
-        }
-
+        // Persist the document FIRST. The cache insert is gated on
+        // document persistence success so the `/pixels` route cannot
+        // serve content for a `document_id` that the rest of the API
+        // (`/documents`, `/images`) returns 404 for. If the sidecar
+        // write fails the FITS file is still on disk; operators can
+        // recover by reading it directly.
         let doc = ExposureDocument {
             id: document_id.clone(),
             captured_at: chrono::Utc::now().to_rfc3339(),
@@ -737,21 +698,67 @@ impl McpHandler {
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
-        if let Err(e) = self.documents.create(doc).await {
-            debug!(error = %e, "document store: create failed, continuing without persistence");
-            // The FITS file is on disk and the cache holds the pixels, but the
-            // sidecar (and therefore the in-memory document) is missing. Tools
-            // keyed by document_id will hit on cache and miss after eviction.
-            // Emit so operators / orchestrators can react before the failure
-            // surfaces as a confusing "document not found" downstream.
-            self.event_bus.emit(
-                "document_persistence_failed",
-                serde_json::json!({
-                    "document_id": document_id,
-                    "file_path": image_path,
-                    "error": e.to_string(),
-                }),
-            );
+        let document_persisted = match self.documents.create(doc).await {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(error = %e, "document store: create failed, skipping cache insert");
+                self.event_bus.emit(
+                    "document_persistence_failed",
+                    serde_json::json!({
+                        "document_id": document_id,
+                        "file_path": image_path,
+                        "error": e.to_string(),
+                    }),
+                );
+                false
+            }
+        };
+
+        if document_persisted {
+            if let Some(max_adu) = captured_max_adu {
+                let shape = (width as usize, height as usize);
+                let cached_pixels = if max_adu <= u16::MAX as u32 {
+                    // Clamp to [0, max_adu] before narrowing — `as u16`
+                    // would otherwise wrap silently on negative or
+                    // > 65535 values from a buggy driver or unexpected
+                    // pixel format. The image-cache contract is "pixels
+                    // in the camera's declared range," so clamping is
+                    // the correct policy (vs. erroring and skipping
+                    // the insert).
+                    let max_cached = max_adu as i32;
+                    let narrowed: Vec<u16> = pixels
+                        .iter()
+                        .map(|&p| p.clamp(0, max_cached) as u16)
+                        .collect();
+                    match ndarray::Array2::from_shape_vec(shape, narrowed) {
+                        Ok(arr) => Some(CachedPixels::U16(arr)),
+                        Err(e) => {
+                            debug!(error = %e, "cache: shape mismatch, skipping insert");
+                            None
+                        }
+                    }
+                } else {
+                    match ndarray::Array2::from_shape_vec(shape, pixels.clone()) {
+                        Ok(arr) => Some(CachedPixels::I32(arr)),
+                        Err(e) => {
+                            debug!(error = %e, "cache: shape mismatch, skipping insert");
+                            None
+                        }
+                    }
+                };
+                if let Some(cp) = cached_pixels {
+                    self.image_cache.insert(
+                        document_id.clone(),
+                        CachedImage {
+                            pixels: cp,
+                            width,
+                            height,
+                            fits_path: std::path::PathBuf::from(&image_path),
+                            max_adu,
+                        },
+                    );
+                }
+            }
         }
 
         self.event_bus.emit(
@@ -2068,13 +2075,19 @@ mod tests {
     async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
         // Drives the scientific-camera (I32) cache-insert branch in
         // `capture` — exercised by no other test, since OmniSim and the
-        // default MockCamera both report max_adu ≤ 65535.
+        // default MockCamera both report max_adu ≤ 65535. Also pins the
+        // post-reorder invariant: capture-success leaves an entry in
+        // BOTH the image cache AND the document store, with consistent
+        // `max_adu`. The reorder makes the inverse impossible by
+        // construction (a cache entry without a matching document) —
+        // see the `/pixels` route's reliance on this invariant.
         let cam = MockCamera {
             max_adu_value: 1 << 20,
             ..Default::default()
         };
         let temp = tempfile::tempdir().unwrap();
         let cache = ImageCache::new(64, 4);
+        let documents = DocumentStore::new();
         let handler = McpHandler::new(
             Arc::new(camera_registry(Arc::new(cam))),
             Arc::new(crate::events::EventBus::from_config(&[])),
@@ -2082,7 +2095,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
-            DocumentStore::new(),
+            documents.clone(),
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -2106,6 +2119,11 @@ mod tests {
             matches!(cached.pixels, CachedPixels::I32(_)),
             "expected I32 variant for max_adu > u16::MAX"
         );
+        let doc = documents
+            .get(doc_id)
+            .await
+            .expect("expected document store to have the doc");
+        assert_eq!(doc.max_adu, Some(1 << 20));
     }
 
     // -----------------------------------------------------------------------

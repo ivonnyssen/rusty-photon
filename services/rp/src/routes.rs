@@ -136,7 +136,7 @@ async fn get_image_metadata(
     match state.documents.get(&document_id).await {
         Some(doc) => {
             let bitpix = match cached.as_ref() {
-                Some(c) => match c.pixels {
+                Some(c) => match &c.pixels {
                     CachedPixels::U16(_) => 16,
                     CachedPixels::I32(_) => 32,
                 },
