@@ -52,8 +52,36 @@ pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
     println!("bound_addr={local}");
     tracing::info!(address = %local, "sky-survey-camera serving");
 
+    // Graceful shutdown on Ctrl+C / SIGTERM. Required so coverage
+    // profraw files flush when bdd-infra's ServiceHandle sends
+    // SIGTERM at the end of each scenario.
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::debug!("received Ctrl+C"),
+        () = terminate => tracing::debug!("received SIGTERM"),
+    }
 }

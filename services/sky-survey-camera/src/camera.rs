@@ -202,7 +202,7 @@ async fn run_exposure_inner(
     })
 }
 
-fn crop_subframe(
+pub(crate) fn crop_subframe(
     src: &[i32],
     src_w: u32,
     src_h: u32,
@@ -587,5 +587,85 @@ impl Camera for SkySurveyCamera {
         )
         .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?;
         Ok(ImageArray::from(array))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DeviceConfig, OpticsConfig, PointingConfig, ServerConfig, SurveyConfig};
+
+    fn fake_config() -> Config {
+        Config {
+            device: DeviceConfig {
+                name: "Test".into(),
+                unique_id: "uid-001".into(),
+                description: "test".into(),
+            },
+            optics: OpticsConfig {
+                focal_length_mm: 1000.0,
+                pixel_size_x_um: 3.76,
+                pixel_size_y_um: 3.76,
+                sensor_width_px: 640,
+                sensor_height_px: 480,
+            },
+            pointing: PointingConfig {
+                initial_ra_deg: 0.0,
+                initial_dec_deg: 0.0,
+                initial_rotation_deg: 0.0,
+            },
+            survey: SurveyConfig {
+                name: "DSS2 Red".into(),
+                request_timeout: Duration::from_secs(5),
+                cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
+                endpoint: "http://placeholder/".into(),
+            },
+            server: ServerConfig {
+                port: 0,
+                device_number: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn build_full_sensor_request_uses_full_sensor_fov() {
+        let cfg = fake_config();
+        let pointing = PointingState::new(10.0, 20.0, 0.0);
+        let req = build_full_sensor_request(&cfg, pointing, 1, 1);
+        assert_eq!(req.pixels_x, 640);
+        assert_eq!(req.pixels_y, 480);
+        assert!(req.size_x_deg > 0.1 && req.size_x_deg < 1.0);
+    }
+
+    #[test]
+    fn build_full_sensor_request_halves_pixels_when_binned() {
+        let cfg = fake_config();
+        let pointing = PointingState::new(0.0, 0.0, 0.0);
+        let req = build_full_sensor_request(&cfg, pointing, 2, 2);
+        assert_eq!(req.pixels_x, 320);
+        assert_eq!(req.pixels_y, 240);
+    }
+
+    #[test]
+    fn crop_subframe_full_frame_is_passthrough() {
+        let src: Vec<i32> = (0..12).collect();
+        let out = crop_subframe(&src, 4, 3, 0, 0, 4, 3).unwrap();
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn crop_subframe_central_window() {
+        // 4x3 source = [[0,1,2,3],[4,5,6,7],[8,9,10,11]]
+        // Crop StartX=1, StartY=1, NumX=2, NumY=2 → [[5,6],[9,10]]
+        let src: Vec<i32> = (0..12).collect();
+        let out = crop_subframe(&src, 4, 3, 1, 1, 2, 2).unwrap();
+        assert_eq!(out, vec![5, 6, 9, 10]);
+    }
+
+    #[test]
+    fn crop_subframe_rejects_out_of_bounds() {
+        let src: Vec<i32> = vec![0; 12];
+        crop_subframe(&src, 4, 3, 3, 0, 2, 1).unwrap_err();
+        crop_subframe(&src, 4, 3, 0, 2, 1, 2).unwrap_err();
     }
 }

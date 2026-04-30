@@ -259,4 +259,125 @@ mod tests {
         let bytes = b"not a fits file at all -- random bytes here".repeat(100);
         parse_primary_hdu(&bytes).unwrap_err();
     }
+
+    fn build_fits_with_data(width: u32, height: u32, bitpix: i32, data: Vec<u8>) -> Vec<u8> {
+        let mut header = String::new();
+        let push = |h: &mut String, line: String| {
+            let mut padded = format!("{line:<80}");
+            padded.truncate(80);
+            h.push_str(&padded);
+        };
+        push(&mut header, "SIMPLE  =                    T".to_string());
+        push(&mut header, format!("BITPIX  = {bitpix:>20}"));
+        push(&mut header, "NAXIS   =                    2".to_string());
+        push(&mut header, format!("NAXIS1  = {width:>20}"));
+        push(&mut header, format!("NAXIS2  = {height:>20}"));
+        push(&mut header, "END".to_string());
+        while !header.len().is_multiple_of(2880) {
+            header.push(' ');
+        }
+        let mut bytes = header.into_bytes();
+        bytes.extend(data);
+        while !bytes.len().is_multiple_of(2880) {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn parses_bitpix32_signed_values() {
+        // Two pixels: 7 and -3 in big-endian i32.
+        let mut data = Vec::new();
+        data.extend_from_slice(&7i32.to_be_bytes());
+        data.extend_from_slice(&(-3i32).to_be_bytes());
+        let bytes = build_fits_with_data(2, 1, 32, data);
+        let img = parse_primary_hdu(&bytes).unwrap();
+        assert_eq!(img.data, vec![7, -3]);
+    }
+
+    #[test]
+    fn parses_bitpix_neg32_float_values() {
+        // Two pixels: 1.5 and -2.25 in big-endian f32.
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.5f32.to_be_bytes());
+        data.extend_from_slice(&(-2.25f32).to_be_bytes());
+        let bytes = build_fits_with_data(2, 1, -32, data);
+        let img = parse_primary_hdu(&bytes).unwrap();
+        // f32 → i32 saturating cast; small positive/negative values
+        // round towards zero.
+        assert_eq!(img.data, vec![1, -2]);
+    }
+
+    #[test]
+    fn parses_bitpix_neg64_double_values() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&100.5f64.to_be_bytes());
+        data.extend_from_slice(&(-50.25f64).to_be_bytes());
+        let bytes = build_fits_with_data(2, 1, -64, data);
+        let img = parse_primary_hdu(&bytes).unwrap();
+        assert_eq!(img.data, vec![100, -50]);
+    }
+
+    #[test]
+    fn rejects_naxis_other_than_2() {
+        let mut header = String::new();
+        let push = |h: &mut String, line: String| {
+            let mut padded = format!("{line:<80}");
+            padded.truncate(80);
+            h.push_str(&padded);
+        };
+        push(&mut header, "SIMPLE  =                    T".to_string());
+        push(&mut header, "BITPIX  =                   32".to_string());
+        push(&mut header, "NAXIS   =                    3".to_string());
+        push(&mut header, "NAXIS1  =                    1".to_string());
+        push(&mut header, "NAXIS2  =                    1".to_string());
+        push(&mut header, "NAXIS3  =                    1".to_string());
+        push(&mut header, "END".to_string());
+        while !header.len().is_multiple_of(2880) {
+            header.push(' ');
+        }
+        let mut bytes = header.into_bytes();
+        bytes.extend(vec![0u8; 2880]);
+        match parse_primary_hdu(&bytes).unwrap_err() {
+            FitsError::UnsupportedValue("NAXIS", _) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_bitpix() {
+        let mut header = String::new();
+        let push = |h: &mut String, line: String| {
+            let mut padded = format!("{line:<80}");
+            padded.truncate(80);
+            h.push_str(&padded);
+        };
+        push(&mut header, "SIMPLE  =                    T".to_string());
+        push(&mut header, "BITPIX  =                   24".to_string());
+        push(&mut header, "NAXIS   =                    2".to_string());
+        push(&mut header, "NAXIS1  =                    1".to_string());
+        push(&mut header, "NAXIS2  =                    1".to_string());
+        push(&mut header, "END".to_string());
+        while !header.len().is_multiple_of(2880) {
+            header.push(' ');
+        }
+        let mut bytes = header.into_bytes();
+        bytes.extend(vec![0u8; 2880]);
+        match parse_primary_hdu(&bytes).unwrap_err() {
+            FitsError::UnsupportedValue("BITPIX", _) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scale_handles_extremes() {
+        // Saturation: a value that overflows i32 from the upper side.
+        assert_eq!(scale(1.0e20, 1.0, 0.0), i32::MAX);
+        // Saturation: lower side.
+        assert_eq!(scale(-1.0e20, 1.0, 0.0), i32::MIN);
+        // NaN folds to zero.
+        assert_eq!(scale(f64::NAN, 1.0, 0.0), 0);
+        // BSCALE / BZERO are applied.
+        assert_eq!(scale(10.0, 2.0, 5.0), 25);
+    }
 }
