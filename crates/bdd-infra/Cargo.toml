@@ -17,6 +17,7 @@ default = []
 # services whose tests only need `ServiceHandle` don't compile axum/reqwest/rmcp.
 rp-harness = [
     "dep:axum",
+    "dep:humantime",
     "dep:reqwest",
     "dep:rmcp",
     "dep:serde_json",
@@ -29,6 +30,7 @@ tracing = { workspace = true }
 
 # Optional — only pulled in when the rp-harness feature is enabled.
 axum = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rmcp = { workspace = true, optional = true, features = [
     "client",

@@ -41,7 +41,7 @@ pub struct CalibratorFlatsWorld {
 
     // --- Webhook state ---
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    pub webhook_ack_config: Option<(u64, u64)>,
+    pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- Flat calibration plan ---
     /// Filter name → count for the calibrator-flats service config.

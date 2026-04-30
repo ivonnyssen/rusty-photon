@@ -80,8 +80,8 @@ The plugin acknowledges with timing estimates:
 
 ```json
 {
-  "estimated_duration_secs": 300,
-  "max_duration_secs": 600
+  "estimated_duration": "5m",
+  "max_duration": "10m"
 }
 ```
 

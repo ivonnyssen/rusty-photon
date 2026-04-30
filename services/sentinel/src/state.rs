@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -18,7 +18,8 @@ pub struct MonitorStatus {
     pub last_poll_epoch_ms: u64,
     pub last_change_epoch_ms: Option<u64>,
     pub consecutive_errors: u32,
-    pub polling_interval_ms: u64,
+    #[serde(with = "humantime_serde")]
+    pub polling_interval: Duration,
 }
 
 /// Shared state accessible by engine and dashboard
@@ -31,16 +32,16 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    pub fn new(monitors_with_intervals: Vec<(String, u64)>, history_max_size: usize) -> Self {
+    pub fn new(monitors_with_intervals: Vec<(String, Duration)>, history_max_size: usize) -> Self {
         let monitors = monitors_with_intervals
             .into_iter()
-            .map(|(name, polling_interval_ms)| MonitorStatus {
+            .map(|(name, polling_interval)| MonitorStatus {
                 name,
                 state: MonitorState::Unknown,
                 last_poll_epoch_ms: 0,
                 last_change_epoch_ms: None,
                 consecutive_errors: 0,
-                polling_interval_ms,
+                polling_interval,
             })
             .collect();
 
@@ -102,7 +103,7 @@ impl SharedState {
 pub type StateHandle = Arc<RwLock<SharedState>>;
 
 pub fn new_state_handle(
-    monitors_with_intervals: Vec<(String, u64)>,
+    monitors_with_intervals: Vec<(String, Duration)>,
     history_max_size: usize,
 ) -> StateHandle {
     Arc::new(RwLock::new(SharedState::new(
@@ -119,19 +120,22 @@ mod tests {
     #[test]
     fn new_state_has_unknown_monitors() {
         let state = SharedState::new(
-            vec![("m1".to_string(), 30000), ("m2".to_string(), 60000)],
+            vec![
+                ("m1".to_string(), Duration::from_secs(30)),
+                ("m2".to_string(), Duration::from_secs(60)),
+            ],
             10,
         );
         assert_eq!(state.monitors.len(), 2);
         assert_eq!(state.monitors[0].state, MonitorState::Unknown);
-        assert_eq!(state.monitors[0].polling_interval_ms, 30000);
+        assert_eq!(state.monitors[0].polling_interval, Duration::from_secs(30));
         assert_eq!(state.monitors[1].state, MonitorState::Unknown);
-        assert_eq!(state.monitors[1].polling_interval_ms, 60000);
+        assert_eq!(state.monitors[1].polling_interval, Duration::from_secs(60));
     }
 
     #[test]
     fn update_monitor_returns_true_on_change() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         let changed = state.update_monitor("m1", MonitorState::Safe, 1000);
         assert!(changed);
         assert_eq!(state.monitors[0].state, MonitorState::Safe);
@@ -140,7 +144,7 @@ mod tests {
 
     #[test]
     fn update_monitor_returns_false_on_same_state() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Safe, 1000);
         let changed = state.update_monitor("m1", MonitorState::Safe, 2000);
         assert!(!changed);
@@ -150,7 +154,7 @@ mod tests {
 
     #[test]
     fn update_unknown_increments_error_count() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         assert_eq!(state.monitors[0].consecutive_errors, 1);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
@@ -159,7 +163,7 @@ mod tests {
 
     #[test]
     fn update_resets_error_count_on_recovery() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
         assert_eq!(state.monitors[0].consecutive_errors, 2);
@@ -169,7 +173,7 @@ mod tests {
 
     #[test]
     fn update_unknown_monitor_returns_false() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         let changed = state.update_monitor("nonexistent", MonitorState::Safe, 1000);
         assert!(!changed);
     }
@@ -194,7 +198,7 @@ mod tests {
 
     #[test]
     fn get_monitor_state() {
-        let mut state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Unknown));
         state.update_monitor("m1", MonitorState::Safe, 1000);
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Safe));
@@ -203,7 +207,7 @@ mod tests {
 
     #[test]
     fn get_consecutive_errors_for_unknown_monitor_returns_zero() {
-        let state = SharedState::new(vec![("m1".to_string(), 30000)], 10);
+        let state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         assert_eq!(state.get_monitor_consecutive_errors("nonexistent"), 0);
     }
 }

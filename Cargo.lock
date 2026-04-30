@@ -370,6 +370,7 @@ name = "bdd-infra"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "humantime",
  "libc",
  "reqwest 0.13.2",
  "rmcp",
@@ -2827,6 +2828,7 @@ dependencies = [
  "cargo-husky",
  "clap",
  "fitrs",
+ "humantime",
  "humantime-serde",
  "mockall",
  "serde",
