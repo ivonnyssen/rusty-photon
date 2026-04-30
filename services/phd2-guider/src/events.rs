@@ -6,19 +6,16 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::Phd2Error;
 
-/// Deserialize a non-negative `f64` of seconds (the PHD2 wire format) into a
-/// [`Duration`]. Negative or non-finite values are rejected.
+/// Deserialize an `f64` of seconds (the PHD2 wire format) into a [`Duration`].
+/// `try_from_secs_f64` rejects NaN, infinity, negative, and out-of-range
+/// values — all surfaced as a serde error rather than a panic.
 fn duration_from_secs_f64<'de, D>(de: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {
     let secs = f64::deserialize(de)?;
-    if !secs.is_finite() || secs < 0.0 {
-        return Err(serde::de::Error::custom(format!(
-            "expected non-negative finite seconds, got {secs}"
-        )));
-    }
-    Ok(Duration::from_secs_f64(secs))
+    Duration::try_from_secs_f64(secs)
+        .map_err(|e| serde::de::Error::custom(format!("invalid seconds {secs}: {e}")))
 }
 
 /// PHD2 application state
@@ -411,6 +408,28 @@ mod tests {
             }
             _ => panic!("Expected GuidingDithered event"),
         }
+    }
+
+    #[test]
+    fn test_settling_event_negative_time_is_serde_error() {
+        let json = r#"{"Event":"Settling","Distance":1.2,"Time":-1.0,"SettleTime":10.0,"StarLocked":true}"#;
+        let err = serde_json::from_str::<Phd2Event>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid seconds"),
+            "expected boundary error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_settling_event_overflow_time_is_serde_error() {
+        // 1e308 seconds is far beyond Duration::MAX. Without try_from_secs_f64
+        // this would panic; the deserializer must surface a serde error.
+        let json = r#"{"Event":"Settling","Distance":1.2,"Time":1e308,"SettleTime":10.0,"StarLocked":true}"#;
+        let err = serde_json::from_str::<Phd2Event>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid seconds"),
+            "expected boundary error, got: {err}"
+        );
     }
 
     #[test]

@@ -1,11 +1,25 @@
 //! Web dashboard with JSON API endpoints (hand-rolled HTML + JS polling)
 
+use std::time::Duration;
+
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
 
 use crate::state::StateHandle;
+
+/// Flatten a `Duration` to integer milliseconds for the dashboard JS, which
+/// does `new Date(last_poll_epoch_ms + polling_interval_ms)` arithmetic.
+/// Rounds non-zero sub-millisecond durations up to `1` (so a configured
+/// `500us` interval doesn't silently collapse to `0`) and saturates the
+/// `u128 → u64` cast (a 584-million-year interval is beyond the
+/// representable range — saturate rather than wrap).
+fn duration_to_ms_for_js(d: Duration) -> u64 {
+    let ms = d.as_millis();
+    let rounded = if ms == 0 && !d.is_zero() { 1 } else { ms };
+    u64::try_from(rounded).unwrap_or(u64::MAX)
+}
 
 /// Dashboard application state
 #[derive(Clone)]
@@ -50,7 +64,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
             } else {
                 format!(
                     r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
-                    m.last_poll_epoch_ms + m.polling_interval.as_millis() as u64
+                    m.last_poll_epoch_ms + duration_to_ms_for_js(m.polling_interval)
                 )
             };
             format!(
@@ -192,7 +206,7 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
                 // Integer ms on the wire — the dashboard JS does
                 // `new Date(last_poll_epoch_ms + polling_interval_ms)` arithmetic.
                 // Internally the field is a `Duration`; flatten only at this boundary.
-                "polling_interval_ms": m.polling_interval.as_millis() as u64,
+                "polling_interval_ms": duration_to_ms_for_js(m.polling_interval),
             })
         })
         .collect();
@@ -236,6 +250,29 @@ mod tests {
     use crate::monitor::MonitorState;
     use crate::notifier::NotificationRecord;
     use crate::state::new_state_handle;
+
+    #[test]
+    fn duration_to_ms_zero_stays_zero() {
+        assert_eq!(duration_to_ms_for_js(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn duration_to_ms_sub_millisecond_rounds_up_to_one() {
+        assert_eq!(duration_to_ms_for_js(Duration::from_micros(500)), 1);
+        assert_eq!(duration_to_ms_for_js(Duration::from_nanos(1)), 1);
+    }
+
+    #[test]
+    fn duration_to_ms_normal_millis_unchanged() {
+        assert_eq!(duration_to_ms_for_js(Duration::from_millis(30_000)), 30_000);
+        assert_eq!(duration_to_ms_for_js(Duration::from_secs(60)), 60_000);
+    }
+
+    #[test]
+    fn duration_to_ms_saturates_on_overflow() {
+        // Duration::MAX is ~5.85e11 years — far beyond u64 ms (~5.85e8 years).
+        assert_eq!(duration_to_ms_for_js(Duration::MAX), u64::MAX);
+    }
 
     fn setup_state() -> StateHandle {
         new_state_handle(

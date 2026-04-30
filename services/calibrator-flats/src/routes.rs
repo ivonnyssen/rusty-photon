@@ -73,13 +73,18 @@ async fn invoke_handler(
         }
     });
 
-    // Acknowledge with timing estimate
+    // Acknowledge with timing estimate. Saturating arithmetic so a pathological
+    // config (e.g. `initial_duration: "1000d"` × thousands of frames) cannot
+    // crash the service while building the ack.
     let total_frames: u32 = plan.filters.iter().map(|f| f.count).sum();
-    let estimated = plan.initial_duration * total_frames + std::time::Duration::from_secs(60); // margin for iterations
+    let estimated = plan
+        .initial_duration
+        .saturating_mul(total_frames)
+        .saturating_add(std::time::Duration::from_secs(60));
 
     let ack = serde_json::json!({
         "estimated_duration": humantime::format_duration(estimated).to_string(),
-        "max_duration": humantime::format_duration(estimated * 2).to_string(),
+        "max_duration": humantime::format_duration(estimated.saturating_mul(2)).to_string(),
     });
 
     (StatusCode::OK, Json(ack))
