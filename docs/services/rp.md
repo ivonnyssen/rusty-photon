@@ -245,6 +245,7 @@ The application does not know or care what subscribers do with events.
 | `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
 | `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration_secs` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
+| `document_persistence_failed` | document_id, file_path, error | Sidecar write failed after capture; FITS is on disk and pixels are cached, but the in-memory document is missing and `document_id`-keyed tool calls will fail after cache eviction |
 
 ### Delivery: Webhooks
 

@@ -732,6 +732,19 @@ impl McpHandler {
         };
         if let Err(e) = self.documents.create(doc).await {
             debug!(error = %e, "document store: create failed, continuing without persistence");
+            // The FITS file is on disk and the cache holds the pixels, but the
+            // sidecar (and therefore the in-memory document) is missing. Tools
+            // keyed by document_id will hit on cache and miss after eviction.
+            // Emit so operators / orchestrators can react before the failure
+            // surfaces as a confusing "document not found" downstream.
+            self.event_bus.emit(
+                "document_persistence_failed",
+                serde_json::json!({
+                    "document_id": document_id,
+                    "file_path": image_path,
+                    "error": e.to_string(),
+                }),
+            );
         }
 
         self.event_bus.emit(
