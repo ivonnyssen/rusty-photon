@@ -288,7 +288,7 @@ The application does not know or care what subscribers do with events.
 | `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
 | `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration_secs` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
-| `document_persistence_failed` | document_id, file_path, error | Sidecar write failed after capture; FITS is on disk and pixels are cached, but the in-memory document is missing and `document_id`-keyed tool calls will fail after cache eviction |
+| `document_persistence_failed` | document_id, file_path, error | Sidecar write failed during capture. The FITS file is on disk but the cache is not populated and no sidecar exists; `document_id`-keyed lookups return 404 (disk fallback requires the sidecar). Recover by reading the FITS via `file_path` from the payload. See [Capture Tool Details](#capture-tool-details). |
 
 ### Delivery: Webhooks
 
@@ -699,6 +699,20 @@ that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
+
+**Sidecar failure contract.** If the sidecar write fails after a
+successful FITS write, `capture` still returns success with
+`image_path` and `document_id` — the FITS file remains on disk and is
+the durable record. The cache insert is gated on sidecar success, so
+no in-memory entry is created; the disk-fallback resolver also cannot
+rehydrate (it requires the sidecar to recover `max_adu` and other
+document fields), so subsequent `document_id`-keyed lookups
+(`/api/documents/{id}`, `/api/images/{id}`, `/pixels`, image-analysis
+tools called with `document_id`) return 404. `rp` emits a
+`document_persistence_failed` event carrying `document_id`,
+`file_path`, and the error. Subscribers and operators recover by
+reading the FITS directly via `file_path` (e.g. image-analysis tools
+called with `image_path` instead of `document_id`).
 
 #### CoverCalibrator Tool Details
 

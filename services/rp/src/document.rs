@@ -254,6 +254,53 @@ mod tests {
     }
 
     #[test]
+    fn read_sidecar_sync_errors_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist.json");
+        let err = read_sidecar_sync(&missing).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to read sidecar"),
+            "expected read-failure prefix, got: {msg}"
+        );
+        assert!(
+            msg.contains(missing.to_string_lossy().as_ref()),
+            "expected error to include the offending path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_sidecar_sync_errors_on_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("garbage.json");
+        std::fs::write(&bad, b"{ not valid json").unwrap();
+        let err = read_sidecar_sync(&bad).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to parse sidecar"),
+            "expected parse-failure prefix, got: {msg}"
+        );
+        assert!(
+            msg.contains(bad.to_string_lossy().as_ref()),
+            "expected error to include the offending path, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_sidecar_at_errors_when_path_has_no_parent() {
+        // `Path::new("").parent()` is `None` cross-platform — exercises the
+        // early-return guard in `write_sidecar_sync` before any filesystem
+        // call is attempted.
+        let doc = doc_with_path("doc-1", "/tmp/x.fits");
+        let err = write_sidecar_at(Path::new(""), &doc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sidecar path has no parent"),
+            "expected parent-missing message, got: {msg}"
+        );
+    }
+
+    #[test]
     fn serialization_skips_none_max_adu() {
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
         doc.max_adu = None;

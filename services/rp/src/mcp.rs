@@ -622,6 +622,67 @@ impl McpHandler {
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
     }
+
+    /// Persist the document and (on success) populate the image cache.
+    ///
+    /// Sidecar failure contract: if `write_sidecar` fails the cache insert
+    /// is skipped, a `document_persistence_failed` event is emitted, and
+    /// the function returns. The FITS file remains on disk; the
+    /// `document_id` is unreachable via cache or disk fallback (no
+    /// sidecar) until callers fall back to the FITS path directly. See
+    /// `docs/services/rp.md` → Capture Tool Details → Sidecar failure
+    /// contract.
+    async fn persist_capture_artifact(
+        &self,
+        doc: ExposureDocument,
+        pixels: Vec<i32>,
+        captured_max_adu: Option<u32>,
+    ) {
+        let document_id = doc.id.clone();
+        let image_path = doc.file_path.clone();
+        let width = doc.width;
+        let height = doc.height;
+
+        let document_persisted = match crate::document::write_sidecar(&doc).await {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(error = %e, "sidecar write failed, skipping cache insert");
+                self.event_bus.emit(
+                    "document_persistence_failed",
+                    serde_json::json!({
+                        "document_id": document_id,
+                        "file_path": image_path,
+                        "error": e.to_string(),
+                    }),
+                );
+                false
+            }
+        };
+
+        if document_persisted {
+            if let Some(max_adu) = captured_max_adu {
+                let shape = (width as usize, height as usize);
+                if let Some(cp) = CachedPixels::from_i32_pixels(pixels, shape, max_adu) {
+                    self.image_cache.insert(
+                        document_id.clone(),
+                        CachedImage::new(
+                            cp,
+                            width,
+                            height,
+                            std::path::PathBuf::from(&image_path),
+                            max_adu,
+                            doc,
+                        ),
+                    );
+                } else {
+                    debug!(
+                        document_id = %document_id,
+                        "cache: shape mismatch, skipping insert"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[tool_router(server_handler)]
@@ -703,12 +764,6 @@ impl McpHandler {
             }
         };
 
-        // Persist the document FIRST. The cache insert is gated on
-        // document persistence success so the `/pixels` route cannot
-        // serve content for a `document_id` that the rest of the API
-        // (`/documents`, `/images`) returns 404 for. If the sidecar
-        // write fails the FITS file is still on disk; operators can
-        // recover by reading it directly.
         let doc = ExposureDocument {
             id: document_id.clone(),
             captured_at: chrono::Utc::now().to_rfc3339(),
@@ -720,50 +775,8 @@ impl McpHandler {
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
-        // Persist the sidecar JSON before populating the cache. The cache
-        // insert is gated on a successful sidecar write so a `document_id`
-        // that the rest of the API can serve from disk also resolves
-        // through the cache. On sidecar failure the FITS file is still on
-        // disk; operators can recover by reading it directly.
-        let document_persisted = match crate::document::write_sidecar(&doc).await {
-            Ok(()) => true,
-            Err(e) => {
-                debug!(error = %e, "sidecar write failed, skipping cache insert");
-                self.event_bus.emit(
-                    "document_persistence_failed",
-                    serde_json::json!({
-                        "document_id": document_id,
-                        "file_path": image_path,
-                        "error": e.to_string(),
-                    }),
-                );
-                false
-            }
-        };
-
-        if document_persisted {
-            if let Some(max_adu) = captured_max_adu {
-                let shape = (width as usize, height as usize);
-                if let Some(cp) = CachedPixels::from_i32_pixels(pixels, shape, max_adu) {
-                    self.image_cache.insert(
-                        document_id.clone(),
-                        CachedImage::new(
-                            cp,
-                            width,
-                            height,
-                            std::path::PathBuf::from(&image_path),
-                            max_adu,
-                            doc.clone(),
-                        ),
-                    );
-                } else {
-                    debug!(
-                        document_id = %document_id,
-                        "cache: shape mismatch, skipping insert"
-                    );
-                }
-            }
-        }
+        self.persist_capture_artifact(doc, pixels, captured_max_adu)
+            .await;
 
         self.event_bus.emit(
             "exposure_complete",
@@ -2173,6 +2186,63 @@ mod tests {
         assert!(
             std::path::Path::new(&image_path).exists(),
             "FITS file should exist at the reported path"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // persist_capture_artifact — sidecar failure skips cache
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
+        // Pins the sidecar-failure branch in `persist_capture_artifact` (the
+        // post-FITS persistence step extracted from `capture`). Contract
+        // documented in `docs/services/rp.md` → Capture Tool Details
+        // → Sidecar failure contract: write_sidecar fails →
+        // `document_persistence_failed` event payload is constructed → cache
+        // insert is skipped → `document_id`-keyed lookups return 404.
+        //
+        // Forcing the failure: `doc.file_path` lives inside a regular file so
+        // `create_dir_all(parent)` in write_sidecar errors with NotADirectory.
+        // Same trick as the put_section rollback tests in cache.rs.
+        let temp = tempfile::tempdir().unwrap();
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let handler = McpHandler::new(
+            Arc::new(crate::equipment::EquipmentRegistry {
+                cameras: vec![],
+                filter_wheels: vec![],
+                cover_calibrators: vec![],
+            }),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: temp.path().to_string_lossy().to_string(),
+            },
+            cache.clone(),
+        );
+
+        let doc = ExposureDocument {
+            id: "doc-fail-1".to_string(),
+            captured_at: "2026-04-30T00:00:00Z".to_string(),
+            file_path: blocker.join("x.fits").to_string_lossy().into_owned(),
+            width: 2,
+            height: 2,
+            camera_id: Some("cam".into()),
+            duration: Some(Duration::from_millis(100)),
+            max_adu: Some(65535),
+            sections: serde_json::Map::new(),
+        };
+        let pixels: Vec<i32> = vec![1, 2, 3, 4];
+
+        handler
+            .persist_capture_artifact(doc, pixels, Some(65535))
+            .await;
+
+        assert!(
+            cache.get("doc-fail-1").is_none(),
+            "cache must not be populated when sidecar write fails"
         );
     }
 

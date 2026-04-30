@@ -878,6 +878,84 @@ mod tests {
         assert_eq!(image.width, 2);
     }
 
+    // ---------------------------------------------------------------
+    // put_section rollback (sidecar-write-failure path)
+    // ---------------------------------------------------------------
+
+    /// Force `write_sidecar` to fail by setting `file_path` to live inside
+    /// a regular file. `create_dir_all(parent)` then errors with
+    /// `NotADirectory` before any I/O touches disk, so the failure is
+    /// deterministic and leaves no half-written state to clean up.
+    fn unwriteable_doc(doc_id: &str, blocker: &Path) -> ExposureDocument {
+        let mut doc = dummy_document(doc_id);
+        doc.file_path = blocker.join("x.fits").to_string_lossy().into_owned();
+        doc
+    }
+
+    #[tokio::test]
+    async fn put_section_rolls_back_new_section_on_sidecar_write_failure() {
+        // prior == None branch: section did not exist before the call;
+        // on sidecar-write failure it must not exist after either.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
+        let image = CachedImage::new(
+            pixels,
+            2,
+            2,
+            PathBuf::from("/tmp/x.fits"),
+            65535,
+            unwriteable_doc("doc-1", &blocker),
+        );
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        cache.insert("doc-1".to_string(), image);
+
+        cache
+            .put_section("doc-1", "image_analysis", serde_json::json!({"hfr": 1.5}))
+            .await
+            .expect_err("sidecar write must fail for the test premise");
+
+        let entry = cache.get("doc-1").unwrap();
+        let after = entry.document.read().await;
+        assert!(
+            !after.sections.contains_key("image_analysis"),
+            "new section must be rolled back when sidecar write fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_section_restores_prior_value_on_sidecar_write_failure() {
+        // prior == Some branch: existing section value must be restored
+        // verbatim after a failed sidecar write.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        let prior = serde_json::json!({"hfr": 1.0, "marker": "prior"});
+        let mut doc = unwriteable_doc("doc-1", &blocker);
+        doc.sections
+            .insert("image_analysis".to_string(), prior.clone());
+        let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
+        let image = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        cache.insert("doc-1".to_string(), image);
+
+        cache
+            .put_section("doc-1", "image_analysis", serde_json::json!({"hfr": 9.9}))
+            .await
+            .expect_err("sidecar write must fail for the test premise");
+
+        let entry = cache.get("doc-1").unwrap();
+        let after = entry.document.read().await;
+        let stored = after
+            .sections
+            .get("image_analysis")
+            .expect("prior section must still be present");
+        assert_eq!(stored, &prior, "prior section value must be restored");
+    }
+
     #[test]
     fn matches_uuid8_suffix_handles_greenfield_and_template_forms() {
         // Greenfield: <uuid8>.fits.
