@@ -28,14 +28,14 @@ Two phases, one per surface. Each phase is independently shippable and reviewabl
 
 The 4 tests spawn `cargo run --bin filemonitor` with different argument sets (`--help`, a valid config, an invalid config, varying log levels) and assert on stdout/stderr/exit-status. This is exactly what `bdd_infra::run_once(package_name, args, stdin)` is for — it's how rp's `init-tls` and `hash-password` tests work today.
 
-- [ ] Rewrite each `Command::new("cargo").args(["run", "--", …])` call as `bdd_infra::run_once("filemonitor", &[…], None)`.
-- [ ] Pre-build filemonitor in CI before the test binary runs. The workspace build step on `ubuntu / stable` / `macos` / `windows / nextest` already does this for all packages; no CI change needed for Cargo.
-- [ ] Verify `filemonitor`'s clap parser accepts the flags the tests pass. The BDD suite uses `--config`; `test_cli.rs` uses a mix of short and long forms — add clap aliases if anything's missing.
-- [ ] Update `services/filemonitor/BUILD.bazel`:
+- [x] Rewrite each `Command::new("cargo").args(["run", "--", …])` call as `bdd_infra::run_once("filemonitor", &[…], None)`.
+- [x] Pre-build filemonitor in CI before the test binary runs. The workspace build step on `ubuntu / stable` / `macos` / `windows / nextest` already does this for all packages; no CI change needed for Cargo.
+- [x] Verify `filemonitor`'s clap parser accepts the flags the tests pass. The BDD suite uses `--config`; `test_cli.rs` uses a mix of short and long forms — add clap aliases if anything's missing.
+- [x] Update `services/filemonitor/BUILD.bazel`:
   - Drop `tags = ["requires-cargo"]` from the `test_cli` target.
   - Add `data = [":filemonitor"]` + `env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)"}` (mirroring the `bdd` target's wiring).
-  - Add `rustc_env = {"CARGO_PKG_NAME": "filemonitor"}` so `bdd_infra::run_once` derives the right env-var name under Bazel.
-- [ ] Remove the `//services/filemonitor:test_cli` bullet from `docs/plans/bazel-migration.md`'s "Known test gaps" section.
+  - `rustc_env = {"CARGO_PKG_NAME": "filemonitor"}` was unnecessary in the end — `test_cli.rs` passes the package name as a string literal, not via `env!("CARGO_PKG_NAME")`.
+- [x] Remove the `//services/filemonitor:test_cli` bullet from `docs/plans/bazel-migration.md`'s "Known test gaps" section.
 
 **Exit criteria:** `bazel test //services/filemonitor:test_cli` passes without `requires-cargo`; `cargo test -p filemonitor --test test_cli` still passes on Linux/macOS/Windows CI; no `Command::new("cargo")` remains in `test_cli.rs`.
 
@@ -60,8 +60,8 @@ run_conformu_tests(&format!("http://localhost:{}", handle.port), 0).await?;
 handle.stop().await;
 ```
 
-- [ ] Replace each manual spawn + `parse_bound_port` + `child.kill()` trio with `ServiceHandle::start` + `handle.stop()`.
-- [ ] The `-c <path>` short-form flag must survive — these binaries already use it. Either add a `--config` alias in each service's clap config (recommended, for consistency with `ServiceHandle`'s `--config` call), or have a variant of `ServiceHandle` that accepts a custom flag (not worth it for one edge case).
+- [x] Replace each manual spawn + `parse_bound_port` + `child.kill()` trio with `ServiceHandle::start` + `handle.stop()`.
+- [x] The `-c <path>` short-form flag must survive — these binaries already use it. All three services already accept `--config` long form via clap's `#[arg(short, long)]` derivation, so no clap changes were needed.
 - [ ] Verify the scheduled conformu workflow (`.github/workflows/conformu.yml`) still passes. It's the only CI surface that runs these tests (they carry `#[ignore]`).
 
 **Exit criteria:** `scheduled / conformu` workflow green on its next run; no `Command::new("cargo")` remains in any `conformu_integration.rs`; each test shrinks by ~15 lines.

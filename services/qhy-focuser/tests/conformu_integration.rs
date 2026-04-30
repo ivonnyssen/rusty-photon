@@ -7,9 +7,8 @@
 
 use ascom_alpaca::api::Focuser;
 use ascom_alpaca::test::ConformUTestBuilder;
-use std::process::Stdio;
+use bdd_infra::ServiceHandle;
 use std::sync::Mutex;
-use tokio::process::Command;
 use tracing_subscriber::{fmt, EnvFilter};
 
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
@@ -95,33 +94,18 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    let mut child = Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "qhy-focuser",
-            "--features",
-            "mock",
-            "--",
-            "-c",
-            config_path.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let (port, stdout_drain) = bdd_infra::parse_bound_port(stdout)
-        .await
-        .ok_or("Failed to parse bound port from service output")?;
+    // Pre-built qhy-focuser binary must include the `mock` feature
+    // (CI builds with --all-features); the binary is launched with the
+    // mock serial port driving /dev/mock from the config.
+    let mut handle = ServiceHandle::start("qhy-focuser", config_path.to_str().unwrap()).await;
 
     println!("::group::ConformU Focuser Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Focuser compliance tests on port {}...",
-        port
+        handle.port
     );
 
-    let result = ConformUTestBuilder::new::<dyn Focuser>(&format!("http://localhost:{}", port), 0)?
+    let result = ConformUTestBuilder::new::<dyn Focuser>(&handle.base_url, 0)?
         .settings_file(&conformu_settings_path)
         .run()
         .await;
@@ -139,9 +123,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("::endgroup::");
 
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    stdout_drain.abort();
+    handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;

@@ -2,8 +2,7 @@
 
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;
-use std::process::Stdio;
-use tokio::process::Command;
+use bdd_infra::ServiceHandle;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::test]
@@ -55,26 +54,15 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
     std::fs::write(&status_file, "SAFE")?;
 
-    // Start filemonitor service, capturing stdout to parse bound port
-    let mut child = Command::new("cargo")
-        .args(["run", "--", "-c", config_path.to_str().unwrap()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    // Parse the bound port from stdout - the server is ready once this message appears
-    // since the socket is already listening after bind()
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let (port, stdout_drain) = bdd_infra::parse_bound_port(stdout)
-        .await
-        .ok_or("Failed to parse bound port from service output")?;
+    let mut handle = ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
     println!("::group::ConformU Compliance Test Results");
-    println!("Running ASCOM Alpaca compliance tests on port {}...", port);
+    println!(
+        "Running ASCOM Alpaca compliance tests on port {}...",
+        handle.port
+    );
 
-    // Run ConformU tests and capture result
-    let result =
-        run_conformu_tests::<dyn SafetyMonitor>(&format!("http://localhost:{}", port), 0).await;
+    let result = run_conformu_tests::<dyn SafetyMonitor>(&handle.base_url, 0).await;
 
     match &result {
         Ok(_) => {
@@ -89,10 +77,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("::endgroup::");
 
-    // Cleanup - ensure process is properly terminated
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    stdout_drain.abort();
+    handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
