@@ -10,12 +10,10 @@ use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::document::ExposureDocument;
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
-use crate::imaging::{
-    self, BackgroundStats, CachedImage, CachedPixels, DetectionParams, ImageCache, Star,
-};
+use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
+use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, ImageCache};
 use crate::session::SessionConfig;
 
 // ---------------------------------------------------------------------------
@@ -177,7 +175,7 @@ pub struct MeasureStarsParams {
 }
 
 fn default_stamp_half_size() -> usize {
-    imaging::measure_stars::DEFAULT_STAMP_HALF_SIZE
+    imaging::DEFAULT_STAMP_HALF_SIZE
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -327,7 +325,7 @@ impl McpHandler {
         let min_a = params.min_area;
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
                 .map_err(|e| {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
@@ -393,7 +391,7 @@ impl McpHandler {
         let k = params.k;
         let max_iters = params.max_iters;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
                 .map_err(|e| {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
@@ -473,7 +471,7 @@ impl McpHandler {
             max_area: params.max_area,
         };
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
                 .map_err(|e| {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
@@ -564,7 +562,7 @@ impl McpHandler {
         let max_a = params.max_area;
         let stamp = params.stamp_half_size;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
                 .map_err(|e| {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
@@ -612,7 +610,7 @@ impl McpHandler {
         let min_a = params.min_area;
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = imaging::read_fits_pixels(&path_owned)?;
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
                 .map_err(|e| {
                     crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
@@ -643,7 +641,7 @@ impl McpHandler {
         let width = doc.width;
         let height = doc.height;
 
-        let document_persisted = match crate::document::write_sidecar(&doc).await {
+        let document_persisted = match crate::persistence::write_sidecar(&doc).await {
             Ok(()) => true,
             Err(e) => {
                 debug!(error = %e, "sidecar write failed, skipping cache insert");
@@ -743,7 +741,8 @@ impl McpHandler {
         let height = dim_y as u32;
         let pixels: Vec<i32> = image_array.iter().copied().collect();
 
-        if let Err(e) = imaging::write_fits(&image_path, &pixels, width, height, &document_id).await
+        if let Err(e) =
+            persistence::write_fits(&image_path, &pixels, width, height, &document_id).await
         {
             return Ok(tool_error!("failed to write FITS file: {}", e));
         }
@@ -852,7 +851,7 @@ impl McpHandler {
 
         let path_clone = image_path.clone();
         let stats = match tokio::task::spawn_blocking(move || {
-            let (pixels, _w, _h) = imaging::read_fits_pixels(&path_clone)?;
+            let (pixels, _w, _h) = persistence::read_fits_pixels(&path_clone)?;
             imaging::compute_stats(&pixels)
                 .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
         })

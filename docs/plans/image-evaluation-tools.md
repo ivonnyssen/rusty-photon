@@ -329,6 +329,35 @@ ahead of Phase 6a; nothing in `rp` itself needs to change to support it
 beyond the catalog-merge logic that will be written when the first
 plugin shadows a built-in (so far there is no caller, so no code yet).
 
+#### Phase 6 prep — Module reorg (imaging vs. persistence)
+
+Status: **complete.**
+
+Before Phase 6 lands its first new files (`auto_focus.rs`,
+`center_on_target.rs`), the `imaging/` module was split to give the
+new tools and the planned filename-template work clear homes:
+
+- `imaging/analysis/` — pure single-purpose kernels (`background`,
+  `stars`, `hfr`, `fwhm`, `snr`, `stats`, `pixel`). Generic over
+  `Pixel`, take `ArrayView2`, no async, no I/O — unit-testable
+  without a runtime.
+- `imaging/tools/` — compositional analyzers (`measure_basic`,
+  `measure_stars`; `auto_focus` and `center_on_target` will land
+  here in Phase 6b/6c). Each binds multiple kernels into one
+  MCP-tool-shaped result.
+- `persistence/` — the I/O / async / on-disk layer. `cache.rs`,
+  `fits.rs`, and `document.rs` (moved from the crate root). Future
+  filename-template / token-resolver work attaches here, not under
+  `imaging/`.
+
+`imaging/mod.rs` re-exports the flat `crate::imaging::<symbol>` shape
+so MCP wiring doesn't have to know which submodule a definition lives
+in. Persistence symbols (`ImageCache`, `CachedPixels`, `CachedImage`,
+`ExposureDocument`, `write_fits`, etc.) move to `crate::persistence::*`
+— callers updated accordingly. 162 lib tests + 139 BDD scenarios green
+post-reorg; no behavior change. See the new Module Structure block in
+`docs/services/rp.md` for the full layout.
+
 #### Phase 6a — Focuser primitives (prerequisite for `auto_focus`)
 
 `auto_focus` composes `move_focuser` + `capture` + `measure_basic`,
@@ -392,7 +421,7 @@ Standard design→BDD→impl sequence. Blocked on Phase 6a.
       happy path (V-curve converges, returns best_position), each
       error path (camera/focuser not found, not connected, all
       captures starless, monotonic curve), persistence.
-- [ ] `services/rp/src/imaging/auto_focus.rs` — pure function on
+- [ ] `services/rp/src/imaging/tools/auto_focus.rs` — pure function on
       `(focuser, camera, measure_basic_fn)` so it's unit-testable
       without hardware. The MCP tool in `mcp.rs` is a thin wrapper.
 - [ ] Unit tests on the V-curve fit (synthetic HFR vs. position
@@ -411,7 +440,7 @@ finalize during design.
 Blocked on the plate-solver rp-managed service ADR (ASTAP vs.
 astrometry.net). Once the `plate_solve` tool exists, work mirrors
 Phase 6b: design contract → BDD → impl in
-`services/rp/src/imaging/center_on_target.rs` (or possibly
+`services/rp/src/imaging/tools/center_on_target.rs` (or possibly
 `services/rp/src/centering.rs` — it doesn't touch pixels, so the
 imaging module isn't necessarily the right home).
 

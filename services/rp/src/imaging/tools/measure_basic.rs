@@ -8,11 +8,11 @@
 use ndarray::ArrayView2;
 use serde::Serialize;
 
-use super::background::estimate_background;
-use super::hfr::aggregate_hfr;
-use super::pixel::Pixel;
-use super::stars::{detect_stars, DetectionParams};
 use crate::error::{Result, RpError};
+use crate::imaging::analysis::background::estimate_background;
+use crate::imaging::analysis::hfr::aggregate_hfr;
+use crate::imaging::analysis::pixel::Pixel;
+use crate::imaging::analysis::stars::{detect_stars, DetectionParams};
 
 /// Result of the basic image measurement. Field names match the JSON
 /// contract returned by the MCP tool — change only with intent.

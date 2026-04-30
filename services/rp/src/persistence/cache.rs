@@ -22,7 +22,7 @@ use ndarray::Array2;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::document::ExposureDocument;
+use super::document::ExposureDocument;
 
 /// Pixel storage variant. The design intent is per-camera selection at
 /// connect time (driven by the camera's `MaxADU`); the same camera always
@@ -50,11 +50,11 @@ pub enum CachedPixels {
 macro_rules! dispatch_pixels {
     ($pixels:expr, |$arr:ident| $body:expr) => {
         match $pixels {
-            $crate::imaging::CachedPixels::U16(__a) => {
+            $crate::persistence::CachedPixels::U16(__a) => {
                 let $arr = __a.view();
                 $body
             }
-            $crate::imaging::CachedPixels::I32(__a) => {
+            $crate::persistence::CachedPixels::I32(__a) => {
                 let $arr = __a.view();
                 $body
             }
@@ -298,7 +298,7 @@ impl ImageCache {
         })?;
         let mut doc = image.document.write().await;
         let prior = doc.sections.insert(name.to_string(), value);
-        match crate::document::write_sidecar(&doc).await {
+        match super::document::write_sidecar(&doc).await {
             Ok(()) => {
                 let new_json_bytes = serde_json::to_vec(&*doc).map(|v| v.len()).unwrap_or(0);
                 let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
@@ -432,7 +432,7 @@ fn find_candidates_by_suffix(dir: &Path, full_uuid: &str) -> Vec<PathBuf> {
 /// is the fallback when the FITS is unreadable. Returns the sidecar
 /// path on match.
 fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
-    if let Ok(Some(doc_id)) = crate::imaging::read_fits_doc_id(fits_path) {
+    if let Ok(Some(doc_id)) = super::fits::read_fits_doc_id(fits_path) {
         if doc_id == full_uuid {
             return Some(fits_path.with_extension("json"));
         }
@@ -442,7 +442,7 @@ fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
     }
     // FITS unreadable or missing DOC_ID. Try the sidecar's id field.
     let sidecar = fits_path.with_extension("json");
-    match crate::document::read_sidecar_sync(&sidecar) {
+    match super::document::read_sidecar_sync(&sidecar) {
         Ok(doc) if doc.id == full_uuid => Some(sidecar),
         _ => None,
     }
@@ -456,7 +456,7 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
-        let doc = match crate::document::read_sidecar_sync(&sidecar_path) {
+        let doc = match super::document::read_sidecar_sync(&sidecar_path) {
             Ok(d) => d,
             Err(e) => {
                 debug!(?sidecar_path, error = %e, "disk_resolve: sidecar parse failed");
@@ -470,7 +470,7 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
             );
             return None;
         };
-        let (pixels, width, height) = match crate::imaging::read_fits_pixels(&fits_path) {
+        let (pixels, width, height) = match super::fits::read_fits_pixels(&fits_path) {
             Ok(t) => t,
             Err(e) => {
                 debug!(?fits_path, error = %e, "disk_resolve: FITS read failed");
@@ -493,7 +493,7 @@ fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
-        match crate::document::read_sidecar_sync(&sidecar_path) {
+        match super::document::read_sidecar_sync(&sidecar_path) {
             Ok(doc) => return Some(doc),
             Err(e) => {
                 debug!(?sidecar_path, error = %e, "disk_resolve_document: parse failed");
@@ -697,7 +697,7 @@ mod tests {
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.join(format!("{}.fits", uuid8));
         let sidecar_path = dir.join(format!("{}.json", uuid8));
-        crate::imaging::write_fits(&fits_path, pixels, width, height, doc_uuid)
+        crate::persistence::write_fits(&fits_path, pixels, width, height, doc_uuid)
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
@@ -759,7 +759,7 @@ mod tests {
         // instead: a manually-renamed legacy file with `_<uuid8>.fits`
         // form sharing the suffix.
         let target_path = dir.path().join("deadbeef.fits");
-        crate::imaging::write_fits(&target_path, &[10i32, 20, 30, 40], 2, 2, target_uuid)
+        crate::persistence::write_fits(&target_path, &[10i32, 20, 30, 40], 2, 2, target_uuid)
             .await
             .unwrap();
         let mut target_doc = dummy_document(target_uuid);
@@ -775,7 +775,7 @@ mod tests {
 
         // Ghost has the suffix `_deadbeef.fits` but a different DOC_ID.
         let ghost_path = dir.path().join("legacy_deadbeef.fits");
-        crate::imaging::write_fits(&ghost_path, &[99i32; 4], 2, 2, ghost_uuid)
+        crate::persistence::write_fits(&ghost_path, &[99i32; 4], 2, 2, ghost_uuid)
             .await
             .unwrap();
         let mut ghost_doc = dummy_document(ghost_uuid);
@@ -814,7 +814,7 @@ mod tests {
         let doc_uuid = "22222222-2222-2222-2222-222222222222";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{}.fits", uuid8));
-        crate::imaging::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
