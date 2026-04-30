@@ -9,6 +9,7 @@ pub mod detect_stars_steps;
 pub mod equipment_steps;
 pub mod estimate_background_steps;
 pub mod event_steps;
+pub mod image_http_api_steps;
 pub mod image_stats_steps;
 pub mod measure_basic_steps;
 pub mod measure_stars_steps;

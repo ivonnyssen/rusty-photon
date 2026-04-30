@@ -80,6 +80,19 @@ Write BDD feature files and test infrastructure **before** writing any
 implementation code. The tests are executable specifications derived directly
 from the design doc.
 
+Treat the feature files as the **canonical contract** for plugin authors,
+frontend developers, and integrators reading the repo from outside. Two
+consequences flow from that:
+
+1. Scenario titles state outcomes, and feature descriptions read as
+   specifications -- not test plans. (See [testing.md §2.2](../skills/testing.md#22-feature-descriptions-state-the-contract)
+   and [§2.3](../skills/testing.md#23-scenarios-describe-outcomes-not-procedures).)
+2. Constants the contract pins (status codes, wire-format offsets,
+   field-by-field expected values) live **in the feature file**, not
+   hidden behind a `should be valid` step. (See
+   [testing.md §2.5](../skills/testing.md#25-make-contract-constants-explicit-in-steps).)
+   A reader should learn the contract from `tests/features/` alone.
+
 #### Step 2a: Scaffold the BDD infrastructure
 
 Create the test directory structure per docs/skills/testing.md Section 5:
@@ -159,7 +172,7 @@ branch, or to mark a clean phase boundary — tag the new feature(s) with
 `@wip` so the default test suite stays green. The `@wip` filter in
 `bdd.rs` skips tagged scenarios at runtime; remove the tag in the same
 commit that lands the implementation. See
-[testing.md §2.6](testing.md#26-use-wip-tag-for-scenarios-without-implementation-yet)
+[testing.md §2.7](testing.md#27-use-wip-tag-for-scenarios-without-implementation-yet)
 for the exact convention and the runner snippet.
 
 This is the only sanctioned way to commit failing scenarios. Do not

@@ -82,6 +82,16 @@ pub struct RpWorld {
     pub last_compute_snr_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
+    /// Last response status from GET /api/images/{id}
+    pub last_image_metadata_status: Option<u16>,
+    /// Last JSON body from GET /api/images/{id}
+    pub last_image_metadata: Option<Value>,
+    /// Last response status from GET /api/images/{id}/pixels
+    pub last_image_pixels_status: Option<u16>,
+    /// Last content-type header from GET /api/images/{id}/pixels
+    pub last_image_pixels_content_type: Option<String>,
+    /// Last raw body from GET /api/images/{id}/pixels
+    pub last_image_pixels_body: Option<Vec<u8>>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
     /// Last tool list result

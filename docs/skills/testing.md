@@ -24,6 +24,17 @@ The project uses four testing layers. Each serves a distinct purpose.
 
 **Purpose:** Living specifications. These are the primary test type for service behavior.
 
+**Why this matters:** Feature files are the canonical contract for
+everyone outside the service team -- plugin authors, frontend developers,
+reviewers, integrators. When someone asks "what does this endpoint
+return?" or "what is the wire format for X?", the answer should be a
+feature file, not the Rust source. This is what makes BDD primary, not
+optional: the test suite **is** the spec, and a reader should be able
+to learn the system's behavior from `tests/features/` alone. Every
+assertion in a scenario is also documentation -- write the scenarios
+with that in mind (see §2.5 on keeping contract constants visible in
+the feature file rather than buried in step code).
+
 **Use BDD tests for:**
 - All observable device behavior (connect, disconnect, read values, evaluate state)
 - Configuration loading and validation
@@ -147,7 +158,48 @@ Scenario Outline: Contains rule evaluation
 
 Use individual scenarios (not outlines) when different inputs need different setup or tell different stories.
 
-#### 2.5 Use `@serial` Tag for Tests With Side Effects
+#### 2.5 Make Contract Constants Explicit in Steps
+
+Step expressions should expose the values being checked, not hide them
+behind opaque adjectives. A reader of the feature file should learn the
+contract -- specific numbers, field names, status codes, wire-format
+positions -- without opening any Rust code. This is what makes feature
+files documentation; an opaque `should be valid` step is a hole in the
+spec.
+
+**Bad -- the contract lives in the step implementation, invisible to a reader:**
+```gherkin
+Then the response should have a valid ImageBytes header
+```
+
+**Good -- the constants live in the feature file, where plugin authors and reviewers can see them:**
+```gherkin
+Then the image pixels header should match these constants (i32 little-endian):
+  | field                     | offset | value |
+  | metadata_version          | 0      | 1     |
+  | data_start                | 16     | 44    |
+  | image_element_type        | 20     | 2     |
+  | transmission_element_type | 24     | 8     |
+  | rank                      | 28     | 2     |
+```
+
+A single step definition iterates the table, parses each value at the
+declared offset, and asserts equality. The spec is now legible to a
+plugin or frontend author without `cargo doc` or grepping the source.
+
+**When to use a Gherkin data table:**
+- Validating a wire-format header, status-code matrix, or any structured
+  output where the relationship between fields is the contract.
+- Parameterizing the same assertion shape across many fields.
+
+**When literal step text is enough:** for one or two values, a plain
+step is more readable than a one-row table -- `Then the response status
+should be 200` is already explicit. The same principle applies:
+`Then bitpix should be 16` beats `Then bitpix should be valid for U16`,
+because "valid" forces the reader into the step source to recover the
+meaning.
+
+#### 2.6 Use `@serial` Tag for Tests With Side Effects
 
 Tag features or scenarios with `@serial` when they depend on timing, shared resources, or file I/O that cannot safely run in parallel.
 
@@ -156,7 +208,7 @@ Tag features or scenarios with `@serial` when they depend on timing, shared reso
 Feature: File content polling
 ```
 
-#### 2.6 Use `@wip` Tag for Scenarios Without Implementation Yet
+#### 2.7 Use `@wip` Tag for Scenarios Without Implementation Yet
 
 This project's design-first / test-first workflow (see
 [development-workflow.md](development-workflow.md)) sometimes requires
@@ -192,7 +244,7 @@ intermittently belongs in an issue, not behind `@wip`. A scenario that
 documents a deferred feature you are not actively working on belongs in
 a follow-up ticket, not in the repo with `@wip`.
 
-#### 2.7 Avoid Gherkin Parser Pitfalls
+#### 2.8 Avoid Gherkin Parser Pitfalls
 
 These are known issues with the Gherkin parser used by cucumber-rs:
 
