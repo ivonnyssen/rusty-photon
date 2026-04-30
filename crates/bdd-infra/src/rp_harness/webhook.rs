@@ -4,6 +4,7 @@
 //! and then assert against captured events.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -26,8 +27,8 @@ pub struct ReceivedEvent {
 #[derive(Debug, Clone)]
 struct WebhookReceiverState {
     events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    ack_estimated_secs: u64,
-    ack_max_secs: u64,
+    ack_estimated: Duration,
+    ack_max: Duration,
 }
 
 /// In-process HTTP server that acts as an event plugin.
@@ -46,13 +47,13 @@ impl WebhookReceiver {
     /// read from the same `Arc` the receiver writes to.
     pub async fn start(
         events: Arc<RwLock<Vec<ReceivedEvent>>>,
-        ack_estimated_secs: u64,
-        ack_max_secs: u64,
+        ack_estimated: Duration,
+        ack_max: Duration,
     ) -> Self {
         let state = WebhookReceiverState {
             events: events.clone(),
-            ack_estimated_secs,
-            ack_max_secs,
+            ack_estimated,
+            ack_max,
         };
 
         let app = Router::new()
@@ -124,8 +125,8 @@ async fn webhook_handler(
     state.events.write().await.push(event);
 
     let ack = serde_json::json!({
-        "estimated_duration_secs": state.ack_estimated_secs,
-        "max_duration_secs": state.ack_max_secs
+        "estimated_duration": humantime::format_duration(state.ack_estimated).to_string(),
+        "max_duration": humantime::format_duration(state.ack_max).to_string()
     });
 
     (StatusCode::OK, axum::Json(ack))

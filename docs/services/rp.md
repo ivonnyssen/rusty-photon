@@ -208,7 +208,7 @@ The application does not know or care what subscribers do with events.
 | `target_switch` | old_target, new_target | Planner decided to switch targets |
 | `filter_switch` | camera_id, old_filter, new_filter | Filter change on a camera |
 | `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
-| `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration_secs` |
+| `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration` |
 | `document_updated` | document_id, section_name | Plugin contributed a section |
 
 ### Delivery: Webhooks
@@ -241,16 +241,16 @@ acknowledgment declaring how long it expects to take:
 
 ```json
 {
-  "estimated_duration_secs": 20,
-  "max_duration_secs": 30
+  "estimated_duration": "20s",
+  "max_duration": "30s"
 }
 ```
 
-- `estimated_duration_secs`: how long the plugin expects processing to
-  take. The planner uses this for scheduling decisions. Provided
-  dynamically per invocation — a plate solve on a wide-field image may
-  differ from a narrow-field one.
-- `max_duration_secs`: hard timeout. If the plugin doesn't complete within
+- `estimated_duration`: humantime string for how long the plugin expects
+  processing to take. The planner uses this for scheduling decisions.
+  Provided dynamically per invocation — a plate solve on a wide-field
+  image may differ from a narrow-field one.
+- `max_duration`: hard timeout. If the plugin doesn't complete within
   this time, `rp` proceeds and emits a warning.
 
 `rp` records the durations and continues with the orchestration. The next
@@ -310,7 +310,7 @@ block these tools until you have."
 
 When the orchestrator calls a gated tool, `rp` checks whether any
 barrier plugin still has an outstanding (uncompleted) webhook. If so,
-`rp` blocks the tool call — up to `max_duration_secs` from the
+`rp` blocks the tool call — up to `max_duration` from the
 acknowledgment — before executing. All outstanding plugins are waited on
 in parallel.
 
@@ -387,7 +387,7 @@ refocuses instead of slewing to a new target).
 
 #### Timeout Behavior
 
-When `max_duration_secs` (from the acknowledgment) expires without a
+When `max_duration` (from the acknowledgment) expires without a
 completion:
 
 1. `rp` proceeds as if the plugin completed with `"complete"` and no
@@ -409,7 +409,7 @@ Setup: 5 exposures on the same target, 300s each, analysis takes 20s.
 Exposure 3 completes
   → rp POSTs exposure_complete to analyzer
   → analyzer responds immediately:
-      {"estimated_duration_secs": 20, "max_duration_secs": 30}
+      {"estimated_duration": "20s", "max_duration": "30s"}
   → rp records outstanding barrier, starts exposure 4 (not gated)
 
   Case A — frame OK, no target switch pending:
@@ -748,23 +748,23 @@ session context it just received:
 
 ```json
 {
-  "estimated_duration_secs": 28800,
-  "max_duration_secs": 0
+  "estimated_duration": "8h",
+  "max_duration": "0s"
 }
 ```
 
-- `estimated_duration_secs`: how long the orchestrator expects the
-  workflow to take. Used for UI display and logging.
-- `max_duration_secs`: hard timeout. If the orchestrator doesn't
-  complete within this time, `rp` cancels it and moves equipment to a
-  safe state. `0` means no timeout — the orchestrator runs until it
-  completes, the user stops the session, or a safety event occurs.
+- `estimated_duration`: humantime string for how long the orchestrator
+  expects the workflow to take. Used for UI display and logging.
+- `max_duration`: hard timeout. If the orchestrator doesn't complete
+  within this time, `rp` cancels it and moves equipment to a safe state.
+  `"0s"` means no timeout — the orchestrator runs until it completes,
+  the user stops the session, or a safety event occurs.
 
 These values are dynamic, not static config — the orchestrator
 computes them at invocation time based on the session it receives.
 This follows the same pattern as event plugin acknowledgments.
 
-A deep-sky orchestrator returns `max_duration_secs: 0` because it
+A deep-sky orchestrator returns `max_duration: "0s"` because it
 runs all night. A flat calibration orchestrator computes a meaningful
 timeout based on the work it needs to do:
 
@@ -772,7 +772,7 @@ timeout based on the work it needs to do:
 rp invokes flat-calibration orchestrator with session context
   → orchestrator inspects session: 4 filters × 20 flats × ~2s each
   → orchestrator acknowledges:
-      {"estimated_duration_secs": 300, "max_duration_secs": 600}
+      {"estimated_duration": "5m", "max_duration": "10m"}
   → if orchestrator hangs, rp kills it after 600s — not after an
     hour-long static ceiling that wastes a time-critical dusk window
 ```
@@ -856,7 +856,7 @@ in the catalog. Safety is enforced at the tool level, universally:
   horizon.
 - **State validation**: cannot capture while another capture is in
   progress on the same camera, cannot slew during an exposure.
-- **Timeout**: if `max_duration_secs` expires without completion, `rp`
+- **Timeout**: if `max_duration` expires without completion, `rp`
   cancels the workflow, moves equipment to a safe state, and proceeds
   with the next orchestration phase. The MCP session is terminated.
 - **Safety override**: a safety event (unsafe transition) immediately

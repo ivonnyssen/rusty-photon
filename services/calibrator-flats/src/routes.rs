@@ -75,12 +75,11 @@ async fn invoke_handler(
 
     // Acknowledge with timing estimate
     let total_frames: u32 = plan.filters.iter().map(|f| f.count).sum();
-    let estimated_secs =
-        (total_frames as u64 * plan.initial_duration.as_millis() as u64) / 1000 + 60; // add margin for iterations
+    let estimated = plan.initial_duration * total_frames + std::time::Duration::from_secs(60); // margin for iterations
 
     let ack = serde_json::json!({
-        "estimated_duration_secs": estimated_secs,
-        "max_duration_secs": estimated_secs * 2,
+        "estimated_duration": humantime::format_duration(estimated).to_string(),
+        "max_duration": humantime::format_duration(estimated * 2).to_string(),
     });
 
     (StatusCode::OK, Json(ack))

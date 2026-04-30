@@ -6,6 +6,8 @@
 //!
 //! Commands return their echo followed by data, terminated by newline.
 
+use std::time::Duration;
+
 use crate::error::{PpbaError, Result};
 
 /// Commands that can be sent to the PPBA device
@@ -84,7 +86,9 @@ pub struct PpbaStatus {
 
 /// Parsed power statistics response from the PS command
 ///
-/// Response format: `PS:averageAmps:ampHours:wattHours:uptime_ms`
+/// Response format: `PS:averageAmps:ampHours:wattHours:uptime_ms` (the wire
+/// field is integer milliseconds; we hold it as a `Duration` internally and
+/// flatten back to ms only at the boundary).
 #[derive(Debug, Clone, Default)]
 pub struct PpbaPowerStats {
     /// Average current in Amps
@@ -93,14 +97,14 @@ pub struct PpbaPowerStats {
     pub amp_hours: f64,
     /// Cumulative watt-hours
     pub watt_hours: f64,
-    /// Uptime in milliseconds
-    pub uptime_ms: u64,
+    /// Device uptime
+    pub uptime: Duration,
 }
 
 impl PpbaPowerStats {
     /// Get uptime in hours
     pub fn uptime_hours(&self) -> f64 {
-        self.uptime_ms as f64 / 3_600_000.0
+        self.uptime.as_secs_f64() / 3600.0
     }
 }
 
@@ -188,13 +192,13 @@ pub fn parse_power_stats_response(response: &str) -> Result<PpbaPowerStats> {
     let average_amps = parse_f64(parts[1], "average_amps")?;
     let amp_hours = parse_f64(parts[2], "amp_hours")?;
     let watt_hours = parse_f64(parts[3], "watt_hours")?;
-    let uptime_ms = parse_u64(parts[4], "uptime_ms")?;
+    let uptime = Duration::from_millis(parse_u64(parts[4], "uptime_ms")?);
 
     Ok(PpbaPowerStats {
         average_amps,
         amp_hours,
         watt_hours,
-        uptime_ms,
+        uptime,
     })
 }
 
@@ -344,7 +348,7 @@ mod tests {
             assert_eq!(stats.average_amps, 2.5);
             assert_eq!(stats.amp_hours, 10.5);
             assert_eq!(stats.watt_hours, 126.0);
-            assert_eq!(stats.uptime_ms, 3600000);
+            assert_eq!(stats.uptime, Duration::from_secs(3600));
         }
 
         #[test]

@@ -157,8 +157,8 @@ async fn orchestrator_invoke_handler(
     });
 
     let ack = serde_json::json!({
-        "estimated_duration_secs": 300,
-        "max_duration_secs": 0
+        "estimated_duration": "5m",
+        "max_duration": "0s"
     });
 
     (StatusCode::OK, axum::Json(ack))

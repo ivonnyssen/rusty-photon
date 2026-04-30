@@ -50,7 +50,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
             } else {
                 format!(
                     r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
-                    m.last_poll_epoch_ms + m.polling_interval_ms
+                    m.last_poll_epoch_ms + m.polling_interval.as_millis() as u64
                 )
             };
             format!(
@@ -189,7 +189,10 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
                 "last_poll_epoch_ms": m.last_poll_epoch_ms,
                 "last_change_epoch_ms": m.last_change_epoch_ms,
                 "consecutive_errors": m.consecutive_errors,
-                "polling_interval_ms": m.polling_interval_ms,
+                // Integer ms on the wire — the dashboard JS does
+                // `new Date(last_poll_epoch_ms + polling_interval_ms)` arithmetic.
+                // Internally the field is a `Duration`; flatten only at this boundary.
+                "polling_interval_ms": m.polling_interval.as_millis() as u64,
             })
         })
         .collect();
@@ -235,7 +238,13 @@ mod tests {
     use crate::state::new_state_handle;
 
     fn setup_state() -> StateHandle {
-        new_state_handle(vec![("Test Monitor".to_string(), 30000)], 10)
+        new_state_handle(
+            vec![(
+                "Test Monitor".to_string(),
+                std::time::Duration::from_secs(30),
+            )],
+            10,
+        )
     }
 
     #[tokio::test]

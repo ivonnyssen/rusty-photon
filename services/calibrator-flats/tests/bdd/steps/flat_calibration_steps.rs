@@ -229,7 +229,9 @@ async fn ensure_webhook_receiver(world: &mut CalibratorFlatsWorld) {
     if world.webhook_receiver.is_some() {
         return;
     }
-    let (estimated, max) = world.webhook_ack_config.unwrap_or((5, 10));
+    let (estimated, max) = world
+        .webhook_ack_config
+        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
     let events = world.received_events.clone();
     world.webhook_receiver = Some(WebhookReceiver::start(events, estimated, max).await);
 }
