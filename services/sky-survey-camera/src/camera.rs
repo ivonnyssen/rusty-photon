@@ -4,7 +4,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 use crate::config::Config;
@@ -81,6 +81,8 @@ pub struct DeviceState {
     pub image_ready: AtomicBool,
     pub last_image: Mutex<Option<ExposureOutcome>>,
     pub last_error: Mutex<Option<String>>,
+    pub last_exposure_start: Mutex<Option<SystemTime>>,
+    pub last_exposure_duration: Mutex<Option<Duration>>,
     pub survey_client: Arc<SkyViewClient>,
 }
 
@@ -112,6 +114,8 @@ impl SkySurveyCamera {
             image_ready: AtomicBool::new(false),
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
+            last_exposure_start: Mutex::new(None),
+            last_exposure_duration: Mutex::new(None),
             survey_client,
         };
         Self {
@@ -485,6 +489,16 @@ impl Camera for SkySurveyCamera {
         self.state.image_ready.store(false, Ordering::Release);
         *self.state.last_error.lock().expect("last_error poisoned") = None;
         *self.state.last_image.lock().expect("last_image poisoned") = None;
+        *self
+            .state
+            .last_exposure_start
+            .lock()
+            .expect("last_exposure_start poisoned") = Some(SystemTime::now());
+        *self
+            .state
+            .last_exposure_duration
+            .lock()
+            .expect("last_exposure_duration poisoned") = Some(duration);
 
         debug!(?duration, light, "exposure started");
         let state = Arc::clone(&self.state);
@@ -531,6 +545,22 @@ impl Camera for SkySurveyCamera {
 
     async fn image_ready(&self) -> ASCOMResult<bool> {
         Ok(self.state.image_ready.load(Ordering::Acquire))
+    }
+
+    async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.state
+            .last_exposure_start
+            .lock()
+            .expect("last_exposure_start poisoned")
+            .ok_or_else(|| ASCOMError::invalid_operation("no exposure has started yet"))
+    }
+
+    async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.state
+            .last_exposure_duration
+            .lock()
+            .expect("last_exposure_duration poisoned")
+            .ok_or_else(|| ASCOMError::invalid_operation("no exposure has started yet"))
     }
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {

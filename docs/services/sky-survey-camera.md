@@ -340,13 +340,15 @@ part of the deliverable.
 
 ## Caching
 
-Cache key: SHA-256 of
+Cache key: a 16-character hex digest from `std::collections::hash_map::
+DefaultHasher` over
 `survey_name | ra_deg | dec_deg | rotation_deg | pixels_x | pixels_y | size_x_deg | size_y_deg`
-rounded to a tolerance (e.g. RA/Dec to 1e-4 deg, sizes to 1e-6 deg) so
-that minor floating-point drift hits the same entry. Stored as
-`<cache_dir>/<hex>.fits` plus a `<hex>.meta.json` sidecar capturing the
-inputs for debugging. No eviction in v0; operators clear the directory
-manually.
+with floating-point fields rounded (RA/Dec to 1e-4 deg, sizes to
+1e-6 deg) so that minor drift hits the same entry. Stored as
+`<cache_dir>/<hex>.fits`. The cache is local-only and the operator
+clears `cache_dir` manually — `DefaultHasher` is non-cryptographic and
+not stable across Rust versions, but neither property is needed here.
+No sidecar metadata in v0. No eviction; manual cleanup.
 
 ## Module Sketch (informative)
 
