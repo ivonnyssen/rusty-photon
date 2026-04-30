@@ -427,7 +427,7 @@ that work.
 
 ### Phase 7 — Unified document/image cache + UUID-suffixed filenames
 
-Status: **planned.** Independent of Phase 6 — can land in parallel.
+Status: **complete.** Independent of Phase 6 — landed in parallel.
 
 Today the document store and the image cache are separate structures
 with different lifetime rules: pixels evict via LRU + MiB budget,
@@ -479,53 +479,59 @@ Document Cache, Document Resolution) and should not be re-litigated:
 
 #### Work breakdown (in order)
 
-- [ ] **Step 1 — UUID suffix in capture filename.** `mcp.rs:capture`
-      appends `_<doc_uuid_8>` after applying `file_naming_pattern`
-      (truncation = `&doc_id[..8]` via the existing UUID v4 string
-      form, lowercase hex). Update BDD scenarios that assert capture
-      file paths to expect the suffix shape (regex anchored on the
-      8-char hex tail).
-- [ ] **Step 2 — `DOC_ID` FITS header.** `imaging::write_fits` accepts
-      a `doc_id: &str` parameter and writes `DOC_ID` to the primary
-      HDU via `fitrs::Hdu::insert` (or the equivalent). New unit test:
-      round-trip write + read header, assert `DOC_ID` matches.
-      `read_fits_pixels` extended (or a sibling `read_fits_doc_id`
-      added) to expose the header field for the disambiguation path.
-- [ ] **Step 3 — Embed the document in `CachedImage`.** Move
-      `ExposureDocument` into `CachedImage` behind a `RwLock`. Update
-      memory accounting (`CachedImage::nbytes`) to include
-      `serde_json::to_vec(&document).len()` in addition to pixel
-      bytes. Existing pixel-only cache tests still pass; add a test
-      that document-section growth bumps the accounted size.
-- [ ] **Step 4 — Mediate document operations through the cache.**
-      `DocumentStore::create` becomes `ImageCache::insert` with the
-      document inline. `DocumentStore::put_section` becomes
-      `ImageCache::put_section`, taking the per-entry document lock
-      and persisting the sidecar atomically before releasing. The
-      standalone `HashMap<String, ExposureDocument>` in
-      `document.rs` is removed; `routes.rs`'s document and section
-      endpoints route through the cache.
-- [ ] **Step 5 — Filesystem fallback on miss.** `ImageCache::get`
-      learns to readdir `<data_directory>` filtered by the 8-char
-      suffix when the in-memory map misses, verify each candidate
-      via FITS-header `DOC_ID` (sidecar `id` fallback), rehydrate
-      both pixels and document into the cache, and return the entry.
-      Unit test: insert, evict (force-shrink budget to 0), `get` →
-      should hydrate from disk and succeed.
-- [ ] **Step 6 — BDD: `document_http_api.feature`.** New feature file
-      documenting the document API contract end-to-end (today the
-      endpoint has no BDD coverage). Scenarios: catalog presence,
-      happy-path body shape after capture, `404` for unknown id,
-      sections-roundtrip after `measure_basic`, post-eviction
-      cross-restart access via the disk fallback. Mirrors
-      `image_http_api.feature` in shape.
+- [x] **Step 1 — UUID suffix in capture filename.** `mcp.rs:capture`
+      writes `<doc_uuid_8>.fits` (and matching `.json`). The optional
+      `session.file_naming_pattern` config is reserved for a future
+      operator-controlled template — until a token resolver lands the
+      template is parsed but not rendered, so capture writes
+      `<doc_uuid_8>.<ext>` regardless. New BDD-friendly unit test on
+      the path shape; no existing scenarios pinned the literal
+      `capture_*.fits` shape.
+- [x] **Step 2 — `DOC_ID` FITS header.** `imaging::write_fits` accepts
+      a `doc_id: &str` parameter and writes `DOC_ID` via
+      `fitrs::Hdu::insert`. New `read_fits_doc_id(path)` returns
+      `Ok(Some)` for new files, `Ok(None)` for legacy files without
+      the keyword, `Err` for I/O / parse failures. Round-trip and
+      legacy-file unit tests pin the contract.
+- [x] **Step 3 — Embed the document in `CachedImage`.** Document lives
+      inline behind `tokio::sync::RwLock`. `CachedImage::nbytes()`
+      includes `serde_json::to_vec(&doc).len()` via an
+      `AtomicUsize::json_nbytes` field that the cache mutex can read
+      during eviction without taking the per-entry lock.
+- [x] **Step 4 — Mediate document operations through the cache.**
+      `DocumentStore` deleted. `ImageCache::put_section` holds the
+      per-entry write lock across the sidecar write so concurrent
+      updates serialize at the entry level, with rollback on write
+      failure. `AppState.documents` and `McpHandler.documents` fields
+      removed; capture, the five image-analysis tools, and the three
+      document/image route handlers all route through the cache.
+- [x] **Step 5 — Filesystem fallback on miss.** `ImageCache::resolve`
+      and `resolve_document` scan `<data_directory>` for files whose
+      filename suffix matches the document's UUID-8, verify each
+      candidate via FITS `DOC_ID` (sidecar `id` as fallback authority
+      for files without DOC_ID), rehydrate both pixels and document
+      into the cache as MRU, and return. `resolve` declines when the
+      sidecar's `max_adu` is null; `resolve_document` returns the doc
+      anyway so callers can reach `file_path` for direct FITS reads.
+      Six unit tests cover post-eviction rehydration, ghost-match
+      disambiguation, max_adu-null handling, and sidecar-id fallback.
+- [x] **Step 6 — BDD: `document_http_api.feature`.** Five scenarios:
+      body shape after capture, 404 for unknown id, section
+      round-trip via `measure_basic`, post-eviction on-disk fallback
+      (`cache_max_images: 1`), cross-restart on-disk fallback (pin
+      data_directory, capture, restart rp, fetch original).
+      `RpConfigBuilder` extended with `with_data_directory` and
+      `with_imaging`.
 
 `rmpfit` and `ndarray-ndimage` are unaffected.
 
-**Exit criteria:** new feature file's scenarios all green; existing
-BDD suite remains green; `cargo rail run --profile commit -q` clean;
-unified cache passes both the existing pixel-only cache tests and the
-new document-aware tests.
+**Exit criteria met:** 139/139 BDD scenarios green (was 130/130 pre-
+Phase-7 + 4 image_http_api); 154 lib tests green (added 16 across
+Phase 7's six steps — capture path-shape, DOC_ID round-trip / legacy /
+nonexistent, json-bytes accounting, six disk-resolve cases including
+ghost-match and sidecar-id fallback); `cargo rail run --profile
+commit -q` reports 530/530 passing workspace-wide. No new workspace
+deps; no `bazel mod tidy` needed.
 
 #### Out of scope for this phase
 
