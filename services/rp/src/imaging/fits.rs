@@ -82,8 +82,13 @@ fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Resu
         .map_err(|e| RpError::Imaging(format!("failed to create FITS file: {}", e)))?;
 
     // fsync the FITS bytes so a crash after rename cannot surface a renamed-
-    // but-zero-length file.
-    std::fs::File::open(&tmp_path)
+    // but-zero-length file. Open with write access — on Windows, FlushFileBuffers
+    // requires GENERIC_WRITE; a read-only handle returns ERROR_ACCESS_DENIED.
+    // `.write(true)` does not truncate (truncation requires `.truncate(true)`),
+    // so the FITS bytes fitrs just wrote stay intact.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp_path)
         .and_then(|f| f.sync_all())
         .map_err(|e| RpError::Imaging(format!("failed to fsync staging file: {}", e)))?;
 
