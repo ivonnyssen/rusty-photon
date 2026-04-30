@@ -28,8 +28,17 @@ pub struct SessionConfig {
     pub data_directory: String,
     #[serde(default)]
     pub session_state_file: String,
+    /// Optional template for capture filenames. `None` is the default and
+    /// produces filenames of the form `<doc_uuid_8>.fits` plus a matching
+    /// `.json` sidecar — fully self-identifying via the UUID-8 suffix that
+    /// drives the disk-fallback resolution path. When set, the template is
+    /// reserved for a future token resolver (planner/capture context feeding
+    /// `{target}` / `{filter}` / etc.); until that lands `capture` ignores
+    /// the value and writes `<doc_uuid_8>.fits` regardless. See
+    /// `docs/services/rp.md` (Persistence) and Phase 7 of
+    /// `docs/plans/image-evaluation-tools.md`.
     #[serde(default)]
-    pub file_naming_pattern: String,
+    pub file_naming_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,6 +226,43 @@ mod tests {
     fn load_config_missing_file() {
         let err = load_config(Path::new("/nonexistent/rp/config.json")).unwrap_err();
         assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn file_naming_pattern_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(
+            config.session.file_naming_pattern.is_none(),
+            "omitted file_naming_pattern must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn file_naming_pattern_round_trips_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "file_naming_pattern": "{target}_{filter}"
+                },
+                "equipment": {},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.session.file_naming_pattern.as_deref(),
+            Some("{target}_{filter}")
+        );
     }
 
     #[test]

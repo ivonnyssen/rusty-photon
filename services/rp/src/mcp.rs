@@ -621,10 +621,14 @@ impl McpHandler {
         let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
         let document_id = Uuid::new_v4().to_string();
-        let image_path = format!(
-            "{}/capture_{}.fits",
-            self.session_config.data_directory, document_id
-        );
+        // The 8-char UUID suffix is the on-disk reverse-lookup key used by
+        // the cache's disk-fallback resolution (see Phase 7 of
+        // `docs/plans/image-evaluation-tools.md` and `rp.md` Persistence).
+        // Operator-controlled `file_naming_pattern` rendering is reserved
+        // until a token resolver lands; for now capture writes
+        // `<uuid8>.fits` regardless of any configured template.
+        let uuid8 = &document_id[..8];
+        let image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
 
         self.event_bus.emit(
             "exposure_started",
@@ -2046,7 +2050,7 @@ mod tests {
         let cam = MockCamera::default(); // succeeds through image_array
         let registry = camera_registry(Arc::new(cam));
         // Use an existing file as the "directory" so write_fits fails cross-platform.
-        // The capture tool appends /capture_{uuid}.fits — creating a file inside
+        // The capture tool appends /<uuid8>.fits — creating a file inside
         // another file fails on all OSes.
         let blocker = tempfile::NamedTempFile::new().unwrap();
         let handler = McpHandler::new(
@@ -2124,6 +2128,60 @@ mod tests {
             .await
             .expect("expected document store to have the doc");
         assert_eq!(doc.max_adu, Some(1 << 20));
+    }
+
+    // -----------------------------------------------------------------------
+    // capture — filename uses 8-char UUID suffix
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_capture_filename_uses_uuid8_suffix() {
+        // Pins the on-disk reverse-lookup contract: the FITS basename matches
+        // the first 8 hex chars of the document_id. The disk-fallback
+        // resolution path in Phase 7 grep's by this suffix.
+        let cam = MockCamera::default();
+        let temp = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4);
+        let documents = DocumentStore::new();
+        let handler = McpHandler::new(
+            Arc::new(camera_registry(Arc::new(cam))),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: temp.path().to_string_lossy().to_string(),
+            },
+            cache,
+            documents,
+        );
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            }))
+            .await
+            .unwrap();
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.clone())
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let doc_id = json["document_id"].as_str().unwrap().to_string();
+        let image_path = json["image_path"].as_str().unwrap().to_string();
+        let basename = std::path::Path::new(&image_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            basename,
+            format!("{}.fits", &doc_id[..8]),
+            "FITS basename must equal first 8 hex chars of document_id + .fits"
+        );
+        assert!(
+            std::path::Path::new(&image_path).exists(),
+            "FITS file should exist at the reported path"
+        );
     }
 
     // -----------------------------------------------------------------------

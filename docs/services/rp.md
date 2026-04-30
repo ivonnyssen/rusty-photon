@@ -211,20 +211,28 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
 
 ### Persistence
 
-Each capture produces a FITS file and a sidecar JSON document. Both
-share a base filename derived from the configured `file_naming_pattern`,
-with `_<doc_uuid_8>` appended by `rp` as the final segment:
+Each capture produces a FITS file and a sidecar JSON document sharing
+the same base filename. The base is the first 8 hex characters of the
+document's full UUID v4 (`<doc_uuid_8>`):
 
 ```
 /data/lights/M31/
-  M31_L_300s_001_550e8400.fits
-  M31_L_300s_001_550e8400.json    <-- exposure document
+  550e8400.fits
+  550e8400.json    <-- exposure document
 ```
 
-`<doc_uuid_8>` is the first 8 hex characters of the document's full
-UUID v4. The full UUID is the canonical document identifier — used by
-the API, the FITS header, and the sidecar's `id` field. The 8-char
-suffix exists only on disk, as the reverse-lookup key for finding a
+The optional `session.file_naming_pattern` config is reserved for a
+future operator-controlled template (`{target}`, `{filter}`,
+`{duration}`, `{sequence}`, etc.). Until a token resolver lands that
+can supply that context to `capture`, the field is parsed but not
+rendered — capture writes `<doc_uuid_8>.fits` regardless of the
+configured value. When a resolver lands, the rendered base will be
+prefixed before the UUID-8 suffix (e.g. `M31_L_300s_001_550e8400.fits`)
+so existing files stay reachable.
+
+The full UUID is the canonical document identifier — used by the API,
+the FITS header, and the sidecar's `id` field. The 8-char suffix
+exists only on disk, as the reverse-lookup key for finding a
 document's files when given its id. See
 [Image and Document Cache](#image-and-document-cache) and
 [Document Resolution](#document-resolution) for the rules.
@@ -686,9 +694,10 @@ After the exposure completes and `image_ready` returns true, `capture`
 downloads the camera's `image_array`, writes it as a FITS file (using
 the `fitrs` crate with BITPIX=32) with `DOC_ID = '<full-uuid>'` in the
 primary HDU header, and creates a sidecar exposure document JSON
-alongside it. The base filename is `<file_naming_pattern>_<doc_uuid_8>`;
-both files share that base. Both are written atomically (stage to a
-sibling temp file, fsync, rename, fsync parent directory). See
+alongside it. The base filename is `<doc_uuid_8>`; both files share
+that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
+written atomically (stage to a sibling temp file, fsync, rename, fsync
+parent directory). See
 [Persistence](#persistence) for the full rule set.
 
 #### CoverCalibrator Tool Details
