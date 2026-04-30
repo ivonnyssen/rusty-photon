@@ -55,16 +55,14 @@ pub struct ExposureDocument {
 
 /// Process-wide store of exposure documents. Cheap to clone — internally
 /// `Arc<RwLock<HashMap>>`.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DocumentStore {
     inner: Arc<RwLock<HashMap<String, ExposureDocument>>>,
 }
 
 impl DocumentStore {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self::default()
     }
 
     /// Insert a freshly-captured document. Writes the sidecar JSON atomically.
@@ -105,12 +103,6 @@ impl DocumentStore {
         guard.insert(id.to_string(), updated);
         debug!(document_id = %id, section = %name, "DocumentStore put_section");
         Ok(())
-    }
-}
-
-impl Default for DocumentStore {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
