@@ -20,7 +20,6 @@ use tracing::{debug, info};
 use rp_tls::config::TlsConfig;
 
 use crate::config::Config;
-use crate::document::DocumentStore;
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
@@ -70,21 +69,17 @@ impl ServerBuilder {
             config.imaging.cache_max_images,
         );
 
-        let documents = DocumentStore::new();
-
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
             session_config,
             image_cache.clone(),
-            documents.clone(),
         );
 
         let state = AppState {
             equipment,
             mcp,
             session: session.clone(),
-            documents,
             image_cache,
         };
 

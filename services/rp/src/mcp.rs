@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::document::{DocumentStore, ExposureDocument};
+use crate::document::ExposureDocument;
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::imaging::{
@@ -271,7 +271,6 @@ pub struct McpHandler {
     pub event_bus: Arc<EventBus>,
     pub session_config: SessionConfig,
     pub image_cache: ImageCache,
-    pub documents: DocumentStore,
 }
 
 impl McpHandler {
@@ -280,14 +279,12 @@ impl McpHandler {
         event_bus: Arc<EventBus>,
         session_config: SessionConfig,
         image_cache: ImageCache,
-        documents: DocumentStore,
     ) -> Self {
         Self {
             equipment,
             event_bus,
             session_config,
             image_cache,
-            documents,
         }
     }
 
@@ -308,7 +305,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
             crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
         })?;
         // No camera context here, so we can't reliably know max_adu — pass None
@@ -373,7 +370,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
             crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
         })?;
         self.estimate_via_path(&doc.file_path, params).await
@@ -445,7 +442,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
             crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
         })?;
         // No camera context here — pass max_adu = None (matches measure_basic).
@@ -534,7 +531,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
             crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
         })?;
         self.measure_stars_via_path(&doc.file_path, params).await
@@ -579,7 +576,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.documents.get(doc_id).await.ok_or_else(|| {
+        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
             crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
         })?;
         self.snr_via_path(&doc.file_path, params).await
@@ -703,13 +700,15 @@ impl McpHandler {
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
-        // Cache entry needs its own copy because `documents.create` consumes
-        // `doc`. Step 4 folds the two stores into one and removes this clone.
-        let doc_for_cache = doc.clone();
-        let document_persisted = match self.documents.create(doc).await {
+        // Persist the sidecar JSON before populating the cache. The cache
+        // insert is gated on a successful sidecar write so a `document_id`
+        // that the rest of the API can serve from disk also resolves
+        // through the cache. On sidecar failure the FITS file is still on
+        // disk; operators can recover by reading it directly.
+        let document_persisted = match crate::document::write_sidecar(&doc).await {
             Ok(()) => true,
             Err(e) => {
-                debug!(error = %e, "document store: create failed, skipping cache insert");
+                debug!(error = %e, "sidecar write failed, skipping cache insert");
                 self.event_bus.emit(
                     "document_persistence_failed",
                     serde_json::json!({
@@ -763,7 +762,7 @@ impl McpHandler {
                             height,
                             std::path::PathBuf::from(&image_path),
                             max_adu,
-                            doc_for_cache,
+                            doc.clone(),
                         ),
                     );
                 }
@@ -917,7 +916,7 @@ impl McpHandler {
         if let Some(doc_id) = params.document_id.as_deref() {
             let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
             if let Err(e) = self
-                .documents
+                .image_cache
                 .put_section(doc_id, "image_analysis", value)
                 .await
             {
@@ -978,7 +977,7 @@ impl McpHandler {
 
         if let Some(doc_id) = params.document_id.as_deref() {
             if let Err(e) = self
-                .documents
+                .image_cache
                 .put_section(doc_id, "background", payload.clone())
                 .await
             {
@@ -1052,7 +1051,7 @@ impl McpHandler {
 
         if let Some(doc_id) = params.document_id.as_deref() {
             if let Err(e) = self
-                .documents
+                .image_cache
                 .put_section(doc_id, "detected_stars", payload.clone())
                 .await
             {
@@ -1118,7 +1117,7 @@ impl McpHandler {
 
         if let Some(doc_id) = params.document_id.as_deref() {
             if let Err(e) = self
-                .documents
+                .image_cache
                 .put_section(doc_id, "measured_stars", payload.clone())
                 .await
             {
@@ -1178,7 +1177,7 @@ impl McpHandler {
 
         if let Some(doc_id) = params.document_id.as_deref() {
             if let Err(e) = self
-                .documents
+                .image_cache
                 .put_section(doc_id, "snr", payload.clone())
                 .await
             {
@@ -1748,7 +1747,6 @@ mod tests {
                     .to_string(),
             },
             ImageCache::new(64, 4),
-            DocumentStore::new(),
         )
     }
 
@@ -2065,7 +2063,6 @@ mod tests {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
             ImageCache::new(64, 4),
-            DocumentStore::new(),
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -2084,19 +2081,16 @@ mod tests {
     async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
         // Drives the scientific-camera (I32) cache-insert branch in
         // `capture` — exercised by no other test, since OmniSim and the
-        // default MockCamera both report max_adu ≤ 65535. Also pins the
-        // post-reorder invariant: capture-success leaves an entry in
-        // BOTH the image cache AND the document store, with consistent
-        // `max_adu`. The reorder makes the inverse impossible by
-        // construction (a cache entry without a matching document) —
-        // see the `/pixels` route's reliance on this invariant.
+        // default MockCamera both report max_adu ≤ 65535. Pins the
+        // capture invariant: a successful capture leaves the embedded
+        // document accessible through the cache entry (now the single
+        // source of truth) with the matching `max_adu`.
         let cam = MockCamera {
             max_adu_value: 1 << 20,
             ..Default::default()
         };
         let temp = tempfile::tempdir().unwrap();
         let cache = ImageCache::new(64, 4);
-        let documents = DocumentStore::new();
         let handler = McpHandler::new(
             Arc::new(camera_registry(Arc::new(cam))),
             Arc::new(crate::events::EventBus::from_config(&[])),
@@ -2104,7 +2098,6 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
-            documents.clone(),
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -2128,10 +2121,10 @@ mod tests {
             matches!(cached.pixels, CachedPixels::I32(_)),
             "expected I32 variant for max_adu > u16::MAX"
         );
-        let doc = documents
-            .get(doc_id)
+        let doc = cache
+            .get_document(doc_id)
             .await
-            .expect("expected document store to have the doc");
+            .expect("expected cache entry to carry the document");
         assert_eq!(doc.max_adu, Some(1 << 20));
     }
 
@@ -2147,7 +2140,6 @@ mod tests {
         let cam = MockCamera::default();
         let temp = tempfile::tempdir().unwrap();
         let cache = ImageCache::new(64, 4);
-        let documents = DocumentStore::new();
         let handler = McpHandler::new(
             Arc::new(camera_registry(Arc::new(cam))),
             Arc::new(crate::events::EventBus::from_config(&[])),
@@ -2155,7 +2147,6 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache,
-            documents,
         );
         let result = handler
             .capture(Parameters(CaptureParams {

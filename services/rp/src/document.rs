@@ -10,20 +10,19 @@
 //! (`<image>.json`). Writes are atomic: data is staged into a `.tmp` file and
 //! `rename`d into place, so a crash mid-write cannot leave a torn document.
 //!
-//! The in-memory store is the runtime source of truth. Reload-on-restart from
-//! the sidecar JSON files is a follow-up (Phase 5); current scope (Phase 4)
-//! only persists writes — readers go through the in-memory map.
+//! As of Phase 7 (`docs/plans/image-evaluation-tools.md`), the document lives
+//! inline on each `imaging::CachedImage` cache entry. Lookups go through
+//! `ImageCache::get_document` and section updates through
+//! `ImageCache::put_section`; the sidecar JSON pair on disk plus the disk-
+//! fallback resolution path together provide the "live as long as the file
+//! is on disk" contract.
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::RwLock;
-use tracing::debug;
 
 use crate::error::{Result, RpError};
 
@@ -61,65 +60,28 @@ pub struct ExposureDocument {
     pub sections: Map<String, Value>,
 }
 
-/// Process-wide store of exposure documents. Cheap to clone — internally
-/// `Arc<RwLock<HashMap>>`.
-#[derive(Clone, Default)]
-pub struct DocumentStore {
-    inner: Arc<RwLock<HashMap<String, ExposureDocument>>>,
-}
-
-impl DocumentStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Insert a freshly-captured document. Writes the sidecar JSON atomically.
-    /// Replaces any existing entry for the same id.
-    pub async fn create(&self, doc: ExposureDocument) -> Result<()> {
-        let sidecar_path = sidecar_path(&doc.file_path);
-        write_sidecar(&sidecar_path, &doc).await?;
-        let id = doc.id.clone();
-        self.inner.write().await.insert(id.clone(), doc);
-        debug!(document_id = %id, "DocumentStore created");
-        Ok(())
-    }
-
-    /// Look up a document by id. `None` if not present in the in-memory store.
-    pub async fn get(&self, id: &str) -> Option<ExposureDocument> {
-        self.inner.read().await.get(id).cloned()
-    }
-
-    /// Write `value` into `sections[name]` on the document. Persists the
-    /// updated sidecar JSON atomically before committing the change to the
-    /// in-memory store, so a sidecar write failure leaves both on-disk and
-    /// in-memory state unchanged. Returns an error if the document is not in
-    /// the store.
-    ///
-    /// Concurrent `put_section` calls are serialized by holding the store's
-    /// write lock across the sidecar write — this prevents a slower writer
-    /// from overwriting the sidecar with an older snapshot after a faster
-    /// concurrent writer already persisted a newer one.
-    pub async fn put_section(&self, id: &str, name: &str, value: Value) -> Result<()> {
-        let mut guard = self.inner.write().await;
-        let mut updated = guard
-            .get(id)
-            .ok_or_else(|| RpError::Imaging(format!("document not found: {}", id)))?
-            .clone();
-        updated.sections.insert(name.to_string(), value);
-        let sidecar_path = sidecar_path(&updated.file_path);
-        write_sidecar(&sidecar_path, &updated).await?;
-        guard.insert(id.to_string(), updated);
-        debug!(document_id = %id, section = %name, "DocumentStore put_section");
-        Ok(())
-    }
-}
-
-fn sidecar_path(file_path: &str) -> PathBuf {
+/// Sidecar JSON path for a given FITS file path (`/foo/<uuid8>.fits` →
+/// `/foo/<uuid8>.json`).
+pub fn sidecar_path(file_path: &str) -> PathBuf {
     let p = PathBuf::from(file_path);
     p.with_extension("json")
 }
 
-async fn write_sidecar(path: &Path, doc: &ExposureDocument) -> Result<()> {
+/// Atomically write `doc` to its sidecar JSON path
+/// (`<doc.file_path>.with_extension("json")`).
+///
+/// Stages into a sibling temp file, fsyncs, renames into place, fsyncs the
+/// parent directory (unix-only). Mirrors the FITS write treatment in
+/// `imaging::fits::write_fits`.
+pub async fn write_sidecar(doc: &ExposureDocument) -> Result<()> {
+    let path = sidecar_path(&doc.file_path);
+    write_sidecar_at(&path, doc).await
+}
+
+/// As `write_sidecar`, but writes to an explicit path. Used by tests that
+/// want to verify sidecar I/O without round-tripping through the rest of
+/// the pipeline.
+pub async fn write_sidecar_at(path: &Path, doc: &ExposureDocument) -> Result<()> {
     let body = serde_json::to_vec_pretty(doc)?;
     let path = path.to_path_buf();
     // Run the whole stage-and-commit sequence on the blocking pool. Matches
@@ -163,7 +125,6 @@ fn write_sidecar_sync(final_path: &Path, body: &[u8]) -> Result<()> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn doc_with_path(id: &str, file_path: &str) -> ExposureDocument {
         ExposureDocument {
@@ -180,151 +141,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_get_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let store = DocumentStore::new();
-
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-
-        let got = store.get("doc-1").await.unwrap();
-        assert_eq!(got.id, "doc-1");
-        assert_eq!(got.file_path, fits_path);
-        assert_eq!(got.width, 16);
-        assert!(got.sections.is_empty());
-    }
-
-    #[tokio::test]
-    async fn get_missing_returns_none() {
-        let store = DocumentStore::new();
-        assert!(store.get("nope").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn create_writes_sidecar_json() {
+    async fn write_sidecar_round_trips_through_json() {
         let dir = tempfile::tempdir().unwrap();
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let sidecar = dir.path().join("img.json");
-        let store = DocumentStore::new();
 
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
+        let doc = doc_with_path("doc-1", &fits_path);
+        write_sidecar(&doc).await.unwrap();
 
-        assert!(
-            sidecar.exists(),
-            "sidecar JSON should exist at {:?}",
-            sidecar
-        );
         let body = tokio::fs::read_to_string(&sidecar).await.unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.id, "doc-1");
+        assert_eq!(parsed.file_path, fits_path);
         assert_eq!(parsed.max_adu, Some(65535));
     }
 
     #[tokio::test]
-    async fn put_section_persists_to_sidecar() {
+    async fn write_sidecar_overwrites_existing() {
         let dir = tempfile::tempdir().unwrap();
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let sidecar = dir.path().join("img.json");
-        let store = DocumentStore::new();
 
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-        store
-            .put_section(
-                "doc-1",
-                "image_analysis",
-                json!({"hfr": 2.5, "star_count": 7}),
-            )
-            .await
-            .unwrap();
+        let mut doc = doc_with_path("doc-1", &fits_path);
+        doc.duration = Some(Duration::from_secs(1));
+        write_sidecar(&doc).await.unwrap();
 
-        let got = store.get("doc-1").await.unwrap();
-        assert_eq!(got.sections["image_analysis"]["hfr"], 2.5);
-        assert_eq!(got.sections["image_analysis"]["star_count"], 7);
+        doc.duration = Some(Duration::from_secs(2));
+        write_sidecar(&doc).await.unwrap();
 
         let body = tokio::fs::read_to_string(&sidecar).await.unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed.sections["image_analysis"]["star_count"], 7);
-    }
-
-    #[tokio::test]
-    async fn put_section_unknown_id_errors() {
-        let store = DocumentStore::new();
-        let err = store
-            .put_section("missing", "image_analysis", json!({}))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("document not found"), "{}", err);
-    }
-
-    #[tokio::test]
-    async fn put_section_overwrites_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let store = DocumentStore::new();
-
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-        store
-            .put_section("doc-1", "image_analysis", json!({"v": 1}))
-            .await
-            .unwrap();
-        store
-            .put_section("doc-1", "image_analysis", json!({"v": 2}))
-            .await
-            .unwrap();
-
-        let got = store.get("doc-1").await.unwrap();
-        assert_eq!(got.sections["image_analysis"]["v"], 2);
-    }
-
-    #[tokio::test]
-    async fn put_section_rolls_back_on_write_failure() {
-        // If the sidecar write fails, neither in-memory state nor on-disk
-        // state should reflect the failed update. We force a write failure
-        // by replacing the sidecar file with a directory of the same name —
-        // `rename(tmp_file, sidecar_dir)` is rejected on Linux and Windows.
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let sidecar = dir.path().join("img.json");
-        let store = DocumentStore::new();
-
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-        store
-            .put_section("doc-1", "image_analysis", json!({"v": 1}))
-            .await
-            .unwrap();
-
-        tokio::fs::remove_file(&sidecar).await.unwrap();
-        tokio::fs::create_dir(&sidecar).await.unwrap();
-
-        let err = store
-            .put_section("doc-1", "image_analysis", json!({"v": 2}))
-            .await
-            .unwrap_err();
-        assert!(
-            !err.to_string().is_empty(),
-            "expected non-empty write failure error"
-        );
-
-        let got = store.get("doc-1").await.unwrap();
-        assert_eq!(
-            got.sections["image_analysis"]["v"], 1,
-            "in-memory section must roll back to the previous value when the sidecar write fails"
-        );
+        assert_eq!(parsed.duration, Some(Duration::from_secs(2)));
     }
 
     async fn entry_names(dir: &std::path::Path) -> Vec<String> {
@@ -337,73 +184,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_writes_leave_no_staging_files() {
+    async fn successful_write_leaves_no_staging_files() {
         let dir = tempfile::tempdir().unwrap();
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let store = DocumentStore::new();
 
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-        store
-            .put_section("doc-1", "image_analysis", json!({"v": 1}))
-            .await
-            .unwrap();
+        let doc = doc_with_path("doc-1", &fits_path);
+        write_sidecar(&doc).await.unwrap();
 
         let names = entry_names(dir.path()).await;
         assert_eq!(
             names,
             vec!["img.json"],
-            "directory should contain only the sidecar after successful writes"
+            "directory should contain only the sidecar after a successful write"
         );
     }
 
     #[tokio::test]
     async fn failed_write_cleans_up_staging_file() {
-        // Same trick as put_section_rolls_back_on_write_failure: replace the
-        // sidecar file with a directory so persist(tmp, sidecar) fails. Verify
-        // that the orphaned NamedTempFile is cleaned up by its Drop guard.
+        // Force the rename to fail by replacing the destination with a
+        // directory — `rename(file, dir)` is rejected on Linux and Windows.
         let dir = tempfile::tempdir().unwrap();
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let sidecar = dir.path().join("img.json");
-        let store = DocumentStore::new();
 
-        store
-            .create(doc_with_path("doc-1", &fits_path))
-            .await
-            .unwrap();
-
-        tokio::fs::remove_file(&sidecar).await.unwrap();
         tokio::fs::create_dir(&sidecar).await.unwrap();
 
-        let _ = store
-            .put_section("doc-1", "image_analysis", json!({"v": 1}))
-            .await;
+        let doc = doc_with_path("doc-1", &fits_path);
+        let err = write_sidecar(&doc).await.unwrap_err();
+        assert!(
+            !err.to_string().is_empty(),
+            "expected non-empty write failure error"
+        );
 
         let names = entry_names(dir.path()).await;
         assert_eq!(
             names,
             vec!["img.json"],
-            "failed write must not leave a staging file behind"
+            "failed write must not leave a staging file behind (only the directory we put in the way remains)"
         );
     }
 
-    #[tokio::test]
-    async fn create_replaces_same_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let store = DocumentStore::new();
+    #[test]
+    fn sidecar_path_swaps_extension() {
+        assert_eq!(
+            sidecar_path("/data/lights/550e8400.fits"),
+            std::path::PathBuf::from("/data/lights/550e8400.json")
+        );
+    }
 
-        let mut first = doc_with_path("doc-1", &fits_path);
-        first.duration = Some(Duration::from_secs(1));
-        store.create(first).await.unwrap();
-
-        let mut second = doc_with_path("doc-1", &fits_path);
-        second.duration = Some(Duration::from_secs(2));
-        store.create(second).await.unwrap();
-
-        let got = store.get("doc-1").await.unwrap();
-        assert_eq!(got.duration, Some(Duration::from_secs(2)));
+    #[test]
+    fn serialization_skips_none_max_adu() {
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.max_adu = None;
+        let body = serde_json::to_string(&doc).unwrap();
+        assert!(
+            !body.contains("max_adu"),
+            "max_adu should be omitted when None, got: {}",
+            body
+        );
     }
 }

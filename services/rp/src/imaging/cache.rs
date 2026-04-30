@@ -201,6 +201,78 @@ impl ImageCache {
         Some(image)
     }
 
+    /// Clone the cached document out for callers that just want the JSON
+    /// (HTTP `GET /api/documents/{id}`, the cache-miss measurement fallback).
+    /// `None` when no entry is in the cache. Step 5 fills the on-disk
+    /// fallback so this stops being the only resolution path.
+    pub async fn get_document(&self, document_id: &str) -> Option<ExposureDocument> {
+        let image = self.get(document_id)?;
+        let cloned = image.document.read().await.clone();
+        Some(cloned)
+    }
+
+    /// Write `value` into `sections[name]` on the cached document and
+    /// persist the updated sidecar JSON atomically. The per-entry write
+    /// lock is held across the sidecar write so concurrent updates
+    /// serialize at the entry level.
+    ///
+    /// Failure semantics: when the sidecar write fails the in-memory
+    /// section is rolled back to its prior value, mirroring the old
+    /// `DocumentStore::put_section` contract. The cache budget is updated
+    /// only after a successful write.
+    pub async fn put_section(
+        &self,
+        document_id: &str,
+        name: &str,
+        value: serde_json::Value,
+    ) -> crate::error::Result<()> {
+        let image = self.get(document_id).ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", document_id))
+        })?;
+        let mut doc = image.document.write().await;
+        let prior = doc.sections.insert(name.to_string(), value);
+        match crate::document::write_sidecar(&doc).await {
+            Ok(()) => {
+                let new_json_bytes = serde_json::to_vec(&*doc).map(|v| v.len()).unwrap_or(0);
+                let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
+                drop(doc);
+                self.adjust_bytes(new_json_bytes as i64 - old_json_bytes as i64);
+                debug!(
+                    document_id = %document_id,
+                    section = %name,
+                    new_json_bytes,
+                    old_json_bytes,
+                    "ImageCache put_section"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                match prior {
+                    Some(v) => {
+                        doc.sections.insert(name.to_string(), v);
+                    }
+                    None => {
+                        doc.sections.remove(name);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Apply a signed delta to the running cache `bytes` total under the
+    /// cache mutex, then run eviction so the budget stays honored after
+    /// document growth.
+    fn adjust_bytes(&self, delta: i64) {
+        let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
+        if delta >= 0 {
+            inner.bytes = inner.bytes.saturating_add(delta as usize);
+        } else {
+            inner.bytes = inner.bytes.saturating_sub((-delta) as usize);
+        }
+        self.evict_locked(&mut inner);
+    }
+
     /// Number of entries currently in the cache.
     #[cfg(test)]
     pub fn len(&self) -> usize {

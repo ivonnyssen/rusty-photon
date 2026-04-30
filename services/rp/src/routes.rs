@@ -5,16 +5,14 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ndarray::Array2;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::document::DocumentStore;
 use crate::equipment::EquipmentRegistry;
-use crate::imaging::{self, CachedPixels, ImageCache};
+use crate::imaging::{CachedPixels, ImageCache};
 use crate::mcp::McpHandler;
 use crate::session::SessionManager;
 
@@ -32,7 +30,6 @@ pub struct AppState {
     pub equipment: Arc<EquipmentRegistry>,
     pub mcp: McpHandler,
     pub session: Arc<SessionManager>,
-    pub documents: DocumentStore,
     pub image_cache: ImageCache,
 }
 
@@ -110,7 +107,7 @@ async fn get_document(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    match state.documents.get(&document_id).await {
+    match state.image_cache.get_document(&document_id).await {
         Some(doc) => match serde_json::to_value(&doc) {
             Ok(v) => (StatusCode::OK, Json(v)),
             Err(e) => (
@@ -129,89 +126,56 @@ async fn get_image_metadata(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    // Single cache lookup: `get` mutates LRU order, so calling it twice would
-    // double-bump this entry to MRU.
-    let cached = state.image_cache.get(&document_id);
-    let in_cache = cached.is_some();
-    match state.documents.get(&document_id).await {
-        Some(doc) => {
-            let bitpix = match cached.as_ref() {
-                Some(c) => match &c.pixels {
-                    CachedPixels::U16(_) => 16,
-                    CachedPixels::I32(_) => 32,
-                },
-                // Cache miss: FITS-on-disk is always written as i32.
-                None => 32,
-            };
-            let body = serde_json::json!({
-                "document_id": document_id,
-                "width": doc.width,
-                "height": doc.height,
-                "bitpix": bitpix,
-                "fits_path": doc.file_path,
-                "in_cache": in_cache,
-                "document_url": format!("/api/documents/{}", document_id),
-            });
-            (StatusCode::OK, Json(body))
-        }
-        None => (
+    let Some(cached) = state.image_cache.get(&document_id) else {
+        return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("document not found: {}", document_id)})),
-        ),
-    }
+        );
+    };
+    let bitpix = match &cached.pixels {
+        CachedPixels::U16(_) => 16,
+        CachedPixels::I32(_) => 32,
+    };
+    let doc = cached.document.read().await;
+    let body = serde_json::json!({
+        "document_id": document_id,
+        "width": doc.width,
+        "height": doc.height,
+        "bitpix": bitpix,
+        "fits_path": doc.file_path,
+        "in_cache": true,
+        "document_url": format!("/api/documents/{}", document_id),
+    });
+    (StatusCode::OK, Json(body))
 }
 
 async fn get_image_pixels(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> Response {
-    if let Some(cached) = state.image_cache.get(&document_id) {
-        let (width, height) = (cached.width, cached.height);
-        let body = match &cached.pixels {
-            CachedPixels::U16(arr) => imagebytes(width, height, TRANSMISSION_U16, |buf| {
-                buf.reserve(arr.len() * 2);
-                for &v in arr.iter() {
-                    buf.extend_from_slice(&v.to_le_bytes());
-                }
-            }),
-            CachedPixels::I32(arr) => imagebytes(width, height, TRANSMISSION_I32, |buf| {
-                buf.reserve(arr.len() * 4);
-                for &v in arr.iter() {
-                    buf.extend_from_slice(&v.to_le_bytes());
-                }
-            }),
-        };
-        return imagebytes_response(body);
-    }
-
-    // Cache miss: fall back to reading the FITS file from disk.
-    let doc = match state.documents.get(&document_id).await {
-        Some(d) => d,
-        None => {
-            return not_found(format!("document not found: {}", document_id));
-        }
+    let Some(cached) = state.image_cache.get(&document_id) else {
+        // Until Step 5's disk-fallback lands, eviction makes a document
+        // unreachable until the next capture re-populates the cache. The
+        // FITS file stays on disk; consumers that need it can read
+        // `file_path` directly via the (filesystem-shared) deployment.
+        return not_found(format!("document not found: {}", document_id));
     };
-    let path = doc.file_path.clone();
-    let read = tokio::task::spawn_blocking(move || imaging::read_fits_pixels(&path)).await;
-    match read {
-        Ok(Ok((pixels, width, height))) => {
-            let arr = match Array2::from_shape_vec((width as usize, height as usize), pixels) {
-                Ok(a) => a,
-                Err(e) => {
-                    return server_error(format!("FITS shape mismatch: {}", e));
-                }
-            };
-            let body = imagebytes(width, height, TRANSMISSION_I32, |buf| {
-                buf.reserve(arr.len() * 4);
-                for &v in arr.iter() {
-                    buf.extend_from_slice(&v.to_le_bytes());
-                }
-            });
-            imagebytes_response(body)
-        }
-        Ok(Err(e)) => server_error(format!("failed to read FITS: {}", e)),
-        Err(e) => server_error(format!("task error: {}", e)),
-    }
+    let (width, height) = (cached.width, cached.height);
+    let body = match &cached.pixels {
+        CachedPixels::U16(arr) => imagebytes(width, height, TRANSMISSION_U16, |buf| {
+            buf.reserve(arr.len() * 2);
+            for &v in arr.iter() {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }),
+        CachedPixels::I32(arr) => imagebytes(width, height, TRANSMISSION_I32, |buf| {
+            buf.reserve(arr.len() * 4);
+            for &v in arr.iter() {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }),
+    };
+    imagebytes_response(body)
 }
 
 /// Build an Alpaca ImageBytes payload (44-byte header + raw little-endian
@@ -263,14 +227,6 @@ fn not_found(msg: String) -> Response {
         .into_response()
 }
 
-fn server_error(msg: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error": msg})),
-    )
-        .into_response()
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -280,7 +236,7 @@ mod tests {
     use crate::imaging::CachedImage;
     use std::path::PathBuf;
 
-    fn test_app_state(image_cache: ImageCache, documents: DocumentStore) -> AppState {
+    fn test_app_state(image_cache: ImageCache) -> AppState {
         let event_bus = Arc::new(EventBus::from_config(&[]));
         let equipment = Arc::new(crate::equipment::EquipmentRegistry {
             cameras: vec![],
@@ -295,13 +251,11 @@ mod tests {
                 data_directory: "/tmp".to_string(),
             },
             image_cache.clone(),
-            documents.clone(),
         );
         AppState {
             equipment,
             mcp,
             session,
-            documents,
             image_cache,
         }
     }
@@ -351,12 +305,6 @@ mod tests {
             .to_vec()
     }
 
-    async fn store_with_doc_at(file_path: &str) -> DocumentStore {
-        let store = DocumentStore::new();
-        store.create(doc_at(file_path)).await.unwrap();
-        store
-    }
-
     #[tokio::test]
     async fn pixels_serves_u16_from_cache() {
         let cache = ImageCache::new(64, 4);
@@ -364,11 +312,8 @@ mod tests {
             "doc-1".to_string(),
             cached_u16(ndarray::Array2::from_shape_vec((2, 2), vec![1u16, 2, 3, 4]).unwrap()),
         );
-        let response = get_image_pixels(
-            State(test_app_state(cache, DocumentStore::new())),
-            Path("doc-1".to_string()),
-        )
-        .await;
+        let response =
+            get_image_pixels(State(test_app_state(cache)), Path("doc-1".to_string())).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -387,11 +332,8 @@ mod tests {
             "doc-1".to_string(),
             cached_i32(ndarray::Array2::from_shape_vec((2, 2), vec![1i32, 2, 3, 4]).unwrap()),
         );
-        let response = get_image_pixels(
-            State(test_app_state(cache, DocumentStore::new())),
-            Path("doc-1".to_string()),
-        )
-        .await;
+        let response =
+            get_image_pixels(State(test_app_state(cache)), Path("doc-1".to_string())).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -408,76 +350,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pixels_falls_back_to_fits_on_cache_miss() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let pixels = vec![10i32, 20, 30, 40];
-        crate::imaging::write_fits(&fits_path, &pixels, 2, 2, "test-doc-id")
-            .await
-            .unwrap();
-        let store = store_with_doc_at(&fits_path).await;
-
+    async fn pixels_returns_404_on_cache_miss() {
+        // Step 5 will reintroduce a disk-fallback that turns this into a
+        // 200; until then a cache miss is a 404. The FITS file stays on
+        // disk regardless of what the route returns.
         let response = get_image_pixels(
-            State(test_app_state(ImageCache::new(64, 4), store)),
-            Path("doc-1".to_string()),
+            State(test_app_state(ImageCache::new(64, 4))),
+            Path("missing".to_string()),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_bytes(response).await;
-        assert_eq!(body.len(), IMAGEBYTES_HEADER_LEN + 4 * 4);
-        // FITS fallback always serves I32 (FITS-on-disk is i32 per write_fits).
-        assert_eq!(&body[24..28], &TRANSMISSION_I32.to_le_bytes());
-        let mut expected = Vec::new();
-        for v in pixels {
-            expected.extend_from_slice(&v.to_le_bytes());
-        }
-        assert_eq!(&body[44..], &expected[..]);
-    }
-
-    #[tokio::test]
-    async fn pixels_returns_500_when_fits_read_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir
-            .path()
-            .join("missing.fits")
-            .to_string_lossy()
-            .into_owned();
-        let store = store_with_doc_at(&missing).await;
-
-        let response = get_image_pixels(
-            State(test_app_state(ImageCache::new(64, 4), store)),
-            Path("doc-1".to_string()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = body_bytes(response).await;
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(
-            v["error"]
-                .as_str()
-                .expect("error field is a string")
-                .contains("failed to read FITS"),
-            "got: {:?}",
-            v
-        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn metadata_reports_bitpix_16_for_u16_cached() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let cache = ImageCache::new(64, 4);
         cache.insert(
             "doc-1".to_string(),
             cached_u16(ndarray::Array2::from_elem((2, 2), 0u16)),
         );
-        let store = store_with_doc_at(&fits_path).await;
 
-        let (status, Json(body)) = get_image_metadata(
-            State(test_app_state(cache, store)),
-            Path("doc-1".to_string()),
-        )
-        .await;
+        let (status, Json(body)) =
+            get_image_metadata(State(test_app_state(cache)), Path("doc-1".to_string())).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["bitpix"], 16);
         assert_eq!(body["in_cache"], true);
@@ -485,39 +379,27 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_reports_bitpix_32_for_i32_cached() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
         let cache = ImageCache::new(64, 4);
         cache.insert(
             "doc-1".to_string(),
             cached_i32(ndarray::Array2::from_elem((2, 2), 0i32)),
         );
-        let store = store_with_doc_at(&fits_path).await;
 
-        let (status, Json(body)) = get_image_metadata(
-            State(test_app_state(cache, store)),
-            Path("doc-1".to_string()),
-        )
-        .await;
+        let (status, Json(body)) =
+            get_image_metadata(State(test_app_state(cache)), Path("doc-1".to_string())).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["bitpix"], 32);
         assert_eq!(body["in_cache"], true);
     }
 
     #[tokio::test]
-    async fn metadata_reports_bitpix_32_when_cache_miss() {
-        let dir = tempfile::tempdir().unwrap();
-        let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
-        let store = store_with_doc_at(&fits_path).await;
-
-        let (status, Json(body)) = get_image_metadata(
-            State(test_app_state(ImageCache::new(64, 4), store)),
-            Path("doc-1".to_string()),
+    async fn metadata_returns_404_on_cache_miss() {
+        let (status, _) = get_image_metadata(
+            State(test_app_state(ImageCache::new(64, 4))),
+            Path("missing".to_string()),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["bitpix"], 32);
-        assert_eq!(body["in_cache"], false);
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[test]
