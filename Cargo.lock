@@ -4217,6 +4217,7 @@ dependencies = [
  "clap",
  "cucumber",
  "humantime-serde",
+ "ndarray",
  "proptest",
  "reqwest 0.13.2",
  "serde",

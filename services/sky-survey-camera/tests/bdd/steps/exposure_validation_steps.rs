@@ -17,10 +17,9 @@ async fn connected_stubbed(world: &mut SkySurveyCameraWorld) {
 
 #[given("an exposure is already in flight")]
 async fn exposure_in_flight(world: &mut SkySurveyCameraWorld) {
-    // Slice 3 stub: the in_flight flag is set by start_exposure but
-    // never cleared by completion (slice 4 will add the real fetch
-    // and ImageReady transition). That's enough to trigger E2 and
-    // satisfy the cancellation scenarios' "in flight" precondition.
+    // Set the stub to Hold so the spawned fetch hangs indefinitely;
+    // that keeps `exposure_in_flight` true for E2 / A1 / A2.
+    world.set_stub_behavior(crate::world::StubBehavior::Hold);
     world.drive_start_exposure(1, 1, 100, 100, 0, 0, 1.0).await;
     if let Some(code) = world.last_ascom_error {
         panic!("expected initial StartExposure to succeed, got ASCOM {code:#X}");

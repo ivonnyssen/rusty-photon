@@ -1,12 +1,16 @@
+use ascom_alpaca::api::camera::ImageArray;
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ndarray::Array2;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::config::Config;
+use crate::fits::parse_primary_hdu;
 use crate::pointing::{PointingState, SharedPointing};
+use crate::survey::{try_cache_load, try_cache_store, SkyViewClient, SurveyError, SurveyRequest};
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
 /// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
@@ -22,6 +26,46 @@ const EXPOSURE_MAX: Duration = Duration::from_secs(3600);
 /// `/sky-survey/*` HTTP routes. Cloning a [`SkySurveyCamera`] only
 /// clones the `Arc` — both views observe the same connection and
 /// pointing state.
+/// Builds the v0 cutout SurveyRequest for a snapshot of camera state:
+/// the cutout is always sized to the binned full sensor (the design
+/// doc cuts sub-frames out client-side after the FITS comes back).
+pub fn build_full_sensor_request(
+    config: &Config,
+    pointing: PointingState,
+    bin_x: u8,
+    bin_y: u8,
+) -> SurveyRequest {
+    let plate_scale_x_arcsec =
+        206.265 * config.optics.pixel_size_x_um / config.optics.focal_length_mm;
+    let plate_scale_y_arcsec =
+        206.265 * config.optics.pixel_size_y_um / config.optics.focal_length_mm;
+    let bx = bin_x.max(1) as u32;
+    let by = bin_y.max(1) as u32;
+    let pixels_x = config.optics.sensor_width_px / bx;
+    let pixels_y = config.optics.sensor_height_px / by;
+    let size_x_deg = plate_scale_x_arcsec * config.optics.sensor_width_px as f64 / 3600.0;
+    let size_y_deg = plate_scale_y_arcsec * config.optics.sensor_height_px as f64 / 3600.0;
+    SurveyRequest {
+        survey: config.survey.name.clone(),
+        ra_deg: pointing.ra_deg,
+        dec_deg: pointing.dec_deg,
+        rotation_deg: pointing.rotation_deg,
+        pixels_x,
+        pixels_y,
+        size_x_deg,
+        size_y_deg,
+    }
+}
+
+/// Outcome of the spawned exposure task — stashed on the device state
+/// so subsequent ASCOM calls can map it to ImageArray vs ASCOM error.
+#[derive(Debug)]
+pub struct ExposureOutcome {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<i32>,
+}
+
 #[derive(Debug)]
 pub struct DeviceState {
     pub config: Config,
@@ -34,6 +78,10 @@ pub struct DeviceState {
     pub start_x: AtomicU32,
     pub start_y: AtomicU32,
     pub exposure_in_flight: AtomicBool,
+    pub image_ready: AtomicBool,
+    pub last_image: Mutex<Option<ExposureOutcome>>,
+    pub last_error: Mutex<Option<String>>,
+    pub survey_client: Arc<SkyViewClient>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +90,7 @@ pub struct SkySurveyCamera {
 }
 
 impl SkySurveyCamera {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, survey_client: Arc<SkyViewClient>) -> Self {
         let pointing = SharedPointing::new(PointingState::new(
             config.pointing.initial_ra_deg,
             config.pointing.initial_dec_deg,
@@ -61,6 +109,10 @@ impl SkySurveyCamera {
             start_x: AtomicU32::new(0),
             start_y: AtomicU32::new(0),
             exposure_in_flight: AtomicBool::new(false),
+            image_ready: AtomicBool::new(false),
+            last_image: Mutex::new(None),
+            last_error: Mutex::new(None),
+            survey_client,
         };
         Self {
             state: Arc::new(state),
@@ -74,6 +126,102 @@ impl SkySurveyCamera {
     pub fn is_connected(&self) -> bool {
         self.state.connected.load(Ordering::Acquire)
     }
+}
+
+/// The body of the spawned exposure task. Performs the cache hit /
+/// fetch / parse / sub-frame crop; on any failure stores the message
+/// in `state.last_error` and clears `in_flight` so subsequent
+/// `image_array` calls can surface UNSPECIFIED_ERROR.
+async fn run_exposure(state: Arc<DeviceState>, light: bool) {
+    let result = run_exposure_inner(&state, light).await;
+    match result {
+        Ok(outcome) => {
+            *state.last_image.lock().expect("last_image poisoned") = Some(outcome);
+            *state.last_error.lock().expect("last_error poisoned") = None;
+            state.image_ready.store(true, Ordering::Release);
+        }
+        Err(err) => {
+            warn!(error = %err, "exposure failed");
+            *state.last_error.lock().expect("last_error poisoned") = Some(err);
+            // image_ready stays false
+        }
+    }
+    state.exposure_in_flight.store(false, Ordering::Release);
+}
+
+async fn run_exposure_inner(
+    state: &Arc<DeviceState>,
+    light: bool,
+) -> Result<ExposureOutcome, String> {
+    let bx = state.bin_x.load(Ordering::Acquire);
+    let by = state.bin_y.load(Ordering::Acquire);
+    let nx = state.num_x.load(Ordering::Acquire);
+    let ny = state.num_y.load(Ordering::Acquire);
+    let sx = state.start_x.load(Ordering::Acquire);
+    let sy = state.start_y.load(Ordering::Acquire);
+
+    if !light {
+        // S2: zero-filled NumX × NumY frame, no fetch.
+        return Ok(ExposureOutcome {
+            width: nx,
+            height: ny,
+            data: vec![0i32; (nx as usize) * (ny as usize)],
+        });
+    }
+
+    let pointing = state.pointing.snapshot();
+    let request = build_full_sensor_request(&state.config, pointing, bx, by);
+    let cache_dir = &state.config.survey.cache_dir;
+    let cache_key = request.cache_key();
+    let bytes = if let Some(b) = try_cache_load(cache_dir, &cache_key) {
+        b
+    } else {
+        match state.survey_client.fetch(&request).await {
+            Ok(b) => {
+                try_cache_store(cache_dir, &cache_key, &b);
+                b
+            }
+            Err(SurveyError::Timeout) => return Err("survey request timed out".into()),
+            Err(SurveyError::NonSuccess(code)) => {
+                return Err(format!("survey returned status {code}"))
+            }
+            Err(SurveyError::Http(msg)) => return Err(format!("survey HTTP error: {msg}")),
+        }
+    };
+
+    let img = parse_primary_hdu(&bytes).map_err(|e| format!("FITS parse error: {e}"))?;
+    let cropped = crop_subframe(&img.data, img.width, img.height, sx, sy, nx, ny)?;
+    Ok(ExposureOutcome {
+        width: nx,
+        height: ny,
+        data: cropped,
+    })
+}
+
+fn crop_subframe(
+    src: &[i32],
+    src_w: u32,
+    src_h: u32,
+    sx: u32,
+    sy: u32,
+    nx: u32,
+    ny: u32,
+) -> Result<Vec<i32>, String> {
+    if sx + nx > src_w || sy + ny > src_h {
+        return Err(format!(
+            "subframe ({sx}+{nx},{sy}+{ny}) exceeds source ({src_w},{src_h})"
+        ));
+    }
+    if sx == 0 && sy == 0 && nx == src_w && ny == src_h {
+        return Ok(src.to_vec());
+    }
+    let mut out = Vec::with_capacity((nx as usize) * (ny as usize));
+    for row in sy..sy + ny {
+        let start = (row as usize) * (src_w as usize) + sx as usize;
+        let end = start + nx as usize;
+        out.extend_from_slice(&src[start..end]);
+    }
+    Ok(out)
 }
 
 #[async_trait::async_trait]
@@ -289,7 +437,7 @@ impl Camera for SkySurveyCamera {
         Ok(())
     }
 
-    async fn start_exposure(&self, duration: Duration, _light: bool) -> ASCOMResult<()> {
+    async fn start_exposure(&self, duration: Duration, light: bool) -> ASCOMResult<()> {
         if !self.state.connected.load(Ordering::Acquire) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::NOT_CONNECTED,
@@ -301,8 +449,6 @@ impl Camera for SkySurveyCamera {
                 "Duration {duration:?} outside [{EXPOSURE_MIN:?}, {EXPOSURE_MAX:?}]"
             )));
         }
-        // Sub-frame combination is validated at setter time; here we
-        // just ensure the user has supplied a non-zero region.
         let bx = self.state.bin_x.load(Ordering::Acquire) as u32;
         let by = self.state.bin_y.load(Ordering::Acquire) as u32;
         let nx = self.state.num_x.load(Ordering::Acquire);
@@ -316,8 +462,7 @@ impl Camera for SkySurveyCamera {
                 "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({sensor_x_binned},{sensor_y_binned})"
             )));
         }
-        // E2: reject if another exposure is already in flight. Slice 4
-        // turns this into a real survey fetch with cancellation.
+        // E2: reject if another exposure is already in flight.
         if self
             .state
             .exposure_in_flight
@@ -326,10 +471,14 @@ impl Camera for SkySurveyCamera {
         {
             return Err(ASCOMError::invalid_operation("exposure already in flight"));
         }
-        debug!(
-            ?duration,
-            "exposure started (slice-3 stub: in_flight set, no fetch)"
-        );
+        // Reset readout state for the new exposure.
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock().expect("last_error poisoned") = None;
+        *self.state.last_image.lock().expect("last_image poisoned") = None;
+
+        debug!(?duration, light, "exposure started");
+        let state = Arc::clone(&self.state);
+        tokio::spawn(run_exposure(state, light));
         Ok(())
     }
 
@@ -344,6 +493,12 @@ impl Camera for SkySurveyCamera {
                 "no exposure in progress to abort",
             ));
         }
+        // The spawned task may still be in flight (e.g. a hung HTTP
+        // fetch); its eventual outcome is suppressed by the cleared
+        // readiness state here. A1 ("ImageReady is false") holds.
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock().expect("last_error poisoned") = None;
+        *self.state.last_image.lock().expect("last_image poisoned") = None;
         Ok(())
     }
 
@@ -358,14 +513,39 @@ impl Camera for SkySurveyCamera {
                 "no exposure in progress to stop",
             ));
         }
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock().expect("last_error poisoned") = None;
+        *self.state.last_image.lock().expect("last_image poisoned") = None;
         Ok(())
     }
 
     async fn image_ready(&self) -> ASCOMResult<bool> {
-        // Slice 4 will replace this with a real readiness flag tracked
-        // by the exposure pipeline. For now: never ready (in_flight
-        // exposures never complete in slice 3), which matches the
-        // cancellation contract A1 ("ImageReady is false").
-        Ok(false)
+        Ok(self.state.image_ready.load(Ordering::Acquire))
+    }
+
+    async fn image_array(&self) -> ASCOMResult<ImageArray> {
+        // S4-S6: a stored fetch error becomes ASCOM UNSPECIFIED_ERROR.
+        if let Some(msg) = self
+            .state
+            .last_error
+            .lock()
+            .expect("last_error poisoned")
+            .clone()
+        {
+            return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
+        }
+        if !self.state.image_ready.load(Ordering::Acquire) {
+            return Err(ASCOMError::invalid_operation("no image is ready"));
+        }
+        let guard = self.state.last_image.lock().expect("last_image poisoned");
+        let outcome = guard
+            .as_ref()
+            .expect("image_ready=true but no stored image");
+        let array = Array2::from_shape_vec(
+            (outcome.height as usize, outcome.width as usize),
+            outcome.data.clone(),
+        )
+        .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?;
+        Ok(ImageArray::from(array))
     }
 }

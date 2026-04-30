@@ -4,8 +4,10 @@
 pub mod camera;
 pub mod config;
 pub mod error;
+pub mod fits;
 pub mod pointing;
 pub mod routes;
+pub mod survey;
 
 pub use config::{load_config, Config};
 pub use error::SkySurveyCameraError;
@@ -20,7 +22,11 @@ use std::path::Path;
 pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
     let config = load_config(config_path).await?;
 
-    let device = camera::SkySurveyCamera::new(config.clone());
+    let survey_client = std::sync::Arc::new(
+        survey::SkyViewClient::new(&config.survey)
+            .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?,
+    );
+    let device = camera::SkySurveyCamera::new(config.clone(), survey_client);
     let shared_state = device.shared_state();
 
     let mut server = Server::new(CargoServerInfo!());
