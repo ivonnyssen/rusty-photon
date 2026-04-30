@@ -67,6 +67,7 @@ impl ServerBuilder {
         let image_cache = ImageCache::new(
             config.imaging.cache_max_mib,
             config.imaging.cache_max_images,
+            std::path::PathBuf::from(&config.session.data_directory),
         );
 
         let mcp = McpHandler::new(

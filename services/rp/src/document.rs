@@ -67,6 +67,27 @@ pub fn sidecar_path(file_path: &str) -> PathBuf {
     p.with_extension("json")
 }
 
+/// Read a sidecar JSON file from disk and deserialize it into an
+/// `ExposureDocument`. Synchronous because sidecars are small (single-digit
+/// KB even with measurement sections); the disk-fallback resolver runs the
+/// whole scan on the blocking pool already.
+pub fn read_sidecar_sync(path: &Path) -> Result<ExposureDocument> {
+    let body = std::fs::read(path).map_err(|e| {
+        RpError::Imaging(format!(
+            "failed to read sidecar '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    serde_json::from_slice(&body).map_err(|e| {
+        RpError::Imaging(format!(
+            "failed to parse sidecar '{}': {}",
+            path.display(),
+            e
+        ))
+    })
+}
+
 /// Atomically write `doc` to its sidecar JSON path
 /// (`<doc.file_path>.with_extension("json")`).
 ///

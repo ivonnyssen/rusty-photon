@@ -293,7 +293,7 @@ impl McpHandler {
         doc_id: &str,
         params: &ResolvedParams,
     ) -> crate::error::Result<imaging::MeasureBasicResult> {
-        if let Some(cached) = self.image_cache.get(doc_id) {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_basic(
                 arr,
@@ -305,9 +305,13 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
-        })?;
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
         // No camera context here, so we can't reliably know max_adu — pass None
         // (saturation flagging is best-effort; not a correctness issue).
         self.measure_via_path(&doc.file_path, params).await
@@ -365,14 +369,18 @@ impl McpHandler {
         doc_id: &str,
         params: &ResolvedClipParams,
     ) -> crate::error::Result<BackgroundOutcome> {
-        if let Some(cached) = self.image_cache.get(doc_id) {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
             return crate::dispatch_pixels!(&cached.pixels, |arr| clip_outcome(arr, params));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
-        })?;
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
         self.estimate_via_path(&doc.file_path, params).await
     }
 
@@ -434,7 +442,7 @@ impl McpHandler {
         doc_id: &str,
         params: &ResolvedDetectParams,
     ) -> crate::error::Result<DetectStarsOutcome> {
-        if let Some(cached) = self.image_cache.get(doc_id) {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| detect_outcome(
                 arr, params, max_adu
@@ -442,9 +450,13 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
-        })?;
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
         // No camera context here — pass max_adu = None (matches measure_basic).
         self.detect_via_path(&doc.file_path, params).await
     }
@@ -518,7 +530,7 @@ impl McpHandler {
         doc_id: &str,
         params: &ResolvedMeasureStarsParams,
     ) -> crate::error::Result<imaging::MeasureStarsResult> {
-        if let Some(cached) = self.image_cache.get(doc_id) {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_stars(
                 arr,
@@ -531,9 +543,13 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
-        })?;
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
         self.measure_stars_via_path(&doc.file_path, params).await
     }
 
@@ -564,7 +580,7 @@ impl McpHandler {
         doc_id: &str,
         params: &ResolvedDetectParams,
     ) -> crate::error::Result<imaging::SnrResult> {
-        if let Some(cached) = self.image_cache.get(doc_id) {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::compute_snr(
                 arr,
@@ -576,9 +592,13 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self.image_cache.get_document(doc_id).await.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
-        })?;
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
         self.snr_via_path(&doc.file_path, params).await
     }
 
@@ -724,36 +744,7 @@ impl McpHandler {
         if document_persisted {
             if let Some(max_adu) = captured_max_adu {
                 let shape = (width as usize, height as usize);
-                let cached_pixels = if max_adu <= u16::MAX as u32 {
-                    // Clamp to [0, max_adu] before narrowing — `as u16`
-                    // would otherwise wrap silently on negative or
-                    // > 65535 values from a buggy driver or unexpected
-                    // pixel format. The image-cache contract is "pixels
-                    // in the camera's declared range," so clamping is
-                    // the correct policy (vs. erroring and skipping
-                    // the insert).
-                    let max_cached = max_adu as i32;
-                    let narrowed: Vec<u16> = pixels
-                        .iter()
-                        .map(|&p| p.clamp(0, max_cached) as u16)
-                        .collect();
-                    match ndarray::Array2::from_shape_vec(shape, narrowed) {
-                        Ok(arr) => Some(CachedPixels::U16(arr)),
-                        Err(e) => {
-                            debug!(error = %e, "cache: shape mismatch, skipping insert");
-                            None
-                        }
-                    }
-                } else {
-                    match ndarray::Array2::from_shape_vec(shape, pixels.clone()) {
-                        Ok(arr) => Some(CachedPixels::I32(arr)),
-                        Err(e) => {
-                            debug!(error = %e, "cache: shape mismatch, skipping insert");
-                            None
-                        }
-                    }
-                };
-                if let Some(cp) = cached_pixels {
+                if let Some(cp) = CachedPixels::from_i32_pixels(pixels, shape, max_adu) {
                     self.image_cache.insert(
                         document_id.clone(),
                         CachedImage::new(
@@ -764,6 +755,11 @@ impl McpHandler {
                             max_adu,
                             doc.clone(),
                         ),
+                    );
+                } else {
+                    debug!(
+                        document_id = %document_id,
+                        "cache: shape mismatch, skipping insert"
                     );
                 }
             }
@@ -1746,7 +1742,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             },
-            ImageCache::new(64, 4),
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
         )
     }
 
@@ -2062,7 +2058,7 @@ mod tests {
             SessionConfig {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
-            ImageCache::new(64, 4),
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -2090,7 +2086,7 @@ mod tests {
             ..Default::default()
         };
         let temp = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         let handler = McpHandler::new(
             Arc::new(camera_registry(Arc::new(cam))),
             Arc::new(crate::events::EventBus::from_config(&[])),
@@ -2122,7 +2118,7 @@ mod tests {
             "expected I32 variant for max_adu > u16::MAX"
         );
         let doc = cache
-            .get_document(doc_id)
+            .resolve_document(doc_id)
             .await
             .expect("expected cache entry to carry the document");
         assert_eq!(doc.max_adu, Some(1 << 20));
@@ -2139,7 +2135,7 @@ mod tests {
         // resolution path in Phase 7 grep's by this suffix.
         let cam = MockCamera::default();
         let temp = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         let handler = McpHandler::new(
             Arc::new(camera_registry(Arc::new(cam))),
             Arc::new(crate::events::EventBus::from_config(&[])),

@@ -107,7 +107,7 @@ async fn get_document(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    match state.image_cache.get_document(&document_id).await {
+    match state.image_cache.resolve_document(&document_id).await {
         Some(doc) => match serde_json::to_value(&doc) {
             Ok(v) => (StatusCode::OK, Json(v)),
             Err(e) => (
@@ -126,7 +126,7 @@ async fn get_image_metadata(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let Some(cached) = state.image_cache.get(&document_id) else {
+    let Some(cached) = state.image_cache.resolve(&document_id).await else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("document not found: {}", document_id)})),
@@ -153,11 +153,7 @@ async fn get_image_pixels(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> Response {
-    let Some(cached) = state.image_cache.get(&document_id) else {
-        // Until Step 5's disk-fallback lands, eviction makes a document
-        // unreachable until the next capture re-populates the cache. The
-        // FITS file stays on disk; consumers that need it can read
-        // `file_path` directly via the (filesystem-shared) deployment.
+    let Some(cached) = state.image_cache.resolve(&document_id).await else {
         return not_found(format!("document not found: {}", document_id));
     };
     let (width, height) = (cached.width, cached.height);
@@ -307,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn pixels_serves_u16_from_cache() {
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
             "doc-1".to_string(),
             cached_u16(ndarray::Array2::from_shape_vec((2, 2), vec![1u16, 2, 3, 4]).unwrap()),
@@ -327,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn pixels_serves_i32_from_cache() {
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
             "doc-1".to_string(),
             cached_i32(ndarray::Array2::from_shape_vec((2, 2), vec![1i32, 2, 3, 4]).unwrap()),
@@ -355,7 +351,11 @@ mod tests {
         // 200; until then a cache miss is a 404. The FITS file stays on
         // disk regardless of what the route returns.
         let response = get_image_pixels(
-            State(test_app_state(ImageCache::new(64, 4))),
+            State(test_app_state(ImageCache::new(
+                64,
+                4,
+                std::path::PathBuf::from("/nonexistent"),
+            ))),
             Path("missing".to_string()),
         )
         .await;
@@ -364,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_reports_bitpix_16_for_u16_cached() {
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
             "doc-1".to_string(),
             cached_u16(ndarray::Array2::from_elem((2, 2), 0u16)),
@@ -379,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_reports_bitpix_32_for_i32_cached() {
-        let cache = ImageCache::new(64, 4);
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
             "doc-1".to_string(),
             cached_i32(ndarray::Array2::from_elem((2, 2), 0i32)),
@@ -395,7 +395,11 @@ mod tests {
     #[tokio::test]
     async fn metadata_returns_404_on_cache_miss() {
         let (status, _) = get_image_metadata(
-            State(test_app_state(ImageCache::new(64, 4))),
+            State(test_app_state(ImageCache::new(
+                64,
+                4,
+                std::path::PathBuf::from("/nonexistent"),
+            ))),
             Path("missing".to_string()),
         )
         .await;

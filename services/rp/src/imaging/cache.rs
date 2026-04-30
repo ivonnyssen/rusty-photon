@@ -14,7 +14,7 @@
 //! — whichever trips first.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -68,6 +68,28 @@ impl CachedPixels {
         match self {
             CachedPixels::U16(a) => a.len() * std::mem::size_of::<u16>(),
             CachedPixels::I32(a) => a.len() * std::mem::size_of::<i32>(),
+        }
+    }
+
+    /// Build the right pixel variant from a flat i32 buffer based on the
+    /// camera's declared `max_adu`. Used both by capture (post-readout) and
+    /// by the disk-fallback resolver. When `max_adu ≤ 65535`, narrow to
+    /// `u16` clamping each pixel into `[0, max_adu]` so a buggy driver
+    /// can't introduce wrap-around. Otherwise keep the i32 buffer
+    /// unchanged.
+    ///
+    /// Returns `None` if `from_shape_vec` fails (pixel count vs shape
+    /// mismatch).
+    pub fn from_i32_pixels(pixels: Vec<i32>, shape: (usize, usize), max_adu: u32) -> Option<Self> {
+        if max_adu <= u16::MAX as u32 {
+            let max_cached = max_adu as i32;
+            let narrowed: Vec<u16> = pixels
+                .into_iter()
+                .map(|p| p.clamp(0, max_cached) as u16)
+                .collect();
+            Array2::from_shape_vec(shape, narrowed).ok().map(Self::U16)
+        } else {
+            Array2::from_shape_vec(shape, pixels).ok().map(Self::I32)
         }
     }
 }
@@ -133,6 +155,10 @@ pub struct ImageCache {
     inner: Arc<Mutex<CacheInner>>,
     max_bytes: usize,
     max_images: usize,
+    /// Root directory to scan for `<uuid8>.fits` files when an in-memory
+    /// lookup misses. The disk-fallback resolver matches by suffix and
+    /// verifies via FITS `DOC_ID` (sidecar `id` as fallback authority).
+    data_directory: PathBuf,
 }
 
 struct CacheInner {
@@ -145,12 +171,15 @@ struct CacheInner {
 impl ImageCache {
     /// `max_mib`: eviction budget in mebibytes. `max_images`: hard cap on
     /// entries — a safety net against pathological large-image streams.
-    /// Whichever budget trips first triggers eviction.
-    pub fn new(max_mib: usize, max_images: usize) -> Self {
+    /// `data_directory`: scanned by `resolve` / `resolve_document` on a
+    /// cache miss to rehydrate from disk. Whichever budget trips first
+    /// triggers eviction.
+    pub fn new(max_mib: usize, max_images: usize, data_directory: PathBuf) -> Self {
         let max_bytes = max_mib.saturating_mul(1024 * 1024);
         debug!(
             max_mib = max_mib,
             max_images = max_images,
+            data_directory = %data_directory.display(),
             "ImageCache constructed"
         );
         Self {
@@ -161,6 +190,7 @@ impl ImageCache {
             })),
             max_bytes,
             max_images,
+            data_directory,
         }
     }
 
@@ -190,9 +220,9 @@ impl ImageCache {
         self.evict_locked(&mut inner);
     }
 
-    /// Returns the cached image for `document_id` if present, marking it
-    /// most-recently-used. `None` if not in cache — the caller is expected
-    /// to fall back to reading the FITS file.
+    /// In-memory lookup only. Returns the cached image for `document_id`
+    /// if present, marking it most-recently-used. `None` on miss — for
+    /// disk fallback use [`resolve`](Self::resolve).
     pub fn get(&self, document_id: &str) -> Option<Arc<CachedImage>> {
         let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
         let image = inner.images.get(document_id).cloned()?;
@@ -201,14 +231,51 @@ impl ImageCache {
         Some(image)
     }
 
-    /// Clone the cached document out for callers that just want the JSON
-    /// (HTTP `GET /api/documents/{id}`, the cache-miss measurement fallback).
-    /// `None` when no entry is in the cache. Step 5 fills the on-disk
-    /// fallback so this stops being the only resolution path.
-    pub async fn get_document(&self, document_id: &str) -> Option<ExposureDocument> {
-        let image = self.get(document_id)?;
-        let cloned = image.document.read().await.clone();
-        Some(cloned)
+    /// Resolve `document_id` to a cache entry, with on-disk rehydration
+    /// on miss. On cache hit returns immediately. On miss scans
+    /// `data_directory` for filenames whose suffix matches the
+    /// document's UUID-8, verifies the candidate via the FITS `DOC_ID`
+    /// header (sidecar `id` as fallback when the FITS is unreadable),
+    /// reads both files, populates the cache as MRU, and returns the
+    /// rehydrated entry. `None` when no candidate matches or the
+    /// sidecar's `max_adu` is `null` (the cache cannot represent an
+    /// image whose pixel type is unknown — callers fall back to
+    /// `resolve_document` + direct FITS read for that rare case).
+    pub async fn resolve(&self, document_id: &str) -> Option<Arc<CachedImage>> {
+        if let Some(image) = self.get(document_id) {
+            return Some(image);
+        }
+        debug!(document_id, "resolve: in-memory miss, scanning disk");
+        let dir = self.data_directory.clone();
+        let id = document_id.to_string();
+        let image = tokio::task::spawn_blocking(move || disk_resolve_to_cached_image(&dir, &id))
+            .await
+            .ok()
+            .flatten()?;
+        self.insert(document_id.to_string(), image);
+        self.get(document_id)
+    }
+
+    /// Resolve `document_id` to its `ExposureDocument`, with on-disk
+    /// rehydration on miss. Same disk-scan algorithm as [`resolve`] but
+    /// returns the document even when the cache cannot hold the pixels
+    /// (e.g. sidecar `max_adu == null`). Callers that need the raw FITS
+    /// path use this to obtain `file_path`.
+    pub async fn resolve_document(&self, document_id: &str) -> Option<ExposureDocument> {
+        if let Some(image) = self.get(document_id) {
+            let cloned = image.document.read().await.clone();
+            return Some(cloned);
+        }
+        debug!(
+            document_id,
+            "resolve_document: in-memory miss, scanning disk"
+        );
+        let dir = self.data_directory.clone();
+        let id = document_id.to_string();
+        tokio::task::spawn_blocking(move || disk_resolve_document(&dir, &id))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Write `value` into `sections[name]` on the cached document and
@@ -258,6 +325,14 @@ impl ImageCache {
                 Err(e)
             }
         }
+    }
+
+    /// Test-only: replace the data directory at runtime so a single
+    /// cache instance can probe multiple fixtures. Production callers
+    /// build a new `ImageCache` per data directory.
+    #[cfg(test)]
+    pub fn set_data_directory(&mut self, dir: PathBuf) {
+        self.data_directory = dir;
     }
 
     /// Apply a signed delta to the running cache `bytes` total under the
@@ -310,6 +385,130 @@ impl ImageCache {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Disk-fallback resolution helpers
+// ---------------------------------------------------------------------------
+
+/// Filename match: `<uuid8>.fits` (greenfield) or `<base>_<uuid8>.fits`
+/// (future operator-template form). Must match exactly at the suffix; we
+/// disambiguate by reading FITS `DOC_ID` afterwards, but the prefilter
+/// keeps the candidate set small.
+fn matches_uuid8_suffix(name: &str, uuid8: &str) -> bool {
+    let needle = format!("{}.fits", uuid8);
+    name == needle || name.ends_with(&format!("_{}", needle))
+}
+
+/// Find candidate FITS files in `dir` whose name suffix matches the
+/// document's UUID-8 prefilter.
+fn find_candidates_by_suffix(dir: &Path, full_uuid: &str) -> Vec<PathBuf> {
+    let Some(uuid8) = full_uuid.get(..8) else {
+        return Vec::new();
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            debug!(
+                ?dir,
+                error = %e,
+                "find_candidates_by_suffix: read_dir failed"
+            );
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if matches_uuid8_suffix(&name, uuid8) {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    debug!(
+        ?dir,
+        full_uuid,
+        candidate_count = out.len(),
+        "find_candidates_by_suffix"
+    );
+    out
+}
+
+/// Confirm that `fits_path` and its sidecar resolve to the requested
+/// `full_uuid`. FITS `DOC_ID` is the preferred authority; sidecar `id`
+/// is the fallback when the FITS is unreadable. Returns the sidecar
+/// path on match.
+fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
+    if let Ok(Some(doc_id)) = crate::imaging::read_fits_doc_id(fits_path) {
+        if doc_id == full_uuid {
+            return Some(fits_path.with_extension("json"));
+        }
+        // FITS has a DOC_ID but it's a different doc — this candidate is
+        // a confirmed ghost match, skip without trying the sidecar.
+        return None;
+    }
+    // FITS unreadable or missing DOC_ID. Try the sidecar's id field.
+    let sidecar = fits_path.with_extension("json");
+    match crate::document::read_sidecar_sync(&sidecar) {
+        Ok(doc) if doc.id == full_uuid => Some(sidecar),
+        _ => None,
+    }
+}
+
+/// Disk-resolve to a full `CachedImage`. Returns `None` when the
+/// sidecar's `max_adu` is `null` (the cache cannot represent it) or
+/// when no candidate matches.
+fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedImage> {
+    for fits_path in find_candidates_by_suffix(dir, full_uuid) {
+        let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
+            continue;
+        };
+        let doc = match crate::document::read_sidecar_sync(&sidecar_path) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!(?sidecar_path, error = %e, "disk_resolve: sidecar parse failed");
+                continue;
+            }
+        };
+        let Some(max_adu) = doc.max_adu else {
+            debug!(
+                full_uuid,
+                "disk_resolve: sidecar max_adu is null, declining cache insert"
+            );
+            return None;
+        };
+        let (pixels, width, height) = match crate::imaging::read_fits_pixels(&fits_path) {
+            Ok(t) => t,
+            Err(e) => {
+                debug!(?fits_path, error = %e, "disk_resolve: FITS read failed");
+                continue;
+            }
+        };
+        let shape = (width as usize, height as usize);
+        let cp = CachedPixels::from_i32_pixels(pixels, shape, max_adu)?;
+        return Some(CachedImage::new(cp, width, height, fits_path, max_adu, doc));
+    }
+    None
+}
+
+/// Disk-resolve to just the `ExposureDocument`. Used when callers need
+/// only the document — e.g. routes' `GET /api/documents/{id}`, or to
+/// reach `file_path` for a FITS that the cache can't represent
+/// (`max_adu == null`).
+fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument> {
+    for fits_path in find_candidates_by_suffix(dir, full_uuid) {
+        let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
+            continue;
+        };
+        match crate::document::read_sidecar_sync(&sidecar_path) {
+            Ok(doc) => return Some(doc),
+            Err(e) => {
+                debug!(?sidecar_path, error = %e, "disk_resolve_document: parse failed");
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -367,7 +566,7 @@ mod tests {
 
     #[test]
     fn insert_and_get_round_trip() {
-        let cache = ImageCache::new(100, 10);
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         cache.insert("doc-1".to_string(), u16_image(4, 42));
 
         let got = cache.get("doc-1").unwrap();
@@ -382,13 +581,13 @@ mod tests {
 
     #[test]
     fn miss_returns_none() {
-        let cache = ImageCache::new(100, 10);
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         assert!(cache.get("nope").is_none());
     }
 
     #[test]
     fn is_empty_tracks_population() {
-        let cache = ImageCache::new(100, 10);
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         assert!(cache.is_empty());
         cache.insert("doc-1".to_string(), u16_image(4, 0));
         assert!(!cache.is_empty());
@@ -396,7 +595,7 @@ mod tests {
 
     #[test]
     fn replacing_same_id_does_not_double_count_bytes() {
-        let cache = ImageCache::new(100, 10);
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         cache.insert("doc-1".to_string(), u16_image(4, 1));
         let bytes_after_first = cache.bytes();
         cache.insert("doc-1".to_string(), u16_image(4, 2));
@@ -406,7 +605,7 @@ mod tests {
 
     #[test]
     fn evicts_when_image_count_exceeds_cap() {
-        let cache = ImageCache::new(1024, 2);
+        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
         cache.insert("doc-1".to_string(), u16_image(2, 1));
         cache.insert("doc-2".to_string(), u16_image(2, 2));
         cache.insert("doc-3".to_string(), u16_image(2, 3));
@@ -419,7 +618,7 @@ mod tests {
     #[test]
     fn evicts_when_byte_budget_exceeded() {
         // Budget: 1 MiB. Each 1024x1024 u16 = 2 MiB → only one fits.
-        let cache = ImageCache::new(1, 100);
+        let cache = ImageCache::new(1, 100, PathBuf::from("/nonexistent"));
         cache.insert("doc-1".to_string(), u16_image(512, 1)); // 0.5 MiB
         cache.insert("doc-2".to_string(), u16_image(512, 2)); // 0.5 MiB total 1 MiB
         assert_eq!(cache.len(), 2);
@@ -434,7 +633,7 @@ mod tests {
 
     #[test]
     fn get_promotes_to_most_recently_used() {
-        let cache = ImageCache::new(1024, 2);
+        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
         cache.insert("doc-1".to_string(), u16_image(2, 1));
         cache.insert("doc-2".to_string(), u16_image(2, 2));
         // Touch doc-1 to make it MRU.
@@ -448,7 +647,7 @@ mod tests {
 
     #[test]
     fn i32_variant_round_trips() {
-        let cache = ImageCache::new(100, 10);
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         cache.insert("doc-i".to_string(), i32_image(4, 100_000));
         let got = cache.get("doc-i").unwrap();
         match &got.pixels {
@@ -487,5 +686,212 @@ mod tests {
         let img = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
         let read = img.document.read().await;
         assert_eq!(read.id, "doc-1");
+    }
+
+    // ---------------------------------------------------------------
+    // Disk-fallback resolution tests (Step 5)
+    // ---------------------------------------------------------------
+
+    /// Write a complete FITS+sidecar pair into `dir` and return the full
+    /// document UUID. The sidecar carries `max_adu = Some(65535)` by
+    /// default so disk_resolve can pick the U16 cache variant.
+    async fn write_disk_pair(
+        dir: &Path,
+        doc_uuid: &str,
+        pixels: &[i32],
+        width: u32,
+        height: u32,
+    ) -> String {
+        let uuid8 = &doc_uuid[..8];
+        let fits_path = dir.join(format!("{}.fits", uuid8));
+        let sidecar_path = dir.join(format!("{}.json", uuid8));
+        crate::imaging::write_fits(&fits_path, pixels, width, height, doc_uuid)
+            .await
+            .unwrap();
+        let mut doc = dummy_document(doc_uuid);
+        doc.file_path = fits_path.to_string_lossy().into_owned();
+        doc.width = width;
+        doc.height = height;
+        doc.max_adu = Some(65535);
+        let body = serde_json::to_vec(&doc).unwrap();
+        std::fs::write(&sidecar_path, body).unwrap();
+        doc_uuid.to_string()
+    }
+
+    #[tokio::test]
+    async fn resolve_hits_disk_after_eviction() {
+        // Capture-equivalent: write FITS+sidecar to disk, no in-memory
+        // entry. resolve() must rehydrate from disk and a follow-up
+        // get() must be an in-memory hit (no second disk scan).
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "11111111-1111-1111-1111-111111111111";
+        write_disk_pair(dir.path(), doc_uuid, &[1, 2, 3, 4], 2, 2).await;
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+
+        // Cold lookup: disk fallback fires.
+        let image = cache.resolve(doc_uuid).await.expect("disk resolve");
+        assert_eq!(image.width, 2);
+        assert_eq!(image.height, 2);
+        assert_eq!(image.max_adu, 65535);
+
+        // Hot lookup: same entry, no disk roundtrip needed.
+        let again = cache.get(doc_uuid).expect("in-memory hit after rehydrate");
+        assert!(Arc::ptr_eq(&image, &again));
+    }
+
+    #[tokio::test]
+    async fn resolve_returns_none_when_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        assert!(cache
+            .resolve("00000000-0000-0000-0000-000000000000")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_handles_ghost_match() {
+        // Two FITS+sidecar pairs whose first 8 hex chars are identical
+        // but full UUIDs differ. The suffix prefilter returns both;
+        // DOC_ID disambiguation must select the requested one.
+        let dir = tempfile::tempdir().unwrap();
+        let target_uuid = "deadbeef-1111-1111-1111-111111111111";
+        let ghost_uuid = "deadbeef-2222-2222-2222-222222222222";
+        // Both have the same uuid8 = "deadbeef", so file basename
+        // collides. Place them in different subdirs to avoid the
+        // basename collision while still sharing the suffix prefilter.
+        // Actually: collision IS the point. We can't put both in the
+        // same dir with the same basename; the design relies on the
+        // greenfield assumption that no two captures share uuid8 in
+        // the same data directory. Test the realistic ghost case
+        // instead: a manually-renamed legacy file with `_<uuid8>.fits`
+        // form sharing the suffix.
+        let target_path = dir.path().join("deadbeef.fits");
+        crate::imaging::write_fits(&target_path, &[10i32, 20, 30, 40], 2, 2, target_uuid)
+            .await
+            .unwrap();
+        let mut target_doc = dummy_document(target_uuid);
+        target_doc.file_path = target_path.to_string_lossy().into_owned();
+        target_doc.width = 2;
+        target_doc.height = 2;
+        target_doc.max_adu = Some(65535);
+        std::fs::write(
+            dir.path().join("deadbeef.json"),
+            serde_json::to_vec(&target_doc).unwrap(),
+        )
+        .unwrap();
+
+        // Ghost has the suffix `_deadbeef.fits` but a different DOC_ID.
+        let ghost_path = dir.path().join("legacy_deadbeef.fits");
+        crate::imaging::write_fits(&ghost_path, &[99i32; 4], 2, 2, ghost_uuid)
+            .await
+            .unwrap();
+        let mut ghost_doc = dummy_document(ghost_uuid);
+        ghost_doc.file_path = ghost_path.to_string_lossy().into_owned();
+        ghost_doc.width = 2;
+        ghost_doc.height = 2;
+        ghost_doc.max_adu = Some(65535);
+        std::fs::write(
+            dir.path().join("legacy_deadbeef.json"),
+            serde_json::to_vec(&ghost_doc).unwrap(),
+        )
+        .unwrap();
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let image = cache.resolve(target_uuid).await.expect("resolve target");
+        // The cached pixel buffer should be the target's [10, 20, 30, 40]
+        // (clamped to u16, max_adu=65535), not the ghost's 99s.
+        match &image.pixels {
+            CachedPixels::U16(arr) => {
+                assert_eq!(
+                    arr.as_slice().unwrap(),
+                    &[10u16, 20, 30, 40],
+                    "resolved to ghost instead of target"
+                );
+            }
+            _ => panic!("expected U16 variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_skips_when_max_adu_unknown() {
+        // Sidecar `max_adu: null` → resolve must return None even though
+        // the document is on disk. Callers fall back to resolve_document
+        // for the rare capture-time max_adu read failure.
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "22222222-2222-2222-2222-222222222222";
+        let uuid8 = &doc_uuid[..8];
+        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        crate::imaging::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+            .await
+            .unwrap();
+        let mut doc = dummy_document(doc_uuid);
+        doc.file_path = fits_path.to_string_lossy().into_owned();
+        doc.width = 2;
+        doc.height = 2;
+        doc.max_adu = None;
+        std::fs::write(
+            dir.path().join(format!("{}.json", uuid8)),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+
+        assert!(cache.resolve(doc_uuid).await.is_none());
+        // resolve_document still returns the doc — that's the escape
+        // hatch for callers that need file_path for direct FITS reads.
+        let resolved = cache
+            .resolve_document(doc_uuid)
+            .await
+            .expect("resolve_document despite max_adu=null");
+        assert_eq!(resolved.id, doc_uuid);
+        assert!(resolved.max_adu.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_falls_back_to_sidecar_id_when_fits_corrupt() {
+        // Pre-Phase-7 files lack DOC_ID; the resolver must fall back to
+        // the sidecar's `id` field. Simulate by writing a FITS via the
+        // raw fitrs API (no DOC_ID stamping).
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "33333333-3333-3333-3333-333333333333";
+        let uuid8 = &doc_uuid[..8];
+        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        let hdu = fitrs::Hdu::new(&[2usize, 2usize], vec![1i32, 2, 3, 4]);
+        fitrs::Fits::create(&fits_path, hdu).unwrap();
+        let mut doc = dummy_document(doc_uuid);
+        doc.file_path = fits_path.to_string_lossy().into_owned();
+        doc.width = 2;
+        doc.height = 2;
+        doc.max_adu = Some(65535);
+        std::fs::write(
+            dir.path().join(format!("{}.json", uuid8)),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let image = cache
+            .resolve(doc_uuid)
+            .await
+            .expect("resolve via sidecar id fallback");
+        assert_eq!(image.width, 2);
+    }
+
+    #[test]
+    fn matches_uuid8_suffix_handles_greenfield_and_template_forms() {
+        // Greenfield: <uuid8>.fits.
+        assert!(matches_uuid8_suffix("550e8400.fits", "550e8400"));
+        // Template form: <base>_<uuid8>.fits.
+        assert!(matches_uuid8_suffix(
+            "M31_L_300s_001_550e8400.fits",
+            "550e8400"
+        ));
+        // Substring without underscore separator → reject.
+        assert!(!matches_uuid8_suffix("xyz550e8400.fits", "550e8400"));
+        // Different suffix → reject.
+        assert!(!matches_uuid8_suffix("deadbeef.fits", "550e8400"));
+        // Wrong extension → reject.
+        assert!(!matches_uuid8_suffix("550e8400.json", "550e8400"));
     }
 }
