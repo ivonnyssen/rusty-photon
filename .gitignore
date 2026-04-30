@@ -12,3 +12,7 @@ lcov.info
 # user.bazelrc allows per-developer overrides without touching .bazelrc.
 user.bazelrc
 # MODULE.bazel.lock IS committed (like Cargo.lock) for reproducibility.
+
+# Claude Code runtime artifacts.
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
