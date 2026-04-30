@@ -1,17 +1,30 @@
-//! Step stubs for `exposure_validation.feature`.
-//! Phase-2: bodies are `todo!()` so scenarios fail loudly until phase 3.
+//! Step definitions for `exposure_validation.feature` (contracts E1-E6)
+//! and the supporting Givens used by `exposure_survey.feature` and
+//! `cancellation.feature`.
 
 use crate::world::SkySurveyCameraWorld;
 use cucumber::{given, then, when};
 
 #[given("the camera is connected with the survey backend stubbed")]
-async fn connected_stubbed(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: start service with mock SurveyClient + connect");
+async fn connected_stubbed(world: &mut SkySurveyCameraWorld) {
+    world.spawn_skyview_stub_ok().await;
+    world.start_service().await;
+    world.set_camera_connected(true).await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected connect to succeed, got ASCOM {code:#X}");
+    }
 }
 
 #[given("an exposure is already in flight")]
-async fn exposure_in_flight(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: kick off StartExposure that does not yet complete");
+async fn exposure_in_flight(world: &mut SkySurveyCameraWorld) {
+    // Slice 3 stub: the in_flight flag is set by start_exposure but
+    // never cleared by completion (slice 4 will add the real fetch
+    // and ImageReady transition). That's enough to trigger E2 and
+    // satisfy the cancellation scenarios' "in flight" precondition.
+    world.drive_start_exposure(1, 1, 100, 100, 0, 0, 1.0).await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected initial StartExposure to succeed, got ASCOM {code:#X}");
+    }
 }
 
 #[when(
@@ -19,29 +32,42 @@ async fn exposure_in_flight(_world: &mut SkySurveyCameraWorld) {
 )]
 #[allow(clippy::too_many_arguments)]
 async fn start_exposure(
-    _world: &mut SkySurveyCameraWorld,
-    _bin_x: i32,
-    _bin_y: i32,
-    _num_x: i32,
-    _num_y: i32,
-    _start_x: i32,
-    _start_y: i32,
-    _duration_s: f64,
+    world: &mut SkySurveyCameraWorld,
+    bin_x: i32,
+    bin_y: i32,
+    num_x: i32,
+    num_y: i32,
+    start_x: i32,
+    start_y: i32,
+    duration_s: f64,
 ) {
-    todo!("phase 3: PUT /api/v1/camera/0/startexposure with all parameters");
+    world
+        .drive_start_exposure(bin_x, bin_y, num_x, num_y, start_x, start_y, duration_s)
+        .await;
 }
 
 #[then("the exposure is rejected with ASCOM INVALID_VALUE")]
-fn rejected_invalid_value(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: assert world.last_ascom_error == 0x401");
+fn rejected_invalid_value(world: &mut SkySurveyCameraWorld) {
+    assert_ascom_error(world, 0x401);
 }
 
 #[then("the exposure is rejected with ASCOM INVALID_OPERATION")]
-fn rejected_invalid_operation(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: assert world.last_ascom_error == 0x40B");
+fn rejected_invalid_operation(world: &mut SkySurveyCameraWorld) {
+    assert_ascom_error(world, 0x40B);
 }
 
 #[then("the exposure is rejected with ASCOM NOT_CONNECTED")]
-fn rejected_not_connected(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: assert world.last_ascom_error == 0x407");
+fn rejected_not_connected(world: &mut SkySurveyCameraWorld) {
+    assert_ascom_error(world, 0x407);
+}
+
+fn assert_ascom_error(world: &SkySurveyCameraWorld, expected: u32) {
+    let actual = world
+        .last_ascom_error
+        .expect("no ASCOM error captured — did the When step run?");
+    assert_eq!(
+        actual, expected,
+        "expected ASCOM error {expected:#X}, got {actual:#X} (body: {:?})",
+        world.last_http_body
+    );
 }

@@ -174,35 +174,85 @@ impl SkySurveyCameraWorld {
 
     /// PUT /api/v1/camera/0/connected — toggle ASCOM Connected.
     pub async fn set_camera_connected(&mut self, connected: bool) {
-        let url = format!("{}/api/v1/camera/0/connected", self.base_url());
+        let extra = [("Connected", connected.to_string())];
+        self.put_camera("connected", &extra).await;
+    }
+
+    /// PUT /api/v1/camera/0/{method} with the given form parameters
+    /// plus the standard ASCOM `ClientID` / `ClientTransactionID`
+    /// envelope. Captures the response body, HTTP status, and any
+    /// ASCOM `ErrorNumber` into the world for assertions.
+    ///
+    /// Returns the parsed `ErrorNumber` (0 = success).
+    pub async fn put_camera(&mut self, method: &str, params: &[(&str, String)]) -> u32 {
+        let url = format!("{}/api/v1/camera/0/{method}", self.base_url());
         let client = self.http();
+        let mut form: Vec<(&str, String)> = Vec::with_capacity(params.len() + 2);
+        form.push(("ClientID", "1".to_string()));
+        form.push(("ClientTransactionID", "1".to_string()));
+        for (k, v) in params {
+            form.push((k, v.clone()));
+        }
         let response = client
             .put(&url)
-            .form(&[
-                ("Connected", connected.to_string()),
-                ("ClientID", "1".to_string()),
-                ("ClientTransactionID", "1".to_string()),
-            ])
+            .form(&form)
             .send()
             .await
-            .expect("PUT /connected failed");
+            .unwrap_or_else(|e| panic!("PUT /{method} failed: {e}"));
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         self.last_http_status = Some(status.as_u16());
         self.last_http_body = Some(body.clone());
-        if status.is_success() {
-            // Surface the ASCOM ErrorNumber from the response envelope so
-            // tests can distinguish HTTP 200 + ASCOM error from real
-            // success.
-            if let Ok(value) = serde_json::from_str::<Value>(&body) {
-                let err_num = value
-                    .get("ErrorNumber")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                if err_num != 0 {
-                    self.last_ascom_error = Some(err_num as u32);
-                }
+        let mut err_num = 0;
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            err_num = value
+                .get("ErrorNumber")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            if err_num != 0 {
+                self.last_ascom_error = Some(err_num);
             }
         }
+        err_num
+    }
+
+    /// Set BinX/BinY/NumX/NumY/StartX/StartY then call StartExposure.
+    /// Stops at the first ASCOM error so the captured `last_ascom_error`
+    /// matches what the test scenario expects.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn drive_start_exposure(
+        &mut self,
+        bin_x: i32,
+        bin_y: i32,
+        num_x: i32,
+        num_y: i32,
+        start_x: i32,
+        start_y: i32,
+        duration_s: f64,
+    ) {
+        // Reset captured error so a failure on (e.g.) set_bin_x in
+        // scenario N+1 isn't masked by a leftover from scenario N.
+        self.last_ascom_error = None;
+
+        let steps: &[(&str, &str, String)] = &[
+            ("binx", "BinX", bin_x.to_string()),
+            ("biny", "BinY", bin_y.to_string()),
+            ("numx", "NumX", num_x.to_string()),
+            ("numy", "NumY", num_y.to_string()),
+            ("startx", "StartX", start_x.to_string()),
+            ("starty", "StartY", start_y.to_string()),
+        ];
+        for (method, key, value) in steps {
+            let err = self.put_camera(method, &[(key, value.clone())]).await;
+            if err != 0 {
+                return;
+            }
+        }
+        // Duration is a JSON-friendly seconds value per ASCOM Camera spec.
+        let extra = [
+            ("Duration", duration_s.to_string()),
+            ("Light", "true".to_string()),
+        ];
+        self.put_camera("startexposure", &extra).await;
     }
 }

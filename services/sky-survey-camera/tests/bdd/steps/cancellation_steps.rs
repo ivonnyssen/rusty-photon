@@ -1,25 +1,40 @@
-//! Step stubs for `cancellation.feature`.
-//! Phase-2: bodies are `todo!()` so scenarios fail loudly until phase 3.
+//! Step definitions for `cancellation.feature` (contracts A1-A2).
 
 use crate::world::SkySurveyCameraWorld;
 use cucumber::{then, when};
 
 #[when("I AbortExposure")]
-async fn abort_exposure(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: PUT /api/v1/camera/0/abortexposure");
+async fn abort_exposure(world: &mut SkySurveyCameraWorld) {
+    world.last_ascom_error = None;
+    world.put_camera("abortexposure", &[]).await;
 }
 
 #[when("I StopExposure")]
-async fn stop_exposure(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: PUT /api/v1/camera/0/stopexposure");
+async fn stop_exposure(world: &mut SkySurveyCameraWorld) {
+    world.last_ascom_error = None;
+    world.put_camera("stopexposure", &[]).await;
 }
 
 #[then("ImageReady is false")]
-async fn image_ready_false(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: GET /api/v1/camera/0/imageready returns false");
+async fn image_ready_false(world: &mut SkySurveyCameraWorld) {
+    let url = format!("{}/api/v1/camera/0/imageready", world.base_url());
+    let client = world.http();
+    let response = client
+        .get(&url)
+        .query(&[("ClientID", "1"), ("ClientTransactionID", "1")])
+        .send()
+        .await
+        .expect("GET /imageready failed");
+    let body: serde_json::Value = response.json().await.expect("response not JSON");
+    let value = body["Value"]
+        .as_bool()
+        .expect("Value field missing or not bool");
+    assert!(!value, "expected ImageReady=false, got {value}");
 }
 
 #[then("the cancellation succeeds")]
-fn cancellation_succeeds(_world: &mut SkySurveyCameraWorld) {
-    todo!("phase 3: assert world.last_ascom_error.is_none()");
+fn cancellation_succeeds(world: &mut SkySurveyCameraWorld) {
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected cancellation to succeed, got ASCOM {code:#X}");
+    }
 }
