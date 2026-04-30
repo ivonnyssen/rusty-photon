@@ -201,16 +201,41 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
 
 ### Persistence
 
-The document is persisted as a sidecar JSON file next to the FITS file:
+Each capture produces a FITS file and a sidecar JSON document. Both
+share a base filename derived from the configured `file_naming_pattern`,
+with `_<doc_uuid_8>` appended by `rp` as the final segment:
 
 ```
 /data/lights/M31/
-  M31_L_300s_001.fits
-  M31_L_300s_001.json    <-- exposure document
+  M31_L_300s_001_550e8400.fits
+  M31_L_300s_001_550e8400.json    <-- exposure document
 ```
 
-The document is written after capture completes and updated as plugins
-contribute sections. Updates are atomic (write to temp file, rename).
+`<doc_uuid_8>` is the first 8 hex characters of the document's full
+UUID v4. The full UUID is the canonical document identifier — used by
+the API, the FITS header, and the sidecar's `id` field. The 8-char
+suffix exists only on disk, as the reverse-lookup key for finding a
+document's files when given its id. See
+[Image and Document Cache](#image-and-document-cache) and
+[Document Resolution](#document-resolution) for the rules.
+
+The FITS file's primary HDU header carries `DOC_ID = '<full-uuid>'`,
+making each FITS self-describing for lineage, downstream tools, and
+disambiguation when multiple files in the data directory happen to
+share an 8-char suffix. The sidecar's `id` field carries the same
+full UUID as a fallback authority.
+
+Both the FITS file and the sidecar JSON are written atomically:
+staged to a sibling temp file, fsynced, renamed into place, parent
+directory fsynced. A crash mid-write cannot leave a torn file. The
+document is updated as plugins and tools contribute sections; each
+section update re-serializes the full sidecar atomically.
+
+The disk pair is durable beyond `rp`'s runtime. After eviction from
+the in-memory cache (or after `rp` restart), a document remains
+accessible via the API as long as its FITS+sidecar pair sits in
+`<data_directory>`. The contract is "live as long as the file is on
+disk", not "live as long as `rp` is up".
 
 ## Event System
 
@@ -591,9 +616,9 @@ the exact parameter types and return structure.
 **Compute (image analysis)**
 
 All image analysis tools accept either `document_id` (resolved via the
-[Image Cache](#image-cache), avoiding FITS decode) or `image_path` (read
-from disk via `fitrs`). Where both are accepted, `document_id` takes
-precedence.
+[Image and Document Cache](#image-and-document-cache), avoiding FITS
+decode) or `image_path` (read from disk via `fitrs`). Where both are
+accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
@@ -648,10 +673,13 @@ hardware.
 The `capture` tool takes exposure time as a humantime string (`duration`,
 e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
-downloads the camera's `image_array`, writes it as a FITS file (using the
-`fitrs` crate with BITPIX=32), and creates a sidecar exposure document
-JSON alongside it. The FITS file and document are written atomically
-(write to temp, rename).
+downloads the camera's `image_array`, writes it as a FITS file (using
+the `fitrs` crate with BITPIX=32) with `DOC_ID = '<full-uuid>'` in the
+primary HDU header, and creates a sidecar exposure document JSON
+alongside it. The base filename is `<file_naming_pattern>_<doc_uuid_8>`;
+both files share that base. Both are written atomically (stage to a
+sibling temp file, fsync, rename, fsync parent directory). See
+[Persistence](#persistence) for the full rule set.
 
 #### CoverCalibrator Tool Details
 
@@ -675,9 +703,10 @@ Image analysis in `rp` follows a **pure Rust on ndarray** approach.
 All algorithms are implemented as custom code on top of well-established
 building blocks — no single crate covers the full range of astronomical
 image analysis needed. Tools accept either a `document_id` (resolved
-via the [Image Cache](#image-cache)) or an `image_path` (FITS file on
-disk read via `fitrs`); `document_id` is preferred for the post-capture
-fast path because it avoids re-decoding the image just written.
+via the [Image and Document Cache](#image-and-document-cache)) or an
+`image_path` (FITS file on disk read via `fitrs`); `document_id` is
+preferred for the post-capture fast path because it avoids re-decoding
+the image just written.
 
 #### Current Capabilities
 
@@ -1000,20 +1029,30 @@ on top of general-purpose image processing primitives. The algorithms
 SEP (Source Extractor as a library) was considered via `sep-sys` but
 rejected due to LGPL license constraints and C FFI maintenance burden.
 
-### Image Cache
+### Image and Document Cache
 
-The image cache is a **first-class API** exposed both to built-in tools
-(in-process, zero-copy) and to rp-managed services / third-party plugins
-(over HTTP). It eliminates redundant FITS decoding for the common
-post-capture flow where a tool wants to analyze the image that was just
-captured.
+The cache is a **first-class API** holding both pixel data and the
+exposure document for each capture, evicted as a unit. It serves
+built-in tools (in-process, zero-copy), rp-managed services, and
+third-party plugins (over HTTP), and eliminates redundant FITS or
+sidecar reads for the common post-capture flow where a tool wants to
+analyze the image just captured.
 
 When `capture` completes, the camera's pixel array is already decoded
-in memory. The cache holds onto that buffer so subsequent tools
-(`measure_basic`, the next iteration of `auto_focus`, an external
-analyzer plugin) don't re-read and re-decode the FITS file. The on-disk
-FITS file remains the durable source of truth — the cache is strictly
-a hot-path optimization, with the file as fallback on miss.
+in memory and the document has just been constructed. The cache holds
+both so subsequent tools (`measure_basic`, the next iteration of
+`auto_focus`, an external analyzer plugin) and document-API consumers
+don't re-read from disk. The on-disk FITS+sidecar pair remains the
+durable source of truth — the cache is strictly a hot-path
+optimization, with the disk as fallback on miss.
+
+Pixels and document share one cache entry. They evict together. Tool
+calls that mutate the document (e.g. `measure_basic` writing the
+`image_analysis` section) update the cached document under a per-entry
+lock and persist the sidecar atomically. After eviction, both the
+pixels and the document are gone from memory; either can be rehydrated
+from disk on the next access — see
+[Document Resolution](#document-resolution).
 
 #### Internal API (built-in tools)
 
@@ -1029,16 +1068,46 @@ pub struct CachedImage {
     pub height: u32,
     pub fits_path: PathBuf,
     pub max_adu: u32,
+    pub document: RwLock<ExposureDocument>,
 }
 
 ImageCache::insert(document_id: &str, image: CachedImage);
 ImageCache::get(document_id: &str) -> Option<Arc<CachedImage>>;
+ImageCache::put_section(document_id: &str, name: &str, value: Value)
+    -> Result<()>;  // mutates the cached document AND persists sidecar
 ```
 
-Built-in tools that accept a `document_id` try the cache first; on miss
-they fall back to reading the FITS file via the path stored in the
-exposure document. Cache misses are logged at `debug!` level for tuning
-visibility.
+Built-in tools and HTTP handlers that accept a `document_id` resolve
+through the cache. On miss, the cache attempts to rehydrate from disk
+before returning `None`. Cache misses are logged at `debug!` for
+tuning visibility.
+
+#### Document Resolution
+
+A `document_id` (the full UUID) resolves through this order:
+
+1. **Cache hit.** Return the cached entry. O(1).
+2. **Disk fallback.** `readdir` `<data_directory>` filtering for
+   filenames matching `*_<uuid[..8]>.fits`. For each candidate, verify
+   by reading the FITS header `DOC_ID` against the requested full
+   UUID. The sidecar's `id` field is the fallback authority if the
+   FITS is unreadable. On match, read both files, populate the cache,
+   and return the entry.
+3. **Not found.** Return `None`. The HTTP API returns `404`.
+
+Ghost-match disambiguation runs only when multiple files in the data
+directory share an 8-char suffix. With UUID v4 entropy, the expected
+number of ghost matches per query is `k/N` where `k` is the total
+captures on disk and `N = 2^32`. At 100,000 captures, that's ~2·10⁻⁵
+— the disambiguation path exists for correctness but in practice
+essentially never fires.
+
+If `<data_directory>` is changed at runtime (rare), entries captured
+under the old directory become unreachable by id even though their
+files remain on disk. This is intentional — the data directory is a
+contract, not an indexed pool. Operators wanting to bring old captures
+back into reach copy or move the relevant FITS+sidecar pairs into the
+current `<data_directory>`.
 
 #### Storage Type Selection (u16 vs i32)
 
@@ -1087,8 +1156,10 @@ we use `u16` whenever possible.
 
 | Endpoint | Returns | Description |
 |----------|---------|-------------|
-| `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag |
-| `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes |
+| `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
+| `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. |
+| `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. |
+| `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes. |
 
 Symmetry: `/pixels` serves the same wire format Alpaca cameras produce
 upstream. A plugin that already speaks Alpaca can reuse its existing
@@ -1103,24 +1174,33 @@ HTTP-proxying a file consumers can already open is unnecessary overhead.
 
 #### Lifetime and Eviction
 
-- **Insertion**: on `capture` completion, after the FITS file is written.
-  The cache holds the pixel buffer that came from the camera — no
-  re-decode at insert time.
-- **Eviction**: LRU. Two configurable budgets, whichever trips first:
+- **Insertion**: on `capture` completion, after the FITS+sidecar pair
+  is written. The cache holds the pixel buffer that came from the
+  camera plus the freshly-constructed document — no re-decode or
+  re-parse at insert time.
+- **Eviction**: LRU. Pixels and document are evicted together as a
+  unit. Two configurable budgets, whichever trips first:
   ```json
   "imaging": {
     "cache_max_mib": 1024,
     "cache_max_images": 8
   }
   ```
-  `cache_max_mib` is the dominant constraint (image sizes vary widely
-  by camera). `cache_max_images` is a safety net against
+  `cache_max_mib` bounds the **combined** memory footprint of pixels
+  and serialized document JSON for each entry. Document size is not
+  negligible — analysis sections like `detect_stars` and
+  `measure_stars` carry per-star arrays that can run into tens of KB
+  per section. `cache_max_images` is a safety net against
   misconfiguration. Defaults are sized for an 8 GB Pi 5; tune for
   larger hosts.
-- **Fallback**: cache miss is not an error. Tools fall back to reading
-  the FITS file at the path recorded in the exposure document. Plugins
-  hitting `GET /api/images/{document_id}/pixels` after eviction get the
-  same fallback (`rp` reads + decodes + serves).
+- **Fallback**: cache miss is not an error. Tools and the
+  document/image HTTP endpoints fall back to the on-disk pair via
+  [Document Resolution](#document-resolution). After successful
+  rehydration the entry is re-inserted into the cache.
+- **Durability**: a document remains accessible by id as long as its
+  FITS+sidecar pair sits in `<data_directory>`, regardless of cache
+  state or `rp` restart history. The contract is "live as long as the
+  file is on disk", not "live as long as `rp` is up".
 
 #### Wire Format Choice
 
@@ -1858,16 +1938,23 @@ application logic.
 
 #### Documents
 - `GET /api/documents` — list recent exposure documents
-- `GET /api/documents/{id}` — full document with all sections
-- `POST /api/documents/{id}/sections` — add/update a section (plugin endpoint)
+- `GET /api/documents/{id}` — full document with all sections. Returns
+  the same JSON written to the sidecar. Resolves through the cache with
+  on-disk fallback; returns `404` only when neither cache nor disk has
+  the document. See
+  [Document Resolution](#document-resolution).
+- `POST /api/documents/{id}/sections` — add/update a section (plugin
+  endpoint). Requires the document be resolvable; persists the sidecar
+  atomically.
 
 #### Images
 - `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
   FITS path, exposure document link, in-cache flag)
 - `GET /api/images/{document_id}/pixels` — raw pixel data in
   `application/imagebytes` (ASCOM Alpaca ImageBytes wire format). See
-  [Image Cache](#image-cache). Consumers wanting FITS read the file
-  directly from the path in the exposure document.
+  [Image and Document Cache](#image-and-document-cache). Consumers
+  wanting FITS read the file directly from the path in the exposure
+  document.
 
 #### Plugins
 - `POST /api/plugins/{id}/complete` — plugin completion callback
@@ -2079,7 +2166,10 @@ services/rp/src/
   error.rs              AppError enum (thiserror)
 
   # Core domain
-  document.rs           ExposureDocument, Section, persistence (sidecar JSON)
+  document.rs           ExposureDocument, Section, atomic sidecar JSON
+                          persistence. Document storage and lookup are
+                          mediated by the unified Image and Document
+                          Cache (imaging/cache.rs).
   target.rs             Target definitions, progress tracking
   session.rs            Session state, persistence, recovery
 
@@ -2125,7 +2215,10 @@ services/rp/src/
     mod.rs              Module root: re-exports, shared types (ImageStats, ImageMetadata)
     pixel.rs            Pixel trait (impls for u16 and i32) for generic analysis
     fits.rs             FITS read/write via fitrs (widens to i32 at the boundary)
-    cache.rs            ImageCache: CachedPixels enum (U16 | I32), Arc<CachedImage>, LRU eviction
+    cache.rs            ImageCache: CachedPixels enum (U16 | I32),
+                          Arc<CachedImage> holding pixels + document
+                          together, LRU eviction over combined memory
+                          footprint, readdir+DOC_ID disk fallback
     stats.rs            Pixel statistics (median, mean, min, max ADU) — generic over Pixel
     background.rs       Sigma-clipped background estimation — generic
     stars.rs            Star detection + centroiding — generic

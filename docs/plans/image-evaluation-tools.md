@@ -129,8 +129,8 @@ stashed at connect time — see follow-up note below.
 
 **Status:** deferred — landed Phase 3 with per-capture fetch.
 
-**What the design says (`docs/services/rp.md` → Image Cache → Storage
-Type Selection):** "Read the camera's `max_adu` (ASCOM
+**What the design says (`docs/services/rp.md` → Image and Document
+Cache → Storage Type Selection):** "Read the camera's `max_adu` (ASCOM
 `ICameraVx::MaxADU`) at connect time and stash it in the camera's
 runtime state." Selection of `CachedPixels::U16` vs `I32` is
 "per-camera (driven by capabilities), not per-frame".
@@ -433,6 +433,121 @@ have any plugin tool-provider integration in code. When the first
 shadowing plugin is integrated (or when plugin tool aggregation
 lands in general), include the precedence + log line as part of
 that work.
+
+### Phase 7 — Unified document/image cache + UUID-suffixed filenames
+
+Status: **planned.** Independent of Phase 6 — can land in parallel.
+
+Today the document store and the image cache are separate structures
+with different lifetime rules: pixels evict via LRU + MiB budget,
+documents accumulate forever (no eviction). Lookups by `document_id`
+go through the in-memory `DocumentStore` map, which is lost on `rp`
+restart — sidecars on disk are a one-way archive that `rp` itself
+cannot read back. This phase consolidates the two structures, ties
+filenames to document ids, and turns the on-disk pair into the
+durable source of truth.
+
+#### Decisions resolved during design discussion
+
+These are now in `docs/services/rp.md` (Persistence, Image and
+Document Cache, Document Resolution) and should not be re-litigated:
+
+- **8-char UUID suffix on filenames.** `<file_naming_pattern>_<uuid8>.fits`
+  with matching `.json` sidecar. The suffix is appended by `rp` after
+  applying the operator-controlled `file_naming_pattern`; operators do
+  not include UUID tokens in the template. `<uuid8>` is the first 8
+  hex characters of the document's full UUID v4. The suffix is the
+  on-disk reverse-lookup key only — the API uses the full UUID
+  throughout.
+- **Full UUID embedded in three places:** API `document_id`, FITS
+  primary HDU header `DOC_ID`, sidecar `id` field. Any of the three
+  is authoritative; the FITS header is preferred when disambiguating
+  ghost matches.
+- **Truncation rationale.** Once disambiguation via `DOC_ID` exists,
+  the relevant collision metric is *expected ghost matches per query*
+  (`k/N`), not *birthday probability over the archive* (`k²/(2N)`).
+  At `N = 2³²` and `k = 100,000`, ghost matches per query ≈ 2·10⁻⁵ —
+  the disambiguation path runs for correctness but essentially never
+  fires. 8 chars keeps filenames short while leaving ample headroom.
+- **Unified cache.** Pixels and document share one cache entry
+  (`CachedImage` gains a `document: RwLock<ExposureDocument>` field).
+  One LRU + MiB budget covers the combined memory footprint. Eviction
+  takes both. The standalone `DocumentStore` map is folded into the
+  cache.
+- **Lazy filesystem fallback on miss.** `readdir <data_directory>` ⇒
+  filter for filenames matching `_<uuid8>.fits` ⇒ verify by reading
+  the FITS header `DOC_ID` against the requested full UUID ⇒ if FITS
+  unreadable, fall back to the sidecar's `id` field ⇒ on match, read
+  both files and re-populate the cache. No on-disk index file, no
+  startup scan.
+- **Live-as-long-as-on-disk contract.** After eviction or `rp`
+  restart, a document remains addressable by id as long as its
+  FITS+sidecar pair sits in `<data_directory>`. The contract operators
+  see is "the file is the artifact"; in-memory caching is invisible
+  performance behavior.
+
+#### Work breakdown (in order)
+
+- [ ] **Step 1 — UUID suffix in capture filename.** `mcp.rs:capture`
+      appends `_<doc_uuid_8>` after applying `file_naming_pattern`
+      (truncation = `&doc_id[..8]` via the existing UUID v4 string
+      form, lowercase hex). Update BDD scenarios that assert capture
+      file paths to expect the suffix shape (regex anchored on the
+      8-char hex tail).
+- [ ] **Step 2 — `DOC_ID` FITS header.** `imaging::write_fits` accepts
+      a `doc_id: &str` parameter and writes `DOC_ID` to the primary
+      HDU via `fitrs::Hdu::insert` (or the equivalent). New unit test:
+      round-trip write + read header, assert `DOC_ID` matches.
+      `read_fits_pixels` extended (or a sibling `read_fits_doc_id`
+      added) to expose the header field for the disambiguation path.
+- [ ] **Step 3 — Embed the document in `CachedImage`.** Move
+      `ExposureDocument` into `CachedImage` behind a `RwLock`. Update
+      memory accounting (`CachedImage::nbytes`) to include
+      `serde_json::to_vec(&document).len()` in addition to pixel
+      bytes. Existing pixel-only cache tests still pass; add a test
+      that document-section growth bumps the accounted size.
+- [ ] **Step 4 — Mediate document operations through the cache.**
+      `DocumentStore::create` becomes `ImageCache::insert` with the
+      document inline. `DocumentStore::put_section` becomes
+      `ImageCache::put_section`, taking the per-entry document lock
+      and persisting the sidecar atomically before releasing. The
+      standalone `HashMap<String, ExposureDocument>` in
+      `document.rs` is removed; `routes.rs`'s document and section
+      endpoints route through the cache.
+- [ ] **Step 5 — Filesystem fallback on miss.** `ImageCache::get`
+      learns to readdir `<data_directory>` filtered by the 8-char
+      suffix when the in-memory map misses, verify each candidate
+      via FITS-header `DOC_ID` (sidecar `id` fallback), rehydrate
+      both pixels and document into the cache, and return the entry.
+      Unit test: insert, evict (force-shrink budget to 0), `get` →
+      should hydrate from disk and succeed.
+- [ ] **Step 6 — BDD: `document_http_api.feature`.** New feature file
+      documenting the document API contract end-to-end (today the
+      endpoint has no BDD coverage). Scenarios: catalog presence,
+      happy-path body shape after capture, `404` for unknown id,
+      sections-roundtrip after `measure_basic`, post-eviction
+      cross-restart access via the disk fallback. Mirrors
+      `image_http_api.feature` in shape.
+
+`rmpfit` and `ndarray-ndimage` are unaffected.
+
+**Exit criteria:** new feature file's scenarios all green; existing
+BDD suite remains green; `cargo rail run --profile commit -q` clean;
+unified cache passes both the existing pixel-only cache tests and the
+new document-aware tests.
+
+#### Out of scope for this phase
+
+- Renaming pre-existing files. Greenfield design — no files exist
+  pre-feature, no migration code path.
+- Pinning a `data_directory` history (entries from old directories
+  remain on disk but unreachable by id after the directory changes).
+  This is the documented contract; revisit only if a real workflow
+  needs it.
+- Boot-time directory scan to pre-populate the cache. The lazy
+  fallback on miss is sufficient and avoids paying scan cost up
+  front. A pre-warm flag could be added later if profiling shows
+  first-access latency matters.
 
 ## Out of scope / deferred
 
