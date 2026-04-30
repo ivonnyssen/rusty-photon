@@ -15,10 +15,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ndarray::Array2;
+use tokio::sync::RwLock;
 use tracing::debug;
+
+use crate::document::ExposureDocument;
 
 /// Pixel storage variant. The design intent is per-camera selection at
 /// connect time (driven by the camera's `MaxADU`); the same camera always
@@ -69,12 +73,58 @@ impl CachedPixels {
 }
 
 /// A cached image plus the metadata tools need to make sense of it.
+///
+/// The exposure document lives inline behind a per-entry async `RwLock` so
+/// section updates (`measure_basic` writing `image_analysis`, plugins writing
+/// their own sections) can mutate it without contending with any other entry.
+/// `json_nbytes` is the *serialized* size of the document — the cache budget
+/// includes it because `detect_stars` / `measure_stars` per-star arrays push
+/// document JSON into the tens-of-KB range, which is non-negligible relative
+/// to a small u16 thumbnail.
 pub struct CachedImage {
     pub pixels: CachedPixels,
     pub width: u32,
     pub height: u32,
     pub fits_path: PathBuf,
     pub max_adu: u32,
+    pub document: RwLock<ExposureDocument>,
+    /// Bytes returned by `serde_json::to_vec(&document)` at the last update.
+    /// Updated atomically by `put_section` (Step 4) so the cache mutex can
+    /// read it during eviction without taking the per-entry lock.
+    pub json_nbytes: AtomicUsize,
+}
+
+impl CachedImage {
+    /// Construct an entry, computing `json_nbytes` from the document up
+    /// front. If JSON serialization fails (which would also break sidecar
+    /// writes), `json_nbytes` falls back to `0` — the cache will under-bill
+    /// the entry rather than refuse to insert. Surface the error elsewhere
+    /// (sidecar write) so the caller can decide.
+    pub fn new(
+        pixels: CachedPixels,
+        width: u32,
+        height: u32,
+        fits_path: PathBuf,
+        max_adu: u32,
+        document: ExposureDocument,
+    ) -> Self {
+        let json_nbytes = serde_json::to_vec(&document).map(|v| v.len()).unwrap_or(0);
+        Self {
+            pixels,
+            width,
+            height,
+            fits_path,
+            max_adu,
+            document: RwLock::new(document),
+            json_nbytes: AtomicUsize::new(json_nbytes),
+        }
+    }
+
+    /// Total memory footprint counted against the cache budget: pixel bytes
+    /// plus the last-known serialized document size.
+    pub fn nbytes(&self) -> usize {
+        self.pixels.nbytes() + self.json_nbytes.load(Ordering::Relaxed)
+    }
 }
 
 /// Process-wide image cache. Cheap to clone — internally `Arc<Mutex<…>>`.
@@ -117,11 +167,11 @@ impl ImageCache {
     /// Insert an image under `document_id`. Replaces any existing entry for
     /// that id. Evicts LRU entries until both budgets are satisfied.
     pub fn insert(&self, document_id: String, image: CachedImage) {
-        let nbytes = image.pixels.nbytes();
+        let nbytes = image.nbytes();
         let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
 
         if let Some(prev) = inner.images.remove(&document_id) {
-            inner.bytes = inner.bytes.saturating_sub(prev.pixels.nbytes());
+            inner.bytes = inner.bytes.saturating_sub(prev.nbytes());
             inner.order.retain(|k| k != &document_id);
         }
 
@@ -178,7 +228,7 @@ impl ImageCache {
         {
             let key = inner.order.pop_front().expect("non-empty checked above");
             if let Some(evicted) = inner.images.remove(&key) {
-                inner.bytes = inner.bytes.saturating_sub(evicted.pixels.nbytes());
+                inner.bytes = inner.bytes.saturating_sub(evicted.nbytes());
                 debug!(
                     document_id = %key,
                     cache_bytes = inner.bytes,
@@ -195,7 +245,28 @@ impl ImageCache {
 mod tests {
     use super::*;
     use ndarray::Array2;
+    use serde_json::Map;
 
+    /// Minimal dummy document. Tests that exercise byte-budget accounting
+    /// pair this with `json_nbytes = 0` so they stay focused on pixel
+    /// bytes and don't depend on serde formatting choices.
+    fn dummy_document(id: &str) -> ExposureDocument {
+        ExposureDocument {
+            id: id.to_string(),
+            captured_at: "2026-04-30T00:00:00Z".to_string(),
+            file_path: format!("/tmp/{}.fits", id),
+            width: 0,
+            height: 0,
+            camera_id: None,
+            duration: None,
+            max_adu: None,
+            sections: Map::new(),
+        }
+    }
+
+    /// Pixel-only test fixture: builds a `CachedImage` with a dummy
+    /// document but accounts zero JSON bytes, isolating byte-budget tests
+    /// from the actual serialized doc size.
     fn u16_image(side: usize, fill: u16) -> CachedImage {
         let pixels = CachedPixels::U16(Array2::from_elem((side, side), fill));
         CachedImage {
@@ -204,6 +275,8 @@ mod tests {
             height: side as u32,
             fits_path: PathBuf::from(format!("/tmp/{}.fits", side)),
             max_adu: 65535,
+            document: RwLock::new(dummy_document("doc")),
+            json_nbytes: AtomicUsize::new(0),
         }
     }
 
@@ -215,6 +288,8 @@ mod tests {
             height: side as u32,
             fits_path: PathBuf::from(format!("/tmp/{}.fits", side)),
             max_adu: 1 << 20,
+            document: RwLock::new(dummy_document("doc")),
+            json_nbytes: AtomicUsize::new(0),
         }
     }
 
@@ -317,5 +392,28 @@ mod tests {
         let i32_img = i32_image(10, 0);
         assert_eq!(u16_img.pixels.nbytes(), 100 * 2);
         assert_eq!(i32_img.pixels.nbytes(), 100 * 4);
+    }
+
+    #[test]
+    fn cached_image_new_includes_serialized_doc_in_nbytes() {
+        // Pins the contract that `CachedImage::new` accounts for the
+        // serialized document size. Step 4 will use this to keep the
+        // running cache budget honest after `put_section` mutations.
+        let pixels = CachedPixels::U16(Array2::from_elem((4, 4), 0u16));
+        let pixel_bytes = pixels.nbytes();
+        let doc = dummy_document("550e8400-e29b-41d4-a716-446655440000");
+        let expected_json_bytes = serde_json::to_vec(&doc).unwrap().len();
+        let img = CachedImage::new(pixels, 4, 4, PathBuf::from("/tmp/x.fits"), 65535, doc);
+        assert_eq!(img.json_nbytes.load(Ordering::Relaxed), expected_json_bytes);
+        assert_eq!(img.nbytes(), pixel_bytes + expected_json_bytes);
+    }
+
+    #[tokio::test]
+    async fn cached_image_new_round_trips_document() {
+        let doc = dummy_document("doc-1");
+        let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
+        let img = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
+        let read = img.document.read().await;
+        assert_eq!(read.id, "doc-1");
     }
 }

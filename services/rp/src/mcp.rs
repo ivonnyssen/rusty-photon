@@ -703,6 +703,9 @@ impl McpHandler {
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
+        // Cache entry needs its own copy because `documents.create` consumes
+        // `doc`. Step 4 folds the two stores into one and removes this clone.
+        let doc_for_cache = doc.clone();
         let document_persisted = match self.documents.create(doc).await {
             Ok(()) => true,
             Err(e) => {
@@ -754,13 +757,14 @@ impl McpHandler {
                 if let Some(cp) = cached_pixels {
                     self.image_cache.insert(
                         document_id.clone(),
-                        CachedImage {
-                            pixels: cp,
+                        CachedImage::new(
+                            cp,
                             width,
                             height,
-                            fits_path: std::path::PathBuf::from(&image_path),
+                            std::path::PathBuf::from(&image_path),
                             max_adu,
-                        },
+                            doc_for_cache,
+                        ),
                     );
                 }
             }

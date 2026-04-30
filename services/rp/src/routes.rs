@@ -308,24 +308,26 @@ mod tests {
 
     fn cached_u16(arr: ndarray::Array2<u16>) -> CachedImage {
         let (w, h) = arr.dim();
-        CachedImage {
-            pixels: CachedPixels::U16(arr),
-            width: w as u32,
-            height: h as u32,
-            fits_path: PathBuf::from("/tmp/fake.fits"),
-            max_adu: 65535,
-        }
+        CachedImage::new(
+            CachedPixels::U16(arr),
+            w as u32,
+            h as u32,
+            PathBuf::from("/tmp/fake.fits"),
+            65535,
+            doc_at("/tmp/fake.fits"),
+        )
     }
 
     fn cached_i32(arr: ndarray::Array2<i32>) -> CachedImage {
         let (w, h) = arr.dim();
-        CachedImage {
-            pixels: CachedPixels::I32(arr),
-            width: w as u32,
-            height: h as u32,
-            fits_path: PathBuf::from("/tmp/fake.fits"),
-            max_adu: 1 << 20,
-        }
+        CachedImage::new(
+            CachedPixels::I32(arr),
+            w as u32,
+            h as u32,
+            PathBuf::from("/tmp/fake.fits"),
+            1 << 20,
+            doc_at("/tmp/fake.fits"),
+        )
     }
 
     fn doc_at(file_path: &str) -> ExposureDocument {
