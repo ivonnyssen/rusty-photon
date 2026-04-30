@@ -3,6 +3,11 @@
 //! Pixels are written as BITPIX=32 (i32) because `fitrs` does not support u16.
 //! Internally the cache may hold `u16` (see `cache.rs`); FITS write widens to
 //! `i32` at this boundary, FITS read produces `i32`.
+//!
+//! Writes are atomic and durable: data is staged into a uniquely-named file in
+//! the destination directory, fsynced, renamed into place, and the parent
+//! directory is fsynced so the rename itself survives a crash. This mirrors
+//! the sidecar JSON treatment in `document.rs`.
 
 use std::path::Path;
 
@@ -13,10 +18,11 @@ use crate::error::{Result, RpError};
 
 /// Write i32 pixel data as a FITS file.
 ///
-/// Not atomic: any existing file at `path` is removed first, then `fitrs`
-/// writes directly to the final path. Capture paths use uuid-derived
-/// filenames so concurrent writers / readers of the same path don't arise
-/// in practice; if that changes, switch to a tmp-write + rename here.
+/// Atomic: data is staged to a sibling temp file, fsynced, then renamed onto
+/// `path`, which overwrites any existing destination. A crash mid-write
+/// cannot leave a torn file at `path` — readers either see the old contents
+/// or the new ones, never a partial mix. The staging file is removed by a
+/// Drop guard if anything before the rename fails.
 pub async fn write_fits<P: AsRef<Path>>(
     path: P,
     pixels: &[i32],
@@ -44,25 +50,58 @@ pub async fn write_fits<P: AsRef<Path>>(
         "writing FITS image"
     );
 
+    // Run the whole stage-and-commit sequence on the blocking pool: fitrs and
+    // tempfile are sync-only, and one task spawn per write is cheaper than
+    // one per fs syscall.
     tokio::task::spawn_blocking(move || write_fits_sync(&path, &pixels, width, height))
         .await
         .map_err(|e| RpError::Imaging(format!("task join error: {}", e)))?
 }
 
 fn write_fits_sync(path: &Path, pixels: &[i32], width: u32, height: u32) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path)
-            .map_err(|e| RpError::Imaging(format!("failed to remove existing file: {}", e)))?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| RpError::Imaging(format!("FITS path has no parent: {}", path.display())))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| RpError::Imaging(format!("failed to create directory: {}", e)))?;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| RpError::Imaging(format!("failed to create directory: {}", e)))?;
-    }
+    // `NamedTempFile::new_in(parent)` reserves an OS-generated unique filename
+    // in the destination directory; `into_temp_path()` drops the file handle
+    // but keeps a Drop guard that removes the staging file on panic or early
+    // return. `fitrs::Fits::create` errors if the file already exists, so we
+    // remove the empty placeholder before handing it the path. The Drop guard
+    // still fires correctly afterwards (its `remove_file` is silent on ENOENT).
+    let tmp_path = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| RpError::Imaging(format!("failed to create staging file: {}", e)))?
+        .into_temp_path();
+    std::fs::remove_file(&tmp_path)
+        .map_err(|e| RpError::Imaging(format!("failed to clear staging file: {}", e)))?;
 
     let hdu = Hdu::new(&[width as usize, height as usize], pixels.to_vec());
-    Fits::create(path, hdu)
+    Fits::create(&tmp_path, hdu)
         .map_err(|e| RpError::Imaging(format!("failed to create FITS file: {}", e)))?;
+
+    // fsync the FITS bytes so a crash after rename cannot surface a renamed-
+    // but-zero-length file.
+    std::fs::File::open(&tmp_path)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| RpError::Imaging(format!("failed to fsync staging file: {}", e)))?;
+
+    // Atomic rename. Overwrites any existing destination on POSIX and on
+    // Windows (Rust's `rename` uses MoveFileExW with MOVEFILE_REPLACE_EXISTING).
+    // `persist` consumes the TempPath, disarming the Drop guard.
+    tmp_path
+        .persist(path)
+        .map_err(|e| RpError::Imaging(format!("failed to persist FITS file: {}", e.error)))?;
+
+    // fsync the parent directory entry so the rename itself is durable.
+    // Windows can't open a directory as a regular file handle, so unix-only.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| RpError::Imaging(format!("failed to fsync parent directory: {}", e)))?;
+    }
 
     debug!(path = %path.display(), "FITS file written successfully");
     Ok(())
@@ -204,6 +243,106 @@ mod tests {
             err.to_string().contains("expected 2D or 3D with 1 plane"),
             "unexpected error: {}",
             err
+        );
+    }
+
+    fn entry_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn write_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+
+        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
+        write_fits(&path, &[10, 20, 30, 40], 2, 2).await.unwrap();
+
+        let (pixels, w, h) = read_fits_pixels(&path).unwrap();
+        assert_eq!(pixels, vec![10, 20, 30, 40]);
+        assert_eq!((w, h), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn successful_write_leaves_no_staging_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+
+        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
+
+        assert_eq!(
+            entry_names(dir.path()),
+            vec!["img.fits"],
+            "directory should contain only the FITS file after a successful write"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_write_cleans_up_staging_file() {
+        // Force the rename to fail by replacing the destination with a directory
+        // — `rename(file, dir)` is rejected on Linux and Windows. Mirrors
+        // document.rs's `failed_write_cleans_up_staging_file` test.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+        std::fs::create_dir(&path).unwrap();
+
+        let err = write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to persist FITS file"),
+            "unexpected error: {}",
+            err
+        );
+
+        assert_eq!(
+            entry_names(dir.path()),
+            vec!["img.fits"],
+            "failed write must not leave a staging file behind (only the directory we put in the way remains)"
+        );
+    }
+
+    /// After a successful first write, force a second write to the *same*
+    /// path to fail (by removing write permission on the parent so staging
+    /// file creation fails). Verify the original FITS contents are still
+    /// intact — atomic rename means the destination is either the old file
+    /// or the new file, never torn or missing.
+    ///
+    /// Unix-only because the chmod trick relies on POSIX-style write bits.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_write_preserves_prior_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+
+        write_fits(&path, &[1, 2, 3, 4], 2, 2).await.unwrap();
+
+        let original_perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        let mut readonly = original_perms.clone();
+        readonly.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), readonly).unwrap();
+
+        let err = write_fits(&path, &[9, 9, 9, 9], 2, 2).await.unwrap_err();
+
+        // Restore so tempdir can clean up regardless of assertion outcomes.
+        std::fs::set_permissions(dir.path(), original_perms).unwrap();
+
+        assert!(
+            err.to_string().contains("failed to create staging file"),
+            "unexpected error: {}",
+            err
+        );
+
+        let (pixels, _, _) = read_fits_pixels(&path).unwrap();
+        assert_eq!(
+            pixels,
+            vec![1, 2, 3, 4],
+            "the original file must remain intact when a write to the same path fails"
         );
     }
 }
