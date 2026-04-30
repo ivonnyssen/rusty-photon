@@ -248,8 +248,10 @@ impl SkySurveyCameraWorld {
             std::fs::write(&path, config.to_string()).expect("failed to write config.json");
             path
         };
-        let handle =
-            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
+        let config_path_str = config_path
+            .to_str()
+            .expect("temp config path must be valid UTF-8 for ServiceHandle::start");
+        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path_str).await;
         self.config_path = Some(config_path);
         self.service = Some(handle);
     }

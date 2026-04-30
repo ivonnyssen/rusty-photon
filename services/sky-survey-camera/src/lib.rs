@@ -43,10 +43,12 @@ pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.server.port))
         .await
-        .map_err(SkySurveyCameraError::ConfigIo)?;
+        .map_err(|e| {
+            SkySurveyCameraError::Bind(format!("bind 0.0.0.0:{}: {e}", config.server.port))
+        })?;
     let local = listener
         .local_addr()
-        .map_err(SkySurveyCameraError::ConfigIo)?;
+        .map_err(|e| SkySurveyCameraError::Bind(format!("local_addr: {e}")))?;
     println!("bound_addr={local}");
     tracing::info!(address = %local, "sky-survey-camera serving");
 

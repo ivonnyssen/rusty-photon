@@ -240,10 +240,20 @@ impl Device for SkySurveyCamera {
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         if connected {
-            // C2: cache_dir must be creatable + writable.
+            // C2: cache_dir must be creatable AND writable. `create_
+            // dir_all` succeeds on an existing read-only directory,
+            // so we follow it with a probe write/delete.
             let cache_dir = &self.state.config.survey.cache_dir;
             if let Err(e) = std::fs::create_dir_all(cache_dir) {
-                debug!(?cache_dir, error = %e, "cache_dir not writable");
+                debug!(?cache_dir, error = %e, "cache_dir create failed");
+                return Err(ASCOMError::new(
+                    UNSPECIFIED_ERROR,
+                    format!("cache_dir is not writable: {e}"),
+                ));
+            }
+            let probe = cache_dir.join(".sky-survey-camera.write-probe");
+            if let Err(e) = std::fs::write(&probe, b"").and_then(|_| std::fs::remove_file(&probe)) {
+                debug!(?cache_dir, error = %e, "cache_dir write probe failed");
                 return Err(ASCOMError::new(
                     UNSPECIFIED_ERROR,
                     format!("cache_dir is not writable: {e}"),
