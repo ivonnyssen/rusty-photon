@@ -334,7 +334,14 @@ Neither spike crate ships in `main` to keep the workspace lean.
   vars, no `--test-threads=1`. `cargo build` works on a fresh
   laptop with the standard `dtolnay/rust-toolchain@stable`.
 - **Native `u16` writes** restore correct byte-level
-  representation. rp and phd2-guider stop widening to i32.
+  representation. phd2-guider's guide-star thumbnails and rp's
+  16-bit captures (the QHY600-class case) both stop widening to
+  i32. **rp's on-disk format moves from BITPIX=32 to BITPIX=16**
+  (with `BSCALE=1, BZERO=32768`) for the common path; cameras
+  whose `max_adu` exceeds `u16::MAX` fall through to BITPIX=32 so
+  high-bit-depth scientific sensors stay lossless. `read_fits_pixels`
+  continues to return `Vec<i32>` regardless of on-disk encoding,
+  so imaging code is unaffected.
 - **Parallel writes** on QHY600 workloads are unblocked. The
   hand-rolled writer has no shared global state.
 - **Test serialisation requirement disappears.** The non-reentrant

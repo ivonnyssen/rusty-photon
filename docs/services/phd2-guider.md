@@ -460,7 +460,11 @@ async fn save_image(&self) -> Result<String>;
 /// Decode base64-encoded image data to u16 pixel values
 fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>>;
 
-/// Write a 16-bit grayscale image to a FITS file
+/// Write a 16-bit grayscale image to a FITS file. Native u16 via
+/// BITPIX=16 + BZERO=32768 (per ADR-001 Amendment A; previously the
+/// `fitrs`-based path widened to BITPIX=32 because it could not write
+/// unsigned values). Atomic and durable: stages, fsyncs, renames,
+/// fsyncs the parent dir.
 async fn write_grayscale_u16_fits(
     path: impl AsRef<Path>,
     pixels: &[u16],
@@ -688,7 +692,7 @@ serde_json = "1"
 tracing = "0.1"
 thiserror = "2"
 base64 = "0.22"
-fitrs = "0.5"
+rp-fits = { workspace = true }
 ```
 
 ## Testing Strategy

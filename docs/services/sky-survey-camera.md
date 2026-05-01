@@ -400,9 +400,10 @@ split, or rename modules so long as the BDD scenarios pass.
 6. **`mock.rs`** (gated by the `mock` feature) — `MockSurveyClient`
    plus the `synthetic_fits` helper used by the ConformU
    integration test's stub backend.
-7. **`fits.rs`** — Minimal FITS primary-HDU reader producing
-   `Vec<i32>` + dimensions. Reuses whichever FITS dependency the
-   workspace ends up standardising on (see ADR-001).
+7. **`fits.rs`** — Thin shim over `rp_fits::reader::read_primary_as_i32`.
+   Returns `(Vec<i32>, width, height)` for SkyView responses. The
+   workspace's FITS surface lives in `crates/rp-fits` per ADR-001
+   Amendment A.
 8. **`camera.rs`** — `Device` + `Camera` trait impl.
 9. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
    composed with the ASCOM server's router.
@@ -449,8 +450,7 @@ Layered per `docs/skills/testing.md`:
   by an attached ASCOM FilterWheel.
 - **Additional backends.** `hips2fits` for faster cutouts, local
   HiPS tiles for fully offline operation.
-- **Workspace FITS consolidation.** sky-survey-camera ships its own
-  `parse_primary_hdu` because the workspace-pinned `fitrs 0.5.0`
-  doesn't apply `BSCALE`/`BZERO` and only reads from a path. See
-  [docs/plans/fits-library-consolidation.md](../plans/fits-library-consolidation.md)
-  for the candidate-library audit and migration strategy.
+- **Workspace FITS consolidation.** *(Done — ADR-001 Amendment A.)*
+  sky-survey-camera now delegates to `rp_fits::reader::read_primary_as_i32`,
+  which applies `BSCALE`/`BZERO` correctly and accepts a
+  `Cursor<&[u8]>` so the HTTP-bytes path doesn't need a tempfile.

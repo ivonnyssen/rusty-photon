@@ -2,11 +2,12 @@
 
 ## Status
 
-**Open / research — tracked in [#107](https://github.com/ivonnyssen/rusty-photon/issues/107).** No commitment yet. The workspace currently
-has two independent FITS implementations and one unsatisfactory
-third-party option. This document captures what's known so the
-eventual consolidation can pick a library deliberately rather than by
-accident.
+**Superseded by [ADR-001 Amendment A](../decisions/001-fits-file-support.md).**
+The workspace now consolidates FITS I/O in `crates/rp-fits` (reads via
+`fitsrs`, writes via a hand-rolled pure-Rust BITPIX 8/16/32 writer).
+Both `fitrs` and the hand-rolled sky-survey-camera parser have been
+retired. This document is retained as the historical audit that
+informed the ADR.
 
 ## Why this exists
 
