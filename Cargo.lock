@@ -4396,6 +4396,7 @@ dependencies = [
  "ndarray",
  "proptest",
  "reqwest 0.13.2",
+ "rp-fits",
  "serde",
  "serde_json",
  "tempfile",

@@ -2830,7 +2830,7 @@
         "bzlTransitiveDigest": "rfE0u75zINNeKkkOlA4SVDGiXInBayQhrBpkJDrccp4=",
         "usagesDigest": "6qni3jvstpF/aGbXbYi3ZaJKVny4hFi1ss0PrSsuerU=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "79a22dfa4810c1be24a66c14c6d3bd849fe9ff247b08454b6cb3e6e9e8cccf4d",
+          "@@//Cargo.lock": "cb191e973e135b1417034230dde8dfb4135feb989362b998b99cc26846309d23",
           "@@//Cargo.toml": "7a6268dafe19dfff97acde359add8e87f555e0fd1e7cc14e0a309507a158f7d6",
           "@@//crates/bdd-infra/Cargo.toml": "35bfdc07a4281b5e9034c994234613bcddf0aecde7225c3062b87045b9d10703",
           "@@//crates/rp-auth/Cargo.toml": "5689e64d63137e20f3be8432e098b88e7395bbd337005175cda1d2a0289a161d",
@@ -2844,7 +2844,7 @@
           "@@//services/rp/Cargo.toml": "8fc82bf136e25713b3305ec5c47b430fef750cba7af94b2110494a14110e2270",
           "@@//services/sentinel-app/Cargo.toml": "251522af4e00988a610aa3336c285b1695be3523183b08aeb303e5c4cd056a9f",
           "@@//services/sentinel/Cargo.toml": "1ff73d694366504da8ee2013cde998a0578dd326219319a721607bfc44de54c5",
-          "@@//services/sky-survey-camera/Cargo.toml": "f6e2b394859cb8386ce411eee838e419e6209bd223d0a2fbfbb954d1739cdb86"
+          "@@//services/sky-survey-camera/Cargo.toml": "c05b16e26019c34bd7ead907c561362585f19af02b9d04a848f88c65eeb656d2"
         },
         "recordedDirentsInputs": {},
         "envVariables": {
@@ -2852,7 +2852,7 @@
           "CARGO_BAZEL_GENERATOR_SHA256": null,
           "CARGO_BAZEL_GENERATOR_URL": null,
           "CARGO_BAZEL_ISOLATED": null,
-          "CARGO_BAZEL_REPIN": null,
+          "CARGO_BAZEL_REPIN": "1",
           "CARGO_BAZEL_REPIN_ONLY": null,
           "CARGO_BAZEL_TIMEOUT": null,
           "REPIN": null
