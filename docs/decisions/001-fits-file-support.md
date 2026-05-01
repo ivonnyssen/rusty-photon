@@ -136,7 +136,7 @@ depend on) shaped the final decision.
      thumbnails, currently `fitrs` widening to i32 (the original
      trade-off).
 2. **License conflict.** Workspace is `MIT OR Apache-2.0`
-   (`Cargo.toml:21`); `fitrs` is **GPL-3.0**. This was previously
+   (`Cargo.toml:22`); `fitrs` is **GPL-3.0**. This was previously
    undocumented and is a real distribution-license concern. Neither
    the original ADR nor the first supersession captured it.
 3. **`fitrs` is unmaintained.** Last release 2019-10-31. PR #4
