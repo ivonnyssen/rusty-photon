@@ -3,6 +3,10 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-fits:rp-fits",
+]
+
 rust_library(
     name = "phd2-guider_lib",
     srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**", "src/main.rs"]),
@@ -11,7 +15,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -21,7 +25,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":phd2-guider_lib"] + all_crate_deps(normal = True),
+    deps = [":phd2-guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -31,7 +35,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":phd2-guider_lib"] + all_crate_deps(normal = True),
+    deps = [":phd2-guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -49,7 +53,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

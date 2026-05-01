@@ -28,7 +28,7 @@ base64 = { workspace = true }
 rp-auth = { workspace = true }
 rp-tls = { workspace = true }
 rpassword = { workspace = true }
-fitrs = { workspace = true }
+rp-fits = { workspace = true }
 ndarray = { workspace = true }
 ndarray-ndimage = { workspace = true }
 rmpfit = { workspace = true }

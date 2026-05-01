@@ -423,7 +423,7 @@ mod tests {
         let doc_uuid = "44444444-4444-4444-4444-444444444444";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{}.fits", uuid8));
-        crate::persistence::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
         let doc = ExposureDocument {

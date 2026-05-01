@@ -5,6 +5,7 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
+    "//crates/rp-fits:rp-fits",
     "//crates/rp-tls:rp-tls",
 ]
 

@@ -689,7 +689,7 @@ impl McpHandler {
     async fn persist_capture_artifact(
         &self,
         doc: ExposureDocument,
-        pixels: Vec<i32>,
+        cached_pixels: Option<CachedPixels>,
         captured_max_adu: Option<u32>,
     ) {
         let document_id = doc.id.clone();
@@ -714,26 +714,18 @@ impl McpHandler {
         };
 
         if document_persisted {
-            if let Some(max_adu) = captured_max_adu {
-                let shape = (width as usize, height as usize);
-                if let Some(cp) = CachedPixels::from_i32_pixels(pixels, shape, max_adu) {
-                    self.image_cache.insert(
-                        document_id.clone(),
-                        CachedImage::new(
-                            cp,
-                            width,
-                            height,
-                            std::path::PathBuf::from(&image_path),
-                            max_adu,
-                            doc,
-                        ),
-                    );
-                } else {
-                    debug!(
-                        document_id = %document_id,
-                        "cache: shape mismatch, skipping insert"
-                    );
-                }
+            if let (Some(max_adu), Some(cp)) = (captured_max_adu, cached_pixels) {
+                self.image_cache.insert(
+                    document_id.clone(),
+                    CachedImage::new(
+                        cp,
+                        width,
+                        height,
+                        std::path::PathBuf::from(&image_path),
+                        max_adu,
+                        doc,
+                    ),
+                );
             }
         }
     }
@@ -797,25 +789,52 @@ impl McpHandler {
         let (dim_x, dim_y, _planes) = image_array.dim();
         let width = dim_x as u32;
         let height = dim_y as u32;
-        let pixels: Vec<i32> = image_array.iter().copied().collect();
 
-        persistence::write_fits(&image_path, &pixels, width, height, &document_id)
-            .await
-            .map_err(|e| format!("failed to write FITS file: {}", e))?;
-
-        // Read max_adu once. The value feeds two consumers: the cache
-        // variant choice (u16 vs i32) and the exposure document's
-        // `max_adu` field, which makes the sidecar self-describing for
-        // downstream rehydration (Phase 7) and archival lineage. A
-        // transient Alpaca failure here is localized to this capture —
-        // the next capture re-reads independently. On failure we persist
-        // `max_adu: None` on the document and skip the cache insert; the
-        // FITS file on disk plus the sidecar remain the durable record.
+        // Read max_adu *before* collecting pixels: it decides whether
+        // we need a u16 or i32 buffer, so reading first lets us collect
+        // straight into the destination type and avoid the wasted
+        // i32→u16 round trip.
+        //
+        // max_adu feeds three consumers: on-disk FITS bit-depth, cache
+        // variant, and the exposure document's `max_adu` field
+        // (sidecar self-describing for rehydration/archival lineage).
+        // A transient Alpaca failure here is localized — the next
+        // capture re-reads independently. On failure we persist
+        // `max_adu: None`, write the FITS as i32 (lossless fallback),
+        // and skip the cache insert; the FITS file on disk plus the
+        // sidecar remain the durable record.
         let captured_max_adu: Option<u32> = match cam.max_adu().await {
             Ok(v) => Some(v),
             Err(e) => {
                 debug!(error = %e, "max_adu unavailable for this capture");
                 None
+            }
+        };
+
+        // Dispatch on max_adu, collecting pixels directly into the
+        // narrowest type each path needs and reusing the same buffer
+        // for the cache insert.
+        let shape = (width as usize, height as usize);
+        let cached_pixels: Option<CachedPixels> = match captured_max_adu {
+            Some(max_adu) if max_adu <= u16::MAX as u32 => {
+                let max_adu_i32 = max_adu as i32;
+                let u16_pixels: Vec<u16> = image_array
+                    .iter()
+                    .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                    .collect();
+                drop(image_array);
+                persistence::write_fits_u16(&image_path, &u16_pixels, width, height, &document_id)
+                    .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                CachedPixels::from_u16_pixels(u16_pixels, shape)
+            }
+            _ => {
+                let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
+                drop(image_array);
+                persistence::write_fits_i32(&image_path, &i32_pixels, width, height, &document_id)
+                    .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                captured_max_adu.and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
             }
         };
 
@@ -830,7 +849,7 @@ impl McpHandler {
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
-        self.persist_capture_artifact(doc, pixels, captured_max_adu)
+        self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
             .await;
 
         self.event_bus.emit(
@@ -2750,10 +2769,10 @@ mod tests {
             max_adu: Some(65535),
             sections: serde_json::Map::new(),
         };
-        let pixels: Vec<i32> = vec![1, 2, 3, 4];
+        let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], (2, 2), 65535);
 
         handler
-            .persist_capture_artifact(doc, pixels, Some(65535))
+            .persist_capture_artifact(doc, cached, Some(65535))
             .await;
 
         assert!(

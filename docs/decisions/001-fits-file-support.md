@@ -285,14 +285,16 @@ three consumers need. Internally:
 - **No CFITSIO** in the workspace. No vcpkg, no pkgconfiglite, no
   `--test-threads=1`, no per-platform link directives.
 
-The cfitsio-vcpkg spike crate (`crates/fits-cfitsio-spike`) and
-the fitsio-pure spike crate (`crates/fitsio-pure-spike`) are both
-preserved as documentation evidence — if a future consumer demands
-BINTABLE / WCS / RICE compression, the recipe to add CFITSIO back
-without source patches is captured; if `fitsio-pure` matures into
-a multi-contributor project, swapping the wrapper crate's writer
-implementation for it is a contained delta. For now both are
-unused.
+The cfitsio-vcpkg spike (branch
+[`feature/fits-cfitsio-vcpkg-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fits-cfitsio-vcpkg-spike))
+and the fitsio-pure spike (branch
+[`feature/fitsio-pure-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fitsio-pure-spike))
+remain on their dedicated branches as historical evidence — if a
+future consumer demands BINTABLE / WCS / RICE compression, the recipe
+to add CFITSIO back without source patches is captured there; if
+`fitsio-pure` matures into a multi-contributor project, swapping the
+wrapper crate's writer implementation for it is a contained delta.
+Neither spike crate ships in `main` to keep the workspace lean.
 
 #### Consequences
 
@@ -332,7 +334,14 @@ unused.
   vars, no `--test-threads=1`. `cargo build` works on a fresh
   laptop with the standard `dtolnay/rust-toolchain@stable`.
 - **Native `u16` writes** restore correct byte-level
-  representation. rp and phd2-guider stop widening to i32.
+  representation. phd2-guider's guide-star thumbnails and rp's
+  16-bit captures (the QHY600-class case) both stop widening to
+  i32. **rp's on-disk format moves from BITPIX=32 to BITPIX=16**
+  (with `BSCALE=1, BZERO=32768`) for the common path; cameras
+  whose `max_adu` exceeds `u16::MAX` fall through to BITPIX=32 so
+  high-bit-depth scientific sensors stay lossless. `read_fits_pixels`
+  continues to return `Vec<i32>` regardless of on-disk encoding,
+  so imaging code is unaffected.
 - **Parallel writes** on QHY600 workloads are unblocked. The
   hand-rolled writer has no shared global state.
 - **Test serialisation requirement disappears.** The non-reentrant

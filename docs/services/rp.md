@@ -635,7 +635,7 @@ the exact parameter types and return structure.
 
 All image analysis tools accept either `document_id` (resolved via the
 [Image and Document Cache](#image-and-document-cache), avoiding FITS
-decode) or `image_path` (read from disk via `fitrs`). Where both are
+decode) or `image_path` (read from disk via `rp-fits`). Where both are
 accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
@@ -691,8 +691,9 @@ hardware.
 The `capture` tool takes exposure time as a humantime string (`duration`,
 e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
-downloads the camera's `image_array`, writes it as a FITS file (using
-the `fitrs` crate with BITPIX=32) with `DOC_ID = '<full-uuid>'` in the
+downloads the camera's `image_array`, writes it as a FITS file via
+`rp-fits` (BITPIX=16+BZERO=32768 for the common 16-bit sensor case;
+BITPIX=32 when `max_adu > u16::MAX`) with `DOC_ID = '<full-uuid>'` in the
 primary HDU header, and creates a sidecar exposure document JSON
 alongside it. The base filename is `<doc_uuid_8>`; both files share
 that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
@@ -737,7 +738,7 @@ All algorithms are implemented as custom code on top of well-established
 building blocks — no single crate covers the full range of astronomical
 image analysis needed. Tools accept either a `document_id` (resolved
 via the [Image and Document Cache](#image-and-document-cache)) or an
-`image_path` (FITS file on disk read via `fitrs`); `document_id` is
+`image_path` (FITS file on disk read via `rp-fits`); `document_id` is
 preferred for the post-capture fast path because it avoids re-decoding
 the image just written.
 
@@ -746,14 +747,16 @@ the image just written.
 - **Pixel statistics** (median, mean, min, max ADU) — stdlib iterators
   and `select_nth_unstable` for median (iterative O(n) quickselect).
   Used by `compute_image_stats` for flat calibration exposure targeting.
-- **FITS I/O** — `fitrs` crate for reading and writing FITS images.
+- **FITS I/O** — `rp-fits` workspace crate (reads via `fitsrs`, writes
+  via a hand-rolled pure-Rust BITPIX 8/16/32 writer). See ADR-001
+  Amendment A.
 
 #### Planned Capabilities and Crate Strategy
 
 | Capability | Approach | Crates |
 |------------|----------|--------|
 | Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
-| FITS I/O | Crate | `fitrs` |
+| FITS I/O | Crate | `rp-fits` (wraps `fitsrs` for reads, hand-rolled writer) |
 | 2D image operations | Crate | `ndarray` (already in workspace) |
 | Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, dilation/erosion). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
 | Star detection | Custom | Threshold + connected components on background-subtracted image, then shape filtering |
@@ -796,7 +799,7 @@ The first analysis tool to implement. Behavioral contract:
 - `pixel_count` — total pixels analyzed.
 
 **Algorithm (in order)**:
-1. Load pixels (image-cache hit or `fitrs` read).
+1. Load pixels (image-cache hit or `rp-fits` read).
 2. Estimate background via sigma-clipped mean/stddev.
 3. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 4. Threshold at `background_mean + threshold_sigma × background_stddev`.
@@ -1196,7 +1199,11 @@ match &cached.pixels {
 }
 ```
 
-FITS write widens to `i32` at the boundary (fitrs requires it). The
+FITS writes preserve the cache pixel type: 16-bit sensors land on
+disk as BITPIX=16+BZERO=32768 (half the byte cost of the previous
+BITPIX=32 widening); cameras with `max_adu > u16::MAX` fall through
+to BITPIX=32 (lossless). Reads always normalise to `i32` — the
+imaging pipeline is uniform regardless of on-disk bit depth. The
 ASCOM `ImageArray` interface contract — which mandates `Int32` — is
 honored at any point we surface pixels through that API; internally
 we use `u16` whenever possible.
@@ -2495,7 +2502,7 @@ services/rp/src/
   # Persistence (FITS I/O, image+document cache, exposure-document storage)
   persistence/
     mod.rs              Module root: re-exports CachedImage / ImageCache /
-                          ExposureDocument / write_fits etc.
+                          ExposureDocument / write_fits_u16 / write_fits_i32 etc.
     document.rs         ExposureDocument struct, atomic sidecar JSON
                           persistence (write_sidecar_at: stage to .tmp →
                           rename). Document storage and lookup are
@@ -2505,8 +2512,10 @@ services/rp/src/
                           Arc<CachedImage> holding pixels + document
                           together, LRU eviction over combined memory
                           footprint, readdir+DOC_ID disk fallback.
-    fits.rs             FITS read/write via fitrs (widens to i32 at the
-                          boundary, embeds the document UUID in DOC_ID).
+    fits.rs             FITS read/write via rp-fits (writes BITPIX=16 for
+                          16-bit sensors, BITPIX=32 fallback when max_adu
+                          exceeds u16::MAX; reads normalise to i32; embeds
+                          the document UUID in DOC_ID).
 
   # Post-capture pipeline
   pipeline/
