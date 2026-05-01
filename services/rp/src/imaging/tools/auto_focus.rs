@@ -75,12 +75,7 @@ pub enum AutoFocusError {
 
 #[async_trait]
 pub trait FocuserOps {
-    async fn position(&self) -> Result<i32, String>;
     async fn move_to(&self, position: i32) -> Result<i32, String>;
-    /// Returns `None` for `NOT_IMPLEMENTED` or any transient read failure
-    /// — temperature is informational on the result, never load-bearing
-    /// on the sweep, so a single failure does not abort the run.
-    async fn temperature(&self) -> Option<f64>;
 }
 
 #[async_trait]
@@ -237,21 +232,29 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
 /// Drive the V-curve sweep against the supplied focuser/capturer/measurer
 /// adapters. See `docs/services/rp.md` → `auto_focus` Contract for the
 /// behavioral spec; this function is the reference implementation.
+///
+/// `starting_position` and `starting_temperature_c` must be the values the
+/// caller already read from the focuser for the `focus_started` event.
+/// The contract guarantees a single read of each — passing them in keeps
+/// the event payload and the result strictly consistent and avoids extra
+/// Alpaca round-trips inside the loop.
 pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>(
     focuser: &F,
     capturer: &C,
     measurer: &M,
     bounds: (Option<i32>, Option<i32>),
+    starting_position: i32,
+    starting_temperature_c: Option<f64>,
     params: AutoFocusParams,
 ) -> Result<AutoFocusResult, AutoFocusError> {
     validate_params(&params)?;
 
-    let current = focuser
-        .position()
-        .await
-        .map_err(AutoFocusError::Equipment)?;
-
-    let grid = build_grid(current, params.step_size, params.half_width, bounds);
+    let grid = build_grid(
+        starting_position,
+        params.step_size,
+        params.half_width,
+        bounds,
+    );
     if grid.len() < params.min_fit_points {
         return Err(AutoFocusError::GridTooSmall {
             available: grid.len(),
@@ -259,9 +262,9 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
         });
     }
 
-    let temperature_c = focuser.temperature().await;
+    let temperature_c = starting_temperature_c;
     debug!(
-        current_position = current,
+        current_position = starting_position,
         grid_len = grid.len(),
         temperature_c = ?temperature_c,
         "auto_focus sweep starting"
@@ -520,15 +523,9 @@ mod tests {
 
     #[async_trait]
     impl FocuserOps for StubFocuser {
-        async fn position(&self) -> Result<i32, String> {
-            Ok(*self.position.lock().unwrap())
-        }
         async fn move_to(&self, position: i32) -> Result<i32, String> {
             *self.position.lock().unwrap() = position;
             Ok(position)
-        }
-        async fn temperature(&self) -> Option<f64> {
-            Some(4.5)
         }
     }
 
@@ -601,6 +598,8 @@ mod tests {
             &cap,
             &meas,
             (None, None),
+            1234,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(100),
                 step_size: 100,
@@ -645,6 +644,8 @@ mod tests {
             &cap,
             &meas,
             (Some(4900), Some(5100)),
+            5000,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(100),
                 step_size: 100,
@@ -709,6 +710,8 @@ mod tests {
             &cap,
             &Sparse,
             (None, None),
+            1234,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(100),
                 step_size: 100,
@@ -724,70 +727,6 @@ mod tests {
             err,
             Err(AutoFocusError::NotEnoughStars { needed: 5, .. })
         ));
-    }
-
-    /// `focuser.position()` errors at the very start of the sweep —
-    /// the run aborts cleanly with `Equipment(_)` carrying the
-    /// underlying message.
-    #[tokio::test]
-    async fn run_auto_focus_propagates_focuser_position_error() {
-        struct FailingPosition;
-        #[async_trait]
-        impl FocuserOps for FailingPosition {
-            async fn position(&self) -> Result<i32, String> {
-                Err("alpaca disconnected".to_string())
-            }
-            async fn move_to(&self, _: i32) -> Result<i32, String> {
-                Ok(0)
-            }
-            async fn temperature(&self) -> Option<f64> {
-                None
-            }
-        }
-        struct UnreachableCapturer;
-        #[async_trait]
-        impl CaptureOps for UnreachableCapturer {
-            async fn capture(&self, _: Duration) -> Result<String, String> {
-                panic!("capture must not be reached when position() fails")
-            }
-        }
-        struct UnreachableMeasurer;
-        #[async_trait]
-        impl MeasureOps for UnreachableMeasurer {
-            async fn measure(
-                &self,
-                _: &str,
-                _: usize,
-                _: usize,
-                _: f64,
-            ) -> Result<HfrSample, String> {
-                panic!("measure must not be reached")
-            }
-        }
-        let err = run_auto_focus(
-            &FailingPosition,
-            &UnreachableCapturer,
-            &UnreachableMeasurer,
-            (None, None),
-            AutoFocusParams {
-                duration: Duration::from_millis(10),
-                step_size: 100,
-                half_width: 400,
-                min_area: 5,
-                max_area: 1000,
-                threshold_sigma: 5.0,
-                min_fit_points: 5,
-            },
-        )
-        .await;
-        match err {
-            Err(AutoFocusError::Equipment(msg)) => assert!(
-                msg.contains("alpaca disconnected"),
-                "expected propagated message, got: {}",
-                msg
-            ),
-            other => panic!("expected Equipment, got {:?}", other),
-        }
     }
 
     /// `capture()` errors mid-sweep on the second grid point — the
@@ -826,6 +765,8 @@ mod tests {
             &cap,
             &meas,
             (None, None),
+            1234,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(10),
                 step_size: 100,
@@ -876,6 +817,8 @@ mod tests {
             &cap,
             &FailingMeasurer,
             (None, None),
+            1234,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(10),
                 step_size: 100,
@@ -922,6 +865,8 @@ mod tests {
             &cap,
             &meas,
             (None, None),
+            1234,
+            Some(4.5),
             AutoFocusParams {
                 duration: Duration::from_millis(10),
                 step_size: 100,
@@ -945,45 +890,17 @@ mod tests {
         }
     }
 
-    /// When the focuser does not implement temperature readout the
-    /// adapter returns `None`; the result's `temperature_c` is also
-    /// `None` and the rest of the run proceeds normally.
+    /// When the caller passes `None` for the starting temperature
+    /// (e.g. the focuser doesn't implement Temperature, or the read
+    /// failed), the result's `temperature_c` is also `None`. The
+    /// rest of the sweep proceeds normally.
     #[tokio::test]
     async fn run_auto_focus_records_none_temperature() {
-        struct NoTemperature {
-            position: Mutex<i32>,
-        }
-        #[async_trait]
-        impl FocuserOps for NoTemperature {
-            async fn position(&self) -> Result<i32, String> {
-                Ok(*self.position.lock().unwrap())
-            }
-            async fn move_to(&self, p: i32) -> Result<i32, String> {
-                *self.position.lock().unwrap() = p;
-                Ok(p)
-            }
-            async fn temperature(&self) -> Option<f64> {
-                None
-            }
-        }
-        struct PosCapturer<'a> {
-            foc: &'a NoTemperature,
-            counter: Mutex<u64>,
-        }
-        #[async_trait]
-        impl CaptureOps for PosCapturer<'_> {
-            async fn capture(&self, _: Duration) -> Result<String, String> {
-                let pos = *self.foc.position.lock().unwrap();
-                let mut c = self.counter.lock().unwrap();
-                *c += 1;
-                Ok(format!("doc-{:05}-pos{}", *c, pos))
-            }
-        }
-        let foc = NoTemperature {
+        let foc = StubFocuser {
             position: Mutex::new(1234),
         };
-        let cap = PosCapturer {
-            foc: &foc,
+        let cap = StubCapturer {
+            focuser: &foc,
             counter: Mutex::new(0),
         };
         let meas = StubMeasurer {
@@ -997,6 +914,8 @@ mod tests {
             &cap,
             &meas,
             (None, None),
+            1234,
+            None,
             AutoFocusParams {
                 duration: Duration::from_millis(10),
                 step_size: 100,

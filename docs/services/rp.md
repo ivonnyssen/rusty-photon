@@ -1783,10 +1783,17 @@ without having to know the focus algorithm.
   starless capture: the entry is preserved as a record but does
   not contribute to the fit.
 - `temperature_c` (f64 | null) — focuser temperature read once at
-  the start of the run, or `null` when the focuser does not
-  implement temperature readout. Useful for downstream
+  the start of the run. `null` when the focuser does not implement
+  temperature readout (`NOT_IMPLEMENTED`) **or** when the read
+  itself fails for any other reason. Temperature is informational
+  on the result and never load-bearing on the sweep, so a transient
+  read failure does not abort the run — the field is just
+  surrendered to `null`. Useful for downstream
   temperature-compensation logic that records
-  `(position, temperature)` pairs across runs.
+  `(position, temperature)` pairs across runs (callers that need
+  absolute temperature confidence should fall back to
+  `get_focuser_temperature` per call rather than relying on this
+  field).
 
 **Algorithm**:
 1. Resolve `camera_id` and `focuser_id`. Read the focuser's current

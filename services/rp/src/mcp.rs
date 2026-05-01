@@ -1701,12 +1701,14 @@ impl McpHandler {
         let _ = cam; // resolved purely for the connection check; do_capture re-resolves.
         let (foc_entry, foc) = resolve_device!(self, find_focuser, &focuser_id, "focuser");
 
-        // Read current focuser position + temperature once for the
-        // `focus_started` event (per the Contract algorithm step 1).
-        // run_auto_focus re-reads internally — two cheap Alpaca calls
-        // is fine; threading them through would require extending the
-        // FocuserOps trait or run_auto_focus's signature with no real
-        // benefit.
+        // Read the current focuser position + temperature exactly once
+        // each (per the Contract algorithm step 1) and thread the values
+        // through to both `focus_started` *and* `run_auto_focus` so the
+        // event payload and the result's `temperature_c`/sweep-grid
+        // origin can never disagree. Temperature is informational only:
+        // any read failure (NOT_IMPLEMENTED or transient) becomes
+        // `temperature_c: null`; we don't abort an auto-focus run over
+        // a missing thermistor.
         let starting_position = match foc.position().await {
             Ok(p) => p,
             Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
@@ -1737,11 +1739,16 @@ impl McpHandler {
             handler: self,
             camera_id: camera_id.clone(),
             focuser_id: focuser_id.clone(),
-            foc,
         };
 
         match imaging::tools::auto_focus::run_auto_focus(
-            &adapter, &adapter, &adapter, bounds, af_params,
+            &adapter,
+            &adapter,
+            &adapter,
+            bounds,
+            starting_position,
+            starting_temperature_c,
+            af_params,
         )
         .await
         {
@@ -1785,30 +1792,14 @@ struct AutoFocusAdapter<'a> {
     handler: &'a McpHandler,
     camera_id: String,
     focuser_id: String,
-    foc: Arc<dyn ascom_alpaca::api::Focuser>,
 }
 
 #[async_trait::async_trait]
 impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
-    async fn position(&self) -> std::result::Result<i32, String> {
-        self.foc
-            .position()
-            .await
-            .map_err(|e| format!("failed to read focuser position: {}", e))
-    }
-
     async fn move_to(&self, position: i32) -> std::result::Result<i32, String> {
         self.handler
             .do_move_focuser_blocking(&self.focuser_id, position)
             .await
-    }
-
-    async fn temperature(&self) -> Option<f64> {
-        // Non-fatal read: NOT_IMPLEMENTED → None; transient errors → None.
-        // The result's `temperature_c` field is informational; never
-        // load-bearing on the sweep, so we never abort the run on a
-        // temperature read.
-        self.foc.temperature().await.ok()
     }
 }
 
