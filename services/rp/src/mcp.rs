@@ -1701,6 +1701,27 @@ impl McpHandler {
         let _ = cam; // resolved purely for the connection check; do_capture re-resolves.
         let (foc_entry, foc) = resolve_device!(self, find_focuser, &focuser_id, "focuser");
 
+        // Read current focuser position + temperature once for the
+        // `focus_started` event (per the Contract algorithm step 1).
+        // run_auto_focus re-reads internally — two cheap Alpaca calls
+        // is fine; threading them through would require extending the
+        // FocuserOps trait or run_auto_focus's signature with no real
+        // benefit.
+        let starting_position = match foc.position().await {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
+        };
+        let starting_temperature_c: Option<f64> = foc.temperature().await.ok();
+        self.event_bus.emit(
+            "focus_started",
+            serde_json::json!({
+                "camera_id": camera_id,
+                "focuser_id": focuser_id,
+                "position": starting_position,
+                "temperature": starting_temperature_c,
+            }),
+        );
+
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
         let af_params = imaging::tools::auto_focus::AutoFocusParams {
             duration,

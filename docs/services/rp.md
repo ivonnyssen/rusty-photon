@@ -272,7 +272,7 @@ The application does not know or care what subscribers do with events.
 | `slew_complete` | target coordinates, actual coordinates | Mount reports slew done |
 | `centering_started` | target, attempt number | Plate solve + correct begins |
 | `centering_complete` | target, error arcsec | Centering converged |
-| `focus_started` | camera_id, focuser_id, temperature | Auto-focus begins |
+| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
 | `focus_complete` | camera_id, focuser_id, position, hfr, samples_used | Auto-focus result |
 | `guide_started` | guider_id | Guiding loop started |
 | `guide_settled` | rms_ra, rms_dec | Guiding RMS below threshold |
@@ -1789,10 +1789,11 @@ without having to know the focus algorithm.
   `(position, temperature)` pairs across runs.
 
 **Algorithm**:
-1. Resolve `camera_id` and `focuser_id`; emit `focus_started` with
-   the current focuser position and temperature.
-2. Read the focuser temperature once; record on the result.
-3. Compute the sweep grid:
+1. Resolve `camera_id` and `focuser_id`. Read the focuser's current
+   position and temperature once each; record both on the result.
+   Emit `focus_started` carrying the resolved ids, the current
+   position, and the temperature.
+2. Compute the sweep grid:
    `start = current_position − half_width`; positions are
    `start, start + step_size, start + 2·step_size, …`, continuing
    while `≤ current_position + half_width`. Clamp the grid to
@@ -1800,7 +1801,7 @@ without having to know the focus algorithm.
    not coerced — coercion would create duplicate sweep positions
    at the bound). Reject before any motion if the clamped grid has
    fewer than `min_fit_points` positions.
-4. For each grid position, in order:
+3. For each grid position, in order:
    1. `move_focuser(position)` — block until the focuser reports
       idle (same poll loop the primitive `move_focuser` tool uses).
    2. `capture(camera_id, duration)` — yields `document_id`. The
@@ -1812,21 +1813,21 @@ without having to know the focus algorithm.
       `curve_points`. A capture with `star_count == 0` (or a
       `null` HFR for any reason) is recorded with `hfr: null` and
       contributes nothing to the fit.
-5. If fewer than `min_fit_points` entries have a non-null HFR,
+4. If fewer than `min_fit_points` entries have a non-null HFR,
    abort with a `not_enough_stars` error. The focuser is left at
    the last sweep position; `auto_focus` does not auto-recover
    the original position.
-6. Fit a parabola in raw HFR vs. position by least squares,
+5. Fit a parabola in raw HFR vs. position by least squares,
    weighted by `star_count` per point. From the fit
    `hfr = a·position² + b·position + c`:
    `best_position = round(−b / 2a)`; `best_hfr = c − b²/(4a)`.
    Reject the fit if `a ≤ 0` (the curve is monotonic or
    concave-down — the sampled range does not contain a true
    minimum) and abort with a `monotonic_curve` error.
-7. Move the focuser to `best_position` (already inside the sweep
+6. Move the focuser to `best_position` (already inside the sweep
    range by construction, so the operator-supplied
    `min_position`/`max_position` bounds are guaranteed to hold).
-8. Emit `focus_complete` with
+7. Emit `focus_complete` with
    `{camera_id, focuser_id, position: best_position, hfr: best_hfr, samples_used}`.
 
 **Error cases**:
@@ -1841,7 +1842,9 @@ without having to know the focus algorithm.
   least 3 non-collinear points).
 - Sweep grid (after clamping to `min_position`/`max_position`)
   has fewer than `min_fit_points` positions → MCP error before
-  any motion or exposure.
+  any motion or exposure. The error message names `min_fit_points`
+  so the caller can tell the grid-size failure apart from a
+  parameter-validation failure.
 - A `move_focuser`, `capture`, or `measure_basic` call inside
   the sweep returns an error → `auto_focus` propagates that
   error and stops sweeping. Captures already taken are persisted

@@ -153,7 +153,11 @@ fn get_focuser_temperature_field(world: &mut RpWorld, field: String) {
 
 // --- Helpers ---
 
-fn add_focuser(world: &mut RpWorld, min_position: Option<i32>, max_position: Option<i32>) {
+pub(super) fn add_focuser(
+    world: &mut RpWorld,
+    min_position: Option<i32>,
+    max_position: Option<i32>,
+) {
     if world.focusers.is_empty() {
         let url = world.omnisim_url();
         world.focusers.push(FocuserConfig {

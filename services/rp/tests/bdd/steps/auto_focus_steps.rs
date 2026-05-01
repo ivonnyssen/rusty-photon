@@ -7,13 +7,19 @@
 //! - `the error message should contain {string}`
 //! - `an MCP client connected to rp`
 //!
-//! Focuser-bounds setup reuses `focuser_steps.rs::rp_running_with_focuser_bounded`.
+//! Focuser-config helpers (the `add_focuser` builder) are reused from
+//! `focuser_steps.rs`. The auto_focus-specific Given steps below add a
+//! camera *alongside* the focuser, which the focuser-only steps in
+//! `focuser_steps.rs` don't do — that's the only reason this module
+//! defines its own composition steps rather than reusing
+//! `rp_running_with_focuser` directly.
 
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
 
 use bdd_infra::rp_harness::{CameraConfig, FocuserConfig};
 
+use crate::steps::focuser_steps::add_focuser;
 use crate::steps::tool_steps::{add_camera, ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
@@ -219,19 +225,6 @@ async fn call_auto_focus(world: &mut RpWorld, args: Map<String, Value>) {
         Err(_) => world.last_auto_focus_result = None,
     }
     world.last_tool_result = Some(result);
-}
-
-fn add_focuser(world: &mut RpWorld, min_position: Option<i32>, max_position: Option<i32>) {
-    if world.focusers.is_empty() {
-        let url = world.omnisim_url();
-        world.focusers.push(FocuserConfig {
-            id: "main-focuser".to_string(),
-            alpaca_url: url,
-            device_number: 0,
-            min_position,
-            max_position,
-        });
-    }
 }
 
 async fn count_extension(dir: &str, ext: &str) -> usize {
