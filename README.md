@@ -15,6 +15,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 | [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
+| [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | — | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 
 ### RP (Main Application)
 
@@ -57,6 +58,12 @@ See [services/sentinel/README.md](services/sentinel/README.md) for usage and [do
 Orchestrator plugin for flat field calibration using a CoverCalibrator device (flat panel / light box). Connects to `rp` as an MCP client, iteratively determines the correct exposure time per filter to achieve 50% of the camera's well depth, then captures the requested number of flat frames. Manages the full CoverCalibrator lifecycle (close cover, turn on light, capture, turn off, open cover).
 
 See [docs/services/calibrator-flats.md](docs/services/calibrator-flats.md) for design documentation.
+
+### Sky Survey Camera
+
+ASCOM Alpaca Camera **simulator** that synthesises exposures from NASA SkyView cutouts. Given a configured optical system (focal length, sensor pixel count, pixel size) and a sky position (RA/Dec, settable at runtime via a custom HTTP endpoint), it returns an `ImageArray` matching the field of view the equivalent real telescope would see. Useful for driving ASCOM clients and the rest of the rusty-photon stack end-to-end without hardware.
+
+See [docs/services/sky-survey-camera.md](docs/services/sky-survey-camera.md) for design documentation.
 
 ## Getting Started
 
@@ -138,6 +145,7 @@ rusty-photon/
     sentinel/              Monitoring service (HTTP consumer)
     sentinel-app/          Leptos web frontend for sentinel dashboard
     calibrator-flats/      Flat field calibration orchestrator (CoverCalibrator)
+    sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
   docs/
     services/              Per-service design documentation
     skills/                How-to playbooks for agents and operators
