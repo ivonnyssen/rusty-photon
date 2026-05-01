@@ -40,9 +40,13 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), FitsError>,
 {
     let parent = path.parent().ok_or_else(|| {
-        FitsError::Parse(format!(
-            "atomic write target has no parent dir: {}",
-            path.display()
+        // Not a FITS *parse* failure — surface as I/O so callers can
+        // dispatch on `FitsError::Io` rather than guessing from the
+        // error text. The `InvalidInput` ErrorKind matches what
+        // `std::fs` would return for a similar precondition violation.
+        FitsError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("atomic write target has no parent dir: {}", path.display()),
         ))
     })?;
     std::fs::create_dir_all(parent)?;
@@ -190,6 +194,11 @@ mod tests {
     #[test]
     fn rejects_root_path_with_no_parent() {
         let err = write_atomic(Path::new("/"), b"x").unwrap_err();
-        assert!(matches!(err, FitsError::Parse(_)));
+        match err {
+            FitsError::Io(io_err) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidInput);
+            }
+            other => panic!("expected Io(InvalidInput), got {other:?}"),
+        }
     }
 }

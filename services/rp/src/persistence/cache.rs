@@ -92,6 +92,13 @@ impl CachedPixels {
             Array2::from_shape_vec(shape, pixels).ok().map(Self::I32)
         }
     }
+
+    /// Build the U16 variant directly from a u16 buffer. Used by the
+    /// capture path when `max_adu ≤ u16::MAX` to avoid the wasted
+    /// i32→u16 round trip that `from_i32_pixels` would do.
+    pub fn from_u16_pixels(pixels: Vec<u16>, shape: (usize, usize)) -> Option<Self> {
+        Array2::from_shape_vec(shape, pixels).ok().map(Self::U16)
+    }
 }
 
 /// A cached image plus the metadata tools need to make sense of it.

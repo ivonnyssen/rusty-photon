@@ -127,8 +127,13 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 ///
 /// Returns `(pixels, width, height)`. The pixel vector is flat
 /// row-major; `width` is `NAXIS1` (the fastest-varying axis), `height`
-/// is `NAXIS2`. BSCALE/BZERO/BLANK are applied transparently — the
-/// caller sees physical ADU values regardless of on-disk encoding.
+/// is `NAXIS2`. `rp_fits::reader` applies BSCALE/BZERO so the caller
+/// sees physical ADU values regardless of on-disk encoding. `BLANK`
+/// sentinel pixels are *not* remapped at this layer — they pass
+/// through unscaled and may surface as ordinary numeric ADU values.
+/// Per ADR-001 Amendment A the wrapper exposes BLANK on the typed
+/// `read_primary` path; consumers that need explicit handling should
+/// use that entry point instead of `read_fits_pixels`.
 pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)> {
     let path = path.as_ref();
     debug!(path = %path.display(), "reading FITS pixels");
@@ -178,15 +183,15 @@ pub fn read_fits_doc_id<P: AsRef<Path>>(path: P) -> Result<Option<String>> {
 }
 
 fn translate_write_err(err: FitsError) -> RpError {
-    // The atomic helper's "blocked by directory at target" failure
-    // surfaces as `FitsError::Io` whose message matches the platform's
-    // rename(2) error text. Older callers pattern-match on the legacy
-    // "failed to persist FITS file" prefix, so preserve it.
-    let msg = match &err {
-        FitsError::Io(io_err) => format!("failed to persist FITS file: {io_err}"),
-        other => format!("failed to write FITS file: {other}"),
-    };
-    RpError::Imaging(msg)
+    // `rp_fits::atomic` surfaces every step's failure as
+    // `FitsError::Io`. We can't distinguish a `create_dir_all` failure
+    // from an fsync failure from a `persist` (rename) collision via
+    // the variant alone, so route everything through a single
+    // "failed to write FITS file" prefix. The previous version painted
+    // every Io with "failed to persist FITS file" for fitrs-era
+    // backwards compat — that's gone now (no external callers depend
+    // on the legacy prefix).
+    RpError::Imaging(format!("failed to write FITS file: {err}"))
 }
 
 #[cfg(test)]
@@ -362,7 +367,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("failed to persist FITS file"),
+            err.to_string().contains("failed to write FITS file"),
             "unexpected error: {}",
             err
         );
@@ -455,8 +460,7 @@ mod tests {
         std::fs::set_permissions(dir.path(), original_perms).unwrap();
 
         assert!(
-            err.to_string().contains("failed to write FITS file")
-                || err.to_string().contains("failed to persist FITS file"),
+            err.to_string().contains("failed to write FITS file"),
             "unexpected error: {}",
             err
         );

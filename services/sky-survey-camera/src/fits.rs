@@ -105,12 +105,14 @@ mod tests {
         let mut bytes = header.into_bytes();
         bytes.extend(vec![0u8; 2880]);
 
-        match parse_primary_hdu(&bytes).unwrap_err() {
-            FitsError::Unsupported(msg) => {
-                assert!(msg.contains("2-D"), "unexpected message: {msg}")
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        // Match on the variant only — the human-readable message is
+        // an implementation detail of `rp-fits` and would otherwise
+        // make this test brittle to harmless wording changes there.
+        let err = parse_primary_hdu(&bytes).unwrap_err();
+        assert!(
+            matches!(err, FitsError::Unsupported(_)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

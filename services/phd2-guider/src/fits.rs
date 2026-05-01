@@ -11,6 +11,7 @@ use std::path::Path;
 use base64::Engine;
 use rp_fits::atomic::write_atomic_with;
 use rp_fits::writer::{write_u16_image, Keyword, KeywordValue};
+use rp_fits::FitsError;
 use tracing::debug;
 
 use crate::error::{Phd2Error, Result};
@@ -97,12 +98,26 @@ pub async fn write_grayscale_u16_fits<P: AsRef<Path>>(
         write_atomic_with(&path, |w| {
             write_u16_image(w, &pixels, width, height, &keywords)
         })
-        .map_err(|e| Phd2Error::InvalidState(format!("Failed to write FITS file: {e}")))?;
+        .map_err(translate_fits_error)?;
         debug!("FITS file written successfully to {}", path.display());
         Ok(())
     })
     .await
     .map_err(|e| Phd2Error::InvalidState(format!("Task join error: {}", e)))?
+}
+
+/// Map an [`rp_fits::FitsError`] to the right [`Phd2Error`] variant.
+///
+/// `FitsError::Io` carries a `std::io::Error` and is reported as
+/// `Phd2Error::Io` so callers can distinguish disk failures from
+/// logical misuse. Everything else (header validation, dimension
+/// mismatch, malformed header) maps to `InvalidState` since those
+/// represent caller errors, not I/O failures.
+fn translate_fits_error(err: FitsError) -> Phd2Error {
+    match err {
+        FitsError::Io(io_err) => Phd2Error::Io(io_err),
+        other => Phd2Error::InvalidState(format!("Failed to write FITS file: {other}")),
+    }
 }
 
 #[cfg(test)]
