@@ -38,7 +38,14 @@ jobs:
         with:
           shared-key: fits-cfitsio-spike-linux
       - name: cargo test (spike)
-        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked
+        # Serialise tests: vcpkg builds CFITSIO without USE_PTHREADS,
+        # so the C library has no internal thread safety. Rust's test
+        # harness runs in parallel by default, which races CFITSIO's
+        # global driver table and error stack. The same constraint
+        # applies anywhere the workspace ends up calling CFITSIO from
+        # parallel tasks -- a real finding for the spike report,
+        # documented here so the cause is obvious.
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked -- --test-threads=1
 
   macos:
     name: macos / brew cfitsio (control)
@@ -53,7 +60,8 @@ jobs:
         with:
           shared-key: fits-cfitsio-spike-macos
       - name: cargo test (spike)
-        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked
+        # See linux job for why --test-threads=1.
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked -- --test-threads=1
 
   windows:
     # The actual research question. Uses the pre-installed vcpkg at
@@ -102,4 +110,5 @@ jobs:
         with:
           shared-key: fits-cfitsio-spike-windows
       - name: cargo test (spike)
-        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked
+        # See linux job for why --test-threads=1.
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked -- --test-threads=1
