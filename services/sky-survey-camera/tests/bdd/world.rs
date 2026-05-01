@@ -406,13 +406,15 @@ impl SkySurveyCameraWorld {
 
     /// GET /api/v1/camera/0/imagearray and return its dimensions.
     /// The ASCOM ImageArray response is `{ ..., "Value": { "Type",
-    /// "Rank", "Value": [[...]] } }` — a nested envelope.
+    /// "Rank", "Value": [[...]] } }` — a nested envelope. The pixel
+    /// array is indexed `[X][Y]` per the ASCOM spec, so the outer
+    /// length is `NumX` and the inner length is `NumY`.
     pub async fn get_image_dimensions(&mut self) -> (u32, u32) {
         let body = self.fetch_image_array_json().await;
         let pixels = &body["Value"]["Value"];
         let outer = pixels.as_array().expect("ImageArray pixels not an array");
-        let height = outer.len() as u32;
-        let width = outer
+        let width = outer.len() as u32;
+        let height = outer
             .first()
             .and_then(|row| row.as_array().map(|r| r.len() as u32))
             .unwrap_or(0);

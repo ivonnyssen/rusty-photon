@@ -31,13 +31,24 @@ jobs:
           ALL_SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
-          # If infra changed or no rail filtering, test all; otherwise intersect with affected
-          if [ "${{ steps.rail.outputs.infra }}" = "true" ] || [ "${{ steps.rail.outputs.test }}" != "true" ]; then
+          # Intersect against the affected-crate list from `cargo rail
+          # plan --json` directly. The cargo-rail-action's `crates`
+          # output isn't populated by v4, and falling back to its
+          # `infra` / `test` surface flags missed real changes — the
+          # plan binary's `scope.crates` is the source of truth.
+          BASE='${{ github.event.pull_request.base.sha || github.event.before }}'
+          PLAN_JSON=$(cargo rail plan --since "$BASE" --json --quiet)
+          INFRA=$(echo "$PLAN_JSON" | jq -r '.scope.surfaces.infra // false')
+          AFFECTED_JSON=$(echo "$PLAN_JSON" | jq -c '.scope.crates // []')
+
+          if [ "$INFRA" = "true" ]; then
+            # Infra-touching change (e.g. workspace Cargo.toml, CI files,
+            # rail config): re-run every conformu service, not just the
+            # nominally-affected ones.
             SERVICES="$ALL_SERVICES"
           else
-            AFFECTED='${{ steps.rail.outputs.crates }}'
-            SERVICES=$(echo "$ALL_SERVICES" | jq -c --arg affected "$AFFECTED" \
-              '[.[] | select(.name as $n | ($affected | split(" ") | index($n)))]')
+            SERVICES=$(echo "$ALL_SERVICES" | jq -c --argjson affected "$AFFECTED_JSON" \
+              '[.[] | select(.name as $n | $affected | index($n))]')
           fi
 
           COUNT=$(echo "$SERVICES" | jq 'length')
