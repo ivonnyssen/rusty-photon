@@ -69,12 +69,18 @@ jobs:
         run: choco install pkgconfiglite -y --no-progress
       - name: vcpkg install cfitsio
         # static-md = static lib, dynamic CRT — matches Rust's MSVC
-        # default toolchain CRT setting. cfitsio[pthreads] pulls in
-        # pthreads-win32 so we keep CFITSIO's reentrant mode rather
-        # than trading it away.
+        # default toolchain CRT setting. We deliberately do NOT request
+        # the [pthreads] feature: vcpkg would build cfitsio with
+        # USE_PTHREADS=ON, but fitsio-sys's pkg-config probe does not
+        # emit a transitive pthreads-w32 link directive, leaving the
+        # MSVC linker with unresolved `pthread_mutex_*` symbols. Giving
+        # up CFITSIO's internal reentrant mode is acceptable for our
+        # consumers (single-writer + spawn_blocking, no shared FitsFile
+        # across threads), and matches the trade-off Option 1 makes
+        # via a fitsio-sys patch -- we just achieve it via vcpkg config.
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows-static-md "cfitsio[pthreads]"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows-static-md cfitsio
       - name: Export PKG_CONFIG_PATH
         shell: pwsh
         run: |
