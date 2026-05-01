@@ -62,9 +62,14 @@ jobs:
             exit 1
           }
           Write-Host "Running $env:ASTAP_BINARY (no args; ASTAP prints banner and exits)"
-          $output = & $env:ASTAP_BINARY 2>&1
-          $output | Out-String | Write-Host
-          if ($output -notmatch "(?i)astap") {
+          # Capture output as a single string so -match returns a boolean,
+          # not a filtered array. Against an array, -notmatch returns the
+          # non-matching elements; the array is non-empty whenever ASTAP
+          # prints any usage line, so the if-branch fires even when the
+          # banner is present.
+          $output = (& $env:ASTAP_BINARY 2>&1) | Out-String
+          Write-Host $output
+          if ($output -notmatch '(?i)astap') {
             Write-Error "ASTAP banner not detected in output"
             exit 1
           }
