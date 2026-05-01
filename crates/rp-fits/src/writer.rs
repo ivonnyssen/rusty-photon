@@ -1,10 +1,573 @@
-//! Hand-rolled FITS writer. Filled in by Phase 2.
+//! Hand-rolled FITS primary-HDU writer.
+//!
+//! Emits BITPIX 8, 16 (signed) or 32 (signed) integer image HDUs in
+//! the format defined by FITS Standard v4.0. The native unsigned 16-bit
+//! path uses the standard `BITPIX=16 + BZERO=32768` convention so each
+//! `u16` value `p` is serialized as `i16 = (p as i32 - 32768) as i16`.
+//!
+//! Block layout is the canonical 2880-byte FITS block: the header is
+//! composed of 80-byte ASCII cards, terminated by `END`, then padded
+//! with ASCII spaces to the next 2880-byte boundary; the data array
+//! is big-endian, then zero-padded to the next 2880-byte boundary.
+//!
+//! Floating-point and i64 BITPIX writes are out of scope per
+//! ADR-001 Amendment A.
+
+use std::io::Write;
 
 use crate::error::FitsError;
 
-/// Stub. The Phase 2 implementation will land the public surface
-/// (`write_u16_image`, `write_i32_image`, `write_u8_image`, `Keyword`).
-#[doc(hidden)]
-pub fn _placeholder() -> Result<(), FitsError> {
+/// Size of a FITS block.
+pub(crate) const BLOCK_SIZE: usize = 2880;
+/// Size of a FITS header card.
+pub(crate) const CARD_SIZE: usize = 80;
+/// Reserved keywords managed by the writer; users may not supply them.
+const RESERVED: &[&str] = &[
+    "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "BSCALE", "BZERO", "END",
+];
+
+/// Typed value of a FITS header card. The variants map 1:1 to the
+/// FITSv4 §4.2 value types we serialize.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeywordValue {
+    /// FITS logical: emitted as `T` or `F` right-justified at column 30.
+    Bool(bool),
+    /// FITS integer: emitted right-justified at column 30.
+    Int(i64),
+    /// FITS real: emitted in `%20.10E` form right-justified at column 30.
+    Float(f64),
+    /// FITS character string: emitted as `'value   '` starting at column 11,
+    /// internally padded to at least 8 characters and any embedded `'`
+    /// doubled per FITSv4 §4.2.1.1.
+    Str(String),
+}
+
+/// A user-supplied header card. Construct via [`Keyword::new`] which
+/// validates the key.
+#[derive(Debug, Clone)]
+pub struct Keyword {
+    key: [u8; 8],
+    value: KeywordValue,
+    comment: Option<String>,
+}
+
+impl Keyword {
+    /// Build a keyword card from a key (≤ 8 ASCII chars) and a typed value.
+    /// Rejects reserved keywords (those the writer emits itself) and
+    /// non-ASCII or overlong keys.
+    pub fn new(key: &str, value: KeywordValue) -> Result<Self, FitsError> {
+        if key.is_empty() || key.len() > 8 {
+            return Err(FitsError::InvalidKeyword(format!(
+                "keyword length must be 1..=8 (got {})",
+                key.len()
+            )));
+        }
+        if !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(FitsError::InvalidKeyword(format!(
+                "keyword must be ASCII graphic: {key:?}"
+            )));
+        }
+        let upper = key.to_ascii_uppercase();
+        if RESERVED.contains(&upper.as_str()) {
+            return Err(FitsError::InvalidKeyword(format!(
+                "keyword {key:?} is reserved (writer emits it)"
+            )));
+        }
+        if let KeywordValue::Str(s) = &value {
+            if s.bytes().any(|b| !(0x20..=0x7E).contains(&b)) {
+                return Err(FitsError::InvalidKeyword(
+                    "string value must be printable ASCII".into(),
+                ));
+            }
+        }
+        let mut key_buf = [b' '; 8];
+        for (i, b) in upper.bytes().enumerate() {
+            key_buf[i] = b;
+        }
+        Ok(Self {
+            key: key_buf,
+            value,
+            comment: None,
+        })
+    }
+
+    /// Attach a `/ comment` suffix (non-recoverable on read; informational).
+    pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
+        self.comment = Some(comment.into());
+        self
+    }
+}
+
+/// Write a `u8` (BITPIX=8) image HDU.
+pub fn write_u8_image<W: Write>(
+    w: &mut W,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    extra: &[Keyword],
+) -> Result<(), FitsError> {
+    let body = serialize_image(8, &[], pixels, width, height, extra, |out, &p| {
+        out.push(p);
+    })?;
+    w.write_all(&body)?;
     Ok(())
+}
+
+/// Write a `u16` (BITPIX=16 + BZERO=32768) image HDU. Restores native
+/// unsigned 16-bit semantics — the on-disk i16 representation is just
+/// the FITS-mandated encoding for unsigned values.
+pub fn write_u16_image<W: Write>(
+    w: &mut W,
+    pixels: &[u16],
+    width: u32,
+    height: u32,
+    extra: &[Keyword],
+) -> Result<(), FitsError> {
+    // BSCALE = 1.0, BZERO = 32768.0 — the standard u16 dance. These are
+    // reserved keywords the writer manages itself; bypass the public
+    // `Keyword::new` reservation guard with a private constructor.
+    let managed = [
+        reserved_card("BSCALE", KeywordValue::Float(1.0)),
+        reserved_card("BZERO", KeywordValue::Float(32768.0)),
+    ];
+
+    let body = serialize_image(16, &managed, pixels, width, height, extra, |out, &p| {
+        let raw = (p as i32 - 32768) as i16;
+        out.extend_from_slice(&raw.to_be_bytes());
+    })?;
+    w.write_all(&body)?;
+    Ok(())
+}
+
+/// Write an `i32` (BITPIX=32) image HDU.
+pub fn write_i32_image<W: Write>(
+    w: &mut W,
+    pixels: &[i32],
+    width: u32,
+    height: u32,
+    extra: &[Keyword],
+) -> Result<(), FitsError> {
+    let body = serialize_image(32, &[], pixels, width, height, extra, |out, &p| {
+        out.extend_from_slice(&p.to_be_bytes());
+    })?;
+    w.write_all(&body)?;
+    Ok(())
+}
+
+/// Internal: shared header+data serializer parameterized by per-pixel
+/// big-endian emit. `managed_pre_user` are reserved keyword cards we
+/// emit ourselves between the mandatory block and user-supplied cards
+/// (currently only BSCALE/BZERO for the u16 path).
+fn serialize_image<T, F>(
+    bitpix: i8,
+    managed_pre_user: &[Card],
+    pixels: &[T],
+    width: u32,
+    height: u32,
+    extra: &[Keyword],
+    mut emit: F,
+) -> Result<Vec<u8>, FitsError>
+where
+    F: FnMut(&mut Vec<u8>, &T),
+{
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| FitsError::Unsupported(format!("dimensions overflow: {width}x{height}")))?;
+    if pixels.len() != expected {
+        return Err(FitsError::DimensionMismatch {
+            got: pixels.len(),
+            width,
+            height,
+            expected,
+        });
+    }
+
+    let bytes_per_pixel = (bitpix.unsigned_abs() as usize) / 8;
+    let mut out = Vec::with_capacity(BLOCK_SIZE + expected * bytes_per_pixel + BLOCK_SIZE);
+
+    // Header.
+    write_card(&mut out, &Card::logical("SIMPLE", true));
+    write_card(&mut out, &Card::integer("BITPIX", bitpix as i64));
+    write_card(&mut out, &Card::integer("NAXIS", 2));
+    write_card(&mut out, &Card::integer("NAXIS1", width as i64));
+    write_card(&mut out, &Card::integer("NAXIS2", height as i64));
+    for c in managed_pre_user {
+        write_card(&mut out, c);
+    }
+    for kw in extra {
+        write_card(&mut out, &Card::from_keyword(kw));
+    }
+    write_end_card(&mut out);
+    pad_to_block(&mut out, b' ');
+
+    // Data.
+    let data_start = out.len();
+    for p in pixels {
+        emit(&mut out, p);
+    }
+    debug_assert_eq!(out.len() - data_start, expected * bytes_per_pixel);
+    pad_to_block(&mut out, 0);
+
+    Ok(out)
+}
+
+/// Internal card representation. Public surface goes through [`Keyword`].
+#[derive(Debug, Clone)]
+pub(crate) struct Card {
+    key: [u8; 8],
+    value: KeywordValue,
+    comment: Option<String>,
+}
+
+impl Card {
+    fn integer(key: &str, value: i64) -> Card {
+        Card {
+            key: pad_key(key),
+            value: KeywordValue::Int(value),
+            comment: None,
+        }
+    }
+
+    fn logical(key: &str, value: bool) -> Card {
+        Card {
+            key: pad_key(key),
+            value: KeywordValue::Bool(value),
+            comment: None,
+        }
+    }
+
+    fn from_keyword(kw: &Keyword) -> Card {
+        Card {
+            key: kw.key,
+            value: kw.value.clone(),
+            comment: kw.comment.clone(),
+        }
+    }
+}
+
+fn reserved_card(key: &str, value: KeywordValue) -> Card {
+    Card {
+        key: pad_key(key),
+        value,
+        comment: None,
+    }
+}
+
+fn pad_key(key: &str) -> [u8; 8] {
+    let mut buf = [b' '; 8];
+    for (i, b) in key.bytes().enumerate().take(8) {
+        buf[i] = b.to_ascii_uppercase();
+    }
+    buf
+}
+
+/// Emit one 80-byte card to `out`.
+fn write_card(out: &mut Vec<u8>, card: &Card) {
+    let start = out.len();
+    out.extend_from_slice(&card.key);
+    out.extend_from_slice(b"= ");
+    let value_start = out.len();
+    match &card.value {
+        KeywordValue::Bool(b) => {
+            // Right-justified at column 30: 20 chars wide.
+            let s = if *b { "T" } else { "F" };
+            push_padded_left(out, s.as_bytes(), 20);
+        }
+        KeywordValue::Int(n) => {
+            let s = format!("{n}");
+            push_padded_left(out, s.as_bytes(), 20);
+        }
+        KeywordValue::Float(f) => {
+            // FITSv4 §4.2.4: any "F" or "E" form is acceptable. %20.10E
+            // is comfortably within precision and right-aligned in 20
+            // chars including the optional sign.
+            let s = format_float(*f);
+            push_padded_left(out, s.as_bytes(), 20);
+        }
+        KeywordValue::Str(s) => {
+            // FITSv4 §4.2.1.1: string starts at column 11 with a single
+            // quote. Embedded single quotes are doubled. The string body
+            // must be at least 8 characters (space-padded).
+            let mut escaped = String::with_capacity(s.len());
+            for c in s.chars() {
+                if c == '\'' {
+                    escaped.push_str("''");
+                } else {
+                    escaped.push(c);
+                }
+            }
+            while escaped.len() < 8 {
+                escaped.push(' ');
+            }
+            out.push(b'\'');
+            out.extend_from_slice(escaped.as_bytes());
+            out.push(b'\'');
+        }
+    }
+    if let Some(comment) = &card.comment {
+        // " / <comment>" — only emit if it fits in the remaining bytes.
+        let remaining = CARD_SIZE.saturating_sub(out.len() - start);
+        if remaining > 4 {
+            out.extend_from_slice(b" / ");
+            let max_comment = remaining - 3;
+            let comment_bytes = comment.as_bytes();
+            out.extend_from_slice(&comment_bytes[..comment_bytes.len().min(max_comment)]);
+        }
+    }
+    let written = out.len() - start;
+    debug_assert!(written <= CARD_SIZE, "card overflowed 80 bytes ({written})");
+    let _ = value_start;
+    // Right-pad the card with spaces to 80 bytes.
+    out.resize(start + CARD_SIZE, b' ');
+}
+
+fn write_end_card(out: &mut Vec<u8>) {
+    let start = out.len();
+    out.extend_from_slice(b"END");
+    out.resize(start + CARD_SIZE, b' ');
+}
+
+fn push_padded_left(out: &mut Vec<u8>, value: &[u8], width: usize) {
+    if value.len() >= width {
+        out.extend_from_slice(value);
+    } else {
+        for _ in 0..(width - value.len()) {
+            out.push(b' ');
+        }
+        out.extend_from_slice(value);
+    }
+}
+
+fn format_float(f: f64) -> String {
+    // %20.10E form. `{:.10E}` gives `1.0000000000E0`; expand to
+    // `1.0000000000E+00` to match the FITS canonical form.
+    let raw = format!("{f:.10E}");
+    // Insert sign on exponent if missing.
+    let (mantissa, exp) = match raw.find('E') {
+        Some(i) => (&raw[..i], &raw[i + 1..]),
+        None => return raw,
+    };
+    let (sign, exp_digits) = match exp.chars().next() {
+        Some('+') | Some('-') => exp.split_at(1),
+        _ => ("+", exp),
+    };
+    // Pad exponent digits to at least 2.
+    let padded_digits = if exp_digits.len() < 2 {
+        format!("{exp_digits:0>2}")
+    } else {
+        exp_digits.to_string()
+    };
+    format!("{mantissa}E{sign}{padded_digits}")
+}
+
+fn pad_to_block(out: &mut Vec<u8>, fill: u8) {
+    let r = out.len() % BLOCK_SIZE;
+    if r != 0 {
+        out.resize(out.len() + (BLOCK_SIZE - r), fill);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    use fitsrs::Fits;
+    use fitsrs::Pixels;
+    use fitsrs::HDU;
+
+    fn fitsrs_read_pixels_i32(bytes: &[u8]) -> Vec<i32> {
+        let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
+        let HDU::Primary(hdu) = hdu_list.next().expect("hdu present").expect("hdu ok") else {
+            panic!("expected primary HDU");
+        };
+        let _hdu = hdu;
+        // Re-iterate to claim data after we've inspected the header.
+        // fitsrs's iterator yields one HDU at a time; we re-open.
+        let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let image = hdu_list.get_data(&hdu);
+        match image.pixels() {
+            Pixels::I32(it) => it.collect(),
+            _ => panic!("expected I32 pixels"),
+        }
+    }
+
+    fn fitsrs_read_pixels_i16(bytes: &[u8]) -> Vec<i16> {
+        let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let image = hdu_list.get_data(&hdu);
+        match image.pixels() {
+            Pixels::I16(it) => it.collect(),
+            _ => panic!("expected I16 pixels"),
+        }
+    }
+
+    fn fitsrs_read_pixels_u8(bytes: &[u8]) -> Vec<u8> {
+        let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let image = hdu_list.get_data(&hdu);
+        match image.pixels() {
+            Pixels::U8(it) => it.collect(),
+            _ => panic!("expected U8 pixels"),
+        }
+    }
+
+    #[test]
+    fn writes_u8_image_with_block_aligned_size() {
+        let mut buf = Vec::new();
+        write_u8_image(&mut buf, &[1, 2, 3, 4], 2, 2, &[]).unwrap();
+        assert!(
+            buf.len() % BLOCK_SIZE == 0,
+            "output not block-aligned: {}",
+            buf.len()
+        );
+        assert_eq!(fitsrs_read_pixels_u8(&buf), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn writes_i32_image_round_trips_through_fitsrs() {
+        let pixels = vec![100, -200, 0, 1_000_000];
+        let mut buf = Vec::new();
+        write_i32_image(&mut buf, &pixels, 2, 2, &[]).unwrap();
+        assert!(buf.len().is_multiple_of(BLOCK_SIZE));
+        assert_eq!(fitsrs_read_pixels_i32(&buf), pixels);
+    }
+
+    #[test]
+    fn writes_u16_image_uses_bzero_convention() {
+        // Boundary values: 0, 32768 (BZERO point), 65535 (max), 12345 (mid).
+        let pixels = vec![0u16, 32768, 65535, 12345];
+        let mut buf = Vec::new();
+        write_u16_image(&mut buf, &pixels, 2, 2, &[]).unwrap();
+        // Read raw i16 values via fitsrs — should be the BZERO-shifted form.
+        let raw = fitsrs_read_pixels_i16(&buf);
+        assert_eq!(raw, vec![-32768, 0, 32767, -20423]);
+        // Apply BSCALE/BZERO ourselves and confirm we get the originals back.
+        let recovered: Vec<u16> = raw.iter().map(|r| (*r as i32 + 32768) as u16).collect();
+        assert_eq!(recovered, pixels);
+    }
+
+    #[test]
+    fn writes_keyword_card_visible_to_fitsrs() {
+        let mut buf = Vec::new();
+        let kw = vec![
+            Keyword::new("DOC_ID", KeywordValue::Str("abc-uuid".into())).unwrap(),
+            Keyword::new("OBSERVER", KeywordValue::Str("Igor".into())).unwrap(),
+            Keyword::new("EXPTIME", KeywordValue::Float(2.5)).unwrap(),
+        ];
+        write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
+
+        let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let header = hdu.get_header();
+        let doc = header.get("DOC_ID").expect("DOC_ID present");
+        match doc {
+            fitsrs::card::Value::String { value, .. } => assert_eq!(value, "abc-uuid"),
+            other => panic!("expected DOC_ID to be string, got {other:?}"),
+        }
+        let obs = header.get("OBSERVER").expect("OBSERVER present");
+        assert!(
+            matches!(obs, fitsrs::card::Value::String { value, .. } if value == "Igor"),
+            "unexpected OBSERVER: {obs:?}"
+        );
+        let exp = header.get("EXPTIME").expect("EXPTIME present");
+        match exp {
+            fitsrs::card::Value::Float { value, .. } => {
+                assert!((value - 2.5).abs() < 1e-9, "got {value}")
+            }
+            other => panic!("expected EXPTIME to be float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_dimension_mismatch() {
+        let mut buf = Vec::new();
+        let err = write_i32_image(&mut buf, &[1, 2, 3], 2, 2, &[]).unwrap_err();
+        match err {
+            FitsError::DimensionMismatch { got, expected, .. } => {
+                assert_eq!((got, expected), (3, 4))
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_oversize_keyword() {
+        let err = Keyword::new("THIS_IS_TOO_LONG", KeywordValue::Bool(true)).unwrap_err();
+        assert!(matches!(err, FitsError::InvalidKeyword(_)));
+    }
+
+    #[test]
+    fn rejects_reserved_keyword() {
+        let err = Keyword::new("BITPIX", KeywordValue::Int(8)).unwrap_err();
+        match err {
+            FitsError::InvalidKeyword(msg) => assert!(msg.contains("reserved"), "{msg}"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_non_ascii_keyword() {
+        let err = Keyword::new("FÖÖ", KeywordValue::Bool(true)).unwrap_err();
+        assert!(matches!(err, FitsError::InvalidKeyword(_)));
+    }
+
+    #[test]
+    fn header_padding_is_spaces_data_padding_is_zero() {
+        let mut buf = Vec::new();
+        write_u8_image(&mut buf, &[7u8; 16], 4, 4, &[]).unwrap();
+        // First block is the header; last bytes before the data block
+        // start (offset 2880) should be spaces.
+        assert_eq!(
+            buf[2879], b' ',
+            "header should be space-padded to block boundary"
+        );
+        // Data block begins at 2880; pixel bytes are 16, so bytes
+        // 2880..2880+16 are pixels (0x07), and the rest of the block
+        // through 5760 is zero-padded.
+        for &b in &buf[2880..2880 + 16] {
+            assert_eq!(b, 7);
+        }
+        assert_eq!(buf[2880 + 16], 0, "data should zero-pad after pixels");
+        assert_eq!(buf[5759], 0, "data block should zero-pad to boundary");
+    }
+
+    #[test]
+    fn naxis_ordering_is_width_then_height() {
+        // 4 wide, 2 tall (8 pixels). Verify NAXIS1=4 in the header.
+        let mut buf = Vec::new();
+        write_i32_image(&mut buf, &[1, 2, 3, 4, 5, 6, 7, 8], 4, 2, &[]).unwrap();
+        let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let header = hdu.get_header();
+        let naxis1 = header.get("NAXIS1").expect("NAXIS1");
+        let naxis2 = header.get("NAXIS2").expect("NAXIS2");
+        assert!(matches!(naxis1, fitsrs::card::Value::Integer { value, .. } if *value == 4));
+        assert!(matches!(naxis2, fitsrs::card::Value::Integer { value, .. } if *value == 2));
+    }
+
+    #[test]
+    fn empty_image_is_supported() {
+        let mut buf = Vec::new();
+        write_i32_image(&mut buf, &[], 0, 0, &[]).unwrap();
+        // Header block + no data; should still be 2880 bytes.
+        assert_eq!(buf.len(), BLOCK_SIZE);
+    }
 }
