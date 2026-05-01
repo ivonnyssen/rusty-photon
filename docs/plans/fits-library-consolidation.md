@@ -2,10 +2,11 @@
 
 ## Status
 
-**Open / research.** No commitment yet. The workspace currently has two
-independent FITS implementations and one unsatisfactory third-party
-option. This document captures what's known so the eventual
-consolidation can pick a library deliberately rather than by accident.
+**Open / research — tracked in [#107](https://github.com/ivonnyssen/rusty-photon/issues/107).** No commitment yet. The workspace currently
+has two independent FITS implementations and one unsatisfactory
+third-party option. This document captures what's known so the
+eventual consolidation can pick a library deliberately rather than by
+accident.
 
 ## Why this exists
 
