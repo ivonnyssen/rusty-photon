@@ -113,9 +113,10 @@ jobs:
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. `--test_env=OMNISIM_PATH`
         # forwards the install-omnisim composite action's pinned binary
-        # path into test sandboxes; `bdd-infra::OmniSimProcess::find_binary`
-        # consumes it (called from `OmniSimHandle::start`). We deliberately
-        # do NOT use `--test_env=PATH` here:
+        # path into test sandboxes; `bdd_infra::rp_harness::OmniSimHandle::start`
+        # consumes it via the binary lookup in
+        # `crates/bdd-infra/src/rp_harness/omnisim.rs`. We deliberately do
+        # NOT use `--test_env=PATH` here:
         # the runner's full PATH is large and on Windows differs between
         # `push` and `pull_request` events, which would bake unstable
         # values into every BDD test action's cache key and silently

@@ -78,8 +78,10 @@ runs:
       run: echo "${{ github.workspace }}/omnisim" >> "$GITHUB_PATH"
 
     # Export the absolute binary path so consumers (notably Bazel's
-    # `--test_env=OMNISIM_PATH` and `bdd-infra::OmniSimHandle`) can locate
-    # OmniSim without relying on the runner PATH.
+    # `--test_env=OMNISIM_PATH` and `bdd_infra::rp_harness::OmniSimHandle`,
+    # whose binary lookup lives in
+    # `crates/bdd-infra/src/rp_harness/omnisim.rs`) can locate OmniSim
+    # without relying on the runner PATH.
     #
     # Why this matters for Bazel: forwarding the runner's full PATH into
     # test actions via `--test_env=PATH` makes the host PATH part of every
