@@ -1,16 +1,19 @@
 [package]
 name = "fits-cfitsio-spike"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Throwaway spike crate for #107: validate stock fitsio (CFITSIO bindings) on Windows MSVC via vcpkg-supplied CFITSIO. Delete me when the cfitsio-vcpkg spike report lands."
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ivonnyssen/rusty_photon"
+description = "Throwaway spike crate for #107: validate stock fitsio (CFITSIO bindings) on Windows MSVC via vcpkg-supplied CFITSIO. Delete me when the cfitsio-vcpkg spike report lands. Excluded from the workspace -- standalone manifest by design."
+rust-version = "1.94.1"
 publish = false
 
-[lints]
-workspace = true
+# Empty [workspace] makes this crate explicitly standalone, so cargo
+# does not try to inherit settings from any parent workspace it
+# happens to find. The spike must build as a standalone crate driven
+# by `cargo test --manifest-path` from CI.
+[workspace]
 
 [dependencies]
 
