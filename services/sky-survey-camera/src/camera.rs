@@ -724,4 +724,171 @@ mod tests {
         crop_subframe(&src, 4, 3, 3, 0, 2, 1).unwrap_err();
         crop_subframe(&src, 4, 3, 0, 2, 1, 2).unwrap_err();
     }
+
+    fn fake_camera() -> SkySurveyCamera {
+        let cfg = fake_config();
+        let client = Arc::new(SkyViewClient::new(&cfg.survey).unwrap());
+        SkySurveyCamera::new(cfg, client)
+    }
+
+    #[test]
+    fn is_connected_starts_false() {
+        let cam = fake_camera();
+        assert!(!cam.is_connected());
+        cam.state.connected.store(true, Ordering::Release);
+        assert!(cam.is_connected());
+    }
+
+    #[tokio::test]
+    async fn camera_trait_static_metadata_matches_config() {
+        let cam = fake_camera();
+        // Device trait
+        assert_eq!(cam.static_name(), "Test");
+        assert_eq!(cam.unique_id(), "uid-001");
+        assert_eq!(cam.description().await.unwrap(), "test");
+        assert_eq!(
+            cam.driver_info().await.unwrap(),
+            "rusty-photon sky-survey-camera"
+        );
+        assert_eq!(
+            cam.driver_version().await.unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(!cam.connected().await.unwrap());
+        // Camera trait
+        assert_eq!(cam.camera_x_size().await.unwrap(), 640);
+        assert_eq!(cam.camera_y_size().await.unwrap(), 480);
+        assert!((cam.pixel_size_x().await.unwrap() - 3.76).abs() < 1e-9);
+        assert!((cam.pixel_size_y().await.unwrap() - 3.76).abs() < 1e-9);
+        assert_eq!(cam.exposure_min().await.unwrap(), Duration::from_micros(1));
+        assert_eq!(cam.exposure_max().await.unwrap(), Duration::from_secs(3600));
+        assert_eq!(
+            cam.exposure_resolution().await.unwrap(),
+            Duration::from_micros(1)
+        );
+        assert!(!cam.has_shutter().await.unwrap());
+        assert_eq!(cam.max_adu().await.unwrap(), 65535);
+        assert_eq!(cam.max_bin_x().await.unwrap(), 4);
+        assert_eq!(cam.max_bin_y().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn bin_num_start_round_trip() {
+        let cam = fake_camera();
+        assert_eq!(cam.bin_x().await.unwrap(), 1);
+        assert_eq!(cam.bin_y().await.unwrap(), 1);
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_bin_y(2).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.bin_y().await.unwrap(), 2);
+        cam.set_num_x(100).await.unwrap();
+        cam.set_num_y(50).await.unwrap();
+        assert_eq!(cam.num_x().await.unwrap(), 100);
+        assert_eq!(cam.num_y().await.unwrap(), 50);
+        cam.set_start_x(10).await.unwrap();
+        cam.set_start_y(5).await.unwrap();
+        assert_eq!(cam.start_x().await.unwrap(), 10);
+        assert_eq!(cam.start_y().await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn last_exposure_methods_pre_first_exposure() {
+        let cam = fake_camera();
+        let err = cam.last_exposure_start_time().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        let err = cam.last_exposure_duration().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn last_exposure_methods_after_set() {
+        let cam = fake_camera();
+        let when = SystemTime::now();
+        let duration = Duration::from_millis(500);
+        *cam.state.last_exposure_start.lock().unwrap() = Some(when);
+        *cam.state.last_exposure_duration.lock().unwrap() = Some(duration);
+        let returned_when = cam.last_exposure_start_time().await.unwrap();
+        let returned_duration = cam.last_exposure_duration().await.unwrap();
+        assert_eq!(returned_when, when);
+        assert_eq!(returned_duration, duration);
+    }
+
+    #[tokio::test]
+    async fn image_ready_initially_false() {
+        let cam = fake_camera();
+        assert!(!cam.image_ready().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn image_array_returns_invalid_operation_when_empty() {
+        let cam = fake_camera();
+        let err = cam.image_array().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn image_array_surfaces_stored_error_as_unspecified() {
+        let cam = fake_camera();
+        *cam.state.last_error.lock().unwrap() = Some("survey returned status 500".into());
+        let err = cam.image_array().await.unwrap_err();
+        assert_eq!(err.code, UNSPECIFIED_ERROR);
+    }
+
+    #[tokio::test]
+    async fn image_array_returns_stored_image_when_ready() {
+        let cam = fake_camera();
+        *cam.state.last_image.lock().unwrap() = Some(ExposureOutcome {
+            width: 4,
+            height: 3,
+            data: (0..12).collect(),
+        });
+        cam.state.image_ready.store(true, Ordering::Release);
+        let array = cam.image_array().await.unwrap();
+        // ImageArray flattens to 3D with rank 2 reported; for our 2D
+        // input the underlying data view has 12 elements.
+        let total: i32 = array.iter().copied().sum();
+        assert_eq!(total, (0..12i32).sum::<i32>());
+    }
+
+    #[tokio::test]
+    async fn abort_stop_when_idle_return_invalid_operation() {
+        let cam = fake_camera();
+        let err = cam.abort_exposure().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        let err = cam.stop_exposure().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn run_exposure_discards_outcome_when_generation_changed() {
+        let cam = fake_camera();
+        // Bump generation so the captured `gen=0` no longer matches.
+        cam.state.exposure_generation.fetch_add(1, Ordering::AcqRel);
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        // Light=false synthesises a zero frame without network I/O.
+        run_exposure(Arc::clone(&cam.state), false, 0).await;
+        // image_ready stays false because the generation check
+        // triggered an early return.
+        assert!(!cam.state.image_ready.load(Ordering::Acquire));
+        assert!(cam.state.last_image.lock().unwrap().is_none());
+        // exposure_in_flight is left untouched on cancellation
+        // (Abort/Stop already cleared it from the caller side).
+        assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn run_exposure_publishes_zero_frame_on_light_false_when_uncancelled() {
+        let cam = fake_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let gen = cam.state.exposure_generation.load(Ordering::Acquire);
+        run_exposure(Arc::clone(&cam.state), false, gen).await;
+        assert!(cam.state.image_ready.load(Ordering::Acquire));
+        let img = cam.state.last_image.lock().unwrap();
+        let outcome = img.as_ref().unwrap();
+        // Default num_x/num_y match the sensor dimensions.
+        assert_eq!(outcome.width, 640);
+        assert_eq!(outcome.height, 480);
+        assert!(outcome.data.iter().all(|v| *v == 0));
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
 }

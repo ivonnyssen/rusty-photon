@@ -10,13 +10,6 @@ coverage:
       default:
         # Avoid false negatives
         threshold: 1%
-    patch:
-      default:
-        # Allow small patch-coverage drops from natural noise. Without
-        # this, the default zero-tolerance patch check fails any PR
-        # whose changed-line coverage is below the project average,
-        # even by a fraction of a percent.
-        threshold: 1%
 
 # Test files, mock binaries, and test helper binaries aren't important for coverage
 ignore:
