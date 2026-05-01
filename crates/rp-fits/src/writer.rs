@@ -52,9 +52,15 @@ pub struct Keyword {
 }
 
 impl Keyword {
-    /// Build a keyword card from a key (≤ 8 ASCII chars) and a typed value.
-    /// Rejects reserved keywords (those the writer emits itself) and
-    /// non-ASCII or overlong keys.
+    /// Build a keyword card from a key and a typed value.
+    ///
+    /// Validates per FITSv4 §4.1.2.1: name is ≤ 8 chars, drawn from the
+    /// restricted set `[A-Z0-9_-]` (case-insensitive — the input is
+    /// uppercased). Reserved keywords (the writer emits SIMPLE, BITPIX,
+    /// NAXIS{,1,2}, BSCALE, BZERO, END itself) are rejected. Float
+    /// values must be finite (no NaN/±Inf — those are not valid FITS
+    /// numeric forms). String values must be printable ASCII and short
+    /// enough to fit in a single 80-byte card.
     pub fn new(key: &str, value: KeywordValue) -> Result<Self, FitsError> {
         if key.is_empty() || key.len() > 8 {
             return Err(FitsError::InvalidKeyword(format!(
@@ -62,23 +68,54 @@ impl Keyword {
                 key.len()
             )));
         }
-        if !key.bytes().all(|b| b.is_ascii_graphic()) {
+        let upper = key.to_ascii_uppercase();
+        // FITSv4 §4.1.2.1: keyword chars are uppercase A-Z, digits,
+        // hyphen, underscore. We uppercase first so callers can write
+        // `Keyword::new("doc_id", …)` ergonomically.
+        if !upper
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        {
             return Err(FitsError::InvalidKeyword(format!(
-                "keyword must be ASCII graphic: {key:?}"
+                "keyword name must be [A-Z0-9_-]: {key:?}"
             )));
         }
-        let upper = key.to_ascii_uppercase();
         if RESERVED.contains(&upper.as_str()) {
             return Err(FitsError::InvalidKeyword(format!(
                 "keyword {key:?} is reserved (writer emits it)"
             )));
         }
-        if let KeywordValue::Str(s) = &value {
-            if s.bytes().any(|b| !(0x20..=0x7E).contains(&b)) {
-                return Err(FitsError::InvalidKeyword(
-                    "string value must be printable ASCII".into(),
-                ));
+        match &value {
+            KeywordValue::Str(s) => {
+                if s.bytes().any(|b| !(0x20..=0x7E).contains(&b)) {
+                    return Err(FitsError::InvalidKeyword(
+                        "string value must be printable ASCII".into(),
+                    ));
+                }
+                // FITSv4 fixed-format strings start at column 11 with a
+                // single quote, value padded to 8+ chars, ending quote
+                // before column 80. Double the embedded quote count to
+                // bound the encoded length.
+                let escaped_len = s.len() + s.bytes().filter(|b| *b == b'\'').count();
+                let padded_len = escaped_len.max(8);
+                // 10 cols prefix ("KEYWORD  = ") + 2 quotes + body, plus
+                // space for an optional " / comment". Reject anything
+                // that can't possibly fit on a single card.
+                if 10 + 2 + padded_len > CARD_SIZE {
+                    return Err(FitsError::InvalidKeyword(format!(
+                        "string value too long for a single FITS card: {} bytes",
+                        s.len()
+                    )));
+                }
             }
+            KeywordValue::Float(f) => {
+                if !f.is_finite() {
+                    return Err(FitsError::InvalidKeyword(format!(
+                        "float value must be finite (got {f})"
+                    )));
+                }
+            }
+            _ => {}
         }
         let mut key_buf = [b' '; 8];
         for (i, b) in upper.bytes().enumerate() {
@@ -186,16 +223,16 @@ where
     let mut out = Vec::with_capacity(BLOCK_SIZE + expected * bytes_per_pixel + BLOCK_SIZE);
 
     // Header.
-    write_card(&mut out, &Card::logical("SIMPLE", true));
-    write_card(&mut out, &Card::integer("BITPIX", bitpix as i64));
-    write_card(&mut out, &Card::integer("NAXIS", 2));
-    write_card(&mut out, &Card::integer("NAXIS1", width as i64));
-    write_card(&mut out, &Card::integer("NAXIS2", height as i64));
+    write_card(&mut out, &Card::logical("SIMPLE", true))?;
+    write_card(&mut out, &Card::integer("BITPIX", bitpix as i64))?;
+    write_card(&mut out, &Card::integer("NAXIS", 2))?;
+    write_card(&mut out, &Card::integer("NAXIS1", width as i64))?;
+    write_card(&mut out, &Card::integer("NAXIS2", height as i64))?;
     for c in managed_pre_user {
-        write_card(&mut out, c);
+        write_card(&mut out, c)?;
     }
     for kw in extra {
-        write_card(&mut out, &Card::from_keyword(kw));
+        write_card(&mut out, &Card::from_keyword(kw))?;
     }
     write_end_card(&mut out);
     pad_to_block(&mut out, b' ');
@@ -262,11 +299,16 @@ fn pad_key(key: &str) -> [u8; 8] {
 }
 
 /// Emit one 80-byte card to `out`.
-fn write_card(out: &mut Vec<u8>, card: &Card) {
+///
+/// Returns [`FitsError::InvalidKeyword`] if the value (or value +
+/// comment) cannot fit in a single 80-byte card. The previous version
+/// silently truncated overlong cards via `Vec::resize`, which could
+/// produce malformed FITS headers (e.g. a string value missing its
+/// closing quote) without surfacing any error.
+fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
     let start = out.len();
     out.extend_from_slice(&card.key);
     out.extend_from_slice(b"= ");
-    let value_start = out.len();
     match &card.value {
         KeywordValue::Bool(b) => {
             // Right-justified at column 30: 20 chars wide.
@@ -275,13 +317,20 @@ fn write_card(out: &mut Vec<u8>, card: &Card) {
         }
         KeywordValue::Int(n) => {
             let s = format!("{n}");
+            // i64 fits comfortably in 20 chars (i64::MIN is 20 chars).
+            // Defensive check anyway in case a future numeric type lands.
+            if s.len() > 20 {
+                return Err(card_overflow(&card.key, "integer", s.len()));
+            }
             push_padded_left(out, s.as_bytes(), 20);
         }
         KeywordValue::Float(f) => {
-            // FITSv4 §4.2.4: any "F" or "E" form is acceptable. %20.10E
-            // is comfortably within precision and right-aligned in 20
-            // chars including the optional sign.
+            // FITSv4 §4.2.4: any "F" or "E" form is acceptable. Our
+            // %20.10E form fits in well under 20 chars.
             let s = format_float(*f);
+            if s.len() > 20 {
+                return Err(card_overflow(&card.key, "float", s.len()));
+            }
             push_padded_left(out, s.as_bytes(), 20);
         }
         KeywordValue::Str(s) => {
@@ -299,6 +348,12 @@ fn write_card(out: &mut Vec<u8>, card: &Card) {
             while escaped.len() < 8 {
                 escaped.push(' ');
             }
+            // Defensive: `Keyword::new` already rejects strings that
+            // wouldn't fit. Re-check here for cards constructed via the
+            // private `Card` API (BSCALE/BZERO etc.).
+            if 12 + escaped.len() > CARD_SIZE {
+                return Err(card_overflow(&card.key, "string", 12 + escaped.len()));
+            }
             out.push(b'\'');
             out.extend_from_slice(escaped.as_bytes());
             out.push(b'\'');
@@ -306,6 +361,9 @@ fn write_card(out: &mut Vec<u8>, card: &Card) {
     }
     if let Some(comment) = &card.comment {
         // " / <comment>" — only emit if it fits in the remaining bytes.
+        // Long comments are *truncated* (informational, lossy is OK).
+        // Long values fail above (lossy on a value would be silent
+        // corruption).
         let remaining = CARD_SIZE.saturating_sub(out.len() - start);
         if remaining > 4 {
             out.extend_from_slice(b" / ");
@@ -315,10 +373,22 @@ fn write_card(out: &mut Vec<u8>, card: &Card) {
         }
     }
     let written = out.len() - start;
-    debug_assert!(written <= CARD_SIZE, "card overflowed 80 bytes ({written})");
-    let _ = value_start;
+    if written > CARD_SIZE {
+        // Should be unreachable given the per-variant guards above;
+        // defensive net so a future code path can't slip an overflow
+        // past via the resize-truncate gap.
+        return Err(card_overflow(&card.key, "card", written));
+    }
     // Right-pad the card with spaces to 80 bytes.
     out.resize(start + CARD_SIZE, b' ');
+    Ok(())
+}
+
+fn card_overflow(key: &[u8; 8], kind: &str, len: usize) -> FitsError {
+    let key_str = std::str::from_utf8(key).unwrap_or("?").trim_end();
+    FitsError::InvalidKeyword(format!(
+        "{kind} value for keyword {key_str:?} is too long for a single FITS card ({len} bytes, max {CARD_SIZE})"
+    ))
 }
 
 fn write_end_card(out: &mut Vec<u8>) {
@@ -524,6 +594,59 @@ mod tests {
     fn rejects_non_ascii_keyword() {
         let err = Keyword::new("FÖÖ", KeywordValue::Bool(true)).unwrap_err();
         assert!(matches!(err, FitsError::InvalidKeyword(_)));
+    }
+
+    #[test]
+    fn rejects_keyword_with_disallowed_punctuation() {
+        // FITSv4 §4.1.2.1 restricts keyword chars to [A-Z0-9_-]. Other
+        // ASCII graphic chars (=, ', ., etc.) must be rejected even
+        // though they're printable.
+        for bad in ["KEY=Y", "FOO.BAR", "A'B", "X+Y"] {
+            let err = Keyword::new(bad, KeywordValue::Bool(true)).unwrap_err();
+            assert!(
+                matches!(err, FitsError::InvalidKeyword(_)),
+                "should reject {bad:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_float() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = Keyword::new("EXPTIME", KeywordValue::Float(bad)).unwrap_err();
+            assert!(
+                matches!(err, FitsError::InvalidKeyword(_)),
+                "should reject {bad}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_overlong_string_value() {
+        // The fixed-format card has 80 bytes total; "KEYWORD  = " uses
+        // 10 chars plus 2 quotes leaves 68 chars for the body. A string
+        // longer than that cannot fit in a single card.
+        let too_long = "x".repeat(70);
+        let err = Keyword::new("OBJECT", KeywordValue::Str(too_long)).unwrap_err();
+        assert!(
+            matches!(err, FitsError::InvalidKeyword(_)),
+            "expected InvalidKeyword, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn write_card_errors_on_value_overflow() {
+        // Build a Card directly via the private API to bypass
+        // `Keyword::new`'s length check, then verify `write_card`
+        // rejects it instead of silently truncating.
+        let mut buf = Vec::new();
+        let bad = Card {
+            key: pad_key("HISTORY"),
+            value: KeywordValue::Str("x".repeat(80)),
+            comment: None,
+        };
+        let err = write_card(&mut buf, &bad).unwrap_err();
+        assert!(matches!(err, FitsError::InvalidKeyword(_)), "{err:?}");
     }
 
     #[test]

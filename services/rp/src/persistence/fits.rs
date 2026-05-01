@@ -14,7 +14,8 @@
 //!   lives in `rp_fits::atomic`. This file is just the rp-specific
 //!   layer that stamps `DOC_ID` and translates errors to `RpError`.
 
-use std::io::Cursor;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
 use rp_fits::atomic::write_atomic_with;
@@ -131,14 +132,14 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)> {
     let path = path.as_ref();
     debug!(path = %path.display(), "reading FITS pixels");
-    let bytes = std::fs::read(path).map_err(|e| {
+    let file = File::open(path).map_err(|e| {
         RpError::Imaging(format!(
             "failed to open FITS file '{}': {}",
             path.display(),
             e
         ))
     })?;
-    read_primary_as_i32(Cursor::new(bytes)).map_err(|e| {
+    read_primary_as_i32(BufReader::new(file)).map_err(|e| {
         RpError::Imaging(format!(
             "failed to parse FITS file '{}': {}",
             path.display(),
@@ -155,14 +156,14 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)>
 /// `Err`.
 pub fn read_fits_doc_id<P: AsRef<Path>>(path: P) -> Result<Option<String>> {
     let path = path.as_ref();
-    let bytes = std::fs::read(path).map_err(|e| {
+    let file = File::open(path).map_err(|e| {
         RpError::Imaging(format!(
             "failed to open FITS file '{}': {}",
             path.display(),
             e
         ))
     })?;
-    match read_primary_keyword(Cursor::new(bytes), DOC_ID_KEY) {
+    match read_primary_keyword(BufReader::new(file), DOC_ID_KEY) {
         Ok(None) => Ok(None),
         Ok(Some(KeywordValue::Str(s))) => Ok(Some(s)),
         Ok(Some(_)) => Err(RpError::Imaging(

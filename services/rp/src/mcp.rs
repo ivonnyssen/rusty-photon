@@ -821,21 +821,32 @@ impl McpHandler {
         // path (half the on-disk size); scientific cameras whose
         // max_adu exceeds 65535, or captures where max_adu was
         // unreadable, fall through to BITPIX=32.
+        //
+        // Memory: on the u16 path, *consume* the i32 buffer to build
+        // u16_pixels so the larger i32 allocation is freed before the
+        // (potentially fsync-blocking) write. The cache insert later
+        // re-collects i32 from u16, but only briefly. This drops peak
+        // sustained memory during the write from 6n bytes to 2n on
+        // QHY600-class frames (~244 MB → 122 MB).
+        let mut pixels = pixels;
         match captured_max_adu {
             Some(max_adu) if max_adu <= u16::MAX as u32 => {
                 let max_adu_i32 = max_adu as i32;
-                let u16_pixels: Vec<u16> = pixels
-                    .iter()
-                    .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                let u16_pixels: Vec<u16> = std::mem::take(&mut pixels)
+                    .into_iter()
+                    .map(|p| p.clamp(0, max_adu_i32) as u16)
                     .collect();
                 persistence::write_fits_u16(&image_path, &u16_pixels, width, height, &document_id)
                     .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                pixels = u16_pixels.iter().map(|&p| i32::from(p)).collect();
             }
             _ => {
-                persistence::write_fits_i32(&image_path, &pixels, width, height, &document_id).await
+                persistence::write_fits_i32(&image_path, &pixels, width, height, &document_id)
+                    .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
             }
         }
-        .map_err(|e| format!("failed to write FITS file: {}", e))?;
 
         let doc = ExposureDocument {
             id: document_id.clone(),
