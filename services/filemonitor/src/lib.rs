@@ -60,7 +60,6 @@ pub enum RuleType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
-    pub device_number: u32,
     #[serde(default = "default_discovery_port")]
     pub discovery_port: Option<u16>,
     #[serde(default)]
@@ -431,7 +430,6 @@ mod property_tests {
             },
             server: ServerConfig {
                 port: 8080,
-                device_number: 0,
                 discovery_port: None,
                 tls: None,
                 auth: None,
@@ -467,7 +465,6 @@ mod property_tests {
             },
             server: ServerConfig {
                 port: 8080,
-                device_number: 0,
                 discovery_port: None,
                 tls: None,
                 auth: None,
@@ -530,7 +527,6 @@ mod property_tests {
                 },
                 server: ServerConfig {
                     port: 8080,
-                    device_number: 0,
                     discovery_port: None,
                     tls: None,
                     auth: None,
@@ -587,7 +583,6 @@ mod property_tests {
                 },
                 server: ServerConfig {
                     port: 8080,
-                    device_number: 0,
                     discovery_port: None,
                     tls: None,
                     auth: None,
@@ -629,7 +624,6 @@ mod property_tests {
                 },
                 server: ServerConfig {
                     port,
-                    device_number: 0,
                     discovery_port: None,
                     tls: None,
                     auth: None,
@@ -671,7 +665,6 @@ mod property_tests {
                 },
                 server: ServerConfig {
                     port: 8080,
-                    device_number: 0,
                     discovery_port: None,
                     tls: None,
                     auth: None,

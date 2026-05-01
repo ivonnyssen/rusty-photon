@@ -36,8 +36,8 @@ fn ppba_configured_with_tls(world: &mut PpbaWorld) {
                 "key": certs_dir.join("ppba-driver-key.pem").to_string_lossy().to_string()
             }
         },
-        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "device_number": 0, "enabled": true },
-        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "device_number": 0, "enabled": false }
+        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "enabled": true },
+        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "enabled": false }
     });
 }
 

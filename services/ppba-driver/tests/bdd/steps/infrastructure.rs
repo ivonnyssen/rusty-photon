@@ -22,15 +22,13 @@ pub fn default_test_config() -> serde_json::Value {
             "enabled": true,
             "name": "Pegasus PPBA Switch",
             "unique_id": "ppba-switch-001",
-            "description": "Pegasus Astro PPBA Gen2 Power Control",
-            "device_number": 0
+            "description": "Pegasus Astro PPBA Gen2 Power Control"
         },
         "observingconditions": {
             "enabled": true,
             "name": "Pegasus PPBA Weather",
             "unique_id": "ppba-observingconditions-001",
             "description": "Pegasus Astro PPBA Environmental Sensors",
-            "device_number": 0,
             "averaging_period": "5m"
         }
     })

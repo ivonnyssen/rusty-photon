@@ -12,14 +12,12 @@
     "name": "Pegasus PPBA Switch",
     "unique_id": "ppba-switch-001",
     "description": "Pegasus Astro PPBA Gen2 Power Control",
-    "device_number": 0,
     "enabled": true
   },
   "observingconditions": {
     "name": "Pegasus PPBA Weather",
     "unique_id": "ppba-observingconditions-001",
     "description": "Pegasus Astro PPBA Environmental Sensors",
-    "device_number": 0,
     "enabled": true,
     "averaging_period": "5m"
   }

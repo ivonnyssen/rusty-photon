@@ -99,15 +99,13 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "enabled": true,
             "name": "ConformU Test PPBA",
             "unique_id": "conformu-ppba-001",
-            "description": "Test PPBA Switch for ConformU compliance",
-            "device_number": 0
+            "description": "Test PPBA Switch for ConformU compliance"
         },
         "observingconditions": {
             "enabled": false,
             "name": "ConformU Test PPBA Weather",
             "unique_id": "conformu-ppba-weather-001",
-            "description": "Test PPBA ObservingConditions",
-            "device_number": 0
+            "description": "Test PPBA ObservingConditions"
         }
     });
 
@@ -240,15 +238,13 @@ async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn s
             "enabled": false,
             "name": "ConformU Test PPBA Switch",
             "unique_id": "conformu-ppba-switch-001",
-            "description": "Test PPBA Switch",
-            "device_number": 0
+            "description": "Test PPBA Switch"
         },
         "observingconditions": {
             "enabled": true,
             "name": "ConformU Test PPBA Weather",
             "unique_id": "conformu-ppba-weather-001",
-            "description": "Test PPBA ObservingConditions for ConformU compliance",
-            "device_number": 0
+            "description": "Test PPBA ObservingConditions for ConformU compliance"
         }
     });
 

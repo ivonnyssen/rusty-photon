@@ -1,9 +1,4 @@
 {
-  "device": {
-    "name": "Pegasus PPBA",
-    "unique_id": "ppba-switch-001",
-    "description": "Pegasus Astro Pocket Powerbox Advance Gen2"
-  },
   "serial": {
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
@@ -11,7 +6,19 @@
     "timeout": "2s"
   },
   "server": {
-    "port": 11112,
-    "device_number": 0
+    "port": 11112
+  },
+  "switch": {
+    "name": "Pegasus PPBA Switch",
+    "unique_id": "ppba-switch-001",
+    "description": "Pegasus Astro PPBA Gen2 Power Control",
+    "enabled": true
+  },
+  "observingconditions": {
+    "name": "Pegasus PPBA Weather",
+    "unique_id": "ppba-observingconditions-001",
+    "description": "Pegasus Astro PPBA Environmental Sensors",
+    "enabled": true,
+    "averaging_period": "5m"
   }
 }

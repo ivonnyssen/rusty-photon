@@ -33,8 +33,8 @@ fn ppba_configured_with_tls_and_auth(world: &mut PpbaWorld) {
                 "password_hash": hash
             }
         },
-        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "device_number": 0, "enabled": true },
-        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "device_number": 0, "enabled": false }
+        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "enabled": true },
+        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "enabled": false }
     });
 
     world.auth_password = Some(AUTH_PASSWORD.to_string());
@@ -45,8 +45,8 @@ fn ppba_configured_without_auth(world: &mut PpbaWorld) {
     world.config = serde_json::json!({
         "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval": "60s", "timeout": "2s" },
         "server": { "port": 0 },
-        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "device_number": 0, "enabled": true },
-        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "device_number": 0, "enabled": false }
+        "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "enabled": true },
+        "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "enabled": false }
     });
 }
 

@@ -80,10 +80,7 @@ impl ServerBuilder {
             let focuser_device =
                 QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&serial_manager));
             server.devices.register(focuser_device);
-            info!(
-                "Registered Focuser device: {} (device number {})",
-                self.config.focuser.name, self.config.focuser.device_number
-            );
+            info!("Registered Focuser device: {}", self.config.focuser.name);
         }
 
         info!("Serial port: {}", self.config.serial.port);
