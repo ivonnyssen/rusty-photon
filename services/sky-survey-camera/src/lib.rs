@@ -76,11 +76,14 @@ pub async fn run_with_client(
 /// Construct the production [`SurveyClient`] from config. The `mock`
 /// feature does NOT short-circuit this — production binaries always
 /// hit the configured endpoint via [`survey::SkyViewClient`]. The
-/// in-process [`mock::MockSurveyClient`] is exposed as a library
-/// type so the conformu integration test can call [`run_with_client`]
-/// directly with a synthetic backend; switching the binary itself
-/// would break BDD scenarios that exercise the real HTTP error
-/// paths against a stub server.
+/// `mock` module exposes [`MockSurveyClient`] and the
+/// [`mock::synthetic_fits`] helper as library-only types: the
+/// ConformU integration test re-uses `synthetic_fits` inside an
+/// in-process axum stub that the binary fetches from over HTTP, and
+/// `MockSurveyClient` is available to any future test that prefers
+/// to call [`run_with_client`] directly with a synthetic backend.
+/// Switching the binary itself would break the BDD scenarios that
+/// exercise real HTTP error paths against a stub server.
 fn build_survey_client(config: &Config) -> Result<Arc<dyn SurveyClient>, SkySurveyCameraError> {
     let client = survey::SkyViewClient::new(&config.survey)
         .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;

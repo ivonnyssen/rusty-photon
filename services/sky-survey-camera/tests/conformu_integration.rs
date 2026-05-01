@@ -68,10 +68,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // The binary must be pre-built with `--features mock,conformu` (the
-    // `mock` feature here is consumed by the in-process stub helper
-    // below — the binary itself always uses SkyViewClient pointed at
-    // the stub URL).
+    // The `conformu` feature transitively pulls in `mock`, which
+    // exposes the `synthetic_fits` helper used by the in-process stub
+    // below. The binary itself always uses `SkyViewClient` pointed at
+    // the stub URL — no runtime mock swap.
     let mut handle = ServiceHandle::try_start(
         env!("CARGO_PKG_NAME"),
         config_path

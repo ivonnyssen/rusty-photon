@@ -1,11 +1,16 @@
-//! Mock survey backend for tests and the `mock`-feature binary.
+//! Library-only test helpers exposed by the `mock` feature. The
+//! production binary always uses [`crate::survey::SkyViewClient`] —
+//! enabling `mock` does not change runtime behaviour.
 //!
-//! Returns a deterministic, valid FITS payload sized to the binned
-//! sensor of the request. The data is a small ramp keyed on
-//! `(pixels_x, pixels_y)` so cache hits remain useful and downstream
-//! image-processing tools see something more interesting than a
-//! zero-filled buffer. No network I/O, no hidden timeouts — `health_
-//! check` and `fetch` both complete in microseconds.
+//! [`MockSurveyClient`] returns a deterministic, valid FITS payload
+//! sized to the binned sensor of the request. [`synthetic_fits`] is
+//! the same generator exposed as a free function so the ConformU
+//! integration test's in-process HTTP stub can reuse it. The data is
+//! a small ramp keyed on `(pixels_x, pixels_y)` so cache hits remain
+//! useful and downstream image-processing tools see something more
+//! interesting than a zero-filled buffer. No network I/O, no hidden
+//! timeouts — `health_check` and `fetch` both complete in
+//! microseconds.
 
 use crate::survey::{SurveyClient, SurveyError, SurveyRequest};
 

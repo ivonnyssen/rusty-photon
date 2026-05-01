@@ -1,0 +1,154 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+# sky-survey-camera has no intra-workspace deps. rp-tls / rp-auth are
+# only required by services that mount HTTPS / Basic Auth in front of
+# the ASCOM Alpaca surface; v0 is plain HTTP.
+
+rust_library(
+    name = "sky-survey-camera_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "sky_survey_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "sky-survey-camera",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":sky-survey-camera_lib"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "sky-survey-camera_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":sky-survey-camera_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# `mock` variants of the lib + binary, for tests that need the
+# `mock::synthetic_fits` helper or any future conformu pipeline that
+# wires `MockSurveyClient` directly. The production binary used by
+# BDD is the non-mock variant — the BDD scenarios deliberately
+# exercise the real HTTP error paths against a stub server.
+rust_library(
+    name = "sky-survey-camera_lib_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "sky_survey_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True),
+)
+
+# BDD cucumber test. harness=false (custom cucumber main via
+# bdd_main!) so use_libtest_harness must be False. BDD_PACKAGE_DIR
+# tells bdd_main! to chdir from the Bazel runfiles root into the
+# package dir so relative paths (`tests/features`, `./Cargo.toml`)
+# behave the same way they do under `cargo test`.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":sky-survey-camera",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/sky-survey-camera",
+        "SKY_SURVEY_CAMERA_BINARY": "$(rootpath :sky-survey-camera)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"),
+    # but bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must
+    # be the service name.
+    rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [":sky-survey-camera_lib", "//crates/bdd-infra:bdd-infra"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# ConformU integration test. Tagged `requires-cargo` so it stays
+# excluded from the default `bazel test //...` filter — the test
+# launches the binary via `bdd-infra::ServiceHandle`, which expects a
+# Cargo-built binary on the path bdd-infra computes from
+# `CARGO_PKG_NAME`. Tagged `conformu` for explicit opt-in via
+# `bazel test --test_tag_filters=conformu //...`. Compiling the
+# target under Bazel still validates that the code parses and
+# typechecks under the Bazel toolchain.
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["mock", "conformu"],
+    data = [":sky-survey-camera_mock"],
+    edition = "2021",
+    env = {
+        "SKY_SURVEY_CAMERA_BINARY": "$(rootpath :sky-survey-camera_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
+    tags = [
+        "conformu",
+        "requires-cargo",
+    ],
+    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Mock-feature binary — only used by the conformu test target above
+# (the conformu test imports `mock::synthetic_fits` for its in-process
+# stub, so the binary it spawns must also have the `mock` feature
+# enabled to keep the feature unification consistent across the
+# linked crate graph).
+rust_binary(
+    name = "sky-survey-camera_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":sky-survey-camera_lib_mock"] + all_crate_deps(normal = True),
+)
