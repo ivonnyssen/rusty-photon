@@ -411,7 +411,7 @@ tests passing workspace-wide. `cargo fmt` clean.
 
 #### Phase 6b — `auto_focus` design + BDD + impl
 
-Standard design→BDD→impl sequence. Blocked on Phase 6a.
+Status: **complete.**
 
 - [x] **Design:** `auto_focus` Contract added to `rp.md` Compound
       Tools (parallel to `measure_basic` Contract). Decisions
@@ -457,21 +457,42 @@ Standard design→BDD→impl sequence. Blocked on Phase 6a.
       - **`min_area` / `max_area` pass-through:** required at the
         `auto_focus` level, same as `measure_basic` — pixel scale
         varies per rig.
-- [ ] `services/rp/tests/features/auto_focus.feature` — catalog,
-      happy path (V-curve converges, returns best_position), each
-      error path (camera/focuser not found, not connected, all
-      captures starless, monotonic curve, sweep-grid too small
-      after clamp, `step_size <= 0`, `half_width <= 0`,
-      `min_fit_points < 3`), persistence (per-step
-      `image_analysis` written; no aggregate `auto_focus`
-      section).
-- [ ] `services/rp/src/imaging/tools/auto_focus.rs` — pure function
-      taking trait objects for focuser / camera / measure_basic so
-      it's unit-testable without hardware. The MCP tool in
-      `mcp.rs` is a thin wrapper.
-- [ ] Unit tests on the parabola fit (synthetic HFR vs. position
-      data; assert `best_position` to ±1 step) and on the
-      monotonic-curve rejection.
+- [x] `services/rp/tests/features/auto_focus.feature` — 17 scenarios:
+      catalog, four device-resolution errors (nonexistent and
+      disconnected camera/focuser), seven missing-parameter
+      examples via Scenario Outline, three numeric-range rejections
+      (step_size=0, half_width=0, min_fit_points<3), grid-too-small
+      after focuser-bounds clamp, sweep-completion + per-step
+      `image_analysis` persistence anchor (5 FITS + 5 sidecars
+      written; every sidecar carries `image_analysis`; no sidecar
+      carries an aggregate `auto_focus` section). The
+      "happy-path V-curve converges to known best_position" was
+      deliberately omitted — OmniSim produces position-independent
+      images, so a real V-curve never materializes in the simulator;
+      numerical fit correctness is unit-tested instead.
+- [x] `services/rp/src/imaging/tools/auto_focus.rs` — pure driver
+      over `FocuserOps` / `CaptureOps` / `MeasureOps` traits so the
+      loop and math are unit-testable without hardware. Validates
+      params, builds the sweep grid (clamping out-of-range points
+      rather than coercing — coercion would create duplicate samples
+      at the bound), runs move/capture/measure for each grid point,
+      fits a parabola via Cramer's rule on the 3×3 weighted
+      least-squares system, validates that the fitted vertex falls
+      inside the sampled grid (an `a > 0` parabola with vertex
+      outside the grid is still monotonic over the sampled range),
+      and moves the focuser to the fitted minimum on success. The
+      MCP wrapper in `mcp.rs` is the thin adapter shell, sharing
+      capture and move semantics with the primitive tools via two
+      newly-extracted helpers (`do_capture`,
+      `do_move_focuser_blocking`).
+- [x] Unit tests on the parabola fit and the run loop. 17 unit
+      tests cover validate_params (4), build_grid (5),
+      fit_parabola (5 — known-vertex recovery to ±1 step,
+      flat-input rejection, concave-down rejection,
+      too-few-samples, zero-weight-sample skipping), and
+      run_auto_focus end-to-end with synthetic adapters (3 —
+      known-vertex recovery, grid-too-small-after-clamp,
+      not-enough-stars-after-skips).
 
 #### Phase 6c — `center_on_target` design + BDD + impl
 
