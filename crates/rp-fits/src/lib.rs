@@ -6,6 +6,8 @@
 //! See `docs/decisions/001-fits-file-support.md` (Amendment A) for the
 //! design rationale.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod atomic;
 pub mod error;
 pub mod reader;

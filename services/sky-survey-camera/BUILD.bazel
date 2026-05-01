@@ -3,9 +3,14 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
-# sky-survey-camera has no intra-workspace deps. rp-tls / rp-auth are
-# only required by services that mount HTTPS / Basic Auth in front of
-# the ASCOM Alpaca surface; v0 is plain HTTP.
+# sky-survey-camera depends on rp-fits for the workspace's shared FITS
+# reader/writer surface. rp-tls / rp-auth are only required by services
+# that mount HTTPS / Basic Auth in front of the ASCOM Alpaca surface;
+# v0 is plain HTTP.
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-fits:rp-fits",
+]
 
 rust_library(
     name = "sky-survey-camera_lib",
@@ -15,7 +20,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -25,7 +30,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":sky-survey-camera_lib"] + all_crate_deps(normal = True),
+    deps = [":sky-survey-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -40,7 +45,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -59,7 +64,7 @@ rust_library(
     crate_name = "sky_survey_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 # BDD cucumber test. harness=false (custom cucumber main via
@@ -95,7 +100,7 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":sky-survey-camera_lib", "//crates/bdd-infra:bdd-infra"] + all_crate_deps(
+    deps = [":sky-survey-camera_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -142,7 +147,7 @@ rust_test(
         "manual",
         "requires-cargo",
     ],
-    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra"] + all_crate_deps(
+    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -160,5 +165,5 @@ rust_binary(
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":sky-survey-camera_lib_mock"] + all_crate_deps(normal = True),
+    deps = [":sky-survey-camera_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
