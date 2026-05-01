@@ -7,7 +7,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 use tracing::{debug, warn};
 
@@ -124,27 +124,66 @@ impl SkyViewClient {
 /// Return cached FITS bytes if `<cache_dir>/<key>.fits` exists.
 /// Errors are logged at `warn!` and treated as "no cache hit"; the
 /// caller continues with a network fetch (S6).
-pub fn try_cache_load(cache_dir: &Path, key: &str) -> Option<Vec<u8>> {
-    let path = cache_dir.join(format!("{key}.fits"));
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            debug!(?path, "cache hit");
-            Some(bytes)
+///
+/// The blocking `std::fs::read` runs on Tokio's blocking pool (one
+/// `spawn_blocking` per cache lookup, mirroring `services/rp/src/
+/// persistence/fits.rs`) so the async exposure task doesn't stall
+/// a runtime worker on slow disks or contended I/O.
+pub async fn try_cache_load(cache_dir: PathBuf, key: String) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let path = cache_dir.join(format!("{key}.fits"));
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                debug!(?path, "cache hit");
+                Some(bytes)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                warn!(?path, error = %e, "cache read failed; falling through to network");
+                None
+            }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            warn!(?path, error = %e, "cache read failed; falling through to network");
-            None
-        }
-    }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
-/// Best-effort write — failures don't fail the exposure (contract S6).
-pub fn try_cache_store(cache_dir: &Path, key: &str, bytes: &[u8]) {
-    let path: PathBuf = cache_dir.join(format!("{key}.fits"));
-    if let Err(e) = std::fs::write(&path, bytes) {
-        warn!(?path, error = %e, "cache write failed");
-    }
+/// Best-effort cache write — failures are logged but do not fail the
+/// exposure (contract S6).
+///
+/// Writes are atomic: the FITS bytes are staged into a uniquely-named
+/// sibling file in `cache_dir`, then renamed onto the target. A
+/// crash mid-write therefore leaves either the old contents or the
+/// new ones at `<cache_dir>/<key>.fits`, never a torn file. The
+/// staging file's `Drop` guard removes the partial on panic / early
+/// return. We deliberately skip `fsync` and parent-dir fsync — the
+/// cache is rebuildable (a missing entry just triggers a fresh
+/// network fetch), so the cost of fsync per write is not justified.
+///
+/// Runs on `tokio::task::spawn_blocking` for the same reason as
+/// `try_cache_load`.
+pub async fn try_cache_store(cache_dir: PathBuf, key: String, bytes: Vec<u8>) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let target = cache_dir.join(format!("{key}.fits"));
+        let staging = match tempfile::NamedTempFile::new_in(&cache_dir) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(?cache_dir, error = %e, "cache staging file create failed");
+                return;
+            }
+        };
+        let staging_path = staging.into_temp_path();
+        if let Err(e) = std::fs::write(&staging_path, &bytes) {
+            warn!(path = ?staging_path, error = %e, "cache staging write failed");
+            // staging_path Drop guard cleans up the partial.
+            return;
+        }
+        if let Err(e) = staging_path.persist(&target) {
+            warn!(?target, error = %e.error, "cache rename failed");
+        }
+    })
+    .await;
 }
 
 #[cfg(test)]

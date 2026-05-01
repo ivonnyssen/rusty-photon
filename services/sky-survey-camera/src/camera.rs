@@ -198,27 +198,28 @@ async fn run_exposure_inner(
 
     let pointing = state.pointing.snapshot();
     let request = build_full_sensor_request(&state.config, pointing, bx, by);
-    let cache_dir = &state.config.survey.cache_dir;
+    let cache_dir = state.config.survey.cache_dir.clone();
     let cache_key = request.cache_key();
-    let (bytes, from_cache) = if let Some(b) = try_cache_load(cache_dir, &cache_key) {
-        (b, true)
-    } else {
-        match state.survey_client.fetch(&request).await {
-            Ok(b) => (b, false),
-            Err(SurveyError::Timeout) => return Err("survey request timed out".into()),
-            Err(SurveyError::NonSuccess(code)) => {
-                return Err(format!("survey returned status {code}"))
+    let (bytes, from_cache) =
+        if let Some(b) = try_cache_load(cache_dir.clone(), cache_key.clone()).await {
+            (b, true)
+        } else {
+            match state.survey_client.fetch(&request).await {
+                Ok(b) => (b, false),
+                Err(SurveyError::Timeout) => return Err("survey request timed out".into()),
+                Err(SurveyError::NonSuccess(code)) => {
+                    return Err(format!("survey returned status {code}"))
+                }
+                Err(SurveyError::Http(msg)) => return Err(format!("survey HTTP error: {msg}")),
             }
-            Err(SurveyError::Http(msg)) => return Err(format!("survey HTTP error: {msg}")),
-        }
-    };
+        };
 
     let img = parse_primary_hdu(&bytes).map_err(|e| format!("FITS parse error: {e}"))?;
     // S6: only commit a network response to the cache after a
     // successful FITS parse. Otherwise a malformed body could poison
     // the cache and re-fail forever.
     if !from_cache {
-        try_cache_store(cache_dir, &cache_key, &bytes);
+        try_cache_store(cache_dir, cache_key, bytes.clone()).await;
     }
     let cropped = crop_subframe(&img.data, img.width, img.height, sx, sy, nx, ny)?;
     Ok(ExposureOutcome {
