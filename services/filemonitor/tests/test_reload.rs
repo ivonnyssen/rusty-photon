@@ -35,8 +35,7 @@ async fn test_server_loop_stop_and_reload() {
                 "case_sensitive": false
             },
             "server": {
-                "port": 0,
-                "device_number": 0
+                "port": 0
             }
         });
 
@@ -80,8 +79,7 @@ async fn test_server_loop_stop_and_reload() {
                 "case_sensitive": false
             },
             "server": {
-                "port": 0,
-                "device_number": 0
+                "port": 0
             }
         });
 

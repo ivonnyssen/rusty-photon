@@ -66,10 +66,7 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
             cache_dir: world.cache_dir(),
             endpoint: "http://placeholder/".to_string(),
         },
-        server: ServerConfig {
-            port: 0,
-            device_number: 0,
-        },
+        server: ServerConfig { port: 0 },
     };
     let req = build_full_sensor_request(&config, pointing, 1, 1);
     let key = req.cache_key();

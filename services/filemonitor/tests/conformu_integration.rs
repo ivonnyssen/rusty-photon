@@ -46,8 +46,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "case_sensitive": false
         },
         "server": {
-            "port": 0,
-            "device_number": 0
+            "port": 0
         }
     });
 

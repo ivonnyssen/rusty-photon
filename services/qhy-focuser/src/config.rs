@@ -46,8 +46,6 @@ pub struct FocuserConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
-    #[serde(default)]
-    pub device_number: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_max_step")]
@@ -106,7 +104,6 @@ impl Default for FocuserConfig {
             name: "QHY Q-Focuser".to_string(),
             unique_id: "qhy-focuser-001".to_string(),
             description: "QHY Q-Focuser (EAF) Stepper Motor Controller".to_string(),
-            device_number: 0,
             enabled: true,
             max_step: default_max_step(),
             speed: 0,
@@ -152,7 +149,6 @@ mod tests {
         assert_eq!(config.name, "QHY Q-Focuser");
         assert_eq!(config.unique_id, "qhy-focuser-001");
         assert!(!config.description.is_empty());
-        assert_eq!(config.device_number, 0);
         assert!(config.enabled);
         assert_eq!(config.max_step, 64_000);
         assert_eq!(config.speed, 0);
@@ -203,7 +199,6 @@ mod tests {
                 "name": "Test Focuser",
                 "unique_id": "test-focuser-001",
                 "description": "Test focuser description",
-                "device_number": 1,
                 "enabled": true,
                 "max_step": 100000,
                 "speed": 3,
@@ -215,7 +210,6 @@ mod tests {
 
         assert_eq!(config.focuser.name, "Test Focuser");
         assert_eq!(config.focuser.unique_id, "test-focuser-001");
-        assert_eq!(config.focuser.device_number, 1);
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 100000);
         assert_eq!(config.focuser.speed, 3);
@@ -251,7 +245,6 @@ mod tests {
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
-        assert_eq!(config.focuser.device_number, 0);
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 64_000);
         assert_eq!(config.focuser.speed, 0);

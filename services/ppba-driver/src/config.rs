@@ -47,8 +47,6 @@ pub struct SwitchConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
-    #[serde(default)]
-    pub device_number: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -59,8 +57,6 @@ pub struct ObservingConditionsConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
-    #[serde(default)]
-    pub device_number: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_averaging_period", with = "humantime_serde")]
@@ -115,7 +111,6 @@ impl Default for SwitchConfig {
             name: "Pegasus PPBA Switch".to_string(),
             unique_id: "ppba-switch-001".to_string(),
             description: "Pegasus Astro PPBA Gen2 Power Control".to_string(),
-            device_number: 0,
             enabled: true,
         }
     }
@@ -127,7 +122,6 @@ impl Default for ObservingConditionsConfig {
             name: "Pegasus PPBA Weather".to_string(),
             unique_id: "ppba-observingconditions-001".to_string(),
             description: "Pegasus Astro PPBA Environmental Sensors".to_string(),
-            device_number: 0,
             enabled: true,
             averaging_period: default_averaging_period(),
         }
@@ -179,7 +173,6 @@ mod tests {
         assert_eq!(config.name, "Pegasus PPBA Switch");
         assert_eq!(config.unique_id, "ppba-switch-001");
         assert!(!config.description.is_empty());
-        assert_eq!(config.device_number, 0);
         assert!(config.enabled);
     }
 
@@ -190,7 +183,6 @@ mod tests {
         assert_eq!(config.name, "Pegasus PPBA Weather");
         assert_eq!(config.unique_id, "ppba-observingconditions-001");
         assert!(!config.description.is_empty());
-        assert_eq!(config.device_number, 0);
         assert!(config.enabled);
         assert_eq!(config.averaging_period, Duration::from_secs(300)); // 5 minutes
     }
@@ -239,14 +231,12 @@ mod tests {
                 "name": "Test Switch",
                 "unique_id": "test-switch-001",
                 "description": "Test switch description",
-                "device_number": 1,
                 "enabled": true
             },
             "observingconditions": {
                 "name": "Test Weather",
                 "unique_id": "test-weather-001",
                 "description": "Test weather description",
-                "device_number": 2,
                 "enabled": false,
                 "averaging_period": "120s"
             }
@@ -256,11 +246,9 @@ mod tests {
 
         assert_eq!(config.switch.name, "Test Switch");
         assert_eq!(config.switch.unique_id, "test-switch-001");
-        assert_eq!(config.switch.device_number, 1);
         assert!(config.switch.enabled);
 
         assert_eq!(config.observingconditions.name, "Test Weather");
-        assert_eq!(config.observingconditions.device_number, 2);
         assert!(!config.observingconditions.enabled);
         assert_eq!(
             config.observingconditions.averaging_period,
@@ -304,9 +292,7 @@ mod tests {
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.polling_interval, Duration::from_millis(5000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
-        assert_eq!(config.switch.device_number, 0);
         assert!(config.switch.enabled);
-        assert_eq!(config.observingconditions.device_number, 0);
         assert!(config.observingconditions.enabled);
         assert_eq!(
             config.observingconditions.averaging_period,

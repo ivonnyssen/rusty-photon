@@ -54,7 +54,6 @@ The service uses a JSON configuration file with the following format:
   },
   "server": {
     "port": 11111,
-    "device_number": 0,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -68,7 +67,7 @@ Configuration sections:
 - **device**: ASCOM device metadata (name, unique ID, description)
 - **file**: Path to monitor and polling interval (humantime string, e.g. `"60s"`)
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
-- **server**: ASCOM Alpaca server configuration (port, device number)
+- **server**: ASCOM Alpaca server configuration (port, optional TLS/auth)
 - **server.auth**: Optional HTTP Basic Auth credentials (username, Argon2id password_hash). See [ADR-003](../decisions/003-authentication-for-device-access.md).
 
 The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons.

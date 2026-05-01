@@ -56,7 +56,6 @@ fn default_survey_endpoint() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
-    pub device_number: u32,
 }
 
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {

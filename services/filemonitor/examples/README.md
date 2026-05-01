@@ -39,5 +39,5 @@ cargo run --release -- -c config-windows.json
 
 - All configurations use the same JSON structure
 - Only file paths need to be adjusted for each platform
-- Network settings (port, device_number) are identical across platforms
+- Network settings (port) are identical across platforms
 - Parsing rules work the same way on all platforms

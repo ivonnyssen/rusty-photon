@@ -57,7 +57,6 @@ impl QhyFocuserWorld {
                 "name": config.focuser.name,
                 "unique_id": config.focuser.unique_id,
                 "description": config.focuser.description,
-                "device_number": config.focuser.device_number,
                 "enabled": config.focuser.enabled,
                 "max_step": config.focuser.max_step,
                 "speed": config.focuser.speed,

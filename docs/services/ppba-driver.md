@@ -81,7 +81,6 @@ Configuration is provided via a JSON file:
   },
   "server": {
     "port": 11112,
-    "device_number": 0,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -102,7 +101,6 @@ Configuration is provided via a JSON file:
 | serial | polling_interval | Status poll interval (humantime, e.g. `"5s"`, `"500ms"`) | `"5s"` |
 | serial | timeout | Serial timeout (humantime) | `"2s"` |
 | server | port | HTTP server port | 11112 |
-| server | device_number | ASCOM device number | 0 |
 | server.auth | username | HTTP Basic Auth username (optional) | — |
 | server.auth | password_hash | Argon2id password hash (optional) | — |
 

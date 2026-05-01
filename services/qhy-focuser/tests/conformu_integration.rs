@@ -85,7 +85,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "name": "ConformU Test QHY Focuser",
             "unique_id": "conformu-qhy-focuser-001",
             "description": "Test QHY Q-Focuser for ConformU compliance",
-            "device_number": 0,
             "max_step": 64000,
             "speed": 0,
             "reverse": false

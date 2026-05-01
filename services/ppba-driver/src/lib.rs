@@ -78,10 +78,7 @@ impl ServerBuilder {
             let switch_device =
                 PpbaSwitchDevice::new(self.config.switch.clone(), Arc::clone(&serial_manager));
             server.devices.register(switch_device);
-            info!(
-                "Registered Switch device: {} (device number {})",
-                self.config.switch.name, self.config.switch.device_number
-            );
+            info!("Registered Switch device: {}", self.config.switch.name);
         }
 
         if self.config.observingconditions.enabled {
@@ -91,8 +88,8 @@ impl ServerBuilder {
             );
             server.devices.register(oc_device);
             info!(
-                "Registered ObservingConditions device: {} (device number {})",
-                self.config.observingconditions.name, self.config.observingconditions.device_number
+                "Registered ObservingConditions device: {}",
+                self.config.observingconditions.name
             );
         }
 

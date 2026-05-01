@@ -30,7 +30,6 @@
     "case_sensitive": false
   },
   "server": {
-    "port": 11111,
-    "device_number": 0
+    "port": 11111
   }
 }

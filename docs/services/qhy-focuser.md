@@ -86,7 +86,6 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
     "name": "QHY Q-Focuser",
     "unique_id": "qhy-focuser-001",
     "description": "QHY Q-Focuser (EAF) Stepper Motor Controller",
-    "device_number": 0,
     "enabled": true,
     "max_step": 64000,
     "speed": 0,

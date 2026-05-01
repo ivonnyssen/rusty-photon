@@ -170,7 +170,6 @@ impl SkySurveyCameraWorld {
             "survey": survey,
             "server": {
                 "port": 0,
-                "device_number": 0,
             },
         })
     }

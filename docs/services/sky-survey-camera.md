@@ -97,8 +97,7 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
     "cache_dir": "/var/cache/sky-survey-camera"
   },
   "server": {
-    "port": 11116,
-    "device_number": 0
+    "port": 11116
   }
 }
 ```
@@ -113,9 +112,8 @@ Configuration sections:
   overrides them. Stored as plain `f64` degrees in J2000.
 - **survey** — Backend selector + request timeout (humantime per the
   `Duration` convention) + on-disk cache directory.
-- **server** — Listening port and ASCOM device number. TLS and Basic
-  Auth are added later via `rp-tls` / `rp-auth` if needed; out of scope
-  for v0.
+- **server** — Listening port. TLS and Basic Auth are added later via
+  `rp-tls` / `rp-auth` if needed; out of scope for v0.
 
 ### Derived Quantities
 
