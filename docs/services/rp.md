@@ -661,7 +661,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. *Planned — see [`auto_focus` Contract](#auto_focus-contract).* |
+| `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `center_on_target` | ra, dec, tolerance_arcsec | final_error_arcsec, attempts | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until tolerance reached. *Planned.* |
 
 **Planner**
@@ -1778,7 +1778,7 @@ without having to know the focus algorithm.
   to the fit (i.e. captures with `star_count > 0` and a non-null
   HFR). `≤ curve_points.length`.
 - `curve_points` — array of
-  `{position: i32, hfr: f64 | null, star_count: usize, document_id: string}`,
+  `{position: i32, hfr: f64 | null, star_count: u32, document_id: string}`,
   one entry per capture, in sweep order. `hfr: null` flags a
   starless capture: the entry is preserved as a record but does
   not contribute to the fit.
