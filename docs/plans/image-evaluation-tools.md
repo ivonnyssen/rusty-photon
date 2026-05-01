@@ -413,36 +413,65 @@ tests passing workspace-wide. `cargo fmt` clean.
 
 Standard design→BDD→impl sequence. Blocked on Phase 6a.
 
-- [ ] **Design:** new `auto_focus` Contract section in `rp.md`
-      (parallel to `measure_basic` Contract, ~70 lines). Decide:
-      sweep range (absolute window vs. ± steps from current),
-      step size (fixed vs. adaptive), exposure duration (parameter
-      vs. derived from `measure_basic` star count), V-curve fit
-      (parabolic vs. piecewise-linear vs. asymmetric V),
-      abort policy on no-stars at extreme defocus, retry policy on
-      monotonic-not-V curve, output shape
-      (`{best_position, best_hfr, curve_points: [{position, hfr,
-      star_count}]}`), persistence section name in the exposure
-      document (probably `auto_focus` on the *final* document,
-      with intermediate captures linked by their own `image_analysis`
-      sections).
+- [x] **Design:** `auto_focus` Contract added to `rp.md` Compound
+      Tools (parallel to `measure_basic` Contract). Decisions
+      resolved during design:
+      - **Sweep range:** ± steps from `current_position`
+        (`half_width: i32`), clamped to operator-supplied
+        `min_position`/`max_position` from the `FocuserConfig`.
+        Out-of-range grid points are dropped (not coerced) so the
+        sweep does not produce duplicate samples at the bound.
+      - **Step size:** required parameter, fixed across the sweep
+        (no adaptive zoom in V1 — adaptive doubles BDD complexity
+        for marginal benefit on amateur rigs; can ship later as a
+        shadow tool).
+      - **Exposure duration:** required `humantime` parameter (no
+        default, no probe-derived heuristic — a probe that itself
+        runs at unknown focus is unreliable as a driver for the
+        rest of the sweep).
+      - **V-curve fit:** parabolic in raw HFR, weighted by
+        `star_count`. Closed-form least-squares — no rmpfit needed.
+        Asymmetric-V / piecewise-linear listed as a future shadow
+        alternative.
+      - **Abort policy on starless captures:** skip-and-continue
+        — record `hfr: null` in `curve_points` but exclude from
+        the fit. Fail with `not_enough_stars` only if fewer than
+        `min_fit_points` (default `5`) survive.
+      - **Retry policy on monotonic curve:** none — fail with a
+        `monotonic_curve` error and let the caller widen
+        `half_width` or coarse-focus externally before retrying.
+        No automatic move to the lowest observed sample.
+      - **Output shape:** `{best_position, best_hfr,
+        final_position, samples_used, curve_points,
+        temperature_c}`. `curve_points[i]` is
+        `{position, hfr|null, star_count, document_id}` so callers
+        can fetch per-step provenance via the existing document
+        API.
+      - **Persistence:** `auto_focus` does *not* write a section
+        on any single document. Each per-step capture's
+        `image_analysis` section is written by the embedded
+        `measure_basic` call as it normally would be. The
+        compound result is returned in the MCP response and
+        emitted as `focus_complete`. The `focus_complete` event
+        payload is enriched with `focuser_id` and `samples_used`.
+      - **`min_area` / `max_area` pass-through:** required at the
+        `auto_focus` level, same as `measure_basic` — pixel scale
+        varies per rig.
 - [ ] `services/rp/tests/features/auto_focus.feature` — catalog,
       happy path (V-curve converges, returns best_position), each
       error path (camera/focuser not found, not connected, all
-      captures starless, monotonic curve), persistence.
-- [ ] `services/rp/src/imaging/tools/auto_focus.rs` — pure function on
-      `(focuser, camera, measure_basic_fn)` so it's unit-testable
-      without hardware. The MCP tool in `mcp.rs` is a thin wrapper.
-- [ ] Unit tests on the V-curve fit (synthetic HFR vs. position
-      data; assert `best_position` to ±1 step).
-- [ ] Document `auto_focus` shadow semantics in the contract (one
-      line — "a plugin may shadow this tool; see Config-Time
-      Validation").
-
-Open question for the contract: does `auto_focus` accept
-`min_area` / `max_area` (passed through to `measure_basic`) or pick
-defaults? Probably explicit, since pixel scale varies per-rig — but
-finalize during design.
+      captures starless, monotonic curve, sweep-grid too small
+      after clamp, `step_size <= 0`, `half_width <= 0`,
+      `min_fit_points < 3`), persistence (per-step
+      `image_analysis` written; no aggregate `auto_focus`
+      section).
+- [ ] `services/rp/src/imaging/tools/auto_focus.rs` — pure function
+      taking trait objects for focuser / camera / measure_basic so
+      it's unit-testable without hardware. The MCP tool in
+      `mcp.rs` is a thin wrapper.
+- [ ] Unit tests on the parabola fit (synthetic HFR vs. position
+      data; assert `best_position` to ±1 step) and on the
+      monotonic-curve rejection.
 
 #### Phase 6c — `center_on_target` design + BDD + impl
 
