@@ -285,14 +285,16 @@ three consumers need. Internally:
 - **No CFITSIO** in the workspace. No vcpkg, no pkgconfiglite, no
   `--test-threads=1`, no per-platform link directives.
 
-The cfitsio-vcpkg spike crate (`crates/fits-cfitsio-spike`) and
-the fitsio-pure spike crate (`crates/fitsio-pure-spike`) are both
-preserved as documentation evidence — if a future consumer demands
-BINTABLE / WCS / RICE compression, the recipe to add CFITSIO back
-without source patches is captured; if `fitsio-pure` matures into
-a multi-contributor project, swapping the wrapper crate's writer
-implementation for it is a contained delta. For now both are
-unused.
+The cfitsio-vcpkg spike (branch
+[`feature/fits-cfitsio-vcpkg-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fits-cfitsio-vcpkg-spike))
+and the fitsio-pure spike (branch
+[`feature/fitsio-pure-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fitsio-pure-spike))
+remain on their dedicated branches as historical evidence — if a
+future consumer demands BINTABLE / WCS / RICE compression, the recipe
+to add CFITSIO back without source patches is captured there; if
+`fitsio-pure` matures into a multi-contributor project, swapping the
+wrapper crate's writer implementation for it is a contained delta.
+Neither spike crate ships in `main` to keep the workspace lean.
 
 #### Consequences
 
