@@ -13,6 +13,11 @@ members = [
   "services/sentinel-app",
   "services/sky-survey-camera",
 ]
+# Throwaway spike (issue #107). Excluded from the workspace so machines
+# without a system CFITSIO install don't fail `cargo build`. Driven
+# explicitly by .github/workflows/fits-cfitsio-vcpkg-spike.yml. Will be
+# deleted when the spike report lands.
+exclude = ["crates/fits-cfitsio-spike"]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,99 @@
+# Spike workflow for issue #107 — proves whether stock `fitsio = "0.21"`
+# from crates.io builds and runs on Windows MSVC when CFITSIO is supplied
+# by vcpkg via pkg-config, with no source patches anywhere.
+#
+# Linux + macOS jobs are control cases that confirm the spike's test logic
+# is valid; the Windows job is the actual research question. See
+# docs/plans/fits-cfitsio-vcpkg-spike.md.
+#
+# This workflow is INTENTIONALLY scoped to the spike branch and its PR —
+# it never runs on `main` or other branches, and never gates other CI.
+permissions:
+  contents: read
+on:
+  push:
+    branches:
+      - feature/fits-cfitsio-vcpkg-spike
+  pull_request:
+    branches:
+      - main
+    paths:
+      - crates/fits-cfitsio-spike/**
+      - .github/workflows/fits-cfitsio-vcpkg-spike.yml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: fits-cfitsio-vcpkg-spike
+jobs:
+  linux:
+    name: linux / system cfitsio (control)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system CFITSIO + pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev pkg-config
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fits-cfitsio-spike-linux
+      - name: cargo test (spike)
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked
+
+  macos:
+    name: macos / brew cfitsio (control)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Homebrew CFITSIO + pkg-config
+        run: brew install cfitsio pkg-config
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fits-cfitsio-spike-macos
+      - name: cargo test (spike)
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked
+
+  windows:
+    # The actual research question. Uses the pre-installed vcpkg at
+    # $VCPKG_INSTALLATION_ROOT (windows-latest images come with vcpkg
+    # already bootstrapped). pkg-config itself is not pre-installed on
+    # Windows runners — chocolatey provides `pkgconfiglite`, the
+    # standard Windows pkg-config implementation.
+    name: windows-msvc / vcpkg cfitsio (RESEARCH)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pkg-config (pkgconfiglite via chocolatey)
+        run: choco install pkgconfiglite -y --no-progress
+      - name: vcpkg install cfitsio
+        # static-md = static lib, dynamic CRT — matches Rust's MSVC
+        # default toolchain CRT setting. cfitsio[pthreads] pulls in
+        # pthreads-win32 so we keep CFITSIO's reentrant mode rather
+        # than trading it away.
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows-static-md "cfitsio[pthreads]"
+      - name: Export PKG_CONFIG_PATH
+        shell: pwsh
+        run: |
+          $pcdir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md\lib\pkgconfig"
+          echo "PKG_CONFIG_PATH=$pcdir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # Static linkage requires asking pkg-config for static deps.
+          echo "PKG_CONFIG_ALL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # Allow pkg-config to resolve transitive vcpkg-provided libs.
+          echo "PKG_CONFIG_ALLOW_SYSTEM_LIBS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: pkg-config sanity check
+        shell: pwsh
+        run: |
+          pkg-config --modversion cfitsio
+          pkg-config --libs --cflags cfitsio
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fits-cfitsio-spike-windows
+      - name: cargo test (spike)
+        run: cargo test --manifest-path crates/fits-cfitsio-spike/Cargo.toml --locked

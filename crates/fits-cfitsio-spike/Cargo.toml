@@ -1,0 +1,19 @@
+[package]
+name = "fits-cfitsio-spike"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Throwaway spike crate for #107: validate stock fitsio (CFITSIO bindings) on Windows MSVC via vcpkg-supplied CFITSIO. Delete me when the cfitsio-vcpkg spike report lands."
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+fitsio = "0.21"
+tempfile = "3"
