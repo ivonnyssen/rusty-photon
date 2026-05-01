@@ -13,8 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, McpTestClient, OmniSimHandle,
-    OrchestratorInvocation, ReceivedEvent, RpConfigBuilder, TestOrchestrator, WebhookReceiver,
+    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
+    OmniSimHandle, OrchestratorInvocation, ReceivedEvent, RpConfigBuilder, TestOrchestrator,
+    WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -48,6 +49,8 @@ pub struct RpWorld {
     pub filter_wheels: Vec<FilterWheelConfig>,
     /// CoverCalibrator configs accumulated via Given steps
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    /// Focuser configs accumulated via Given steps
+    pub focusers: Vec<FocuserConfig>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -193,6 +196,9 @@ impl RpWorld {
         }
         for cc in &self.cover_calibrators {
             builder.add_cover_calibrator(cc.clone());
+        }
+        for foc in &self.focusers {
+            builder.add_focuser(foc.clone());
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

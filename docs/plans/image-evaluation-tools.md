@@ -360,45 +360,54 @@ post-reorg; no behavior change. See the new Module Structure block in
 
 #### Phase 6a — Focuser primitives (prerequisite for `auto_focus`)
 
-`auto_focus` composes `move_focuser` + `capture` + `measure_basic`,
-but the focuser primitives don't exist yet. `services/rp/src/equipment.rs`
-has cameras, filter wheels, and cover calibrators only;
-`services/rp/src/config.rs:41` types focusers as `Vec<Value>` (untyped
-placeholder). The Built-in Tools tables in `rp.md` already list
-`move_focuser`, `get_focuser_position`, `get_focuser_temperature` and
-the Module Structure references a planned `focuser.rs`, so this is
-unimplemented work, not unscoped.
+Status: **complete.**
 
-Work breakdown:
-
-- [ ] `FocuserConfig` in `config.rs` (replace the `Vec<Value>`
-      placeholder — `id`, `alpaca_url`, `device_number`, optional
-      `auth: ClientAuthConfig`, optional `min_position` / `max_position`
-      bounds for parameter validation).
-- [ ] `FocuserEntry` in `equipment.rs` mirroring `CameraEntry` +
+- [x] `FocuserConfig` in `config.rs` (replaces the `Vec<Value>`
+      placeholder — `id`, optional `camera_id`, `alpaca_url`,
+      `device_number`, optional `auth: ClientAuthConfig`, optional
+      `min_position` / `max_position` bounds).
+- [x] `FocuserEntry` in `equipment.rs` mirroring `CameraEntry` +
       `connect_focuser` Alpaca client wiring.
-- [ ] `EquipmentRegistry::find_focuser`.
-- [ ] MCP tools in `mcp.rs`: `move_focuser` (absolute position,
-      bounds-checked, blocks until idle via Alpaca polling — same
-      pattern as `set_filter`), `get_focuser_position`,
-      `get_focuser_temperature` (returns `null` when the focuser
-      reports `TempCompAvailable=false`, per ASCOM convention).
-- [ ] `services/rp/tests/features/focuser.feature` — happy paths
-      (move, read position, read temperature), error paths (focuser
-      not found, not connected, position out of bounds, target equals
-      current — should still succeed), connectivity scenarios.
-- [ ] `services/rp/tests/bdd/steps/focuser_steps.rs` reusing
-      `tool_steps.rs` shared steps.
-- [ ] Update `docs/services/rp.md` Configuration example focuser
-      block (already shows `main-focuser` / `guide-focuser` at line
-      ~1918 — confirm the typed schema matches).
-- [ ] `CARGO_BAZEL_REPIN=1 bazel mod tidy` if any new workspace deps;
-      otherwise none expected (reuses `ascom-alpaca`, `rp-auth`).
+- [x] `EquipmentRegistry::find_focuser`.
+- [x] MCP tools in `mcp.rs`: `move_focuser` (absolute position,
+      bounds-checked against operator-supplied
+      `min_position`/`max_position`, blocks via 100 ms `is_moving`
+      polling with a 120 s deadline), `get_focuser_position`,
+      `get_focuser_temperature` (calls `temperature()` directly and
+      returns `temperature_c: null` only when the device returns
+      `ASCOMError::NOT_IMPLEMENTED`; `Temperature` and
+      `TempCompAvailable` are independent ASCOM properties — qhy-focuser
+      reports `TempCompAvailable=false` but exposes a real temperature
+      reading, and that case must surface the value, not null).
+- [x] `services/rp/tests/features/focuser.feature` (11 scenarios:
+      catalog, move/idempotent move/position/temperature happy paths,
+      five error paths — focuser not found, not connected, below min,
+      above max, missing focuser_id, plus get_focuser_position not
+      found).
+- [x] `services/rp/tests/bdd/steps/focuser_steps.rs` reusing
+      `tool_steps.rs` shared steps; `RpWorld.focusers` accumulator;
+      new `bdd_infra::rp_harness::FocuserConfig` + builder.
+- [x] `docs/services/rp.md` Configuration example focuser block
+      shows the typed schema with optional `min_position` /
+      `max_position` and `auth`.
+- [x] No `bazel mod tidy` needed — only added the existing
+      `ascom-alpaca` `focuser` feature on the rp crate; no new
+      workspace deps.
+- [x] Direct unit tests for `connect_focuser` failure + success
+      branches via an in-test axum stub Alpaca server (one of the
+      paths under workspace-wide-strategy issue #111). Covers all
+      five failure arms (`build_alpaca_client` error, `get_devices`
+      network error, 5 s timeout, no-focuser-in-list, `set_connected`
+      Alpaca rejection) plus the `Ok(())` success arm and
+      `EquipmentRegistry::new` / `find_focuser` /
+      `EquipmentStatus.focusers` plumbing.
 
-OmniSim coverage: OmniSim provides a focuser simulator. Feature file
-should drive the simulator the same way camera/cover-calibrator
-features already do — no new test infrastructure needed. (Confirm
-device type and number when picking this up.)
+**Exit criteria met:** 11 new BDD scenarios green (150/150 total
+in rp's BDD suite); 24 new lib tests across `config` (2),
+`equipment` (7 — 5 for `connect_focuser` failure paths, 1 success
+path, 1 registry end-to-end via the axum stub), and `mcp` focuser
+tools (15). `cargo rail run --profile commit -q` reports 600/600
+tests passing workspace-wide. `cargo fmt` clean.
 
 #### Phase 6b — `auto_focus` design + BDD + impl
 
