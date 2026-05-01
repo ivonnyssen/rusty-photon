@@ -1,4 +1,3 @@
-@wip
 @serial
 Feature: Auto-focus compound tool
   The auto_focus MCP tool drives a V-curve focus sweep using move_focuser,
