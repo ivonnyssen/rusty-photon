@@ -373,6 +373,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn write_fits_i32_dimension_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.fits");
+
+        let err = write_fits_i32(&path, &[1i32, 2, 3, 4], 2, 3, "test-doc")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("does not match dimensions"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    /// `read_fits_doc_id` translates a non-string DOC_ID header (a file
+    /// where DOC_ID was somehow written as an integer) into a clean
+    /// "non-string value" error. Force the case by writing a raw HDU
+    /// with `DOC_ID` as an Int.
+    #[test]
+    fn read_fits_doc_id_rejects_non_string_value() {
+        use rp_fits::writer::{write_i32_image as raw_write, Keyword, KeywordValue};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_docid.fits");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let kw = [Keyword::new("DOC_ID", KeywordValue::Int(42)).unwrap()];
+        raw_write(&mut file, &[1i32; 4], 2, 2, &kw).unwrap();
+        drop(file);
+
+        let err = read_fits_doc_id(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("non-string value"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    /// `read_fits_doc_id` propagates a parse failure from rp-fits.
+    /// Force the case with a deliberately-truncated FITS file.
+    #[test]
+    fn read_fits_doc_id_propagates_parse_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.fits");
+        std::fs::write(&path, b"not a fits payload").unwrap();
+        let err = read_fits_doc_id(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("failed to read DOC_ID"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
     /// Atomic rename means the destination is either the old file or
     /// the new file, never torn or missing. Force a second write to
     /// fail by removing write permission on the parent and confirm

@@ -570,4 +570,62 @@ mod tests {
         // Header block + no data; should still be 2880 bytes.
         assert_eq!(buf.len(), BLOCK_SIZE);
     }
+
+    #[test]
+    fn string_keyword_escapes_embedded_quote() {
+        let mut buf = Vec::new();
+        let kw = vec![Keyword::new("OBJECT", KeywordValue::Str("o'brien".into())).unwrap()];
+        write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
+        // fitsrs unescapes `''` back to `'` on read.
+        let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let v = hdu.get_header().get("OBJECT").expect("OBJECT");
+        match v {
+            fitsrs::card::Value::String { value, .. } => assert_eq!(value, "o'brien"),
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keyword_with_comment_round_trips() {
+        let mut buf = Vec::new();
+        let kw = vec![Keyword::new("GAIN", KeywordValue::Int(100))
+            .unwrap()
+            .with_comment("ADU per electron")];
+        write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
+        let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
+        let hdu = match hdu_list.next().unwrap().unwrap() {
+            HDU::Primary(h) => h,
+            _ => panic!(),
+        };
+        let v = hdu.get_header().get("GAIN").expect("GAIN");
+        match v {
+            fitsrs::card::Value::Integer { value, comment } => {
+                assert_eq!(*value, 100);
+                assert!(
+                    comment
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("ADU per electron"),
+                    "comment lost on round-trip: {comment:?}"
+                );
+            }
+            other => panic!("expected int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_float_handles_negative_and_zero() {
+        // %20.10E forms — verify we always emit `E±DD` (FITS canonical).
+        let s_pos = format_float(1.5);
+        assert!(s_pos.contains("E+"), "got {s_pos:?}");
+        let s_neg = format_float(-2.5e-3);
+        assert!(s_neg.starts_with('-'), "got {s_neg:?}");
+        assert!(s_neg.contains("E-"), "got {s_neg:?}");
+        let s_zero = format_float(0.0);
+        assert!(s_zero.contains('E'), "got {s_zero:?}");
+    }
 }

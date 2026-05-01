@@ -54,23 +54,6 @@ pub enum Pixels {
     F64(Vec<f64>),
 }
 
-impl Pixels {
-    pub fn len(&self) -> usize {
-        match self {
-            Pixels::U8(v) => v.len(),
-            Pixels::I16(v) => v.len(),
-            Pixels::I32(v) => v.len(),
-            Pixels::I64(v) => v.len(),
-            Pixels::F32(v) => v.len(),
-            Pixels::F64(v) => v.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 /// Read the primary HDU of a FITS stream. Returns the on-disk pixel
 /// data plus BSCALE/BZERO/BLANK metadata. The reader must support
 /// seeking — `Cursor<&[u8]>` and `BufReader<File>` both qualify.
@@ -318,5 +301,64 @@ mod tests {
     fn read_primary_rejects_empty_stream() {
         let err = read_primary(Cursor::new(&b""[..])).unwrap_err();
         assert!(matches!(err, FitsError::Parse(_)));
+    }
+
+    #[test]
+    fn read_primary_as_i32_handles_u8() {
+        let mut buf = Vec::new();
+        write_u8_image(&mut buf, &[0u8, 7, 200, 255], 2, 2, &[]).unwrap();
+        let (got, w, h) = read_primary_as_i32(Cursor::new(&buf[..])).unwrap();
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(got, vec![0i32, 7, 200, 255]);
+    }
+
+    #[test]
+    fn read_primary_keyword_returns_int() {
+        let mut buf = Vec::new();
+        let kw = vec![Keyword::new("GAIN", KeywordValue::Int(42)).unwrap()];
+        write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
+        let v = read_primary_keyword(Cursor::new(&buf[..]), "GAIN")
+            .unwrap()
+            .unwrap();
+        match v {
+            KeywordValue::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_primary_keyword_returns_bool() {
+        let mut buf = Vec::new();
+        let kw = vec![Keyword::new("LIGHT", KeywordValue::Bool(true)).unwrap()];
+        write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
+        let v = read_primary_keyword(Cursor::new(&buf[..]), "LIGHT")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(v, KeywordValue::Bool(true)));
+    }
+
+    #[test]
+    fn read_primary_rejects_non_2d_image() {
+        // Build a 3-axis BITPIX=32 HDU by hand. Reader rejects.
+        let mut header = String::new();
+        let push = |h: &mut String, line: String| {
+            let mut padded = format!("{line:<80}");
+            padded.truncate(80);
+            h.push_str(&padded);
+        };
+        push(&mut header, "SIMPLE  =                    T".into());
+        push(&mut header, "BITPIX  =                   32".into());
+        push(&mut header, "NAXIS   =                    3".into());
+        push(&mut header, "NAXIS1  =                    1".into());
+        push(&mut header, "NAXIS2  =                    1".into());
+        push(&mut header, "NAXIS3  =                    1".into());
+        push(&mut header, "END".into());
+        while !header.len().is_multiple_of(2880) {
+            header.push(' ');
+        }
+        let mut bytes = header.into_bytes();
+        bytes.extend(vec![0u8; 2880]);
+        let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
+        assert!(matches!(err, FitsError::Unsupported(_)));
     }
 }
