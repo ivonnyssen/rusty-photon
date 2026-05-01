@@ -254,6 +254,7 @@ mod tests {
             cameras: vec![],
             filter_wheels: vec![],
             cover_calibrators: vec![],
+            focusers: vec![],
         });
         let session = Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[]));
         let mcp = McpHandler::new(

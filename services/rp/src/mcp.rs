@@ -259,6 +259,20 @@ pub struct CalibratorOnParams {
     pub brightness: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FocuserIdParams {
+    /// Focuser device ID
+    pub focuser_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveFocuserParams {
+    /// Focuser device ID
+    pub focuser_id: String,
+    /// Target absolute position
+    pub position: i32,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -1450,6 +1464,108 @@ impl McpHandler {
 
         Ok(tool_error!("timeout waiting for calibrator to turn off"))
     }
+
+    // -------------------------------------------------------------------
+    // Focuser tools
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Move the focuser to an absolute position (blocks until idle)")]
+    async fn move_focuser(
+        &self,
+        Parameters(params): Parameters<MoveFocuserParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (foc_entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
+
+        if let Some(min) = foc_entry.config.min_position {
+            if params.position < min {
+                return Ok(tool_error!(
+                    "position out of range: {} < min_position {}",
+                    params.position,
+                    min
+                ));
+            }
+        }
+        if let Some(max) = foc_entry.config.max_position {
+            if params.position > max {
+                return Ok(tool_error!(
+                    "position out of range: {} > max_position {}",
+                    params.position,
+                    max
+                ));
+            }
+        }
+
+        debug!(focuser_id = %params.focuser_id, position = params.position, "moving focuser");
+        if let Err(e) = foc.move_(params.position).await {
+            return Ok(tool_error!("failed to move focuser: {}", e));
+        }
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match foc.is_moving().await {
+                Ok(false) => break,
+                Ok(true) if tokio::time::Instant::now() < deadline => continue,
+                Ok(true) => return Ok(tool_error!("timeout waiting for focuser to settle")),
+                Err(e) => {
+                    return Ok(tool_error!("error polling focuser is_moving: {}", e));
+                }
+            }
+        }
+
+        let actual_position = match foc.position().await {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "focuser_id": params.focuser_id,
+            "actual_position": actual_position,
+        }))
+    }
+
+    #[tool(description = "Read the current absolute position of the focuser")]
+    async fn get_focuser_position(
+        &self,
+        Parameters(params): Parameters<FocuserIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
+
+        let position = match foc.position().await {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "focuser_id": params.focuser_id,
+            "position": position,
+        }))
+    }
+
+    #[tool(description = "Read the focuser temperature sensor (null if not implemented)")]
+    async fn get_focuser_temperature(
+        &self,
+        Parameters(params): Parameters<FocuserIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
+
+        // ASCOM `Temperature` and `TempCompAvailable` are independent: a
+        // focuser may expose a temperature reading while reporting
+        // `TempCompAvailable=false` (qhy-focuser is the canonical local
+        // example). Try the temperature read directly and only translate
+        // a `NOT_IMPLEMENTED` rejection to `null`; surface every other
+        // error to the caller.
+        let temperature_c: Option<f64> = match foc.temperature().await {
+            Ok(t) => Some(t),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => None,
+            Err(e) => return Ok(tool_error!("failed to read focuser temperature: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "focuser_id": params.focuser_id,
+            "temperature_c": temperature_c,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1741,6 +1857,96 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // MockFocuser — single configurable mock for Focuser
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct MockFocuser {
+        fail_move: bool,
+        fail_is_moving: bool,
+        fail_position: bool,
+        /// `true` ⇒ `temperature()` returns a generic INVALID_OPERATION
+        /// error (sensor wired but reading failed). Distinct from
+        /// `temperature_not_implemented` below.
+        fail_temperature: bool,
+        /// `true` ⇒ `temperature()` returns `ASCOMError::NOT_IMPLEMENTED`.
+        /// Models a focuser that does not implement the `Temperature`
+        /// property at all.
+        temperature_not_implemented: bool,
+        stuck_moving: bool,
+        temperature_value: f64,
+        position_value: i32,
+    }
+
+    impl_mock_device!(MockFocuser);
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::Focuser for MockFocuser {
+        async fn absolute(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(true)
+        }
+
+        async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_is_moving {
+                return Err(ASCOMError::invalid_operation("encoder fault"));
+            }
+            Ok(self.stuck_moving)
+        }
+
+        async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            Ok(100000)
+        }
+
+        async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
+            Ok(100000)
+        }
+
+        async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
+            if self.fail_position {
+                return Err(ASCOMError::invalid_operation("position unavailable"));
+            }
+            Ok(self.position_value)
+        }
+
+        async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Err(ASCOMError::NOT_IMPLEMENTED)
+        }
+
+        async fn temp_comp(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(false)
+        }
+
+        async fn set_temp_comp(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+            Err(ASCOMError::NOT_IMPLEMENTED)
+        }
+
+        async fn temp_comp_available(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(false)
+        }
+
+        async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            if self.temperature_not_implemented {
+                return Err(ASCOMError::NOT_IMPLEMENTED);
+            }
+            if self.fail_temperature {
+                return Err(ASCOMError::invalid_operation("sensor failure"));
+            }
+            Ok(self.temperature_value)
+        }
+
+        async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
+            Ok(())
+        }
+
+        async fn move_(&self, _position: i32) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_move {
+                return Err(ASCOMError::invalid_operation("focuser stuck"));
+            }
+            Ok(())
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Helper functions
     // -----------------------------------------------------------------------
 
@@ -1804,6 +2010,7 @@ mod tests {
             }],
             filter_wheels: vec![],
             cover_calibrators: vec![],
+            focusers: vec![],
         }
     }
 
@@ -1826,6 +2033,7 @@ mod tests {
                 device: Some(fw),
             }],
             cover_calibrators: vec![],
+            focusers: vec![],
         }
     }
 
@@ -1846,6 +2054,33 @@ mod tests {
                     auth: None,
                 },
                 device: Some(cc),
+            }],
+            focusers: vec![],
+        }
+    }
+
+    fn focuser_registry(
+        foc: Arc<dyn ascom_alpaca::api::Focuser>,
+        min_position: Option<i32>,
+        max_position: Option<i32>,
+    ) -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![crate::equipment::FocuserEntry {
+                id: "foc".to_string(),
+                connected: true,
+                config: crate::config::FocuserConfig {
+                    id: "foc".to_string(),
+                    camera_id: String::new(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    min_position,
+                    max_position,
+                    auth: None,
+                },
+                device: Some(foc),
             }],
         }
     }
@@ -2214,6 +2449,7 @@ mod tests {
                 cameras: vec![],
                 filter_wheels: vec![],
                 cover_calibrators: vec![],
+                focusers: vec![],
             }),
             Arc::new(crate::events::EventBus::from_config(&[])),
             SessionConfig {
@@ -2455,6 +2691,7 @@ mod tests {
             cameras: vec![],
             filter_wheels: vec![],
             cover_calibrators: vec![],
+            focusers: vec![],
         });
         let result = handler
             .compute_image_stats(Parameters(ComputeImageStatsParams {
@@ -2523,5 +2760,288 @@ mod tests {
             .await;
         let call_result = result.unwrap();
         assert!(!call_result.is_error.unwrap_or(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // Focuser tests
+    // -----------------------------------------------------------------------
+
+    fn ok_text(call_result: CallToolResult) -> serde_json::Value {
+        assert!(
+            !call_result.is_error.unwrap_or(false),
+            "expected success, got error: {:?}",
+            call_result.content
+        );
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.as_str())
+            .unwrap_or("");
+        serde_json::from_str(text).expect("valid JSON")
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_success() {
+        let foc = MockFocuser {
+            position_value: 4321,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 4321,
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["actual_position"], 4321);
+        assert_eq!(json["focuser_id"], "foc");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_not_found() {
+        let foc = MockFocuser::default();
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "missing".into(),
+                position: 100,
+            }))
+            .await;
+        assert_tool_error(result, "focuser not found");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_below_min_position() {
+        let foc = MockFocuser::default();
+        let handler = test_handler(focuser_registry(Arc::new(foc), Some(1000), Some(9000)));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 500,
+            }))
+            .await;
+        assert_tool_error(result, "position out of range");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_above_max_position() {
+        let foc = MockFocuser::default();
+        let handler = test_handler(focuser_registry(Arc::new(foc), Some(1000), Some(9000)));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 9500,
+            }))
+            .await;
+        assert_tool_error(result, "position out of range");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_command_fails() {
+        let foc = MockFocuser {
+            fail_move: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            }))
+            .await;
+        assert_tool_error(result, "failed to move focuser");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_is_moving_poll_fails() {
+        let foc = MockFocuser {
+            fail_is_moving: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            }))
+            .await;
+        assert_tool_error(result, "error polling focuser is_moving");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_position_read_fails() {
+        let foc = MockFocuser {
+            fail_position: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            }))
+            .await;
+        assert_tool_error(result, "failed to read focuser position");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_move_focuser_timeout() {
+        let foc = MockFocuser {
+            stuck_moving: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for focuser to settle");
+    }
+
+    #[tokio::test]
+    async fn test_move_focuser_not_connected() {
+        let registry = crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![crate::equipment::FocuserEntry {
+                id: "foc".to_string(),
+                connected: false,
+                config: crate::config::FocuserConfig {
+                    id: "foc".to_string(),
+                    camera_id: String::new(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    min_position: None,
+                    max_position: None,
+                    auth: None,
+                },
+                device: None,
+            }],
+        };
+        let handler = test_handler(registry);
+        let result = handler
+            .move_focuser(Parameters(MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            }))
+            .await;
+        assert_tool_error(result, "focuser not connected");
+    }
+
+    #[tokio::test]
+    async fn test_get_focuser_position_success() {
+        let foc = MockFocuser {
+            position_value: 12345,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .get_focuser_position(Parameters(FocuserIdParams {
+                focuser_id: "foc".into(),
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["position"], 12345);
+    }
+
+    #[tokio::test]
+    async fn test_get_focuser_position_not_connected() {
+        let registry = crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![crate::equipment::FocuserEntry {
+                id: "foc".to_string(),
+                connected: false,
+                config: crate::config::FocuserConfig {
+                    id: "foc".to_string(),
+                    camera_id: String::new(),
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    min_position: None,
+                    max_position: None,
+                    auth: None,
+                },
+                device: None,
+            }],
+        };
+        let handler = test_handler(registry);
+        let result = handler
+            .get_focuser_position(Parameters(FocuserIdParams {
+                focuser_id: "foc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "focuser not connected");
+    }
+
+    /// `Temperature` is independent of `TempCompAvailable`: a focuser may
+    /// report a temperature reading regardless of whether temperature
+    /// compensation is available. The mock leaves `temp_comp_available()`
+    /// at its default `Ok(false)` to make that decoupling explicit.
+    #[tokio::test]
+    async fn test_get_focuser_temperature_returns_value() {
+        let foc = MockFocuser {
+            temperature_value: 12.5,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .get_focuser_temperature(Parameters(FocuserIdParams {
+                focuser_id: "foc".into(),
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["temperature_c"], 12.5);
+    }
+
+    /// `Temperature` returning `NOT_IMPLEMENTED` is the only signal that
+    /// the property is unsupported on this device; the tool surfaces
+    /// `temperature_c: null` for that exact case.
+    #[tokio::test]
+    async fn test_get_focuser_temperature_null_when_not_implemented() {
+        let foc = MockFocuser {
+            temperature_not_implemented: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .get_focuser_temperature(Parameters(FocuserIdParams {
+                focuser_id: "foc".into(),
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert!(
+            json["temperature_c"].is_null(),
+            "expected null temperature_c, got {:?}",
+            json["temperature_c"]
+        );
+    }
+
+    /// Any non-`NOT_IMPLEMENTED` failure from `temperature()` propagates
+    /// as a tool error rather than being silently coerced to `null`. This
+    /// pins the asymmetry between "device says I don't have one" and
+    /// "device tried to read but the read itself failed".
+    #[tokio::test]
+    async fn test_get_focuser_temperature_sensor_fails() {
+        let foc = MockFocuser {
+            fail_temperature: true,
+            ..Default::default()
+        };
+        let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+        let result = handler
+            .get_focuser_temperature(Parameters(FocuserIdParams {
+                focuser_id: "foc".into(),
+            }))
+            .await;
+        assert_tool_error(result, "failed to read focuser temperature");
     }
 }

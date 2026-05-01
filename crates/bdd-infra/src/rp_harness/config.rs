@@ -42,12 +42,24 @@ pub struct CoverCalibratorConfig {
     pub device_number: u32,
 }
 
+/// Focuser equipment entry. `min_position` / `max_position` are the
+/// operator-supplied safe-travel bounds enforced by `move_focuser`.
+#[derive(Debug, Clone)]
+pub struct FocuserConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+    pub min_position: Option<i32>,
+    pub max_position: Option<i32>,
+}
+
 /// Accumulates equipment and plugin entries, then emits rp's JSON config.
 #[derive(Debug, Default, Clone)]
 pub struct RpConfigBuilder {
     pub cameras: Vec<CameraConfig>,
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    pub focusers: Vec<FocuserConfig>,
     pub plugin_configs: Vec<Value>,
     /// Override `session.data_directory`. When `None`, the builder
     /// generates a fresh per-call path. The cross-restart BDD scenarios
@@ -120,6 +132,11 @@ impl RpConfigBuilder {
                 device_number: 0,
             });
         }
+        self
+    }
+
+    pub fn add_focuser(&mut self, foc: FocuserConfig) -> &mut Self {
+        self.focusers.push(foc);
         self
     }
 
@@ -196,6 +213,25 @@ impl RpConfigBuilder {
             })
             .collect();
 
+        let focusers: Vec<Value> = self
+            .focusers
+            .iter()
+            .map(|f| {
+                let mut obj = serde_json::json!({
+                    "id": f.id,
+                    "alpaca_url": f.alpaca_url,
+                    "device_number": f.device_number,
+                });
+                if let Some(min) = f.min_position {
+                    obj["min_position"] = serde_json::json!(min);
+                }
+                if let Some(max) = f.max_position {
+                    obj["max_position"] = serde_json::json!(max);
+                }
+                obj
+            })
+            .collect();
+
         let pid = std::process::id();
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -218,7 +254,7 @@ impl RpConfigBuilder {
             "equipment": {
                 "cameras": cameras,
                 "mount": null,
-                "focusers": [],
+                "focusers": focusers,
                 "filter_wheels": filter_wheels,
                 "cover_calibrators": cover_calibrators,
                 "safety_monitors": []

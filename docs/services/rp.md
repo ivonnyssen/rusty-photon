@@ -2080,13 +2080,19 @@ connection details. Plugins register their webhook URLs and command endpoints.
         "id": "main-focuser",
         "camera_id": "main-cam",
         "alpaca_url": "http://localhost:11113",
-        "device_number": 0
+        "device_number": 0,
+        "min_position": 0,
+        "max_position": 100000
       },
       {
         "id": "guide-focuser",
         "camera_id": "guide-cam",
         "alpaca_url": "http://localhost:11113",
-        "device_number": 1
+        "device_number": 1,
+        "auth": {
+          "username": "observatory",
+          "password": "secret"
+        }
       }
     ],
     "filter_wheels": [
