@@ -136,7 +136,7 @@ cargo test -p qhy-focuser --test bdd
 cargo test -p qhy-focuser --features mock
 
 # Run ConformU compliance tests
-cargo test -p qhy-focuser --features mock --test conformu_integration -- --ignored
+cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored
 
 # Run in mock mode
 cargo run -p qhy-focuser --features mock

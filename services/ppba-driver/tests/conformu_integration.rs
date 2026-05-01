@@ -4,6 +4,7 @@
 //! against the driver running in mock mode.
 // The std::Mutex is intentional here: it serializes sequential test runs because
 // the ASCOM Alpaca discovery service binds to a fixed address.
+#![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 
 use ascom_alpaca::api::{ObservingConditions, Switch};
