@@ -68,11 +68,6 @@ Configuration is provided via a JSON file:
 
 ```json
 {
-  "device": {
-    "name": "Pegasus PPBA",
-    "unique_id": "ppba-switch-001",
-    "description": "Pegasus Astro Pocket Powerbox Advance Gen2"
-  },
   "serial": {
     "port": "/dev/ttyUSB0",
     "baud_rate": 9600,
@@ -85,6 +80,19 @@ Configuration is provided via a JSON file:
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
     }
+  },
+  "switch": {
+    "name": "Pegasus PPBA Switch",
+    "unique_id": "ppba-switch-001",
+    "description": "Pegasus Astro PPBA Gen2 Power Control",
+    "enabled": true
+  },
+  "observingconditions": {
+    "name": "Pegasus PPBA Weather",
+    "unique_id": "ppba-observingconditions-001",
+    "description": "Pegasus Astro PPBA Environmental Sensors",
+    "enabled": true,
+    "averaging_period": "5m"
   }
 }
 ```
@@ -93,9 +101,6 @@ Configuration is provided via a JSON file:
 
 | Section | Field | Description | Default |
 |---------|-------|-------------|---------|
-| device | name | Device name for ASCOM | "Pegasus PPBA" |
-| device | unique_id | Unique identifier | "ppba-switch-001" |
-| device | description | Device description | (see above) |
 | serial | port | Serial port path | "/dev/ttyUSB0" |
 | serial | baud_rate | Baud rate | 9600 |
 | serial | polling_interval | Status poll interval (humantime, e.g. `"5s"`, `"500ms"`) | `"5s"` |
@@ -103,6 +108,15 @@ Configuration is provided via a JSON file:
 | server | port | HTTP server port | 11112 |
 | server.auth | username | HTTP Basic Auth username (optional) | — |
 | server.auth | password_hash | Argon2id password hash (optional) | — |
+| switch | name | ASCOM device name for the Switch | "Pegasus PPBA Switch" |
+| switch | unique_id | Unique identifier for the Switch | "ppba-switch-001" |
+| switch | description | Switch description | "Pegasus Astro PPBA Gen2 Power Control" |
+| switch | enabled | Whether to register the Switch device | `true` |
+| observingconditions | name | ASCOM device name for ObservingConditions | "Pegasus PPBA Weather" |
+| observingconditions | unique_id | Unique identifier for ObservingConditions | "ppba-observingconditions-001" |
+| observingconditions | description | ObservingConditions description | "Pegasus Astro PPBA Environmental Sensors" |
+| observingconditions | enabled | Whether to register the ObservingConditions device | `true` |
+| observingconditions | averaging_period | Sliding-window length for sensor means (humantime) | `"5m"` |
 
 ## Usage
 
