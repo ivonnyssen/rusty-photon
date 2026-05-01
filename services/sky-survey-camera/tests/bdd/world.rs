@@ -221,9 +221,12 @@ impl SkySurveyCameraWorld {
             .unwrap_or(0)
     }
 
-    /// Point the survey endpoint at `127.0.0.1:1`, which is reserved
-    /// and almost certainly not bound — a connection attempt is
-    /// refused immediately.
+    /// Point the survey endpoint at `127.0.0.1:1`, a low-numbered
+    /// privileged loopback port that is essentially never bound in
+    /// CI / dev environments — a connection attempt is refused
+    /// immediately. (Privileged-but-unused, not "reserved" in the
+    /// IANA sense.) If a future test environment binds port 1, swap
+    /// this for an explicit `bind → drop` to guarantee refusal.
     pub fn set_unreachable_survey_endpoint(&mut self) {
         self.survey_endpoint_override = Some("http://127.0.0.1:1/".to_string());
     }

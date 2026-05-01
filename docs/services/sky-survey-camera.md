@@ -146,17 +146,24 @@ begins.
    snapshot the current `PointingState`.
 3. If `Light = false`, synthesise a zero-filled `i32` array of size
    `NumX * NumY` and skip to step 7.
-4. Compute the requested cutout geometry:
-   - `pixels = (BinX * NumX, BinY * NumY)`
-   - `size_deg = (plate_scale_x * binned_width / 3600,
-                  plate_scale_y * binned_height / 3600)`
+4. Compute the SkyView request geometry for the **full sensor at the
+   requested binning**, not just the requested sub-frame:
+   - `pixels = (sensor_width_px / BinX, sensor_height_px / BinY)`
+   - `size_deg = (plate_scale_x_arcsec * sensor_width_px / 3600,
+                  plate_scale_y_arcsec * sensor_height_px / 3600)`
+   `StartX/Y` and `NumX/Y` do **not** influence the SkyView request —
+   they are applied later as a local crop. Requesting the full binned
+   frame keeps cache hits useful across sub-frame variations at the
+   same pointing.
 5. Look up `(survey, ra, dec, rotation, pixels, size)` in the on-disk
-   cache. On miss, request SkyView with those exact parameters and store
-   the resulting FITS bytes in the cache.
-6. Parse the FITS payload, extract the primary HDU image plane, cast to
-   `i32` ADU values **without scaling, noise, or bias** (decision #4 in
-   the design discussion: raw survey data passes through). Apply the
-   sub-frame offset if `(StartX, StartY) != (0, 0)`.
+   cache using those full-frame binned parameters. On miss, request
+   SkyView with them, parse the response, and (only on successful
+   parse) store the FITS bytes in the cache.
+6. Parse the FITS primary HDU into `(width, height, Vec<i32>)`,
+   without scaling, noise, or bias (decision #4 in the design
+   discussion: raw survey data passes through). Apply the sub-frame
+   crop using `(StartX, StartY, NumX, NumY)` to produce the final
+   `NumX × NumY` array.
 7. Update `LastExposureStartTime` and `LastExposureDuration`, mark
    `ImageReady = true`, surface the array via `ImageArray` /
    `ImageArrayVariant`.
@@ -306,9 +313,8 @@ graph TD;
     C --> D[Optics Constants];
     C --> E[PointingState];
     C --> F[Exposure Pipeline];
-    F --> G[SurveyClient trait];
-    G --> H[SkyView Backend];
-    H --> I[NASA SkyView HTTP];
+    F --> G[SkyViewClient];
+    G --> I[NASA SkyView HTTP];
     F --> J[FITS Cache];
     J --> K[Disk: cache_dir];
     F --> L[ImageArray buffer];
@@ -334,9 +340,12 @@ graph TD;
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y`, `SensorType` | Cooling / guiding / shutter / bayer all `false`/`Monochrome`; raises `PROPERTY_NOT_IMPLEMENTED` for the methods that demand it |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above |
 
-ConformU is the canonical correctness check; an integration test
-analogous to `services/filemonitor/tests/conformu_integration.rs` is
-part of the deliverable.
+ConformU is the canonical ASCOM correctness check. v0 ships without a
+`tests/conformu_integration.rs` target; once the SurveyClient gains a
+`mock` feature (deferred — see *Future Work*), a ConformU integration
+test analogous to `services/filemonitor/tests/conformu_integration.rs`
+will run the validator against the simulator with the mock backend so
+CI doesn't depend on real SkyView availability.
 
 ## Caching
 
@@ -385,13 +394,15 @@ Layered per `docs/skills/testing.md`:
 - **BDD** (`bdd-infra::ServiceHandle`) — `/sky-survey/position` round
   trips, `StartExposure` returns a non-empty array of the configured
   dimensions when the survey backend is mocked.
-- **Integration** — `tests/conformu_integration.rs` runs ConformU
-  against the service with a stubbed survey backend (no real network
-  in CI).
+- **Integration (deferred).** A `tests/conformu_integration.rs`
+  driving ConformU against the simulator is intended but not in v0;
+  it depends on the `mock` feature / `SurveyClient` trait that *Future
+  Work* defers, so CI doesn't depend on real SkyView availability.
 
-A `mock` feature flag adds a `MockSurveyClient` returning a
-deterministic synthetic FITS for tests, mirroring the
-`mock`-feature pattern from `ppba-driver` / `qhy-focuser`.
+The `mock` feature flag and `MockSurveyClient` returning deterministic
+synthetic FITS are part of the deferred trait work — they will mirror
+the `mock`-feature pattern from `ppba-driver` / `qhy-focuser` once the
+`SurveyClient` trait lands.
 
 ## Future Work
 
@@ -407,6 +418,11 @@ deterministic synthetic FITS for tests, mirroring the
   by an attached ASCOM FilterWheel.
 - **Additional backends.** `hips2fits` for faster cutouts, local
   HiPS tiles for fully offline operation.
+- **`SurveyClient` trait + `mock` feature + ConformU test.** Introduce
+  the `SurveyClient` trait (deferred until a second backend lands),
+  add a `MockSurveyClient` behind a `mock` feature, and wire a
+  `tests/conformu_integration.rs` that drives ConformU against the
+  simulator with the mock backend.
 - **Workspace FITS consolidation.** sky-survey-camera ships its own
   `parse_primary_hdu` because the workspace-pinned `fitrs 0.5.0`
   doesn't apply `BSCALE`/`BZERO` and only reads from a path. See

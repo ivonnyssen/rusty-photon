@@ -215,13 +215,16 @@ async fn run_exposure_inner(
         };
 
     let img = parse_primary_hdu(&bytes).map_err(|e| format!("FITS parse error: {e}"))?;
+    let cropped = crop_subframe(&img.data, img.width, img.height, sx, sy, nx, ny)?;
     // S6: only commit a network response to the cache after a
     // successful FITS parse. Otherwise a malformed body could poison
-    // the cache and re-fail forever.
+    // the cache and re-fail forever. We move `bytes` into the cache
+    // store here — `parse_primary_hdu`'s output owns its own data and
+    // `crop_subframe` already ran above, so the original FITS bytes
+    // aren't needed downstream.
     if !from_cache {
-        try_cache_store(cache_dir, cache_key, bytes.clone()).await;
+        try_cache_store(cache_dir, cache_key, bytes).await;
     }
-    let cropped = crop_subframe(&img.data, img.width, img.height, sx, sy, nx, ny)?;
     Ok(ExposureOutcome {
         width: nx,
         height: ny,
