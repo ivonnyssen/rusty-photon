@@ -111,9 +111,17 @@ jobs:
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
-        # run them explicitly in their own step. --test_env=PATH forwards
-        # the runner PATH (extended by the OmniSim install step) into
-        # test sandboxes so rp's scenarios can spawn ascom.alpaca.simulators.
+        # run them explicitly in their own step. `--test_env=OMNISIM_PATH`
+        # forwards the install-omnisim composite action's pinned binary
+        # path into test sandboxes; `bdd_infra::rp_harness::OmniSimHandle::start`
+        # consumes it via the binary lookup in
+        # `crates/bdd-infra/src/rp_harness/omnisim.rs`. We deliberately do
+        # NOT use `--test_env=PATH` here:
+        # the runner's full PATH is large and on Windows differs between
+        # `push` and `pull_request` events, which would bake unstable
+        # values into every BDD test action's cache key and silently
+        # invalidate every cache entry across event types. Pinning
+        # `OMNISIM_PATH` keeps the action key stable.
         # On macOS, darwin-sandbox blocks OmniSim from binding network
         # ports; --spawn_strategy=local bypasses the sandbox for tests.
         run: |
@@ -125,4 +133,4 @@ jobs:
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             EXTRA_FLAGS="--spawn_strategy=local"
           fi
-          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=PATH $EXTRA_FLAGS //...
+          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=OMNISIM_PATH $EXTRA_FLAGS //...

@@ -76,3 +76,27 @@ runs:
     - name: Add to PATH
       shell: bash
       run: echo "${{ github.workspace }}/omnisim" >> "$GITHUB_PATH"
+
+    # Export the absolute binary path so consumers (notably Bazel's
+    # `--test_env=OMNISIM_PATH` and `bdd_infra::rp_harness::OmniSimHandle`,
+    # whose binary lookup lives in
+    # `crates/bdd-infra/src/rp_harness/omnisim.rs`) can locate OmniSim
+    # without relying on the runner PATH.
+    #
+    # Why this matters for Bazel: forwarding the runner's full PATH into
+    # test actions via `--test_env=PATH` makes the host PATH part of every
+    # test action's cache key. On Windows the runner exposes different
+    # PATH entries on `pull_request` vs `push` events, which silently
+    # invalidates cache entries written by main pushes. A pinned
+    # `OMNISIM_PATH=<workspace>/omnisim/<binary>` is stable across event
+    # types, so Bazel cache hits work the same as on Linux/macOS. See
+    # docs/decisions/004-* for the analysis.
+    - name: Export OMNISIM_PATH
+      shell: bash
+      run: |
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          BIN="${{ github.workspace }}/omnisim/ascom.alpaca.simulators.exe"
+        else
+          BIN="${{ github.workspace }}/omnisim/ascom.alpaca.simulators"
+        fi
+        echo "OMNISIM_PATH=$BIN" >> "$GITHUB_ENV"
