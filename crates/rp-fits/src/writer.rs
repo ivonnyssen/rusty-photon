@@ -108,12 +108,10 @@ impl Keyword {
                     )));
                 }
             }
-            KeywordValue::Float(f) => {
-                if !f.is_finite() {
-                    return Err(FitsError::InvalidKeyword(format!(
-                        "float value must be finite (got {f})"
-                    )));
-                }
+            KeywordValue::Float(f) if !f.is_finite() => {
+                return Err(FitsError::InvalidKeyword(format!(
+                    "float value must be finite (got {f})"
+                )));
             }
             _ => {}
         }
