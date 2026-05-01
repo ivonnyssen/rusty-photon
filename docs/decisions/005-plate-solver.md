@@ -147,7 +147,48 @@ star-pattern matcher.
 - Building a domain-appropriate index would itself be a research
   project comparable in scope to writing the adapter for ASTAP.
 
-### Option 4: StellarSolver
+### Option 4: zodiacal (pure Rust)
+
+`zodiacal` is an Apache-2.0 pure-Rust blind plate solver implementing
+the same Lang-et-al-2010 4-star quad geometric-hashing algorithm
+astrometry.net uses, with kd-tree code matching, TAN-WCS fitting, and
+Bayesian verification.
+
+**Pros:**
+
+- License (Apache-2.0) is unambiguously compatible.
+- Pure Rust: no rp-managed service required. The `plate_solve` tool
+  could be a built-in calling the crate directly. Collapses the entire
+  service boundary that the BYO ASTAP model still needs.
+- **Targets our FOV regime** — the published index is built from
+  Gaia DR3 for typical amateur scales, unlike `tetra3` whose default
+  index targets star trackers.
+- Self-reported benchmark: 985 / 1000 simulated 9568×6380 frames
+  solved, median 1.07 s — same order of magnitude as ASTAP, slower
+  with hints.
+
+**Cons:**
+
+- **Alpha, ~3 months old.** First crate publication 2026-02-06,
+  current 0.4.1 of 2026-04-29. ~100 total downloads. The version
+  trajectory (0.0.1 → 0.0.2 → 0.2.0 → 0.4.0 → 0.4.1 in 12 weeks)
+  signals an API in motion.
+- **Single-org bus-factor risk.** OrbitalCommons is the sole
+  publisher; no upstream ecosystem yet.
+- **Heavy index footprint.** The Gaia-derived index is ~2.5 GB at
+  mag-16 (vs. ASTAP D05's ~100 MB) and ~17 GB at mag-19. Real cost
+  on a Pi-5 SD-card deployment.
+- **Not FITS-native.** Inputs are PNG or pre-extracted JSON
+  centroids. Bridging FITS in is straightforward via our existing
+  `imaging/stars.rs` centroid extraction, but it is glue we'd own.
+- Untested at the scale ASTAP has been hammered by amateur operators
+  nightly for years.
+
+Same archetype as `tetra3` — the right shape for v2, not v1. Worth
+revisiting in 6–12 months once the API stabilises and the field-test
+record fills in.
+
+### Option 5: StellarSolver
 
 KStars/Ekos's library wrapping astrometry.net plus its own SExtractor
 fork. Cross-platform via Qt.
@@ -160,7 +201,7 @@ as a subprocess means writing a thin CLI shim in C++ that we then own,
 or pulling Qt into our distribution. License is an effective GPL-3.0+
 because of the embedded astrometry.net. Hard pass for our shape.
 
-### Option 5: Siril `siril-cli platesolve`
+### Option 6: Siril `siril-cli platesolve`
 
 Siril is a full image-processing suite with a CLI mode that exposes
 plate-solving.
@@ -171,7 +212,7 @@ plate-solving.
 subcommand is wildly oversized. The platesolve subcommand can also
 delegate to astrometry.net under the hood, so we'd be wrapping a wrapper.
 
-### Option 6: THRASTRO/astrometrylib
+### Option 7: THRASTRO/astrometrylib
 
 A BSD-3 / GPL-3 dual-licensed MSVC-friendly fork of astrometry.net.
 Tempting because it would solve the Windows-native gap.
@@ -180,7 +221,7 @@ Tempting because it would solve the Windows-native gap.
 POC" per upstream). The dual-license still inherits astrometry.net's
 GPL-forcing dependencies. Not a v1 candidate.
 
-### Option 7: Build-it-ourselves in pure Rust
+### Option 8: Build-it-ourselves in pure Rust
 
 Implementing a star-pattern-matching solver from scratch (e.g. the
 4-star quad invariants of astrometry.net or Tetra-style hashes)
@@ -191,18 +232,20 @@ expertise. The bar to clear is very high; nothing in our roadmap
 justifies that investment when ASTAP gives us the same answer for
 zero engineering cost.
 
-### Option 8: PlateSolve2/3, ASPS — Windows-only
+### Option 9: PlateSolve2/3, ASPS — Windows-only
 
 Disqualified by the cross-platform constraint.
 
-### Option 9: Nova astrometry.net cloud API
+### Option 10: Nova astrometry.net cloud API
 
 Disqualified by the offline constraint.
 
 ## Decision
 
-Adopt **Option 1 — ASTAP wrapped as a subprocess** by a new
-`rp-plate-solver` rp-managed service.
+Adopt **Option 1 — ASTAP, executed as a subprocess by a new
+`rp-plate-solver` rp-managed service, with the ASTAP binary and index
+database supplied by the operator (BYO)** rather than bundled,
+mirrored, or fetched by `rp` itself.
 
 The decision rests on three points:
 
@@ -213,37 +256,58 @@ The decision rests on three points:
    trades operational quality for license simplicity, and the operational
    cost is high (Cygwin-on-Windows, Qt distribution, oversized suites,
    research-project scope).
-2. **Subprocess use retires the LGPL concern.** The `sep-sys` rejection
-   memo's load-bearing word is "burden" — specifically the FFI
-   maintenance burden of carrying a C library across our build matrix.
-   Subprocess invocation has no FFI surface. We ship the upstream
-   binary unmodified, document where it came from, and let operators
-   replace it with their own build per LGPL-3.0 §4. There is no static
-   or dynamic linking, so §6's "Combined Works" clause is not engaged.
+2. **Bring-your-own binary keeps `rp` out of the LGPL distribution
+   path entirely.** `rp` does not ship, bundle, mirror, or stage the
+   ASTAP binary or index database. Operators install ASTAP from
+   upstream (hnsky.org / SourceForge / their package manager) and
+   point `rp-plate-solver` at the install via required config fields.
+   CI does the same via a local
+   [`install-astap`](../../.github/actions/install-astap/action.yml)
+   composite action that mirrors the existing `install-omnisim`
+   pattern (CI is just acting as a normal user that installs ASTAP
+   for itself). Working assumption pending the formal review listed
+   under [Open Questions](#open-questions-to-retire-before-rp-plate-solver-ships):
+   because `rp` never *conveys* the LGPL work, the LGPL-3.0 §4 / §6
+   redistribution paths are not engaged at the `rp` boundary at all.
+   The SEP/`sep-sys` rejection rationale ("LGPL + FFI burden") is
+   doubly avoided — there is no FFI surface *and* there is nothing
+   for `rp` to redistribute. The runtime subprocess boundary
+   additionally keeps §6's "Combined Works" clause out of scope at
+   execution time.
 3. **Bus-factor managed by a viable fallback.** If ASTAP upstream
    stalls or the license becomes operationally awkward, swapping in
    astrometry.net's `solve-field` is mostly a configuration change in
    the rp-managed-service wrapper — same `Command::new`, different
    argument layout, different output parser. Both share the same
-   FITS-in / WCS-out subprocess contract.
+   FITS-in / WCS-out subprocess contract, and both fit the BYO
+   posture identically.
 
-Tetra3 remains an attractive longer-term direction. If a future
-maintenance window justifies building a Gaia-derived narrow-FOV index,
-the in-process pure-Rust path collapses an entire service boundary and
-eliminates the LGPL question outright. That is a v2 conversation, not a
-v1 one.
+Pure-Rust solvers — `tetra3` (Option 3) and `zodiacal` (Option 4) —
+remain attractive longer-term directions. Either would collapse the
+rp-managed-service boundary entirely (`plate_solve` becomes a
+built-in calling a crate function in process) and remove the LGPL
+question outright (both Apache-2.0). `zodiacal` already targets our
+FOV regime, which `tetra3` does not; its v1-disqualifying gap is
+maturity (alpha, ~3 months old) and a heavy index footprint, not
+domain fit. Revisit in 6–12 months.
 
 ## Verification Spike
 
-A reproducible harness lives in `scripts/astap-spike.sh`. It downloads
-the appropriate ASTAP CLI for the host platform, runs it with no
-arguments to confirm the binary executes and emits its self-help banner,
-and (optionally, with `--with-solve <fits>` and a fetched D05 database)
-performs a real solve and parses the resulting `.wcs` sidecar.
+Two reproducible artefacts back the verification work:
 
-The harness is **not** wired into `cargo test` or CI. It is an operator
-tool for retiring the open questions below on each platform we plan to
-ship on.
+1. **`scripts/astap-spike.sh`** — operator-side harness. Downloads
+   the appropriate ASTAP CLI for the host platform, runs it with no
+   arguments to confirm the binary executes and emits its self-help
+   banner, and (optionally, with `--with-solve <fits>` and a fetched
+   D05 database) performs a real solve and parses the resulting
+   `.wcs` sidecar. Not wired into `cargo test` or CI — an operator
+   tool that documents the install recipe end to end.
+2. **`.github/actions/install-astap`** — CI-side composite action
+   that performs the same install steps inside GitHub-hosted
+   runners. A small workflow exercises the action on
+   `ubuntu-latest`, `macos-latest`, and `windows-latest` to keep the
+   per-platform install paths green as a regression target. This is
+   the same model `install-omnisim` follows for the ASCOM simulator.
 
 ### Spike result on Linux aarch64 (this machine)
 
@@ -266,36 +330,37 @@ verification is left for the per-platform passes outlined under
 
 ### Open questions to retire before `rp-plate-solver` ships
 
-These are the verification items the spike harness exists to address.
 Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
 
-1. **macOS Apple Silicon** — run the spike, including a `--with-solve`
-   pass, on macOS arm64. Confirm `xattr -d com.apple.quarantine` is
-   sufficient or whether re-signing with the project's Developer ID is
-   required.
-2. **Windows x64** — run the spike on Windows native. Confirm the
-   download-and-extract flow works without WSL and that `astap_cli.exe`
-   runs from a non-installer placement.
-3. **Windows ARM64** — the upstream Windows ARM64 build is one release
-   behind x64. Confirm parity is acceptable for v1; if not, document a
-   graceful "no Windows ARM64 support yet" fallback.
+1. **macOS Apple Silicon** — run the spike (and the
+   `install-astap` action) including a `--with-solve` pass on macOS
+   arm64. Confirm `xattr -d com.apple.quarantine` is sufficient or
+   whether re-signing with the project's Developer ID is required.
+2. **Windows x64** — exercise the install path on Windows native.
+   Confirm the download-and-extract flow works without WSL and that
+   `astap_cli.exe` runs from an arbitrary user-chosen directory.
+3. **Windows ARM64** — the upstream Windows ARM64 build is one
+   release behind x64. Confirm parity is acceptable for v1; if not,
+   document a graceful "no Windows ARM64 support yet" fallback and
+   gate the install-astap action accordingly.
 4. **End-to-end solve timing** — run `--with-solve` against
    representative FITS frames on each target platform. Confirm the
    "few seconds with hint" budget holds at the upper end of what
    `rp` will actually feed (full-frame 2k–4k Bayer-debayered
    captures).
-5. **LGPL-3.0 §4 / §6 redistribution review** — read the relevant
-   clauses against the planned distribution shape (rp installer
-   bundles ASTAP unmodified, links to source, allows replacement).
-   Confirm the documented obligation ladder is sufficient. The ADR's
-   subprocess-vs-FFI distinction depends on this review.
-6. **Index database hosting** — decide whether `rp-plate-solver` ships a
-   small bundled DB, fetches D05 on first run, or leaves DB management
-   to the operator. Mirroring SourceForge has its own redistribution
-   implications.
-7. **Hint plumbing** — confirm the ASCOM mount driver exposes the
-   pointing accuracy ASTAP's `-r` (search radius) flag depends on. The
-   speed advantage over astrometry.net evaporates without good hints.
+5. **LGPL-3.0 §4 / §6 review under BYO** — confirm that "execute a
+   binary the operator installed" does not engage either clause; that
+   the `install-astap` GitHub action does not constitute conveyance
+   (it triggers a fresh upstream download per run); and that the
+   GH-Actions cache layer for that download is scoped narrowly enough
+   to count as ephemeral build infrastructure rather than mirroring.
+   The §6 "Combined Works" question is also confirmed moot for
+   subprocess execution. This question is the formal closure of the
+   ADR's working assumption — see [License Treatment](#license-treatment).
+6. **Hint plumbing** — confirm the ASCOM mount driver exposes the
+   pointing accuracy ASTAP's `-r` (search radius) flag depends on.
+   The speed advantage over astrometry.net evaporates without good
+   hints.
 
 ## Consequences
 
@@ -313,33 +378,53 @@ Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
 
 ### Distribution
 
-- Per-platform installers fetch the appropriate ASTAP CLI archive from
-  SourceForge at install time (or bundle the binary directly — the
-  install-time fetch keeps our installer footprint small but introduces
-  an offline-install caveat). Final shape decided in the
-  `rp-plate-solver` plan.
-- Index databases (D05 by default, ≈ 100 MB) are fetched separately on
-  first use, configurable via the `rp-plate-solver` config block.
-- The `data_directory` ASCOM rp shares via §"File Accessibility" is the
-  natural place for the solver to read FITS from; no additional path
-  contract is needed.
+- `rp` ships **no** ASTAP code, binary, archive, or index database.
+  Operator-supplied install via `astap_binary_path` and
+  `astap_db_directory` is the contract.
+- Per-platform install instructions live in the `rp-plate-solver`
+  README, linking out to hnsky.org / SourceForge by platform. The
+  README also points operators at
+  [`.github/actions/install-astap`](../../.github/actions/install-astap/action.yml)
+  in this repo as the reference for how CI installs ASTAP — the same
+  recipe an operator would follow manually.
+- The `data_directory` `rp` shares via §"File Accessibility" remains
+  the place the solver reads FITS from; no additional path contract
+  is needed.
 
 ### License Treatment
 
-- ASTAP's binaries are LGPL-3.0. We treat them as **conveyed in object
-  form, unmodified**, per LGPL-3.0 §4. The rp installer:
-  1. Ships the upstream binary unmodified.
-  2. Includes the LGPL-3.0 text and a clear statement of where the
-     binary was sourced from.
-  3. Documents in the user-facing license file that the binary is
-     replaceable: an operator may substitute their own ASTAP build by
-     pointing the `astap_binary_path` config field at it.
-- No part of `rp` is statically or dynamically linked against the
-  ASTAP binary, so §6's "Combined Works" clause is not engaged. The
-  subprocess boundary is the legal severance.
-- `solve-field` (Option 2) remains available as a drop-in alternative
-  via the same configuration knob; an operator can swap implementations
-  without rebuilding `rp`.
+This section captures the working assumption pending the formal
+LGPL-3.0 review listed as Open Question #5. The posture is "BYO so
+the question reduces to a sanity check," not "conveyance compliant."
+
+- ASTAP's binaries are LGPL-3.0. **`rp` does not convey them.**
+  Operators install ASTAP separately (from hnsky.org, SourceForge,
+  their package manager, or their own build) and point
+  `rp-plate-solver` at it via required config fields:
+  - `astap_binary_path` — absolute path to `astap_cli` (or
+    `astap_cli.exe` on Windows).
+  - `astap_db_directory` — directory containing the operator's
+    chosen star database (D05 by default; operators can choose
+    larger DBs for wider FOVs).
+- Both fields are validated at `rp-plate-solver` startup; missing or
+  unreadable values produce an explicit error that names the field
+  and links to install instructions.
+- CI installs ASTAP into its own runners via a local
+  [`.github/actions/install-astap`](../../.github/actions/install-astap/action.yml)
+  composite action — same shape `install-omnisim` already uses. The
+  action triggers a fresh upstream download per run; it is repo
+  tooling, not a published distribution channel. (Whether the
+  GH-Actions cache layer for that download counts as "mirroring" is
+  a sub-item of Open Question #5.)
+- Working assumption: because `rp` never conveys the LGPL work,
+  LGPL-3.0 §4 and §6 are not engaged at the `rp` boundary. The
+  runtime subprocess boundary additionally keeps §6 out of scope at
+  execution time. **This is the assumption Open Question #5
+  formally closes** — not a settled legal conclusion the ADR makes
+  on its own authority.
+- `solve-field` (Option 2) and any other compatible solver remain
+  available via the same configuration knobs; an operator can swap
+  implementations without rebuilding `rp`.
 
 ### CI / Build
 
@@ -390,6 +475,9 @@ Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
   <https://siril.readthedocs.io/en/latest/astrometry/platesolving.html>.
 - tetra3 — <https://crates.io/crates/tetra3>,
   <https://docs.rs/tetra3/latest/tetra3/>.
+- zodiacal — <https://crates.io/crates/zodiacal>,
+  <https://github.com/OrbitalCommons/zodiacal>. Apache-2.0,
+  alpha (~3 months old at ADR time).
 - THRASTRO/astrometrylib —
   <https://github.com/THRASTRO/astrometrylib>.
 - platesolve crate — <https://crates.io/crates/platesolve>.

@@ -1,0 +1,146 @@
+name: Install ASTAP CLI
+description: |
+  Download and install the ASTAP astrometric plate solver command-line
+  binary into a fixed path inside the runner workspace, then export
+  ASTAP_BINARY (and optionally ASTAP_DB_DIR) for downstream steps.
+
+  This is repo tooling that mirrors install-omnisim. CI is acting as a
+  normal user that installs ASTAP for itself. See ADR-005 for the
+  bring-your-own posture this action implements.
+
+inputs:
+  download-database:
+    description: |
+      Whether to also download and unpack the D05 star database
+      (~100 MB). Default false because most CI jobs only need to verify
+      the binary, not solve real fields.
+    required: false
+    default: "false"
+
+outputs:
+  astap-binary:
+    description: Absolute path to the astap_cli binary.
+    value: ${{ steps.export.outputs.astap-binary }}
+  astap-db-dir:
+    description: |
+      Absolute path to the directory holding the extracted star
+      database. Empty string when download-database is "false".
+    value: ${{ steps.export.outputs.astap-db-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine asset name
+      id: asset
+      shell: bash
+      run: |
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)
+            ARCHIVE="astap_command-line_version_Linux_amd64.zip"
+            SUBDIR="linux_installer"
+            BIN="astap_cli"
+            ;;
+          Linux-ARM64)
+            ARCHIVE="astap_command-line_version_Linux_aarch64.zip"
+            SUBDIR="linux_installer"
+            BIN="astap_cli"
+            ;;
+          macOS-ARM64)
+            ARCHIVE="astap_command-line_version_macOS_M1.zip"
+            SUBDIR="macOS%20installer"
+            BIN="astap_cli"
+            ;;
+          macOS-X64)
+            ARCHIVE="astap_command-line_version_macOS_x86_64.zip"
+            SUBDIR="macOS%20installer"
+            BIN="astap_cli"
+            ;;
+          Windows-X64)
+            ARCHIVE="astap_command-line_version_win64.zip"
+            SUBDIR="windows_installer"
+            BIN="astap_cli.exe"
+            ;;
+          Windows-ARM64)
+            ARCHIVE="astap_command-line_version_win11_aarch64.zip"
+            SUBDIR="windows_installer"
+            BIN="astap_cli.exe"
+            ;;
+          *)
+            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        {
+          echo "archive=$ARCHIVE"
+          echo "subdir=$SUBDIR"
+          echo "bin=$BIN"
+          echo "cache-key=astap-cli-$ARCHIVE"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache ASTAP binary
+      id: cache
+      uses: actions/cache@v5
+      with:
+        path: astap
+        key: ${{ steps.asset.outputs.cache-key }}
+
+    - name: Download ASTAP CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p astap
+        URL="https://sourceforge.net/projects/astap-program/files/${{ steps.asset.outputs.subdir }}/${{ steps.asset.outputs.archive }}/download"
+        echo "Downloading $URL"
+        curl -fsSL --retry 3 --retry-delay 2 -o "astap/${{ steps.asset.outputs.archive }}" "$URL"
+
+    - name: Extract ASTAP CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd astap
+        unzip -o "${{ steps.asset.outputs.archive }}"
+        rm "${{ steps.asset.outputs.archive }}"
+
+    - name: Set permissions (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x "astap/${{ steps.asset.outputs.bin }}"
+
+    - name: Remove quarantine (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: xattr -d com.apple.quarantine "astap/${{ steps.asset.outputs.bin }}" 2>/dev/null || true
+
+    - name: Cache D05 star database
+      if: inputs.download-database == 'true'
+      id: db-cache
+      uses: actions/cache@v5
+      with:
+        path: astap-db
+        key: astap-d05-database-v1
+
+    - name: Download D05 star database
+      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p astap-db
+        URL="https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database.zip/download"
+        echo "Downloading D05 star database (~100 MB)"
+        curl -fsSL --retry 3 --retry-delay 2 -o astap-db/d05.zip "$URL"
+        ( cd astap-db && unzip -o d05.zip && rm d05.zip )
+
+    - name: Export environment
+      id: export
+      shell: bash
+      run: |
+        BIN_PATH="${{ github.workspace }}/astap/${{ steps.asset.outputs.bin }}"
+        echo "ASTAP_BINARY=$BIN_PATH" >> "$GITHUB_ENV"
+        echo "astap-binary=$BIN_PATH" >> "$GITHUB_OUTPUT"
+        echo "${{ github.workspace }}/astap" >> "$GITHUB_PATH"
+        if [[ "${{ inputs.download-database }}" == "true" ]]; then
+          DB_PATH="${{ github.workspace }}/astap-db"
+          echo "ASTAP_DB_DIR=$DB_PATH" >> "$GITHUB_ENV"
+          echo "astap-db-dir=$DB_PATH" >> "$GITHUB_OUTPUT"
+        else
+          echo "astap-db-dir=" >> "$GITHUB_OUTPUT"
+        fi
