@@ -689,9 +689,12 @@ async fn test_server_starts() {
 }
 ```
 
-#### 6.7 Mock Strategy: Hand-Written vs mockall
+#### 6.7 Mock Strategy: Hand-Written vs mockall vs axum stub
 
-The project uses two mock strategies depending on the use case:
+The project uses three mock strategies. The full rationale and the
+empirical comparison that produced this rule live in
+[ADR-004 — Testing Strategy for HTTP-Client Error Paths](../decisions/004-testing-strategy-for-http-client-error-paths.md).
+The summary follows.
 
 **Hand-written mocks** — Use for stateful device simulators that maintain internal
 state across multiple calls. These mocks simulate hardware behavior: they process
@@ -704,10 +707,29 @@ serial port communication with response queues and device state machines.
 **mockall (`#[automock]`)** — Use for service-boundary traits where you need simple
 "expect this call, return this value" behavior. These are thin abstractions over
 external APIs (HTTP clients, DNS providers, ACME protocol) where the mock just
-needs to return canned responses or verify call arguments.
+needs to return canned responses or verify call arguments. **This is the default
+for HTTP-client error-path tests** — see ADR-004.
 
-Examples: `DnsProvider` trait in rp-tls (mocks Cloudflare API), `AcmeClient` trait
-in rp-tls (mocks Let's Encrypt ACME protocol).
+Examples: `HttpClient` trait in sentinel (mocks reqwest for `AlpacaSafetyMonitor`
+and `PushoverNotifier`), `DnsProvider` trait in rp-tls (mocks Cloudflare API),
+`AcmeClient` trait in rp-tls (mocks Let's Encrypt ACME protocol).
+
+**In-test axum stub server** — Use as the **escape hatch** when the production
+code traverses a wide foreign trait surface that mockall would generate huge
+boilerplate for. The qualitative threshold is roughly 10 methods on the trait
+you'd need to mock: at the small end (3-method `HttpClient`), mockall is clean;
+at the large end (76-method `ascom_alpaca::Camera`), it is not.
+
+Spawn an axum server on `127.0.0.1:0` inside the test, configure routes that
+return canned wire-format responses, point the production code at the bound
+address. The existing `spawn_stub` helper plus extracted helpers with names
+like `devices_body`, `ascom_body`, and `assert_disconnected` /
+`assert_connected` (to be added when the pattern grows) keep per-test bodies
+short.
+
+Examples: `services/rp/src/equipment.rs::connect_*` (failure-branch tests
+against the ascom-alpaca client); `services/sky-survey-camera/tests/bdd/world.rs`
+(stateful behaviour switching for survey responses).
 
 **How to use mockall with async traits:**
 
@@ -731,9 +753,22 @@ mock.expect_do_something()
     .returning(|_| Ok("result".to_string()));
 ```
 
-**Rule of thumb:** If the mock needs internal state or command processing logic,
-hand-write it. If it wraps an external API and just needs call/return behavior,
-use mockall.
+**Decision rule for HTTP-client error paths:**
+
+```
+Stateful device simulator (multi-call state, command processing)?
+└── Hand-written mock.
+
+Otherwise: dependency surface ≤ ~10 methods?
+├── Yes  → mockall + thin trait. Wrap only the methods used; gate
+│         #[cfg_attr(test, mockall::automock)] on it; inject via Arc<dyn _>.
+└── No   → axum stub server. Spawn axum on 127.0.0.1:0; extract helpers
+          for repeated wire format; assert on the production-side outcome.
+```
+
+`httpmock` was evaluated and rejected — see ADR-004 for the empirical
+comparison and the specific failure modes (silent `Content-Type`
+omission, behaviour-switching regression, forced async propagation).
 
 ---
 

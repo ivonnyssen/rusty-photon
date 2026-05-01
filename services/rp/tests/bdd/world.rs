@@ -83,6 +83,8 @@ pub struct RpWorld {
     pub last_measure_stars_result: Option<Value>,
     /// Last compute_snr result
     pub last_compute_snr_result: Option<Value>,
+    /// Last auto_focus result
+    pub last_auto_focus_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
     /// Last response status from GET /api/images/{id}
