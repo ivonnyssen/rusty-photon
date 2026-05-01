@@ -407,3 +407,8 @@ deterministic synthetic FITS for tests, mirroring the
   by an attached ASCOM FilterWheel.
 - **Additional backends.** `hips2fits` for faster cutouts, local
   HiPS tiles for fully offline operation.
+- **Workspace FITS consolidation.** sky-survey-camera ships its own
+  `parse_primary_hdu` because the workspace-pinned `fitrs 0.5.0`
+  doesn't apply `BSCALE`/`BZERO` and only reads from a path. See
+  [docs/plans/fits-library-consolidation.md](../plans/fits-library-consolidation.md)
+  for the candidate-library audit and migration strategy.

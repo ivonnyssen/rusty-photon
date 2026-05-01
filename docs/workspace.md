@@ -38,6 +38,8 @@ belong in any single service design doc.
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
+| [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
+| [fits-library-consolidation.md](plans/fits-library-consolidation.md) | FITS library evaluation across the workspace |
 
 ## Shared Crates
 
