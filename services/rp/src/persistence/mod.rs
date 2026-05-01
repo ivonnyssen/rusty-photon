@@ -20,4 +20,4 @@ pub use cache::{CachedImage, CachedPixels, ImageCache};
 pub use document::{
     read_sidecar_sync, sidecar_path, write_sidecar, write_sidecar_at, ExposureDocument,
 };
-pub use fits::{read_fits_doc_id, read_fits_pixels, write_fits};
+pub use fits::{read_fits_doc_id, read_fits_pixels, write_fits_i32, write_fits_u16};

@@ -755,20 +755,16 @@ impl McpHandler {
         let height = dim_y as u32;
         let pixels: Vec<i32> = image_array.iter().copied().collect();
 
-        if let Err(e) =
-            persistence::write_fits(&image_path, &pixels, width, height, &document_id).await
-        {
-            return Ok(tool_error!("failed to write FITS file: {}", e));
-        }
-
-        // Read max_adu once. The value feeds two consumers: the cache
-        // variant choice (u16 vs i32) and the exposure document's
-        // `max_adu` field, which makes the sidecar self-describing for
-        // downstream rehydration (Phase 7) and archival lineage. A
-        // transient Alpaca failure here is localized to this capture —
-        // the next capture re-reads independently. On failure we persist
-        // `max_adu: None` on the document and skip the cache insert; the
-        // FITS file on disk plus the sidecar remain the durable record.
+        // Read max_adu once. The value feeds three consumers: the
+        // on-disk FITS bit-depth (u16 vs i32), the cache variant
+        // choice (u16 vs i32), and the exposure document's `max_adu`
+        // field, which makes the sidecar self-describing for
+        // downstream rehydration and archival lineage. A transient
+        // Alpaca failure here is localized to this capture — the next
+        // capture re-reads independently. On failure we persist
+        // `max_adu: None`, write the FITS as i32 (lossless fallback),
+        // and skip the cache insert; the FITS file on disk plus the
+        // sidecar remain the durable record.
         let captured_max_adu: Option<u32> = match cam.max_adu().await {
             Ok(v) => Some(v),
             Err(e) => {
@@ -776,6 +772,28 @@ impl McpHandler {
                 None
             }
         };
+
+        // Dispatch on max_adu: 16-bit sensors get the BITPIX=16+BZERO=32768
+        // path (half the on-disk size); scientific cameras whose
+        // max_adu exceeds 65535, or captures where max_adu was
+        // unreadable, fall through to BITPIX=32.
+        let write_result = match captured_max_adu {
+            Some(max_adu) if max_adu <= u16::MAX as u32 => {
+                let max_adu_i32 = max_adu as i32;
+                let u16_pixels: Vec<u16> = pixels
+                    .iter()
+                    .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                    .collect();
+                persistence::write_fits_u16(&image_path, &u16_pixels, width, height, &document_id)
+                    .await
+            }
+            _ => {
+                persistence::write_fits_i32(&image_path, &pixels, width, height, &document_id).await
+            }
+        };
+        if let Err(e) = write_result {
+            return Ok(tool_error!("failed to write FITS file: {}", e));
+        }
 
         let doc = ExposureDocument {
             id: document_id.clone(),

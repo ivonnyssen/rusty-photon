@@ -690,14 +690,14 @@ mod tests {
     async fn write_disk_pair(
         dir: &Path,
         doc_uuid: &str,
-        pixels: &[i32],
+        pixels: &[u16],
         width: u32,
         height: u32,
     ) -> String {
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.join(format!("{}.fits", uuid8));
         let sidecar_path = dir.join(format!("{}.json", uuid8));
-        crate::persistence::write_fits(&fits_path, pixels, width, height, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, pixels, width, height, doc_uuid)
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
@@ -717,7 +717,7 @@ mod tests {
         // get() must be an in-memory hit (no second disk scan).
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "11111111-1111-1111-1111-111111111111";
-        write_disk_pair(dir.path(), doc_uuid, &[1, 2, 3, 4], 2, 2).await;
+        write_disk_pair(dir.path(), doc_uuid, &[1u16, 2, 3, 4], 2, 2).await;
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
 
         // Cold lookup: disk fallback fires.
@@ -759,7 +759,7 @@ mod tests {
         // instead: a manually-renamed legacy file with `_<uuid8>.fits`
         // form sharing the suffix.
         let target_path = dir.path().join("deadbeef.fits");
-        crate::persistence::write_fits(&target_path, &[10i32, 20, 30, 40], 2, 2, target_uuid)
+        crate::persistence::write_fits_u16(&target_path, &[10u16, 20, 30, 40], 2, 2, target_uuid)
             .await
             .unwrap();
         let mut target_doc = dummy_document(target_uuid);
@@ -775,7 +775,7 @@ mod tests {
 
         // Ghost has the suffix `_deadbeef.fits` but a different DOC_ID.
         let ghost_path = dir.path().join("legacy_deadbeef.fits");
-        crate::persistence::write_fits(&ghost_path, &[99i32; 4], 2, 2, ghost_uuid)
+        crate::persistence::write_fits_u16(&ghost_path, &[99u16; 4], 2, 2, ghost_uuid)
             .await
             .unwrap();
         let mut ghost_doc = dummy_document(ghost_uuid);
@@ -814,7 +814,7 @@ mod tests {
         let doc_uuid = "22222222-2222-2222-2222-222222222222";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{}.fits", uuid8));
-        crate::persistence::write_fits(&fits_path, &[0i32; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
@@ -843,14 +843,15 @@ mod tests {
     #[tokio::test]
     async fn resolve_falls_back_to_sidecar_id_when_fits_corrupt() {
         // Pre-Phase-7 files lack DOC_ID; the resolver must fall back to
-        // the sidecar's `id` field. Simulate by writing a FITS via the
-        // raw fitrs API (no DOC_ID stamping).
+        // the sidecar's `id` field. Simulate by writing a raw rp_fits
+        // HDU with no extra keywords (no DOC_ID stamping).
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "33333333-3333-3333-3333-333333333333";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{}.fits", uuid8));
-        let hdu = fitrs::Hdu::new(&[2usize, 2usize], vec![1i32, 2, 3, 4]);
-        fitrs::Fits::create(&fits_path, hdu).unwrap();
+        let mut file = std::fs::File::create(&fits_path).unwrap();
+        rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &[]).unwrap();
+        drop(file);
         let mut doc = dummy_document(doc_uuid);
         doc.file_path = fits_path.to_string_lossy().into_owned();
         doc.width = 2;
