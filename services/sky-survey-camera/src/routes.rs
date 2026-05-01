@@ -34,7 +34,7 @@ pub fn build_router(state: Arc<DeviceState>) -> Router {
 }
 
 async fn get_position(State(state): State<Arc<DeviceState>>) -> impl IntoResponse {
-    let snap = state.pointing.snapshot();
+    let snap = state.pointing.snapshot().await;
     Json(PositionResponse {
         ra_deg: snap.ra_deg,
         dec_deg: snap.dec_deg,
@@ -58,6 +58,7 @@ async fn post_position(
     match state
         .pointing
         .update(req.ra_deg, req.dec_deg, req.rotation_deg)
+        .await
     {
         Ok(_) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::BAD_REQUEST,

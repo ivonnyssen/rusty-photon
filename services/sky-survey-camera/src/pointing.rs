@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PointingState {
@@ -18,6 +18,12 @@ impl PointingState {
     }
 }
 
+/// Shared pointing state behind a `tokio::sync::RwLock`. Both
+/// readers (the spawned exposure task) and the single writer (the
+/// `POST /sky-survey/position` axum handler) live in async contexts,
+/// so an async-aware lock keeps the runtime cooperative under
+/// future concurrent load and avoids the std-lock poisoning
+/// surface area.
 #[derive(Debug)]
 pub struct SharedPointing {
     state: RwLock<PointingState>,
@@ -30,14 +36,14 @@ impl SharedPointing {
         }
     }
 
-    pub fn snapshot(&self) -> PointingState {
-        *self.state.read().expect("pointing rwlock poisoned")
+    pub async fn snapshot(&self) -> PointingState {
+        *self.state.read().await
     }
 
     /// Atomically update RA, Dec, and (optionally) rotation. If
     /// `rotation_deg` is `None`, the existing rotation is preserved.
     /// Returns `Err` with a list of validation messages on bad input.
-    pub fn update(
+    pub async fn update(
         &self,
         ra_deg: f64,
         dec_deg: f64,
@@ -59,7 +65,7 @@ impl SharedPointing {
             return Err(errors);
         }
 
-        let mut guard = self.state.write().expect("pointing rwlock poisoned");
+        let mut guard = self.state.write().await;
         let new_rotation = rotation_deg
             .map(wrap_rotation)
             .unwrap_or(guard.rotation_deg);
@@ -96,30 +102,30 @@ mod tests {
         assert!((wrap_rotation(-10.0) - 350.0).abs() < 1e-9);
     }
 
-    #[test]
-    fn update_rejects_out_of_range() {
+    #[tokio::test]
+    async fn update_rejects_out_of_range() {
         let s = SharedPointing::new(PointingState::new(10.0, 20.0, 0.0));
-        s.update(-1.0, 0.0, None).unwrap_err();
-        s.update(360.0, 0.0, None).unwrap_err();
-        s.update(0.0, -91.0, None).unwrap_err();
-        s.update(0.0, 91.0, None).unwrap_err();
+        s.update(-1.0, 0.0, None).await.unwrap_err();
+        s.update(360.0, 0.0, None).await.unwrap_err();
+        s.update(0.0, -91.0, None).await.unwrap_err();
+        s.update(0.0, 91.0, None).await.unwrap_err();
         // unchanged
-        let snap = s.snapshot();
+        let snap = s.snapshot().await;
         assert_eq!(snap.ra_deg, 10.0);
         assert_eq!(snap.dec_deg, 20.0);
     }
 
-    #[test]
-    fn update_preserves_rotation_when_none() {
+    #[tokio::test]
+    async fn update_preserves_rotation_when_none() {
         let s = SharedPointing::new(PointingState::new(0.0, 0.0, 45.0));
-        s.update(10.0, 20.0, None).unwrap();
-        assert_eq!(s.snapshot().rotation_deg, 45.0);
+        s.update(10.0, 20.0, None).await.unwrap();
+        assert_eq!(s.snapshot().await.rotation_deg, 45.0);
     }
 
-    #[test]
-    fn update_wraps_rotation() {
+    #[tokio::test]
+    async fn update_wraps_rotation() {
         let s = SharedPointing::new(PointingState::new(0.0, 0.0, 0.0));
-        s.update(0.0, 0.0, Some(390.0)).unwrap();
-        assert!((s.snapshot().rotation_deg - 30.0).abs() < 1e-9);
+        s.update(0.0, 0.0, Some(390.0)).await.unwrap();
+        assert!((s.snapshot().await.rotation_deg - 30.0).abs() < 1e-9);
     }
 }

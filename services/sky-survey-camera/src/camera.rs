@@ -196,7 +196,7 @@ async fn run_exposure_inner(
         });
     }
 
-    let pointing = state.pointing.snapshot();
+    let pointing = state.pointing.snapshot().await;
     let request = build_full_sensor_request(&state.config, pointing, bx, by);
     let cache_dir = state.config.survey.cache_dir.clone();
     let cache_key = request.cache_key();
