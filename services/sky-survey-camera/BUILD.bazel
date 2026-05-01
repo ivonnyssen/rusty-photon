@@ -101,21 +101,23 @@ rust_test(
     ),
 )
 
-# ConformU integration test. Tagged `requires-cargo` so it stays
-# excluded from the default `bazel test //...` filter — the test
-# launches the binary via `bdd-infra::ServiceHandle`, which expects a
-# Cargo-built binary on the path bdd-infra computes from
-# `CARGO_PKG_NAME`. Tagged `conformu` for explicit opt-in via
-# `bazel test --test_tag_filters=conformu //...`.
+# ConformU integration test. The test launches the binary via
+# `bdd-infra::ServiceHandle`, which expects a Cargo-built binary on the
+# path bdd-infra computes from `CARGO_PKG_NAME`, so it can't actually run
+# under Bazel — hence `requires-cargo`.
 #
-# Tagged `manual` so `bazel build //...` skips it. The test imports
+# Tagged `manual` so neither `bazel build //...` nor `bazel test //...`
+# (with any --test_tag_filters) picks it up: the test imports
 # `ascom_alpaca::test`, gated behind `ascom-alpaca/test`. Cargo enables
 # this transitively via the per-service `conformu` feature, but Bazel's
 # crate_universe resolves the dep graph from default features only, so
 # `dtor` (a transitive dep of the `test` feature) falls out of the
-# resolved set and the target won't compile under `bazel build //...`.
+# resolved set and the target won't compile under wildcard builds.
 # Until crate_universe is wired to enable workspace-wide `test`, opt in
-# explicitly: `bazel build //services/sky-survey-camera:conformu_integration`.
+# with the explicit target:
+# `bazel build //services/sky-survey-camera:conformu_integration`.
+# The `conformu` tag is retained so a future un-`manual`-ed build can
+# still be filtered with `--test_tag_filters=conformu`.
 rust_test(
     name = "conformu_integration",
     srcs = ["tests/conformu_integration.rs"],
