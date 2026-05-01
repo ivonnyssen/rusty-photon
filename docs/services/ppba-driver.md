@@ -340,7 +340,7 @@ cargo test -p ppba-driver --features mock --quiet
 cargo test -p ppba-driver protocol::tests
 
 # Run ConformU compliance test (requires ConformU installed)
-cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture
+cargo test -p ppba-driver --features conformu --test conformu_integration -- --ignored --nocapture
 ```
 
 BDD tests use cucumber-rs with feature files in `tests/features/`. Tests spawn the actual ppba-driver binary as a subprocess (with `--features mock` for the mock serial port) and communicate via ASCOM Alpaca HTTP REST API, testing the full stack from config loading through HTTP routing to device logic.

@@ -190,9 +190,9 @@ cargo metadata --format-version 1 --no-deps | \
 ```
 
 Current services and their commands:
-- **filemonitor**: `cargo test -p filemonitor --test conformu_integration -- --ignored --nocapture`
-- **ppba-driver**: `cargo test -p ppba-driver --features mock --test conformu_integration -- --ignored --nocapture`
-- **qhy-focuser**: `cargo test -p qhy-focuser --features mock --test conformu_integration -- --ignored --nocapture`
+- **filemonitor**: `cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture`
+- **ppba-driver**: `cargo test -p ppba-driver --features conformu --test conformu_integration -- --ignored --nocapture`
+- **qhy-focuser**: `cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored --nocapture`
 
 ### scheduled.yml (rolling)
 
