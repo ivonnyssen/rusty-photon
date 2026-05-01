@@ -725,4 +725,291 @@ mod tests {
             Err(AutoFocusError::NotEnoughStars { needed: 5, .. })
         ));
     }
+
+    /// `focuser.position()` errors at the very start of the sweep —
+    /// the run aborts cleanly with `Equipment(_)` carrying the
+    /// underlying message.
+    #[tokio::test]
+    async fn run_auto_focus_propagates_focuser_position_error() {
+        struct FailingPosition;
+        #[async_trait]
+        impl FocuserOps for FailingPosition {
+            async fn position(&self) -> Result<i32, String> {
+                Err("alpaca disconnected".to_string())
+            }
+            async fn move_to(&self, _: i32) -> Result<i32, String> {
+                Ok(0)
+            }
+            async fn temperature(&self) -> Option<f64> {
+                None
+            }
+        }
+        struct UnreachableCapturer;
+        #[async_trait]
+        impl CaptureOps for UnreachableCapturer {
+            async fn capture(&self, _: Duration) -> Result<String, String> {
+                panic!("capture must not be reached when position() fails")
+            }
+        }
+        struct UnreachableMeasurer;
+        #[async_trait]
+        impl MeasureOps for UnreachableMeasurer {
+            async fn measure(
+                &self,
+                _: &str,
+                _: usize,
+                _: usize,
+                _: f64,
+            ) -> Result<HfrSample, String> {
+                panic!("measure must not be reached")
+            }
+        }
+        let err = run_auto_focus(
+            &FailingPosition,
+            &UnreachableCapturer,
+            &UnreachableMeasurer,
+            (None, None),
+            AutoFocusParams {
+                duration: Duration::from_millis(10),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+            },
+        )
+        .await;
+        match err {
+            Err(AutoFocusError::Equipment(msg)) => assert!(
+                msg.contains("alpaca disconnected"),
+                "expected propagated message, got: {}",
+                msg
+            ),
+            other => panic!("expected Equipment, got {:?}", other),
+        }
+    }
+
+    /// `capture()` errors mid-sweep on the second grid point — the
+    /// run aborts and propagates the underlying message.
+    #[tokio::test]
+    async fn run_auto_focus_propagates_capture_error() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        struct FailingCapturer {
+            counter: Mutex<u64>,
+        }
+        #[async_trait]
+        impl CaptureOps for FailingCapturer {
+            async fn capture(&self, _: Duration) -> Result<String, String> {
+                let mut c = self.counter.lock().unwrap();
+                *c += 1;
+                if *c == 2 {
+                    Err("readout aborted".to_string())
+                } else {
+                    Ok(format!("doc-{:05}-pos9999", *c))
+                }
+            }
+        }
+        let cap = FailingCapturer {
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1234,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            AutoFocusParams {
+                duration: Duration::from_millis(10),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+            },
+        )
+        .await;
+        match err {
+            Err(AutoFocusError::Equipment(msg)) => assert!(
+                msg.contains("readout aborted"),
+                "expected propagated message, got: {}",
+                msg
+            ),
+            other => panic!("expected Equipment, got {:?}", other),
+        }
+    }
+
+    /// `measure()` errors on the first sample — the run aborts and
+    /// propagates the underlying message.
+    #[tokio::test]
+    async fn run_auto_focus_propagates_measure_error() {
+        struct FailingMeasurer;
+        #[async_trait]
+        impl MeasureOps for FailingMeasurer {
+            async fn measure(
+                &self,
+                _: &str,
+                _: usize,
+                _: usize,
+                _: f64,
+            ) -> Result<HfrSample, String> {
+                Err("FITS decode failed".to_string())
+            }
+        }
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &FailingMeasurer,
+            (None, None),
+            AutoFocusParams {
+                duration: Duration::from_millis(10),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+            },
+        )
+        .await;
+        match err {
+            Err(AutoFocusError::Equipment(msg)) => assert!(
+                msg.contains("FITS decode failed"),
+                "expected propagated message, got: {}",
+                msg
+            ),
+            other => panic!("expected Equipment, got {:?}", other),
+        }
+    }
+
+    /// `a > 0` but the fitted vertex falls outside the sampled grid
+    /// — the curve is monotonic over the sampled range, so the run
+    /// errors `MonotonicCurve` even though the parabola itself has
+    /// a minimum somewhere off-grid. Achieved by sweeping on one
+    /// arm of the V-curve only (vertex at 9999, sweep around 1234).
+    #[tokio::test]
+    async fn run_auto_focus_rejects_vertex_outside_sampled_grid() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 9999,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            AutoFocusParams {
+                duration: Duration::from_millis(10),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+            },
+        )
+        .await;
+        match err {
+            Err(AutoFocusError::MonotonicCurve(msg)) => {
+                assert!(
+                    msg.contains("outside sampled grid"),
+                    "expected vertex-outside-grid message, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected MonotonicCurve, got {:?}", other),
+        }
+    }
+
+    /// When the focuser does not implement temperature readout the
+    /// adapter returns `None`; the result's `temperature_c` is also
+    /// `None` and the rest of the run proceeds normally.
+    #[tokio::test]
+    async fn run_auto_focus_records_none_temperature() {
+        struct NoTemperature {
+            position: Mutex<i32>,
+        }
+        #[async_trait]
+        impl FocuserOps for NoTemperature {
+            async fn position(&self) -> Result<i32, String> {
+                Ok(*self.position.lock().unwrap())
+            }
+            async fn move_to(&self, p: i32) -> Result<i32, String> {
+                *self.position.lock().unwrap() = p;
+                Ok(p)
+            }
+            async fn temperature(&self) -> Option<f64> {
+                None
+            }
+        }
+        struct PosCapturer<'a> {
+            foc: &'a NoTemperature,
+            counter: Mutex<u64>,
+        }
+        #[async_trait]
+        impl CaptureOps for PosCapturer<'_> {
+            async fn capture(&self, _: Duration) -> Result<String, String> {
+                let pos = *self.foc.position.lock().unwrap();
+                let mut c = self.counter.lock().unwrap();
+                *c += 1;
+                Ok(format!("doc-{:05}-pos{}", *c, pos))
+            }
+        }
+        let foc = NoTemperature {
+            position: Mutex::new(1234),
+        };
+        let cap = PosCapturer {
+            foc: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1234,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let result = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            AutoFocusParams {
+                duration: Duration::from_millis(10),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.temperature_c, None);
+        assert!((result.best_position - 1234).abs() <= 1);
+    }
 }
