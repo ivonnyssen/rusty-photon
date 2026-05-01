@@ -111,7 +111,8 @@ let result = monitor.poll().await;
 - Most expressive failure-injection in the workspace. `.times(N)`,
   `.never()`, `.withf(|x| ...)` predicates, and sequence matchers cover
   almost every shape of test you'd want to write.
-- Already a workspace dev-dep (`mockall = "0.14.0"`) used by 8 crates.
+- Already a workspace dev-dep (`mockall = "0.14.0"`) used by several
+  crates in the workspace.
 - The trait itself is documentation: it pins down exactly which methods
   the production code depends on, making API-surface drift visible.
 - No wire-format work — tests deal in domain types
@@ -499,7 +500,7 @@ inline above so the rationale is self-contained.
 - PR [#109 — Phase 6a focuser primitives](https://github.com/ivonnyssen/rusty-photon/pull/109)
   (introduced the in-test axum stub for `connect_focuser`)
 - [`docs/skills/testing.md`](../skills/testing.md) §6.7 — Mock Strategy:
-  Hand-Written vs `mockall`
+  Hand-Written vs `mockall` vs axum stub
 - `services/sentinel/src/io.rs` — `HttpClient` trait, the workspace
   precedent for Tier 1
 - `services/rp/src/equipment.rs` — Tier 2 precedent (in-test axum stub)

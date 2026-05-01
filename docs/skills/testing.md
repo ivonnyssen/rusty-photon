@@ -722,8 +722,10 @@ at the large end (76-method `ascom_alpaca::Camera`), it is not.
 
 Spawn an axum server on `127.0.0.1:0` inside the test, configure routes that
 return canned wire-format responses, point the production code at the bound
-address. Helpers like `spawn_stub`, `devices_body`, `ascom_body`,
-`assert_disconnected` / `assert_connected` keep per-test bodies short.
+address. The existing `spawn_stub` helper plus extracted helpers with names
+like `devices_body`, `ascom_body`, and `assert_disconnected` /
+`assert_connected` (to be added when the pattern grows) keep per-test bodies
+short.
 
 Examples: `services/rp/src/equipment.rs::connect_*` (failure-branch tests
 against the ascom-alpaca client); `services/sky-survey-camera/tests/bdd/world.rs`
