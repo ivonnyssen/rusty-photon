@@ -99,7 +99,7 @@ impl Keyword {
 }
 
 /// Write a `u8` (BITPIX=8) image HDU.
-pub fn write_u8_image<W: Write>(
+pub fn write_u8_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u8],
     width: u32,
@@ -116,7 +116,7 @@ pub fn write_u8_image<W: Write>(
 /// Write a `u16` (BITPIX=16 + BZERO=32768) image HDU. Restores native
 /// unsigned 16-bit semantics — the on-disk i16 representation is just
 /// the FITS-mandated encoding for unsigned values.
-pub fn write_u16_image<W: Write>(
+pub fn write_u16_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u16],
     width: u32,
@@ -140,7 +140,7 @@ pub fn write_u16_image<W: Write>(
 }
 
 /// Write an `i32` (BITPIX=32) image HDU.
-pub fn write_i32_image<W: Write>(
+pub fn write_i32_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[i32],
     width: u32,
