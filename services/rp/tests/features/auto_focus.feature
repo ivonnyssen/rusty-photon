@@ -8,15 +8,21 @@ Feature: Auto-focus compound tool
   vertex. The sweep grid is clamped to the operator-supplied
   min_position / max_position bounds — points outside the bounds are
   dropped, not coerced. The tool errors before any motion when input
-  parameters are missing or invalid, when devices are unreachable, when
-  the clamped grid has fewer than min_fit_points positions, when the
-  sweep yields fewer than min_fit_points non-null HFR samples, or when
-  the parabolic fit's leading coefficient `a` is non-positive (the
-  curve is monotonic or concave-down, with no minimum inside the
-  sampled range). auto_focus does not write a section on any single
-  exposure document — the per-frame image_analysis section is written
-  by the embedded measure_basic call as it normally would be, and the
-  compound result is returned via MCP plus a focus_complete event.
+  parameters are missing or invalid, when the requested sweep would
+  exceed the safety cap on grid size, when devices are unreachable,
+  when the clamped grid has fewer than min_fit_points positions,
+  when the sweep yields fewer than min_fit_points non-null HFR
+  samples, or when the parabolic fit produces no meaningful minimum
+  inside the sampled range — that last case fires when the leading
+  coefficient `a` is non-positive (concave-down or flat), when the
+  design matrix is singular (essentially flat HFR over the sweep),
+  or when `a > 0` but the fitted vertex falls outside the sampled
+  grid (the visible curve is monotonic over the sampled range even
+  if a true minimum exists somewhere off-grid). auto_focus does not
+  write a section on any single exposure document — the per-frame
+  image_analysis section is written by the embedded measure_basic
+  call as it normally would be, and the compound result is returned
+  via MCP plus a focus_complete event.
 
   Scenario: Tool catalog includes auto_focus
     Given a running Alpaca simulator

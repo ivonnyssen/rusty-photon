@@ -65,6 +65,11 @@ pub enum AutoFocusError {
          min_fit_points={requested}"
     )]
     GridTooSmall { available: usize, requested: usize },
+    #[error(
+        "sweep grid would contain {requested} positions, exceeds the safety cap of \
+         {max} (raise step_size or lower half_width)"
+    )]
+    GridTooLarge { requested: usize, max: usize },
     #[error("not enough stars: only {got} of {needed} required samples have non-null HFR")]
     NotEnoughStars { got: usize, needed: usize },
     #[error("monotonic curve: {0}")]
@@ -95,6 +100,14 @@ pub trait MeasureOps {
     ) -> Result<HfrSample, String>;
 }
 
+/// Maximum number of grid points an `auto_focus` sweep is allowed to
+/// build. Generous enough that any plausible auto-focus run fits well
+/// inside the cap (typical 10–30 points; even an aggressively-fine
+/// sweep over a wide range stays under 200), so the cap is purely a
+/// guardrail against operator misconfiguration that would otherwise
+/// produce thousands of captures and tie up the rig for hours.
+pub const MAX_GRID_POINTS: usize = 1000;
+
 pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
     if params.step_size <= 0 {
         return Err(AutoFocusError::InvalidStepSize(params.step_size));
@@ -105,13 +118,28 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
     if params.min_fit_points < 3 {
         return Err(AutoFocusError::InvalidMinFitPoints(params.min_fit_points));
     }
+    // Upper bound on the unclamped grid size: 2·half_width steps from
+    // start to end, plus the start point itself. Computed in i64 so
+    // an extreme half_width can't overflow before the cap check fires.
+    let estimated = (2_i64 * params.half_width as i64 / params.step_size as i64) + 1;
+    if estimated > MAX_GRID_POINTS as i64 {
+        return Err(AutoFocusError::GridTooLarge {
+            requested: estimated.max(0) as usize,
+            max: MAX_GRID_POINTS,
+        });
+    }
     Ok(())
 }
 
-/// Build the sweep grid `[start, start+step, …, end]` clamped to
-/// `[min_bound, max_bound]`. Out-of-range points are dropped (not
-/// coerced) — coercion would produce duplicate samples at a bound and
-/// distort the parabola fit.
+/// Build the sweep grid `[start, start+step, …]` continuing while the
+/// position stays `≤ end`, then clamped to `[min_bound, max_bound]`.
+/// `start` is `current − half_width` and `end` is
+/// `current + half_width`, so `end` only appears as a grid point when
+/// `(end − start)` is an exact multiple of `step`; otherwise the
+/// last grid point is the largest `start + k·step` that's still
+/// `≤ end`. Out-of-range points (those failing the `[min_bound,
+/// max_bound]` clamp) are dropped, not coerced — coercion would
+/// produce duplicate samples at a bound and distort the parabola fit.
 pub fn build_grid(
     current: i32,
     step: i32,
@@ -406,6 +434,28 @@ mod tests {
             validate_params(&p),
             Err(AutoFocusError::InvalidMinFitPoints(2))
         ));
+    }
+
+    #[test]
+    fn validate_params_rejects_grid_size_above_safety_cap() {
+        // step_size=1, half_width=1_000_000 → 2_000_001 points,
+        // far beyond the 1000-point safety cap.
+        let p = AutoFocusParams {
+            duration: Duration::from_millis(100),
+            step_size: 1,
+            half_width: 1_000_000,
+            min_area: 5,
+            max_area: 1000,
+            threshold_sigma: 5.0,
+            min_fit_points: 5,
+        };
+        match validate_params(&p) {
+            Err(AutoFocusError::GridTooLarge { requested, max }) => {
+                assert!(requested > max, "expected requested > max");
+                assert_eq!(max, MAX_GRID_POINTS);
+            }
+            other => panic!("expected GridTooLarge, got {:?}", other),
+        }
     }
 
     // ---- grid construction ----

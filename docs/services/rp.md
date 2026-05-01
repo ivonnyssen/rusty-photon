@@ -1828,9 +1828,15 @@ without having to know the focus algorithm.
    weighted by `star_count` per point. From the fit
    `hfr = a·position² + b·position + c`:
    `best_position = round(−b / 2a)`; `best_hfr = c − b²/(4a)`.
-   Reject the fit if `a ≤ 0` (the curve is monotonic or
-   concave-down — the sampled range does not contain a true
-   minimum) and abort with a `monotonic_curve` error.
+   Abort with a `monotonic_curve` error in any of three cases:
+   (i) the design matrix is singular at fit time (essentially
+   flat HFR over the sweep — no parabola can be fitted), (ii)
+   `a ≤ 0` (the curve is monotonic or concave-down — no minimum
+   exists), or (iii) `a > 0` but the fitted vertex falls outside
+   `[min(grid), max(grid)]` (a true minimum exists somewhere
+   off-grid, so the visible curve is monotonic *over the sampled
+   range* — the caller needs to widen the sweep or coarse-focus
+   first).
 6. Move the focuser to `best_position` (already inside the sweep
    range by construction, so the operator-supplied
    `min_position`/`max_position` bounds are guaranteed to hold).
@@ -1847,6 +1853,13 @@ without having to know the focus algorithm.
 - `step_size <= 0`, `half_width <= 0`, or `min_fit_points < 3`
   → MCP error naming the bad parameter (a parabolic fit needs at
   least 3 non-collinear points).
+- Estimated unclamped grid size (`2·half_width / step_size + 1`)
+  exceeds the safety cap (1000 points) → MCP error before any
+  motion or exposure. The cap is purely a guardrail against
+  operator misconfiguration that would otherwise produce
+  thousands of captures and tie up the rig for hours; any
+  plausible auto-focus run fits well inside it (typical 10–30
+  points).
 - Sweep grid (after clamping to `min_position`/`max_position`)
   has fewer than `min_fit_points` positions → MCP error before
   any motion or exposure. The error message names `min_fit_points`
@@ -1859,11 +1872,17 @@ without having to know the focus algorithm.
   `auto_focus`); the focuser is left at its current position.
 - Fewer than `min_fit_points` non-null HFR samples after the
   sweep completes → `not_enough_stars` error.
-- Parabolic fit yields `a ≤ 0` → `monotonic_curve` error. The
-  caller is expected to widen `half_width`, coarse-focus
-  externally, or both, then retry. The focuser is **not**
-  automatically moved to the lowest observed sample, because
-  that point is unverified as a true minimum.
+- Parabolic fit yields no meaningful minimum within the sampled
+  range → `monotonic_curve` error. This fires when the design
+  matrix is singular (the input is essentially flat HFR), when
+  `a ≤ 0` (the curve is monotonic or concave-down — no minimum
+  exists), or when `a > 0` but the fitted vertex falls outside
+  `[min(grid), max(grid)]` (a true minimum exists somewhere
+  off-grid, so the *visible* curve over the sampled range is
+  monotonic). The caller is expected to widen `half_width`,
+  coarse-focus externally, or both, then retry. The focuser is
+  **not** automatically moved to the lowest observed sample,
+  because that point is unverified as a true minimum.
 
 **Persistence**: `auto_focus` does **not** write a section on any
 single exposure document — its result spans the sweep. Each capture
