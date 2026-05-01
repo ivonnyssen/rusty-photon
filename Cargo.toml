@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/bdd-infra",
+  "crates/fitsio-pure-spike",
   "crates/rp-auth",
   "crates/rp-tls",
   "services/filemonitor",

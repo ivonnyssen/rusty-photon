@@ -1,0 +1,19 @@
+[package]
+name = "fitsio-pure-spike"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Throwaway spike crate for #107: validate fitsio-pure against the rp / sky-survey-camera / phd2-guider call-site profiles. Delete me when the spike report lands."
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+fitsio-pure = "0.11"
+tempfile = { workspace = true }

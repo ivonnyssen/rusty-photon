@@ -1,0 +1,43 @@
+# Spike workflow for issue #107 — proves whether `fitsio-pure = 0.11`
+# from crates.io covers our three FITS call-site profiles on every
+# platform we care about, with zero system dependencies (pure Rust).
+#
+# All three matrix jobs run the same `cargo test -p fitsio-pure-spike`
+# with no per-platform setup. If a job goes red the spike has found
+# a real platform-specific gap.
+#
+# This workflow is INTENTIONALLY scoped to the spike branch and its PR —
+# it never runs on `main` or other branches, and never gates other CI.
+permissions:
+  contents: read
+on:
+  push:
+    branches:
+      - feature/fitsio-pure-spike
+  pull_request:
+    branches:
+      - main
+    paths:
+      - crates/fitsio-pure-spike/**
+      - .github/workflows/fitsio-pure-spike.yml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: fitsio-pure-spike
+jobs:
+  matrix:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fitsio-pure-spike-${{ matrix.os }}
+      - name: cargo test (spike)
+        run: cargo test -p fitsio-pure-spike --locked -- --nocapture
