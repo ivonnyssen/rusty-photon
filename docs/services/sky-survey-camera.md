@@ -229,15 +229,20 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 ### Connection lifecycle
 
 - **C1.** `set_connected(true)` validates the configured `cache_dir`
-  is writable and reaches SkyView with a HEAD request. On success,
-  `Connected` becomes `true`.
+  is writable and probes the survey endpoint with a short capped HEAD
+  request. On success, `Connected` becomes `true`.
 - **C2.** `set_connected(true)` while `cache_dir` cannot be
   created or is not writable returns `UNSPECIFIED_ERROR` and
   `Connected` stays `false`.
-- **C3.** `set_connected(true)` while SkyView is unreachable returns
-  `UNSPECIFIED_ERROR` and `Connected` stays `false`.
-- **C4.** `set_connected(false)` cancels any in-flight exposure;
-  subsequent ASCOM operations return `NOT_CONNECTED`.
+- **C3.** A failed HEAD probe (timeout, DNS failure, non-2xx) is
+  logged at `warn!` and **does not** block Connect — `Connected`
+  becomes `true` regardless. Tying ASCOM Connect latency to NASA's
+  TLS handshake makes the simulator flaky on slow links and in CI;
+  the next `StartExposure` will surface a hard failure via S4 if
+  the endpoint is genuinely down.
+- **C4.** `set_connected(false)` cancels any in-flight exposure and
+  resets `LastExposureStartTime` / `LastExposureDuration` to the
+  unset state; subsequent ASCOM operations return `NOT_CONNECTED`.
 
 ### Pointing API
 
@@ -261,17 +266,24 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 
 ### `StartExposure` parameter validation
 
+Per ASCOM convention, the `NumX` / `NumY` / `StartX` / `StartY` setters
+accept any `u32` value. Geometry validation is enforced at
+`StartExposure`, not at the property setter — this is what ConformU's
+"Reject Bad …" tests exercise. `BinX` / `BinY` are validated at the
+setter because the spec defines a hard `[1, MaxBin]` range.
+
 - **E1.** `StartExposure` while disconnected returns `NOT_CONNECTED`.
 - **E2.** `StartExposure` while another exposure is in flight
   (`ImageReady = false` and not yet aborted) returns
   `INVALID_OPERATION`.
-- **E3.** `BinX` or `BinY` outside `[1, MaxBinX/Y]` returns
+- **E3.** `BinX` or `BinY` outside `[1, MaxBinX/Y]` is rejected at
+  the property setter with `INVALID_VALUE`.
+- **E4.** `StartExposure` with `NumX = 0` or `NumY = 0` returns
   `INVALID_VALUE`.
-- **E4.** `NumX` or `NumY` ≤ 0 returns `INVALID_VALUE`.
-- **E5.** `StartX + NumX > CameraXSize / BinX`, or the analogous
-  Y-axis condition, returns `INVALID_VALUE`.
-- **E6.** `Duration` outside `[ExposureMin, ExposureMax]` returns
-  `INVALID_VALUE`.
+- **E5.** `StartExposure` with `StartX + NumX > CameraXSize / BinX`,
+  or the analogous Y-axis condition, returns `INVALID_VALUE`.
+- **E6.** `StartExposure` with `Duration` outside
+  `[ExposureMin, ExposureMax]` returns `INVALID_VALUE`.
 
 ### `StartExposure` survey path
 
@@ -325,25 +337,37 @@ graph TD;
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
-| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` |
+| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter |
 | `MaxBinX` / `MaxBinY` | `4` (configurable later) |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY`, `StartX` / `StartY` | Standard sub-frame semantics |
+| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5) |
 | `MaxADU` | `65535` (16-bit equivalent) |
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
-| `FullWellCapacity` | `MaxADU * ElectronsPerADU` |
-| `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs` (durations are accepted, not modelled) |
-| `Gain` / `Offset` / `ReadoutMode` | Single fixed value reported; setters reject changes |
+| `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |
+| `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs`; the spawned exposure task sleeps for `min(Duration, 5s)` so clients can observe `CameraState = Exposing` |
+| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; setter rejects non-zero with `INVALID_VALUE` |
+| `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
+| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero |
+| `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
+| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state |
+| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady` |
 | `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
-| `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y`, `SensorType` | Cooling / guiding / shutter / bayer all `false`/`Monochrome`; raises `PROPERTY_NOT_IMPLEMENTED` for the methods that demand it |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above |
+| `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]` |
 
-ConformU is the canonical ASCOM correctness check. v0 ships without a
-`tests/conformu_integration.rs` target; once the SurveyClient gains a
-`mock` feature (deferred — see *Future Work*), a ConformU integration
-test analogous to `services/filemonitor/tests/conformu_integration.rs`
-will run the validator against the simulator with the mock backend so
-CI doesn't depend on real SkyView availability.
+ConformU is the canonical ASCOM correctness check. The
+`tests/conformu_integration.rs` target (gated by the `conformu`
+feature) drives ConformU against the simulator with a stub HTTP
+backend so CI doesn't depend on real SkyView availability:
+
+```bash
+cargo test -p sky-survey-camera --features mock,conformu \
+    --test conformu_integration -- --ignored --nocapture
+```
+
+The stub serves a synthetic FITS payload via
+[`mock::synthetic_fits`] (gated by the `mock` feature) so
+`StartExposure` / `ImageArray` exercise the full pipeline end-to-end.
 
 ## Caching
 
@@ -370,37 +394,46 @@ split, or rename modules so long as the BDD scenarios pass.
 3. **`optics.rs`** — `Optics` struct: derived plate scales, FOV, helpers
    for cutout geometry.
 4. **`pointing.rs`** — `PointingState` + concurrency primitive.
-5. **`survey/mod.rs`** — `SurveyClient` trait
-   (`async fn fetch(&self, request: SurveyRequest) -> Result<Vec<u8>>`).
-6. **`survey/skyview.rs`** — SkyView HTTP backend (reqwest).
-7. **`survey/cache.rs`** — Disk cache with the keying described above.
-8. **`fits.rs`** — Minimal FITS primary-HDU reader producing
+5. **`survey.rs`** — `SurveyClient` trait
+   (`health_check`, `fetch`), `SkyViewClient` HTTP backend, and
+   the disk cache helpers (`try_cache_load` / `try_cache_store`).
+6. **`mock.rs`** (gated by the `mock` feature) — `MockSurveyClient`
+   plus the `synthetic_fits` helper used by the ConformU
+   integration test's stub backend.
+7. **`fits.rs`** — Minimal FITS primary-HDU reader producing
    `Vec<i32>` + dimensions. Reuses whichever FITS dependency the
    workspace ends up standardising on (see ADR-001).
-9. **`camera_device.rs`** — `Device` + `Camera` trait impl.
-10. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
-    composed with the ASCOM server's router.
-11. **`lib.rs`** — `ServerBuilder` (CLI args → server).
-12. **`main.rs`** — Entry point.
+8. **`camera.rs`** — `Device` + `Camera` trait impl.
+9. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
+   composed with the ASCOM server's router.
+10. **`lib.rs`** — `run` / `run_with_client` entry points and the
+    `SurveyClient` re-export.
+11. **`main.rs`** — Entry point.
 
 ## Testing
 
 Layered per `docs/skills/testing.md`:
 
 - **Unit** — optics calculations, config parsing, pointing API
-  validation, cache key determinism, FITS parse on canned bytes.
+  validation, cache key determinism, FITS parse on canned bytes,
+  `Camera` trait method behaviour (camera state machine, gain/readout
+  fixed-value semantics, setter relaxation, `StartExposure`
+  geometry checks).
 - **BDD** (`bdd-infra::ServiceHandle`) — `/sky-survey/position` round
   trips, `StartExposure` returns a non-empty array of the configured
-  dimensions when the survey backend is mocked.
-- **Integration (deferred).** A `tests/conformu_integration.rs`
-  driving ConformU against the simulator is intended but not in v0;
-  it depends on the `mock` feature / `SurveyClient` trait that *Future
-  Work* defers, so CI doesn't depend on real SkyView availability.
-
-The `mock` feature flag and `MockSurveyClient` returning deterministic
-synthetic FITS are part of the deferred trait work — they will mirror
-the `mock`-feature pattern from `ppba-driver` / `qhy-focuser` once the
-`SurveyClient` trait lands.
+  dimensions when the survey backend is stubbed, the C1–C4 connection
+  contracts including the warn-only behaviour for an unreachable
+  endpoint, and the S1–S6 survey-error paths against a stub HTTP
+  server.
+- **ConformU integration** (`tests/conformu_integration.rs`, gated by
+  the `conformu` feature) — launches the production binary pointed
+  at an in-process axum stub that serves
+  [`mock::synthetic_fits`] for any GET, and runs the official
+  ConformU validator end-to-end. The `mock` feature gates the
+  synthetic-FITS helper used by the stub. The binary itself always
+  uses [`SurveyClient = SkyViewClient`] so that the BDD scenarios
+  exercising real HTTP error paths are not bypassed under
+  `--all-features`.
 
 ## Future Work
 
@@ -416,11 +449,6 @@ the `mock`-feature pattern from `ppba-driver` / `qhy-focuser` once the
   by an attached ASCOM FilterWheel.
 - **Additional backends.** `hips2fits` for faster cutouts, local
   HiPS tiles for fully offline operation.
-- **`SurveyClient` trait + `mock` feature + ConformU test.** Introduce
-  the `SurveyClient` trait (deferred until a second backend lands),
-  add a `MockSurveyClient` behind a `mock` feature, and wire a
-  `tests/conformu_integration.rs` that drives ConformU against the
-  simulator with the mock backend.
 - **Workspace FITS consolidation.** sky-survey-camera ships its own
   `parse_primary_hdu` because the workspace-pinned `fitrs 0.5.0`
   doesn't apply `BSCALE`/`BZERO` and only reads from a path. See

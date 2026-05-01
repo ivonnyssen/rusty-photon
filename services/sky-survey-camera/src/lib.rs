@@ -5,27 +5,38 @@ pub mod camera;
 pub mod config;
 pub mod error;
 pub mod fits;
+#[cfg(feature = "mock")]
+pub mod mock;
 pub mod pointing;
 pub mod routes;
 pub mod survey;
 
 pub use config::{load_config, Config};
 pub use error::SkySurveyCameraError;
+#[cfg(feature = "mock")]
+pub use mock::MockSurveyClient;
+pub use survey::SurveyClient;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
 /// the BDD harness, and serve forever.
 pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
     let config = load_config(config_path).await?;
+    let survey_client = build_survey_client(&config)?;
+    run_with_client(config, survey_client).await
+}
 
-    let survey_client = std::sync::Arc::new(
-        survey::SkyViewClient::new(&config.survey)
-            .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?,
-    );
+/// Variant of [`run`] used by tests / the `mock` feature where the
+/// caller has already constructed an [`Arc<dyn SurveyClient>`].
+pub async fn run_with_client(
+    config: Config,
+    survey_client: Arc<dyn SurveyClient>,
+) -> Result<(), SkySurveyCameraError> {
     let device = camera::SkySurveyCamera::new(config.clone(), survey_client);
     let shared_state = device.shared_state();
 
@@ -60,6 +71,20 @@ pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
         .await
         .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
     Ok(())
+}
+
+/// Construct the production [`SurveyClient`] from config. The `mock`
+/// feature does NOT short-circuit this — production binaries always
+/// hit the configured endpoint via [`survey::SkyViewClient`]. The
+/// in-process [`mock::MockSurveyClient`] is exposed as a library
+/// type so the conformu integration test can call [`run_with_client`]
+/// directly with a synthetic backend; switching the binary itself
+/// would break BDD scenarios that exercise the real HTTP error
+/// paths against a stub server.
+fn build_survey_client(config: &Config) -> Result<Arc<dyn SurveyClient>, SkySurveyCameraError> {
+    let client = survey::SkyViewClient::new(&config.survey)
+        .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
+    Ok(Arc::new(client))
 }
 
 async fn shutdown_signal() {

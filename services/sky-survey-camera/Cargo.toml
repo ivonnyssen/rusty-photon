@@ -11,6 +11,7 @@ description = "ASCOM Alpaca Camera simulator backed by NASA SkyView"
 [features]
 default = []
 mock = []
+conformu = ["ascom-alpaca/test"]
 
 [lints]
 workspace = true
@@ -30,6 +31,9 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 ndarray = { workspace = true }
 tempfile = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p sky-survey-camera --features mock,conformu --test conformu_integration -- --ignored --nocapture"
 
 [dev-dependencies]
 bdd-infra = { workspace = true }

@@ -8,10 +8,30 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::config::SurveyConfig;
+
+/// Short cap for the connect-time reachability probe. Connect should
+/// fail fast or warn — not block on a multi-second TLS handshake.
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Abstraction over the survey-image backend. Production code uses
+/// [`SkyViewClient`]; tests and the `mock` feature use a synthetic
+/// implementation so they don't depend on NASA's network.
+#[async_trait::async_trait]
+pub trait SurveyClient: Send + Sync + std::fmt::Debug {
+    /// Cheap reachability probe for `set_connected(true)`. Returns
+    /// `Ok(())` if the backend appears reachable; the camera treats
+    /// `Err(_)` as a soft warning per contract C3.
+    async fn health_check(&self) -> Result<(), SurveyError>;
+
+    /// Fetch a survey cutout matching `request`. Implementations are
+    /// expected to honour their own request timeout.
+    async fn fetch(&self, request: &SurveyRequest) -> Result<Vec<u8>, SurveyError>;
+}
 
 #[derive(Debug, Error)]
 pub enum SurveyError {
@@ -65,6 +85,7 @@ fn round_to(value: f64, step: f64) -> f64 {
 #[derive(Debug)]
 pub struct SkyViewClient {
     http: reqwest::Client,
+    health: reqwest::Client,
     endpoint: String,
 }
 
@@ -74,13 +95,38 @@ impl SkyViewClient {
             .timeout(config.request_timeout)
             .build()
             .map_err(|e| SurveyError::Http(e.to_string()))?;
+        // Separate client for the connect-time HEAD probe so a slow
+        // DNS/TLS handshake on the long-fetch client can't block the
+        // ASCOM Connect call past `HEALTH_CHECK_TIMEOUT`.
+        let health = reqwest::Client::builder()
+            .timeout(HEALTH_CHECK_TIMEOUT)
+            .build()
+            .map_err(|e| SurveyError::Http(e.to_string()))?;
         Ok(Self {
             http,
+            health,
             endpoint: config.endpoint.clone(),
         })
     }
+}
 
-    pub async fn fetch(&self, req: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
+#[async_trait::async_trait]
+impl SurveyClient for SkyViewClient {
+    async fn health_check(&self) -> Result<(), SurveyError> {
+        let response = self.health.head(&self.endpoint).send().await.map_err(|e| {
+            if e.is_timeout() {
+                SurveyError::Timeout
+            } else {
+                SurveyError::Http(e.to_string())
+            }
+        })?;
+        if !response.status().is_success() {
+            return Err(SurveyError::NonSuccess(response.status().as_u16()));
+        }
+        Ok(())
+    }
+
+    async fn fetch(&self, req: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
         // SkyView's runquery.pl accepts these query parameters; see
         // https://skyview.gsfc.nasa.gov/current/help/fields.html.
         let pixels = format!("{},{}", req.pixels_x, req.pixels_y);

@@ -1,4 +1,4 @@
-use ascom_alpaca::api::camera::ImageArray;
+use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::fits::parse_primary_hdu;
 use crate::pointing::{PointingState, SharedPointing};
-use crate::survey::{try_cache_load, try_cache_store, SkyViewClient, SurveyError, SurveyRequest};
+use crate::survey::{try_cache_load, try_cache_store, SurveyClient, SurveyError, SurveyRequest};
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
 /// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
@@ -92,7 +92,7 @@ pub struct DeviceState {
     pub last_exposure_start: Mutex<Option<SystemTime>>,
     pub last_exposure_duration: Mutex<Option<Duration>>,
     pub exposure_generation: AtomicU64,
-    pub survey_client: Arc<SkyViewClient>,
+    pub survey_client: Arc<dyn SurveyClient>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +101,7 @@ pub struct SkySurveyCamera {
 }
 
 impl SkySurveyCamera {
-    pub fn new(config: Config, survey_client: Arc<SkyViewClient>) -> Self {
+    pub fn new(config: Config, survey_client: Arc<dyn SurveyClient>) -> Self {
         let pointing = SharedPointing::new(PointingState::new(
             config.pointing.initial_ra_deg,
             config.pointing.initial_dec_deg,
@@ -186,6 +186,19 @@ async fn run_exposure_inner(
     let ny = state.num_y.load(Ordering::Acquire);
     let sx = state.start_x.load(Ordering::Acquire);
     let sy = state.start_y.load(Ordering::Acquire);
+
+    // Hold `Exposing` state for the requested duration so clients
+    // (incl. ConformU) can observe the camera mid-exposure. Capped at
+    // 5s so survey/cache fetches don't add their latency on top of an
+    // already-long simulated exposure.
+    let exposure_sleep = state
+        .last_exposure_duration
+        .lock()
+        .expect("last_exposure_duration poisoned")
+        .map(|d| std::cmp::min(d, Duration::from_secs(5)));
+    if let Some(d) = exposure_sleep {
+        tokio::time::sleep(d).await;
+    }
 
     if !light {
         // S2: zero-filled NumX × NumY frame, no fetch.
@@ -293,44 +306,29 @@ impl Device for SkySurveyCamera {
                     format!("cache_dir is not writable: {e}"),
                 ));
             }
-            // C3: survey endpoint must respond to a HEAD request.
-            let endpoint = &self.state.config.survey.endpoint;
-            let timeout = self.state.config.survey.request_timeout;
-            let client = match reqwest::Client::builder().timeout(timeout).build() {
-                Ok(c) => c,
-                Err(e) => {
-                    return Err(ASCOMError::new(
-                        UNSPECIFIED_ERROR,
-                        format!("HTTP client build failed: {e}"),
-                    ));
-                }
-            };
-            match client.head(endpoint).send().await {
-                Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => {
-                    debug!(status = %resp.status(), "survey endpoint HEAD non-success");
-                    return Err(ASCOMError::new(
-                        UNSPECIFIED_ERROR,
-                        format!(
-                            "survey endpoint {endpoint} returned status {}",
-                            resp.status()
-                        ),
-                    ));
-                }
-                Err(e) => {
-                    debug!(error = %e, "survey endpoint unreachable");
-                    return Err(ASCOMError::new(
-                        UNSPECIFIED_ERROR,
-                        format!("survey endpoint {endpoint} unreachable: {e}"),
-                    ));
-                }
+            // C3: probe the survey endpoint with a short capped HEAD.
+            // A failed probe is logged at warn! but does NOT block
+            // Connect — tying ASCOM Connect latency to NASA's TLS
+            // handshake makes the simulator flaky on slow links and
+            // in CI. The first real exposure will still surface a
+            // hard error via S4 if the endpoint is genuinely down.
+            if let Err(e) = self.state.survey_client.health_check().await {
+                warn!(
+                    endpoint = %self.state.config.survey.endpoint,
+                    error = %e,
+                    "survey endpoint health check failed; continuing anyway",
+                );
             }
         }
         self.state.connected.store(connected, Ordering::Release);
         if !connected {
             // C4: disconnect cancels any in-flight exposure. Bumping
             // the generation makes the spawned task discard its
-            // outcome on completion.
+            // outcome on completion. Per ASCOM convention the
+            // LastExposure* properties are reset too — they describe
+            // exposures since the *current* connect, so a Connect →
+            // Disconnect → Connect cycle should make them error
+            // again until a fresh exposure runs.
             self.state
                 .exposure_generation
                 .fetch_add(1, Ordering::AcqRel);
@@ -340,6 +338,16 @@ impl Device for SkySurveyCamera {
             self.state.image_ready.store(false, Ordering::Release);
             *self.state.last_image.lock().expect("last_image poisoned") = None;
             *self.state.last_error.lock().expect("last_error poisoned") = None;
+            *self
+                .state
+                .last_exposure_start
+                .lock()
+                .expect("last_exposure_start poisoned") = None;
+            *self
+                .state
+                .last_exposure_duration
+                .lock()
+                .expect("last_exposure_duration poisoned") = None;
         }
         Ok(())
     }
@@ -436,13 +444,10 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
-        let bin = self.state.bin_x.load(Ordering::Acquire) as u32;
-        let max = self.state.config.optics.sensor_width_px / bin.max(1);
-        if num_x == 0 || num_x > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "NumX {num_x} outside (0, {max}]"
-            )));
-        }
+        // ASCOM convention: sub-frame property setters accept any
+        // value; geometry validation runs at StartExposure (E4/E5).
+        // ConformU exercises this by setting one-past-the-edge then
+        // calling StartExposure and expecting INVALID_VALUE there.
         self.state.num_x.store(num_x, Ordering::Release);
         Ok(())
     }
@@ -452,13 +457,6 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
-        let bin = self.state.bin_y.load(Ordering::Acquire) as u32;
-        let max = self.state.config.optics.sensor_height_px / bin.max(1);
-        if num_y == 0 || num_y > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "NumY {num_y} outside (0, {max}]"
-            )));
-        }
         self.state.num_y.store(num_y, Ordering::Release);
         Ok(())
     }
@@ -468,13 +466,6 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
-        let bin = self.state.bin_x.load(Ordering::Acquire) as u32;
-        let limit = self.state.config.optics.sensor_width_px / bin.max(1);
-        if start_x >= limit {
-            return Err(ASCOMError::invalid_value(format!(
-                "StartX {start_x} >= sensor/bin {limit}"
-            )));
-        }
         self.state.start_x.store(start_x, Ordering::Release);
         Ok(())
     }
@@ -484,13 +475,6 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
-        let bin = self.state.bin_y.load(Ordering::Acquire) as u32;
-        let limit = self.state.config.optics.sensor_height_px / bin.max(1);
-        if start_y >= limit {
-            return Err(ASCOMError::invalid_value(format!(
-                "StartY {start_y} >= sensor/bin {limit}"
-            )));
-        }
         self.state.start_y.store(start_y, Ordering::Release);
         Ok(())
     }
@@ -515,7 +499,20 @@ impl Camera for SkySurveyCamera {
         let sy = self.state.start_y.load(Ordering::Acquire);
         let sensor_x_binned = self.state.config.optics.sensor_width_px / bx.max(1);
         let sensor_y_binned = self.state.config.optics.sensor_height_px / by.max(1);
-        if sx + nx > sensor_x_binned || sy + ny > sensor_y_binned {
+        // E4: NumX/NumY must be > 0. The setters now accept any u32
+        // per ASCOM convention; we enforce E4/E5 here at the moment
+        // the geometry is actually used.
+        if nx == 0 || ny == 0 {
+            return Err(ASCOMError::invalid_value(format!(
+                "NumX/NumY must be > 0 (got NumX={nx} NumY={ny})"
+            )));
+        }
+        // E5: subframe must fit within the binned sensor. `u32` wrap
+        // on `sx + nx` is impossible in practice (sensor sizes are
+        // < 2^31) but we still check before the comparison.
+        let end_x = sx.saturating_add(nx);
+        let end_y = sy.saturating_add(ny);
+        if end_x > sensor_x_binned || end_y > sensor_y_binned {
             return Err(ASCOMError::invalid_value(format!(
                 "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({sensor_x_binned},{sensor_y_binned})"
             )));
@@ -641,12 +638,100 @@ impl Camera for SkySurveyCamera {
         let outcome = guard
             .as_ref()
             .expect("image_ready=true but no stored image");
+        // ASCOM ImageArray indexing is `[x][y]` (column-major from a
+        // ndarray perspective), so the first axis must be NumX and the
+        // second NumY. The FITS data is laid out row-major (rows of
+        // width columns), so we build a row-major (height, width)
+        // array first and then `.reversed_axes()` swaps the strides
+        // in-place — no element copy.
         let array = Array2::from_shape_vec(
             (outcome.height as usize, outcome.width as usize),
             outcome.data.clone(),
         )
-        .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?;
+        .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?
+        .reversed_axes();
         Ok(ImageArray::from(array))
+    }
+
+    async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        if self
+            .state
+            .last_error
+            .lock()
+            .expect("last_error poisoned")
+            .is_some()
+        {
+            return Ok(CameraState::Error);
+        }
+        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+            return Ok(CameraState::Exposing);
+        }
+        Ok(CameraState::Idle)
+    }
+
+    async fn percent_completed(&self) -> ASCOMResult<u8> {
+        // The fetch-or-cache pipeline is atomic from the client's
+        // perspective — there's no meaningful intermediate progress
+        // to report — so percent is binary.
+        if self.state.image_ready.load(Ordering::Acquire) {
+            Ok(100)
+        } else {
+            Ok(0)
+        }
+    }
+
+    async fn sensor_name(&self) -> ASCOMResult<String> {
+        Ok("SkyView Virtual Sensor".to_string())
+    }
+
+    async fn sensor_type(&self) -> ASCOMResult<SensorType> {
+        Ok(SensorType::Monochrome)
+    }
+
+    async fn readout_modes(&self) -> ASCOMResult<Vec<String>> {
+        Ok(vec!["Default".to_string()])
+    }
+
+    async fn readout_mode(&self) -> ASCOMResult<usize> {
+        Ok(0)
+    }
+
+    async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
+        if readout_mode != 0 {
+            return Err(ASCOMError::invalid_value(format!(
+                "ReadoutMode {readout_mode} not supported (only index 0)"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn electrons_per_adu(&self) -> ASCOMResult<f64> {
+        Ok(1.0)
+    }
+
+    async fn full_well_capacity(&self) -> ASCOMResult<f64> {
+        Ok(65535.0)
+    }
+
+    async fn gain(&self) -> ASCOMResult<i32> {
+        Ok(0)
+    }
+
+    async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        if gain != 0 {
+            return Err(ASCOMError::invalid_value(format!(
+                "Gain {gain} not supported (single fixed value 0)"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn gain_min(&self) -> ASCOMResult<i32> {
+        Ok(0)
+    }
+
+    async fn gain_max(&self) -> ASCOMResult<i32> {
+        Ok(0)
     }
 }
 
@@ -726,9 +811,25 @@ mod tests {
         crop_subframe(&src, 4, 3, 0, 2, 1, 2).unwrap_err();
     }
 
+    /// Trait stub usable from `cfg(test)` without enabling the
+    /// public `mock` feature. Fetch is unused — tests that exercise
+    /// the survey path go through BDD with a stub HTTP server.
+    #[derive(Debug)]
+    struct StubSurveyClient;
+
+    #[async_trait::async_trait]
+    impl SurveyClient for StubSurveyClient {
+        async fn health_check(&self) -> Result<(), SurveyError> {
+            Ok(())
+        }
+        async fn fetch(&self, _request: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
+            Err(SurveyError::Http("stub: fetch not implemented".into()))
+        }
+    }
+
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
-        let client = Arc::new(SkyViewClient::new(&cfg.survey).unwrap());
+        let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
         SkySurveyCamera::new(cfg, client)
     }
 
@@ -875,6 +976,99 @@ mod tests {
         // exposure_in_flight is left untouched on cancellation
         // (Abort/Stop already cleared it from the caller side).
         assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn camera_state_reflects_in_flight_and_error() {
+        let cam = fake_camera();
+        assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        assert_eq!(cam.camera_state().await.unwrap(), CameraState::Exposing);
+        cam.state.exposure_in_flight.store(false, Ordering::Release);
+        *cam.state.last_error.lock().unwrap() = Some("boom".into());
+        assert_eq!(cam.camera_state().await.unwrap(), CameraState::Error);
+    }
+
+    #[tokio::test]
+    async fn percent_completed_is_binary() {
+        let cam = fake_camera();
+        assert_eq!(cam.percent_completed().await.unwrap(), 0);
+        cam.state.image_ready.store(true, Ordering::Release);
+        assert_eq!(cam.percent_completed().await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn readout_mode_only_accepts_zero() {
+        let cam = fake_camera();
+        assert_eq!(cam.readout_mode().await.unwrap(), 0);
+        assert_eq!(cam.readout_modes().await.unwrap(), vec!["Default"]);
+        cam.set_readout_mode(0).await.unwrap();
+        let err = cam.set_readout_mode(1).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn sensor_name_and_type_are_populated() {
+        let cam = fake_camera();
+        assert_eq!(cam.sensor_name().await.unwrap(), "SkyView Virtual Sensor");
+        assert_eq!(cam.sensor_type().await.unwrap(), SensorType::Monochrome);
+    }
+
+    #[tokio::test]
+    async fn gain_reports_single_fixed_value() {
+        let cam = fake_camera();
+        assert_eq!(cam.gain().await.unwrap(), 0);
+        assert_eq!(cam.gain_min().await.unwrap(), 0);
+        assert_eq!(cam.gain_max().await.unwrap(), 0);
+        cam.set_gain(0).await.unwrap();
+        let err = cam.set_gain(5).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn full_well_and_electrons_per_adu() {
+        let cam = fake_camera();
+        assert!((cam.electrons_per_adu().await.unwrap() - 1.0).abs() < 1e-12);
+        assert!((cam.full_well_capacity().await.unwrap() - 65535.0).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn setters_accept_out_of_range_values() {
+        // ASCOM convention: NumX/NumY/StartX/StartY setters always
+        // accept; geometry validation happens at StartExposure.
+        let cam = fake_camera();
+        cam.set_num_x(99_999).await.unwrap();
+        cam.set_num_y(99_999).await.unwrap();
+        cam.set_start_x(99_999).await.unwrap();
+        cam.set_start_y(99_999).await.unwrap();
+        assert_eq!(cam.num_x().await.unwrap(), 99_999);
+        assert_eq!(cam.start_x().await.unwrap(), 99_999);
+    }
+
+    #[tokio::test]
+    async fn start_exposure_rejects_zero_num() {
+        let cam = fake_camera();
+        cam.state.connected.store(true, Ordering::Release);
+        cam.set_num_x(0).await.unwrap();
+        let err = cam
+            .start_exposure(Duration::from_millis(1), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn start_exposure_rejects_oversized_subframe() {
+        let cam = fake_camera();
+        cam.state.connected.store(true, Ordering::Release);
+        // Sensor is 640×480; 700×100 overflows X.
+        cam.set_num_x(700).await.unwrap();
+        cam.set_num_y(100).await.unwrap();
+        let err = cam
+            .start_exposure(Duration::from_millis(1), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
     #[tokio::test]
