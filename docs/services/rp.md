@@ -272,8 +272,8 @@ The application does not know or care what subscribers do with events.
 | `slew_complete` | target coordinates, actual coordinates | Mount reports slew done |
 | `centering_started` | target, attempt number | Plate solve + correct begins |
 | `centering_complete` | target, error arcsec | Centering converged |
-| `focus_started` | camera_id, focuser_id, temperature | Auto-focus begins |
-| `focus_complete` | camera_id, position, hfr | Auto-focus result |
+| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
+| `focus_complete` | camera_id, focuser_id, position, hfr, samples_used | Auto-focus result |
 | `guide_started` | guider_id | Guiding loop started |
 | `guide_settled` | rms_ra, rms_dec | Guiding RMS below threshold |
 | `guide_stopped` | reason | Guiding stopped |
@@ -661,7 +661,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `auto_focus` | camera_id, focuser_id | best_position, best_hfr, curve_points | V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. *Planned.* |
+| `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `center_on_target` | ra, dec, tolerance_arcsec | final_error_arcsec, attempts | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until tolerance reached. *Planned.* |
 
 **Planner**
@@ -1729,18 +1729,224 @@ Orchestrator                    rp (single process)
 No MCP-over-HTTP hop, no FITS re-decode (the in-process call resolves
 each capture's pixels via the image cache).
 
+#### `auto_focus` Contract
+
+A built-in compound tool that drives a V-curve focus sweep using
+`move_focuser`, `capture`, and `measure_basic` internally. The
+orchestrator calls one tool and gets back the best focuser position
+without having to know the focus algorithm.
+
+**Input**:
+- `camera_id` — required.
+- `focuser_id` — required.
+- `duration` — required, humantime string (same shape as `capture`'s
+  `duration`, e.g. `"3s"`, `"500ms"`). Per-frame exposure for every
+  point in the sweep. No default: the right value depends on focal
+  ratio, sky brightness, and target field, none of which `auto_focus`
+  can infer. Deriving it from a probe `measure_basic` star count was
+  considered and rejected — the probe itself runs at unknown focus,
+  so its star count is unreliable as a driver for the rest of the
+  sweep.
+- `step_size` — required, positive integer focuser steps. Required
+  for the same reason `min_area`/`max_area` are required on
+  `measure_basic`: focuser step → µm and rig depth-of-focus vary per
+  setup and `rp` cannot infer them.
+- `half_width` — required, positive integer. The sweep covers
+  `[current_position − half_width, current_position + half_width]`
+  in `step_size` increments. The grid is then clamped to the
+  focuser's `min_position`/`max_position` from the `FocuserConfig`.
+- `min_area` and `max_area` — required, passed through to each
+  per-frame `measure_basic` call. At extreme defocus, donut-shaped
+  PSFs from the secondary obstruction can span many hundreds of
+  pixels — set `max_area` accordingly so the wings of the V-curve
+  remain measurable.
+- Optional `threshold_sigma` (default `5.0`) — passed through to
+  `measure_basic`.
+- Optional `min_fit_points` (default `5`) — minimum number of
+  non-null HFR samples required to fit the V-curve. Also enforced
+  on the *grid size* before any motion happens — a sweep that
+  cannot produce at least this many capture positions errors before
+  moving the focuser.
+
+**Output**:
+- `best_position` (i32) — focuser position at the fitted V-curve
+  minimum, rounded to the nearest integer step.
+- `best_hfr` (f64) — fitted HFR at `best_position`, in pixels.
+- `final_position` (i32) — position the focuser was actually moved
+  to at the end of the run. Equal to `best_position` on success.
+- `samples_used` (usize) — number of HFR samples that contributed
+  to the fit (i.e. captures with `star_count > 0` and a non-null
+  HFR). `≤ curve_points.length`.
+- `curve_points` — array of
+  `{position: i32, hfr: f64 | null, star_count: u32, document_id: string}`,
+  one entry per capture, in sweep order. `hfr: null` flags a
+  starless capture: the entry is preserved as a record but does
+  not contribute to the fit.
+- `temperature_c` (f64 | null) — focuser temperature read once at
+  the start of the run. `null` when the focuser does not implement
+  temperature readout (`NOT_IMPLEMENTED`) **or** when the read
+  itself fails for any other reason. Temperature is informational
+  on the result and never load-bearing on the sweep, so a transient
+  read failure does not abort the run — the field is just
+  surrendered to `null`. Useful for downstream
+  temperature-compensation logic that records
+  `(position, temperature)` pairs across runs (callers that need
+  absolute temperature confidence should fall back to
+  `get_focuser_temperature` per call rather than relying on this
+  field).
+
+**Algorithm**:
+1. Resolve `camera_id` and `focuser_id`. Read the focuser's current
+   position and temperature once each; record both on the result.
+   Emit `focus_started` carrying the resolved ids, the current
+   position, and the temperature.
+2. Compute the sweep grid:
+   `start = current_position − half_width`; positions are
+   `start, start + step_size, start + 2·step_size, …`, continuing
+   while `≤ current_position + half_width`. Clamp the grid to
+   `[min_position, max_position]` (any point outside is dropped,
+   not coerced — coercion would create duplicate sweep positions
+   at the bound). Reject before any motion if the clamped grid has
+   fewer than `min_fit_points` positions.
+3. For each grid position, in order:
+   1. `move_focuser(position)` — block until the focuser reports
+      idle (same poll loop the primitive `move_focuser` tool uses).
+   2. `capture(camera_id, duration)` — yields `document_id`. The
+      pixels populate the image cache as a side effect.
+   3. `measure_basic(document_id, min_area, max_area, threshold_sigma)`
+      — yields `hfr` and `star_count`. The cache hit avoids any
+      FITS decode.
+   4. Append `{position, hfr, star_count, document_id}` to
+      `curve_points`. A capture with `star_count == 0` (or a
+      `null` HFR for any reason) is recorded with `hfr: null` and
+      contributes nothing to the fit.
+4. If fewer than `min_fit_points` entries have a non-null HFR,
+   abort with a `not_enough_stars` error. The focuser is left at
+   the last sweep position; `auto_focus` does not auto-recover
+   the original position.
+5. Fit a parabola in raw HFR vs. position by least squares,
+   weighted by `star_count` per point. From the fit
+   `hfr = a·position² + b·position + c`:
+   `best_position = round(−b / 2a)`; `best_hfr = c − b²/(4a)`.
+   Abort with a `monotonic_curve` error in any of three cases:
+   (i) the design matrix is singular at fit time (essentially
+   flat HFR over the sweep — no parabola can be fitted), (ii)
+   `a ≤ 0` (the curve is monotonic or concave-down — no minimum
+   exists), or (iii) `a > 0` but the fitted vertex falls outside
+   `[min(grid), max(grid)]` (a true minimum exists somewhere
+   off-grid, so the visible curve is monotonic *over the sampled
+   range* — the caller needs to widen the sweep or coarse-focus
+   first).
+6. Move the focuser to `best_position` (already inside the sweep
+   range by construction, so the operator-supplied
+   `min_position`/`max_position` bounds are guaranteed to hold).
+7. Emit `focus_complete` with
+   `{camera_id, focuser_id, position: best_position, hfr: best_hfr, samples_used}`.
+
+**Error cases**:
+- `camera_id` not found → MCP error naming the camera.
+- `focuser_id` not found → MCP error naming the focuser.
+- Camera or focuser not connected → MCP error.
+- `duration`, `step_size`, `half_width`, `min_area`, `max_area`
+  missing → MCP error naming the missing parameter (validated in
+  body in input order, same convention as `measure_basic`).
+- `step_size <= 0`, `half_width <= 0`, or `min_fit_points < 3`
+  → MCP error naming the bad parameter (a parabolic fit needs at
+  least 3 non-collinear points).
+- Estimated unclamped grid size (`2·half_width / step_size + 1`)
+  exceeds the safety cap (1000 points) → MCP error before any
+  motion or exposure. The cap is purely a guardrail against
+  operator misconfiguration that would otherwise produce
+  thousands of captures and tie up the rig for hours; any
+  plausible auto-focus run fits well inside it (typical 10–30
+  points).
+- Sweep grid (after clamping to `min_position`/`max_position`)
+  has fewer than `min_fit_points` positions → MCP error before
+  any motion or exposure. The error message names `min_fit_points`
+  so the caller can tell the grid-size failure apart from a
+  parameter-validation failure.
+- A `move_focuser`, `capture`, or `measure_basic` call inside
+  the sweep returns an error → `auto_focus` propagates that
+  error and stops sweeping. Captures already taken are persisted
+  on disk normally (that path is owned by `capture`, not
+  `auto_focus`); the focuser is left at its current position.
+- Fewer than `min_fit_points` non-null HFR samples after the
+  sweep completes → `not_enough_stars` error.
+- Parabolic fit yields no meaningful minimum within the sampled
+  range → `monotonic_curve` error. This fires when the design
+  matrix is singular (the input is essentially flat HFR), when
+  `a ≤ 0` (the curve is monotonic or concave-down — no minimum
+  exists), or when `a > 0` but the fitted vertex falls outside
+  `[min(grid), max(grid)]` (a true minimum exists somewhere
+  off-grid, so the *visible* curve over the sampled range is
+  monotonic). The caller is expected to widen `half_width`,
+  coarse-focus externally, or both, then retry. The focuser is
+  **not** automatically moved to the lowest observed sample,
+  because that point is unverified as a true minimum.
+
+**Persistence**: `auto_focus` does **not** write a section on any
+single exposure document — its result spans the sweep. Each capture
+inside the sweep gets its own `image_analysis` section written by
+the embedded `measure_basic` call exactly as if `measure_basic` had
+been called directly. The compound result is returned in the MCP
+response and emitted as `focus_complete`. Each entry in
+`curve_points` carries the per-step `document_id`, so callers that
+need per-step provenance can fetch the individual exposure documents
+and read their `image_analysis` sections.
+
+**Caveats**:
+- Parabolic fit is the V1 choice for simplicity. Real V-curves are
+  often slightly asymmetric (extra-focal vs. intra-focal slopes
+  differ); a parabola fits an effective vertex that may sit one
+  or two steps off the true minimum. Acceptable for amateur rigs.
+  An asymmetric V or piecewise-linear fit can ship later either
+  side-by-side under a different tool name (e.g.
+  `auto_focus_asymmetric_v`) or as a drop-in replacement that
+  shadows the built-in — see [Third-party alternatives](#third-party-alternatives).
+- No automatic re-sweep on a monotonic curve. The caller already
+  knows what coarse-focus heuristic they prefer; `auto_focus`
+  reports the failure cleanly and lets the caller widen
+  `half_width` or coarse-focus externally before retrying.
+  Adding re-sweep state-machine logic would double the BDD
+  surface for marginal benefit.
+- Saturated stars are included in `star_count` and contribute to
+  the fit through their HFR, mirroring `measure_basic`'s policy.
+  Filtering them at the auto-focus layer would reintroduce the
+  HFR-vs-focus monotonicity break the policy was designed to
+  avoid (see `measure_basic` Contract). Callers that need a
+  per-curve saturation aggregate can fetch each
+  `curve_points[i].document_id` and read its `image_analysis`
+  section.
+- `auto_focus` is a built-in compound tool and may be **shadowed**
+  by a tool-provider plugin advertising the same `auto_focus`
+  name; the plugin wins per Config-Time Validation, with the
+  shadow logged at startup. Two plugins both claiming
+  `auto_focus` remains a config-time error.
+
 #### Example: `auto_focus` (V-curve)
 
+See [`auto_focus` Contract](#auto_focus-contract) for the full parameter
+set, error policy, and persistence rules. The pseudo-code below
+illustrates the loop shape only.
+
 ```
-Orchestrator: tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
-  rp's auto_focus implementation:
-    move_focuser(position=10000) → 10000
-    capture(camera_id="main-cam", duration_ms=2000) → {document_id: "doc-001", ...}
-    measure_basic(document_id="doc-001")           → {hfr: 5.2, star_count: 340}
-    move_focuser(position=10200) → 10200
-    ... 12 more iterations on the V-curve ...
-    move_focuser(position=12450) → 12450
-  ← {best_position: 12450, best_hfr: 2.1, curve_points: 15}
+Orchestrator: tools/call auto_focus {
+    camera_id: "main-cam",  focuser_id: "main-focuser",
+    duration: "2s",         step_size: 200,          half_width: 1500,
+    min_area: 8,            max_area: 400
+}
+  rp's auto_focus implementation (current_position = 11000):
+    move_focuser(position=9500) → 9500
+    capture(camera_id="main-cam", duration="2s") → {document_id: "doc-001"}
+    measure_basic(document_id="doc-001", min_area=8, max_area=400)
+                                                   → {hfr: 6.8, star_count: 220}
+    move_focuser(position=9700) → 9700
+    ... 14 more sweep points (15 total) ...
+    move_focuser(position=12500) → 12500   # last sweep point
+    fit parabola → best_position = 11212
+    move_focuser(position=11212) → 11212   # final move to fitted vertex
+  ← {best_position: 11212, best_hfr: 2.1, final_position: 11212,
+     samples_used: 15, curve_points: [...], temperature_c: 4.3}
 ```
 
 #### Example: `center_on_target`

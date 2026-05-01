@@ -273,6 +273,48 @@ pub struct MoveFocuserParams {
     pub position: i32,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AutoFocusToolParams {
+    /// Camera device ID. Required (validated in body for deterministic
+    /// error ordering — see `docs/services/rp.md` `auto_focus` Contract).
+    #[serde(default)]
+    pub camera_id: Option<String>,
+    /// Focuser device ID. Required (validated in body).
+    #[serde(default)]
+    pub focuser_id: Option<String>,
+    /// Per-frame exposure duration as a humantime string (e.g. `"2s"`,
+    /// `"500ms"`). Required (validated in body).
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub duration: Option<Duration>,
+    /// Step between adjacent sweep grid points, in absolute focuser
+    /// steps. Must be positive. Required (validated in body).
+    #[serde(default)]
+    pub step_size: Option<i32>,
+    /// Half-width of the sweep grid: positions are
+    /// `current_position ± half_width` in `step_size` increments,
+    /// clamped to the focuser's `min_position` / `max_position`. Must
+    /// be positive. Required (validated in body).
+    #[serde(default)]
+    pub half_width: Option<i32>,
+    /// Minimum component pixel area to admit as a star, passed through
+    /// to per-frame `measure_basic`. Required (validated in body).
+    #[serde(default)]
+    pub min_area: Option<usize>,
+    /// Maximum component pixel area, passed through to per-frame
+    /// `measure_basic`. Required (validated in body).
+    #[serde(default)]
+    pub max_area: Option<usize>,
+    /// Detection threshold above sky in stddev units, passed through to
+    /// per-frame `measure_basic`. Default `5.0`.
+    #[serde(default = "default_threshold_sigma")]
+    pub threshold_sigma: f64,
+    /// Minimum non-null HFR samples required for the parabola fit.
+    /// Must be at least 3. Default 5.
+    #[serde(default)]
+    pub min_fit_points: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -695,20 +737,26 @@ impl McpHandler {
             }
         }
     }
-}
 
-#[tool_router(server_handler)]
-impl McpHandler {
-    // -------------------------------------------------------------------
-    // Camera tools
-    // -------------------------------------------------------------------
-
-    #[tool(description = "Capture an image, download image_array, save FITS file")]
-    async fn capture(
+    /// Run the full capture pipeline against the named camera and return
+    /// `(image_path, document_id)`. Shared body of the `capture` MCP tool
+    /// and the `auto_focus` compound tool's per-step capture call —
+    /// both want the same exposure / FITS-write / cache-insert / event
+    /// flow.
+    pub(crate) async fn do_capture(
         &self,
-        Parameters(params): Parameters<CaptureParams>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
+        camera_id: &str,
+        duration: Duration,
+    ) -> std::result::Result<(String, String), String> {
+        let cam_entry = self
+            .equipment
+            .find_camera(camera_id)
+            .ok_or_else(|| format!("camera not found: {}", camera_id))?;
+        let cam = cam_entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
 
         let document_id = Uuid::new_v4().to_string();
         // The 8-char UUID suffix is the on-disk reverse-lookup key used by
@@ -723,43 +771,37 @@ impl McpHandler {
         self.event_bus.emit(
             "exposure_started",
             serde_json::json!({
-                "camera_id": params.camera_id,
-                "duration": humantime::format_duration(params.duration).to_string(),
+                "camera_id": camera_id,
+                "duration": humantime::format_duration(duration).to_string(),
             }),
         );
 
-        if let Err(e) = cam.start_exposure(params.duration, true).await {
-            return Ok(tool_error!("failed to start exposure: {}", e));
-        }
+        cam.start_exposure(duration, true)
+            .await
+            .map_err(|e| format!("failed to start exposure: {}", e))?;
 
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cam.image_ready().await {
                 Ok(true) => break,
                 Ok(false) => continue,
-                Err(e) => {
-                    return Ok(tool_error!("error checking image ready: {}", e));
-                }
+                Err(e) => return Err(format!("error checking image ready: {}", e)),
             }
         }
 
-        let image_array = match cam.image_array().await {
-            Ok(arr) => arr,
-            Err(e) => {
-                return Ok(tool_error!("failed to download image array: {}", e));
-            }
-        };
+        let image_array = cam
+            .image_array()
+            .await
+            .map_err(|e| format!("failed to download image array: {}", e))?;
 
         let (dim_x, dim_y, _planes) = image_array.dim();
         let width = dim_x as u32;
         let height = dim_y as u32;
         let pixels: Vec<i32> = image_array.iter().copied().collect();
 
-        if let Err(e) =
-            persistence::write_fits(&image_path, &pixels, width, height, &document_id).await
-        {
-            return Ok(tool_error!("failed to write FITS file: {}", e));
-        }
+        persistence::write_fits(&image_path, &pixels, width, height, &document_id)
+            .await
+            .map_err(|e| format!("failed to write FITS file: {}", e))?;
 
         // Read max_adu once. The value feeds two consumers: the cache
         // variant choice (u16 vs i32) and the exposure document's
@@ -783,8 +825,8 @@ impl McpHandler {
             file_path: image_path.clone(),
             width,
             height,
-            camera_id: Some(params.camera_id.clone()),
-            duration: Some(params.duration),
+            camera_id: Some(camera_id.to_string()),
+            duration: Some(duration),
             max_adu: captured_max_adu,
             sections: serde_json::Map::new(),
         };
@@ -799,10 +841,89 @@ impl McpHandler {
             }),
         );
 
-        Ok(tool_success!({
-            "image_path": image_path,
-            "document_id": document_id,
-        }))
+        Ok((image_path, document_id))
+    }
+
+    /// Resolve a focuser, validate the requested `position` against the
+    /// operator-supplied `min_position`/`max_position` bounds, issue the
+    /// Alpaca move, poll `is_moving` until idle (with a 120 s deadline),
+    /// and return the focuser's reported `position` after settling.
+    ///
+    /// This is the shared body of the `move_focuser` MCP tool and the
+    /// `auto_focus` compound tool's per-step focuser drive — both want
+    /// the same bounds-check + blocking-poll semantics.
+    pub(crate) async fn do_move_focuser_blocking(
+        &self,
+        focuser_id: &str,
+        position: i32,
+    ) -> std::result::Result<i32, String> {
+        let foc_entry = self
+            .equipment
+            .find_focuser(focuser_id)
+            .ok_or_else(|| format!("focuser not found: {}", focuser_id))?;
+        let foc = foc_entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| format!("focuser not connected: {}", focuser_id))?;
+
+        if let Some(min) = foc_entry.config.min_position {
+            if position < min {
+                return Err(format!(
+                    "position out of range: {} < min_position {}",
+                    position, min
+                ));
+            }
+        }
+        if let Some(max) = foc_entry.config.max_position {
+            if position > max {
+                return Err(format!(
+                    "position out of range: {} > max_position {}",
+                    position, max
+                ));
+            }
+        }
+
+        debug!(focuser_id, position, "moving focuser");
+        foc.move_(position)
+            .await
+            .map_err(|e| format!("failed to move focuser: {}", e))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match foc.is_moving().await {
+                Ok(false) => break,
+                Ok(true) if tokio::time::Instant::now() < deadline => continue,
+                Ok(true) => return Err("timeout waiting for focuser to settle".to_string()),
+                Err(e) => return Err(format!("error polling focuser is_moving: {}", e)),
+            }
+        }
+
+        foc.position()
+            .await
+            .map_err(|e| format!("failed to read focuser position: {}", e))
+    }
+}
+
+#[tool_router(server_handler)]
+impl McpHandler {
+    // -------------------------------------------------------------------
+    // Camera tools
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Capture an image, download image_array, save FITS file")]
+    async fn capture(
+        &self,
+        Parameters(params): Parameters<CaptureParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.do_capture(&params.camera_id, params.duration).await {
+            Ok((image_path, document_id)) => Ok(tool_success!({
+                "image_path": image_path,
+                "document_id": document_id,
+            })),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
     }
 
     #[tool(description = "Read camera capabilities: max_adu, exposure limits, sensor dimensions")]
@@ -1474,54 +1595,16 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MoveFocuserParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (foc_entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
-
-        if let Some(min) = foc_entry.config.min_position {
-            if params.position < min {
-                return Ok(tool_error!(
-                    "position out of range: {} < min_position {}",
-                    params.position,
-                    min
-                ));
-            }
+        match self
+            .do_move_focuser_blocking(&params.focuser_id, params.position)
+            .await
+        {
+            Ok(actual_position) => Ok(tool_success!({
+                "focuser_id": params.focuser_id,
+                "actual_position": actual_position,
+            })),
+            Err(e) => Ok(tool_error!("{}", e)),
         }
-        if let Some(max) = foc_entry.config.max_position {
-            if params.position > max {
-                return Ok(tool_error!(
-                    "position out of range: {} > max_position {}",
-                    params.position,
-                    max
-                ));
-            }
-        }
-
-        debug!(focuser_id = %params.focuser_id, position = params.position, "moving focuser");
-        if let Err(e) = foc.move_(params.position).await {
-            return Ok(tool_error!("failed to move focuser: {}", e));
-        }
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-        loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            match foc.is_moving().await {
-                Ok(false) => break,
-                Ok(true) if tokio::time::Instant::now() < deadline => continue,
-                Ok(true) => return Ok(tool_error!("timeout waiting for focuser to settle")),
-                Err(e) => {
-                    return Ok(tool_error!("error polling focuser is_moving: {}", e));
-                }
-            }
-        }
-
-        let actual_position = match foc.position().await {
-            Ok(p) => p,
-            Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
-        };
-
-        Ok(tool_success!({
-            "focuser_id": params.focuser_id,
-            "actual_position": actual_position,
-        }))
     }
 
     #[tool(description = "Read the current absolute position of the focuser")]
@@ -1565,6 +1648,204 @@ impl McpHandler {
             "focuser_id": params.focuser_id,
             "temperature_c": temperature_c,
         }))
+    }
+
+    // -------------------------------------------------------------------
+    // Compound: auto_focus (V-curve)
+    // -------------------------------------------------------------------
+
+    #[tool(
+        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, fit a parabola in HFR, and move the focuser to the fitted minimum"
+    )]
+    async fn auto_focus(
+        &self,
+        Parameters(params): Parameters<AutoFocusToolParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Field-presence validation runs in input order so the error
+        // message always points at the first missing field — same
+        // pattern as `measure_basic`.
+        let camera_id = match params.camera_id.as_deref() {
+            Some(s) => s.to_string(),
+            None => return Ok(tool_error!("missing required parameter: camera_id")),
+        };
+        let focuser_id = match params.focuser_id.as_deref() {
+            Some(s) => s.to_string(),
+            None => return Ok(tool_error!("missing required parameter: focuser_id")),
+        };
+        let duration = match params.duration {
+            Some(d) => d,
+            None => return Ok(tool_error!("missing required parameter: duration")),
+        };
+        let step_size = match params.step_size {
+            Some(s) => s,
+            None => return Ok(tool_error!("missing required parameter: step_size")),
+        };
+        let half_width = match params.half_width {
+            Some(s) => s,
+            None => return Ok(tool_error!("missing required parameter: half_width")),
+        };
+        let min_area = match params.min_area {
+            Some(s) => s,
+            None => return Ok(tool_error!("missing required parameter: min_area")),
+        };
+        let max_area = match params.max_area {
+            Some(s) => s,
+            None => return Ok(tool_error!("missing required parameter: max_area")),
+        };
+
+        // Resolve devices early — emits the standard
+        // "<kind> not found" / "<kind> not connected" errors expected
+        // by the BDD device-resolution scenarios. Camera order before
+        // focuser matches input order in the contract.
+        let (_cam_entry, cam) = resolve_device!(self, find_camera, &camera_id, "camera");
+        let _ = cam; // resolved purely for the connection check; do_capture re-resolves.
+        let (foc_entry, foc) = resolve_device!(self, find_focuser, &focuser_id, "focuser");
+
+        // Read the current focuser position + temperature exactly once
+        // each (per the Contract algorithm step 1) and thread the values
+        // through to both `focus_started` *and* `run_auto_focus` so the
+        // event payload and the result's `temperature_c`/sweep-grid
+        // origin can never disagree. Temperature is informational only:
+        // any read failure (NOT_IMPLEMENTED or transient) becomes
+        // `temperature_c: null`; we don't abort an auto-focus run over
+        // a missing thermistor.
+        let starting_position = match foc.position().await {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
+        };
+        let starting_temperature_c: Option<f64> = foc.temperature().await.ok();
+        self.event_bus.emit(
+            "focus_started",
+            serde_json::json!({
+                "camera_id": camera_id,
+                "focuser_id": focuser_id,
+                "position": starting_position,
+                "temperature": starting_temperature_c,
+            }),
+        );
+
+        let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
+        let af_params = imaging::tools::auto_focus::AutoFocusParams {
+            duration,
+            step_size,
+            half_width,
+            min_area,
+            max_area,
+            threshold_sigma: params.threshold_sigma,
+            min_fit_points: params.min_fit_points.unwrap_or(5),
+        };
+
+        let adapter = AutoFocusAdapter {
+            handler: self,
+            camera_id: camera_id.clone(),
+            focuser_id: focuser_id.clone(),
+        };
+
+        match imaging::tools::auto_focus::run_auto_focus(
+            &adapter,
+            &adapter,
+            &adapter,
+            bounds,
+            starting_position,
+            starting_temperature_c,
+            af_params,
+        )
+        .await
+        {
+            Ok(result) => {
+                self.event_bus.emit(
+                    "focus_complete",
+                    serde_json::json!({
+                        "camera_id": camera_id,
+                        "focuser_id": focuser_id,
+                        "position": result.best_position,
+                        "hfr": result.best_hfr,
+                        "samples_used": result.samples_used,
+                    }),
+                );
+                let curve_points =
+                    serde_json::to_value(&result.curve_points).unwrap_or(serde_json::Value::Null);
+                Ok(tool_success!({
+                    "best_position": result.best_position,
+                    "best_hfr": result.best_hfr,
+                    "final_position": result.final_position,
+                    "samples_used": result.samples_used,
+                    "curve_points": curve_points,
+                    "temperature_c": result.temperature_c,
+                }))
+            }
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+}
+
+/// Adapter that satisfies all three [`auto_focus`] traits
+/// (`FocuserOps`, `CaptureOps`, `MeasureOps`) by delegating to the
+/// existing [`McpHandler`] helpers (`do_move_focuser_blocking`,
+/// `do_capture`, `measure_via_document` + cache `put_section`).
+///
+/// Keeps the compound tool's wiring close to the corresponding
+/// primitive tools: same bounds-check / poll semantics on focuser
+/// motion, same FITS write / cache insert / event emission on
+/// capture, same `image_analysis` section persistence on measure.
+struct AutoFocusAdapter<'a> {
+    handler: &'a McpHandler,
+    camera_id: String,
+    focuser_id: String,
+}
+
+#[async_trait::async_trait]
+impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
+    async fn move_to(&self, position: i32) -> std::result::Result<i32, String> {
+        self.handler
+            .do_move_focuser_blocking(&self.focuser_id, position)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
+    async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
+        let (_image_path, document_id) = self.handler.do_capture(&self.camera_id, duration).await?;
+        Ok(document_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl imaging::tools::auto_focus::MeasureOps for AutoFocusAdapter<'_> {
+    async fn measure(
+        &self,
+        document_id: &str,
+        min_area: usize,
+        max_area: usize,
+        threshold_sigma: f64,
+    ) -> std::result::Result<imaging::tools::auto_focus::HfrSample, String> {
+        let resolved = ResolvedParams {
+            threshold_sigma,
+            min_area,
+            max_area,
+        };
+        let result = self
+            .handler
+            .measure_via_document(document_id, &resolved)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Persist the per-frame `image_analysis` section, matching the
+        // standalone `measure_basic` tool's side effect — auto_focus is
+        // explicitly composed of measure_basic calls per the contract.
+        let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+        if let Err(e) = self
+            .handler
+            .image_cache
+            .put_section(document_id, "image_analysis", value)
+            .await
+        {
+            debug!(error = %e, document_id, "failed to persist image_analysis section");
+        }
+        Ok(imaging::tools::auto_focus::HfrSample {
+            hfr: result.hfr,
+            star_count: result.star_count,
+        })
     }
 }
 

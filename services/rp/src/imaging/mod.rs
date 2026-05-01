@@ -1,12 +1,25 @@
-//! Image analysis: pure kernels and the compositional tools that bind
-//! them together. FITS I/O, the image cache, and exposure-document
-//! storage live in [`crate::persistence`] — this module is async- and
-//! I/O-free so kernels can be unit-tested in isolation.
+//! Image analysis: pure kernels, compositional analyzers, and compound
+//! equipment-driving tools. FITS I/O, the image cache, and
+//! exposure-document storage live in [`crate::persistence`] —
+//! [`analysis`] kernels and the pure compositional analyzers in
+//! [`tools`] (`measure_basic`, `measure_stars`) are async- and
+//! I/O-free so they can be unit-tested in isolation.
+//!
+//! Compound tools that drive equipment loops (`auto_focus` and the
+//! planned `center_on_target`) also live under [`tools`]. They are
+//! async and they take device-trait objects, so they are *not*
+//! async-/I/O-free at the top level — but the math and grid logic
+//! they bundle (`build_grid`, `fit_parabola`, `validate_params`) are
+//! still pure helpers that test independently. The MCP wrappers in
+//! `mcp.rs` provide concrete adapters that bind the equipment traits
+//! to live Alpaca clients; tests substitute synthetic adapters.
 //!
 //! Submodules:
 //! - [`analysis`]: single-purpose math (background, stars, hfr, fwhm,
-//!   snr, stats, pixel trait).
-//! - [`tools`]: compositional analyzers (measure_basic, measure_stars).
+//!   snr, stats, pixel trait). Pure, generic over [`Pixel`], no I/O.
+//! - [`tools`]: compositional analyzers (`measure_basic`,
+//!   `measure_stars`) plus compound equipment-driving tools
+//!   (`auto_focus`).
 //!
 //! The flat re-exports below preserve the previous `crate::imaging::*`
 //! call-site shape so MCP wiring doesn't have to know which submodule
