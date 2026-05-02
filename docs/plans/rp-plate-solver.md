@@ -66,7 +66,7 @@ independently bounded by an explicit supervisor:
 |--------|-----------|-----------|-----------|
 | `rp` (gateway) | session-state owner | Sentinel | event-stream disconnect → operator-configured restart command |
 | `rp-plate-solver` (wrapper) | one solver process; no session state | Sentinel | operator-configured restart command (e.g. `systemctl restart rp-plate-solver`) |
-| `astap_cli` (child) | one solve attempt | the wrapper itself | per-request wall-clock deadline → SIGTERM → SIGKILL after 2 s grace |
+| `astap_cli` (child) | one solve attempt | the wrapper itself | per-request wall-clock deadline → graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` then `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) then `TerminateProcess`. Pattern follows `crates/bdd-infra/src/lib.rs`. |
 
 Belt and suspenders: **rp's HTTP client to the wrapper has its own
 outer timeout** (`plate_solver.timeout_secs` in rp config). Even if the
@@ -124,9 +124,13 @@ for scenarios that want to assert the full request → subprocess pipeline
 preserves what the runner builds.
 
 `mock_astap` is not feature-gated — same as `mock_phd2`, it's a regular
-`[[bin]]` that always builds. BDD discovers it via
-`env!("CARGO_BIN_EXE_mock_astap")` (cleaner than the path-walking
-`mock_phd2` does, because BDD lives in the same crate).
+`[[bin]]` that always builds. BDD discovers it in this order:
+explicit `MOCK_ASTAP_BINARY` env var (Bazel test targets set it) →
+`option_env!("CARGO_BIN_EXE_mock_astap")` (Cargo defines it for
+`[[test]]` crates including `tests/bdd.rs`). Both fallbacks let the
+suite run under Cargo and Bazel without divergent code paths. Pure
+`env!()` is intentionally avoided because `CARGO_BIN_EXE_*` is unset
+under Bazel.
 
 This pattern unifies what would otherwise be three separate test
 artifacts (shell scripts for happy-path / failure / hang, plus a
@@ -362,7 +366,9 @@ Phase 5 below addresses the gap.
 - Single endpoint `POST /api/v1/solve` and `GET /health`.
 - ASTAP runner only.
 - Single-flight solves (configurable max concurrency, default 1).
-- Per-request timeout with SIGTERM → SIGKILL escalation.
+- Per-request timeout with graceful → 2 s grace → force-kill
+  escalation (Unix: `SIGTERM` → `SIGKILL`; Windows:
+  `CTRL_BREAK_EVENT` → `TerminateProcess`).
 - Startup config validation.
 - Sentinel-friendly: prints `bound_addr=` to stdout (per
   `bdd-infra` convention), responds to SIGTERM cleanly, exits non-zero
@@ -428,10 +434,12 @@ services/rp-plate-solver/
                                 # surface with named MOCK_ASTAP_MODE modes
                                 # (normal | exit_failure | hang |
                                 # ignore_sigterm | malformed_wcs | no_wcs).
-                                # Discovered by BDD via
-                                # env!("CARGO_BIN_EXE_mock_astap"). Not
-                                # feature-gated — always built. Pattern
-                                # mirrors services/phd2-guider/src/bin/mock_phd2.rs.
+                                # Discovered by BDD/integration tests
+                                # via MOCK_ASTAP_BINARY env var (Bazel)
+                                # → option_env!("CARGO_BIN_EXE_mock_astap")
+                                # (Cargo). Not feature-gated — always
+                                # built. Pattern mirrors
+                                # services/phd2-guider/src/bin/mock_phd2.rs.
 ```
 
 The closest workspace reference is `services/phd2-guider/`. Note the
@@ -490,9 +498,10 @@ Status: **not started.**
       coverage of the hint-flag pass-through contract; BDD asserts
       end-to-end behavior, not argv shape.
 - [ ] `runner/wcs.rs` — thin adapter that reads the `.wcs` sidecar
-      via the existing `fitsrs` (`wcs.cargo.toml` deps: `fitsrs`,
-      `wcs`; both already transitive via `rp-fits`) and deserializes
-      the FITS header into `wcs::params::WCSParams`. Returns the four
+      via the existing `fitsrs` (add `fitsrs` and `wcs` to the new
+      crate's `Cargo.toml`; both are already transitive via
+      `rp-fits`, so no new download) and deserializes the FITS
+      header into `wcs::params::WCSParams`. Returns the four
       fields the HTTP contract requires (CRVAL1, CRVAL2, |CDELT1|,
       CROTA2), pulled either directly from `WCSParams` or via a
       `wcs::WCS::new(&params)` projection wrapper (the latter buys
@@ -507,23 +516,42 @@ Status: **not started.**
       required key → named error; ASTAP-specific extra keys →
       ignored; the spike's specific quirk path if any.
 - [ ] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
-      `tokio::process::Command`, races `child.wait()` against
-      `tokio::time::sleep(deadline)`. On deadline expiry, sends
-      SIGTERM, waits 2 s, sends SIGKILL. Returns a typed outcome
-      (`Exited(status)` / `TimedOutTerminated` / `TimedOutKilled`).
-      Unit tests use `mock_astap` (built in this same phase, see
-      below):
-      - **Exited** — `MOCK_ASTAP_MODE=normal` with a generous deadline.
-      - **TimedOutTerminated** — `MOCK_ASTAP_MODE=hang` with a 100 ms
-        deadline; mock_astap responds to SIGTERM cleanly.
-      - **TimedOutKilled** — `MOCK_ASTAP_MODE=ignore_sigterm` with a
-        100 ms deadline; mock_astap traps SIGTERM, must be SIGKILLed
-        after the 2 s grace.
+      `tokio::process::Command` configured with `kill_on_drop(true)`
+      (and on Windows also placed in a job object via the `windows`
+      crate so OS cleanup catches dropped handles), races
+      `child.wait()` against `tokio::time::sleep(deadline)`. On
+      deadline expiry, sends the platform's graceful signal
+      (`SIGTERM` on Unix; `CTRL_BREAK_EVENT` on Windows via
+      `GenerateConsoleCtrlEvent`, requiring `CREATE_NEW_PROCESS_GROUP`
+      at spawn). Waits 2 s, then sends the platform's force-kill
+      (`SIGKILL` on Unix; `TerminateProcess` on Windows). Returns a
+      typed outcome (`Exited(status)` / `TimedOutTerminated` /
+      `TimedOutKilled`). The pure-logic side of supervision
+      (deadline arithmetic, outcome decoding) is unit-tested
+      `#[cfg(test)] mod tests` in-source.
+- [ ] `tests/supervision_integration.rs` — integration tests for
+      the spawn-based supervision arms (the only place real child
+      processes are spawned in this crate's test surface). Three
+      arms drive `mock_astap`:
+      - **Exited** — `MOCK_ASTAP_MODE=normal` with a generous
+        deadline.
+      - **TimedOutTerminated** — `MOCK_ASTAP_MODE=hang` with a
+        100 ms deadline; mock_astap responds to the graceful signal
+        cleanly.
+      - **TimedOutKilled** — `MOCK_ASTAP_MODE=ignore_sigterm` with
+        a 100 ms deadline; mock_astap traps the graceful signal,
+        must be force-killed after the 2 s grace.
 
-      Resolved via `env!("CARGO_BIN_EXE_mock_astap")`. Same binary
-      drives both supervision unit tests and BDD scenarios — one
-      artifact, one set of named modes, one place to extend when new
-      failure modes need coverage.
+      Binary discovery in this order: explicit `MOCK_ASTAP_BINARY`
+      env var (set by the Bazel test target) → `option_env!(
+      "CARGO_BIN_EXE_mock_astap")` (set by Cargo for `[[test]]`
+      crates). Test fails with a diagnostic pointing at both
+      mechanisms when neither resolves. Same shape
+      `services/phd2-guider/tests/test_integration.rs` uses for
+      `mock_phd2`. **`env!()` does not work** here because
+      `CARGO_BIN_EXE_*` is unset for `#[cfg(test)] mod tests`
+      inside `src/` and unset under Bazel entirely — the `option_env!
+      ` + `MOCK_ASTAP_BINARY` fallback handles both.
 - [ ] `src/bin/mock_astap.rs` — the `[[bin]]` itself. Implements the
       six `MOCK_ASTAP_MODE` modes from the design decision above. On
       Windows, `ignore_sigterm` uses `SetConsoleCtrlHandler` to
@@ -601,9 +629,12 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       `docs/skills/testing.md` §2.7.
 - [ ] `tests/bdd/world.rs` — `PlateSolverWorld` with
       `service_handle: Option<ServiceHandle>`, `last_response:
-      Option<reqwest::Response>`, `temp_dir: Option<TempDir>`. Resolves
-      the `mock_astap` path from `env!("CARGO_BIN_EXE_mock_astap")` at
-      compile time — no env vars to set, no path walking.
+      Option<reqwest::Response>`, `temp_dir: Option<TempDir>`.
+      Resolves the `mock_astap` path in this order:
+      `MOCK_ASTAP_BINARY` env var (Bazel) →
+      `option_env!("CARGO_BIN_EXE_mock_astap")` (Cargo). Same
+      lookup the supervision integration tests use; falls back
+      cleanly across both build systems.
 - [ ] `tests/bdd/steps/*.rs` — step definitions. Reuse the
       `bdd-infra` `ServiceHandle` for the wrapper spawn/stop. No new
       feature flag on `bdd-infra` is needed — the wrapper does not
