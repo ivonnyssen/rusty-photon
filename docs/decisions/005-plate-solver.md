@@ -65,9 +65,11 @@ Windows x64, and Windows ARM64.
 - **Operational fit.** Single static binary per platform; no shared-lib
   dependencies; FITS-native input; documented `-ra / -spd / -fov / -r`
   hint flags; writes a `.wcs` sidecar that is straightforward to parse.
-- **Cross-platform, including Pi 5 and Apple Silicon.** Verified by the
-  spike on Linux ARM64 (see [Verification Spike](#verification-spike)
-  for the result captured at ADR-time).
+- **Cross-platform, including Pi 5 and Apple Silicon.** Verified by
+  the [`install-astap`](../../.github/actions/install-astap/action.yml)
+  smoke workflow on Linux x64 + macOS arm64 + Windows x64, plus a
+  manual Linux aarch64 install captured at ADR-time. See
+  [Verification Spike](#verification-spike) for the table of results.
 - **Active.** Releases through 2026-04-26 on the Windows line, 2026-04-28
   on Linux. The dominant default solver in the current amateur stack
   (N.I.N.A., APT, CCDciel).
@@ -293,61 +295,82 @@ domain fit. Revisit in 6–12 months.
 
 ## Verification Spike
 
-Two reproducible artefacts back the verification work:
+The verification work has a single artefact: the local
+[`install-astap`](../../.github/actions/install-astap/action.yml)
+composite action plus the
+[`install-astap.yml`](../../.github/workflows/install-astap.yml)
+workflow that exercises it on `ubuntu-latest`, `macos-latest`, and
+`windows-latest`. The action is itself the install recipe — its per-OS
+table names the SourceForge archive each platform downloads from. The
+smoke workflow forces a fresh upstream download on every run (via
+`cache-key-suffix: github.run_id`) so upstream regressions surface
+within a CI cycle. This mirrors the model `install-omnisim` follows
+for the ASCOM simulator.
 
-1. **`scripts/astap-spike.sh`** — operator-side harness. Downloads
-   the appropriate ASTAP CLI for the host platform, runs it with no
-   arguments to confirm the binary executes and emits its self-help
-   banner, and (optionally, with `--with-solve <fits>` and a fetched
-   D05 database) performs a real solve and parses the resulting
-   `.wcs` sidecar. Not wired into `cargo test` or CI — an operator
-   tool that documents the install recipe end to end.
-2. **`.github/actions/install-astap`** — CI-side composite action
-   that performs the same install steps inside GitHub-hosted
-   runners. A small workflow exercises the action on
-   `ubuntu-latest`, `macos-latest`, and `windows-latest` to keep the
-   per-platform install paths green as a regression target. This is
-   the same model `install-omnisim` follows for the ASCOM simulator.
+### Operator verification, after a BYO install
 
-### Spike result on Linux aarch64 (this machine)
+An operator who has installed ASTAP on their own machine (per the BYO
+posture this ADR adopts) can verify it works in three commands:
 
-Captured 2026-05-01 against ASTAP CLI release 2026.02.09. See
-`scripts/astap-spike.sh` for the exact command. The harness:
+```sh
+# 1. Sanity-check the binary: prints the banner and a usage block.
+"$ASTAP_BINARY"
 
-1. Downloaded `astap_command-line_version_Linux_aarch64.zip` (≈ 300 KB)
-   from SourceForge.
-2. Unzipped to `astap_cli` in a tempdir.
-3. Invoked `./astap_cli` with no arguments (ASTAP's convention for
-   showing the help banner).
-4. Confirmed the banner: `ASTAP astrometric solver version
-   CLI-2026.02.09`.
+# 2. End-to-end solve against a known FITS, with a star database
+#    matched to the field of view (D05 for 0.6°-6° FOV).
+"$ASTAP_BINARY" -f path/to/your.fits -d "$ASTAP_DB_DIR" -wcs
 
-The actual end-to-end solve path (D05 download + invoke against a known
-FITS) is documented in the harness but is gated behind the
-`--with-solve` flag because the database download is ≈ 100 MB. That
-verification is left for the per-platform passes outlined under
-[Open Questions](#open-questions).
+# 3. The previous step writes path/to/your.wcs alongside the FITS.
+#    Read CRVAL1/CRVAL2 (RA/Dec at center), CDELT1/CDELT2 (pixel
+#    scale), CROTA2 (rotation).
+cat path/to/your.wcs
+```
+
+The earlier `scripts/astap-spike.sh` operator harness was deleted
+once `install-astap` matured: the script duplicated the action's
+per-OS table (causing divergence bugs), and its auto-download
+behaviour conflicted with the BYO posture this ADR adopts. The
+action remains the canonical install recipe for both CI and human
+operators reading the file.
+
+### Smoke results captured during ADR drafting
+
+| Platform | ASTAP CLI version | Source | Result |
+|----------|------------------|--------|--------|
+| Linux aarch64 | CLI-2026.02.09 | manual download from SourceForge (2026-05-01) | banner OK |
+| Linux x64 | latest | `install-astap` smoke workflow | banner OK |
+| macOS arm64 | latest | `install-astap` smoke workflow | banner OK |
+| Windows x64 | CLI-2026.03.05 | `install-astap` smoke workflow | banner OK |
+
+End-to-end solve verification (D05 database + a known FITS) is left
+to the per-platform passes outlined under
+[Open Questions](#open-questions-to-retire-before-rp-plate-solver-ships).
 
 ### Open questions to retire before `rp-plate-solver` ships
 
 Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
 
-1. **macOS Apple Silicon** — run the spike (and the
-   `install-astap` action) including a `--with-solve` pass on macOS
-   arm64. Confirm `xattr -d com.apple.quarantine` is sufficient or
-   whether re-signing with the project's Developer ID is required.
-2. **Windows x64** — exercise the install path on Windows native.
-   Confirm the download-and-extract flow works without WSL and that
-   `astap_cli.exe` runs from an arbitrary user-chosen directory.
+1. **macOS Apple Silicon — end-to-end solve.** The `install-astap`
+   smoke workflow already covers binary install + banner. Add an
+   end-to-end solve pass (manual or in the workflow with
+   `download-database: true` and a publicly-fetchable test FITS).
+   Confirm `xattr -d com.apple.quarantine` is sufficient or whether
+   re-signing with the project's Developer ID is required.
+2. **Windows x64 — end-to-end solve.** Same shape as item 1 — the
+   smoke workflow proves the binary runs; outstanding question is
+   whether a real solve completes within budget on a stock Windows
+   runner.
 3. **Windows ARM64** — the upstream Windows ARM64 build is one
-   release behind x64. Confirm parity is acceptable for v1; if not,
-   document a graceful "no Windows ARM64 support yet" fallback and
-   gate the install-astap action accordingly.
-4. **End-to-end solve timing** — run `--with-solve` against
-   representative FITS frames on each target platform. Confirm the
-   "few seconds with hint" budget holds at the upper end of what
-   `rp` will actually feed (full-frame 2k–4k Bayer-debayered
-   captures).
+   release behind x64. Confirm parity is acceptable for v1 (no
+   GitHub-hosted ARM64 Windows runner today, so this is a
+   manual-machine verification); if not, document a graceful "no
+   Windows ARM64 support yet" fallback and remove the `Windows-ARM64`
+   row from the install-astap action's per-OS table.
+4. **End-to-end solve timing** — once items 1–3 are wired,
+   capture timing on representative FITS frames on each target
+   platform. Confirm the "few seconds with hint" budget holds at
+   the upper end of what `rp` will actually feed (full-frame 2k–4k
+   Bayer-debayered captures).
 5. **LGPL-3.0 §4 / §6 review under BYO** — confirm that "execute a
    binary the operator installed" does not engage either clause; that
    the `install-astap` GitHub action does not constitute conveyance
@@ -434,7 +457,9 @@ the question reduces to a sanity check," not "conveyance compliant."
 - The rp-plate-solver crate's own tests will mock the binary subprocess
   (per `docs/decisions/004-testing-strategy-for-http-client-error-paths.md`'s
   abstract-the-trait pattern). End-to-end ASTAP execution is verified
-  manually via the spike harness, not in `cargo test`.
+  by the `install-astap` smoke workflow plus the per-platform
+  end-to-end solve passes outlined in Open Questions 1–4 — not in
+  `cargo test`.
 
 ### Compatibility With Existing Decisions
 
