@@ -3691,9 +3691,6 @@ dependencies = [
  "async-trait",
  "axum",
  "cargo-husky",
- "clap",
- "fitsrs",
- "humantime",
  "humantime-serde",
  "libc",
  "mockall",
@@ -3704,8 +3701,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
- "wcs",
 ]
 
 [[package]]

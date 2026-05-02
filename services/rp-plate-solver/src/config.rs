@@ -183,14 +183,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let bin = fake_binary(&dir, "astap_cli");
         let db = fake_db_dir(&dir);
-        let body = format!(
-            r#"{{
-              "astap_binary_path": "{}",
-              "astap_db_directory": "{}"
-            }}"#,
-            bin.display(),
-            db.display()
-        );
+        // Use serde_json to construct the body so Windows paths
+        // (which contain backslashes) are escaped properly. A raw
+        // format!() would put a literal `\b` into the JSON string,
+        // which the parser rejects as an invalid escape.
+        let body = serde_json::json!({
+            "astap_binary_path": bin.to_string_lossy(),
+            "astap_db_directory": db.to_string_lossy(),
+        })
+        .to_string();
         let cfg_path = write_config(&dir, &body);
         let cfg = load_config(&cfg_path).unwrap();
         cfg.validate().unwrap();
@@ -206,12 +207,10 @@ mod tests {
     fn missing_binary_path_field_fails_to_parse() {
         let dir = TempDir::new().unwrap();
         let db = fake_db_dir(&dir);
-        let body = format!(
-            r#"{{
-              "astap_db_directory": "{}"
-            }}"#,
-            db.display()
-        );
+        let body = serde_json::json!({
+            "astap_db_directory": db.to_string_lossy(),
+        })
+        .to_string();
         let cfg_path = write_config(&dir, &body);
         let err = load_config(&cfg_path).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));

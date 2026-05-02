@@ -19,7 +19,6 @@ rust_binary(
     srcs = ["src/bin/mock_astap.rs"],
     aliases = aliases(),
     edition = "2021",
-    data = ["tests/fixtures/sample.wcs.txt"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = [":rp-plate-solver_lib"] + all_crate_deps(normal = True),

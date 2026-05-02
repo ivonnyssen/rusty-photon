@@ -20,7 +20,31 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-const CANNED_WCS: &str = include_str!("../../tests/fixtures/sample.wcs.txt");
+/// Canned `.wcs` sidecar content for `MOCK_ASTAP_MODE=normal`. Inlined
+/// rather than `include_str!`-ed from `tests/fixtures/` so Bazel's
+/// sandboxed compilation doesn't need a `data` dependency to find it.
+/// Each card is exactly 80 ASCII characters; total length is a multiple
+/// of 80.
+const CANNED_WCS: &str = concat!(
+    "SIMPLE  =                    T                                                  ",
+    "BITPIX  =                   16                                                  ",
+    "NAXIS   =                    0                                                  ",
+    "CRVAL1  =              10.6848                                                  ",
+    "CRVAL2  =              41.2690                                                  ",
+    "CDELT1  =         -0.000291667                                                  ",
+    "CDELT2  =          0.000291667                                                  ",
+    "CROTA2  =                 12.3                                                  ",
+    "COMMENT ASTAP-CLI mock_astap test double                                        ",
+    "END                                                                             ",
+);
+
+#[cfg(debug_assertions)]
+const _: () = {
+    // Compile-time guard: every card in CANNED_WCS must be exactly 80 ASCII
+    // bytes. Total length must be a multiple of 80. The parser depends on
+    // this layout; a stray space here would propagate as a silent bug.
+    assert!(CANNED_WCS.len().is_multiple_of(80));
+};
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();

@@ -48,32 +48,50 @@ pub async fn spawn_with_deadline(
         .id()
         .ok_or_else(|| std::io::Error::other("spawned child has no PID"))?;
 
-    // Take stderr now so we can collect its tail regardless of which arm
-    // of the race fires.
-    let stderr = child.stderr.take();
+    // Drain stderr concurrently in a background task. If we instead read
+    // it after `wait()`, a child writing >64 KiB to stderr would fill the
+    // OS pipe buffer and block itself before exiting — `wait()` would
+    // never return, and the deadline race could not save us. The drain
+    // task captures up to STDERR_TAIL_BYTES into a buffer and discards
+    // the rest (so the pipe stays drained without unbounded memory).
+    let stderr_task = child.stderr.take().map(spawn_stderr_drain);
 
-    tokio::select! {
+    let outcome = tokio::select! {
         biased;
         result = child.wait() => {
             let status = result?;
-            let stderr_tail = collect_stderr_tail(stderr).await;
-            Ok(SpawnOutcome::Exited { status, stderr_tail })
+            SpawnOutcome::Exited { status, stderr_tail: String::new() }
         }
         _ = tokio::time::sleep(deadline) => {
             // Deadline. Send graceful signal, wait grace period, escalate.
             send_graceful(pid);
             match tokio::time::timeout(GRACE_PERIOD, child.wait()).await {
-                Ok(_status) => Ok(SpawnOutcome::TimedOutTerminated),
+                Ok(_status) => SpawnOutcome::TimedOutTerminated,
                 Err(_) => {
                     // Force-kill. tokio's Child::kill sends SIGKILL on Unix
                     // and TerminateProcess on Windows.
                     let _ = child.start_kill();
                     let _ = child.wait().await;
-                    Ok(SpawnOutcome::TimedOutKilled)
+                    SpawnOutcome::TimedOutKilled
                 }
             }
         }
-    }
+    };
+
+    // Collect the drained stderr tail. Only carried in the Exited variant
+    // because the timeout variants do not include stderr in their HTTP
+    // response per the contract.
+    let stderr_tail = match stderr_task {
+        Some(t) => t.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    Ok(match outcome {
+        SpawnOutcome::Exited { status, .. } => SpawnOutcome::Exited {
+            status,
+            stderr_tail,
+        },
+        other => other,
+    })
 }
 
 /// Send the platform's graceful-shutdown signal to a process. Best-effort:
@@ -114,21 +132,52 @@ fn send_graceful(pid: u32) {
     }
 }
 
-/// Read up to ~4 KiB of the child's stderr. Returns an empty string if no
-/// stderr was captured or the read failed.
-async fn collect_stderr_tail(stderr: Option<tokio::process::ChildStderr>) -> String {
-    let Some(mut s) = stderr else {
-        return String::new();
-    };
-    let mut buf = Vec::with_capacity(4096);
-    let _ = s.read_to_end(&mut buf).await;
-    let text = String::from_utf8_lossy(&buf).to_string();
-    // Truncate to last 4096 bytes if very long.
-    if text.len() > 4096 {
-        text[text.len() - 4096..].to_string()
-    } else {
-        text
-    }
+/// Maximum bytes of stderr captured for the response. Beyond this, the
+/// drain task keeps reading (to keep the pipe drained) but discards the
+/// bytes.
+const STDERR_TAIL_BYTES: usize = 4096;
+
+/// Spawn a background task that drains `stderr` indefinitely while
+/// preserving the first `STDERR_TAIL_BYTES` of output. Returns a join
+/// handle that resolves to the captured prefix as a `String`.
+///
+/// The drain pattern avoids two failure modes the older read-after-wait
+/// approach was vulnerable to:
+///
+/// 1. **Pipe-fill deadlock** — a child writing >64 KiB to stderr would
+///    fill the OS pipe buffer and block itself before exiting,
+///    preventing `wait()` from returning. The drain task is always
+///    active concurrently, so the pipe is kept clear regardless of
+///    output volume.
+/// 2. **Unbounded memory** — `read_to_end` would buffer the entire
+///    stream before any truncation. The drain task copies at most
+///    `STDERR_TAIL_BYTES` bytes into the captured buffer, then keeps
+///    reading into a discard buffer.
+///
+/// The captured buffer is `Vec<u8>`; `String::from_utf8_lossy` runs
+/// once at the end on the bounded slice, so there is no UTF-8 boundary
+/// risk from mid-string truncation.
+fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut captured: Vec<u8> = Vec::with_capacity(STDERR_TAIL_BYTES);
+        let mut chunk = [0u8; 1024];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if captured.len() < STDERR_TAIL_BYTES {
+                        let take = n.min(STDERR_TAIL_BYTES - captured.len());
+                        captured.extend_from_slice(&chunk[..take]);
+                    }
+                    // Past the limit: continue draining the pipe so the
+                    // child is never blocked on a full buffer, but
+                    // discard the bytes.
+                }
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&captured).into_owned()
+    })
 }
 
 #[cfg(test)]
