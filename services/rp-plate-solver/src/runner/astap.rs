@@ -21,6 +21,7 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 pub struct AstapCliRunner {
     binary_path: PathBuf,
     db_directory: PathBuf,
+    extra_env: Vec<(String, String)>,
 }
 
 impl AstapCliRunner {
@@ -28,7 +29,18 @@ impl AstapCliRunner {
         Self {
             binary_path,
             db_directory,
+            extra_env: Vec::new(),
         }
+    }
+
+    /// Add an environment variable to set on every spawned `astap_cli`
+    /// child. Useful for operator-controlled tunables (locale, library
+    /// paths) and for integration tests that drive `mock_astap`'s
+    /// `MOCK_ASTAP_MODE` per-test without process-wide `env::set_var`
+    /// races.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_env.push((key.into(), value.into()));
+        self
     }
 
     /// Build the `Command` argv from a `SolveRequest` without spawning.
@@ -57,6 +69,10 @@ impl AstapCliRunner {
 
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::piped());
+
+        for (k, v) in &self.extra_env {
+            cmd.env(k, v);
+        }
 
         #[cfg(windows)]
         {
