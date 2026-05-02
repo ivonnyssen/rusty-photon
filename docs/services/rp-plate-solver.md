@@ -94,8 +94,13 @@ states the behavior, not the wire format details.
 5. Service waits for the child under the request's `timeout`
    (defaulting to `default_solve_timeout` from config).
 6. On clean exit with zero status, service reads the `.wcs` sidecar
-   ASTAP wrote next to the FITS, parses the four required fields,
-   and returns them.
+   ASTAP wrote next to the FITS via `fitsrs` (the workspace's
+   existing FITS library), deserializes the header into
+   `wcs::params::WCSParams` (cds-astro/wcs-rs, already a transitive
+   dep), and extracts the four fields the response requires (CRVAL1,
+   CRVAL2, |CDELT1|, CROTA2). The wrapper does not hand-roll
+   FITS-header parsing — see the implementation plan §"WCS parsing
+   via `fitsrs` + `wcs`, not hand-rolled".
 7. Service releases the semaphore.
 
 **Error paths** all return the structured error envelope frozen in
