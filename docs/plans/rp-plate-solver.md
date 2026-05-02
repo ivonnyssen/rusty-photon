@@ -197,10 +197,10 @@ unless the `ASTAP_BINARY` env var is set:
 
 ```rust
 .filter_run("tests/features", |feat, _rule, sc| {
-    let is_wip = feat.tags.iter().any(|t| t == "@wip")
-        || sc.tags.iter().any(|t| t == "@wip");
-    let needs_astap = feat.tags.iter().any(|t| t == "@requires-astap")
-        || sc.tags.iter().any(|t| t == "@requires-astap");
+    let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
+        || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
+    let needs_astap = feat.tags.iter().any(|t| t == "requires-astap" || t == "@requires-astap")
+        || sc.tags.iter().any(|t| t == "requires-astap" || t == "@requires-astap");
     let astap_available = std::env::var("ASTAP_BINARY").is_ok();
     !is_wip && (!needs_astap || astap_available)
 })
@@ -253,8 +253,8 @@ Request body (JSON):
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `fits_path` | absolute path string | yes | Must be readable by the wrapper process. Path-based input matches ADR-005's "rp and the plate solver share a filesystem" contract — no pixel bytes over HTTP. |
-| `ra_hint` | f64 (decimal hours, 0–24) | no | Maps to ASTAP `-ra`. |
-| `dec_hint` | f64 (decimal degrees, −90–90) | no | Maps to ASTAP `-spd` after south-pole-distance conversion. |
+| `ra_hint` | f64 (decimal degrees, 0–360) | no | Wrapper converts to decimal hours (`degrees / 15`) before passing to ASTAP `-ra`. Degrees on the wire matches the `ra_center` response field (sourced from `CRVAL1`, also degrees). |
+| `dec_hint` | f64 (decimal degrees, −90–90) | no | Wrapper converts to south-pole-distance (`90 + dec`) before passing to ASTAP `-spd`. |
 | `fov_hint_deg` | f64 (degrees, image height) | no | Maps to ASTAP `-fov`. |
 | `search_radius_deg` | f64 (degrees) | no | Maps to ASTAP `-r`. Defaults to ASTAP's own default when omitted. |
 | `timeout` | humantime string | no | Wrapper's wall-clock deadline for the ASTAP child. Defaults to `30s`. Bounded by wrapper-config max. |
@@ -303,8 +303,16 @@ Error codes (frozen):
 
 Returns `200 OK` with `{"status": "ok"}` when the wrapper has passed
 startup config validation and the ASTAP binary is still executable on
-disk. `503` otherwise. Sentinel's "Responsive but stuck" check at
-`rp.md` line 2143 uses this endpoint.
+disk. `503` otherwise.
+
+This is the standard HTTP health-probe pattern, exposed for
+operational tooling and any future Sentinel probe path. Today,
+Sentinel's documented watchdog flow (`rp.md` §"Sentinel Watchdog
+Integration") only describes pinging Alpaca service endpoints, and
+`rp-plate-solver` is not Alpaca. Whether Sentinel is wired to use
+this `/health` (vs relying purely on event-stream signals and
+configured restart commands) is a Sentinel-side design question.
+Phase 5 below addresses the gap.
 
 ## MVP scope
 
@@ -594,9 +602,17 @@ Status: **not started.**
       service entry for `rp-plate-solver` without code changes. If it
       does, this phase is docs-only; if it does not, the gap is
       called out in a follow-up issue.
-- [ ] Sentinel's "Responsive but stuck" check uses `GET /health` on
-      this service. The check happens via Sentinel's existing health
-      probe machinery; no per-service code in `rp-plate-solver`.
+- [ ] Decide whether Sentinel should probe `rp-plate-solver`'s
+      `/health` or rely on event-stream + restart-command alone. The
+      currently-documented Sentinel watchdog flow only pings Alpaca
+      service endpoints; `rp-plate-solver` is not Alpaca. Two paths:
+      (a) extend Sentinel's health-probe surface to support
+      configurable HTTP `/health` per rp-managed service (Sentinel
+      design change); (b) rely on event-stream-derived deadline
+      signals from rp's compound tools and configured restart
+      commands, leaving `/health` as operator-only. Pick one in this
+      phase; the wrapper exposes `/health` either way so option (a)
+      stays available for later.
 
 **Exit criteria:** an operator can configure Sentinel to restart
 `rp-plate-solver` on hang/crash by following the README. No regression
