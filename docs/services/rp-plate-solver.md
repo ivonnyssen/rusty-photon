@@ -115,42 +115,70 @@ operator can diagnose without console access to the wrapper.
 
 #### `GET /health`
 
-Returns `200 OK` with `{"status": "ok"}` when:
+Returns `200 OK` with `{"status": "ok"}` when **all** of:
 
-- Startup config validation passed, AND
+- Startup config validation passed.
 - The configured `astap_binary_path` is still a regular file and
   still executable by the wrapper process at probe time.
+- The configured `astap_db_directory` still exists and is still a
+  directory at probe time.
 
-Returns `503 Service Unavailable` otherwise. Sentinel uses this
-endpoint as the "Responsive but stuck" probe described in `rp.md`
-§"Sentinel Watchdog Integration" — a `503` (or no response within
-Sentinel's HTTP timeout) is the trigger for Sentinel to escalate to
-the configured restart command.
+Returns `503 Service Unavailable` if any of those checks fail. Both
+runtime checks must pass: a binary present without its database
+cannot solve, and a database without an executable binary cannot
+either. The probe set matches the startup-validation set so
+"healthy at probe time" means "still capable of solving."
 
-The probe is intentionally cheap: a stat on the binary path, no
-subprocess spawn. Sentinel may probe at high frequency without
-costing wrapper performance.
+The probe is intentionally cheap: two filesystem stats, no
+subprocess spawn. Sentinel (or any operational tooling) may probe
+at high frequency without costing wrapper performance.
+
+How Sentinel uses this endpoint — vs. relying purely on event-stream
+signals and the operator-configured restart command — is a
+Sentinel-side design question. The currently-documented Sentinel
+watchdog flow in `rp.md` only describes Alpaca service health
+probes; whether to extend it to non-Alpaca rp-managed services is
+addressed by the implementation plan's Phase 5.
 
 ### Subprocess Supervision
 
 Every solve request is bounded by a wall-clock deadline. The
 escalation sequence on deadline expiry is:
 
-1. **t = deadline:** send SIGTERM (or `TerminateProcess` on Windows).
+1. **t = deadline (graceful stage):**
+   - Unix: `SIGTERM` to the child.
+   - Windows: `CTRL_BREAK_EVENT` delivered via
+     `GenerateConsoleCtrlEvent` to the child's process group. The
+     child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event
+     reaches it without affecting the wrapper. Pattern follows
+     `crates/bdd-infra/src/lib.rs`.
+
    ASTAP normally responds cleanly within ~100 ms.
-2. **t = deadline + 2 s:** if the child has not exited, send SIGKILL
-   (or the Windows equivalent). The 2 s grace is a fixed constant,
-   not configurable — chosen to dominate any signal-handling latency
-   ASTAP might exhibit while staying short enough that a wedged child
-   doesn't tie up the single-flight semaphore.
+2. **t = deadline + 2 s (force-kill stage):** if the child has not
+   exited, escalate:
+   - Unix: `SIGKILL`.
+   - Windows: `TerminateProcess`.
+
+   The 2 s grace is a fixed constant, not configurable — chosen to
+   dominate any signal-handling latency ASTAP might exhibit while
+   staying short enough that a wedged child doesn't tie up the
+   single-flight semaphore.
 3. The service waits for the child to fully exit (via `wait()`)
    before returning the `solve_timeout` error. The semaphore is
    released only after exit. This guarantees that a `solve_timeout`
    response is always followed by a free slot for the next request.
 
-The service never leaks child processes. The `tokio::process::Child`
-drop guard is the safety net; the explicit `wait()` is the
-correctness contract.
+The service does not leak child processes. The explicit `wait()` is
+the **correctness contract** — it guarantees no leak on the normal
+deadline path. The wrapper additionally spawns every child with
+`Command::kill_on_drop(true)` (and, on Windows, places the child in
+a job object that auto-terminates members on handle close) as the
+**safety net** for unexpected wrapper-side failures: a panic before
+`wait()`, a future-cancellation that abandons the child, or any
+other code path that drops the `Child` without explicit termination.
+Tokio's default `Child` drop *detaches* the process, which is why
+`kill_on_drop(true)` is required for the safety-net guarantee to
+hold.
 
 ### Single-Flight Concurrency
 
