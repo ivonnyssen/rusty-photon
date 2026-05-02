@@ -133,4 +133,25 @@ jobs:
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             EXTRA_FLAGS="--spawn_strategy=local"
           fi
-          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=OMNISIM_PATH $EXTRA_FLAGS //...
+          # --execution_log_compact_file dumps every spawned action's full
+          # input set, env, command, and platform properties — i.e. exactly
+          # the fields Bazel hashes into the action key. Uploaded as an
+          # artifact below so Windows-PR vs Windows-push runs can be diffed
+          # to find what's still varying for services/rp:bdd and
+          # services/sky-survey-camera:bdd (4/6 BDD targets cache-hit on
+          # Windows after PR #120; these 2 still miss). Compact format is
+          # zstd-compressed protobuf — small enough to upload (~MB-scale).
+          bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=OMNISIM_PATH $EXTRA_FLAGS \
+            --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" //...
+
+      # Diagnostic artifact for the Windows BDD cache-miss investigation.
+      # Drop this step (and the --execution_log_compact_file flag above)
+      # once the action-key delta is identified and fixed.
+      - name: Upload BDD execution log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bdd-exec-log-${{ matrix.os }}-${{ github.event_name }}
+          path: ${{ runner.temp }}/bdd-exec.log.zst
+          if-no-files-found: warn
+          retention-days: 14
