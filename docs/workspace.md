@@ -14,6 +14,7 @@ belong in any single service design doc.
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
+| [rp-plate-solver](services/rp-plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/rp-plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
@@ -34,12 +35,15 @@ belong in any single service design doc.
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
 | [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |
 | [ADR-003](decisions/003-authentication-for-device-access.md) | Authentication for device access |
+| [ADR-004](decisions/004-testing-strategy-for-http-client-error-paths.md) | Testing strategy for HTTP-client error paths |
+| [ADR-005](decisions/005-plate-solver.md) | Plate solver: ASTAP via subprocess + verification spike |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
 | [fits-library-consolidation.md](plans/fits-library-consolidation.md) | FITS library evaluation across the workspace |
+| [rp-plate-solver.md](plans/rp-plate-solver.md) | rp-plate-solver rp-managed service implementation (ADR-005 sequencing) |
 
 ## Shared Crates
 
