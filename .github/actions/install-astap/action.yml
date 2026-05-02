@@ -1,0 +1,213 @@
+name: Install ASTAP CLI
+description: |
+  Download and install the ASTAP astrometric plate solver command-line
+  binary into a fixed path inside the runner workspace, then export
+  ASTAP_BINARY (and optionally ASTAP_DB_DIR) for downstream steps.
+
+  This is repo tooling that mirrors install-omnisim. CI is acting as a
+  normal user that installs ASTAP for itself. See ADR-005 for the
+  bring-your-own posture this action implements.
+
+inputs:
+  download-database:
+    description: |
+      Whether to also download and unpack the D05 star database
+      (~100 MB). Default false because most CI jobs only need to verify
+      the binary, not solve real fields.
+    required: false
+    default: "false"
+  use-cache:
+    description: |
+      Whether to use actions/cache for the downloaded archives.
+      Default true is right for production callers that just want
+      ASTAP installed quickly. Pass "false" to skip both cache load
+      AND save — useful for the dedicated install-astap smoke
+      workflow whose purpose is to catch upstream regressions (a
+      warm cache would hide them, and a forced cache miss with save
+      would churn the repo cache quota for no benefit).
+    required: false
+    default: "true"
+
+outputs:
+  astap-binary:
+    description: Absolute path to the astap_cli binary.
+    value: ${{ steps.export.outputs.astap-binary }}
+  astap-db-dir:
+    description: |
+      Absolute path to the directory holding the extracted star
+      database. Empty string when download-database is "false".
+    value: ${{ steps.export.outputs.astap-db-dir }}
+
+runs:
+  using: composite
+  steps:
+    # Per-OS table. SHA-256 values are pinned against the snapshot
+    # captured 2026-05-02 from upstream SourceForge. See
+    # docs/decisions/005-plate-solver.md §Verification Spike for
+    # how/when to refresh these (any upstream release rotates the
+    # archive and breaks this check by design).
+    - name: Determine asset name and pinned SHA-256
+      id: asset
+      shell: bash
+      run: |
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)
+            ARCHIVE="astap_command-line_version_Linux_amd64.zip"
+            SUBDIR="linux_installer"
+            BIN="astap_cli"
+            SHA256="424e9bcba8ad84b4125d4858f2de07822eff2f6710618f9312e4443de3b1c697"
+            ;;
+          Linux-ARM64)
+            ARCHIVE="astap_command-line_version_Linux_aarch64.zip"
+            SUBDIR="linux_installer"
+            BIN="astap_cli"
+            SHA256="0216f84430b6c2c9b3c0f061476755a6768319be02819447e2e3a7b6a7339267"
+            ;;
+          macOS-ARM64)
+            ARCHIVE="astap_command-line_version_macOS_M1.zip"
+            SUBDIR="macOS%20installer"
+            BIN="astap_cli"
+            SHA256="5d8e5083bd6a5dd75a96592f847db20da528bab2e3ad55066bfe3da5cbf66829"
+            ;;
+          macOS-X64)
+            ARCHIVE="astap_command-line_version_macOS_x86_64.zip"
+            SUBDIR="macOS%20installer"
+            BIN="astap_cli"
+            SHA256="b4b1123a470cc324167be0fa375b1f6bd09357719115baa7e7d02198ae379ab4"
+            ;;
+          Windows-X64)
+            ARCHIVE="astap_command-line_version_win64.zip"
+            SUBDIR="windows_installer"
+            BIN="astap_cli.exe"
+            SHA256="ac0bb228e46c25809c17c4a48e8e02e59d064067ab728cdd2b3e9b22b2093d91"
+            ;;
+          Windows-ARM64)
+            ARCHIVE="astap_command-line_version_win11_aarch64.zip"
+            SUBDIR="windows_installer"
+            BIN="astap_cli.exe"
+            SHA256="5ed42b4b7e5221aeca19953561ecc2f53f62ab5f122cd0dc5bdd28f086b86afc"
+            ;;
+          *)
+            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        {
+          echo "archive=$ARCHIVE"
+          echo "subdir=$SUBDIR"
+          echo "bin=$BIN"
+          echo "sha256=$SHA256"
+          # Pinned SHA participates in the cache key so a SHA bump
+          # invalidates any previously-cached download.
+          echo "cache-key=astap-cli-$ARCHIVE-$SHA256"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache ASTAP binary
+      if: inputs.use-cache != 'false'
+      id: cache
+      uses: actions/cache@v5
+      with:
+        path: astap
+        key: ${{ steps.asset.outputs.cache-key }}
+
+    - name: Download ASTAP CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p astap
+        URL="https://sourceforge.net/projects/astap-program/files/${{ steps.asset.outputs.subdir }}/${{ steps.asset.outputs.archive }}/download"
+        echo "Downloading $URL"
+        curl -fsSL --retry 3 --retry-delay 2 -o "astap/${{ steps.asset.outputs.archive }}" "$URL"
+
+    - name: Verify ASTAP CLI checksum
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        EXPECTED="${{ steps.asset.outputs.sha256 }}"
+        # Portable SHA-256 across runners: shasum is on every macOS, sha256sum is on Linux + Git Bash.
+        if command -v sha256sum >/dev/null; then
+          ACTUAL=$(sha256sum "astap/${{ steps.asset.outputs.archive }}" | awk '{print $1}')
+        else
+          ACTUAL=$(shasum -a 256 "astap/${{ steps.asset.outputs.archive }}" | awk '{print $1}')
+        fi
+        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+          echo "::error::SHA-256 mismatch for ${{ steps.asset.outputs.archive }}"
+          echo "  expected: $EXPECTED"
+          echo "  actual:   $ACTUAL"
+          echo "Upstream may have rotated the archive. See ADR-005 §Verification Spike for the refresh procedure."
+          exit 1
+        fi
+        echo "SHA-256 match: $ACTUAL"
+
+    - name: Extract ASTAP CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd astap
+        unzip -o "${{ steps.asset.outputs.archive }}"
+        rm "${{ steps.asset.outputs.archive }}"
+
+    - name: Set permissions (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x "astap/${{ steps.asset.outputs.bin }}"
+
+    - name: Remove quarantine (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: xattr -d com.apple.quarantine "astap/${{ steps.asset.outputs.bin }}" 2>/dev/null || true
+
+    # D05 SHA-256 also pinned against the 2026-05-02 snapshot.
+    # Refresh procedure same as the per-OS table above.
+    - name: Cache D05 star database
+      if: inputs.download-database == 'true' && inputs.use-cache != 'false'
+      id: db-cache
+      uses: actions/cache@v5
+      with:
+        path: astap-db
+        key: astap-d05-database-39d59b73
+
+    - name: Download D05 star database
+      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p astap-db
+        URL="https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database.zip/download"
+        echo "Downloading D05 star database (~100 MB)"
+        curl -fsSL --retry 3 --retry-delay 2 -o astap-db/d05.zip "$URL"
+
+    - name: Verify D05 database checksum
+      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        EXPECTED="39d59b73cb960fa0956c35162e70b09a8af10ef20a1e8f5cae7b77d48be5ce31"
+        if command -v sha256sum >/dev/null; then
+          ACTUAL=$(sha256sum astap-db/d05.zip | awk '{print $1}')
+        else
+          ACTUAL=$(shasum -a 256 astap-db/d05.zip | awk '{print $1}')
+        fi
+        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+          echo "::error::SHA-256 mismatch for d05_star_database.zip"
+          echo "  expected: $EXPECTED"
+          echo "  actual:   $ACTUAL"
+          echo "Upstream may have rotated the database. See ADR-005 §Verification Spike for the refresh procedure."
+          exit 1
+        fi
+        echo "SHA-256 match: $ACTUAL"
+        ( cd astap-db && unzip -o d05.zip && rm d05.zip )
+
+    - name: Export environment
+      id: export
+      shell: bash
+      run: |
+        BIN_PATH="${{ github.workspace }}/astap/${{ steps.asset.outputs.bin }}"
+        echo "ASTAP_BINARY=$BIN_PATH" >> "$GITHUB_ENV"
+        echo "astap-binary=$BIN_PATH" >> "$GITHUB_OUTPUT"
+        echo "${{ github.workspace }}/astap" >> "$GITHUB_PATH"
+        if [[ "${{ inputs.download-database }}" == "true" ]]; then
+          DB_PATH="${{ github.workspace }}/astap-db"
+          echo "ASTAP_DB_DIR=$DB_PATH" >> "$GITHUB_ENV"
+          echo "astap-db-dir=$DB_PATH" >> "$GITHUB_OUTPUT"
+        else
+          echo "astap-db-dir=" >> "$GITHUB_OUTPUT"
+        fi

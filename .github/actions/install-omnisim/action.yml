@@ -10,23 +10,48 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Determine asset name
+    # Per-OS table. SHA-256 values pinned against OmniSim v0.5.0
+    # release assets on GitHub. Bumping `inputs.version` requires
+    # refreshing every SHA below — the verify step fails closed on
+    # any mismatch. Same shape and same supply-chain reasoning as
+    # the install-astap action.
+    - name: Determine asset name and pinned SHA-256
       id: asset
       shell: bash
       run: |
         case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)    ASSET="ascom.alpaca.simulators.linux-x64.tar.xz" ;;
-          Linux-ARM64)  ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz" ;;
-          macOS-ARM64)  ASSET="ascom.alpaca.simulators.macos-arm64.zip" ;;
-          macOS-X64)    ASSET="ascom.alpaca.simulators.macos-x64.zip" ;;
-          Windows-X64)  ASSET="ascom.alpaca.simulators.windows-x64.zip" ;;
+          Linux-X64)
+            ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
+            SHA256="5d9dd3ecdaefb3b36ffe17223172e656a7920c7830185f19390f5d84f051d625"
+            ;;
+          Linux-ARM64)
+            ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
+            SHA256="7b55ebaeb662046eca6ed7dcbb0947d322894fb2ce7eedca6554f695aa160195"
+            ;;
+          macOS-ARM64)
+            ASSET="ascom.alpaca.simulators.macos-arm64.zip"
+            SHA256="ca8069a24e2e7c2049db15b98069308230c4d0cc15c6e41a2ea8c2cff0ad4893"
+            ;;
+          macOS-X64)
+            ASSET="ascom.alpaca.simulators.macos-x64.zip"
+            SHA256="2b6724b033130862834dc3f1816e18ba7c7cdf5d8929609dff468cbc60cad9fa"
+            ;;
+          Windows-X64)
+            ASSET="ascom.alpaca.simulators.windows-x64.zip"
+            SHA256="f808dc0d9c8d5cbfaa8b03ceaad64454a3a52728e2602795c397d847fbc367a0"
+            ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
             exit 1
             ;;
         esac
-        echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
-        echo "cache-key=omnisim-${{ inputs.version }}-$ASSET" >> "$GITHUB_OUTPUT"
+        {
+          echo "asset=$ASSET"
+          echo "sha256=$SHA256"
+          # Pinned SHA participates in the cache key so a SHA bump
+          # invalidates any previously-cached download.
+          echo "cache-key=omnisim-${{ inputs.version }}-$ASSET-$SHA256"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Cache OmniSim binary
       id: cache
@@ -43,6 +68,26 @@ runs:
         URL="https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/download/${{ inputs.version }}/${{ steps.asset.outputs.asset }}"
         echo "Downloading $URL"
         curl -fsSL -o "omnisim/${{ steps.asset.outputs.asset }}" "$URL"
+
+    - name: Verify OmniSim checksum
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        EXPECTED="${{ steps.asset.outputs.sha256 }}"
+        # Portable SHA-256 across runners: shasum is on every macOS, sha256sum is on Linux + Git Bash.
+        if command -v sha256sum >/dev/null; then
+          ACTUAL=$(sha256sum "omnisim/${{ steps.asset.outputs.asset }}" | awk '{print $1}')
+        else
+          ACTUAL=$(shasum -a 256 "omnisim/${{ steps.asset.outputs.asset }}" | awk '{print $1}')
+        fi
+        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+          echo "::error::SHA-256 mismatch for ${{ steps.asset.outputs.asset }}"
+          echo "  expected: $EXPECTED"
+          echo "  actual:   $ACTUAL"
+          echo "Upstream may have rotated the asset (or inputs.version was bumped without refreshing the SHA table)."
+          exit 1
+        fi
+        echo "SHA-256 match: $ACTUAL"
 
     - name: Extract OmniSim
       if: steps.cache.outputs.cache-hit != 'true'
