@@ -276,8 +276,8 @@ the test sets before spawning the wrapper:
 |------|----------|--------|
 | `normal` | Read `-f <path>`, write a canned `.wcs` next to it, exit 0 | Happy path |
 | `exit_failure` | Write to stderr, exit 1 (no `.wcs`) | `solve_failed` (non-zero exit branch) |
-| `hang` | Sleep indefinitely; respond to SIGTERM cleanly | `solve_timeout` (terminated) |
-| `ignore_sigterm` | Trap SIGTERM, sleep anyway | `solve_timeout` (killed via SIGKILL) |
+| `hang` | Sleep indefinitely; respond cleanly to the platform's graceful signal (Unix `SIGTERM`; Windows `CTRL_BREAK_EVENT`) | `solve_timeout` (terminated) |
+| `ignore_sigterm` | Trap and ignore the graceful signal; sleep anyway. Mode name kept for stability — semantics are platform-neutral. | `solve_timeout` (killed via the platform's force-kill) |
 | `malformed_wcs` | Write a `.wcs` missing `CRVAL2`, exit 0 | `solve_failed` (parser-detected branch) |
 | `no_wcs` | Exit 0 without writing any `.wcs` | `solve_failed` (sidecar-missing branch) |
 
@@ -285,8 +285,15 @@ Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
 
 This binary is **not feature-gated** — it builds with every
-`cargo build --all-targets`. BDD discovers it via
-`env!("CARGO_BIN_EXE_mock_astap")`.
+`cargo build --all-targets`. BDD and supervision integration tests
+discover it in this order: explicit `MOCK_ASTAP_BINARY` env var
+(set by Bazel test targets) → `option_env!("CARGO_BIN_EXE_mock_astap")`
+(set by Cargo for `[[test]]` crates). Both fallbacks let the suite
+run under Cargo and Bazel without divergent code paths. Pure
+`env!()` is intentionally avoided because `CARGO_BIN_EXE_*` is
+unset under Bazel and unset for `#[cfg(test)] mod tests` inside
+`src/`. Same lookup `services/phd2-guider/tests/test_integration.rs`
+uses for `mock_phd2`.
 
 ### Real-ASTAP Coverage Cadence
 
@@ -311,7 +318,7 @@ rp-managed-service supervision flow described in `rp.md`
 |--------|-----------|-----------|--------|
 | `rp` (gateway) | Sentinel | event-stream disconnect | Operator-configured restart command |
 | `rp-plate-solver` (this service) | Sentinel | `GET /health` non-200 or no response within Sentinel's HTTP timeout | Operator-configured restart command (e.g., `systemctl restart rp-plate-solver`) |
-| `astap_cli` (child) | This service | per-request wall-clock deadline | SIGTERM → 2 s grace → SIGKILL |
+| `astap_cli` (child) | This service | per-request wall-clock deadline | graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
 
 ### Belt-and-Suspenders Outer Timeout
 
