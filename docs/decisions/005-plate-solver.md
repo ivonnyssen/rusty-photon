@@ -307,6 +307,31 @@ smoke workflow forces a fresh upstream download on every run (via
 within a CI cycle. This mirrors the model `install-omnisim` follows
 for the ASCOM simulator.
 
+### Pinned SHA-256 + refresh procedure
+
+The action's per-OS table pins a SHA-256 for each downloaded archive
+(snapshot captured 2026-05-02) and the optional D05 database. Every
+download is verified before extraction; mismatch fails the action
+closed. ASTAP's URLs are unversioned ("latest" filenames), so
+upstream rotates the bytes without bumping the URL — the SHA pin
+turns that rotation into a deliberate, reviewed event rather than a
+silent supply-chain drift.
+
+**Refresh procedure** (when ASTAP releases an upstream update and the
+verify step starts failing):
+
+1. Download each archive listed in the action's per-OS table from
+   SourceForge (and `d05_star_database.zip` if the database SHA is
+   what failed).
+2. `sha256sum` each (or `shasum -a 256` on macOS).
+3. Update the corresponding `SHA256=` line in
+   `.github/actions/install-astap/action.yml` and the
+   `astap-d05-database-<8-hex-prefix>` cache-key prefix if applicable.
+4. Run the smoke workflow on the change to confirm the new pin
+   verifies cleanly on all three runner OSes.
+5. Land the PR with a brief note of which ASTAP CLI version the new
+   bytes correspond to (read from the binary's `astap_cli` banner).
+
 ### Operator verification, after a BYO install
 
 An operator who has installed ASTAP on their own machine (per the BYO
