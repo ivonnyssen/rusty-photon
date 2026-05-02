@@ -494,14 +494,242 @@ Status: **complete.**
       known-vertex recovery, grid-too-small-after-clamp,
       not-enough-stars-after-skips).
 
-#### Phase 6c — `center_on_target` design + BDD + impl
+#### Phase 6c — `center_on_target`
 
-Blocked on the plate-solver rp-managed service ADR (ASTAP vs.
-astrometry.net). Once the `plate_solve` tool exists, work mirrors
-Phase 6b: design contract → BDD → impl in
-`services/rp/src/imaging/tools/center_on_target.rs` (or possibly
-`services/rp/src/centering.rs` — it doesn't touch pixels, so the
-imaging module isn't necessarily the right home).
+Status: **planned (2026-05-02).** ADR-005 (plate solver: ASTAP via
+subprocess + verification spike) landed on main on 2026-05-02,
+retiring the prior blocker.
+
+`center_on_target` composes four primitive tools — `capture`,
+`plate_solve`, `sync_mount`, `slew` — of which only `capture` exists
+today. Phase 6c therefore decomposes into four sub-phases. The first
+two are prerequisites; the third wires the plate solver into rp's
+catalog; the fourth is the compound tool itself, mirroring Phase 6b's
+shape. Each sub-phase is its own PR.
+
+##### Decisions resolved during Phase 6c planning
+
+These will be captured in `docs/services/rp.md` (Compound Tools →
+`center_on_target` Contract — added by Phase 6c-3) and should not be
+re-litigated:
+
+- **`tolerance_arcsec` and `max_attempts`: required parameters, no
+  defaults.** Same rationale as `measure_basic`'s `min_area` /
+  `max_area`: the right values depend on rig pixel scale, mount
+  tracking quality, and target altitude — none of which the tool can
+  infer. Callers (workflows, plugins) own that policy.
+- **`min_improvement_arcsec` deferred.** Useful future addition (early
+  exit when an iteration stops improving the residual), but not v1.
+  Add as an optional parameter when the first concrete need surfaces.
+- **`sync_mount` only on the first iteration.** The first
+  `plate_solve` produces the absolute pointing reference; subsequent
+  iterations rely on the mount honouring relative `slew`s rather than
+  re-syncing on each pass. Repeated syncs interact badly with
+  model-building drivers (some treat each sync as a new pointing
+  model entry, polluting the model) and are unnecessary once the
+  absolute position is established.
+- **Fail fast on per-iteration failures.** A `plate_solve`,
+  `sync_mount`, `capture`, or `slew` failure inside the loop aborts
+  `center_on_target` and propagates the error, with the mount left at
+  its current (uncentered) position. No retry-with-longer-exposure
+  fallback in v1 — workflows that want adaptive recovery wrap the
+  call themselves. Captures already taken stay on disk normally;
+  their exposure documents are intact.
+- **No aggregate persistence section.** `center_on_target` does not
+  write a `centering` section on any single document — same reasoning
+  as `auto_focus`'s sweep-spanning result. Each per-iteration capture
+  writes its own analysis sections (notably `wcs` from `plate_solve`)
+  via the embedded calls. The compound result is returned in the MCP
+  response and emitted as a `centering_complete` event.
+- **Single `duration` parameter.** Required `humantime` string, same
+  shape as `auto_focus`'s `duration`. No adaptive per-iteration
+  exposure scaling in v1; if low star count blocks a solve, the
+  caller re-runs with a longer duration.
+- **Module home: `services/rp/src/imaging/tools/center_on_target.rs`.**
+  Resolves the open question in the prior plan stub. Symmetry with
+  `auto_focus.rs` outweighs the "it doesn't touch pixels" argument —
+  every primitive `center_on_target` composes already lives in the
+  imaging or MCP layer, and "compound tools live under
+  `imaging/tools/`" is a clean rule.
+
+##### Phase 6c-prep — Telescope (mount) primitives
+
+Status: **not started.** Parallels Phase 6a (focuser primitives).
+Required because `center_on_target` needs `slew` and `sync_mount`,
+neither of which exists in `rp` today.
+
+- [ ] `TelescopeConfig` in `config.rs` (`id`, `alpaca_url`,
+      `device_number`, optional `auth: ClientAuthConfig`). Replaces
+      any placeholder telescope slot in the existing config schema.
+- [ ] `TelescopeEntry` in `equipment.rs` mirroring `CameraEntry` /
+      `FocuserEntry`; `connect_telescope` Alpaca client wiring with
+      five-arm failure coverage (`build_alpaca_client` error,
+      `get_devices` network error, 5 s timeout, no-telescope-in-list,
+      `set_connected` Alpaca rejection).
+- [ ] `EquipmentRegistry::find_telescope` plus
+      `EquipmentStatus.telescopes` plumbing.
+- [ ] MCP tools in `mcp.rs`:
+      - `slew` — `telescope_id`, `ra`, `dec`. Blocks via `Slewing`
+        polling (mirrors `move_focuser`'s `is_moving` poll loop) with
+        a deadline appropriate to a mount slew (initial pick: 5 min;
+        revisit during impl).
+      - `sync_mount` — `telescope_id`, `ra`, `dec`. Immediate, no
+        blocking poll.
+      - `get_telescope_position` — returns current `ra` / `dec` /
+        `side_of_pier`. Deferred unless a concrete consumer surfaces
+        before 6c-3 lands.
+- [ ] `services/rp/tests/features/telescope.feature` — catalog,
+      slew/sync/idempotent-slew happy paths, five device-resolution /
+      missing-parameter errors. Mirrors the shape of `focuser.feature`.
+      Target ~10 scenarios.
+- [ ] `services/rp/tests/bdd/steps/telescope_steps.rs` reusing
+      `tool_steps.rs` shared steps; `RpWorld.telescopes` accumulator;
+      new `bdd_infra::rp_harness::TelescopeConfig` + builder.
+- [ ] Direct unit tests for `connect_telescope` failure + success
+      branches via in-test axum stub Alpaca server (same pattern Phase
+      6a established for `connect_focuser`).
+- [ ] `docs/services/rp.md` Configuration example updated with a
+      typed telescope block.
+- [ ] No new workspace deps — only adds the existing `ascom-alpaca`
+      `telescope` feature on the rp crate. No `bazel mod tidy`.
+
+**Exit criteria:** new BDD scenarios green, all `connect_telescope`
+failure-path + happy-path unit tests pass, `cargo rail run --profile
+commit -q` clean, `cargo fmt` clean.
+
+##### Phase 6c-1 — `rp-plate-solver` rp-managed service
+
+Status: **not started.** Sequenced separately from this plan because
+of its size (subprocess supervision, ASTAP CLI argument layout, `.wcs`
+parsing, per-platform install verification) and because ADR-005
+already calls for "a separate plan to sequence the rp-plate-solver
+rp-managed-service implementation."
+
+- [ ] **`docs/plans/rp-plate-solver.md` (new)** sequences the service
+      itself: workspace member skeleton, ASTAP subprocess wrapper,
+      HTTP API, BDD scenarios, supervision integration with sentinel,
+      and the per-platform end-to-end solve passes that retire ADR-005
+      Open Questions 1–6.
+- [ ] **HTTP contract (frozen here so 6c-2 can mock it):**
+      `POST /api/v1/solve` with body
+      `{fits_path, ra_hint?, dec_hint?, fov_hint_deg?, search_radius_deg?, timeout?}`
+      returns `{ra_center, dec_center, pixel_scale_arcsec, rotation_deg}`
+      on success, structured error otherwise. Path-based input matches
+      ADR-005's "rp and plate solver share a filesystem" contract — no
+      pixel bytes over HTTP.
+- [ ] **Service supervision** via the existing rp-managed-service
+      pattern. The closest shape references in the workspace today are
+      `services/phd2-guider` and `services/sentinel`; `rp-plate-solver`
+      mirrors their crate layout, lifecycle, and sentinel integration.
+
+This sub-phase is the largest in 6c by far. It is independent of
+6c-prep and 6c-3 once the HTTP contract above is fixed; a stub
+plate-solver process satisfies 6c-2's tests until the real service
+lands.
+
+##### Phase 6c-2 — `plate_solve` built-in MCP tool
+
+Status: **not started.** Depends on the HTTP contract from 6c-1.
+
+- [ ] `services/rp/src/plate_solver.rs` — thin reqwest client to
+      `rp-plate-solver`'s `/api/v1/solve` endpoint. This is also the
+      first rp-managed-service client written on the `rp` side; the
+      module shape it establishes will be reused when the planned
+      `guider.rs` client lands later.
+- [ ] MCP tool wiring in `mcp.rs`: `plate_solve` accepts `document_id`
+      *or* `image_path` (the imaging-tool convention), optional
+      pointing hints (`ra_hint`, `dec_hint`, `fov_hint_deg`,
+      `search_radius_deg`, `timeout`), resolves a `fits_path` from the
+      document or argument, calls the service, returns the WCS
+      solution.
+- [ ] **Persistence:** when called with `document_id`, write a `wcs`
+      section into the exposure document with the full solver result.
+      Distinct from existing imaging sections (`image_analysis`,
+      `background`, `detected_stars`, `measured_stars`, `snr`) so all
+      tools coexist on one document.
+- [ ] `services/rp/tests/features/plate_solve.feature` — catalog,
+      happy path against an in-test stub solver, document_id and
+      image_path resolution paths, `wcs` section persistence anchor,
+      service-unreachable error, missing-parameter outline. Target
+      ~10 scenarios.
+- [ ] BDD harness: a small in-test axum stub returning canned WCS
+      payloads (same shape Phase 6a used for `connect_focuser`). The
+      real `rp-plate-solver` process is **not** started in rp's BDD
+      suite; that lives in `rp-plate-solver`'s own BDD tests.
+
+**Exit criteria:** new BDD scenarios green, `wcs` section round-trips
+through the document API, `cargo rail run --profile commit -q` clean.
+
+##### Phase 6c-3 — `center_on_target` design + BDD + impl
+
+Status: **not started.** Mirrors Phase 6b in shape (design contract →
+BDD → pure-Rust driver behind trait adapters → MCP wrapper).
+
+- [ ] **Design.** `center_on_target` Contract added to `rp.md`
+      Compound Tools (parallel to `auto_focus` Contract) wiring up
+      the decisions above. Inputs:
+      `{camera_id, telescope_id, ra, dec, duration, tolerance_arcsec, max_attempts, min_area, max_area}`
+      plus optional `threshold_sigma`. Output:
+      `{final_error_arcsec, attempts, final_ra, final_dec}`.
+      Algorithm:
+      1. Resolve `camera_id` and `telescope_id`. Emit
+         `centering_started`.
+      2. Loop up to `max_attempts`:
+         - `capture(camera_id, duration)` → `document_id`.
+         - `plate_solve(document_id, hints)` → solved center.
+         - On the **first** iteration only:
+           `sync_mount(solved_ra, solved_dec)`.
+         - Compute residual error (great-circle separation in arcsec)
+           between solved center and requested `(ra, dec)`.
+         - If residual ≤ `tolerance_arcsec`, emit
+           `centering_complete` and return.
+         - Otherwise `slew(ra, dec)` and continue.
+      3. If the loop exits with residual still > tolerance, return a
+         `tolerance_not_reached` error carrying the last residual and
+         attempt count. The mount is left at its last commanded
+         position; `center_on_target` does not auto-recover.
+- [ ] `services/rp/src/imaging/tools/center_on_target.rs` — pure
+      driver over `CaptureOps` / `PlateSolveOps` / `MountOps` traits
+      so the loop is unit-testable without hardware. The MCP wrapper
+      in `mcp.rs` is the thin adapter shell, sharing capture and slew
+      semantics with the primitive tools via the existing
+      `do_capture` helper plus newly-extracted `do_slew_blocking` /
+      `do_sync_mount` helpers (parallel to Phase 6b's
+      `do_move_focuser_blocking`).
+- [ ] `services/rp/tests/features/center_on_target.feature` —
+      catalog; four device-resolution errors (nonexistent and
+      disconnected camera/telescope); missing-parameter outline;
+      numeric-range rejections (`tolerance_arcsec ≤ 0`,
+      `max_attempts ≤ 0`, `max_attempts` exceeds a safety cap —
+      mirroring `auto_focus`'s `MAX_GRID_POINTS` guardrail);
+      mid-loop `plate_solve` failure → abort; max_attempts exhausted
+      → `tolerance_not_reached`; single-iteration happy path
+      (residual already inside tolerance); multi-iteration happy
+      path with the sync-on-first-only invariant verified via the
+      stub plate solver's call log. Target ~12–15 scenarios. The
+      OmniSim caveat from Phase 6b applies — OmniSim does not model
+      pointing, so happy-path convergence is asserted via the
+      synthetic `PlateSolveOps` adapter rather than a real solve
+      cycle.
+- [ ] Unit tests on the run loop with synthetic adapters: known-
+      residual convergence on iteration 1, convergence on iteration
+      N, abort on mid-loop solve failure, `tolerance_not_reached`
+      after `max_attempts`, sync-on-first-only invariant.
+
+**Exit criteria:** new BDD scenarios green, run-loop unit tests cover
+the success / abort / not-reached arms, `cargo rail run --profile
+commit -q` clean, `cargo fmt` clean.
+
+##### Phase 6c sequencing notes
+
+- 6c-prep, 6c-1, 6c-2, 6c-3 land as independent PRs in that order.
+- 6c-1 unblocks 6c-2's HTTP contract; 6c-2 unblocks 6c-3's
+  `PlateSolveOps` adapter. 6c-prep is independent of the plate-solver
+  chain and can land in parallel.
+- The catalog-merge / shadow-rule code change called out under
+  Phase 6 ("Catalog-merge code change (small, deferred until first
+  caller)") remains deferred; `center_on_target` is a built-in and
+  does not require it.
 
 #### Catalog-merge code change (small, deferred until first caller)
 
