@@ -1573,23 +1573,25 @@ service that implements the same HTTP endpoints.
 ### Plate Solver
 
 The plate solver is an **rp-managed service** — a separate process that
-wraps an external solver binary (ASTAP or astrometry.net). The MCP tool
-surface (`plate_solve`) is a built-in tool that proxies to the service;
-the wrapped binary lives in the supervised process.
+wraps the operator-installed ASTAP CLI binary. The MCP tool surface
+(`plate_solve`) is a built-in tool that proxies to the service; ASTAP
+lives in the supervised wrapper process.
 
 This shape (service rather than built-in Rust code) is chosen because:
-- The solvers are external programs `rp` cannot link against.
-- They can hang or crash independently of `rp`.
-- Sentinel can restart them via the standard rp-managed-service
+- ASTAP is an external program `rp` cannot link against.
+- It can hang or crash independently of `rp`.
+- Sentinel can restart the wrapper via the standard rp-managed-service
   supervision flow (see [Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
 
 The plate solver can also subscribe to `exposure_complete` events for
-background solving.
+background solving (deferred to v2; v1 is request/response only).
 
-> **Note:** The choice of plate solving engine requires further research.
-> The first implementation should wrap an open-source, cross-platform, locally
-> available solver. Candidates include ASTAP and a local astrometry.net
-> installation. This decision will be captured in a separate ADR.
+The choice of solver and the supervision posture are settled by
+[ADR-005](../decisions/005-plate-solver.md). The service's own design
+doc — HTTP contract, supervision contract, configuration, mock test
+double — lives at [`docs/services/rp-plate-solver.md`](rp-plate-solver.md).
+Implementation sequencing is in
+[`docs/plans/rp-plate-solver.md`](../plans/rp-plate-solver.md).
 
 ### File Accessibility
 
