@@ -4,13 +4,13 @@
 
 Proposed (2026-05-01).
 
-This ADR is the prerequisite called out in
-`docs/services/rp.md` §"Plate Solver" (line 1582 — "The choice of plate
-solving engine requires further research […] This decision will be
-captured in a separate ADR") and in `docs/plans/image-evaluation-tools.md`
-Phase 6c (line 499 — `center_on_target` is blocked on it). Once accepted,
-Phase 6c is unblocked and a separate plan will sequence the
-`rp-plate-solver` rp-managed-service implementation.
+This ADR is the prerequisite called out in `docs/services/rp.md`
+§"Plate Solver" ("The choice of plate solving engine requires further
+research […] This decision will be captured in a separate ADR") and in
+`docs/plans/image-evaluation-tools.md` Phase 6c (`center_on_target` is
+blocked on it). Once accepted, Phase 6c is unblocked and a separate
+plan will sequence the `rp-plate-solver` rp-managed-service
+implementation.
 
 ## Context
 
@@ -41,7 +41,7 @@ Raspberry Pi 5):
 3. **License**: ADR-001's first supersession was triggered by an
    undisclosed GPL-3.0 conflict in `fitrs`, and the SEP / `sep-sys`
    integration was rejected in `docs/services/rp.md` §"Image Analysis
-   Strategy / Design Rationale" (line 1062) for being "LGPL + C FFI
+   Strategy / Design Rationale" for being "LGPL + C FFI
    maintenance burden." Permissive (MIT/Apache/BSD) is preferred. Copyleft
    options must be evaluated explicitly against the planned
    integration mode.
@@ -501,13 +501,13 @@ the question reduces to a sanity check," not "conveyance compliant."
 
 ### Project context
 
-- `docs/services/rp.md` §"Plate Solver" (line 1566) — the
-  rp-managed-service pattern this ADR ratifies.
+- `docs/services/rp.md` §"Plate Solver" — the rp-managed-service
+  pattern this ADR ratifies.
 - `docs/services/rp.md` §"Image Analysis Strategy / Design Rationale"
-  (line 1057) — the SEP / `sep-sys` rejection memo whose
-  "LGPL + FFI burden" wording is reread in this ADR.
-- `docs/plans/image-evaluation-tools.md` Phase 6c (line 499) — the
-  blocked work item this ADR unblocks.
+  — the SEP / `sep-sys` rejection memo whose "LGPL + FFI burden"
+  wording is reread in this ADR.
+- `docs/plans/image-evaluation-tools.md` Phase 6c — the blocked work
+  item this ADR unblocks.
 - `docs/decisions/001-fits-file-support.md` — prior decision on
   cross-platform native libraries; informed the cross-platform bar.
 

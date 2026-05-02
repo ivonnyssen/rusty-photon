@@ -16,17 +16,17 @@ inputs:
       the binary, not solve real fields.
     required: false
     default: "false"
-  cache-key-suffix:
+  use-cache:
     description: |
-      Optional suffix appended to the cache keys. Empty (default) means
-      the cache hits any previously-downloaded archive — the right
-      behavior for production callers that just want ASTAP installed
-      quickly. Pass a unique value (e.g. github.run_id, or a date
-      stamp) to force a fresh upstream download. Only the dedicated
-      install-astap smoke workflow needs this: its purpose is to catch
-      upstream regressions, which a warm cache would otherwise hide.
+      Whether to use actions/cache for the downloaded archives.
+      Default true is right for production callers that just want
+      ASTAP installed quickly. Pass "false" to skip both cache load
+      AND save — useful for the dedicated install-astap smoke
+      workflow whose purpose is to catch upstream regressions (a
+      warm cache would hide them, and a forced cache miss with save
+      would churn the repo cache quota for no benefit).
     required: false
-    default: ""
+    default: "true"
 
 outputs:
   astap-binary:
@@ -103,11 +103,12 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Cache ASTAP binary
+      if: inputs.use-cache != 'false'
       id: cache
       uses: actions/cache@v5
       with:
         path: astap
-        key: ${{ steps.asset.outputs.cache-key }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
+        key: ${{ steps.asset.outputs.cache-key }}
 
     - name: Download ASTAP CLI
       if: steps.cache.outputs.cache-hit != 'true'
@@ -159,12 +160,12 @@ runs:
     # D05 SHA-256 also pinned against the 2026-05-02 snapshot.
     # Refresh procedure same as the per-OS table above.
     - name: Cache D05 star database
-      if: inputs.download-database == 'true'
+      if: inputs.download-database == 'true' && inputs.use-cache != 'false'
       id: db-cache
       uses: actions/cache@v5
       with:
         path: astap-db
-        key: astap-d05-database-39d59b73${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
+        key: astap-d05-database-39d59b73
 
     - name: Download D05 star database
       if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
