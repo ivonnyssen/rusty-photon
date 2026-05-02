@@ -21,7 +21,7 @@ inputs:
       Optional suffix appended to the cache keys. Empty (default) means
       the cache hits any previously-downloaded archive — the right
       behavior for production callers that just want ASTAP installed
-      quickly. Pass a unique value (e.g. `${{ github.run_id }}`, a date
+      quickly. Pass a unique value (e.g. github.run_id, or a date
       stamp) to force a fresh upstream download. Only the dedicated
       install-astap smoke workflow needs this: its purpose is to catch
       upstream regressions, which a warm cache would otherwise hide.
