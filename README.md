@@ -15,7 +15,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 | [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
-| [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | — | Camera simulator that returns NASA SkyView cutouts for the configured optics |
+| [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 
 ### RP (Main Application)
 
@@ -69,9 +69,13 @@ See [docs/services/sky-survey-camera.md](docs/services/sky-survey-camera.md) for
 
 ### Prerequisites
 
-- **Rust** (edition 2021, MSRV 1.88.0 for most services, 1.85.0 for phd2-guider)
+- **Rust** (edition 2021, MSRV 1.94.1 — inherited by all workspace members)
+- **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — required by the pre-push profile
+- **[cargo-rail](https://github.com/loadingalias/cargo-rail)** (optional, recommended) — runs the affected-package pre-push profile
 
 ### Building
+
+Cargo is the canonical build. A Bazel build runs in shadow mode alongside it (see [docs/plans/bazel-migration.md](docs/plans/bazel-migration.md)) and is not yet a required pre-push step.
 
 ```bash
 # Build everything
@@ -79,6 +83,9 @@ cargo build --all
 
 # Build a single service
 cargo build -p filemonitor
+
+# (Optional) exercise the Bazel shadow build
+bazel test //...
 ```
 
 ### Running
@@ -124,8 +131,14 @@ cargo test --test conformu_integration -- --ignored
 CI workflows can be run locally using [act](https://github.com/nektos/act). See [docs/skills/pre-push.md](docs/skills/pre-push.md) for the full guide, or run the minimum pre-push checks:
 
 ```bash
-cargo build --all --quiet --color never
-cargo test --all --quiet --color never
+# Preferred: cargo-rail's commit profile (affected packages only,
+# --locked --all-features --all-targets baked in; defined in .config/rail.toml)
+cargo rail run --profile commit -q
+cargo fmt
+
+# Fallback if cargo-rail is not installed
+cargo build --all --all-targets --all-features --locked --quiet --color never
+cargo nextest run --locked --all-features --all-targets --color never
 cargo fmt
 ```
 
@@ -134,8 +147,13 @@ cargo fmt
 ```
 rusty-photon/
   Cargo.toml              Workspace root with shared dependencies
+  MODULE.bazel            Bazel module (shadow build, see docs/plans/bazel-migration.md)
+  CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/             Shared BDD test infrastructure (ServiceHandle)
+    rp-auth/               Shared HTTP Basic Auth (Argon2id + axum middleware, see ADR-003)
+    rp-fits/               FITS file reader/writer wrapper (see ADR-001)
+    rp-tls/                Shared TLS/ACME helpers for inter-service comms (ADR-002)
   services/
     rp/                    Main application: equipment gateway, event bus
     filemonitor/           ASCOM SafetyMonitor (file-based)
@@ -150,10 +168,13 @@ rusty-photon/
     services/              Per-service design documentation
     skills/                How-to playbooks for agents and operators
     references/            Protocol and standards reference
-    decisions/             Architecture Decision Records
+    decisions/             Architecture Decision Records (ADRs)
+    plans/                 Active migration and roadmap plans
     workspace.md           Workspace architecture and shared patterns
   scripts/                 CI and ConformU setup scripts
-  external/phd2/           PHD2 source (git submodule, reference only)
+  external/
+    phd2/                  PHD2 source (git submodule, reference only)
+    homebrew-rusty-photon/ Homebrew tap (git submodule)
 ```
 
 ## Documentation
@@ -186,3 +207,5 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sentinel
 [cov-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=calibrator-flats
 [cov-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=calibrator-flats
+[cov-sky-survey-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sky-survey-camera
+[cov-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sky-survey-camera
