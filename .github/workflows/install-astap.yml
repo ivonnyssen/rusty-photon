@@ -30,6 +30,13 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASTAP
         uses: ./.github/actions/install-astap
+        # Force a fresh upstream download on every run. This workflow
+        # exists to catch upstream install breakages; a warm cache
+        # would let regressions slip through unnoticed. Production
+        # callers leave cache-key-suffix empty and benefit from cache
+        # hits across runs.
+        with:
+          cache-key-suffix: ${{ github.run_id }}
       - name: Smoke test (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash

@@ -16,6 +16,17 @@ inputs:
       the binary, not solve real fields.
     required: false
     default: "false"
+  cache-key-suffix:
+    description: |
+      Optional suffix appended to the cache keys. Empty (default) means
+      the cache hits any previously-downloaded archive — the right
+      behavior for production callers that just want ASTAP installed
+      quickly. Pass a unique value (e.g. `${{ github.run_id }}`, a date
+      stamp) to force a fresh upstream download. Only the dedicated
+      install-astap smoke workflow needs this: its purpose is to catch
+      upstream regressions, which a warm cache would otherwise hide.
+    required: false
+    default: ""
 
 outputs:
   astap-binary:
@@ -82,7 +93,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: astap
-        key: ${{ steps.asset.outputs.cache-key }}
+        key: ${{ steps.asset.outputs.cache-key }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
 
     - name: Download ASTAP CLI
       if: steps.cache.outputs.cache-hit != 'true'
@@ -117,7 +128,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: astap-db
-        key: astap-d05-database-v1
+        key: astap-d05-database-v1${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
 
     - name: Download D05 star database
       if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'

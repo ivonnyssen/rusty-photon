@@ -99,7 +99,12 @@ case "$OS:$ARCH" in
         BINARY="astap_cli"
         ;;
     MINGW*:*|MSYS*:*|CYGWIN*:*|*NT*:x86_64)
-        ARCHIVE="astap_command-line_version_Windows_x64.zip"
+        # Filename matches the actual SourceForge asset under
+        # windows_installer/, kept in sync with the per-OS table in
+        # .github/actions/install-astap/action.yml. Broader spike
+        # cleanup (including macOS auto-download, *NT* URL routing,
+        # arity checks, BSD date portability) is tracked separately.
+        ARCHIVE="astap_command-line_version_win64.zip"
         BINARY="astap_cli.exe"
         ;;
     *)
