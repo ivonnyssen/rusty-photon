@@ -3685,6 +3685,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-plate-solver"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "cargo-husky",
+ "humantime-serde",
+ "libc",
+ "mockall",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "rp-tls"
 version = "0.1.0"
 dependencies = [
