@@ -171,8 +171,8 @@ Optional pointing and FOV hints map directly to ASTAP CLI flags:
 
 | Request field | ASTAP flag | Notes |
 |---------------|-----------|-------|
-| `ra_hint` | `-ra <decimal hours>` | Pass-through. |
-| `dec_hint` | `-spd <degrees>` | Wrapper converts decimal degrees → south-pole-distance (90 + dec) before passing. |
+| `ra_hint` | `-ra <decimal hours>` | Wire format is decimal degrees (0–360) for consistency with `ra_center`; wrapper converts to hours (`degrees / 15`) before passing to ASTAP. |
+| `dec_hint` | `-spd <degrees>` | Wire format is decimal degrees (−90–90); wrapper converts to south-pole-distance (`90 + dec`) before passing to ASTAP. |
 | `fov_hint_deg` | `-fov <degrees>` | Pass-through (image height, per ASTAP CLI documentation). |
 | `search_radius_deg` | `-r <degrees>` | Pass-through. Defaults to ASTAP's own default when omitted. |
 
