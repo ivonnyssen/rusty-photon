@@ -10,6 +10,7 @@ members = [
   "services/qhy-focuser",
   "services/calibrator-flats",
   "services/rp",
+  "services/rp-plate-solver",
   "services/sentinel",
   "services/sentinel-app",
   "services/sky-survey-camera",
@@ -45,6 +46,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tokio-test = "0.4.5"
 proptest = "1.11.0"
 fitsrs = "0.4"
+wcs = "0.4"
 ndarray = "0.17"
 ndarray-ndimage = "0.6.0"
 rmpfit = "1.0"

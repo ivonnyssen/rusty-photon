@@ -1,0 +1,38 @@
+[package]
+name = "rp-plate-solver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "rp-managed plate solver service: HTTP wrapper around the ASTAP CLI"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+humantime = { workspace = true }
+humantime-serde = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+fitsrs = { workspace = true }
+wcs = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+
+[[bin]]
+name = "mock_astap"
+path = "src/bin/mock_astap.rs"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+mockall = { workspace = true }
+tempfile = { workspace = true }
+cargo-husky = { workspace = true }

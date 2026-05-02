@@ -1,0 +1,69 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+rust_library(
+    name = "rp-plate-solver_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    aliases = aliases(),
+    crate_name = "rp_plate_solver",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "mock_astap",
+    srcs = ["src/bin/mock_astap.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    data = ["tests/fixtures/sample.wcs.txt"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":rp-plate-solver_lib"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rp-plate-solver_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":rp-plate-solver_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "supervision_integration",
+    srcs = ["tests/supervision_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    # Spawns mock_astap; bazel sets MOCK_ASTAP_BINARY via env so the test
+    # discovers the binary. See tests/supervision_integration.rs.
+    env = {
+        "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
+    },
+    data = [":mock_astap"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rp-plate-solver_lib"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
