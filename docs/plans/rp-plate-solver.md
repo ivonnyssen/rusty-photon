@@ -211,6 +211,47 @@ skip with no error noise. The nightly job sets it via
 `install-astap` → tagged scenarios fire. The same pattern generalizes
 to any future service with a real-binary backstop.
 
+### WCS parsing via `fitsrs` + `wcs`, not hand-rolled
+
+ASTAP's `.wcs` sidecar is a FITS-style header file. The workspace
+already depends on **`fitsrs` v0.4.1** (via `rp-fits`) for FITS I/O
+and on **`wcs` v0.4.2** (a transitive dep of `fitsrs`, same author
+— [cds-astro/wcs-rs](https://github.com/cds-astro/wcs-rs/),
+MIT/Apache). The wrapper uses both:
+
+- **`fitsrs`** parses the `.wcs` file as a FITS header.
+- **`wcs::params::WCSParams`** is the deserialization target — its
+  fields cover every standard FITS WCS keyword (CRVAL1/2, CDELT1/2,
+  CROTA2, full CD/PC matrices, SIP polynomial terms). `Deserialize`
+  is derived.
+- **`wcs::WCS::new(&WCSParams)`** wraps the params in a
+  projection-capable solution with `proj()` / `unproj()` /
+  `field_of_view()`. Not strictly needed for the four fields the
+  HTTP contract returns, but cheap to construct and useful for any
+  future consumer (`center_on_target` will want `WCS::proj` for
+  great-circle residuals).
+
+Why this beats a hand-rolled parser:
+
+- No new dep — `wcs` is already in `Cargo.lock` transitively. Adding
+  it to `rp-plate-solver`'s direct deps just makes the dependency
+  explicit.
+- Library handles CD-matrix vs CDELT/CROTA representation
+  differences. ASTAP today writes CDELT+CROTA2; if a future solver
+  swap-in writes CD matrices, the wrapper code is unchanged.
+- SIP distortion terms parsed automatically — relevant if a future
+  caller wants accurate corner pixel projections.
+- Forward-compatibility: when `center_on_target` (Phase 6c-3)
+  computes residual arcsec, it can use `WCS::proj` instead of
+  reimplementing the trigonometry.
+
+The Phase 2 implementation includes a spike to verify `fitsrs`
+parses a real ASTAP `.wcs` cleanly — ASTAP's sidecar is FITS-style
+but may have quirks (line endings, padding, ASTAP-specific
+non-standard keys). If quirks surface, a thin pre-processor stays
+inside `runner/wcs.rs`; the parser/deserializer pipeline does not
+change.
+
 ### HTTP, not MCP
 
 The wrapper exposes a narrow REST surface over HTTP, not an MCP
@@ -448,11 +489,23 @@ Status: **not started.**
       matches expected. No spawning. This is the only unit-level
       coverage of the hint-flag pass-through contract; BDD asserts
       end-to-end behavior, not argv shape.
-- [ ] `runner/wcs.rs` — `.wcs` file parser. Pure function over a
-      string slice. Returns the four fields + the solver banner from
-      the file's `COMMENT` line, or a parse error naming the missing
-      key. Unit-tested exhaustively (every required key absent, every
-      key present, malformed numeric, unexpected key order).
+- [ ] `runner/wcs.rs` — thin adapter that reads the `.wcs` sidecar
+      via the existing `fitsrs` (`wcs.cargo.toml` deps: `fitsrs`,
+      `wcs`; both already transitive via `rp-fits`) and deserializes
+      the FITS header into `wcs::params::WCSParams`. Returns the four
+      fields the HTTP contract requires (CRVAL1, CRVAL2, |CDELT1|,
+      CROTA2), pulled either directly from `WCSParams` or via a
+      `wcs::WCS::new(&params)` projection wrapper (the latter buys
+      `field_of_view()` / `proj()` / `unproj()` for any future
+      consumer; see [Decisions resolved](#decisions-resolved-during-design)
+      §"WCS parsing"). Banner string read from the file's `COMMENT`
+      line via `WCSParams` debug or a separate header lookup.
+      **Phase 2 spike:** verify `fitsrs` parses an actual ASTAP
+      `.wcs` cleanly (line endings, ASTAP-specific keys). If quirks
+      surface, a thin pre-processor stays inside this module. Unit
+      tests cover: valid ASTAP `.wcs` → expected fields; missing
+      required key → named error; ASTAP-specific extra keys →
+      ignored; the spike's specific quirk path if any.
 - [ ] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
       `tokio::process::Command`, races `child.wait()` against
       `tokio::time::sleep(deadline)`. On deadline expiry, sends
