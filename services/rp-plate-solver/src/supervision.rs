@@ -132,17 +132,18 @@ fn send_graceful(pid: u32) {
     }
 }
 
-/// Maximum bytes of stderr captured for the response. Beyond this, the
-/// drain task keeps reading (to keep the pipe drained) but discards the
-/// bytes.
+/// Maximum bytes of stderr the drain task retains for the response.
+/// The drain task keeps reading past this limit (to keep the OS pipe
+/// drained), but only the **last** `STDERR_TAIL_BYTES` bytes are kept.
 const STDERR_TAIL_BYTES: usize = 4096;
 
-/// Spawn a background task that drains `stderr` indefinitely while
-/// preserving the first `STDERR_TAIL_BYTES` of output. Returns a join
-/// handle that resolves to the captured prefix as a `String`.
+/// Spawn a background task that drains `stderr` and returns its **tail**
+/// — the last `STDERR_TAIL_BYTES` bytes of output, where ASTAP's actual
+/// error context lives. Returns a join handle resolving to the tail as
+/// a `String` (lossy-decoded once, on a bounded byte slice, so no
+/// UTF-8 boundary risk).
 ///
-/// The drain pattern avoids two failure modes the older read-after-wait
-/// approach was vulnerable to:
+/// Two failure modes this avoids:
 ///
 /// 1. **Pipe-fill deadlock** — a child writing >64 KiB to stderr would
 ///    fill the OS pipe buffer and block itself before exiting,
@@ -150,33 +151,36 @@ const STDERR_TAIL_BYTES: usize = 4096;
 ///    active concurrently, so the pipe is kept clear regardless of
 ///    output volume.
 /// 2. **Unbounded memory** — `read_to_end` would buffer the entire
-///    stream before any truncation. The drain task copies at most
-///    `STDERR_TAIL_BYTES` bytes into the captured buffer, then keeps
-///    reading into a discard buffer.
-///
-/// The captured buffer is `Vec<u8>`; `String::from_utf8_lossy` runs
-/// once at the end on the bounded slice, so there is no UTF-8 boundary
-/// risk from mid-string truncation.
+///    stream before any truncation. This task keeps a sliding window
+///    of at most `2 * STDERR_TAIL_BYTES` bytes and amortizes the
+///    drain cost via a periodic shift.
 fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move {
-        let mut captured: Vec<u8> = Vec::with_capacity(STDERR_TAIL_BYTES);
+        // Sliding window: append new bytes to the end; when the buffer
+        // exceeds 2 * STDERR_TAIL_BYTES, drain the leading half so the
+        // tail (last STDERR_TAIL_BYTES) is preserved. Vec::drain's shift
+        // cost is amortized by the doubling threshold.
+        let mut buf: Vec<u8> = Vec::with_capacity(STDERR_TAIL_BYTES * 2);
         let mut chunk = [0u8; 1024];
         loop {
             match stderr.read(&mut chunk).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if captured.len() < STDERR_TAIL_BYTES {
-                        let take = n.min(STDERR_TAIL_BYTES - captured.len());
-                        captured.extend_from_slice(&chunk[..take]);
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > STDERR_TAIL_BYTES * 2 {
+                        let drop = buf.len() - STDERR_TAIL_BYTES;
+                        buf.drain(..drop);
                     }
-                    // Past the limit: continue draining the pipe so the
-                    // child is never blocked on a full buffer, but
-                    // discard the bytes.
                 }
                 Err(_) => break,
             }
         }
-        String::from_utf8_lossy(&captured).into_owned()
+        // Final trim to the last STDERR_TAIL_BYTES bytes.
+        if buf.len() > STDERR_TAIL_BYTES {
+            let drop = buf.len() - STDERR_TAIL_BYTES;
+            buf.drain(..drop);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
     })
 }
 

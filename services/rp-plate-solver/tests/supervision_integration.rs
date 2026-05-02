@@ -10,13 +10,22 @@
 //! 2. `option_env!("CARGO_BIN_EXE_mock_astap")` (set by Cargo for this
 //!    `[[test]]` target).
 //!
-//! If neither resolves, the tests skip with a diagnostic naming both
-//! mechanisms.
+//! If neither resolves, the tests fail with a diagnostic naming both
+//! mechanisms — `mock_astap` should always be present (Cargo provides
+//! the env var automatically; Bazel sets it explicitly via the
+//! BUILD.bazel `env` attribute).
 
 use rp_plate_solver::supervision::{spawn_with_deadline, SpawnOutcome, GRACE_PERIOD};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
+
+/// Windows process-creation flag. Spawning the child in a new process
+/// group is required for the supervision module's `CTRL_BREAK_EVENT`
+/// to target only the child (and not propagate up to the test runner).
+/// Same constant as `runner/astap.rs`.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 fn mock_astap_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("MOCK_ASTAP_BINARY") {
@@ -56,7 +65,7 @@ fn cmd_with_mode(mode: &str) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
     cmd
 }

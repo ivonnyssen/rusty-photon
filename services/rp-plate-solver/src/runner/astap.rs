@@ -114,9 +114,14 @@ impl AstapRunner for AstapCliRunner {
     }
 }
 
-/// Compute the `.wcs` sidecar path for a FITS file: replace the `.fits` /
-/// `.fit` / `.fz` extension with `.wcs`. ASTAP writes the sidecar next to
-/// the input.
+/// Compute the `.wcs` sidecar path for a FITS file: replace the
+/// trailing extension with `.wcs`. ASTAP writes the sidecar next to
+/// the input. Single-extension forms (`.fits`, `.fit`, `.fz`) are
+/// handled directly by `Path::with_extension`. Compound extensions
+/// like `.fits.fz` are **not supported** here — `with_extension`
+/// would yield `something.fits.wcs` rather than `something.wcs`.
+/// Real fixtures using `.fits.fz` haven't surfaced; revisit if they
+/// do.
 fn wcs_sidecar_path(fits_path: &Path) -> PathBuf {
     fits_path.with_extension("wcs")
 }
@@ -229,6 +234,22 @@ mod tests {
         assert_eq!(
             wcs_sidecar_path(Path::new("/data/m31.fit")),
             PathBuf::from("/data/m31.wcs")
+        );
+        assert_eq!(
+            wcs_sidecar_path(Path::new("/data/m31.fz")),
+            PathBuf::from("/data/m31.wcs")
+        );
+    }
+
+    #[test]
+    fn wcs_sidecar_path_compound_extension_not_supported() {
+        // Documents the known non-support for compound extensions:
+        // `with_extension` only replaces the last component, so
+        // `.fits.fz` yields `.fits.wcs`, not `.wcs`. The behavior is
+        // intentional per wcs_sidecar_path's docstring.
+        assert_eq!(
+            wcs_sidecar_path(Path::new("/data/m31.fits.fz")),
+            PathBuf::from("/data/m31.fits.wcs")
         );
     }
 }
