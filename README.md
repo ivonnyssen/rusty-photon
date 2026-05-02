@@ -128,15 +128,18 @@ cargo test --test conformu_integration -- --ignored
 
 ### Local CI
 
-CI workflows can be run locally using [act](https://github.com/nektos/act). See [docs/skills/pre-push.md](docs/skills/pre-push.md) for the full guide, or run the minimum pre-push checks:
+CI workflows can be run locally using [act](https://github.com/nektos/act). See [docs/skills/pre-push.md](docs/skills/pre-push.md) for the full guide, or run the minimum pre-push checks. Use **either** the preferred path **or** the fallback — not both.
+
+**Preferred** — cargo-rail's `commit` profile (affected packages only, with `--locked --all-features --all-targets` baked in; defined in `.config/rail.toml`):
 
 ```bash
-# Preferred: cargo-rail's commit profile (affected packages only,
-# --locked --all-features --all-targets baked in; defined in .config/rail.toml)
 cargo rail run --profile commit -q
 cargo fmt
+```
 
-# Fallback if cargo-rail is not installed
+**Fallback** — if cargo-rail is not installed:
+
+```bash
 cargo build --all --all-targets --all-features --locked --quiet --color never
 cargo nextest run --locked --all-features --all-targets --color never
 cargo fmt
