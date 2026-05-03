@@ -125,7 +125,11 @@ pub(crate) fn meridian_flip(
 ) -> Option<Duration> {
     let lst = lst_hours(site, &time_jds(time));
     let ha = (lst - target.ra_hours).rem_euclid(24.0);
-    let hours_sidereal = if ha == 0.0 { 24.0 } else { 24.0 - ha };
+    // ha ∈ [0, 24). HA = 0 means the target is on the meridian *right
+    // now* — the flip is due now, not in another full sidereal day.
+    // For 0 < ha < 24, transit is `24 - ha` sidereal hours in the
+    // future.
+    let hours_sidereal = if ha == 0.0 { 0.0 } else { 24.0 - ha };
     let hours_solar = hours_sidereal * SIDEREAL_TO_SOLAR;
     Some(Duration::milliseconds((hours_solar * 3_600_000.0) as i64))
 }
@@ -228,6 +232,30 @@ mod tests {
             NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap()).and_utc();
         assert!(t >= window_start);
         assert!(t < window_start + Duration::hours(24));
+    }
+
+    #[test]
+    fn meridian_flip_at_meridian_returns_zero() {
+        // Construct a target whose RA equals the current LST: HA = 0.
+        // The flip is "right now", so the duration should be ~0, not
+        // a full sidereal day.
+        let eph = ErfarsEphemeris::new();
+        let site = site_seattle();
+        let t = Utc.with_ymd_and_hms(2026, 5, 3, 12, 0, 0).unwrap();
+        let lst = eph.sidereal_time(&site, t).lst_hours;
+        let target = IcrsCoord {
+            ra_hours: lst,
+            dec_degrees: 30.0,
+        };
+        let d = meridian_flip(&site, target, t).unwrap();
+        // Allow ~1 minute slack for the f64 roundtrip through
+        // chrono::Duration::milliseconds; should be far below a full
+        // sidereal day.
+        assert!(
+            d.num_seconds().abs() < 60,
+            "expected ~0s at HA=0, got {}s",
+            d.num_seconds()
+        );
     }
 
     #[test]

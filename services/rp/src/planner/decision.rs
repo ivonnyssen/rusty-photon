@@ -68,15 +68,31 @@ pub fn next_target(
 
     // Step 1: eliminate by altitude. A target whose computed alt is
     // below `min_altitude_degrees` (per-target if set, else default)
-    // is dropped.
+    // is dropped. Set-time elimination (the "will set before one
+    // exposure can complete" half of rp.md §"Dynamic Planner"
+    // bullet 1) is a documented v1 gap — see the §"v1 implementation
+    // status" callout in `docs/services/rp.md`.
     let mut survivors: Vec<&PlannerTarget> = Vec::new();
     for t in targets {
         let coords = rp_ephemeris::IcrsCoord {
             ra_hours: t.ra_hours,
             dec_degrees: t.dec_degrees,
         };
-        let Ok(aa) = eph.alt_az(site, coords, now) else {
-            continue;
+        let aa = match eph.alt_az(site, coords, now) {
+            Ok(aa) => aa,
+            Err(e) => {
+                // ERFA can refuse the alt/az transform at degenerate
+                // sites (e.g. exactly the pole). Log it so a
+                // configuration problem doesn't disguise itself as
+                // "all targets below floor"; continue past the
+                // offender.
+                tracing::debug!(
+                    target = %t.name,
+                    error = %e,
+                    "alt/az transform failed; skipping target in next_target evaluation"
+                );
+                continue;
+            }
         };
         let floor = t.min_altitude_degrees.unwrap_or(default_min_altitude_deg);
         if aa.altitude_degrees >= floor {
