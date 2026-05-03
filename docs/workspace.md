@@ -44,6 +44,7 @@ belong in any single service design doc.
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
 | [fits-library-consolidation.md](plans/fits-library-consolidation.md) | FITS library evaluation across the workspace |
 | [rp-plate-solver.md](plans/rp-plate-solver.md) | rp-plate-solver rp-managed service implementation (ADR-005 sequencing) |
+| [rp-planning-tools.md](plans/rp-planning-tools.md) | rp planning & ephemeris tools: site config, `rp-ephemeris` + `rp-catalog` crates, primitive + convenience MCP tools |
 
 ## Shared Crates
 
