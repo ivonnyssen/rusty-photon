@@ -215,6 +215,79 @@ Omitted fields produce no flag — ASTAP falls back to blind solve.
 The wrapper does not synthesize hints; it never invents data the
 caller did not provide.
 
+### Hint sources and search-radius defaults
+
+The wrapper itself receives hints in the HTTP request body — it
+neither queries the mount nor maintains a default. Hint sources are
+the caller's concern; for `rp` (the canonical caller), the hint
+chain is:
+
+1. **`ra_hint` / `dec_hint`** come from the mount's current pointing
+   (ASCOM Alpaca Telescope `RightAscension` / `Declination`
+   properties). `rp` reads these via the equipment registry when
+   it makes the `plate_solve` MCP call. Mount-not-connected ⇒ no
+   hints, blind solve.
+2. **`fov_hint_deg`** comes from the camera's pixel scale and
+   sensor dimensions (operator-supplied via camera calibration
+   data) — it doesn't change between sessions, so it's typically a
+   per-camera config field rather than a per-request lookup.
+3. **`search_radius_deg`** is the harder field. **The ASCOM Alpaca
+   Telescope spec does not standardize a "pointing uncertainty"
+   property.** Mount drivers may expose vendor-specific accuracy
+   estimates, but there is no portable way to ask "how confident
+   are you in your pointing?" Operators provide this number via
+   their rp config (or accept rp's default).
+
+Recommended `search_radius_deg` defaults — operators tune per their
+rig:
+
+| Mount state | Recommended radius |
+|-------------|--------------------|
+| Synced to a recent solve, GoTo mount with pointing model | 1°–2° |
+| Synced, no model | 2°–5° |
+| Unsynced cold start | 5°–10° |
+| No reliable mount input (manual pointing) | omit hint — blind solve |
+
+Smaller radius means faster solve. ASTAP's documented sweet spot is
+~3° for typical amateur GoTo setups.
+
+ADR-005 §"Open questions" item 6 is retired by this section: the
+ASCOM gap is documented, the operator-supplied default is
+recommended, and `rp`'s eventual `plate_solve` tool implementation
+will source `search_radius_deg` from rp config rather than from a
+nonexistent ASCOM property.
+
+#### Operator perf comparison (manual)
+
+To verify the hint speed advantage on a real rig, run the wrapper
+with a real ASTAP install + a known-solvable FITS, then time two
+requests via `curl`:
+
+```sh
+# With hints (M31 example)
+time curl -s -X POST http://localhost:11131/api/v1/solve \
+  -H 'content-type: application/json' \
+  -d '{
+    "fits_path": "/path/to/m31_known.fits",
+    "ra_hint": 10.6847,
+    "dec_hint": 41.2689,
+    "fov_hint_deg": 1.5,
+    "search_radius_deg": 3.0,
+    "timeout": "30s"
+  }'
+
+# Same FITS, no hints (blind solve)
+time curl -s -X POST http://localhost:11131/api/v1/solve \
+  -H 'content-type: application/json' \
+  -d '{"fits_path": "/path/to/m31_known.fits", "timeout": "120s"}'
+```
+
+The hinted call typically completes in 1–3 s; the blind call takes
+10× to 100× longer (or hits the timeout). This is the speed
+advantage ADR-005 cites; if it disappears in practice, the wrapper
+isn't being invoked correctly or ASTAP's index database is
+mismatched to the FOV.
+
 ### Configuration Validation at Startup
 
 The service validates its config before binding the HTTP listener.

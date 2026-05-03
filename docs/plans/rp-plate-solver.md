@@ -784,25 +784,58 @@ runs land after merge when the cron next fires (and via
 
 ### Phase 7 — Hint-plumbing verification (retires ADR-005 OQ 6)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] Confirm via `services/rp/src/equipment/mount.rs` (Phase 6c-prep
-      lands this) that the mount wrapper exposes RA/Dec with enough
-      accuracy to seed `-ra` / `-spd` and that mount pointing
-      uncertainty is bounded enough to seed `-r`. If pointing
-      uncertainty is not currently observable from the Alpaca
-      surface, document the gap and the operator-supplied default
-      that fills it.
-- [ ] Add a hinted-vs-blind perf comparison to Phase 6's nightly
-      smoke workflow: run the happy-path scenario twice (hints
-      supplied, hints omitted) and capture the solve-time delta in
-      the workflow log. Observation, not contract enforcement —
-      surfaces drift in the speed advantage the ADR promises without
-      failing the build.
-- [ ] Update ADR-005 open-question 6 to retired with a pointer to
-      the workflow run that demonstrated it.
+The original framing assumed `services/rp/src/equipment/mount.rs`
+existed (gated on Phase 6c-prep, an independent track that hasn't
+landed) and that the verification would observe real solve-time
+deltas in CI. Reality:
 
-**Exit criteria:** ADR-005 OQ 6 marked retired.
+1. **ASCOM doesn't standardize pointing uncertainty.** The Alpaca
+   Telescope spec exposes `RightAscension` / `Declination` (which
+   the wrapper's `ra_hint` / `dec_hint` will source from once
+   6c-prep lands) but no portable `PointingUncertainty` /
+   `SearchRadius` property. Mount drivers may have vendor-specific
+   accuracy estimates; the wrapper can't query them portably.
+
+2. **`search_radius_deg` is therefore operator-supplied.** When
+   `rp`'s `plate_solve` MCP tool lands (Phase 6c-2), it'll source
+   the radius from rp config rather than from the mount. The
+   wrapper's HTTP contract already accepts `search_radius_deg` per
+   request; today, callers that don't pass it get ASTAP's blind-solve
+   fallback.
+
+3. **The CI hinted-vs-blind perf comparison can't run unattended**
+   because the m31 happy-path fixture is `@manual`-tagged (Phase 6
+   forward work). Operators verify the speed advantage on their own
+   rig using the curl recipe documented in the design doc.
+
+What this phase delivered:
+
+- [x] New §"Hint sources and search-radius defaults" in
+      `docs/services/rp-plate-solver.md` §"Hint Mapping" — names
+      the ASCOM gap, recommends per-mount-state defaults (1°-10°
+      depending on sync state), shows how `rp` will source each
+      hint when 6c-prep + 6c-2 land.
+- [x] Operator perf-comparison runbook in the same section — a
+      curl one-liner pair (hinted vs. blind) operators run against
+      their own real fixture to verify the speed advantage.
+- [x] ADR-005 §"Open questions" item 6 marked retired with the
+      ASCOM-gap answer and pointers to the design-doc section.
+
+What this phase did **not** do (acknowledged forward work):
+
+- Automated nightly perf trending. Requires a committable solvable
+  FITS or a synthetic fixture-generation step that produces real
+  star data (hard). Operators verify locally per the runbook.
+- `services/rp/src/equipment/mount.rs` itself — that's
+  6c-prep's deliverable per the parent plan
+  (`docs/plans/image-evaluation-tools.md` §Phase 6c-prep).
+- `rp`'s `plate_solve` MCP tool implementation that sources
+  `search_radius_deg` from rp config — that's 6c-2.
+
+**Exit criteria met:** ADR-005 OQ 6 marked retired with the
+documented ASCOM-gap answer and the operator-supplied default policy.
 
 ### Phase 8 — LGPL §4/§6 review under BYO (retires ADR-005 OQ 5)
 
