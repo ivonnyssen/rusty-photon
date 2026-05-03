@@ -509,24 +509,29 @@ own guidance on GPL/LGPL boundaries.
 
 **Answer: No.**
 
-LGPL-3.0 §4 ("Combined Works") is the section that converts an
-LGPL work into something the larger program must also license under
-GPL/LGPL terms. It applies when you "convey a Combined Work under
-terms of your choice" — and §0 defines a Combined Work as "a work
-produced by combining or linking an Application with the Library."
-The terms "combining" and "linking" in the LGPL refer to the static
-or dynamic linker boundary; subprocess execution is not linking by
-any commonly-cited interpretation
-([FSF FAQ](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation),
-[FSF "What is mere aggregation"](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)).
+LGPL-3.0 §4 ("Combined Works") sets *conditions on conveying a
+Combined Work under terms of your choice* — for example, providing
+source for the Library portion and ensuring users can replace the
+LGPL component. It does not auto-relicense the larger program;
+rather, it applies *if and when* you convey a Combined Work, and it
+defines a Combined Work in §0 as "a work produced by combining or
+linking an Application with the Library." The terms "combining" and
+"linking" refer to the static or dynamic linker boundary; subprocess
+execution is not linking under
+[the FSF's own guidance on plugins and subprocesses](https://www.gnu.org/licenses/gpl-faq.html#GPLAndPlugins).
+Two separate reasons §4 doesn't engage at our boundary, then: we
+don't form a Combined Work (no linking), and we don't convey
+anything (the predicate the §4 conditions hang on).
 
 §6 ("Conveying Non-Source Forms") imposes obligations *only when
 conveying* — and conveying is defined in GPL-3.0 §0 (which LGPL-3.0
 §0 inherits) as "any kind of propagation that enables other parties
-to make or receive copies." `rp` and `rp-plate-solver` neither
-make nor receive copies of `astap_cli`; they invoke an
-operator-installed binary by absolute path. The subprocess boundary
-puts §6 outside the runtime path entirely.
+to make or receive copies"
+([FSF on mere aggregation vs. conveyance](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)).
+`rp` and `rp-plate-solver` neither make nor receive copies of
+`astap_cli`; they invoke an operator-installed binary by its
+configured path. The subprocess boundary puts §6 outside the
+runtime path entirely.
 
 #### Question 2: Does the `install-astap` GH action's per-run fresh download constitute conveyance?
 
@@ -547,9 +552,14 @@ for third-party download under its own distribution channel. The
 that mirrors what a human operator would do by hand from the
 README's "Operator install" section.
 
-The fresh-download-per-run posture (`cache-key-suffix: github.run_id`
-on the smoke workflow) reinforces this: caching is at most a
-performance optimization, not a distribution mechanism.
+The dedicated `install-astap` smoke workflow
+(`.github/workflows/install-astap.yml`) sets `use-cache: "false"` on
+the composite action so each run does a genuinely fresh upstream
+download — there is no cache layer to call into question for that
+workflow at all. Other callers (the production `rp-plate-solver-smoke`
+nightly + path-triggered workflow) leave caching at its default;
+that cache is repo-internal CI infrastructure scoped to the runner
+(see Question 3 below).
 
 #### Question 3: Is the GH-Actions cache layer narrow enough to count as ephemeral build infrastructure?
 
