@@ -159,7 +159,8 @@ Feature: Mount tools
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     When the MCP client calls "park"
-    And the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
     Then the tool call should succeed
     And the get_park_state result at_park should be true
 
@@ -176,17 +177,29 @@ Feature: Mount tools
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     When the MCP client calls "park"
-    And the MCP client calls "unpark"
-    And the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the get_park_state result at_park should be true
+    When the MCP client calls "unpark"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
     Then the tool call should succeed
     And the get_park_state result at_park should be false
 
+  # Unparks first to pin a deterministic at_park == false starting
+  # state — earlier scenarios in this feature park the singleton
+  # OmniSim mount, so the round-trip-from-default assumption can't
+  # hold without an explicit reset.
   Scenario: get_park_state returns at_park, can_park, and can_unpark
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    When the MCP client calls "unpark"
+    Then the tool call should succeed
     When the MCP client calls "get_park_state"
     Then the tool call should succeed
+    And the get_park_state result at_park should be false
     And the get_park_state result can_park should be true
     And the get_park_state result can_unpark should be true
 

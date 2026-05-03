@@ -1101,7 +1101,7 @@ impl McpHandler {
 
         match mount.at_park().await {
             Ok(true) => Ok(()),
-            Ok(false) => Err("mount completed slew but is not at park".to_string()),
+            Ok(false) => Err("park completed but mount is not at park".to_string()),
             Err(e) => Err(format!("failed to verify mount at_park: {}", e)),
         }
     }
@@ -4483,7 +4483,7 @@ mod tests {
         };
         let handler = test_handler(mount_registry(Arc::new(mount), None));
         let result = handler.park(Parameters(ParkParams {})).await;
-        assert_tool_error(result, "completed slew but is not at park");
+        assert_tool_error(result, "park completed but mount is not at park");
     }
 
     /// 300 s deadline expires while `slewing()` keeps returning `true`.
@@ -4564,6 +4564,82 @@ mod tests {
             .get_park_state(Parameters(GetParkStateParams {}))
             .await;
         assert_tool_error(result, "failed to read mount at_park");
+    }
+
+    #[tokio::test]
+    async fn test_get_park_state_fails_when_can_park_read_errors() {
+        let mount = MockTelescope {
+            fail_can_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount can_park");
+    }
+
+    #[tokio::test]
+    async fn test_get_park_state_fails_when_can_unpark_read_errors() {
+        let mount = MockTelescope {
+            fail_can_unpark: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount can_unpark");
+    }
+
+    /// `park()` succeeds, `slewing()` returns false, but `at_park()`
+    /// itself errors during the post-park verification — distinct from
+    /// `at_park()` returning `Ok(false)` (which is the "completed but
+    /// not at park" arm). Pins the third arm of the post-condition
+    /// check.
+    #[tokio::test]
+    async fn test_park_at_park_read_fails_during_verify() {
+        let mount = MockTelescope {
+            fail_at_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "failed to verify mount at_park");
+    }
+
+    /// Polling `slewing()` itself errors during the park wait —
+    /// covers the `PollIdleError::Read` arm in `do_park_blocking`.
+    #[tokio::test]
+    async fn test_park_polling_error_propagates() {
+        let mount = MockTelescope {
+            fail_slewing_poll: true,
+            at_park_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "error polling mount slewing");
+    }
+
+    /// Same coverage for `do_slew_blocking`'s `PollIdleError::Read`
+    /// arm — the helper is shared with park, but the slew callsite
+    /// has its own error-mapping path.
+    #[tokio::test]
+    async fn test_slew_polling_error_propagates() {
+        let mount = MockTelescope {
+            fail_slewing_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "error polling mount slewing");
     }
 
     #[tokio::test]
