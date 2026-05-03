@@ -124,7 +124,8 @@ purely how the operations are projected onto the MCP catalog:
 | `compute_meridian_flip {ra, dec, time, side_of_pier}` | time-to-flip |
 | `get_sun_position {time?}` | RA/Dec, alt/az |
 | `get_twilight {date, kind}` | civil/nautical/astronomical begin/end |
-| `get_moon_position {time?, target?}` | RA/Dec, alt/az, phase, illumination, optional separation |
+| `get_moon_position {time?}` | RA/Dec, alt/az, phase, illumination |
+| `compute_moon_separation {ra, dec, time?}` | angular separation between target and moon |
 | `get_local_sidereal_time {time?}` | LST |
 
 **High-level convenience tools (compose primitives):**
@@ -184,7 +185,7 @@ embedded data; no service supervision, no HTTP surface.
   impl + reference-value tests.
 - `rp-catalog` crate: embedded Messier + NGC + IC; `resolve(name) →
   ResolvedTarget` (RA, Dec, type, magnitude).
-- Primitive MCP tools listed above (9 operations).
+- Primitive MCP tools listed above (10 operations).
 - High-level MCP tools: `get_target_status`, `get_next_target`,
   `get_meridian_status` actually backed by computed values.
 - `target` definitions in config still accept literal RA/Dec; the
@@ -216,7 +217,9 @@ crates/rp-ephemeris/
     lib.rs                # Ephemeris trait + ResolvedSky / SunInfo / MoonInfo / etc.
     astro_math_impl.rs    # AstroMathEphemeris: Ephemeris-trait wrapper around astro-math
     site.rs               # Site { lat, lon } + tzf-rs timezone derivation
-    refvals/              # JSON tables of reference Astropy/Stellarium values
+  refvals/
+    *.json                # Reference Astropy/Stellarium values per object
+    gen.py                # Astropy generator script (run by hand, not CI)
   tests/
     reference_values.rs   # Asserts AstroMathEphemeris output matches refvals/
 
@@ -332,7 +335,8 @@ Status: **not started.**
       mid-southern, an equatorial) at ~3 times (solstices and an
       equinox). For each (object, site, time) tuple, the canonical
       Astropy/Stellarium value is committed in
-      `src/refvals/<object>.json`, and the test asserts
+      `refvals/<object>.json` (crate root, alongside the generator),
+      and the test asserts
       `AstroMathEphemeris` output is within tolerance (1 arcsec for
       alt/az, 1 minute for transit/rise/set, 0.1° for moon phase).
       Reference values are generated once via a documented Astropy
@@ -418,6 +422,11 @@ Status: **not started.**
 - [ ] `docs/services/rp.md` Configuration example: ensure the `site`
       block lands now, not later (it's now load-bearing for
       `cargo run`).
+- [ ] `docs/references/ascom-alpaca.md` — extend with a Telescope
+      section covering `SiteLatitude`, `SiteLongitude`,
+      `CanGetSiteLatitude`, `CanGetSiteLongitude` (the four properties
+      this phase actually reads), so future contributors don't have to
+      chase the upstream spec for the in-repo workflow.
 
 **Exit criteria:** all `site_validation.feature` scenarios green.
 `cargo rail run --profile commit -q` clean. The rp binary fails
@@ -459,10 +468,10 @@ without `@wip`. `cargo rail run --profile commit -q` clean.
 Status: **not started.**
 
 - [ ] `services/rp/src/planner/primitives.rs` — MCP wrappers for the
-      9 primitive operations from the Decisions Resolved table.
+      10 primitive operations from the Decisions Resolved table.
       Each wrapper is a thin `serde_json` ↔ `Ephemeris`-trait-call
       adapter; the math lives in `rp-ephemeris`.
-- [ ] `services/rp/src/mcp.rs` — register all 9 primitives.
+- [ ] `services/rp/src/mcp.rs` — register all 10 primitives.
 - [ ] `services/rp/tests/features/ephemeris_primitives.feature` —
       one scenario per primitive, with a known-answer check (the
       reference-value table from Phase 2 supplies the canonical
@@ -574,8 +583,14 @@ Within that fixed scope, dependencies are mostly linear:
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
 - ASCOM Telescope `SiteLatitude` / `SiteLongitude` /
-  `CanGetSiteLatitude` / `CanGetSiteLongitude` properties:
-  [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md)
+  `CanGetSiteLatitude` / `CanGetSiteLongitude` properties — the
+  in-repo reference [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md)
+  does not yet cover the Telescope interface; see the upstream Alpaca
+  device spec at
+  [ascom-standards.org/api](https://ascom-standards.org/api/) (Telescope
+  endpoints `/sitelatitude`, `/sitelongitude`, `/cangetsitelatitude`,
+  `/cangetsitelongitude`). Phase 4 should extend the in-repo reference
+  with a Telescope section as part of the work.
 - [astro-math on crates.io](https://crates.io/crates/astro-math)
 - [tzf-rs on crates.io](https://crates.io/crates/tzf-rs)
 - [openNGC dataset](https://github.com/mattiaverga/OpenNGC) (candidate
