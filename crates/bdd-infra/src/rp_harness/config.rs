@@ -74,6 +74,11 @@ pub struct RpConfigBuilder {
     pub focusers: Vec<FocuserConfig>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
+    /// Optional `(latitude_degrees, longitude_degrees)` site block.
+    /// Required for ephemeris-driven scenarios (planner, twilight,
+    /// alt/az MCP tools) and for exercising the mount-side site
+    /// validation path. None ⇒ rp's `site` field stays absent.
+    pub site: Option<(f64, f64)>,
     pub plugin_configs: Vec<Value>,
     /// Override `session.data_directory`. When `None`, the builder
     /// generates a fresh per-call path. The cross-restart BDD scenarios
@@ -112,6 +117,14 @@ impl RpConfigBuilder {
     /// Set the singular mount config (overwrites any prior call).
     pub fn with_mount(&mut self, mount: MountConfig) -> &mut Self {
         self.mount = Some(mount);
+        self
+    }
+
+    /// Set the observer site (latitude/longitude in degrees). Used by
+    /// ephemeris and planner scenarios; also required to exercise
+    /// the mount-side site validation rule on connect.
+    pub fn with_site(&mut self, latitude_degrees: f64, longitude_degrees: f64) -> &mut Self {
+        self.site = Some((latitude_degrees, longitude_degrees));
         self
     }
 
@@ -275,6 +288,13 @@ impl RpConfigBuilder {
             });
         }
 
+        if let Some((lat, lon)) = self.site {
+            config["site"] = serde_json::json!({
+                "latitude_degrees": lat,
+                "longitude_degrees": lon,
+            });
+        }
+
         config
     }
 }
@@ -359,6 +379,26 @@ mod tests {
             cfg["equipment"]["filter_wheels"][0]["camera_id"],
             "imaging-cam"
         );
+    }
+
+    #[test]
+    fn site_block_omitted_by_default() {
+        let cfg = RpConfigBuilder::new().build();
+        assert!(
+            cfg.get("site").is_none(),
+            "expected site key to be absent when not set, got: {:?}",
+            cfg.get("site")
+        );
+    }
+
+    #[test]
+    fn with_site_emits_site_block() {
+        let mut b = RpConfigBuilder::new();
+        b.with_site(47.6062, -122.3321);
+        let cfg = b.build();
+        let site = cfg.get("site").expect("site block must be present");
+        assert_eq!(site["latitude_degrees"], 47.6062);
+        assert_eq!(site["longitude_degrees"], -122.3321);
     }
 
     #[test]

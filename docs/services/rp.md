@@ -1577,11 +1577,11 @@ Supported ASCOM device types:
 | CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness) |
 
 **Mount site properties.** On telescope connect, `rp` reads
-`SiteLatitude` and `SiteLongitude` (and the
-`CanGetSiteLatitude`/`CanGetSiteLongitude` capability bits) to
-validate the configured `site` block. A mismatch greater than
-`0.01°` in either dimension is a hard error; missing capability
-bits cause the validation to be skipped with a `debug!()` log. See
+`SiteLatitude` and `SiteLongitude` to validate the configured `site`
+block. A mismatch greater than `0.01°` in either dimension is a
+hard error; if either read fails (typically `NOT_IMPLEMENTED` from
+a mount that does not expose the property), the validation is
+skipped with a `debug!()` log. See
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 
 ### Guider Service
@@ -2082,15 +2082,18 @@ the common case. Per-azimuth obstruction profiles are deferred.
 properties. On telescope connect, `rp` reads both and compares to
 config:
 
-- If `CanGetSiteLatitude` and `CanGetSiteLongitude` are both true,
-  any difference greater than `0.01°` (≈1 km) in either dimension
-  is a **hard error** on connect, naming both pairs in the error
-  message. Silently running ephemeris math against a site that
-  disagrees with what the mount computes hour-angle from is the
-  precise class of bug that produces plausible-looking wrong slew
-  targets — i.e., the worst kind.
-- If either capability bit is false, config is the source of truth
-  and a `debug!()` log notes that mount validation was skipped.
+- If both reads succeed, any difference greater than `0.01°` (≈1 km)
+  in either dimension is a **hard error** on connect, naming both
+  pairs in the error message. Silently running ephemeris math
+  against a site that disagrees with what the mount computes
+  hour-angle from is the precise class of bug that produces
+  plausible-looking wrong slew targets — i.e., the worst kind.
+- If either read fails (typically `NOT_IMPLEMENTED` from a mount
+  that does not expose the property — ASCOM has no
+  `CanGetSiteLatitude` / `CanGetSiteLongitude` capability bit;
+  the read attempt itself is the capability probe), config is the
+  source of truth and a `debug!()` log notes that mount validation
+  was skipped.
 
 The mismatch threshold is not configurable: 0.01° is below the
 positional accuracy any operator would set deliberately, and well

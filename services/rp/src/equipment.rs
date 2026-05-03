@@ -10,6 +10,7 @@ use serde::Serialize;
 use tracing::debug;
 
 use crate::config;
+use crate::error::RpError;
 
 pub struct CameraEntry {
     pub id: String,
@@ -179,7 +180,85 @@ impl EquipmentRegistry {
     pub fn find_mount(&self) -> Option<&MountEntry> {
         self.mount.as_ref()
     }
+
+    /// Validate the configured site against the mount's reported
+    /// `SiteLatitude`/`SiteLongitude`. Returns:
+    ///
+    /// - `Ok(())` when no site is configured, no mount is connected,
+    ///   the mount lacks the property (any read error → debug-log
+    ///   skip), or the values agree to within `SITE_MATCH_TOLERANCE_DEG`.
+    /// - `Err(RpError::SiteMismatch)` when both sides expose values
+    ///   and they disagree past the tolerance.
+    ///
+    /// ASCOM does **not** expose a `CanGetSiteLatitude` capability
+    /// bit — the read attempt itself is the capability probe, and
+    /// `NOT_IMPLEMENTED` (or any other ASCOM error) is treated as
+    /// "skip validation" rather than "fail loud".
+    pub async fn validate_site(
+        &self,
+        site: Option<&config::SiteConfig>,
+    ) -> crate::error::Result<()> {
+        let Some(site) = site else {
+            debug!("no site configured; skipping mount-side site validation");
+            return Ok(());
+        };
+        let Some(mount) = self.mount.as_ref() else {
+            debug!("no mount configured; skipping mount-side site validation");
+            return Ok(());
+        };
+        if !mount.connected {
+            debug!("mount not connected; skipping mount-side site validation");
+            return Ok(());
+        }
+        let Some(t) = mount.device.as_ref() else {
+            debug!("mount entry has no device handle; skipping site validation");
+            return Ok(());
+        };
+
+        let mount_lat = match t.site_latitude().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "mount did not report SiteLatitude; skipping mount-side site validation"
+                );
+                return Ok(());
+            }
+        };
+        let mount_lon = match t.site_longitude().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "mount did not report SiteLongitude; skipping mount-side site validation"
+                );
+                return Ok(());
+            }
+        };
+
+        let lat_diff = (mount_lat - site.latitude_degrees).abs();
+        let lon_diff = (mount_lon - site.longitude_degrees).abs();
+        if lat_diff > SITE_MATCH_TOLERANCE_DEG || lon_diff > SITE_MATCH_TOLERANCE_DEG {
+            return Err(RpError::SiteMismatch {
+                config_lat: site.latitude_degrees,
+                config_lon: site.longitude_degrees,
+                mount_lat,
+                mount_lon,
+            });
+        }
+        debug!(
+            site_lat = site.latitude_degrees,
+            site_lon = site.longitude_degrees,
+            "mount-side site validation: configured site agrees with mount"
+        );
+        Ok(())
+    }
 }
+
+/// Hard tolerance for the lat/lon mismatch check. 0.01° ≈ 1 km on the
+/// ground — finer than any operator would set deliberately, well above
+/// numerical noise on either side. Not configurable.
+pub const SITE_MATCH_TOLERANCE_DEG: f64 = 0.01;
 
 /// Build an Alpaca client with optional HTTP Basic Auth credentials.
 fn build_alpaca_client(
@@ -1089,5 +1168,187 @@ mod tests {
             .as_ref()
             .expect("EquipmentStatus.mount should be Some when configured");
         assert!(mount_status.connected);
+    }
+
+    /// Build an `ok_mount_router` extended with `SiteLatitude` /
+    /// `SiteLongitude` Get handlers that return the supplied values.
+    fn mount_router_with_site(lat: f64, lon: f64) -> Router {
+        ok_mount_router()
+            .route(
+                "/api/v1/telescope/0/sitelatitude",
+                get(move || async move {
+                    Json(serde_json::json!({
+                        "Value": lat,
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/sitelongitude",
+                get(move || async move {
+                    Json(serde_json::json!({
+                        "Value": lon,
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+    }
+
+    /// Build an `ok_mount_router` whose `SiteLatitude` / `SiteLongitude`
+    /// endpoints respond with `NOT_IMPLEMENTED` (ASCOM error 0x400),
+    /// modelling a mount that lacks the property. The validate_site
+    /// path treats this as "skip validation" rather than "fail loud".
+    fn mount_router_without_site() -> Router {
+        ok_mount_router()
+            .route(
+                "/api/v1/telescope/0/sitelatitude",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 0x400,
+                        "ErrorMessage": "Property SiteLatitude is not implemented"
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/sitelongitude",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 0x400,
+                        "ErrorMessage": "Property SiteLongitude is not implemented"
+                    }))
+                }),
+            )
+    }
+
+    async fn registry_with_mount(stub_url: &str) -> EquipmentRegistry {
+        let equipment_cfg = config::EquipmentConfig {
+            cameras: vec![],
+            mount: Some(mount_config_for(stub_url)),
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![],
+        };
+        EquipmentRegistry::new(&equipment_cfg).await
+    }
+
+    #[tokio::test]
+    async fn validate_site_no_op_when_site_absent() {
+        let stub = spawn_stub(ok_mount_router()).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        registry
+            .validate_site(None)
+            .await
+            .expect("missing site config must short-circuit cleanly");
+    }
+
+    #[tokio::test]
+    async fn validate_site_no_op_when_mount_absent() {
+        let registry = EquipmentRegistry::new(&config::EquipmentConfig {
+            cameras: vec![],
+            mount: None,
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![],
+        })
+        .await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.6062,
+            longitude_degrees: -122.3321,
+        };
+        registry
+            .validate_site(Some(&site))
+            .await
+            .expect("no mount → no validation, no error");
+    }
+
+    #[tokio::test]
+    async fn validate_site_skips_when_mount_lacks_property() {
+        let stub = spawn_stub(mount_router_without_site()).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.6062,
+            longitude_degrees: -122.3321,
+        };
+        // No `CanGetSiteLatitude`/`Longitude` in ASCOM — the read
+        // attempt itself is the capability probe. NOT_IMPLEMENTED
+        // (or any other error) should be debug-logged and skipped.
+        registry
+            .validate_site(Some(&site))
+            .await
+            .expect("missing property must skip, not error");
+    }
+
+    #[tokio::test]
+    async fn validate_site_passes_when_mount_agrees() {
+        let stub = spawn_stub(mount_router_with_site(47.6062, -122.3321)).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.6062,
+            longitude_degrees: -122.3321,
+        };
+        registry.validate_site(Some(&site)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn validate_site_passes_when_within_tolerance() {
+        // Diff = 0.005° in each dim, below the 0.01° hard cap.
+        let stub = spawn_stub(mount_router_with_site(47.611, -122.337)).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.606,
+            longitude_degrees: -122.332,
+        };
+        registry.validate_site(Some(&site)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn validate_site_errors_on_latitude_mismatch() {
+        // Mount reports lat off by 1°, well past the 0.01° cap.
+        let stub = spawn_stub(mount_router_with_site(48.6062, -122.3321)).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.6062,
+            longitude_degrees: -122.3321,
+        };
+        let err = registry.validate_site(Some(&site)).await.unwrap_err();
+        match err {
+            RpError::SiteMismatch {
+                config_lat,
+                config_lon,
+                mount_lat,
+                mount_lon,
+            } => {
+                assert!((config_lat - 47.6062).abs() < 1e-9);
+                assert!((config_lon - -122.3321).abs() < 1e-9);
+                assert!((mount_lat - 48.6062).abs() < 1e-9);
+                assert!((mount_lon - -122.3321).abs() < 1e-9);
+            }
+            other => panic!("expected SiteMismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_site_errors_on_longitude_mismatch() {
+        let stub = spawn_stub(mount_router_with_site(47.6062, -120.0)).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 47.6062,
+            longitude_degrees: -122.3321,
+        };
+        let err = registry.validate_site(Some(&site)).await.unwrap_err();
+        assert!(
+            matches!(err, RpError::SiteMismatch { .. }),
+            "expected SiteMismatch, got {err}"
+        );
+        // The Display impl must name both pairs so an operator who
+        // sees this in a startup log knows what the disagreement is.
+        let s = err.to_string();
+        assert!(s.contains("47.6062"), "missing config lat: {s}");
+        assert!(s.contains("-122.3321"), "missing config lon: {s}");
+        assert!(s.contains("-120.0000"), "missing mount lon: {s}");
     }
 }

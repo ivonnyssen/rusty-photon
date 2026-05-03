@@ -146,6 +146,36 @@ The Switch interface manages controllable switches and sensors. Switches are num
 
 ---
 
+## Telescope Interface (Site Properties)
+
+Used by `rp` for site validation on mount connect (see
+[`docs/services/rp.md`](../services/rp.md) §"Site Validation
+Against the ASCOM Mount"). The Telescope interface is large
+(~70 properties/methods); only the subset `rp` reads at startup
+is documented here. The full interface is at the upstream Alpaca
+device spec — <https://ascom-standards.org/api/>.
+
+### Site Geographic Properties
+
+| Property | HTTP | Type | Description |
+|----------|------|------|-------------|
+| `sitelatitude` | GET | `f64` (degrees, +N) | Geodetic latitude (WGS84) of the observing site |
+| `sitelongitude` | GET | `f64` (degrees, +E) | Longitude (WGS84) of the observing site |
+| `siteelevation` | GET | `f64` (metres, ASL) | Site elevation — `rp` does not consume this in v1 |
+
+### Capability Probe Pattern
+
+ASCOM has **no** `CanGetSiteLatitude` / `CanGetSiteLongitude`
+capability bit — the read attempt itself is the capability probe.
+A mount that does not expose the property returns
+`0x400 NOT_IMPLEMENTED`; `rp` treats any read error as "skip the
+validation" rather than "fail loud", with a `debug!()` log to make
+the skip visible. The setters (`set_sitelatitude`,
+`set_sitelongitude`) are not used by `rp` — site lat/lon comes
+from the config file on disk; the mount is asked only to confirm.
+
+---
+
 ## SafetyMonitor Interface
 
 Used by the `filemonitor` service in this project.

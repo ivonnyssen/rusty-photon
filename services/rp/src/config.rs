@@ -10,6 +10,14 @@ use crate::error::{Result, RpError};
 pub struct Config {
     pub session: SessionConfig,
     pub equipment: EquipmentConfig,
+    /// Observer site (lat/lon). Required for ephemeris features
+    /// (`compute_alt_az`, `get_target_status`, etc.); optional otherwise.
+    /// When `Some` and a mount is configured, `rp` validates the
+    /// configured lat/lon against the mount's `SiteLatitude` /
+    /// `SiteLongitude` on connect — see `docs/services/rp.md`
+    /// §"Site Validation Against the ASCOM Mount".
+    #[serde(default)]
+    pub site: Option<SiteConfig>,
     #[serde(default)]
     pub plugins: Vec<Value>,
     #[serde(default)]
@@ -21,6 +29,38 @@ pub struct Config {
     #[serde(default)]
     pub imaging: ImagingConfig,
     pub server: ServerConfig,
+}
+
+/// Observer site location. Validated at config-load time: latitude
+/// must be in [-90, 90] and longitude in [-180, 180]. The IANA
+/// timezone is derived from these coordinates at startup via
+/// `rp-ephemeris`; elevation is intentionally omitted (see
+/// `docs/services/rp.md` §"Site Configuration").
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SiteConfig {
+    pub latitude_degrees: f64,
+    pub longitude_degrees: f64,
+}
+
+impl SiteConfig {
+    /// Range-validate the site, returning a [`RpError::Config`] with a
+    /// message naming the offending field on failure.
+    pub fn validate(&self) -> Result<()> {
+        if !(-90.0..=90.0).contains(&self.latitude_degrees) {
+            return Err(RpError::Config(format!(
+                "site.latitude_degrees must be in [-90, 90]; got {}",
+                self.latitude_degrees
+            )));
+        }
+        if !(-180.0..=180.0).contains(&self.longitude_degrees) {
+            return Err(RpError::Config(format!(
+                "site.longitude_degrees must be in [-180, 180]; got {}",
+                self.longitude_degrees
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,13 +251,17 @@ pub fn load_config(path: &Path) -> Result<Config> {
             e
         ))
     })?;
-    serde_json::from_str(&contents).map_err(|e| {
+    let config: Config = serde_json::from_str(&contents).map_err(|e| {
         RpError::Config(format!(
             "failed to parse config file '{}': {}",
             path.display(),
             e
         ))
-    })
+    })?;
+    if let Some(site) = config.site.as_ref() {
+        site.validate()?;
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -449,6 +493,116 @@ mod tests {
 
         let config = load_config(&path).unwrap();
         assert!(config.equipment.mount.is_none());
+    }
+
+    #[test]
+    fn site_config_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "site": {
+                    "latitude_degrees": 47.6062,
+                    "longitude_degrees": -122.3321
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        let site = config.site.unwrap();
+        assert!((site.latitude_degrees - 47.6062).abs() < 1e-9);
+        assert!((site.longitude_degrees - (-122.3321)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn site_config_omitted_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+        let config = load_config(&path).unwrap();
+        assert!(config.site.is_none());
+    }
+
+    #[test]
+    fn site_config_rejects_latitude_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "site": {"latitude_degrees": 91.0, "longitude_degrees": 0.0},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("latitude_degrees") && msg.contains("[-90, 90]"),
+            "expected latitude range diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn site_config_rejects_longitude_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "site": {"latitude_degrees": 0.0, "longitude_degrees": 181.0},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("longitude_degrees") && msg.contains("[-180, 180]"),
+            "expected longitude range diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn site_config_rejects_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "site": {
+                    "latitude_degrees": 0.0,
+                    "longitude_degrees": 0.0,
+                    "elevation_meters": 1000
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        // Elevation is explicitly out of v1 scope; surface a parse
+        // error so an operator who's read the rp.md plan and added
+        // an `elevation_meters` key gets a helpful failure rather
+        // than silent ignoring.
+        let err = load_config(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("elevation_meters") || msg.contains("unknown field"),
+            "expected unknown-field diagnostic, got: {msg}"
+        );
     }
 
     #[test]

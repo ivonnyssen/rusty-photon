@@ -54,6 +54,14 @@ impl ServerBuilder {
         debug!("initializing equipment registry");
         let equipment = Arc::new(EquipmentRegistry::new(&config.equipment).await);
 
+        // Validate the configured site against the mount's reported
+        // SiteLatitude/SiteLongitude. A mismatch beyond 0.01° aborts
+        // startup — see docs/services/rp.md §"Site Validation Against
+        // the ASCOM Mount". When site config is omitted, the mount
+        // lacks the property, or no mount is configured, this is a
+        // debug-logged no-op.
+        equipment.validate_site(config.site.as_ref()).await?;
+
         debug!("initializing event bus");
         let event_bus = Arc::new(EventBus::from_config(&config.plugins));
 

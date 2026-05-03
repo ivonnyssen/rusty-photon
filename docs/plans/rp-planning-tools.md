@@ -163,10 +163,14 @@ running ephemeris math against a site that disagrees with what the
 mount computes hour-angle from is precisely the class of bug that
 produces plausible-looking wrong slew targets — i.e., the worst kind.
 
-If the mount does not implement `SiteLatitude`/`SiteLongitude` (the
-ASCOM `CanGetSite*` capability bits are false), config is the source
+If the mount does not implement `SiteLatitude`/`SiteLongitude` (it
+returns `NOT_IMPLEMENTED` for either read — ASCOM has **no**
+`CanGetSiteLatitude`/`CanGetSiteLongitude` capability bit, the
+read attempt itself is the capability probe), config is the source
 of truth and a `debug!()` log notes that mount validation was
-skipped.
+skipped. Any other read error is also treated as a skip, on the
+same posture: `rp` will not abort startup over a transient mount
+glitch when the configured site is the source of truth anyway.
 
 ### Two-layer MCP tool surface — primitives plus convenience
 
@@ -492,19 +496,20 @@ Status: **not started.**
       tests cover the range validation and a happy-path round-trip.
 - [ ] `services/rp/src/equipment.rs` — on telescope connect, read
       `SiteLatitude` / `SiteLongitude` via the existing
-      `ascom-alpaca` telescope feature. If `CanGetSiteLatitude` and
-      `CanGetSiteLongitude` are both true, compare to config; abs
-      diff > 0.01° in either dimension → return a typed error
-      `SiteMismatch` containing both pairs. If the mount lacks the
-      capability, `debug!()` log and proceed.
+      `ascom-alpaca` telescope feature. If both reads succeed,
+      compare to config; abs diff > 0.01° in either dimension →
+      return a typed error `SiteMismatch` containing both pairs.
+      If either read fails (typically `NOT_IMPLEMENTED` — ASCOM has
+      no `CanGetSite*` capability bit; the read is the probe),
+      `debug!()` log and proceed.
 - [ ] `services/rp/tests/features/site_validation.feature` —
       scenarios:
       1. Config + mount agree → connect succeeds, log line shows
          derived IANA timezone.
       2. Config + mount disagree (lat off by 1°) → connect fails,
          error message names both lat values.
-      3. Mount lacks `CanGetSiteLatitude` → connect succeeds, debug
-         log notes validation was skipped.
+      3. Mount returns `NOT_IMPLEMENTED` for `SiteLatitude` →
+         connect succeeds, debug log notes validation was skipped.
       4. Config lat out of range → config-load error, named field.
       Target ~5 scenarios.
 - [ ] All four feature scenarios tagged `@wip` initially; tag
@@ -521,10 +526,10 @@ Status: **not started.**
       block lands now, not later (it's now load-bearing for
       `cargo run`).
 - [ ] `docs/references/ascom-alpaca.md` — extend with a Telescope
-      section covering `SiteLatitude`, `SiteLongitude`,
-      `CanGetSiteLatitude`, `CanGetSiteLongitude` (the four properties
-      this phase actually reads), so future contributors don't have to
-      chase the upstream spec for the in-repo workflow.
+      section covering `SiteLatitude` and `SiteLongitude`, plus the
+      "no `CanGetSite*` bit; the read is the probe" pattern, so
+      future contributors don't have to chase the upstream spec for
+      the in-repo workflow.
 
 **Exit criteria:** all `site_validation.feature` scenarios green.
 `cargo rail run --profile commit -q` clean. The rp binary fails
@@ -686,15 +691,14 @@ Within that fixed scope, dependencies are mostly linear:
 - [`docs/plans/image-evaluation-tools.md`](image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
-- ASCOM Telescope `SiteLatitude` / `SiteLongitude` /
-  `CanGetSiteLatitude` / `CanGetSiteLongitude` properties — the
+- ASCOM Telescope `SiteLatitude` / `SiteLongitude` properties —
+  ASCOM has no `CanGetSiteLatitude` / `CanGetSiteLongitude` capability
+  bit; the read attempt itself is the capability probe (a mount that
+  doesn't expose the property returns `NOT_IMPLEMENTED`). The
   in-repo reference [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md)
-  does not yet cover the Telescope interface; see the upstream Alpaca
-  device spec at
-  [ascom-standards.org/api](https://ascom-standards.org/api/) (Telescope
-  endpoints `/sitelatitude`, `/sitelongitude`, `/cangetsitelatitude`,
-  `/cangetsitelongitude`). Phase 4 should extend the in-repo reference
-  with a Telescope section as part of the work.
+  Telescope section documents this. Upstream Alpaca device spec is at
+  [ascom-standards.org/api](https://ascom-standards.org/api/)
+  (Telescope endpoints `/sitelatitude`, `/sitelongitude`).
 - [erfars on crates.io](https://crates.io/crates/erfars) — Rust FFI
   binding for ERFA
 - [ERFA project (liberfa/erfa)](https://github.com/liberfa/erfa) —
