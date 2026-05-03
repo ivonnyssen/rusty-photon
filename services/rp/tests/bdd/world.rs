@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
-    OmniSimHandle, OrchestratorInvocation, ReceivedEvent, RpConfigBuilder, TestOrchestrator,
-    WebhookReceiver,
+    MountConfig, OmniSimHandle, OrchestratorInvocation, ReceivedEvent, RpConfigBuilder,
+    TestOrchestrator, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -51,6 +51,8 @@ pub struct RpWorld {
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     /// Focuser configs accumulated via Given steps
     pub focusers: Vec<FocuserConfig>,
+    /// Singular mount config — at most one per `rp` deployment.
+    pub mount: Option<MountConfig>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -201,6 +203,9 @@ impl RpWorld {
         }
         for foc in &self.focusers {
             builder.add_focuser(foc.clone());
+        }
+        if let Some(mount) = &self.mount {
+            builder.with_mount(mount.clone());
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

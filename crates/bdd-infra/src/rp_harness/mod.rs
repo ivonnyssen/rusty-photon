@@ -31,7 +31,7 @@ mod webhook;
 
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
-    FocuserConfig, RpConfigBuilder,
+    FocuserConfig, MountConfig, RpConfigBuilder,
 };
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
