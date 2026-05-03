@@ -1,4 +1,3 @@
-@wip
 Feature: Configuration validation at startup
 
   The wrapper validates its config before binding the HTTP listener. On

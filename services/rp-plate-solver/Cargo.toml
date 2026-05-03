@@ -12,15 +12,15 @@ description = "rp-managed plate solver service: HTTP wrapper around the ASTAP CL
 workspace = true
 
 [dependencies]
-# Phase 2 minimal: only the deps actually referenced by current source.
-# fitsrs, wcs, clap, tracing-subscriber rejoin in Phase 4 when main.rs
-# initialises logging and the .wcs spike retires (both per the plan).
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+humantime = { workspace = true }
 humantime-serde = { workspace = true }
 axum = { workspace = true }
+clap = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 libc = { workspace = true }

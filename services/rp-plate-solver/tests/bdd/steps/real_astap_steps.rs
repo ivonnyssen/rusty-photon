@@ -1,26 +1,75 @@
 //! Step definitions for `real_astap_smoke.feature`.
 //!
-//! Phase 3 stubs. Bodies arrive in Phase 4. Note that
 //! `@requires-astap` keeps these from running in PR jobs even after
-//! Phase 4 removes `@wip`.
+//! Phase 4 removed `@wip` — the dedicated nightly cross-platform
+//! workflow (Phase 6) sets `ASTAP_BINARY` so they fire there only.
+//! Phase 4 ships the test bodies; Phase 6 wires the cron + matrix.
 
 use crate::world::PlateSolverWorld;
+use bdd_infra::ServiceHandle;
 use cucumber::given;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[given("the wrapper is running with the real ASTAP_BINARY as its solver")]
-async fn given_wrapper_with_real_astap(_world: &mut PlateSolverWorld) {
-    todo!(
-        "Phase 4: read ASTAP_BINARY env var (set by the nightly install-astap workflow); \
-         start the wrapper pointing at it"
-    )
+async fn given_wrapper_with_real_astap(world: &mut PlateSolverWorld) {
+    let astap_path = std::env::var("ASTAP_BINARY")
+        .map(PathBuf::from)
+        .expect("ASTAP_BINARY env var must be set for @requires-astap scenarios");
+    let astap_db = std::env::var("ASTAP_DB_DIR")
+        .map(PathBuf::from)
+        .expect("ASTAP_DB_DIR env var must be set for @requires-astap scenarios");
+
+    let dir = world.temp_dir_path();
+    let extra_env: HashMap<String, String> = HashMap::new();
+    let cfg_path = write_real_config(&dir, &astap_path, &astap_db, &extra_env);
+
+    world.astap_binary_path = Some(astap_path);
+    world.astap_db_directory = Some(astap_db);
+    let cfg_str = cfg_path.to_string_lossy().into_owned();
+    let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &cfg_str).await;
+    world.service_handle = Some(handle);
 }
 
 #[given("the m31_known.fits fixture is on disk")]
-async fn given_m31_fixture(_world: &mut PlateSolverWorld) {
-    todo!("Phase 4: copy tests/fixtures/m31_known.fits into temp_dir, store path in world")
+async fn given_m31_fixture(world: &mut PlateSolverWorld) {
+    let fixture_src = fixture_path("m31_known.fits");
+    let dir = world.temp_dir_path();
+    let dst = dir.join("m31_known.fits");
+    std::fs::copy(&fixture_src, &dst).expect("copy m31 fixture");
+    world.fits_path = Some(dst);
 }
 
 #[given("the degenerate_no_stars.fits fixture is on disk")]
-async fn given_degenerate_fixture(_world: &mut PlateSolverWorld) {
-    todo!("Phase 4: same shape as m31; the degenerate fixture exists for solve_failed coverage")
+async fn given_degenerate_fixture(world: &mut PlateSolverWorld) {
+    let fixture_src = fixture_path("degenerate_no_stars.fits");
+    let dir = world.temp_dir_path();
+    let dst = dir.join("degenerate_no_stars.fits");
+    std::fs::copy(&fixture_src, &dst).expect("copy degenerate fixture");
+    world.fits_path = Some(dst);
+}
+
+fn fixture_path(name: &str) -> PathBuf {
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set; run via cargo");
+    PathBuf::from(manifest).join("tests/fixtures").join(name)
+}
+
+fn write_real_config(
+    dir: &std::path::Path,
+    binary: &std::path::Path,
+    db: &std::path::Path,
+    extra_env: &HashMap<String, String>,
+) -> PathBuf {
+    let body = serde_json::json!({
+        "bind_address": "127.0.0.1",
+        "port": 0,
+        "astap_binary_path": binary.to_string_lossy(),
+        "astap_db_directory": db.to_string_lossy(),
+        "astap_extra_env": extra_env,
+    })
+    .to_string();
+    let p = dir.join("config.json");
+    std::fs::write(&p, body).expect("write config");
+    p
 }

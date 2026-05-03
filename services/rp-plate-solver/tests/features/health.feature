@@ -1,4 +1,3 @@
-@wip
 Feature: GET /health — readiness probe
 
   The /health endpoint is the standard HTTP health-probe pattern,
