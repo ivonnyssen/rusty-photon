@@ -142,9 +142,23 @@ pub fn get_sun_position(site: &Site, time: DateTime<Utc>) -> Value {
     json!({
         "ra_hours": info.coords.ra_hours,
         "dec_degrees": info.coords.dec_degrees,
-        "altitude_degrees": info.alt_az.altitude_degrees,
-        "azimuth_degrees": info.alt_az.azimuth_degrees,
+        // Alt/az can be NaN at degenerate sites where the topocentric
+        // transform is undefined (the trait substitutes NaN rather
+        // than erroring). serde_json panics on non-finite floats, so
+        // we map them to JSON null.
+        "altitude_degrees": finite_or_null(info.alt_az.altitude_degrees),
+        "azimuth_degrees": finite_or_null(info.alt_az.azimuth_degrees),
     })
+}
+
+/// Map an `f64` to a JSON value, substituting `null` for NaN /
+/// infinities so `serde_json::json!` doesn't panic.
+fn finite_or_null(v: f64) -> Value {
+    if v.is_finite() {
+        json!(v)
+    } else {
+        Value::Null
+    }
 }
 
 pub fn get_twilight(site: &Site, date: NaiveDate, kind: TwilightKind) -> Value {
@@ -165,8 +179,10 @@ pub fn get_moon_position(site: &Site, time: DateTime<Utc>) -> Value {
     json!({
         "ra_hours": info.coords.ra_hours,
         "dec_degrees": info.coords.dec_degrees,
-        "altitude_degrees": info.alt_az.altitude_degrees,
-        "azimuth_degrees": info.alt_az.azimuth_degrees,
+        // Alt/az can be NaN at degenerate sites; same protection as
+        // `get_sun_position`.
+        "altitude_degrees": finite_or_null(info.alt_az.altitude_degrees),
+        "azimuth_degrees": finite_or_null(info.alt_az.azimuth_degrees),
         "phase_degrees": info.phase_degrees,
         "illumination_fraction": info.illumination_fraction,
     })
@@ -373,6 +389,38 @@ mod tests {
         // phase ≈ 180 → illum ≈ 1.
         let expected = (1.0 - (phase * std::f64::consts::PI / 180.0).cos()) / 2.0;
         assert!((illum - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn finite_or_null_maps_nan_and_infinity_to_null() {
+        assert_eq!(finite_or_null(0.0), serde_json::json!(0.0));
+        assert_eq!(finite_or_null(42.5), serde_json::json!(42.5));
+        assert!(finite_or_null(f64::NAN).is_null());
+        assert!(finite_or_null(f64::INFINITY).is_null());
+        assert!(finite_or_null(f64::NEG_INFINITY).is_null());
+    }
+
+    #[test]
+    fn sun_position_handles_nan_alt_az_without_panicking() {
+        // The Site at exactly the geographic pole is a contrived case
+        // for ERFA's topocentric transform; ErfarsEphemeris substitutes
+        // NaN alt/az when the transform errors. Without `finite_or_null`,
+        // `json!` would panic. This pin asserts we just emit JSON null.
+        let pole = Site::new(90.0, 0.0).unwrap();
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 12, 0, 0).unwrap();
+        let v = get_sun_position(&pole, t);
+        // ra_hours / dec_degrees come from Epv00 (geocentric); they're
+        // always finite. alt/az may be null if the transform errored.
+        assert!(v["ra_hours"].as_f64().is_some());
+        // The contract is "no panic" — alt/az is either finite or
+        // null, never NaN.
+        for k in ["altitude_degrees", "azimuth_degrees"] {
+            let val = &v[k];
+            assert!(
+                val.is_null() || val.as_f64().is_some_and(|f| f.is_finite()),
+                "{k} should be null or finite, got {val:?}"
+            );
+        }
     }
 
     #[test]

@@ -3,15 +3,17 @@
 //! time, site, `Ephemeris` impl, default min-altitude); a hand-rolled
 //! mock `Ephemeris` can drive it deterministically in tests.
 //!
-//! v1 implements the rp.md §"Dynamic Planner" decision-logic bullets
-//! 1, 2, and 6 in full (altitude / set-time elimination, prefer
-//! transiting, twilight / end-of-session fallback). Bullet 3
-//! (least-progress preference) and bullet 4 (filter-change
-//! minimization) currently no-op because rp does not yet track
-//! per-target progress in the session. Bullet 5 (meridian-flip
-//! avoidance) is satisfied indirectly: a target whose transit was
-//! already in the recent past has a large positive HA and ranks
-//! lower than a target approaching transit.
+//! v1 implements three of the rp.md §"Dynamic Planner" decision-logic
+//! bullets: altitude elimination (the first half of bullet 1),
+//! transit preference (bullet 2), and the
+//! `WaitForTwilight` / `AllBelowMinAltitude` fallback (the half of
+//! bullet 6 that's reachable from this code path). Documented gaps:
+//! the set-time half of bullet 1, bullet 3 (least-progress preference),
+//! bullet 4 (filter-change minimization), explicit bullet 5
+//! (meridian-flip-aware exposure-fit check; the choice of
+//! smallest-|HA| target satisfies it indirectly), and `EndOfSession`
+//! reachability — all need session-state plumbing to land cleanly,
+//! tracked in the rp.md §"v1 implementation status" callout.
 //!
 //! The returned `NextTargetReason` is a structured discriminant so
 //! a planner plugin can branch without parsing free-form text.
@@ -20,6 +22,12 @@ use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, Site};
 use serde::Serialize;
 use serde_json::Value;
+
+/// Sun altitude (degrees) at astronomical dusk — the boundary that
+/// rp.md's prose for `WaitForTwilight` references. Above this, the
+/// sky is still too bright for deep-sky imaging (daylight, civil, or
+/// nautical twilight); below it, true astronomical night.
+const ASTRONOMICAL_DUSK_DEG: f64 = -18.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannerTarget {
@@ -101,9 +109,14 @@ pub fn next_target(
     }
 
     if survivors.is_empty() {
-        // Distinguish "we're in daylight" from "all targets are
-        // below min altitude even though it's night". The Sun
-        // elevation supplies that branch.
+        // Distinguish "the sky is too bright to image" from "all
+        // targets are genuinely below the altitude floor". The
+        // rp.md prose for `WaitForTwilight` says "astronomical dusk
+        // has not yet begun", which is the Sun-altitude threshold
+        // for astronomical twilight (-18°). Anything brighter than
+        // that — daylight, civil, or nautical twilight — is the
+        // "wait" branch; below -18° (true astronomical night) and
+        // every target still below floor is `AllBelowMinAltitude`.
         //
         // `EndOfSession` is in the discriminant for forward
         // compatibility but unreachable from this v1 code path: it
@@ -113,7 +126,7 @@ pub fn next_target(
         // all passed). Both require state we don't yet thread
         // through — see rp.md §"Dynamic Planner" bullets 1, 3.
         let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
-        let reason = if sun_alt > 0.0 {
+        let reason = if sun_alt > ASTRONOMICAL_DUSK_DEG {
             NextTargetReason::WaitForTwilight
         } else {
             NextTargetReason::AllBelowMinAltitude
@@ -363,7 +376,7 @@ mod tests {
     fn target_below_min_alt_is_eliminated() {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
-            sun_alt: -10.0, // night
+            sun_alt: -25.0, // true astronomical night (sun < -18°)
             lst_hours: 12.0,
         };
         let targets = vec![PlannerTarget {
@@ -393,6 +406,45 @@ mod tests {
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
+    }
+
+    #[test]
+    fn nautical_twilight_returns_wait_for_twilight_not_all_below_min_altitude() {
+        // Sun at -10° (nautical twilight, between civil at -6° and
+        // astronomical at -18°). Per rp.md prose, "astronomical dusk
+        // has not yet begun" → WaitForTwilight, not AllBelowMinAltitude.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: -10.0,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
+    }
+
+    #[test]
+    fn full_astronomical_night_with_no_targets_above_floor_is_all_below_min() {
+        // Sun well below -18° (true astronomical night) and every
+        // target still below the floor → distinguish from twilight.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: -25.0,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
 
     #[test]

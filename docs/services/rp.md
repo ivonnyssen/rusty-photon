@@ -2244,22 +2244,39 @@ table.
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
 
-> **v1 implementation status.** Bullets 1, 2, and 6 are implemented
-> in full (altitude / set-time elimination, smallest-|HA| transit
-> preference, twilight + end-of-session fallback distinguished by
-> Sun elevation). Bullet 3 (least-progress preference) and bullet 4
-> (filter-change minimisation) currently no-op because `rp` does
-> not yet thread per-target `record_exposure` counters or the
-> last-frame filter into the planner. Bullet 5 (meridian-flip
-> avoidance with `compute_meridian_flip`) is satisfied indirectly:
-> a target whose transit was in the recent past has a large
-> positive HA and ranks lower than a target approaching transit,
-> but the planner does not check `time_to_flip` against
-> `exposures[].duration_secs`. `EndOfSession` is wired in the
-> reason-discriminant for forward compatibility but unreachable
-> from the v1 code path; `WaitForTwilight` covers the daytime
-> case. A follow-up will close these gaps once session state is
-> wired through.
+> **v1 implementation status.** Three of the six bullets land
+> partially in v1: the altitude half of bullet 1 (per-target /
+> per-planner-default floor), bullet 2 (smallest-|HA| transit
+> preference), and the `WaitForTwilight` /
+> `AllBelowMinAltitude` half of bullet 6 (the Sun-elevation
+> cut-off uses astronomical dusk, -18°, matching the
+> "astronomical dusk has not yet begun" wording above).
+> Documented v1 gaps:
+>
+> - **Bullet 1 set-time elimination** — `next_target` does *not*
+>   currently check `compute_rise_set` against
+>   `exposures[].duration_secs`. A target that rose ten minutes
+>   before now and sets in five minutes can still be recommended;
+>   the orchestrator must catch the short-set case and re-call
+>   `get_next_target`.
+> - **Bullet 3 (least-progress preference) and bullet 4
+>   (filter-change minimisation)** — both no-op until `rp` threads
+>   per-target `record_exposure` counters and the last-frame filter
+>   into the planner. Tied transit-distance targets break by
+>   ordering in `targets[]`, not by progress.
+> - **Bullet 5 (meridian-flip avoidance)** — satisfied *indirectly*:
+>   a target whose transit was in the recent past has a large
+>   positive HA and ranks lower than a target approaching transit,
+>   so the smallest-|HA| pick tends to avoid imminent flips. The
+>   planner does *not* check `time_to_flip` against
+>   `exposures[].duration_secs` explicitly.
+> - **`EndOfSession`** — wired in the reason-discriminant for
+>   forward compatibility but unreachable from the v1 code path
+>   (would need session-state plumbing to detect "all targets
+>   exhausted" or "the night is over").
+>
+> A follow-up will close these gaps once session state is wired
+> through.
 
 ### Target Definition
 
