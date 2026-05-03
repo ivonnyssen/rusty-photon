@@ -696,9 +696,9 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | — | target, filter, duration, reason | Evaluate candidates and recommend next target/filter |
-| `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a target |
-| `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip needed |
+| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. v1 returns `filter`/`duration_secs` as null — see §"Dynamic Planner" |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is null in v1 |
+| `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
 | `record_exposure` | target, filter | completed, goal | Increment counter, return updated progress |
 | `get_session_progress` | — | per-target, per-filter progress | Full progress overview |
 

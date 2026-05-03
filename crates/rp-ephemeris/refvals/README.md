@@ -1,10 +1,18 @@
 # Reference values for `rp-ephemeris`
 
-These JSON files pin canonical alt/az and ICRS positions for known
-objects at known sites and times. The matching test in
+These JSON files pin canonical topocentric alt/az for known objects
+at known sites and times. The matching test in
 `tests/reference_values.rs` asserts that `ErfarsEphemeris` reproduces
-each entry within tight tolerances (0.1″ for alt/az, ~1 s for
-transit / rise / set).
+each `alt_az` entry within `1e-4°` (≈ 0.36″).
+
+The JSONs also carry the ICRS RA/Dec used to compute the alt/az —
+the test reads those back as inputs for the trait call, so a
+provenance audit is still possible — but the assertion itself is on
+alt/az only. Transit / rise/set / sun / moon cross-checks against
+Astropy are not yet wired into the test (the `gen.py` script
+populates only alt/az fields today). Adding them is a future
+refinement; the current tolerance is tight enough that an alt/az
+regression from a wrapping bug surfaces immediately.
 
 Astropy uses ERFA internally, so agreement should be near-perfect.
 Disagreement is a wrapping bug, not an algorithmic one — the test
