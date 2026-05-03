@@ -5597,4 +5597,225 @@ mod tests {
         // standard "mount not configured" error.
         assert_tool_error(r, "mount");
     }
+
+    // -----------------------------------------------------------------------
+    // Planner tools — happy paths (cover the success-return arms in mcp.rs;
+    // value correctness is covered by primitives.rs / convenience.rs unit
+    // tests).
+    // -----------------------------------------------------------------------
+
+    fn handler_with_site_and_mount() -> McpHandler {
+        let mock = MockTelescope::default();
+        let mount_cfg = crate::config::MountConfig {
+            alpaca_url: "http://unused".into(),
+            device_number: 0,
+            settle_after_slew: None,
+            auth: None,
+        };
+        // Skip the connect-time HTTP fetch by hand-building a registry
+        // with the mock device wired in directly.
+        let registry = crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: Some(crate::equipment::MountEntry {
+                connected: true,
+                config: mount_cfg,
+                device: Some(Arc::new(mock)),
+            }),
+        };
+        McpHandler::new(
+            Arc::new(registry),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: std::env::temp_dir()
+                    .join("rp-planner-happy-test")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            Some(test_site()),
+        )
+    }
+
+    /// Yank the JSON payload from a successful CallToolResult.
+    fn ok_json(r: Result<CallToolResult, rmcp::ErrorData>) -> serde_json::Value {
+        let call_result = r.expect("tool returned protocol error");
+        assert!(
+            !call_result.is_error.unwrap_or(false),
+            "expected success, got error: {:?}",
+            call_result
+        );
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .expect("expected text content");
+        serde_json::from_str(&text).expect("response was not valid JSON")
+    }
+
+    const TEST_TIME: &str = "2026-05-03T22:00:00Z";
+
+    #[tokio::test]
+    async fn compute_alt_az_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_alt_az(Parameters(AltAzParams {
+                ra: 2.5301944,
+                dec: 89.2641111,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["altitude_degrees"].as_f64().is_some());
+        assert!(v["azimuth_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_transit_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_transit(Parameters(TransitParams {
+                ra: 0.7123,
+                dec: 41.27,
+                date: "2026-11-01".into(),
+            }))
+            .await,
+        );
+        assert!(v.get("transit_utc").is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.7123,
+                dec: 41.27,
+                date: "2026-11-01".into(),
+                min_alt_degrees: 30.0,
+            }))
+            .await,
+        );
+        assert!(v.get("rise_utc").is_some());
+        assert!(v.get("set_utc").is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.7123,
+                dec: 41.27,
+                time: Some(TEST_TIME.into()),
+                side_of_pier: "east".into(),
+            }))
+            .await,
+        );
+        assert!(v["time_to_flip_seconds"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_sun_position_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_sun_position(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["ra_hours"].as_f64().is_some());
+        assert!(v["dec_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_twilight_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_twilight(Parameters(TwilightParams {
+                date: "2026-12-21".into(),
+                kind: "civil".into(),
+            }))
+            .await,
+        );
+        assert_eq!(v["kind"], "civil");
+    }
+
+    #[tokio::test]
+    async fn get_moon_position_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_moon_position(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["phase_degrees"].as_f64().is_some());
+        assert!(v["illumination_fraction"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_moon_separation_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_moon_separation(Parameters(MoonSeparationParams {
+                ra: 0.7123,
+                dec: 41.27,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        let sep = v["separation_degrees"].as_f64().unwrap();
+        assert!((0.0..=180.0).contains(&sep));
+    }
+
+    #[tokio::test]
+    async fn get_local_sidereal_time_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_local_sidereal_time(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        let lst = v["lst_hours"].as_f64().unwrap();
+        assert!((0.0..24.0).contains(&lst));
+    }
+
+    #[tokio::test]
+    async fn get_target_status_happy_path_via_catalog() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 31".into()),
+                ra: None,
+                dec: None,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert_eq!(v["target_name"], "M 31");
+        assert!(v["altitude_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_happy_path() {
+        // MockTelescope doesn't implement side_of_pier, which returns
+        // NOT_IMPLEMENTED — get_meridian_status maps that to "unknown"
+        // and surfaces the JSON. Exercises the success arm + the
+        // NOT_IMPLEMENTED → Unknown branch in one shot.
+        let h = handler_with_site_and_mount();
+        let v = ok_json(
+            h.get_meridian_status(Parameters(GetMeridianStatusParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["time_to_flip_seconds"].is_number());
+        assert_eq!(v["side_of_pier"], "unknown");
+        assert!(v["mount_ra_hours"].as_f64().is_some());
+    }
 }
