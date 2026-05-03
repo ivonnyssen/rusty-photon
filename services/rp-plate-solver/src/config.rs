@@ -5,6 +5,7 @@
 //! `configuration.feature`.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::{net::IpAddr, path::Path, path::PathBuf, time::Duration};
 use thiserror::Error;
 
@@ -29,6 +30,14 @@ pub struct Config {
 
     #[serde(default = "default_max_solve_timeout", with = "humantime_serde")]
     pub max_solve_timeout: Duration,
+
+    /// Environment variables set on every spawned `astap_cli` child.
+    /// Useful for operator-controlled tunables (locale, library
+    /// paths) and for BDD tests that drive `mock_astap`'s
+    /// `MOCK_ASTAP_MODE` per-scenario without process-wide
+    /// `env::set_var` races.
+    #[serde(default)]
+    pub astap_extra_env: HashMap<String, String>,
 }
 
 fn default_bind_address() -> IpAddr {
@@ -52,7 +61,11 @@ pub enum ConfigError {
     #[error("config file: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("config parse error: {0}")]
+    #[error(
+        "config parse error: {0}. \
+         See services/rp-plate-solver/README.md for install instructions \
+         and the configuration field reference."
+    )]
     Parse(#[from] serde_json::Error),
 
     #[error(
@@ -228,6 +241,7 @@ mod tests {
             max_concurrency: default_max_concurrency(),
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
+            astap_extra_env: Default::default(),
         };
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -248,6 +262,7 @@ mod tests {
             max_concurrency: default_max_concurrency(),
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
+            astap_extra_env: Default::default(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDbDirectory { .. }));
@@ -267,6 +282,7 @@ mod tests {
             max_concurrency: 1,
             default_solve_timeout: Duration::from_secs(60),
             max_solve_timeout: Duration::from_secs(30),
+            astap_extra_env: Default::default(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::TimeoutOrder { .. }));
@@ -285,6 +301,7 @@ mod tests {
             max_concurrency: 0,
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
+            astap_extra_env: Default::default(),
         };
         assert!(matches!(
             cfg.validate().unwrap_err(),
@@ -310,6 +327,7 @@ mod tests {
             max_concurrency: 1,
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
+            astap_extra_env: Default::default(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::InvalidBinaryPath { .. }));

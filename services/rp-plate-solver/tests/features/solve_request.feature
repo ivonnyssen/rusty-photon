@@ -1,4 +1,3 @@
-@wip
 Feature: POST /api/v1/solve — request handling and error surface
 
   The solve endpoint accepts a FITS path plus optional pointing/FOV/
