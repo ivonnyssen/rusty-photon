@@ -10,4 +10,6 @@
 //! `docs/services/rp.md` §"Planning and Ephemeris".
 
 pub mod catalog;
+pub mod convenience;
+pub mod decision;
 pub mod primitives;

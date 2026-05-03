@@ -463,6 +463,33 @@ pub struct MoonSeparationParams {
     pub time: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTargetStatusParams {
+    /// Catalog name (`"M 31"`, `"NGC 224"`, common-name aliases) or
+    /// a raw RA/Dec via the alternate form below — exactly one of
+    /// `target_name` or (`ra` + `dec`) must be supplied.
+    #[serde(default)]
+    pub target_name: Option<String>,
+    #[serde(default)]
+    pub ra: Option<f64>,
+    #[serde(default)]
+    pub dec: Option<f64>,
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetNextTargetParams {
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMeridianStatusParams {
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -478,6 +505,15 @@ pub struct McpHandler {
     /// tools that require a site (`compute_alt_az`, `get_twilight`,
     /// etc.) error cleanly in that case.
     pub site: Option<rp_ephemeris::Site>,
+    /// Targets parsed from `Config.targets` for the planner
+    /// convenience tools. Empty when `targets[]` is absent or none
+    /// of its rows carry the required `name` / `ra_hours` /
+    /// `dec_degrees` fields.
+    pub targets: Vec<crate::planner::decision::PlannerTarget>,
+    /// Planner-wide minimum altitude default (degrees). Read from
+    /// `Config.planner.min_altitude_degrees`, falling back to 20°
+    /// when omitted.
+    pub default_min_altitude_degrees: f64,
 }
 
 impl McpHandler {
@@ -494,7 +530,23 @@ impl McpHandler {
             session_config,
             image_cache,
             site,
+            targets: Vec::new(),
+            default_min_altitude_degrees: 20.0,
         }
+    }
+
+    /// Wire planner inputs after construction. The lib.rs build path
+    /// calls this with the parsed `targets[]` JSON and
+    /// `planner.min_altitude_degrees` (defaulting to 20°). Tests
+    /// can leave the defaults as-is.
+    pub fn with_planner_config(
+        mut self,
+        targets: Vec<crate::planner::decision::PlannerTarget>,
+        default_min_altitude_degrees: f64,
+    ) -> Self {
+        self.targets = targets;
+        self.default_min_altitude_degrees = default_min_altitude_degrees;
+        self
     }
 
     async fn measure_via_document(
@@ -2642,6 +2694,161 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::get_local_sidereal_time(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    // -------------------------------------------------------------------
+    // Planner: convenience tools (get_target_status, get_next_target,
+    // get_meridian_status) — see docs/services/rp.md §"Dynamic Planner"
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Sky position + progress for a target. Accepts either \
+                       target_name (resolved via the embedded catalog) or a \
+                       raw ra/dec pair. progress is null in v1 (per-target \
+                       record_exposure tracking is not yet wired into the \
+                       planner). Requires `site`.")]
+    async fn get_target_status(
+        &self,
+        Parameters(params): Parameters<GetTargetStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let (target, name) = match (params.target_name.as_ref(), params.ra, params.dec) {
+            (Some(name), None, None) => match crate::planner::catalog::resolve(name) {
+                crate::planner::catalog::ResolveOutcome::Resolved(view) => (
+                    rp_ephemeris::IcrsCoord {
+                        ra_hours: view.ra_hours,
+                        dec_degrees: view.dec_degrees,
+                    },
+                    view.name,
+                ),
+                crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        serde_json::json!({
+                            "error": "target_not_found",
+                            "name": name,
+                            "suggestions": suggestions,
+                        })
+                        .to_string(),
+                    )]));
+                }
+            },
+            (None, Some(ra), Some(dec)) => {
+                match crate::planner::primitives::validate_icrs(ra, dec) {
+                    Ok(c) => (c, format!("ICRS({ra:.4}, {dec:.4})")),
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
+            }
+            _ => {
+                return Ok(tool_error!(
+                    "supply exactly one of `target_name` or (`ra` + `dec`)"
+                ))
+            }
+        };
+        match crate::planner::convenience::target_status_view(
+            site,
+            target,
+            &name,
+            time,
+            self.default_min_altitude_degrees,
+        ) {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Recommend the next target from `targets[]` config based on \
+                       altitude / approaching transit / sun-elevation gating. \
+                       Returns target=null and a structured reason \
+                       (no_targets_configured / all_below_min_altitude / \
+                       wait_for_twilight / end_of_session) when no candidate is \
+                       viable. Requires `site`."
+    )]
+    async fn get_next_target(
+        &self,
+        Parameters(params): Parameters<GetNextTargetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let eph = rp_ephemeris::ErfarsEphemeris::new();
+        let rec = crate::planner::decision::next_target(
+            &eph,
+            site,
+            time,
+            &self.targets,
+            self.default_min_altitude_degrees,
+        );
+        let v = crate::planner::convenience::next_target_view(rec);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Time-to-flip plus side-of-pier for the mount's current \
+                       pointing. Reads RA/Dec/SideOfPier from the configured \
+                       mount, then runs the meridian-flip primitive. Requires \
+                       `site` and a connected mount."
+    )]
+    async fn get_meridian_status(
+        &self,
+        Parameters(params): Parameters<GetMeridianStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let ra = match mount.right_ascension().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount right_ascension: {}", e)),
+        };
+        let dec = match mount.declination().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount declination: {}", e)),
+        };
+        // ASCOM SideOfPier returns NOT_IMPLEMENTED on mounts that
+        // don't expose it; treat as `Unknown` so the flip ETA still
+        // surfaces.
+        let side = match mount.side_of_pier().await {
+            Ok(ascom_alpaca::api::telescope::PierSide::East) => rp_ephemeris::SideOfPier::East,
+            Ok(ascom_alpaca::api::telescope::PierSide::West) => rp_ephemeris::SideOfPier::West,
+            Ok(_) | Err(_) => rp_ephemeris::SideOfPier::Unknown,
+        };
+        let v = crate::planner::convenience::meridian_status_view(site, ra, dec, time, side);
         Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
     }
 }

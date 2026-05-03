@@ -54,6 +54,68 @@ async fn call_lst(world: &mut RpWorld, time: String) {
     world.last_tool_result = Some(result);
 }
 
+#[when(expr = "the MCP client calls \"get_target_status\" for target {string}")]
+async fn call_target_status(world: &mut RpWorld, name: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "get_target_status",
+            serde_json::json!({"target_name": name}),
+        )
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[when("the MCP client calls \"get_next_target\"")]
+async fn call_next_target(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_next_target", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[then(expr = "the result target_name should be {string}")]
+fn result_target_name(world: &mut RpWorld, expected: String) {
+    let value = success_payload(world);
+    let name = value
+        .get("target_name")
+        .and_then(|v| v.as_str())
+        .expect("missing `target_name`");
+    assert_eq!(name, expected.as_str());
+}
+
+#[then("the result altitude_degrees should be a finite number")]
+fn result_altitude_finite(world: &mut RpWorld) {
+    let value = success_payload(world);
+    let alt = value
+        .get("altitude_degrees")
+        .and_then(|v| v.as_f64())
+        .expect("missing `altitude_degrees`");
+    assert!(alt.is_finite(), "altitude_degrees not finite: {alt}");
+}
+
+#[then(expr = "the result reason should be {string}")]
+fn result_reason(world: &mut RpWorld, expected: String) {
+    let value = success_payload(world);
+    let reason = value
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .expect("missing `reason`");
+    assert_eq!(reason, expected.as_str());
+}
+
+#[then("the result target should be null")]
+fn result_target_null(world: &mut RpWorld) {
+    let value = success_payload(world);
+    assert!(
+        value.get("target").is_some_and(|v| v.is_null()),
+        "expected target=null, got: {value}"
+    );
+}
+
 #[when(expr = "the MCP client calls \"get_twilight\" for date {string} kind {string}")]
 async fn call_twilight(world: &mut RpWorld, date: String, kind: String) {
     ensure_mcp_client(world).await;

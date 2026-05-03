@@ -93,13 +93,21 @@ impl ServerBuilder {
             None
         };
 
+        let targets = crate::planner::decision::parse_targets_from_value(&config.targets);
+        let default_min_alt = config
+            .planner
+            .get("min_altitude_degrees")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(20.0);
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
             session_config,
             image_cache.clone(),
             site,
-        );
+        )
+        .with_planner_config(targets, default_min_alt);
 
         let state = AppState {
             equipment,
