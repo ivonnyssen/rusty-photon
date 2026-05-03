@@ -88,9 +88,25 @@ async fn solve(
         )));
     }
 
-    // 3. fits_path must exist and be readable.
-    if !body.fits_path.exists() {
-        return Err(AppError::FitsNotFound(body.fits_path.display().to_string()));
+    // 3. fits_path must exist, be a regular file (not a directory),
+    //    and be readable. Each failure surfaces as `fits_not_found`
+    //    with a message describing which check failed — `internal` is
+    //    reserved for genuine wrapper bugs.
+    let fits_meta = std::fs::metadata(&body.fits_path)
+        .map_err(|e| AppError::FitsNotFound(format!("{}: {}", body.fits_path.display(), e)))?;
+    if !fits_meta.is_file() {
+        return Err(AppError::FitsNotFound(format!(
+            "{}: not a regular file",
+            body.fits_path.display()
+        )));
+    }
+    // Open-check confirms read permissions without reading content.
+    if let Err(e) = std::fs::File::open(&body.fits_path) {
+        return Err(AppError::FitsNotFound(format!(
+            "{}: {}",
+            body.fits_path.display(),
+            e
+        )));
     }
 
     // 4. Determine timeout. Caller-supplied is capped at max; missing
@@ -153,6 +169,11 @@ struct HealthBody {
 /// Cheap readiness probe: stats both runtime dependencies. Returns 200
 /// with `{"status": "ok"}` when both pass; 503 otherwise.
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    // SECURITY: `state.astap_binary_path` and `state.astap_db_directory`
+    // come from operator-supplied config, validated at startup. Health
+    // re-validates them against the same rules. The wrapper isn't
+    // multi-tenant; "user-controlled path" alerts on these fields are
+    // by-design and dismissed.
     if !path_is_executable_file(&state.astap_binary_path) {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -179,6 +200,9 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 fn path_is_executable_file(path: &std::path::Path) -> bool {
+    // SECURITY: `path` is operator-supplied via config; see comment in
+    // `health()`. CodeQL's "user-controlled data in path expression"
+    // alert on this `metadata` call is by-design.
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };

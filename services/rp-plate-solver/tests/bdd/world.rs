@@ -196,10 +196,24 @@ impl PlateSolverWorld {
     }
 }
 
-/// Locate the `rp-plate-solver` binary. Mirrors
-/// `bdd_infra::find_binary` (whose impl is private) because
-/// `ServiceHandle::start` waits for `bound_addr=` on stdout, which
-/// the configuration-error scenarios never reach.
+/// Locate the `rp-plate-solver` binary. Mirrors `bdd_infra::find_binary`
+/// (whose impl is private) including the precedence rules the original
+/// uses for cross-compile / coverage / sanitizer builds:
+///
+/// 1. Explicit `RP_PLATE_SOLVER_BINARY` env var.
+/// 2. `CARGO_TARGET_DIR` or `CARGO_LLVM_COV_TARGET_DIR` (whichever
+///    is set), with `CARGO_BUILD_TARGET` triple subdir prepended when
+///    set. When either is set we honor it *exclusively* — falling
+///    through to walk-up could silently pick up a stale,
+///    non-instrumented binary at `target/debug/<pkg>` and skip
+///    coverage data collection.
+/// 3. Walk up from cwd looking for `target/debug/<bin>` (and the
+///    `CARGO_BUILD_TARGET`-qualified variant).
+///
+/// `ServiceHandle::start` waits for `bound_addr=` on stdout, which the
+/// configuration-error scenarios never reach — that's why
+/// configuration scenarios spawn the wrapper themselves via this
+/// helper rather than going through `ServiceHandle`.
 fn find_wrapper_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("RP_PLATE_SOLVER_BINARY") {
         let p = PathBuf::from(path);
@@ -212,18 +226,35 @@ fn find_wrapper_binary() -> Option<PathBuf> {
     } else {
         "rp-plate-solver"
     };
-    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
-        let p = PathBuf::from(dir).join("debug").join(bin_name);
+    let triple = std::env::var("CARGO_BUILD_TARGET").ok();
+
+    let candidate = |target_dir: &std::path::Path| -> Option<PathBuf> {
+        if let Some(triple) = triple.as_deref() {
+            let p = target_dir.join(triple).join("debug").join(bin_name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        let p = target_dir.join("debug").join(bin_name);
         if p.exists() {
             return Some(p);
         }
+        None
+    };
+
+    // Honor CARGO_TARGET_DIR / CARGO_LLVM_COV_TARGET_DIR exclusively
+    // when set (matches bdd_infra::find_binary's behavior).
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR")
+        .or_else(|| std::env::var_os("CARGO_LLVM_COV_TARGET_DIR"))
+    {
+        return candidate(std::path::Path::new(&dir));
     }
+
     // Walk up from cwd looking for target/debug/<bin>.
     let mut cur = std::env::current_dir().ok()?;
     loop {
-        let candidate = cur.join("target").join("debug").join(bin_name);
-        if candidate.exists() {
-            return Some(candidate);
+        if let Some(p) = candidate(&cur.join("target")) {
+            return Some(p);
         }
         if !cur.pop() {
             return None;
