@@ -21,7 +21,7 @@ Feature: Real-ASTAP smoke (mock-honesty backstop)
     Then the response status is 200
     And the response field "ra_center" is approximately 10.6848 within 0.01 degrees
     And the response field "dec_center" is approximately 41.2690 within 0.01 degrees
-    And the response field "solver" contains "astap"
+    And the response field "solver" contains "astap" case-insensitively
 
   Scenario: Real ASTAP returns solve_failed on a degenerate FITS
     Given the wrapper is running with the real ASTAP_BINARY as its solver

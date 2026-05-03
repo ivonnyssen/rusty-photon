@@ -16,7 +16,7 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
 
   Scenario: Hung child responding to graceful signal returns solve_timeout (terminated)
     Given mock_astap is configured for "hang" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path and timeout "100ms"
     Then the response status is 504
     And the response field "error" is "solve_timeout"
@@ -24,7 +24,7 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
 
   Scenario: Hung child ignoring graceful signal is force-killed after grace
     Given mock_astap is configured for "ignore_sigterm" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path and timeout "100ms"
     Then the response status is 504
     And the response field "error" is "solve_timeout"
@@ -33,7 +33,7 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
 
   Scenario: Single-flight semaphore serializes overlapping solves
     Given mock_astap is configured for "hang" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST two concurrent solve requests with timeout "100ms" each
     Then both responses have status 504
     And the second request's spawn time is after the first request's exit time

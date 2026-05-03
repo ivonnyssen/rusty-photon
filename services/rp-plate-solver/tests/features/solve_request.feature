@@ -14,17 +14,18 @@ Feature: POST /api/v1/solve — request handling and error surface
 
   Scenario: Happy path returns the four WCS fields
     Given mock_astap is configured for "normal" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path
     Then the response status is 200
     And the response field "ra_center" is approximately 10.6848
     And the response field "dec_center" is approximately 41.2690
     And the response field "pixel_scale_arcsec" is approximately 1.05
     And the response field "rotation_deg" is approximately 12.3
-    And the response field "solver" contains "ASTAP"
+    And the response field "solver" contains "astap" case-insensitively
 
   Scenario: Non-existent fits_path returns fits_not_found
-    When I POST to /api/v1/solve with fits_path "/tmp/does-not-exist.fits"
+    Given a non-existent FITS path
+    When I POST to /api/v1/solve with that fits_path
     Then the response status is 404
     And the response field "error" is "fits_not_found"
 
@@ -46,7 +47,7 @@ Feature: POST /api/v1/solve — request handling and error surface
 
   Scenario: ASTAP exits non-zero returns solve_failed with stderr tail
     Given mock_astap is configured for "exit_failure" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path
     Then the response status is 422
     And the response field "error" is "solve_failed"
@@ -55,7 +56,7 @@ Feature: POST /api/v1/solve — request handling and error surface
 
   Scenario: ASTAP exits clean but writes no .wcs returns solve_failed
     Given mock_astap is configured for "no_wcs" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path
     Then the response status is 422
     And the response field "error" is "solve_failed"
@@ -63,7 +64,7 @@ Feature: POST /api/v1/solve — request handling and error surface
 
   Scenario: ASTAP writes a malformed .wcs returns solve_failed naming the missing key
     Given mock_astap is configured for "malformed_wcs" mode
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path
     Then the response status is 422
     And the response field "error" is "solve_failed"
@@ -72,7 +73,7 @@ Feature: POST /api/v1/solve — request handling and error surface
   Scenario Outline: Hint flags pass through to ASTAP argv
     Given mock_astap is configured for "normal" mode
     And mock_astap is configured to write argv to a side-channel file
-    And a writable FITS path "/tmp/m31.fits"
+    And a writable FITS path
     When I POST to /api/v1/solve with that fits_path and hint <field> set to <value>
     Then the response status is 200
     And the spawned argv contains the flag "<flag>"

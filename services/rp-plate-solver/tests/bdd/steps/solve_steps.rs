@@ -25,12 +25,26 @@ async fn given_mock_astap_argv_out(_world: &mut PlateSolverWorld) {
     todo!("Phase 4: set MOCK_ASTAP_ARGV_OUT on the spawned child to a temp file path; store path in world.argv_out_path")
 }
 
-#[given(expr = "a writable FITS path {string}")]
-async fn given_writable_fits_path(_world: &mut PlateSolverWorld, _path: String) {
-    todo!("Phase 4: ensure parent dir exists; touch the file so wrapper's existence check passes")
+#[given("a writable FITS path")]
+async fn given_writable_fits_path(_world: &mut PlateSolverWorld) {
+    todo!("Phase 4: create a unique FITS file under world.temp_dir, store path in world")
+}
+
+#[given("a non-existent FITS path")]
+async fn given_non_existent_fits_path(_world: &mut PlateSolverWorld) {
+    todo!("Phase 4: build an absolute path under world.temp_dir that we never create")
 }
 
 // ----- when: HTTP requests -----
+//
+// Note on the `\\/` escapes in `expr = "..."` patterns below: cucumber
+// expressions interpret bare `/` as alternation (e.g., `red/blue`
+// matches `red` or `blue`). A literal `/api/v1/solve` triggers a
+// compile error: "An alternation can not be empty." `\\/` in the Rust
+// string yields `\/` in the cucumber expression, the documented
+// escape for a literal `/`. The literal-string form (no `expr =`) is
+// not a cucumber expression and accepts bare `/`, which is why the
+// next step works without escaping.
 
 #[when("I POST to /api/v1/solve with that fits_path")]
 async fn when_post_solve_with_fits_path(_world: &mut PlateSolverWorld) {
@@ -102,6 +116,15 @@ async fn then_response_field_contains(
     _needle: String,
 ) {
     todo!("Phase 4")
+}
+
+#[then(expr = "the response field {string} contains {string} case-insensitively")]
+async fn then_response_field_contains_ci(
+    _world: &mut PlateSolverWorld,
+    _path: String,
+    _needle: String,
+) {
+    todo!("Phase 4: lowercase both sides and compare; matches both ASTAP and astap")
 }
 
 #[then(expr = "the spawned argv contains the flag {string}")]
