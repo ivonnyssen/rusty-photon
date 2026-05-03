@@ -671,7 +671,28 @@ boundary — but expose the same MCP tool surface as any other tool.
 | `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `center_on_target` | ra, dec, tolerance_arcsec | final_error_arcsec, attempts | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until tolerance reached. *Planned.* |
 
-**Planner**
+**Planner — Ephemeris primitives**
+
+One operation each, backed by the `Ephemeris` trait in
+`rp-ephemeris`. Times are humantime ISO-8601 strings (e.g.
+`"2026-05-03T22:00:00Z"`); when omitted, defaults to "now". `ra` is
+hours, `dec` is degrees. See
+[Planning and Ephemeris](#planning-and-ephemeris).
+
+| Action | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `resolve_target` | name | ra_hours, dec_degrees, object_type, magnitude, size_arcmin | Catalog lookup against embedded Messier + NGC + IC |
+| `compute_alt_az` | ra, dec, time (optional) | altitude_degrees, azimuth_degrees | Topocentric alt/az for an ICRS target |
+| `compute_transit` | ra, dec, date | transit_utc | UT of upper transit on a given local date |
+| `compute_rise_set` | ra, dec, date, min_alt_degrees | rise_utc, set_utc | Rise/set times above a given altitude (None for circumpolar / never-up) |
+| `compute_meridian_flip` | ra, dec, time, side_of_pier | time_to_flip | Time-to-flip from current side of pier |
+| `get_sun_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees | Sun position |
+| `get_twilight` | date, kind | begin_utc, end_utc | Civil / nautical / astronomical twilight window |
+| `get_moon_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees, phase, illumination | Moon position + phase |
+| `compute_moon_separation` | ra, dec, time (optional) | separation_degrees | Angular separation between target and Moon |
+| `get_local_sidereal_time` | time (optional) | lst_hours | Local sidereal time at the configured site |
+
+**Planner — Convenience tools**
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
@@ -1555,6 +1576,14 @@ Supported ASCOM device types:
 | SafetyMonitor | Safety state polling |
 | CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness) |
 
+**Mount site properties.** On telescope connect, `rp` reads
+`SiteLatitude` and `SiteLongitude` (and the
+`CanGetSiteLatitude`/`CanGetSiteLongitude` capability bits) to
+validate the configured `site` block. A mismatch greater than
+`0.01°` in either dimension is a hard error; missing capability
+bits cause the validation to be skipped with a `debug!()` log. See
+[Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
+
 ### Guider Service
 
 The guider service is an **rp-managed service** that wraps PHD2 and
@@ -1996,6 +2025,174 @@ options:
 Two *plugins* both claiming `auto_focus` remains a startup error —
 there is no deterministic precedence between plugins.
 
+## Planning and Ephemeris
+
+`rp` ships the planner with an in-process astronomical math layer
+(`rp-ephemeris`) and an embedded deep-sky object catalog
+(`rp-catalog`). Together they let an orchestrator answer "image M41
+right now" from a name string, without the operator having to paste
+coordinates by hand or trust the mount's pointing model.
+
+The implementation plan that introduces both crates lives at
+[`docs/plans/rp-planning-tools.md`](../plans/rp-planning-tools.md).
+This section describes the resulting design as it appears to MCP
+clients and to operators editing the config file.
+
+### Site Configuration
+
+Site location is a top-level `site` block:
+
+```json
+"site": {
+  "latitude_degrees": 47.6062,
+  "longitude_degrees": -122.3321
+}
+```
+
+Range validation: `latitude_degrees ∈ [-90, 90]`,
+`longitude_degrees ∈ [-180, 180]`. Out-of-range values fail config
+load with a named field.
+
+The IANA timezone (`America/Los_Angeles`, `Europe/Madrid`,
+`America/Santiago`, …) is derived once at startup from `(lat, lon)`
+via the `tzf-rs` crate. System tzdata then supplies DST rules.
+Startup logs an `info!("site: {site}")` line carrying lat/lon and
+the derived timezone, so a misconfigured location surfaces as a
+visibly-wrong timezone before it produces wrong twilight times.
+
+`tzf-rs`'s default polygon dataset costs ≈128 MiB of resident memory
+and bundles ODbL-licensed data; that is acceptable in this service's
+deployment posture. The crate itself is MIT-licensed (an additional
+"Anti CSDN License" footnote forbids the Chinese aggregator CSDN
+specifically and has no practical effect on this workspace's use).
+
+**No elevation in v1.** Sidereal time depends only on longitude, the
+mount's refraction model handles pressure/temperature, and elevation
+matters only for solar-system parallax (≤1° for the Moon, sub-arcsec
+for planets) and horizon-dip in twilight (≈1° at 4000 m). Adding
+`elevation_meters` later is a backwards-compatible config addition.
+
+**No horizon profile in v1.** A single `min_altitude_degrees` (per
+target, with a planner-wide default in the `planner` block) covers
+the common case. Per-azimuth obstruction profiles are deferred.
+
+### Site Validation Against the ASCOM Mount
+
+`SiteLatitude` and `SiteLongitude` are standard ASCOM Telescope
+properties. On telescope connect, `rp` reads both and compares to
+config:
+
+- If `CanGetSiteLatitude` and `CanGetSiteLongitude` are both true,
+  any difference greater than `0.01°` (≈1 km) in either dimension
+  is a **hard error** on connect, naming both pairs in the error
+  message. Silently running ephemeris math against a site that
+  disagrees with what the mount computes hour-angle from is the
+  precise class of bug that produces plausible-looking wrong slew
+  targets — i.e., the worst kind.
+- If either capability bit is false, config is the source of truth
+  and a `debug!()` log notes that mount validation was skipped.
+
+The mismatch threshold is not configurable: 0.01° is below the
+positional accuracy any operator would set deliberately, and well
+above any rounding noise on either side.
+
+### The `Ephemeris` Trait
+
+`rp-ephemeris` exposes a single trait — the seam between the
+math layer and everything that consumes positions, times, and
+twilight windows:
+
+```text
+sidereal_time(site, time) -> LocalSiderealTime
+alt_az(site, target_icrs, time) -> AltAz
+transit(site, target_icrs, date) -> Option<UtcTime>
+rise_set(site, target_icrs, date, min_alt_deg) -> Option<RiseSet>
+meridian_flip(site, target_icrs, time, side_of_pier) -> Option<DurationToFlip>
+sun_position(site, time) -> SunInfo
+twilight(site, date, kind) -> TwilightWindow
+moon_position(site, time) -> MoonInfo
+moon_separation(target_icrs, time) -> AngleDeg
+```
+
+All methods are pure functions; the trait surface contains zero
+`unsafe` and no FFI types.
+
+The shipped implementation, `ErfarsEphemeris`, wraps the
+[`erfars`](https://crates.io/crates/erfars) crate (Rust FFI for ERFA
+— the BSD-licensed clean-room derivative of IAU SOFA used by Astropy
+and LSST/Rubin), in-process. ERFA is pure computation: no I/O, no
+file parsing, scalar-only inputs, ~25 years of heavy production use
+in safety-critical astronomy software. Isolating it as an
+rp-managed service (the posture used for ASTAP, see
+[Plate Solver](#plate-solver)) would route every primitive call
+through HTTP — a single `get_next_target` invocation can issue 20+
+ephemeris calls — for safety we don't actually need. The trait wall
+makes service-extraction a mechanical follow-up if a real
+ERFA-related crash is ever observed in production.
+
+Operations not in ERFA's surface (rise/set, twilight, transit,
+meridian-flip ETA) are small root-finders inside `rp-ephemeris`
+that close over the ERFA-supplied positions.
+
+ΔUT1 is treated as zero (UT1 ≈ UTC, error ≤ 0.9 s = ≤ 13″ of LST)
+— well inside what plate-solving will refine on a real frame.
+
+### Catalog (`rp-catalog`)
+
+`rp-catalog` ships an embedded Messier + NGC + IC dataset (~13k
+objects) sourced from openNGC (CC-BY-SA-4.0 attribution; license
+text and source pointer live in
+`crates/rp-catalog/src/data/LICENSE-DATA`). Resolution is
+case- and whitespace-insensitive — `"M41"`, `"m 41"`, `"Messier 41"`,
+and `"NGC 2287"` (an alias) all resolve to the same object. Object
+type and approximate magnitude are returned alongside RA/Dec.
+
+The catalog is offline-first: typing a Messier number and getting
+coordinates is too core to require a plugin install, the data is
+small (well under 1 MB compressed), and offline operation matters
+at remote dark sites. A future SIMBAD-backed plugin can register the
+same `resolve_target` MCP tool name and shadow the built-in via the
+existing tool-provider override mechanism (see
+[Config-Time Validation](#config-time-validation)).
+
+`targets[]` definitions in config still accept literal RA/Dec —
+catalog lookup is a tool call, not a config-time resolution. A
+future enhancement could let `targets[]` reference catalog names;
+explicitly out of v1 scope.
+
+### Primitive vs. Convenience MCP Tools
+
+Both layers call the same internal `Ephemeris` trait. The split is
+purely how operations are projected onto the MCP catalog: primitives
+are one operation each (a planner plugin composes them); convenience
+tools are the high-level shapes the default planner uses.
+
+**Primitive tools** (one operation each):
+
+| Tool | Returns |
+|------|---------|
+| `resolve_target {name}` | ICRS RA/Dec, object type, magnitude (catalog) |
+| `compute_alt_az {ra, dec, time?}` | altitude, azimuth |
+| `compute_transit {ra, dec, date}` | UT of upper transit |
+| `compute_rise_set {ra, dec, date, min_alt_degrees}` | rise/set times |
+| `compute_meridian_flip {ra, dec, time, side_of_pier}` | time-to-flip |
+| `get_sun_position {time?}` | RA/Dec, alt/az |
+| `get_twilight {date, kind}` | civil/nautical/astronomical begin/end |
+| `get_moon_position {time?}` | RA/Dec, alt/az, phase, illumination |
+| `compute_moon_separation {ra, dec, time?}` | angular separation |
+| `get_local_sidereal_time {time?}` | LST |
+
+**Convenience tools** (compose primitives, listed in
+[Planner Tools](#planner-tools)): `get_target_status`,
+`get_next_target`, `get_meridian_status`. `record_exposure` and
+`get_session_progress` are orthogonal to ephemeris and not built on
+this layer.
+
+The chattiness cost of primitives is zero: planning runs at
+target-switch cadence (minutes/hours), not per-frame. A plugin that
+makes 20 MCP calls to compute "best target for the next 90 minutes"
+is imperceptible.
+
 ## Dynamic Planner
 
 The planner is a pure function exposed as MCP tools. Given current state,
@@ -2014,15 +2211,32 @@ decide what to do next — `rp` does not make workflow decisions.
 
 ### Decision Logic (inside `get_next_target`)
 
-1. Eliminate targets below minimum altitude or that will set before a
-   minimum number of exposures can be taken.
-2. Prefer targets that are transiting (highest altitude, best seeing).
-3. Prefer targets with the least progress toward their integration goal.
-4. Minimize filter changes (batch same-filter exposures).
-5. Account for meridian flip timing — avoid starting a long exposure if a
-   flip is imminent.
-6. If no targets are viable, return a "wait" or "end session"
-   recommendation.
+The convenience tool delegates each numbered check to the named
+primitive (or to the persisted progress map for non-ephemeris
+checks). Primitives are defined in the
+[Primitive vs. Convenience MCP Tools](#primitive-vs-convenience-mcp-tools)
+table.
+
+1. Eliminate targets whose `compute_alt_az` altitude is below
+   `min_altitude_degrees` (per-target value, falling back to the
+   planner-wide `min_altitude_degrees` from config), or whose
+   `compute_rise_set` set time leaves less than the
+   `dawn_buffer_minutes` plus a single full exposure.
+2. Among the survivors, prefer targets that are transiting —
+   smallest absolute hour-angle from `compute_transit` against the
+   current `get_local_sidereal_time` (highest altitude, best
+   seeing).
+3. Prefer targets with the least progress toward their integration
+   goal (from the persisted `record_exposure` counters).
+4. Minimize filter changes: among the remaining ties, batch the
+   same-filter exposure as the previous frame.
+5. Account for meridian flip timing — avoid starting a long
+   exposure if `compute_meridian_flip` returns a `time_to_flip`
+   shorter than the per-target `exposures[].duration_secs` plus a
+   safety margin.
+6. If no targets are viable, return a `WaitForTwilight` (when
+   `get_twilight` says astronomical dusk has not yet begun) or
+   `EndOfSession` recommendation.
 
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
@@ -2274,6 +2488,10 @@ when the config sets a non-zero default).
     "session_state_file": "/data/session_state.json",
     "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
   },
+  "site": {
+    "latitude_degrees": 47.6062,
+    "longitude_degrees": -122.3321
+  },
   "equipment": {
     "cameras": [
       {
@@ -2475,11 +2693,19 @@ services/rp/src/
   # Safety enforcement
   safety.rs             SafetyMonitor polling, park/resume, orchestrator cancellation
 
-  # Planning (exposed as MCP tools)
+  # Planning (exposed as MCP tools — see Planning and Ephemeris)
+  # Math and catalog data live in workspace crates rp-ephemeris and
+  # rp-catalog; this sub-tree is the MCP-tool wrapping plus the
+  # decision logic that composes the primitives.
   planner/
-    mod.rs              Planner tool implementations (get_next_target, etc.)
-    sky.rs              Altitude, azimuth, hour angle, meridian calculations
-    scorer.rs           Target scoring (altitude, progress, priority, filter)
+    mod.rs              Module root; tool registration helpers
+    primitives.rs       MCP wrappers for the 10 ephemeris primitives
+    catalog.rs          MCP wrapper for resolve_target (over rp-catalog)
+    convenience.rs      MCP wrappers: get_target_status, get_next_target,
+                          get_meridian_status (compose primitives)
+    decision.rs         The decision logic from §"Dynamic Planner",
+                          parameterised by an `Ephemeris` impl + an
+                          explicit `now` so tests are deterministic
 
   # Event system
   events/
@@ -2568,8 +2794,13 @@ Testing follows the conventions in `docs/skills/testing.md`.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: Missing tools, conflicting plugins, circular
   dependencies.
-- **Sky calculations**: Altitude, hour angle, meridian time against known
-  ephemeris data.
+- **Sky calculations**: covered by `rp-ephemeris`'s own
+  reference-value tests against Astropy-generated values
+  (alt/az / transit / rise/set / sun / moon / twilight). `rp`'s
+  unit tests don't re-test the math; they assert the MCP wrappers
+  deserialise inputs, dispatch through the trait, and serialise
+  outputs correctly. `planner/decision.rs` is unit-tested with a
+  mock `Ephemeris` impl over hand-rolled fake positions.
 
 ### BDD Tests (Cucumber)
 

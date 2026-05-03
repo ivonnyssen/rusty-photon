@@ -124,11 +124,23 @@ algorithmic one — caught at a fixed surface.
 ### Use `tzf-rs` for lat/lon → IANA timezone
 
 Site config holds lat/lon only. The IANA timezone name (`Europe/Madrid`,
-`America/Santiago`) is derived at startup via `tzf-rs` (MIT, currently
-maintained, ~58k recent downloads). System tzdata then supplies DST
-rules. Cost: ~few MB of polygon data bundled into the binary.
-Logged once at startup so a misconfigured lat/lon surfaces as a
-visibly-wrong timezone before it produces wrong twilight times.
+`America/Santiago`) is derived at startup via `tzf-rs` (MIT-licensed
+crate, ODbL-licensed bundled polygon data from
+`evansiroky/timezone-boundary-builder`, currently maintained). System
+tzdata then supplies DST rules. Cost: `DefaultFinder` with the
+simplified dataset reports ≈128 MiB peak RSS (per the upstream README;
+the full-precision dataset is ~5× larger and not enabled). The
+finder is constructed once at startup, held for the lifetime of the
+process, and the derived timezone is logged immediately so a
+misconfigured lat/lon surfaces as a visibly-wrong timezone before it
+produces wrong twilight times.
+
+The tzf-rs licence advertises an additional "Anti CSDN License"
+clause forbidding the Chinese aggregator CSDN specifically; the
+upstream description and Cargo.toml make clear it has no practical
+effect on this workspace's use. If the constraint ever becomes
+material the swap-out point is `rp_ephemeris::site` — `Site` exposes
+`iana_timezone()` and nothing further leaks.
 
 ### No elevation in v1 site config
 
