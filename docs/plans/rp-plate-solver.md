@@ -673,34 +673,54 @@ Status: **not started.**
 **Exit criteria:** all BDD scenarios pass. `cargo rail run --profile
 commit -q` clean. `cargo fmt` clean.
 
-### Phase 5 — Sentinel integration
+### Phase 5 — Process-supervisor integration (Sentinel forward work)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] Document the per-service Sentinel restart command in
-      `services/rp-plate-solver/README.md`. Linux/systemd:
-      `systemctl restart rp-plate-solver`. Mention macOS launchd /
-      Windows service-manager equivalents.
-- [ ] Confirm Sentinel's existing per-service restart-command config
-      surface (per `rp.md` §"Sentinel Watchdog Integration") accepts a
-      service entry for `rp-plate-solver` without code changes. If it
-      does, this phase is docs-only; if it does not, the gap is
-      called out in a follow-up issue.
-- [ ] Decide whether Sentinel should probe `rp-plate-solver`'s
-      `/health` or rely on event-stream + restart-command alone. The
-      currently-documented Sentinel watchdog flow only pings Alpaca
-      service endpoints; `rp-plate-solver` is not Alpaca. Two paths:
-      (a) extend Sentinel's health-probe surface to support
-      configurable HTTP `/health` per rp-managed service (Sentinel
-      design change); (b) rely on event-stream-derived deadline
-      signals from rp's compound tools and configured restart
-      commands, leaving `/health` as operator-only. Pick one in this
-      phase; the wrapper exposes `/health` either way so option (a)
-      stays available for later.
+The plan's original framing assumed a Sentinel "configured
+restart-command per service" feature the existing Sentinel doesn't
+have — Sentinel today is an Alpaca SafetyMonitor poller and notifier
+([`docs/services/sentinel.md`](../services/sentinel.md)), not a
+generic HTTP service supervisor. The honest answer for v1: the
+operator's OS process supervisor (systemd / launchd / NSSM) is the
+recovery mechanism; future Sentinel work can layer on the `/health`
+endpoint the wrapper already exposes.
 
-**Exit criteria:** an operator can configure Sentinel to restart
-`rp-plate-solver` on hang/crash by following the README. No regression
-in Sentinel's existing tests.
+What this phase delivered:
+
+- [x] Per-OS process-supervisor recipes in
+      `services/rp-plate-solver/README.md` — systemd unit (Linux),
+      launchd plist (macOS), NSSM commands (Windows). Each entry
+      gives the install snippet plus the operator's restart and
+      log-tail commands.
+- [x] Honest "Sentinel integration" section in
+      `docs/services/rp-plate-solver.md` — drops the
+      "Sentinel-supervised" framing, retitles to "Supervision and
+      recovery", names the OS process supervisor as today's
+      recovery mechanism, and keeps the failure-domain table /
+      belt-and-suspenders timeout / what-restart-recovers-from
+      content unchanged.
+- [x] Architecture mermaid in the design doc updated to show the
+      OS process supervisor (rather than Sentinel) restarting the
+      wrapper and rp.
+- [x] Forward-work note acknowledging that when Sentinel grows
+      generic HTTP service supervision (periodic `/health` probes,
+      configurable restart commands), the wrapper's existing
+      `/health` and graceful-shutdown semantics fit cleanly.
+
+What this phase did **not** do (forward work):
+
+- Extend Sentinel itself with HTTP `/health` polling or per-service
+  restart-command config. That's a larger Sentinel design change
+  beyond this PR's scope; tracked separately.
+- Add `/health` probing logic in any consumer (rp's HTTP client to
+  the wrapper relies on its own outer timeout for each request, not
+  on `/health`).
+
+**Exit criteria met:** operator can stand up `rp-plate-solver` on any
+target OS using the README's recipes; the wrapper's exit semantics
+play correctly with `Restart=on-failure` (systemd) / `KeepAlive`
+(launchd) / `nssm restart` policies.
 
 ### Phase 6 — Nightly cross-platform real-ASTAP smoke (retires ADR-005 OQ 1–4)
 
