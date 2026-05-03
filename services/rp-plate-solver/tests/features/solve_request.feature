@@ -28,6 +28,20 @@ Feature: POST /api/v1/solve — request handling and error surface
     Then the response status is 404
     And the response field "error" is "fits_not_found"
 
+  Scenario: fits_path pointing at a directory returns fits_not_found
+    Given a fits_path pointing at a directory
+    When I POST to /api/v1/solve with that fits_path
+    Then the response status is 404
+    And the response field "error" is "fits_not_found"
+    And the response field "message" contains "not a regular file"
+
+  @unix
+  Scenario: fits_path with read permission denied returns fits_not_found
+    Given an unreadable FITS path
+    When I POST to /api/v1/solve with that fits_path
+    Then the response status is 404
+    And the response field "error" is "fits_not_found"
+
   Scenario: Non-absolute fits_path returns invalid_request
     When I POST to /api/v1/solve with fits_path "relative/path.fits"
     Then the response status is 400

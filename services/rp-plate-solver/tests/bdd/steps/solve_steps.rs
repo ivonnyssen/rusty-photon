@@ -47,6 +47,33 @@ async fn given_non_existent_fits_path(world: &mut PlateSolverWorld) {
     world.fits_path = Some(p);
 }
 
+#[given("a fits_path pointing at a directory")]
+async fn given_fits_path_is_directory(world: &mut PlateSolverWorld) {
+    let dir = world.temp_dir_path();
+    let p = dir.join("not_a_file.fits");
+    std::fs::create_dir_all(&p).expect("mkdir fits-as-dir");
+    world.fits_path = Some(p);
+}
+
+// The "unreadable FITS" scenario is gated `@unix` in the feature file.
+// On Windows the simple `chmod 000` trick doesn't deny read (file ACLs
+// override mode bits, and the test runner typically has override
+// privileges); covering that branch reliably would need DENY ACLs or
+// file locks, which isn't worth the complexity until a real Windows
+// failure mode surfaces.
+#[given("an unreadable FITS path")]
+#[cfg(unix)]
+async fn given_unreadable_fits_path(world: &mut PlateSolverWorld) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = world.temp_dir_path();
+    let p = dir.join("unreadable.fits");
+    std::fs::write(&p, b"placeholder").expect("touch FITS");
+    // Mode 000: no read for owner/group/other. `File::open` returns
+    // EACCES on the wrapper's open-check.
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    world.fits_path = Some(p);
+}
+
 // ----- when: HTTP requests -----
 //
 // Note on the `\\/` escapes in `expr = "..."` patterns below: cucumber
