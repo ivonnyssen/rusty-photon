@@ -552,50 +552,199 @@ re-litigated:
   imaging or MCP layer, and "compound tools live under
   `imaging/tools/`" is a clean rule.
 
-##### Phase 6c-prep — Telescope (mount) primitives
+##### Phase 6c-prep — Mount primitives
 
-Status: **not started.** Parallels Phase 6a (focuser primitives).
-Required because `center_on_target` needs `slew` and `sync_mount`,
-neither of which exists in `rp` today.
+Status: **planned (2026-05-02).** Parallels Phase 6a (focuser
+primitives). Required because `center_on_target` needs `slew` and
+`sync_mount`, neither of which exists in `rp` today.
 
-- [ ] `TelescopeConfig` in `config.rs` (`id`, `alpaca_url`,
-      `device_number`, optional `auth: ClientAuthConfig`). Replaces
-      any placeholder telescope slot in the existing config schema.
-- [ ] `TelescopeEntry` in `equipment.rs` mirroring `CameraEntry` /
-      `FocuserEntry`; `connect_telescope` Alpaca client wiring with
-      five-arm failure coverage (`build_alpaca_client` error,
-      `get_devices` network error, 5 s timeout, no-telescope-in-list,
-      `set_connected` Alpaca rejection).
-- [ ] `EquipmentRegistry::find_telescope` plus
-      `EquipmentStatus.telescopes` plumbing.
-- [ ] MCP tools in `mcp.rs`:
-      - `slew` — `telescope_id`, `ra`, `dec`. Blocks via `Slewing`
-        polling (mirrors `move_focuser`'s `is_moving` poll loop) with
-        a deadline appropriate to a mount slew (initial pick: 5 min;
-        revisit during impl).
-      - `sync_mount` — `telescope_id`, `ra`, `dec`. Immediate, no
-        blocking poll.
-      - `get_telescope_position` — returns current `ra` / `dec` /
-        `side_of_pier`. Deferred unless a concrete consumer surfaces
-        before 6c-3 lands.
-- [ ] `services/rp/tests/features/telescope.feature` — catalog,
-      slew/sync/idempotent-slew happy paths, five device-resolution /
-      missing-parameter errors. Mirrors the shape of `focuser.feature`.
-      Target ~10 scenarios.
-- [ ] `services/rp/tests/bdd/steps/telescope_steps.rs` reusing
-      `tool_steps.rs` shared steps; `RpWorld.telescopes` accumulator;
-      new `bdd_infra::rp_harness::TelescopeConfig` + builder.
-- [ ] Direct unit tests for `connect_telescope` failure + success
-      branches via in-test axum stub Alpaca server (same pattern Phase
-      6a established for `connect_focuser`).
-- [ ] `docs/services/rp.md` Configuration example updated with a
-      typed telescope block.
-- [ ] No new workspace deps — only adds the existing `ascom-alpaca`
-      `telescope` feature on the rp crate. No `bazel mod tidy`.
+###### Decisions resolved during planning
 
-**Exit criteria:** new BDD scenarios green, all `connect_telescope`
-failure-path + happy-path unit tests pass, `cargo rail run --profile
-commit -q` clean, `cargo fmt` clean.
+These will be captured in `docs/services/rp.md` (Configuration,
+Built-in Tools — Hardware) and should not be re-litigated:
+
+- **Singular `mount: Option<MountConfig>`, not plural `Vec`.** `rp`
+  is not running farms of mounts. Piggyback rigs share **one** mount
+  with multiple optical trains (multiple cameras, focusers, filter
+  wheels) — those stay plural; the mount stays singular. The
+  one-mount-per-deployment contract is expressed in the type, not
+  enforced as a singleton runtime invariant. `Option` because a
+  camera-only / flats-rig config remains valid.
+- **Naming: "mount" in our code, "telescope" only at the Alpaca
+  boundary.** `MountConfig`, `MountEntry`, `find_mount`, `mount.feature`,
+  `slew`/`sync_mount` MCP tools. The `Arc<dyn Telescope>` field type
+  and the `ascom-alpaca` `"telescope"` feature flag stay (forced by
+  upstream). The two-name asymmetry matches our domain language ("the
+  mount slewed to M31") rather than ASCOM's device-type label.
+- **No `id` field on `MountConfig`.** Singular type, nothing to
+  disambiguate. MCP tools take no `mount_id` / `telescope_id`
+  parameter.
+- **`slew` does not touch `Tracking`.** ASCOM mandates `Tracking ==
+  true` before equatorial `SlewToCoordinatesAsync` (driver raises
+  `InvalidOperationException` otherwise) and guarantees `Tracking ==
+  true` after (per the AbortSlew docs: "equatorial slews by
+  definition always start and finish with Tracking on"). The contract
+  is unambiguous; `slew` propagates the natural Alpaca error if
+  tracking is off rather than auto-enabling. No `ensure_tracking`
+  parameter.
+- **`set_tracking` and `get_tracking` are standalone MCP tools.**
+  Workflows that need to enable tracking before slewing (the common
+  case, after unparking) call `set_tracking` explicitly. `get_tracking`
+  returns `{ tracking, can_set_tracking }`; fails loud when the
+  underlying `Tracking` read errors.
+- **`get_mount_position` is included** (un-deferred from the original
+  stub). Returns `{ ra, dec }`. Needed for BDD verification that
+  `sync_mount` took effect, and useful for any caller that wants to
+  read the current pointing without going through `slew`.
+- **`mount.settle_after_slew` is a config field with optional per-call
+  override.** Mounts have post-slew mechanical settle (gear backlash,
+  ringing) that's a property of the rig, not of any individual
+  workflow. Operator sets `mount.settle_after_slew: "3s"` (or
+  whatever their mount needs); `slew { ra, dec, settle_after?: "1s" }`
+  overrides per call (including `"0s"` to skip). Default `"0s"` (no
+  settle) so the field is purely opt-in.
+- **300 s slew deadline, hardcoded.** Covers a worst-case
+  meridian-flip + park-side traversal at ~1°/s. Move to config later
+  if needed. Best-effort `abort_slew()` on deadline expiry before
+  returning the timeout error (mount runaways are more dangerous than
+  focuser runaways — cables, hard stops, sun-pointing in a flat
+  workflow).
+- **`get_focuser_position` follow-up: issue [#130](https://github.com/ivonnyssen/rusty-photon/issues/130)**
+  tracks revisiting `ensure_default_*` helpers in `bdd-infra` for
+  piggyback (multi-optical-train) BDD scenarios. Out of scope for
+  this PR.
+
+###### Work breakdown (in order)
+
+- [ ] **Step 1 — `MountConfig` in `config.rs`.** Fields: `alpaca_url:
+      String`, `device_number: u32` (`#[serde(default)]`), optional
+      `auth: Option<ClientAuthConfig>`, optional
+      `settle_after_slew: Option<Duration>` (`humantime_serde`).
+      Replace the existing `pub mount: Value` placeholder on
+      `EquipmentConfig` with `pub mount: Option<MountConfig>`
+      (`#[serde(default)]`). Two unit tests — minimal-fields, with
+      auth + settle_after_slew.
+- [ ] **Step 2 — `MountEntry` + `connect_mount` in `equipment.rs`.**
+      Mirrors `FocuserEntry` / `connect_focuser`. Holds
+      `Arc<dyn Telescope>` from ascom-alpaca. Five failure-arm unit
+      tests via in-test axum stub (same pattern Phase 6a established
+      for `connect_focuser`): `build_alpaca_client` error, `get_devices`
+      network error, 5 s `tokio::time::timeout`, no-telescope-in-list,
+      `set_connected` Alpaca rejection. Plus one happy-path arm. No
+      connect-time probes of `Tracking` / `Slewing` / `AtPark`.
+- [ ] **Step 3 — `EquipmentRegistry` plumbing.** Singular
+      `pub mount: Option<MountEntry>` field, populated in
+      `EquipmentRegistry::new`. `find_mount(&self) -> Option<&MountEntry>`
+      lookup. `EquipmentStatus.mount: Option<DeviceStatus>` (singular,
+      JSON-serialized as `null` when no mount is configured). One
+      end-to-end registry test against the axum stub paralleling
+      `connect_focuser_success_returns_connected_entry` +
+      `find_focuser`.
+- [ ] **Step 4 — `do_slew_blocking` helper in `mcp.rs`.**
+      `pub(crate) async fn do_slew_blocking(&self, ra: f64, dec: f64,
+      settle_after: Duration) -> Result<(f64, f64), String>`. Resolves
+      the mount, calls `slew_to_coordinates_async`, polls `slewing()`
+      every 100 ms with a 300 s deadline, sleeps `settle_after` after
+      `Slewing == false`, then reads `(right_ascension(),
+      declination())` and returns. Best-effort `abort_slew()` on
+      deadline expiry before returning the timeout error. Modeled on
+      `do_move_focuser_blocking`. Helper `resolve_mount` (no macro)
+      handles "no mount configured" + "mount not connected" symmetrically.
+- [ ] **Step 5 — Five MCP tools in `mcp.rs`.**
+      - `slew { ra: f64, dec: f64, settle_after: Option<Duration> }` →
+        `{ actual_ra, actual_dec }`. Validates `ra ∈ [0, 24)` hours and
+        `dec ∈ [-90, 90]` degrees in the body. `settle_after` resolves
+        `None → config default`, `Some → override`.
+      - `sync_mount { ra: f64, dec: f64 }` → `{}`. Same validation,
+        calls `sync_to_coordinates`. Immediate, no polling.
+      - `get_mount_position { }` → `{ ra: f64, dec: f64 }`. Reads
+        `right_ascension()` then `declination()`. Fails loud on either
+        read error.
+      - `get_tracking { }` → `{ tracking: bool, can_set_tracking: bool }`.
+        Reads both `tracking()` and `can_set_tracking()`. Fails loud
+        on the `tracking()` read error (no half-success).
+      - `set_tracking { enabled: bool }` → `{}`. Calls `set_tracking`.
+        `CanSetTracking == false` surfaces as the natural Alpaca error.
+
+      ~16 unit tests against a `MockTelescope` (paralleling the
+      existing `MockFocuser` pattern at `mcp.rs:2160+`).
+- [ ] **Step 6 — `tests/features/mount.feature`** (~15 scenarios,
+      `@serial` tagged). Catalog (1); `slew` (5: tracking-on happy
+      path, tracking-off error, no-mount-configured, mount-not-connected,
+      one Outline using `MISSING` sentinel for ra/dec range +
+      missing-field cases); `sync_mount` (3: happy path verified via
+      `get_mount_position`, no-mount/not-connected Outline,
+      ra/dec range Outline); `get_tracking` (1); `set_tracking`
+      (2: enable, disable); `get_mount_position` (2: happy path,
+      no-mount/not-connected); plus one settle-honoring scenario
+      asserting `settle_after: "100ms"` extends total slew time by
+      ~100ms. Slew tolerance: exact equality (revisit at impl time
+      if OmniSim diverges).
+- [ ] **Step 7 — `tests/bdd/steps/mount_steps.rs`.** Reuse-first:
+      pull `the tool list should include`, `the tool call should
+      succeed`, `the tool call should return an error`, `the error
+      message should contain` from `tool_steps.rs`. New mount-specific
+      steps: `Given(rp is running with a mount on the simulator)`,
+      `Given(rp is running without a mount)`,
+      `Given(rp is running with a mount at <url> device <n>)`,
+      `Given(the mount tracking is set to <bool>)`, `When` steps for
+      each MCP tool (slew/sync_mount/get_tracking/set_tracking/get_mount_position),
+      `Then` field-extraction asserts. The slew/sync_mount `When`
+      steps interpret `MISSING` in the table as "omit that field
+      from the JSON-RPC params." No new `RpWorld` fields. Wire into
+      `tests/bdd/steps/mod.rs`.
+- [ ] **Step 8 — `bdd_infra::rp_harness::MountConfig` +
+      `RpConfigBuilder::with_mount`.** Test-side struct holds
+      `alpaca_url` + `device_number` (no `auth`, matches existing
+      test-side device structs). Builder field
+      `mount: Option<MountConfig>`; `with_mount` setter (singular,
+      not `add_*`). `build()` emits `"mount": null | { … }`,
+      replacing the current literal `"mount": null` line. No
+      `ensure_default_mount` — explicit `.with_mount(...)` reads
+      better at every call site that needs a mount.
+- [ ] **Step 9 — `docs/services/rp.md` updates.**
+      - Configuration example: replace the existing
+        `mount` block with the singular typed shape including
+        optional `settle_after_slew`. Drop the obsolete
+        `settle_time_secs` field.
+      - Built-in Tools — Hardware table: add three rows for
+        `get_mount_position`, `get_tracking`, `set_tracking`.
+      - One-line prose under Configuration: "Exactly one mount is
+        the typical deployment — the singular `mount` field reflects
+        that. Piggyback rigs have multiple cameras / focusers /
+        filter wheels on the same mount; multi-mount support is in
+        Future Considerations."
+      - One-line prose under the new tools: "`mount.settle_after_slew`
+        is applied after `Slewing == false`; per-call `settle_after`
+        on `slew` overrides (including `"0s"` to skip)."
+- [ ] **Step 10 — `services/rp/Cargo.toml`.** Append `"telescope"` to
+      `ascom-alpaca`'s features list. No new workspace deps; no
+      `bazel mod tidy` needed. Per-crate features lists are intent
+      expression — workspace builds compile the union due to Cargo
+      feature unification, but cargo-hack's feature-powerset CI
+      enforces standalone-buildability.
+- [ ] **Step 11 — Plan-doc bookkeeping.** Land alongside the impl:
+      flip Phase 6c-prep status to **complete** with the work-breakdown
+      checkboxes ticked, exit-criteria block populated with concrete
+      counts (BDD scenarios green, lib tests passing).
+
+**Out of scope (deferred or never):**
+
+- `park` / `unpark` MCP tools. Add when a workflow needs them.
+- `abort_slew` as a standalone MCP tool. Sentinel's safety path
+  already terminates the orchestrator on unsafe transitions; no
+  caller for an MCP `abort_slew` yet.
+- `tracking_rate` (sidereal / lunar / solar / king). Sidereal is the
+  only rate deep-sky workflows need; defer until a planetary or
+  comet-tracking workflow surfaces.
+- Multi-mount support. Already in `rp.md` Future Considerations.
+- `side_of_pier` exposure. The original stub mentioned it on
+  `get_mount_position`; deferred until a meridian-flip workflow
+  surfaces.
+
+**Exit criteria:** ~15 new BDD scenarios green; ~24 new lib tests
+across `config` (2), `equipment` (7), `mcp` mount tools (~16);
+`cargo rail run --profile commit -q` clean; `cargo fmt` clean.
 
 ##### Phase 6c-1 — `rp-plate-solver` rp-managed service
 
