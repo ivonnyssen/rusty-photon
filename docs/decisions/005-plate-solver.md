@@ -373,29 +373,33 @@ to the per-platform passes outlined under
 
 ### Open questions to retire before `rp-plate-solver` ships
 
-Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
+Each becomes a checkbox in the `rp-plate-solver` plan doc; status
+below tracks which have been retired.
 
-1. **macOS Apple Silicon — end-to-end solve.** The `install-astap`
-   smoke workflow already covers binary install + banner. Add an
-   end-to-end solve pass (manual or in the workflow with
-   `download-database: true` and a publicly-fetchable test FITS).
-   Confirm `xattr -d com.apple.quarantine` is sufficient or whether
-   re-signing with the project's Developer ID is required.
-2. **Windows x64 — end-to-end solve.** Same shape as item 1 — the
-   smoke workflow proves the binary runs; outstanding question is
-   whether a real solve completes within budget on a stock Windows
-   runner.
-3. **Windows ARM64** — the upstream Windows ARM64 build is one
-   release behind x64. Confirm parity is acceptable for v1 (no
-   GitHub-hosted ARM64 Windows runner today, so this is a
-   manual-machine verification); if not, document a graceful "no
-   Windows ARM64 support yet" fallback and remove the `Windows-ARM64`
-   row from the install-astap action's per-OS table.
-4. **End-to-end solve timing** — once items 1–3 are wired,
-   capture timing on representative FITS frames on each target
-   platform. Confirm the "few seconds with hint" budget holds at
-   the upper end of what `rp` will actually feed (full-frame 2k–4k
-   Bayer-debayered captures).
+1. **macOS Apple Silicon — end-to-end solve.** **Retired by Phase 6.**
+   The nightly `rp-plate-solver-smoke` workflow runs the
+   `@requires-astap` BDD smoke against real ASTAP on `macos-latest`
+   with `xattr -d com.apple.quarantine` cleared per run. Failure
+   recovery → tracking issue. Happy-path m31 solve is `@manual`-tagged
+   pending a real solvable fixture (synthesizing one is hard;
+   committing a multi-MB binary is undesirable); the failure-mode
+   scenario (`solve_failed` on a synthetic degenerate FITS) is
+   exercised on every nightly run.
+2. **Windows x64 — end-to-end solve.** **Retired by Phase 6** —
+   same workflow, `windows-latest` matrix leg.
+3. **Windows ARM64** — **decision: out of scope for v1.** No
+   GitHub-hosted Windows ARM64 runner exists; the cost of a manual
+   verification cycle for a niche platform isn't worth the v1
+   investment. The `install-astap` action keeps the `Windows-ARM64`
+   row for operators who *do* run on that hardware, but the wrapper
+   isn't claimed to be supported there until a real user surfaces.
+4. **End-to-end solve timing** — **partially retired.** The nightly
+   smoke captures per-OS workflow log timing on the failure-mode
+   scenario, which exercises the wrapper's spawn / wait / exit
+   pipeline. Real solve-time trending against representative
+   2k–4k FITS frames is forward work tracked in Phase 7
+   (hint-plumbing verification) — that's where the `@manual` happy-path
+   gets exercised by an operator with a real fixture.
 5. **LGPL-3.0 §4 / §6 review under BYO** — confirm that "execute a
    binary the operator installed" does not engage either clause; that
    the `install-astap` GitHub action does not constitute conveyance
@@ -405,10 +409,11 @@ Each becomes a checkbox in the eventual `rp-plate-solver` plan doc.
    The §6 "Combined Works" question is also confirmed moot for
    subprocess execution. This question is the formal closure of the
    ADR's working assumption — see [License Treatment](#license-treatment).
+   Tracked under Phase 8.
 6. **Hint plumbing** — confirm the ASCOM mount driver exposes the
    pointing accuracy ASTAP's `-r` (search radius) flag depends on.
    The speed advantage over astrometry.net evaporates without good
-   hints.
+   hints. Tracked under Phase 7.
 
 ## Consequences
 

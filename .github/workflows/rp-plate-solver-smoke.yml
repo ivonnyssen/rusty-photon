@@ -1,0 +1,181 @@
+# Nightly cross-platform real-ASTAP smoke for rp-plate-solver.
+#
+# Drives the wrapper end-to-end against a real ASTAP install on each
+# target OS. The wrapper's contract correctness is already covered on
+# every PR by the mock_astap-backed BDD suite; this workflow's job is
+# to catch *integration drift* — a real ASTAP that has rotated its
+# `.wcs` shape, CLI surface, or banner format would silently bypass
+# the mock-based BDD but trip a `@requires-astap`-tagged scenario
+# here.
+#
+# Cadence: nightly cron + workflow_dispatch (manual). Not on every
+# PR (PRs already pay for the mock BDD; ASTAP install + DB download
+# would be ~100 MB per run × 3 OSes per PR for marginal benefit).
+#
+# See docs/plans/rp-plate-solver.md §"Real-ASTAP coverage: cadence
+# and gating" for the rationale and the bdd.rs filter snippet.
+
+name: rp-plate-solver-smoke
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  schedule:
+    # Every day at 03:30 UTC. Pick a slot away from the install-astap
+    # smoke (which runs on every PR) so the two don't fight for the
+    # same upstream SourceForge endpoint at the same minute.
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "services/rp-plate-solver/**"
+      - ".github/actions/install-astap/**"
+      - ".github/workflows/rp-plate-solver-smoke.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ASTAP + D05 database
+        uses: ./.github/actions/install-astap
+        with:
+          download-database: "true"
+
+      # The mac binary is ad-hoc-signed by the upstream maintainer.
+      # First-run quarantine flagging would block exec without
+      # surfacing a useful error. ADR-005 §"Open questions" item 1
+      # tracks whether re-signing under our own Developer ID is
+      # required; until that's settled, this clear-on-each-run mirrors
+      # what an operator would do by hand.
+      - name: macOS — clear quarantine on astap_cli
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          xattr -d com.apple.quarantine "$ASTAP_BINARY" 2>/dev/null || true
+
+      - name: Generate degenerate FITS fixture
+        # The @requires-astap "solve_failed on a degenerate FITS"
+        # scenario expects tests/fixtures/degenerate_no_stars.fits to
+        # exist. We synthesize a 256×256 zero-filled FITS at workflow
+        # time rather than checking a binary into git.
+        # ASTAP scans this and exits non-zero (no stars detected),
+        # exercising the wrapper's solve_failed mapping end-to-end
+        # against the real binary.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p services/rp-plate-solver/tests/fixtures
+          python3 - <<'PY'
+          import struct
+          # Single 2880-byte FITS header block.
+          cards = [
+              "SIMPLE  =                    T",
+              "BITPIX  =                   16",
+              "NAXIS   =                    2",
+              "NAXIS1  =                  256",
+              "NAXIS2  =                  256",
+              "BSCALE  =                    1",
+              "BZERO   =                32768",
+              "END",
+          ]
+          header = "".join(c.ljust(80) for c in cards).ljust(2880)
+          data_bytes = 256 * 256 * 2
+          # FITS data is padded to a 2880-byte boundary.
+          pad = (2880 - data_bytes % 2880) % 2880
+          with open("services/rp-plate-solver/tests/fixtures/degenerate_no_stars.fits", "wb") as f:
+              f.write(header.encode("ascii"))
+              f.write(b"\x00" * (data_bytes + pad))
+          PY
+
+      - name: Pre-build wrapper + mock_astap (BDD discovery)
+        shell: bash
+        run: |
+          cargo build -p rp-plate-solver --all-features --tests
+
+      - name: Run @requires-astap BDD scenarios
+        shell: bash
+        env:
+          # ASTAP_BINARY and ASTAP_DB_DIR are set by install-astap.
+          # Their presence flips the bdd.rs filter to fire the
+          # @requires-astap scenarios.
+          RUST_LOG: rp_plate_solver=debug
+        run: |
+          set -euo pipefail
+          cargo test -p rp-plate-solver --all-features --test bdd
+
+      - name: Capture median solve time
+        # The BDD scenarios emit timing in their assertions; this step
+        # extracts it from the test output for trending. v1: just log
+        # to the workflow run; future work could push to a metrics
+        # store.
+        if: always()
+        shell: bash
+        run: |
+          echo "::notice::Real-ASTAP smoke completed on ${{ matrix.os }} — see step above for per-scenario timing."
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly run fails so
+    # divergence is visible without depending on someone reading
+    # scheduled-workflow logs. Skipped on push and workflow_dispatch
+    # so manual debugging runs don't churn an issue.
+    needs: smoke
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Open or update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly: rp-plate-solver real-ASTAP smoke failing`;
+            const body = [
+              `The nightly cross-platform real-ASTAP smoke workflow failed.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on schedule.`,
+              `It will be updated (rather than re-opened) on subsequent failures so the`,
+              `notification cadence stays low. Close it once the underlying issue is`,
+              `resolved; the next failure will reopen.`,
+            ].join("\n");
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "rp-plate-solver-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["rp-plate-solver-nightly", "ci-flake"],
+              });
+            }

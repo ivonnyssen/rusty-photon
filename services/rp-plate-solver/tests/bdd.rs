@@ -57,7 +57,17 @@ bdd_infra::bdd_main! {
             let unix_only = feat.tags.iter().any(|t| t == "unix" || t == "@unix")
                 || sc.tags.iter().any(|t| t == "unix" || t == "@unix");
             let is_unix = cfg!(unix);
-            !is_wip && (!needs_astap || astap_available) && (!unix_only || is_unix)
+            // `@manual` gates scenarios that need an external fixture
+            // not committed to the repo (e.g., a real ASTAP-solvable
+            // m31 FITS). Run them by setting `RUN_MANUAL_BDD=1` and
+            // staging the fixture into `tests/fixtures/`.
+            let is_manual = feat.tags.iter().any(|t| t == "manual" || t == "@manual")
+                || sc.tags.iter().any(|t| t == "manual" || t == "@manual");
+            let manual_enabled = std::env::var("RUN_MANUAL_BDD").is_ok();
+            !is_wip
+                && (!needs_astap || astap_available)
+                && (!unix_only || is_unix)
+                && (!is_manual || manual_enabled)
         })
         .await;
 }

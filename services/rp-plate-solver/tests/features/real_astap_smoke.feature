@@ -14,7 +14,17 @@ Feature: Real-ASTAP smoke (mock-honesty backstop)
   feature files'. The `@requires-astap` tag stays — it's the permanent
   cadence gate.
 
+  @manual
   Scenario: Real ASTAP solves the m31 fixture within tolerance
+    # Tagged @manual because the m31_known.fits fixture (a real
+    # ASTAP-solvable star field) is not committed to the repo —
+    # generating one synthetically is hard (ASTAP needs real star
+    # positions) and committing a multi-MB binary doesn't fit. The
+    # scenario stays in the feature file as a documented contract;
+    # the bdd.rs filter excludes @manual unless RUN_MANUAL_BDD=1 is
+    # set. Hint-plumbing and timing data come from Phase 7's perf
+    # comparison, which an operator runs against their own real
+    # FITS.
     Given the wrapper is running with the real ASTAP_BINARY as its solver
     And the m31_known.fits fixture is on disk
     When I POST to /api/v1/solve with that fits_path
