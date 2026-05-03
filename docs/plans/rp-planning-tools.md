@@ -168,7 +168,7 @@ purely how the operations are projected onto the MCP catalog:
 | `resolve_target {name}` | ICRS RA/Dec, object type, magnitude (catalog) |
 | `compute_alt_az {ra, dec, time?}` | altitude, azimuth |
 | `compute_transit {ra, dec, date}` | UT of upper transit |
-| `compute_horizon_events {ra, dec, date, min_alt_degrees}` | rise/set times |
+| `compute_rise_set {ra, dec, date, min_alt_degrees}` | rise/set times |
 | `compute_meridian_flip {ra, dec, time, side_of_pier}` | time-to-flip |
 | `get_sun_position {time?}` | RA/Dec, alt/az |
 | `get_twilight {date, kind}` | civil/nautical/astronomical begin/end |
@@ -180,7 +180,7 @@ purely how the operations are projected onto the MCP catalog:
 
 | Tool | Existing in `rp.md` |
 |------|---------------------|
-| `get_target_status {name}` | Yes — finally implementable |
+| `get_target_status {target_name}` | Yes — finally implementable (parameter name matches the existing `rp.md` §"Dynamic Planner" table) |
 | `get_next_target` | Yes — finally implementable |
 | `get_meridian_status` | Yes |
 | `record_exposure`, `get_session_progress` | Yes — orthogonal to ephemeris |
@@ -594,7 +594,7 @@ Status: **not started.**
       `get_target_status`, `get_next_target`, `get_meridian_status`.
 - [ ] `services/rp/src/mcp.rs` — register the three.
 - [ ] `services/rp/tests/features/planner.feature` — scenarios:
-      - `get_target_status {name: "M41"}` mid-evening → returns
+      - `get_target_status {target_name: "M41"}` mid-evening → returns
         positive altitude, transit time in the future, finite
         time-to-set.
       - Same call near dawn → altitude negative or below
