@@ -56,20 +56,35 @@ rp-plate-solver --config /etc/rp-plate-solver/config.json
 ```
 
 The wrapper prints `bound_addr=<host>:<port>` to stdout once it has
-bound its listener (so test harnesses and process supervisors can
-discover the actual port when `port: 0` is used). Logs go to stderr
-via `tracing-subscriber`; set `RUST_LOG=debug` for verbose output.
+bound its listener. Test harnesses and wrapper scripts parse this to
+discover the bound port when `port: 0` is configured; production
+deployments should pin a fixed port so reverse proxies, firewall
+rules, and rp's `plate_solver.url` config remain stable. Logs go to
+stderr via `tracing-subscriber`; set `RUST_LOG=debug` for verbose
+output.
 
 Graceful shutdown: SIGTERM and SIGINT on Unix, Ctrl-C on Windows.
 
 ## Process-supervisor recipes
 
 Phase 5 documents the operator's recovery mechanism: an OS-level
-process supervisor that restarts the wrapper on crash or hang. Today
-this is the canonical answer — automated Sentinel-driven restart of
-rp-managed services is forward work and is **not** wired into the
-current Sentinel design (see [Sentinel integration](#sentinel-integration)
+process supervisor that restarts the wrapper on **crash / non-zero
+exit**. Today this is the canonical answer — automated Sentinel-driven
+restart of rp-managed services is forward work and is **not** wired
+into the current Sentinel design (see [Sentinel integration](#sentinel-integration)
 below).
+
+> **Hang recovery is *not* covered by these recipes.** systemd
+> `Restart=on-failure`, launchd `KeepAlive`, and NSSM's auto-restart
+> all fire on process exit, not on a hung-but-still-alive wrapper.
+> A wedged wrapper that's still bound to its port will keep the
+> supervisor happy. Hangs would need an external `/health`-polling
+> watchdog (Prometheus blackbox exporter, Nagios, a small cron-driven
+> probe) that kills the wrapper when `/health` stops returning 200 —
+> tracked as forward work under [Sentinel integration](#sentinel-integration)
+> below. The wrapper does not hang waiting for `astap_cli`: every
+> request is bounded by a wall-clock deadline that escalates to
+> SIGKILL / TerminateProcess after a 2-second grace.
 
 ### Linux / systemd
 
@@ -98,6 +113,11 @@ Tail logs:     `journalctl -u rp-plate-solver -f`.
 
 ### macOS / launchd
 
+This recipe uses a **per-user LaunchAgent**. For a system-wide
+LaunchDaemon (root context, recommended for headless observatory
+machines), put the plist in `/Library/LaunchDaemons` instead and
+swap the log paths to `/var/log/rp-plate-solver.{out,err}.log`.
+
 `~/Library/LaunchAgents/com.rusty-photon.rp-plate-solver.plist`:
 
 ```xml
@@ -114,26 +134,38 @@ Tail logs:     `journalctl -u rp-plate-solver -f`.
     <string>/etc/rp-plate-solver/config.json</string>
   </array>
   <key>KeepAlive</key>       <true/>
-  <key>StandardOutPath</key> <string>/var/log/rp-plate-solver.out.log</string>
-  <key>StandardErrorPath</key><string>/var/log/rp-plate-solver.err.log</string>
+  <key>StandardOutPath</key> <string>/Users/<USER>/Library/Logs/rp-plate-solver.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/<USER>/Library/Logs/rp-plate-solver.err.log</string>
 </dict>
 </plist>
 ```
 
+(Replace `<USER>` with the actual home directory — plist values
+don't expand `~` or `$HOME`.)
+
 Restart command: `launchctl kickstart -k gui/$(id -u)/com.rusty-photon.rp-plate-solver`.
+Tail logs:        `tail -f ~/Library/Logs/rp-plate-solver.err.log`.
 
 ### Windows / NSSM
 
-[NSSM](https://nssm.cc/) wraps a Win32 binary as a Windows service:
+[NSSM](https://nssm.cc/) wraps a Win32 binary as a Windows service.
+By default NSSM doesn't redirect stdout / stderr, so the install
+recipe also sets `AppStdout` / `AppStderr` and enables NSSM's
+built-in log rotation:
 
 ```cmd
 nssm install rp-plate-solver "C:\Program Files\rp-plate-solver\rp-plate-solver.exe"
 nssm set     rp-plate-solver AppParameters "--config C:\ProgramData\rp-plate-solver\config.json"
 nssm set     rp-plate-solver AppRestartDelay 2000
+nssm set     rp-plate-solver AppStdout "C:\ProgramData\rp-plate-solver\stdout.log"
+nssm set     rp-plate-solver AppStderr "C:\ProgramData\rp-plate-solver\stderr.log"
+nssm set     rp-plate-solver AppRotateFiles 1
+nssm set     rp-plate-solver AppRotateBytes 10485760
 nssm start   rp-plate-solver
 ```
 
 Restart command: `nssm restart rp-plate-solver`.
+Tail logs (PowerShell): `Get-Content -Wait C:\ProgramData\rp-plate-solver\stderr.log`.
 
 ## Sentinel integration
 
