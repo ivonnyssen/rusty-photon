@@ -1,0 +1,890 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>rp — observatory instrument panel</title>
+<style>
+  /* ── design tokens ────────────────────────────────────────────────── */
+  :root {
+    /* warm dark palette — observatory instrument, not blue slate */
+    --bg:           #0b0907;
+    --bg-deep:      #050403;
+    --surface:      #14110d;
+    --surface-2:    #1c1813;
+    --edge:         #2a241c;
+    --edge-soft:    #1f1c16;
+    --edge-strong:  #3d3528;
+
+    --text:         #f4ede0;
+    --text-soft:    #c8bfae;
+    --dim:          #8a8071;
+    --dim-soft:     #5c5447;
+
+    /* accents — one cyan-green for "live", warm amber + coral for warn/bad */
+    --live:         #80e6c4;   /* retro cyan-green */
+    --live-glow:    rgba(128, 230, 196, .55);
+    --warn:         #e8a85c;   /* refined amber */
+    --bad:          #e0775c;   /* warm coral */
+    --armed:        #d68d3a;   /* deeper amber for the top bar */
+
+    --ra:           #ff8a6a;
+    --dec:          #88c0e0;
+    --hfr:          #c89cea;
+
+    /* spacing scale (4px base) */
+    --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+    --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+
+    /* type scale */
+    --fs-xs: 10.5px;
+    --fs-sm: 12px;
+    --fs-base: 13.5px;
+    --fs-md: 15px;
+    --fs-lg: 17px;
+    --fs-xl: 22px;
+    --fs-2xl: 32px;
+
+    /* fonts — system distinctive */
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino,
+             "URW Palladio L", "Book Antiqua", Georgia, serif;
+    --sans:  ui-sans-serif, -apple-system, "Helvetica Neue",
+             "Segoe UI", Tahoma, sans-serif;
+    --mono:  ui-monospace, "SF Mono", "Cascadia Code", Menlo,
+             Consolas, monospace;
+  }
+
+  /* ── reset ────────────────────────────────────────────────────────── */
+  *,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+  html,body { min-height:100%; background:var(--bg); color:var(--text);
+    font-family:var(--sans); font-size:var(--fs-base); line-height:1.45;
+    font-feature-settings:"ss01","cv11"; -webkit-font-smoothing:antialiased }
+  button, a, label { font:inherit; color:inherit; background:none;
+    border:0; cursor:pointer; text-decoration:none }
+  input { font:inherit; color:inherit }
+  ol,ul { list-style:none }
+
+  .mono { font-family:var(--mono); font-feature-settings:"tnum","zero" }
+  .serif { font-family:var(--serif); letter-spacing:-0.005em }
+
+  /* ── grain overlay (subtle film grain over the whole page) ─────── */
+  .grain { position:fixed; inset:0; pointer-events:none; z-index:1000;
+    opacity:.5; mix-blend-mode:overlay }
+
+  /* ── armed bar (signals "session live" — top 2px of page) ───────── */
+  .armed-bar { position:sticky; top:0; z-index:40; height:2px;
+    background:linear-gradient(90deg,
+      transparent 0%, var(--armed) 8%, var(--armed) 92%, transparent 100%);
+    box-shadow:0 0 12px 0 rgba(214,141,58,.5) }
+
+  /* ── nav ──────────────────────────────────────────────────────────── */
+  nav { height:54px; padding:0 var(--s-6);
+    display:flex; align-items:center; gap:var(--s-5);
+    background:var(--bg);
+    border-bottom:1px solid var(--edge);
+    position:sticky; top:2px; z-index:30 }
+
+  .brand { display:flex; align-items:baseline; gap:10px }
+  .brand-mark {
+    width:22px; height:22px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #f5e7c8 0%, #d68d3a 30%, #6e3a18 70%, #1c0e06 100%);
+    box-shadow:0 0 0 1px rgba(214,141,58,.3), 0 0 14px rgba(214,141,58,.15);
+    align-self:center;
+  }
+  .brand-name {
+    font-family:var(--serif); font-size:18px; font-weight:600;
+    letter-spacing:-0.015em;
+  }
+  .brand-name em { font-style:italic; color:var(--text-soft); font-weight:400 }
+
+  .nav-tabs { display:flex; gap:2px; margin-left:var(--s-3); font-size:var(--fs-sm) }
+  .nav-tabs a { padding:7px 12px; border-radius:3px; color:var(--dim);
+    transition:color .15s, background .15s }
+  .nav-tabs a:hover { color:var(--text) }
+  .nav-tabs a.active { color:var(--text); background:rgba(255,255,255,.04);
+    box-shadow:inset 0 -1px 0 var(--text) }
+
+  .grow { flex:1 }
+
+  /* night-vision toggle */
+  .night-toggle { display:flex; align-items:center; gap:var(--s-2);
+    padding:6px 12px; font-size:var(--fs-sm); color:var(--dim);
+    border:1px solid var(--edge); border-radius:3px;
+    user-select:none; cursor:pointer; transition:color .15s, border-color .15s }
+  .night-toggle:hover { color:var(--text); border-color:var(--edge-strong) }
+  .night-toggle .nv-icon { font-size:14px; line-height:1; opacity:.75 }
+  .night-toggle .nv-dot { width:7px; height:7px; border-radius:50%;
+    background:#3a3328; box-shadow:inset 0 0 0 1px #4a4234 }
+  .night-toggle:has(input:checked) { color:var(--text); border-color:var(--text) }
+  .night-toggle:has(input:checked) .nv-icon { opacity:1 }
+  .night-toggle:has(input:checked) .nv-dot {
+    background:#fff; box-shadow:0 0 8px 1px rgba(255,255,255,.6) }
+
+  .avatar { width:30px; height:30px; border-radius:50%;
+    background:#3a2818; color:var(--text-soft);
+    display:grid; place-items:center;
+    font-family:var(--serif); font-size:13px; font-weight:600;
+    letter-spacing:0.02em; border:1px solid var(--edge-strong) }
+
+  /* ── live telemetry strip (always visible, sticky) ────────────── */
+  .fold-state { display:none }
+
+  .fold-strip {
+    position:sticky; top:56px; z-index:20;
+    background:var(--bg);
+    border-bottom:1px solid var(--edge);
+    height:46px; padding:0 var(--s-6);
+    display:flex; align-items:center; gap:var(--s-5);
+    font-size:var(--fs-sm); cursor:pointer;
+    transition:background .2s }
+  .fold-strip::after { content:""; position:absolute; left:0; right:0; bottom:-1px;
+    height:1px; background:linear-gradient(90deg,
+      transparent, var(--live-glow) 50%, transparent); opacity:.4 }
+  .fold-strip:hover { background:var(--surface) }
+
+  .strip-pulse { width:8px; height:8px; border-radius:50%;
+    background:var(--live);
+    box-shadow:0 0 0 2px rgba(128,230,196,.18), 0 0 14px var(--live-glow);
+    animation:heartbeat 1.6s ease-in-out infinite; flex:none }
+  @keyframes heartbeat {
+    0%, 100% { transform:scale(1); box-shadow:0 0 0 2px rgba(128,230,196,.18), 0 0 14px var(--live-glow) }
+    50%      { transform:scale(1.15); box-shadow:0 0 0 3px rgba(128,230,196,.25), 0 0 22px var(--live-glow) }
+  }
+
+  .strip-target { font-family:var(--serif); font-size:14px; font-weight:600;
+    letter-spacing:-0.005em; color:var(--text) }
+  .strip-target em { color:var(--dim); font-style:normal;
+    font-family:var(--mono); font-size:var(--fs-sm); margin-left:6px;
+    font-weight:400 }
+
+  .sep { width:1px; height:14px; background:var(--edge-strong); flex:none }
+
+  .stat { display:flex; align-items:center; gap:6px; color:var(--dim);
+    font-size:var(--fs-sm) }
+  .stat .lbl-ra  { color:var(--ra);  font-weight:500; letter-spacing:0.02em }
+  .stat .lbl-dec { color:var(--dec); font-weight:500; letter-spacing:0.02em }
+  .stat .v { color:var(--text); font-family:var(--mono); font-size:12px }
+  .stat .v.warn { color:var(--warn) }
+  .stat .v.live { color:var(--live) }
+
+  .mini { width:78px; height:22px; flex:none }
+
+  .strip-eta { color:var(--dim); font-family:var(--mono); font-size:var(--fs-sm) }
+  .strip-eta b { color:var(--text); font-weight:500 }
+
+  .fold-toggle { display:flex; align-items:center; gap:6px;
+    padding:5px 10px; border:1px solid var(--edge);
+    border-radius:3px; font-size:var(--fs-xs); color:var(--dim);
+    text-transform:uppercase; letter-spacing:0.08em;
+    transition:color .15s, border-color .15s }
+  .fold-toggle:hover { color:var(--text); border-color:var(--edge-strong) }
+  .fold-toggle .chev { display:inline-block;
+    transition:transform 360ms cubic-bezier(.4,0,.2,1); line-height:1 }
+  .fold-state:checked ~ .fold-strip .fold-toggle .chev { transform:rotate(180deg) }
+  .fold-state:checked ~ .fold-strip .fold-toggle .lbl::before { content:"Collapse" }
+  .fold-state:not(:checked) ~ .fold-strip .fold-toggle .lbl::before { content:"Expand" }
+
+  /* ── fold panel (animated full-width drop-down) ──────────────────── */
+  .fold-body {
+    display:grid; grid-template-rows:0fr;
+    transition:grid-template-rows 360ms cubic-bezier(.4,0,.2,1) }
+  .fold-body > .panel {
+    min-height:0; overflow:hidden; opacity:0;
+    transition:opacity 240ms ease }
+  .fold-state:checked ~ .fold-body { grid-template-rows:1fr }
+  .fold-state:checked ~ .fold-body > .panel {
+    opacity:1; transition-delay:80ms }
+
+  .panel { background:var(--bg);
+    border-bottom:1px solid var(--edge);
+    padding:var(--s-5) var(--s-6) var(--s-6) }
+  .panel-head { padding:0 0 var(--s-4); display:flex;
+    align-items:baseline; gap:var(--s-3) }
+  .panel-head .num { font-family:var(--serif); font-size:11px;
+    font-style:italic; color:var(--dim); margin-right:6px }
+  .panel-head .title { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.16em; color:var(--text-soft); font-weight:500 }
+  .panel-head .meta { color:var(--dim); font-family:var(--mono);
+    font-size:var(--fs-sm) }
+  .panel-head .rule { flex:1; height:1px; background:var(--edge);
+    margin-left:var(--s-3); align-self:center }
+
+  .panel-grid { display:grid; grid-template-columns:1fr 296px;
+    gap:var(--s-4) }
+
+  /* ── card primitive (with reticle corners) ──────────────────────── */
+  .card { background:var(--surface);
+    border:1px solid var(--edge);
+    position:relative;
+    display:flex; flex-direction:column }
+  .card::before, .card::after {
+    content:""; position:absolute; width:8px; height:8px;
+    border-color:var(--edge-strong); pointer-events:none }
+  .card::before { top:-1px; left:-1px;
+    border-top:1px solid; border-left:1px solid;
+    border-top-color:var(--text-soft); border-left-color:var(--text-soft);
+    opacity:.35 }
+  .card::after { bottom:-1px; right:-1px;
+    border-bottom:1px solid; border-right:1px solid;
+    border-bottom-color:var(--text-soft); border-right-color:var(--text-soft);
+    opacity:.35 }
+
+  /* ── guider card ─────────────────────────────────────────────────── */
+  .guider-head { padding:var(--s-3) var(--s-4); display:flex;
+    align-items:center; gap:var(--s-3); flex-wrap:wrap;
+    border-bottom:1px solid var(--edge) }
+  .guider-head .label { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.14em; color:var(--text-soft); font-weight:500 }
+  .guider-head .sub { font-family:var(--mono); font-size:var(--fs-sm);
+    color:var(--dim) }
+  .guider-head .gstats { display:flex; gap:var(--s-4); margin-left:auto;
+    font-size:var(--fs-sm); color:var(--dim) }
+  .gstat { display:flex; align-items:baseline; gap:6px }
+  .gstat .swatch { width:14px; height:2px; align-self:center }
+  .gstat.ra .swatch { background:var(--ra) }
+  .gstat.dec .swatch { background:var(--dec) }
+  .gstat .v { font-family:var(--mono); color:var(--text);
+    font-size:13px; font-weight:500 }
+  .gstat.total { padding-left:var(--s-4); border-left:1px solid var(--edge);
+    color:var(--text) }
+  .gstat.total .v { color:var(--live); font-size:14px }
+
+  .graph-body { padding:var(--s-3); height:248px }
+  .graph-body svg { display:block; width:100%; height:100% }
+
+  /* ── trend chart row ─────────────────────────────────────────────── */
+  .charts-row { margin-top:var(--s-4); display:grid;
+    grid-template-columns:repeat(4,1fr); gap:var(--s-4) }
+  .chart-card { padding:0 }
+  .chart-head { padding:var(--s-3) var(--s-4) 4px; display:flex;
+    align-items:baseline; gap:var(--s-2) }
+  .chart-head .k { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.12em; color:var(--text-soft); font-weight:500 }
+  .chart-head .v { font-family:var(--mono); font-size:var(--fs-lg);
+    font-weight:500; margin-left:auto; color:var(--text) }
+  .chart-head .v.warn { color:var(--warn) }
+  .chart-head .v.live { color:var(--live) }
+  .chart-head .d { font-family:var(--mono); font-size:var(--fs-xs);
+    color:var(--dim) }
+  .chart-head .d.warn { color:var(--warn) }
+  .chart-head .d.live { color:var(--live) }
+  .chart-body { padding:0 var(--s-3) var(--s-3); height:88px }
+  .chart-body svg { display:block; width:100%; height:100% }
+
+  /* ── side column: equipment + stages ─────────────────────────────── */
+  .side-card { display:flex; flex-direction:column }
+  .side-section { padding:var(--s-4) }
+  .side-section + .side-section { border-top:1px solid var(--edge) }
+  .side-section h3 { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.14em; color:var(--text-soft); font-weight:500;
+    margin-bottom:var(--s-3); display:flex; align-items:center; gap:8px }
+  .side-section h3::after { content:""; flex:1; height:1px; background:var(--edge) }
+
+  .equip-list { display:flex; flex-direction:column; gap:var(--s-2) }
+  .equip-list li { display:flex; align-items:center; gap:var(--s-2);
+    font-size:var(--fs-sm) }
+  .led { width:8px; height:8px; border-radius:50%; flex:none;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.3) }
+  .led.live { background:var(--live); box-shadow:0 0 6px var(--live-glow) }
+  .led.warn { background:var(--warn) }
+  .led.bad  { background:var(--bad) }
+  .equip-list li .v { color:var(--dim); margin-left:auto;
+    font-family:var(--mono); font-size:var(--fs-xs) }
+
+  .stages-list { display:flex; flex-direction:column; gap:8px;
+    font-size:var(--fs-sm) }
+  .stages-list li { display:flex; align-items:center; gap:var(--s-2) }
+  .stages-list .step { width:14px; height:14px; flex:none;
+    display:grid; place-items:center; font-size:8px; border-radius:50% }
+  .stages-list .step.done { background:var(--live); color:#0a0907 }
+  .stages-list .step.live { background:transparent;
+    border:1px solid var(--live); position:relative }
+  .stages-list .step.live::after { content:""; position:absolute;
+    inset:3px; border-radius:50%; background:var(--live);
+    animation:heartbeat 1.6s ease-in-out infinite }
+  .stages-list .step.pending { background:transparent;
+    border:1px dashed var(--edge-strong) }
+  .stages-list li.muted { color:var(--dim) }
+  .stages-list .right { margin-left:auto; font-family:var(--mono);
+    font-size:var(--fs-xs); color:var(--dim) }
+  .stages-list strong { font-weight:500; color:var(--text) }
+
+  /* ── main stream content ─────────────────────────────────────────── */
+  main { max-width:840px; margin:0 auto;
+    padding:var(--s-10) var(--s-6) var(--s-10);
+    display:flex; flex-direction:column; gap:var(--s-6) }
+
+  /* section markers (editorial numbering) */
+  .section-marker { display:flex; align-items:baseline; gap:var(--s-3);
+    margin-bottom:var(--s-3) }
+  .section-marker .num { font-family:var(--serif); font-style:italic;
+    font-size:11px; color:var(--dim); font-weight:400 }
+  .section-marker .label { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.16em; color:var(--text-soft); font-weight:500 }
+  .section-marker .meta { font-family:var(--mono); font-size:var(--fs-xs);
+    color:var(--dim); margin-left:auto }
+  .section-marker .rule { flex:1; height:1px; background:var(--edge);
+    align-self:center }
+
+  /* hero card */
+  .hero { background:var(--surface);
+    border:1px solid var(--edge);
+    padding:var(--s-6); position:relative }
+  .hero::before, .hero::after {
+    content:""; position:absolute; width:10px; height:10px;
+    border-color:var(--text-soft); pointer-events:none; opacity:.35 }
+  .hero::before { top:-1px; left:-1px;
+    border-top:1px solid; border-left:1px solid }
+  .hero::after { bottom:-1px; right:-1px;
+    border-bottom:1px solid; border-right:1px solid }
+
+  .hero-row { display:flex; align-items:flex-start; gap:var(--s-6) }
+
+  .ring { position:relative; width:96px; height:96px; flex:none }
+  .ring svg { width:100%; height:100%; transform:rotate(-90deg) }
+  .ring .center { position:absolute; inset:0; display:grid;
+    place-items:center; text-align:center }
+  .ring .pct { font-family:var(--serif); font-size:24px; font-weight:600;
+    color:var(--text); letter-spacing:-0.02em }
+  .ring .cap { font-size:9px; text-transform:uppercase;
+    color:var(--dim); letter-spacing:0.18em; margin-top:1px }
+
+  .hero-body { flex:1; min-width:0 }
+  .hero-eyebrow { display:flex; align-items:center; gap:var(--s-2) }
+  .hero-eyebrow .label { font-size:var(--fs-xs); text-transform:uppercase;
+    letter-spacing:0.14em; color:var(--live); font-weight:500;
+    display:flex; align-items:center; gap:8px }
+  .hero-eyebrow .label::before { content:""; width:6px; height:6px;
+    border-radius:50%; background:var(--live);
+    box-shadow:0 0 8px var(--live-glow);
+    animation:heartbeat 1.6s ease-in-out infinite }
+  .hero-eyebrow .meta { color:var(--dim); font-family:var(--mono);
+    font-size:var(--fs-sm); margin-left:8px }
+
+  .hero h1 { font-family:var(--serif); font-size:var(--fs-2xl);
+    font-weight:600; line-height:1.1; margin-top:6px;
+    letter-spacing:-0.02em }
+  .hero h1 em { font-style:italic; color:var(--text-soft); font-weight:400 }
+  .hero .sub { font-size:var(--fs-sm); color:var(--dim); margin-top:6px;
+    font-family:var(--mono) }
+
+  .chips { margin-top:var(--s-4); display:flex; flex-wrap:wrap;
+    gap:6px; font-size:var(--fs-xs) }
+  .chip { padding:3px 9px; border-radius:2px; font-family:var(--mono);
+    text-transform:uppercase; letter-spacing:0.08em;
+    color:var(--dim); border:1px solid var(--edge);
+    display:flex; align-items:center; gap:6px }
+  .chip.done { color:var(--text-soft); border-color:var(--edge-strong) }
+  .chip.done::before { content:"✓"; color:var(--live) }
+  .chip.live { color:var(--live); border-color:var(--live);
+    background:rgba(128,230,196,.06) }
+  .chip.live::before { content:""; width:5px; height:5px; border-radius:50%;
+    background:var(--live); box-shadow:0 0 6px var(--live-glow);
+    animation:heartbeat 1.6s ease-in-out infinite }
+
+  .hero-buttons { display:flex; flex-direction:column; gap:6px; flex:none }
+  .btn { font-size:var(--fs-xs); padding:6px 14px; border-radius:2px;
+    border:1px solid var(--edge-strong);
+    color:var(--text-soft);
+    text-transform:uppercase; letter-spacing:0.1em; font-family:var(--mono);
+    transition:color .15s, border-color .15s, background .15s }
+  .btn:hover { color:var(--text); border-color:var(--text) }
+  .btn.danger { color:var(--bad); border-color:rgba(224,119,92,.4) }
+  .btn.danger:hover { color:var(--bad); border-color:var(--bad);
+    background:rgba(224,119,92,.06) }
+
+  /* frame card */
+  .frame-card { background:var(--surface); border:1px solid var(--edge);
+    overflow:hidden; position:relative }
+  .frame-card::before, .frame-card::after {
+    content:""; position:absolute; width:10px; height:10px;
+    border-color:var(--text-soft); pointer-events:none; opacity:.35; z-index:2 }
+  .frame-card::before { top:-1px; left:-1px;
+    border-top:1px solid; border-left:1px solid }
+  .frame-card::after { bottom:-1px; right:-1px;
+    border-bottom:1px solid; border-right:1px solid }
+  .frame-head { height:46px; padding:0 var(--s-5);
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--edge); font-size:var(--fs-sm) }
+  .frame-head .left { display:flex; align-items:center; gap:var(--s-2) }
+  .frame-head .name { font-family:var(--serif); font-size:14px;
+    font-weight:600; letter-spacing:-0.005em }
+  .frame-head .meta { color:var(--dim); font-family:var(--mono);
+    font-size:var(--fs-sm); margin-left:var(--s-2) }
+  .frame-head .right { color:var(--dim); display:flex; gap:var(--s-2);
+    font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:0.1em }
+  .frame-head .right button:hover { color:var(--text) }
+  .frame-image { background:#000; position:relative; aspect-ratio:16/9 }
+  .frame-image svg { position:absolute; inset:0; width:100%; height:100% }
+  .frame-image .ovl { position:absolute; bottom:14px; left:14px;
+    font-family:var(--mono); font-size:11px;
+    color:var(--text-soft); background:rgba(11,9,7,.7);
+    padding:5px 10px; border:1px solid var(--edge);
+    backdrop-filter:blur(4px) }
+
+  /* past sessions timeline */
+  .timeline { position:relative; padding-left:32px;
+    display:flex; flex-direction:column; gap:var(--s-3) }
+  .timeline::before { content:""; position:absolute; left:11px; top:6px;
+    bottom:6px; width:1px; background:var(--edge) }
+
+  .tl-item { background:var(--surface); border:1px solid var(--edge);
+    position:relative }
+  .dot { position:absolute; left:-25px; top:14px; width:10px; height:10px;
+    border-radius:50%; background:var(--bg-deep);
+    border:1px solid var(--dim); box-shadow:0 0 0 3px var(--bg) }
+  .dot.done::after { content:""; position:absolute; inset:2px;
+    border-radius:50%; background:var(--text-soft) }
+  .dot.warn { border-color:var(--warn) }
+  .dot.warn::after { content:""; position:absolute; inset:2px;
+    border-radius:50%; background:var(--warn) }
+  .dot.bad { border-color:var(--bad) }
+  .dot.bad::after { content:""; position:absolute; inset:2px;
+    border-radius:50%; background:var(--bad) }
+
+  details > summary { list-style:none; cursor:pointer }
+  details > summary::-webkit-details-marker { display:none }
+  details[open] .chev { transform:rotate(90deg) }
+  .chev { transition:transform .2s; color:var(--dim);
+    display:inline-block; width:12px }
+
+  .tl-summary { padding:var(--s-3) var(--s-4); display:flex;
+    align-items:center; gap:var(--s-3); transition:background .15s }
+  .tl-summary:hover { background:var(--surface-2) }
+  .tl-summary .body { flex:1; min-width:0 }
+  .tl-summary .title-row { display:flex; align-items:baseline; gap:var(--s-2) }
+  .tl-summary .name { font-family:var(--serif); font-size:15px;
+    font-weight:600; letter-spacing:-0.005em }
+  .tl-summary .name em { font-style:italic; color:var(--text-soft);
+    font-weight:400 }
+  .tl-summary .when { font-family:var(--mono); font-size:var(--fs-xs);
+    color:var(--dim) }
+  .tl-summary .desc { font-family:var(--mono); font-size:var(--fs-xs);
+    color:var(--dim); margin-top:3px }
+  .tl-pill { font-family:var(--mono); font-size:var(--fs-xs);
+    padding:3px 9px; border-radius:2px; flex:none;
+    text-transform:uppercase; letter-spacing:0.08em }
+  .tl-pill.ok   { color:var(--live);  border:1px solid rgba(128,230,196,.3) }
+  .tl-pill.warn { color:var(--warn);  border:1px solid rgba(232,168,92,.3) }
+  .tl-pill.bad  { color:var(--bad);   border:1px solid rgba(224,119,92,.3) }
+
+  /* night-vision: single page-level filter, monochromatic red */
+  body:has(#night-vision:checked) {
+    filter: grayscale(1) sepia(1) hue-rotate(-50deg) saturate(7) brightness(0.7);
+  }
+</style>
+</head>
+<body>
+
+<!-- subtle film grain over everything -->
+<svg class="grain" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+  <filter id="noise">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch"/>
+    <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.06 0"/>
+  </filter>
+  <rect width="100%" height="100%" filter="url(#noise)"/>
+</svg>
+
+<!-- 2px amber bar — system armed indicator -->
+<div class="armed-bar"></div>
+
+<nav>
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <span class="brand-name">rusty <em>photon</em></span>
+  </div>
+  <div class="nav-tabs">
+    <a class="active">Activity</a>
+    <a>Equipment</a>
+    <a>Plans</a>
+    <a>Logs</a>
+    <a>Settings</a>
+  </div>
+  <div class="grow"></div>
+  <label class="night-toggle" title="Toggle red night-vision mode">
+    <input type="checkbox" id="night-vision" hidden>
+    <span class="nv-icon">☾</span>
+    <span class="nv-lbl">Night vision</span>
+    <span class="nv-dot"></span>
+  </label>
+  <div class="avatar">IV</div>
+</nav>
+
+<!-- live telemetry strip + foldable panel -->
+<input type="checkbox" id="fold-state" class="fold-state" hidden>
+<label for="fold-state" class="fold-strip">
+  <span class="strip-pulse"></span>
+  <span class="strip-target">M51 <em>· L · 300s</em></span>
+  <span class="sep"></span>
+  <div class="stat">
+    <span class="lbl-ra">RA</span>
+    <svg class="mini" viewBox="0 0 200 24" preserveAspectRatio="none">
+      <line x1="0" y1="12" x2="200" y2="12" stroke="#3d3528" stroke-width=".5"/>
+      <path fill="none" stroke="#ff8a6a" stroke-width="1"
+            d="M0,12 L10,10 L20,14 L30,9 L40,15 L50,11 L60,16 L70,8 L80,11 L90,15 L100,9 L110,17 L120,11 L130,10 L140,16 L150,7 L160,14 L170,11 L180,17 L190,9 L200,12"/>
+    </svg>
+    <span class="v">0.42″</span>
+  </div>
+  <div class="stat">
+    <span class="lbl-dec">Dec</span>
+    <svg class="mini" viewBox="0 0 200 24" preserveAspectRatio="none">
+      <line x1="0" y1="12" x2="200" y2="12" stroke="#3d3528" stroke-width=".5"/>
+      <path fill="none" stroke="#88c0e0" stroke-width="1"
+            d="M0,12 L10,11 L20,15 L30,8 L40,14 L50,10 L60,15 L70,12 L80,8 L90,16 L100,10 L110,14 L120,7 L130,15 L140,9 L150,12 L160,17 L170,10 L180,14 L190,9 L200,12"/>
+    </svg>
+    <span class="v">0.51″</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stat">HFR <span class="v warn">1.84″</span></div>
+  <div class="stat">CCD <span class="v live">−10.0°</span></div>
+  <div class="stat">Sky <span class="v warn">20.8</span></div>
+  <span class="grow"></span>
+  <span class="strip-eta">finish <b>01:42</b></span>
+  <span class="fold-toggle"><span class="lbl"></span><span class="chev">▾</span></span>
+</label>
+
+<div class="fold-body">
+  <div class="panel">
+    <div class="panel-head">
+      <span class="num">i.</span>
+      <span class="title">Live telemetry</span>
+      <span class="meta">streaming · 21:18:47 · last 5 minutes</span>
+      <span class="rule"></span>
+    </div>
+
+    <div class="panel-grid">
+      <div>
+        <!-- guider graph -->
+        <section class="card guider-card">
+          <div class="guider-head">
+            <span class="label">Guider</span>
+            <span class="sub">RA / Dec error · arcseconds · last 5 minutes</span>
+            <div class="gstats">
+              <span class="gstat ra"><span class="swatch"></span>RA <span class="v">0.42″</span></span>
+              <span class="gstat dec"><span class="swatch"></span>Dec <span class="v">0.51″</span></span>
+              <span class="gstat total">Total RMS <span class="v">0.66″</span></span>
+            </div>
+          </div>
+          <div class="graph-body">
+            <svg viewBox="0 0 600 240" preserveAspectRatio="none">
+              <!-- bands -->
+              <rect x="0" y="60"  width="600" height="120" fill="#80e6c4" fill-opacity=".035"/>
+              <rect x="0" y="90"  width="600" height="60"  fill="#80e6c4" fill-opacity=".045"/>
+              <!-- center + refs -->
+              <line x1="0" y1="120" x2="600" y2="120" stroke="#3d3528" stroke-width="1"/>
+              <line x1="0" y1="60"  x2="600" y2="60"  stroke="#2a241c" stroke-width=".5" stroke-dasharray="2,4"/>
+              <line x1="0" y1="180" x2="600" y2="180" stroke="#2a241c" stroke-width=".5" stroke-dasharray="2,4"/>
+              <line x1="0" y1="90"  x2="600" y2="90"  stroke="#2a241c" stroke-width=".5" stroke-dasharray="1,5"/>
+              <line x1="0" y1="150" x2="600" y2="150" stroke="#2a241c" stroke-width=".5" stroke-dasharray="1,5"/>
+              <!-- y labels -->
+              <text x="6" y="22"  fill="#8a8071" font-size="9.5" font-family="ui-monospace,monospace" letter-spacing="0.05em">arcsec</text>
+              <text x="6" y="64"  fill="#8a8071" font-size="9.5" font-family="ui-monospace,monospace">+1.0</text>
+              <text x="6" y="94"  fill="#5c5447" font-size="9.5" font-family="ui-monospace,monospace">+0.5</text>
+              <text x="6" y="124" fill="#8a8071" font-size="9.5" font-family="ui-monospace,monospace">0</text>
+              <text x="6" y="154" fill="#5c5447" font-size="9.5" font-family="ui-monospace,monospace">−0.5</text>
+              <text x="6" y="184" fill="#8a8071" font-size="9.5" font-family="ui-monospace,monospace">−1.0</text>
+              <!-- x markers -->
+              <text x="100" y="234" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">−4m</text>
+              <text x="200" y="234" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">−3m</text>
+              <text x="300" y="234" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">−2m</text>
+              <text x="400" y="234" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">−1m</text>
+              <text x="595" y="234" fill="#80e6c4" font-size="9" font-family="ui-monospace,monospace" text-anchor="end">now</text>
+              <!-- Dec line -->
+              <path fill="none" stroke="#88c0e0" stroke-width="1.3" stroke-linejoin="round"
+                    d="M0,120 L10,115 L20,129 L30,102 L40,124 L50,107 L60,129 L70,115 L80,102 L90,134 L100,111 L110,124 L120,98 L130,129 L140,107 L150,115 L160,138 L170,111 L180,124 L190,107 L200,115 L210,129 L220,102 L230,111 L240,124 L250,107 L260,142 L270,115 L280,102 L290,129 L300,107 L310,115 L320,124 L330,98 L340,134 L350,111 L360,102 L370,124 L380,107 L390,111 L400,134 L410,115 L420,102 L430,129 L440,107 L450,115 L460,138 L470,111 L480,107 L490,124 L500,102 L510,111 L520,129 L530,98 L540,124 L550,107 L560,115 L570,134 L580,102 L590,111"/>
+              <!-- RA line -->
+              <path fill="none" stroke="#ff8a6a" stroke-width="1.3" stroke-linejoin="round"
+                    d="M0,120 L10,111 L20,124 L30,107 L40,129 L50,115 L60,134 L70,102 L80,115 L90,129 L100,107 L110,138 L120,115 L130,111 L140,134 L150,98 L160,124 L170,111 L180,138 L190,107 L200,115 L210,129 L220,102 L230,134 L240,111 L250,124 L260,107 L270,142 L280,111 L290,115 L300,134 L310,102 L320,129 L330,115 L340,107 L350,129 L360,102 L370,124 L380,111 L390,134 L400,115 L410,98 L420,129 L430,107 L440,124 L450,111 L460,138 L470,115 L480,107 L490,129 L500,102 L510,124 L520,111 L530,107 L540,124 L550,98 L560,134 L570,111 L580,124 L590,102"/>
+              <!-- now line + dots -->
+              <line x1="595" y1="0" x2="595" y2="220" stroke="#80e6c4" stroke-width="1" stroke-opacity=".7"/>
+              <circle cx="595" cy="102" r="2.4" fill="#ff8a6a"/>
+              <circle cx="595" cy="111" r="2.4" fill="#88c0e0"/>
+            </svg>
+          </div>
+        </section>
+
+        <!-- trend charts -->
+        <div class="charts-row">
+          <section class="card chart-card">
+            <div class="chart-head">
+              <span class="k">Focus HFR</span>
+              <span class="d warn">↑ 0.06 / 30m</span>
+              <span class="v warn">1.84″</span>
+            </div>
+            <div class="chart-body">
+              <svg viewBox="0 0 200 88" preserveAspectRatio="none">
+                <line x1="0" y1="44" x2="200" y2="44" stroke="#2a241c" stroke-width=".5" stroke-dasharray="2,4"/>
+                <text x="2" y="13" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">2.4″</text>
+                <text x="2" y="83" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">1.4″</text>
+                <path fill="none" stroke="#c89cea" stroke-width="1.5" stroke-linejoin="round"
+                      d="M0,54 L11,52 L22,50 L33,48 L44,46 L55,44 L66,42 L77,39 L88,35 L99,32 L110,28
+                         M110,28 L121,66 L132,64 L143,62 L154,58 L165,56 L176,52 L187,50 L200,48"/>
+                <circle cx="200" cy="48" r="2.5" fill="#c89cea"/>
+              </svg>
+            </div>
+          </section>
+
+          <section class="card chart-card">
+            <div class="chart-head">
+              <span class="k">CCD temp</span>
+              <span class="d live">on target</span>
+              <span class="v live">−10.0°</span>
+            </div>
+            <div class="chart-body">
+              <svg viewBox="0 0 200 88" preserveAspectRatio="none">
+                <text x="2" y="13" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">−9.5°</text>
+                <text x="2" y="83" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">−10.5°</text>
+                <line x1="0" y1="44" x2="200" y2="44" stroke="#2a241c" stroke-width=".5" stroke-dasharray="2,4"/>
+                <path fill="none" stroke="#80e6c4" stroke-width="1.5"
+                      d="M0,44 L11,44 L22,42 L33,44 L44,46 L55,44 L66,44 L77,42 L88,44 L99,44 L110,46 L121,44 L132,44 L143,42 L154,44 L165,46 L176,44 L187,44 L200,44"/>
+                <circle cx="200" cy="44" r="2.5" fill="#80e6c4"/>
+              </svg>
+            </div>
+          </section>
+
+          <section class="card chart-card">
+            <div class="chart-head">
+              <span class="k">Sky brightness</span>
+              <span class="d warn">−0.6 / 1h</span>
+              <span class="v warn">20.8</span>
+            </div>
+            <div class="chart-body">
+              <svg viewBox="0 0 200 88" preserveAspectRatio="none">
+                <text x="2" y="13" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">21.5</text>
+                <text x="2" y="83" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">20.5</text>
+                <path fill="none" stroke="#e8a85c" stroke-width="1.5"
+                      d="M0,15 L11,15 L22,23 L33,23 L44,23 L55,31 L66,31 L77,31 L88,39 L99,39 L110,47 L121,47 L132,54 L143,54 L154,54 L165,62 L176,62 L187,62 L200,62"/>
+                <circle cx="200" cy="62" r="2.5" fill="#e8a85c"/>
+              </svg>
+            </div>
+          </section>
+
+          <section class="card chart-card">
+            <div class="chart-head">
+              <span class="k">Dew margin</span>
+              <span class="d warn">↓ 3.4 / 1h</span>
+              <span class="v warn">4.8°</span>
+            </div>
+            <div class="chart-body">
+              <svg viewBox="0 0 200 88" preserveAspectRatio="none">
+                <text x="2" y="13" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">10°</text>
+                <text x="2" y="83" fill="#5c5447" font-size="9" font-family="ui-monospace,monospace">0°</text>
+                <line x1="0" y1="78" x2="200" y2="78" stroke="#e0775c" stroke-width=".5" stroke-dasharray="2,4"/>
+                <text x="198" y="76" fill="#a04030" font-size="8" font-family="ui-monospace,monospace" text-anchor="end">dew point</text>
+                <path fill="none" stroke="#e8a85c" stroke-width="1.5"
+                      d="M0,17 L11,20 L22,21 L33,21 L44,24 L55,24 L66,28 L77,31 L88,35 L99,39 L110,42 L121,46 L132,49 L143,53 L154,57 L165,60 L176,64 L187,64 L200,67"/>
+                <circle cx="200" cy="67" r="2.5" fill="#e8a85c"/>
+              </svg>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- side: equipment + stages -->
+      <div class="card side-card">
+        <div class="side-section">
+          <h3>Equipment</h3>
+          <ul class="equip-list">
+            <li><span class="led live"></span>Camera <span class="v">−10.0°C</span></li>
+            <li><span class="led live"></span>Mount <span class="v">RMS 0.62″</span></li>
+            <li><span class="led live"></span>Focuser <span class="v">14,820 · 22.4°C</span></li>
+            <li><span class="led live"></span>Guider <span class="v">snr 32 · 2.1 px</span></li>
+            <li><span class="led warn"></span>Sky <span class="v">18% clouds ↑</span></li>
+            <li><span class="led warn"></span>Dew margin <span class="v">4.8°</span></li>
+          </ul>
+        </div>
+        <div class="side-section">
+          <h3>Tonight's plan</h3>
+          <ol class="stages-list">
+            <li><span class="step done">✓</span> Slew &amp; solve <span class="right">2m 04s</span></li>
+            <li><span class="step done">✓</span> Auto-focus <span class="right">3m 11s</span></li>
+            <li><span class="step done">✓</span> PHD2 calibrate <span class="right">1m 47s</span></li>
+            <li><span class="step live"></span> <strong>L · 300s × 10</strong> <span class="right" style="color:var(--text)">4 / 10</span></li>
+            <li class="muted"><span class="step pending"></span> R · 180s × 10 <span class="right">0 / 10</span></li>
+            <li class="muted"><span class="step pending"></span> G · 180s × 10 <span class="right">0 / 10</span></li>
+            <li class="muted"><span class="step pending"></span> B · 180s × 10 <span class="right">0 / 10</span></li>
+            <li class="muted"><span class="step pending"></span> Park &amp; shutdown</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main>
+
+  <!-- hero -->
+  <article class="hero">
+    <div class="hero-row">
+      <div class="ring">
+        <svg viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="44" fill="none" stroke="#2a241c" stroke-width="6"/>
+          <circle cx="50" cy="50" r="44" fill="none" stroke="#80e6c4" stroke-width="6"
+                  stroke-dasharray="276" stroke-dashoffset="160" stroke-linecap="round"/>
+          <!-- tick marks at quarters -->
+          <g stroke="#3d3528" stroke-width=".8">
+            <line x1="50" y1="3" x2="50" y2="7"/>
+            <line x1="50" y1="93" x2="50" y2="97"/>
+            <line x1="3" y1="50" x2="7" y2="50"/>
+            <line x1="93" y1="50" x2="97" y2="50"/>
+          </g>
+        </svg>
+        <div class="center"><div><div class="pct">42%</div><div class="cap">complete</div></div></div>
+      </div>
+
+      <div class="hero-body">
+        <div class="hero-eyebrow">
+          <span class="label">Capturing now</span>
+          <span class="meta">started 21:18 · 26m 14s remaining · finishes 01:42 local</span>
+        </div>
+        <h1>M51 <em>— Whirlpool</em></h1>
+        <div class="sub">Luminance · 300s · frame 4 of 10 · 30 of 40 across L R G B</div>
+        <div class="chips">
+          <span class="chip done">slew</span>
+          <span class="chip done">focus</span>
+          <span class="chip done">guide</span>
+          <span class="chip live">capturing L</span>
+          <span class="chip">R</span>
+          <span class="chip">G</span>
+          <span class="chip">B</span>
+          <span class="chip">park</span>
+        </div>
+      </div>
+
+      <div class="hero-buttons">
+        <button class="btn">Pause</button>
+        <button class="btn danger">Abort</button>
+      </div>
+    </div>
+  </article>
+
+  <!-- latest frame -->
+  <section>
+    <div class="section-marker">
+      <span class="num">ii.</span>
+      <span class="label">Latest frame</span>
+      <span class="rule"></span>
+      <span class="meta">just landed · 21:18:04</span>
+    </div>
+    <article class="frame-card">
+      <div class="frame-head">
+        <div class="left">
+          <span class="name">M51 <em>· L · 300s</em></span>
+          <span class="meta">frame 0042</span>
+        </div>
+        <div class="right">
+          <button>open</button><span style="color:var(--edge-strong)">·</span><button>download</button>
+        </div>
+      </div>
+      <div class="frame-image">
+        <svg viewBox="0 0 800 450" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <radialGradient id="neb8" cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/>
+              <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="core8" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fff7ed" stop-opacity=".95"/>
+              <stop offset="35%" stop-color="#fbbf24" stop-opacity=".55"/>
+              <stop offset="100%" stop-color="#7c2d12" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="800" height="450" fill="#03050b"/>
+          <ellipse cx="400" cy="225" rx="380" ry="200" fill="url(#neb8)"/>
+          <g transform="translate(400 225) rotate(-22)">
+            <ellipse rx="60" ry="40" fill="url(#core8)"/>
+            <path d="M 0 0 Q -150 -50 -240 -10 Q -290 20 -310 70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+            <path d="M 0 0 Q 150 50 240 10 Q 290 -20 310 -70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+          </g>
+          <ellipse cx="610" cy="160" rx="20" ry="16" fill="#fef3c7" fill-opacity=".7"/>
+          <g fill="#fff">
+            <circle cx="50" cy="60" r="1"/><circle cx="120" cy="100" r=".8"/><circle cx="180" cy="40" r=".6"/>
+            <circle cx="240" cy="160" r="1.2"/><circle cx="300" cy="70" r=".7"/><circle cx="360" cy="140" r=".9"/>
+            <circle cx="420" cy="30" r=".6"/><circle cx="480" cy="180" r="1"/><circle cx="540" cy="50" r=".8"/>
+            <circle cx="600" cy="120" r="1.2"/><circle cx="660" cy="80" r=".7"/><circle cx="720" cy="140" r=".9"/>
+            <circle cx="80" cy="200" r=".6"/><circle cx="160" cy="240" r="1"/><circle cx="220" cy="300" r=".8"/>
+            <circle cx="340" cy="320" r="1.2"/><circle cx="460" cy="260" r=".9"/><circle cx="520" cy="340" r="1"/>
+            <circle cx="640" cy="360" r=".8"/><circle cx="700" cy="280" r="1.2"/><circle cx="60" cy="360" r=".9"/>
+            <circle cx="380" cy="430" r="1.2"/><circle cx="500" cy="430" r=".6"/><circle cx="770" cy="60" r=".7"/>
+          </g>
+        </svg>
+        <div class="ovl">HFR 1.84″ · stars 2,941 · ADU 1,247 · ecc 0.41</div>
+      </div>
+    </article>
+  </section>
+
+  <!-- past sessions -->
+  <section>
+    <div class="section-marker">
+      <span class="num">iii.</span>
+      <span class="label">Past sessions</span>
+      <span class="rule"></span>
+      <span class="meta">last 30 days · 12 sessions</span>
+    </div>
+
+    <div class="timeline">
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot done"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">M101 <em>— Pinwheel</em></span>
+              <span class="when">last night · 22:14 → 03:48</span>
+            </div>
+            <div class="desc">L 20 · R 14 · G 14 · B 14 · 5h 34m on target · HFR 1.91″</div>
+          </div>
+          <span class="tl-pill ok">complete</span>
+        </summary>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot warn"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">NGC 7000 <em>— North America</em></span>
+              <span class="when">3 days ago · 21:48 → 02:11</span>
+            </div>
+            <div class="desc">38 of 50 planned · aborted — clouds rose above 60%</div>
+          </div>
+          <span class="tl-pill warn">aborted</span>
+        </summary>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot done"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">M31 <em>— Andromeda</em></span>
+              <span class="when">a week ago · 20:31 → 04:02</span>
+            </div>
+            <div class="desc">L 22 · R 20 · G 20 · B 20 · 7h 31m on target · HFR 1.78″</div>
+          </div>
+          <span class="tl-pill ok">complete</span>
+        </summary>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot bad"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">IC 1396 <em>— Elephant's Trunk</em></span>
+              <span class="when">12 days ago · 22:02 → 23:00</span>
+            </div>
+            <div class="desc">12 of 60 planned · failed — guide loss after meridian flip</div>
+          </div>
+          <span class="tl-pill bad">failed</span>
+        </summary>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+</body>
+</html>

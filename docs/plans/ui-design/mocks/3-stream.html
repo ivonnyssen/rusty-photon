@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>rp — Activity (Vercel/Stripe-style)</title>
+<style>
+  :root {
+    --bg:#08080a; --panel:#0f0f12; --edge:#1c1c22;
+    --text:#fafafa; --dim:#9c9ca6;
+  }
+  *,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+  html,body { min-height:100%; background:var(--bg); color:var(--text);
+    font-family:ui-sans-serif,system-ui,-apple-system,"SF Pro Text","Segoe UI",sans-serif;
+    font-size:14px; line-height:1.4 }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  button, a { font:inherit; color:inherit; background:none; border:0; cursor:pointer; text-decoration:none }
+  .ring-line { box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+
+  /* ── nav ── */
+  nav { height:48px; padding:0 20px; display:flex; align-items:center; gap:16px;
+    border-bottom:1px solid var(--edge); background:rgba(15,15,18,.6);
+    backdrop-filter:blur(8px); position:sticky; top:0; z-index:10 }
+  .brand { display:flex; align-items:center; gap:8px; font-weight:600; letter-spacing:-.01em }
+  .logo { width:24px; height:24px; border-radius:5px;
+    background:linear-gradient(135deg,#6366f1,#d946ef) }
+  .nav-tabs { display:flex; align-items:center; gap:4px; margin-left:12px; font-size:13px }
+  .nav-tabs a { padding:5px 10px; border-radius:5px; color:var(--dim) }
+  .nav-tabs a.active { color:#fff; background:rgba(255,255,255,.05) }
+  .nav-tabs a:hover { color:#fff }
+  .grow { flex:1 }
+  .status-strip { font-size:12px; color:var(--dim); display:flex; align-items:center; gap:8px }
+  .led { width:8px; height:8px; border-radius:999px; display:inline-block }
+  .led.ok { background:#4ade80 }
+  .avatar { width:32px; height:32px; border-radius:999px; background:rgba(244,63,94,.2);
+    box-shadow:inset 0 0 0 1px rgba(251,113,133,.4); display:grid; place-items:center; font-size:12px }
+
+  /* ── main ── */
+  main { max-width:768px; margin:0 auto; padding:32px 20px; display:flex; flex-direction:column; gap:24px }
+
+  /* ── hero card ── */
+  .hero { position:relative; border-radius:12px; background:var(--panel);
+    padding:20px; overflow:hidden; box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+  .hero::before { content:''; position:absolute; top:0; left:0; right:0; height:1px;
+    background:linear-gradient(90deg,transparent,rgba(74,222,128,.6),transparent) }
+  .hero-row { display:flex; align-items:flex-start; gap:20px }
+  .ring { position:relative; width:96px; height:96px; flex:none }
+  .ring svg { width:100%; height:100%; transform:rotate(-90deg) }
+  .ring .center { position:absolute; inset:0; display:grid; place-items:center; text-align:center }
+  .ring .pct { font-size:20px; font-weight:600; font-family:ui-monospace,monospace }
+  .ring .cap { font-size:10px; text-transform:uppercase; color:var(--dim); letter-spacing:.06em }
+
+  .hero-body { flex:1; min-width:0 }
+  .hero-eyebrow { display:flex; align-items:center; gap:8px }
+  .hero-eyebrow .label { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#4ade80 }
+  .hero-eyebrow .meta { color:var(--dim); font-size:12px; font-family:ui-monospace,monospace }
+  .hero h1 { font-size:20px; font-weight:600; line-height:1.2; margin-top:4px }
+  .hero .sub { font-size:13px; color:var(--dim); margin-top:2px }
+  .chips { margin-top:12px; display:flex; flex-wrap:wrap; gap:6px; font-size:11px }
+  .chip { padding:2px 8px; border-radius:4px; background:rgba(34,197,94,.1); color:#4ade80;
+    box-shadow:inset 0 0 0 1px rgba(34,197,94,.3) }
+  .chip.live { background:rgba(34,197,94,.18); color:#86efac;
+    box-shadow:inset 0 0 0 1px rgba(74,222,128,.4) }
+  .chip.muted { background:rgba(255,255,255,.05); color:var(--dim);
+    box-shadow:inset 0 0 0 1px var(--edge) }
+
+  .hero-buttons { display:flex; flex-direction:column; gap:6px; flex:none }
+  .btn { font-size:12px; padding:5px 10px; border-radius:6px;
+    background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px var(--edge) }
+  .btn:hover { background:rgba(255,255,255,.1) }
+  .btn.danger { background:rgba(239,68,68,.15); color:#fca5a5;
+    box-shadow:inset 0 0 0 1px rgba(239,68,68,.3) }
+  .btn.danger:hover { background:rgba(239,68,68,.25) }
+
+  .env-grid { margin-top:20px; display:grid; grid-template-columns:repeat(4,1fr); gap:12px; font-size:12px }
+  .env-cell { border-radius:6px; padding:10px; box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+  .env-cell .k { color:var(--dim) }
+  .env-cell .v { font-family:ui-monospace,monospace; margin-top:2px }
+  .v.ok { color:#4ade80 } .v.warn { color:#fbbf24 }
+
+  /* ── latest frame card ── */
+  .frame-card { border-radius:12px; background:var(--panel); overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+  .frame-head { height:44px; padding:0 20px; display:flex; align-items:center;
+    justify-content:space-between; border-bottom:1px solid var(--edge); font-size:13px }
+  .frame-head .left { display:flex; align-items:center; gap:8px }
+  .frame-head .meta { color:var(--dim); font-size:12px; font-family:ui-monospace,monospace }
+  .frame-head .right { color:var(--dim); font-size:12px }
+  .frame-head .right button:hover { color:#fff }
+  .frame-image { background:#000; position:relative; aspect-ratio:16/9 }
+  .frame-image svg { position:absolute; inset:0; width:100%; height:100% }
+  .frame-image .overlay { position:absolute; bottom:12px; left:12px;
+    font-family:ui-monospace,monospace; font-size:11px;
+    color:rgba(255,255,255,.7); background:rgba(0,0,0,.5);
+    padding:4px 8px; border-radius:4px }
+
+  /* ── timeline ── */
+  .past h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--dim); display:flex; justify-content:space-between; align-items:flex-end;
+    margin-bottom:12px }
+  .past h2 .meta { font-family:ui-monospace,monospace; font-size:11px }
+  .timeline { position:relative; padding-left:28px; display:flex; flex-direction:column; gap:12px }
+  .timeline::before { content:''; position:absolute; left:11px; top:0; bottom:0;
+    width:1px; background:var(--edge) }
+  .tl-item { border-radius:10px; background:var(--panel); position:relative;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+  .dot { position:absolute; left:-21px; top:14px; width:8px; height:8px;
+    border-radius:999px; background:var(--dim); box-shadow:0 0 0 4px var(--bg) }
+  .dot.live { background:#22c55e; box-shadow:0 0 0 4px var(--bg), 0 0 18px 2px rgba(34,197,94,.6) }
+  .dot.warn { background:#f59e0b }
+  .dot.bad  { background:#ef4444 }
+  details > summary { list-style:none; cursor:pointer }
+  details > summary::-webkit-details-marker { display:none }
+  details[open] .chev { transform:rotate(90deg) }
+  .chev { transition:transform .15s; color:var(--dim); display:inline-block; width:12px }
+
+  .tl-summary { padding:12px 16px; display:flex; align-items:center; gap:12px }
+  .tl-summary .body { flex:1; min-width:0 }
+  .tl-summary .title-row { display:flex; align-items:baseline; gap:8px }
+  .tl-summary .name { font-weight:500 }
+  .tl-summary .when { font-size:12px; color:var(--dim); font-family:ui-monospace,monospace }
+  .tl-summary .desc { font-size:12px; color:var(--dim); margin-top:2px }
+  .tl-pill { font-size:11px; padding:2px 6px; border-radius:4px; flex:none }
+  .tl-pill.ok   { background:rgba(34,197,94,.15);  color:#4ade80; box-shadow:inset 0 0 0 1px rgba(34,197,94,.3) }
+  .tl-pill.warn { background:rgba(245,158,11,.15); color:#fbbf24; box-shadow:inset 0 0 0 1px rgba(245,158,11,.3) }
+  .tl-pill.bad  { background:rgba(239,68,68,.15);  color:#fca5a5; box-shadow:inset 0 0 0 1px rgba(239,68,68,.3) }
+  .tl-thumbs { padding:0 16px 16px; display:grid; grid-template-columns:repeat(8,1fr); gap:8px }
+  .thumb { aspect-ratio:4/3; border-radius:4px; box-shadow:inset 0 0 0 1px var(--edge);
+    position:relative }
+  .thumb-label { position:absolute; bottom:4px; left:4px;
+    font-family:ui-monospace,monospace; font-size:9px;
+    color:rgba(255,255,255,.7); background:rgba(0,0,0,.4);
+    padding:1px 4px; border-radius:2px }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand"><div class="logo"></div><span>rusty&nbsp;photon</span></div>
+  <div class="nav-tabs">
+    <a class="active">Activity</a>
+    <a>Equipment</a>
+    <a>Plans</a>
+    <a>Logs</a>
+    <a>Settings</a>
+  </div>
+  <div class="grow"></div>
+  <div class="status-strip"><span class="led ok"></span>All systems healthy</div>
+  <div class="avatar">IV</div>
+</nav>
+
+<main>
+
+  <!-- hero -->
+  <article class="hero">
+    <div class="hero-row">
+      <div class="ring">
+        <svg viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="44" fill="none" stroke="#1c1c22" stroke-width="8"/>
+          <circle cx="50" cy="50" r="44" fill="none" stroke="#22c55e" stroke-width="8"
+                  stroke-dasharray="276" stroke-dashoffset="160" stroke-linecap="round"/>
+        </svg>
+        <div class="center">
+          <div>
+            <div class="pct">42%</div>
+            <div class="cap">done</div>
+          </div>
+        </div>
+      </div>
+      <div class="hero-body">
+        <div class="hero-eyebrow">
+          <span class="label">Capturing now</span>
+          <span class="meta">started 21:18 · 26m 14s remaining · finishes 01:42 local</span>
+        </div>
+        <h1>M51 — Whirlpool · Luminance · 300s</h1>
+        <div class="sub">Frame 4 of 10 in this filter · 30 of 40 across L R G B</div>
+        <div class="chips">
+          <span class="chip">✓ slew</span>
+          <span class="chip">✓ focus</span>
+          <span class="chip">✓ guide</span>
+          <span class="chip live">● capturing L</span>
+          <span class="chip muted">R</span>
+          <span class="chip muted">G</span>
+          <span class="chip muted">B</span>
+          <span class="chip muted">park</span>
+        </div>
+      </div>
+      <div class="hero-buttons">
+        <button class="btn">Pause</button>
+        <button class="btn danger">Abort</button>
+      </div>
+    </div>
+    <div class="env-grid">
+      <div class="env-cell"><div class="k">Camera</div><div class="v ok">−10.0 °C</div></div>
+      <div class="env-cell"><div class="k">Guide RMS</div><div class="v">0.62″</div></div>
+      <div class="env-cell"><div class="k">Focus HFR</div><div class="v">1.84″</div></div>
+      <div class="env-cell"><div class="k">Sky</div><div class="v warn">18% clouds</div></div>
+    </div>
+  </article>
+
+  <!-- latest frame -->
+  <article class="frame-card">
+    <div class="frame-head">
+      <div class="left">
+        <span class="led ok"></span>
+        <span style="font-weight:500">Latest frame just landed</span>
+        <span class="meta">0042 · L · 300s · 21:18:04</span>
+      </div>
+      <div class="right">
+        <button>open</button> · <button>download</button>
+      </div>
+    </div>
+    <div class="frame-image">
+      <svg viewBox="0 0 800 450" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="neb3" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/>
+            <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="core3" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fff7ed" stop-opacity=".95"/>
+            <stop offset="35%" stop-color="#fbbf24" stop-opacity=".55"/>
+            <stop offset="100%" stop-color="#7c2d12" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <rect width="800" height="450" fill="#03050b"/>
+        <ellipse cx="400" cy="225" rx="380" ry="200" fill="url(#neb3)"/>
+        <g transform="translate(400 225) rotate(-22)">
+          <ellipse rx="60" ry="40" fill="url(#core3)"/>
+          <path d="M 0 0 Q -150 -50 -240 -10 Q -290 20 -310 70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+          <path d="M 0 0 Q 150 50 240 10 Q 290 -20 310 -70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+        </g>
+        <ellipse cx="610" cy="160" rx="20" ry="16" fill="#fef3c7" fill-opacity=".7"/>
+        <g fill="#fff">
+          <circle cx="50" cy="60" r="1"/><circle cx="120" cy="100" r=".8"/><circle cx="180" cy="40" r=".6"/>
+          <circle cx="240" cy="160" r="1.2"/><circle cx="300" cy="70" r=".7"/><circle cx="360" cy="140" r=".9"/>
+          <circle cx="420" cy="30" r=".6"/><circle cx="480" cy="180" r="1"/><circle cx="540" cy="50" r=".8"/>
+          <circle cx="600" cy="120" r="1.2"/><circle cx="660" cy="80" r=".7"/><circle cx="720" cy="140" r=".9"/>
+          <circle cx="80" cy="200" r=".6"/><circle cx="160" cy="240" r="1"/><circle cx="220" cy="300" r=".8"/>
+          <circle cx="280" cy="200" r=".6"/><circle cx="340" cy="320" r="1.2"/><circle cx="460" cy="260" r=".9"/>
+          <circle cx="520" cy="340" r="1"/><circle cx="580" cy="220" r=".6"/><circle cx="640" cy="360" r=".8"/>
+          <circle cx="700" cy="280" r="1.2"/><circle cx="60" cy="360" r=".9"/><circle cx="140" cy="420" r="1"/>
+          <circle cx="380" cy="430" r="1.2"/><circle cx="500" cy="430" r=".6"/><circle cx="770" cy="60" r=".7"/>
+        </g>
+      </svg>
+      <div class="overlay">HFR 1.84″ · Stars 2,941 · ADU 1,247 · Ecc 0.41</div>
+    </div>
+  </article>
+
+  <!-- past sessions timeline -->
+  <section class="past">
+    <h2><span>Past sessions</span><span class="meta">last 30 days · 12 sessions</span></h2>
+    <div class="timeline">
+
+      <details open class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">M101 — Pinwheel</span>
+              <span class="when">last night · 22:14 → 03:48</span>
+            </div>
+            <div class="desc">L 20 · R 14 · G 14 · B 14 · 5h 34m on target · HFR 1.91″</div>
+          </div>
+          <span class="tl-pill ok">complete</span>
+        </summary>
+        <div class="tl-thumbs">
+          <div class="thumb" style="background:linear-gradient(135deg,#1e1b4b,#020617)"><div class="thumb-label">0001</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0002</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0003</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0004</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0005</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#164e63,#020617)"><div class="thumb-label">0006</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#312e81,#020617)"><div class="thumb-label">0007</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e293b,#020617)"><div class="thumb-label">0008</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e1b4b,#020617)"><div class="thumb-label">0009</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0010</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0011</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0012</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0013</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#164e63,#020617)"><div class="thumb-label">0014</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#312e81,#020617)"><div class="thumb-label">0015</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e293b,#020617)"><div class="thumb-label">0016</div></div>
+        </div>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot warn"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">NGC 7000 — North America</span>
+              <span class="when">3 days ago · 21:48 → 02:11</span>
+            </div>
+            <div class="desc">38 of 50 planned · aborted 02:11 — clouds rose above 60%</div>
+          </div>
+          <span class="tl-pill warn">aborted · clouds</span>
+        </summary>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">M31 — Andromeda</span>
+              <span class="when">a week ago · 20:31 → 04:02</span>
+            </div>
+            <div class="desc">L 22 · R 20 · G 20 · B 20 · 7h 31m on target · HFR 1.78″</div>
+          </div>
+          <span class="tl-pill ok">complete</span>
+        </summary>
+      </details>
+
+      <details class="tl-item">
+        <summary class="tl-summary">
+          <span class="dot bad"></span>
+          <span class="chev">▸</span>
+          <div class="body">
+            <div class="title-row">
+              <span class="name">IC 1396 — Elephant's Trunk</span>
+              <span class="when">12 days ago · 22:02 → 23:00</span>
+            </div>
+            <div class="desc">12 of 60 planned · failed — guide loss after meridian flip</div>
+          </div>
+          <span class="tl-pill bad">failed · guide loss</span>
+        </summary>
+      </details>
+
+    </div>
+  </section>
+
+</main>
+
+</body>
+</html>

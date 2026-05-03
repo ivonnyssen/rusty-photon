@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>rp — Mission control (Linear-style)</title>
+<style>
+  :root {
+    --bg:#0a0a0b; --panel:#111113; --edge:#202024;
+    --text:#ededef; --dim:#8a8a93;
+    --hot:#22c55e; --warn:#f59e0b; --bad:#ef4444; --accent:#7c3aed;
+  }
+  *,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+  html,body { min-height:100%; background:var(--bg); color:var(--text);
+    font-family:ui-sans-serif,system-ui,-apple-system,"SF Pro Text","Segoe UI",sans-serif;
+    font-size:14px; line-height:1.4 }
+  body { display:flex; min-height:100vh }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  button { font:inherit; color:inherit; background:none; border:0; cursor:pointer }
+  input { font:inherit; color:inherit }
+
+  /* ── nav ── */
+  nav.side { width:56px; border-right:1px solid var(--edge); background:var(--panel);
+    display:flex; flex-direction:column; align-items:center; padding:12px 0; gap:4px; flex:none }
+  .logo { width:32px; height:32px; border-radius:6px;
+    background:linear-gradient(135deg,#6366f1,#d946ef); margin-bottom:8px }
+  .nav-btn { width:36px; height:36px; border-radius:6px; display:grid; place-items:center;
+    color:var(--dim); font-size:16px }
+  .nav-btn.active { background:rgba(255,255,255,.05); color:#fff }
+  .nav-btn:hover { background:rgba(255,255,255,.05) }
+  .grow { flex:1 }
+  .avatar { width:32px; height:32px; border-radius:999px; background:rgba(244,63,94,.2);
+    box-shadow:inset 0 0 0 1px rgba(251,113,133,.4); display:grid; place-items:center; font-size:12px }
+
+  /* ── main column ── */
+  .col { flex:1; min-width:0; display:flex; flex-direction:column }
+
+  header.bar { height:48px; padding:0 20px; border-bottom:1px solid var(--edge);
+    background:var(--panel); display:flex; align-items:center; gap:12px }
+  .crumb { font-size:13px; color:var(--dim) }
+  .crumb b { color:var(--text); font-weight:500 }
+  .pill { font-size:11px; padding:2px 6px; border-radius:4px;
+    background:rgba(34,197,94,.15); color:#4ade80;
+    box-shadow:inset 0 0 0 1px rgba(34,197,94,.3) }
+  .pill.warn { background:rgba(245,158,11,.15); color:#fbbf24;
+    box-shadow:inset 0 0 0 1px rgba(245,158,11,.3) }
+  .pill.bad { background:rgba(239,68,68,.15); color:#fca5a5;
+    box-shadow:inset 0 0 0 1px rgba(239,68,68,.3) }
+  .spacer { flex:1 }
+  .status-strip { font-size:12px; color:var(--dim); display:flex; align-items:center; gap:8px }
+  .led { width:8px; height:8px; border-radius:999px; display:inline-block }
+  .led.ok { background:#4ade80 } .led.warn { background:#fbbf24 }
+  .sep { color:var(--edge) }
+  .btn { font-size:12px; padding:5px 10px; border-radius:6px;
+    background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px var(--edge) }
+  .btn:hover { background:rgba(255,255,255,.1) }
+  .btn.danger { background:rgba(239,68,68,.15); color:#fca5a5;
+    box-shadow:inset 0 0 0 1px rgba(239,68,68,.3) }
+  .btn.danger:hover { background:rgba(239,68,68,.25) }
+
+  main.grid { flex:1; padding:20px; display:grid; grid-template-columns:repeat(12,1fr);
+    gap:20px; overflow-y:auto }
+  .card { border-radius:10px; background:var(--panel);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.06) }
+  .card-head { height:40px; padding:0 16px; display:flex; align-items:center;
+    border-bottom:1px solid var(--edge) }
+  .card-head .label { font-weight:500 } .card-head .sub { color:var(--dim); font-size:12px; margin-left:8px }
+  .card-head .right { margin-left:auto; display:flex; gap:4px; font-size:12px; color:var(--dim) }
+  .card-head .right button { padding:4px 8px } .card-head .right button:hover { color:#fff }
+
+  .image-card { grid-column:span 8; display:flex; flex-direction:column; overflow:hidden }
+  .image-frame { background:#000; flex:1; min-height:420px; position:relative }
+  .image-frame svg { position:absolute; inset:0; width:100%; height:100% }
+  .image-overlay { position:absolute; bottom:12px; left:12px;
+    font-family:ui-monospace,monospace; font-size:11px; color:rgba(255,255,255,.7);
+    background:rgba(0,0,0,.4); padding:4px 8px; border-radius:4px }
+
+  .status-card { grid-column:span 4; padding:20px; display:flex; flex-direction:column; gap:20px }
+  .status-card .head-row { display:flex; align-items:center; justify-content:space-between }
+  .status-card .label-sm { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim) }
+  .status-card h2 { font-size:17px; font-weight:600; margin-top:4px }
+  .status-card .sub { font-size:11px; color:var(--dim); font-family:ui-monospace,monospace }
+  .ring-row { display:flex; align-items:center; gap:20px }
+  .ring { position:relative; width:128px; height:128px; flex:none }
+  .ring svg { width:100%; height:100%; transform:rotate(-90deg) }
+  .ring .center { position:absolute; inset:0; display:grid; place-items:center; text-align:center }
+  .ring .pct { font-size:24px; font-weight:600; font-family:ui-monospace,monospace }
+  .ring .cap { font-size:10px; text-transform:uppercase; color:var(--dim); letter-spacing:.06em }
+  .stats { font-size:13px; flex:1; display:flex; flex-direction:column; gap:6px }
+  .stats .row { display:flex; justify-content:space-between; gap:16px }
+  .stats .row span:first-child { color:var(--dim) }
+  .stats .row span:last-child { font-family:ui-monospace,monospace }
+  .stats .row .v-warn { color:#fbbf24 }
+
+  .stages { list-style:none; display:flex; flex-direction:column; gap:6px; font-size:13px }
+  .stages li { display:flex; align-items:center; gap:8px }
+  .stages .step { width:18px; height:18px; border-radius:999px; display:grid; place-items:center;
+    font-size:10px; flex:none }
+  .stages .done { background:#22c55e; color:#02180a }
+  .stages .live { background:rgba(34,197,94,.2); box-shadow:inset 0 0 0 1px #4ade80 }
+  .stages .live span { width:6px; height:6px; border-radius:999px; background:#4ade80; animation:pulse 1.6s infinite }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .stages .pending { background:rgba(255,255,255,.05) }
+  .stages li.muted { color:var(--dim) }
+  .stages .right { margin-left:auto; font-family:ui-monospace,monospace; color:var(--dim) }
+
+  .history-card { grid-column:span 12 }
+  .history-head input { background:rgba(0,0,0,.4); border:0; box-shadow:inset 0 0 0 1px var(--edge);
+    border-radius:6px; padding:5px 8px; font-size:12px; width:200px; color:var(--text) }
+  .history-head input::placeholder { color:rgba(138,138,147,.6) }
+  details { border-top:1px solid var(--edge) }
+  details:first-of-type { border-top:0 }
+  details > summary { list-style:none; cursor:pointer }
+  details > summary::-webkit-details-marker { display:none }
+  details[open] .chev { transform:rotate(90deg) }
+  .chev { transition:transform .15s; display:inline-block; color:var(--dim) }
+  .row-summary { padding:0 16px; height:48px; display:flex; align-items:center; gap:12px }
+  .row-summary:hover { background:rgba(255,255,255,.02) }
+  .row-summary .name { font-weight:500 }
+  .row-summary .sub { font-size:12px; color:var(--dim); font-family:ui-monospace,monospace }
+  .row-summary .right { margin-left:auto; display:flex; align-items:center; gap:12px;
+    font-size:12px; color:var(--dim) }
+  .ok-text { color:#4ade80 } .warn-text { color:#fbbf24 } .bad-text { color:#fca5a5 }
+  .thumbs-grid { padding:8px 16px 16px; display:grid; grid-template-columns:repeat(8,1fr); gap:8px }
+  .thumb { aspect-ratio:4/3; border-radius:4px; box-shadow:inset 0 0 0 1px var(--edge);
+    position:relative }
+  .thumb-label { position:absolute; bottom:4px; left:4px;
+    font-family:ui-monospace,monospace; font-size:9px;
+    color:rgba(255,255,255,.7); background:rgba(0,0,0,.4);
+    padding:1px 4px; border-radius:2px }
+</style>
+</head>
+<body>
+
+<nav class="side">
+  <div class="logo"></div>
+  <button class="nav-btn active" title="Sessions">◐</button>
+  <button class="nav-btn" title="Equipment">⚙</button>
+  <button class="nav-btn" title="Plans">▤</button>
+  <button class="nav-btn" title="Logs">≡</button>
+  <button class="nav-btn" title="Settings">…</button>
+  <div class="grow"></div>
+  <div class="avatar">IV</div>
+</nav>
+
+<div class="col">
+
+  <header class="bar">
+    <span class="crumb">Sessions /</span>
+    <span class="crumb"><b>M51 — 2026-05-03</b></span>
+    <span class="pill">In progress</span>
+    <span class="spacer"></span>
+    <span class="status-strip">
+      <span class="led ok"></span> Mount tracking
+      <span class="sep">·</span>
+      <span>Camera −10.0°C</span>
+      <span class="sep">·</span>
+      <span style="color:#fbbf24">Clouds 18%</span>
+    </span>
+    <button class="btn">Pause</button>
+    <button class="btn danger">Abort</button>
+  </header>
+
+  <main class="grid">
+
+    <section class="card image-card">
+      <div class="card-head">
+        <span class="label">Latest frame</span>
+        <span class="sub mono">0042 · L · 300s · 21:18:04</span>
+        <span class="right">
+          <button>Fit</button><button>100%</button><button>Stretch</button><button>⤢</button>
+        </span>
+      </div>
+      <div class="image-frame">
+        <svg viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <radialGradient id="neb2" cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/>
+              <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="core2" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fff7ed" stop-opacity=".95"/>
+              <stop offset="35%" stop-color="#fbbf24" stop-opacity=".55"/>
+              <stop offset="100%" stop-color="#7c2d12" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="800" height="600" fill="#03050b"/>
+          <ellipse cx="420" cy="300" rx="380" ry="260" fill="url(#neb2)"/>
+          <g transform="translate(420 300) rotate(-22)">
+            <ellipse rx="70" ry="46" fill="url(#core2)"/>
+            <path d="M 0 0 Q -160 -60 -260 -10 Q -310 20 -330 80" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+            <path d="M 0 0 Q 160 60 260 10 Q 310 -20 330 -80" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+          </g>
+          <ellipse cx="640" cy="220" rx="22" ry="18" fill="#fef3c7" fill-opacity=".7"/>
+          <g fill="#fff">
+            <circle cx="50" cy="80" r="1"/><circle cx="120" cy="130" r=".8"/><circle cx="180" cy="60" r=".6"/>
+            <circle cx="240" cy="200" r="1.2"/><circle cx="300" cy="90" r=".7"/><circle cx="360" cy="180" r=".9"/>
+            <circle cx="420" cy="40" r=".6"/><circle cx="480" cy="220" r="1"/><circle cx="540" cy="70" r=".8"/>
+            <circle cx="600" cy="160" r="1.2"/><circle cx="660" cy="100" r=".7"/><circle cx="720" cy="180" r=".9"/>
+            <circle cx="80" cy="250" r=".6"/><circle cx="160" cy="300" r="1"/><circle cx="220" cy="380" r=".8"/>
+            <circle cx="280" cy="260" r=".6"/><circle cx="340" cy="420" r="1.2"/><circle cx="460" cy="340" r=".9"/>
+            <circle cx="520" cy="440" r="1"/><circle cx="580" cy="280" r=".6"/><circle cx="640" cy="460" r=".8"/>
+            <circle cx="700" cy="360" r="1.2"/><circle cx="60" cy="460" r=".9"/><circle cx="140" cy="540" r="1"/>
+            <circle cx="200" cy="480" r=".6"/><circle cx="320" cy="500" r=".7"/><circle cx="500" cy="580" r=".6"/>
+            <circle cx="630" cy="220" r=".9"/><circle cx="770" cy="80" r=".7"/>
+          </g>
+        </svg>
+        <div class="image-overlay">HFR 1.84″ · Stars 2,941 · Ecc 0.41 · ADU 1,247</div>
+      </div>
+    </section>
+
+    <section class="card status-card">
+      <div>
+        <div class="head-row">
+          <span class="label-sm">Now capturing</span>
+          <span class="pill">healthy</span>
+        </div>
+        <h2>M51 · Luminance · 300s</h2>
+        <div class="sub">frame 4 of 10 · started 21:18:04</div>
+      </div>
+
+      <div class="ring-row">
+        <div class="ring">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="44" fill="none" stroke="#202024" stroke-width="8"/>
+            <circle cx="50" cy="50" r="44" fill="none" stroke="#22c55e" stroke-width="8"
+                    stroke-dasharray="276" stroke-dashoffset="160" stroke-linecap="round"/>
+          </svg>
+          <div class="center">
+            <div>
+              <div class="pct">42%</div>
+              <div class="cap">complete</div>
+            </div>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="row"><span>Sub elapsed</span><span>02:18 / 05:00</span></div>
+          <div class="row"><span>Sequence ETA</span><span style="color:#fff">26m 14s</span></div>
+          <div class="row"><span>Finish at</span><span>01:42 local</span></div>
+          <div class="row"><span>Meridian flip</span><span class="v-warn">in 1h 48m</span></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="label-sm" style="margin-bottom:8px">Tonight's plan</div>
+        <ol class="stages">
+          <li><span class="step done">✓</span> Slew & plate-solve <span class="right">2m 04s</span></li>
+          <li><span class="step done">✓</span> Auto-focus run <span class="right">3m 11s</span></li>
+          <li><span class="step done">✓</span> PHD2 calibrate <span class="right">1m 47s</span></li>
+          <li><span class="step live"><span></span></span> <strong>L · 300s × 10</strong> <span class="right" style="color:#fff">4 / 10</span></li>
+          <li class="muted"><span class="step pending"></span> R · 180s × 10 <span class="right">0 / 10</span></li>
+          <li class="muted"><span class="step pending"></span> G · 180s × 10 <span class="right">0 / 10</span></li>
+          <li class="muted"><span class="step pending"></span> B · 180s × 10 <span class="right">0 / 10</span></li>
+          <li class="muted"><span class="step pending"></span> Park & shutdown</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card history-card">
+      <div class="card-head history-head">
+        <span class="label">History</span>
+        <span class="sub mono">last 30 days · 12 sessions · 487 frames</span>
+        <span class="right"><input type="text" placeholder="filter targets…"/></span>
+      </div>
+
+      <details open>
+        <summary class="row-summary">
+          <span class="chev">▸</span>
+          <span class="name">M101 — Pinwheel</span>
+          <span class="sub">2026-05-02 · 22:14 → 03:48</span>
+          <span class="right">
+            <span class="ok-text">62 / 64 frames</span>
+            <span class="mono">5h 34m</span>
+            <span class="pill">complete</span>
+          </span>
+        </summary>
+        <div class="thumbs-grid">
+          <div class="thumb" style="background:linear-gradient(135deg,#1e1b4b,#020617)"><div class="thumb-label">0001</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0002</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0003</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0004</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0005</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#164e63,#020617)"><div class="thumb-label">0006</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#312e81,#020617)"><div class="thumb-label">0007</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e293b,#020617)"><div class="thumb-label">0008</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e1b4b,#020617)"><div class="thumb-label">0009</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0010</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0011</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0012</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0013</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#164e63,#020617)"><div class="thumb-label">0014</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#312e81,#020617)"><div class="thumb-label">0015</div></div>
+          <div class="thumb" style="background:linear-gradient(135deg,#1e293b,#020617)"><div class="thumb-label">0016</div></div>
+        </div>
+      </details>
+
+      <details>
+        <summary class="row-summary">
+          <span class="chev">▸</span>
+          <span class="name">NGC 7000 — North America</span>
+          <span class="sub">2026-04-30 · 21:48 → 02:11</span>
+          <span class="right">
+            <span class="warn-text">38 / 50 frames</span>
+            <span class="mono">4h 23m</span>
+            <span class="pill warn">aborted — clouds</span>
+          </span>
+        </summary>
+      </details>
+
+      <details>
+        <summary class="row-summary">
+          <span class="chev">▸</span>
+          <span class="name">M31 — Andromeda</span>
+          <span class="sub">2026-04-26 · 20:31 → 04:02</span>
+          <span class="right">
+            <span class="ok-text">82 / 82 frames</span>
+            <span class="mono">7h 31m</span>
+            <span class="pill">complete</span>
+          </span>
+        </summary>
+      </details>
+
+      <details>
+        <summary class="row-summary">
+          <span class="chev">▸</span>
+          <span class="name">IC 1396 — Elephant's Trunk</span>
+          <span class="sub">2026-04-21 · 22:02 → 03:18</span>
+          <span class="right">
+            <span class="bad-text">12 / 60 frames</span>
+            <span class="mono">0h 58m</span>
+            <span class="pill bad">failed — guide loss</span>
+          </span>
+        </summary>
+      </details>
+    </section>
+
+  </main>
+</div>
+
+</body>
+</html>
