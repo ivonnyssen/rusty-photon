@@ -844,24 +844,35 @@ documented ASCOM-gap answer and the operator-supplied default policy.
 
 ### Phase 8 — LGPL §4/§6 review under BYO (retires ADR-005 OQ 5)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] Add a short legal-review note under
-      `docs/decisions/005-plate-solver.md` §"License Treatment"
-      converting the working assumption into a closed item: confirm
-      that subprocess execution of an operator-installed binary
-      engages neither §4 (Conveying Verbatim Copies) nor §6 (Combined
-      Works); confirm that the `install-astap` GH action's per-run
-      fresh download does not constitute conveyance; confirm the
-      GH-Actions cache layer is scoped narrowly enough to count as
-      ephemeral build infrastructure.
-- [ ] If any of those three sub-items returns the opposite finding,
-      open a follow-up issue capturing the remediation (e.g., move the
-      install-astap action's cache scope to per-PR, or drop caching
-      entirely).
+What this phase delivered:
 
-**Exit criteria:** ADR-005 OQ 5 marked retired or a remediation
-issue is open.
+- [x] New §"License Review" subsection in
+      `docs/decisions/005-plate-solver.md` walking through each of
+      the three sub-questions (subprocess vs §4/§6; install-astap as
+      conveyance; GH cache as mirroring) with citations to the
+      LGPL-3.0 text and FSF guidance. Each concludes the BYO posture
+      is consistent with the standard reading of the license.
+- [x] Re-evaluation triggers documented for future-proofing: a
+      change in distribution model (bundling ASTAP), publishing
+      ASTAP archives via this repo's GitHub releases, or a
+      regulatory change affecting subprocess-boundary interpretation.
+- [x] ADR-005 §"Open questions" item 5 marked retired with the
+      conclusion summary and a pointer to the full review section.
+- [x] §"License Treatment" updated to point at the formal review
+      rather than calling it a "working assumption."
+
+What this phase did **not** do:
+
+- Engage outside legal counsel. This is reasoned analysis under the
+  standard reading of LGPL-3.0 and FSF guidance; commercial
+  redistributors or operators in jurisdictions with unusual
+  copyright doctrines should consult counsel for their own posture.
+
+**Exit criteria met:** ADR-005 OQ 5 retired with the documented
+conclusion. None of the three sub-questions returned an opposite
+finding, so no remediation issue is open.
 
 ## Sequencing notes
 

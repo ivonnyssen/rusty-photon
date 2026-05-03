@@ -400,16 +400,19 @@ below tracks which have been retired.
    2k–4k FITS frames is forward work tracked in Phase 7
    (hint-plumbing verification) — that's where the `@manual` happy-path
    gets exercised by an operator with a real fixture.
-5. **LGPL-3.0 §4 / §6 review under BYO** — confirm that "execute a
-   binary the operator installed" does not engage either clause; that
-   the `install-astap` GitHub action does not constitute conveyance
-   (it triggers a fresh upstream download per run); and that the
-   GH-Actions cache layer for that download is scoped narrowly enough
-   to count as ephemeral build infrastructure rather than mirroring.
-   The §6 "Combined Works" question is also confirmed moot for
-   subprocess execution. This question is the formal closure of the
-   ADR's working assumption — see [License Treatment](#license-treatment).
-   Tracked under Phase 8.
+5. **LGPL-3.0 §4 / §6 review under BYO** — **Retired by Phase 8.**
+   Conclusions: (a) subprocess execution doesn't engage §4
+   (Combined Works) or §6 (Conveying Non-Source Forms) — those
+   apply to linker-boundary combination and to conveyance, both
+   absent here; (b) the `install-astap` GH action is repo-internal
+   CI tooling that downloads from upstream per run, not a
+   distribution channel — no conveyance; (c) GH-Actions cache is
+   ephemeral build infrastructure (per-repo, ≤7-day TTL, no public
+   download surface), not mirroring. Full reasoning, citations, and
+   re-evaluation triggers documented in
+   [License Review](#license-review). Reasoned analysis, not legal
+   advice — operators distributing commercially or in unusual
+   jurisdictions should consult counsel.
 6. **Hint plumbing** — **Retired by Phase 7.** Answer: the ASCOM
    Alpaca Telescope spec does **not** standardize a pointing-
    uncertainty / accuracy property — only `RightAscension` and
@@ -458,9 +461,10 @@ below tracks which have been retired.
 
 ### License Treatment
 
-This section captures the working assumption pending the formal
-LGPL-3.0 review listed as Open Question #5. The posture is "BYO so
-the question reduces to a sanity check," not "conveyance compliant."
+The formal LGPL-3.0 review (Open Question #5) is captured in
+[License Review](#license-review) below. The summary of our posture:
+"BYO so the question reduces to a sanity check," not "conveyance
+compliant."
 
 - ASTAP's binaries are LGPL-3.0. **`rp` does not convey them.**
   Operators install ASTAP separately (from hnsky.org, SourceForge,
@@ -490,6 +494,111 @@ the question reduces to a sanity check," not "conveyance compliant."
 - `solve-field` (Option 2) and any other compatible solver remain
   available via the same configuration knobs; an operator can swap
   implementations without rebuilding `rp`.
+
+### License Review
+
+This section retires Open Question #5 by walking through each of the
+three sub-questions ADR-005 raised about LGPL-3.0 §4 / §6 and the CI
+install path. **This is reasoned analysis, not legal advice.**
+Operators distributing commercially or in jurisdictions with unusual
+copyright doctrines should consult counsel. The reasoning below is
+the standard interpretation under US copyright law and the FSF's
+own guidance on GPL/LGPL boundaries.
+
+#### Question 1: Does subprocess execution engage LGPL §4 or §6?
+
+**Answer: No.**
+
+LGPL-3.0 §4 ("Combined Works") is the section that converts an
+LGPL work into something the larger program must also license under
+GPL/LGPL terms. It applies when you "convey a Combined Work under
+terms of your choice" — and §0 defines a Combined Work as "a work
+produced by combining or linking an Application with the Library."
+The terms "combining" and "linking" in the LGPL refer to the static
+or dynamic linker boundary; subprocess execution is not linking by
+any commonly-cited interpretation
+([FSF FAQ](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation),
+[FSF "What is mere aggregation"](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)).
+
+§6 ("Conveying Non-Source Forms") imposes obligations *only when
+conveying* — and conveying is defined in GPL-3.0 §0 (which LGPL-3.0
+§0 inherits) as "any kind of propagation that enables other parties
+to make or receive copies." `rp` and `rp-plate-solver` neither
+make nor receive copies of `astap_cli`; they invoke an
+operator-installed binary by absolute path. The subprocess boundary
+puts §6 outside the runtime path entirely.
+
+#### Question 2: Does the `install-astap` GH action's per-run fresh download constitute conveyance?
+
+**Answer: No.**
+
+The action does not republish, mirror, or stage ASTAP for end-user
+consumption. It is repo-internal CI tooling that downloads the
+binary directly from upstream SourceForge (`https://sourceforge.net/...`)
+on each runner, into a runner-local path, for the duration of one
+workflow run. The bytes never leave the runner; nothing is uploaded
+back to GitHub releases or to a downstream artifact channel.
+
+Compare with the explicit "conveyance" example: a project that
+forked or rehosted `astap_cli` binaries on its own GitHub release
+page would be conveying — it would be making the bytes available
+for third-party download under its own distribution channel. The
+`install-astap` action does not do that; it is a download-helper
+that mirrors what a human operator would do by hand from the
+README's "Operator install" section.
+
+The fresh-download-per-run posture (`cache-key-suffix: github.run_id`
+on the smoke workflow) reinforces this: caching is at most a
+performance optimization, not a distribution mechanism.
+
+#### Question 3: Is the GH-Actions cache layer narrow enough to count as ephemeral build infrastructure?
+
+**Answer: Yes, with one note.**
+
+`actions/cache@v5` stores artifacts in a per-repository, per-key
+cache with a default 7-day eviction policy and a 10 GB total cap
+([GitHub docs](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows)).
+Cache entries are scoped to the repository and accessible only to
+workflow runs in that repository (and its forks under the standard
+fork access rules). They are not surfaced as a download endpoint
+the public can hit.
+
+By the test the FSF applies to "mirroring" — does this make the
+work available to third parties under your distribution authority?
+— GH-Actions cache fails the test on every prong: scope is
+repo-internal CI infrastructure, lifetime is bounded, and there is
+no "public download URL" surface. It's the same shape as a CI's
+package-manager cache (npm, pip, cargo) for transitive
+dependencies, which the same analysis treats as ephemeral build
+tooling rather than redistribution.
+
+**The note:** the dedicated `install-astap` smoke workflow
+(`.github/workflows/install-astap.yml`) explicitly disables the
+cache (`use-cache: "false"`) precisely because its job is to catch
+upstream regressions on every run, and a warm cache would mask them.
+Operators forking the repo and running their own builds inherit the
+same cache scope; they're not republishing.
+
+#### Posture summary
+
+- `rp` and `rp-plate-solver` never convey ASTAP. §4 and §6 do not
+  engage at the `rp` boundary.
+- The `install-astap` action is repo-internal CI tooling, not a
+  distribution channel. It does not convey.
+- GH-Actions cache is ephemeral build infrastructure, not mirroring.
+
+The wrapper's HTTP boundary, BYO config posture, and CI tooling
+shape are all consistent with this analysis. ADR-005 OQ #5 is
+**retired** with this conclusion. Future re-evaluation triggers:
+
+- A change in distribution model (e.g., `rp-plate-solver` starts
+  bundling ASTAP — explicitly out of scope per ADR-005's BYO
+  decision).
+- A decision to publish ASTAP archives via GitHub releases on this
+  repo (would convert `install-astap` from "download helper" into
+  "mirror," which would engage §6).
+- A regulatory or jurisdictional change affecting the FSF's
+  guidance on subprocess boundaries.
 
 ### CI / Build
 
