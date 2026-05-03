@@ -74,10 +74,16 @@ async fn mount_tracking_set_to(world: &mut RpWorld, value: String) {
         other => panic!("expected true|false for tracking, got {other}"),
     };
     ensure_mcp_client(world).await;
-    let _ = world
+    // Given step: fail fast on setup problems per testing.md §3.3.
+    // If `set_tracking` fails (e.g., misconfigured mount or
+    // CanSetTracking == false in the simulator), the scenario should
+    // surface that directly rather than failing later with a
+    // less-direct symptom from the When step.
+    world
         .mcp()
         .call_tool("set_tracking", serde_json::json!({ "enabled": enabled }))
-        .await;
+        .await
+        .expect("set_tracking should succeed in scenario setup");
 }
 
 // --- When steps ---

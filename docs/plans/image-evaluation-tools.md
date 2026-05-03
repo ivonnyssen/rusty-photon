@@ -554,7 +554,7 @@ re-litigated:
 
 ##### Phase 6c-prep — Mount primitives
 
-Status: **planned (2026-05-02).** Parallels Phase 6a (focuser
+Status: **complete (2026-05-03).** Parallels Phase 6a (focuser
 primitives). Required because `center_on_target` needs `slew` and
 `sync_mount`, neither of which exists in `rp` today.
 
@@ -616,7 +616,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
 
 ###### Work breakdown (in order)
 
-- [ ] **Step 1 — `MountConfig` in `config.rs`.** Fields: `alpaca_url:
+- [x] **Step 1 — `MountConfig` in `config.rs`.** Fields: `alpaca_url:
       String`, `device_number: u32` (`#[serde(default)]`), optional
       `auth: Option<ClientAuthConfig>`, optional
       `settle_after_slew: Option<Duration>` (`humantime_serde`).
@@ -624,7 +624,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       `EquipmentConfig` with `pub mount: Option<MountConfig>`
       (`#[serde(default)]`). Two unit tests — minimal-fields, with
       auth + settle_after_slew.
-- [ ] **Step 2 — `MountEntry` + `connect_mount` in `equipment.rs`.**
+- [x] **Step 2 — `MountEntry` + `connect_mount` in `equipment.rs`.**
       Mirrors `FocuserEntry` / `connect_focuser`. Holds
       `Arc<dyn Telescope>` from ascom-alpaca. Five failure-arm unit
       tests via in-test axum stub (same pattern Phase 6a established
@@ -632,7 +632,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       network error, 5 s `tokio::time::timeout`, no-telescope-in-list,
       `set_connected` Alpaca rejection. Plus one happy-path arm. No
       connect-time probes of `Tracking` / `Slewing` / `AtPark`.
-- [ ] **Step 3 — `EquipmentRegistry` plumbing.** Singular
+- [x] **Step 3 — `EquipmentRegistry` plumbing.** Singular
       `pub mount: Option<MountEntry>` field, populated in
       `EquipmentRegistry::new`. `find_mount(&self) -> Option<&MountEntry>`
       lookup. `EquipmentStatus.mount: Option<DeviceStatus>` (singular,
@@ -640,7 +640,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       end-to-end registry test against the axum stub paralleling
       `connect_focuser_success_returns_connected_entry` +
       `find_focuser`.
-- [ ] **Step 4 — `do_slew_blocking` helper in `mcp.rs`.**
+- [x] **Step 4 — `do_slew_blocking` helper in `mcp.rs`.**
       `pub(crate) async fn do_slew_blocking(&self, ra: f64, dec: f64,
       settle_after: Duration) -> Result<(f64, f64), String>`. Resolves
       the mount, calls `slew_to_coordinates_async`, polls `slewing()`
@@ -650,7 +650,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       deadline expiry before returning the timeout error. Modeled on
       `do_move_focuser_blocking`. Helper `resolve_mount` (no macro)
       handles "no mount configured" + "mount not connected" symmetrically.
-- [ ] **Step 5 — Five MCP tools in `mcp.rs`.**
+- [x] **Step 5 — Five MCP tools in `mcp.rs`.**
       - `slew { ra: f64, dec: f64, settle_after: Option<Duration> }` →
         `{ actual_ra, actual_dec }`. Validates `ra ∈ [0, 24)` hours and
         `dec ∈ [-90, 90]` degrees in the body. `settle_after` resolves
@@ -668,7 +668,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
 
       ~16 unit tests against a `MockTelescope` (paralleling the
       existing `MockFocuser` pattern at `mcp.rs:2160+`).
-- [ ] **Step 6 — `tests/features/mount.feature`** (~15 scenarios,
+- [x] **Step 6 — `tests/features/mount.feature`** (~15 scenarios,
       `@serial` tagged). Catalog (1); `slew` (5: tracking-on happy
       path, tracking-off error, no-mount-configured, mount-not-connected,
       one Outline using `MISSING` sentinel for ra/dec range +
@@ -680,7 +680,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       asserting `settle_after: "100ms"` extends total slew time by
       ~100ms. Slew tolerance: exact equality (revisit at impl time
       if OmniSim diverges).
-- [ ] **Step 7 — `tests/bdd/steps/mount_steps.rs`.** Reuse-first:
+- [x] **Step 7 — `tests/bdd/steps/mount_steps.rs`.** Reuse-first:
       pull `the tool list should include`, `the tool call should
       succeed`, `the tool call should return an error`, `the error
       message should contain` from `tool_steps.rs`. New mount-specific
@@ -693,7 +693,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       steps interpret `MISSING` in the table as "omit that field
       from the JSON-RPC params." No new `RpWorld` fields. Wire into
       `tests/bdd/steps/mod.rs`.
-- [ ] **Step 8 — `bdd_infra::rp_harness::MountConfig` +
+- [x] **Step 8 — `bdd_infra::rp_harness::MountConfig` +
       `RpConfigBuilder::with_mount`.** Test-side struct holds
       `alpaca_url` + `device_number` (no `auth`, matches existing
       test-side device structs). Builder field
@@ -702,7 +702,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
       replacing the current literal `"mount": null` line. No
       `ensure_default_mount` — explicit `.with_mount(...)` reads
       better at every call site that needs a mount.
-- [ ] **Step 9 — `docs/services/rp.md` updates.**
+- [x] **Step 9 — `docs/services/rp.md` updates.**
       - Configuration example: replace the existing
         `mount` block with the singular typed shape including
         optional `settle_after_slew`. Drop the obsolete
@@ -717,13 +717,13 @@ Built-in Tools — Hardware) and should not be re-litigated:
       - One-line prose under the new tools: "`mount.settle_after_slew`
         is applied after `Slewing == false`; per-call `settle_after`
         on `slew` overrides (including `"0s"` to skip)."
-- [ ] **Step 10 — `services/rp/Cargo.toml`.** Append `"telescope"` to
+- [x] **Step 10 — `services/rp/Cargo.toml`.** Append `"telescope"` to
       `ascom-alpaca`'s features list. No new workspace deps; no
       `bazel mod tidy` needed. Per-crate features lists are intent
       expression — workspace builds compile the union due to Cargo
       feature unification, but cargo-hack's feature-powerset CI
       enforces standalone-buildability.
-- [ ] **Step 11 — Plan-doc bookkeeping.** Land alongside the impl:
+- [x] **Step 11 — Plan-doc bookkeeping.** Land alongside the impl:
       flip Phase 6c-prep status to **complete** with the work-breakdown
       checkboxes ticked, exit-criteria block populated with concrete
       counts (BDD scenarios green, lib tests passing).
@@ -742,9 +742,18 @@ Built-in Tools — Hardware) and should not be re-litigated:
   `get_mount_position`; deferred until a meridian-flip workflow
   surfaces.
 
-**Exit criteria:** ~15 new BDD scenarios green; ~24 new lib tests
-across `config` (2), `equipment` (7), `mcp` mount tools (~16);
-`cargo rail run --profile commit -q` clean; `cargo fmt` clean.
+**Exit criteria met:** 14 new BDD scenarios green (187/187 total in
+rp's BDD suite, was 173/173 pre-Phase-6c-prep); 33 new lib tests
+across `config` (3), `equipment` (7 — 5 `connect_mount` failure paths
++ 1 success arm + 1 `EquipmentRegistry` end-to-end via axum stub),
+and `mcp` mount tools (23 against `MockTelescope`); plus 3 new
+`bdd-infra` tests pinning `RpConfigBuilder::with_mount` JSON shape.
+`cargo rail run --profile commit -q` reports 701/701 tests passing
+workspace-wide. `cargo fmt` clean. No new workspace deps; no
+`bazel mod tidy` needed. Slew-echo BDD assertion uses a
+`0.001`-hour / `0.001`-degree tolerance because OmniSim's slew echo
+drifts ~0.4 arcsec from internal coordinate transforms — well under
+any centering workflow's tolerance, well above OmniSim's drift.
 
 ##### Phase 6c-1 — `rp-plate-solver` rp-managed service
 

@@ -1839,8 +1839,10 @@ impl McpHandler {
             ));
         }
 
-        // Resolve the mount once before reading the settle config so
-        // "no mount configured" error wins over a config lookup.
+        // Resolve `settle_after`: explicit per-call value wins; otherwise
+        // pull the mount's configured default (or zero if no mount is
+        // configured — `do_slew_blocking` below calls `resolve_mount`
+        // and surfaces the "no mount configured" error in that case).
         let settle_after = match params.settle_after {
             Some(d) => d,
             None => match self.equipment.find_mount() {
