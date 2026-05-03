@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>RP // LCARS // ACTIVITY</title>
+<style>
+  /* ── LCARS palette ───────────────────────────────────────────────── */
+  :root {
+    --lcars-orange:  #ff9966;   /* salmon-orange (Okudagram primary) */
+    --lcars-amber:   #ff9900;   /* burnt amber */
+    --lcars-peach:   #ffcc99;   /* peach */
+    --lcars-violet:  #cc99cc;   /* violet */
+    --lcars-magenta: #cc6688;   /* dusty magenta */
+    --lcars-blue:    #9999ff;   /* periwinkle blue */
+    --lcars-sky:     #99ccff;   /* light blue */
+    --lcars-yellow:  #ffcc66;   /* honey yellow */
+    --lcars-tan:     #cc9966;   /* tan */
+    --lcars-red:     #ff5544;   /* red alert */
+
+    --bg:    #000;
+    --text:  #ffcc99;
+    --dim:   #886655;
+
+    /* layout */
+    --side-w: 180px;
+    --top-h:  60px;
+    --bot-h:  28px;
+    --corner: 50px;
+    --gap:    4px;
+  }
+
+  *,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+  html,body { background:#000; color:var(--text);
+    font-family:"Helvetica Neue", "Arial Narrow", "Roboto Condensed", Impact, sans-serif;
+    font-stretch:condensed; font-weight:700;
+    font-size:14px; line-height:1.2; min-height:100vh;
+    text-transform:uppercase; letter-spacing:0.04em;
+    -webkit-font-smoothing:antialiased }
+  button, a, label { font:inherit; color:inherit; background:none;
+    border:0; cursor:pointer; text-decoration:none }
+  ol,ul { list-style:none }
+  .case-normal { text-transform:none }
+  .num { font-variant-numeric:tabular-nums; letter-spacing:0.02em }
+
+  /* ── frame: top bar + sidebar + bottom bar (the L-shapes) ───── */
+  .lcars-app { min-height:100vh; padding:var(--gap);
+    display:grid; gap:var(--gap);
+    grid-template-columns:var(--side-w) 1fr;
+    grid-template-rows:var(--top-h) 1fr var(--bot-h) }
+
+  /* TOP BAR — full width, top row */
+  .lcars-top { grid-column:1 / -1; height:var(--top-h);
+    background:var(--lcars-amber);
+    border-radius:var(--corner) var(--corner) 0 0;
+    padding:0 var(--corner) 0 var(--corner);
+    display:grid;
+    grid-template-columns:auto auto 1fr auto auto auto;
+    align-items:center; gap:18px;
+    color:#000 }
+  .lcars-top .logo { font-size:18px; letter-spacing:0.08em }
+  .lcars-top .div { color:rgba(0,0,0,.4) }
+  .lcars-top .title { font-size:24px; letter-spacing:0.12em;
+    justify-self:center; margin-left:40px }
+  .lcars-top .stardate { font-size:13px; color:#000 }
+  .lcars-top .stardate b { font-size:15px; margin-left:6px;
+    font-variant-numeric:tabular-nums }
+  .lcars-top .ref { font-size:12px; color:rgba(0,0,0,.55);
+    border-left:2px solid #000; padding-left:14px; height:24px;
+    line-height:24px }
+  .lcars-top .nv {
+    background:#000; color:var(--lcars-amber);
+    padding:6px 18px; border-radius:99px;
+    font-size:12px; letter-spacing:0.14em;
+    display:flex; align-items:center; gap:8px;
+    border:2px solid #000; cursor:pointer; user-select:none;
+    transition:background .15s, color .15s }
+  .lcars-top .nv:hover { background:#1a1a1a }
+  .lcars-top .nv:has(input:checked) { background:#fff; color:#000 }
+  .lcars-top .nv .icon { font-size:13px }
+  .lcars-top .nv .dot { width:8px; height:8px; border-radius:50%;
+    background:var(--lcars-amber); border:1px solid var(--lcars-amber) }
+  .lcars-top .nv:has(input:checked) .dot { background:#000;
+    border-color:#000; box-shadow:0 0 6px #fff }
+
+  /* SIDEBAR — left column, mid+bottom rows */
+  .lcars-side { grid-row:2 / -1;
+    display:flex; flex-direction:column; gap:var(--gap) }
+
+  /* SIDEBAR pill blocks */
+  .pill {
+    padding:14px 22px 12px;
+    color:#000; font-size:14px; letter-spacing:0.08em;
+    border-radius:0 99px 99px 0;
+    margin-right:var(--corner);
+    cursor:pointer;
+    transition:filter .15s }
+  .pill:hover { filter:brightness(1.15) }
+  .pill.active { padding-right:32px }
+  .pill.active::after { content:"▸"; float:right; margin-top:-1px }
+
+  .pill.amber   { background:var(--lcars-amber) }
+  .pill.peach   { background:var(--lcars-peach) }
+  .pill.salmon  { background:var(--lcars-orange) }
+  .pill.violet  { background:var(--lcars-violet) }
+  .pill.magenta { background:var(--lcars-magenta) }
+  .pill.blue    { background:var(--lcars-blue) }
+  .pill.sky     { background:var(--lcars-sky) }
+  .pill.yellow  { background:var(--lcars-yellow) }
+  .pill.tan     { background:var(--lcars-tan) }
+  .pill.red     { background:var(--lcars-red); color:#fff }
+
+  /* spacer-pill: tiny height, just for color rhythm */
+  .spacer { height:14px; background:var(--lcars-magenta);
+    border-radius:0 99px 99px 0; margin-right:var(--corner) }
+  .spacer.tan    { background:var(--lcars-tan) }
+  .spacer.yellow { background:var(--lcars-yellow) }
+  .spacer.violet { background:var(--lcars-violet) }
+  .spacer.peach  { background:var(--lcars-peach) }
+  .spacer.amber  { background:var(--lcars-amber) }
+  .spacer.blue   { background:var(--lcars-blue) }
+
+  /* sidebar section header — small label at top of a group */
+  .side-section-h { font-size:10px; color:var(--dim);
+    padding:8px 22px 4px; letter-spacing:0.16em }
+
+  /* sidebar status group: tighter rows with LED + label */
+  .side-status { padding:8px 22px 14px var(--corner);
+    background:var(--lcars-magenta);
+    color:#000; border-radius:0 99px 99px 0;
+    display:flex; flex-direction:column; gap:6px;
+    font-size:11px; letter-spacing:0.06em;
+    margin-right:var(--corner) }
+  .side-status li { display:grid; grid-template-columns:auto 1fr auto;
+    gap:8px; align-items:center }
+  .side-status li::before { content:""; width:7px; height:7px; border-radius:50%;
+    background:#000 }
+  .side-status li.warn::before { background:var(--lcars-red) }
+  .side-status li .v { font-variant-numeric:tabular-nums; letter-spacing:0;
+    text-transform:none; font-size:11px }
+
+  /* user / sign-out at bottom */
+  .side-foot { margin-top:auto; display:flex; flex-direction:column; gap:var(--gap) }
+
+  /* ── elbow piece — rounded inside corner of the L ──────────── */
+  /* Sits at the join of top bar bottom and sidebar right.
+     Color matches the top bar / sidebar that meets here. */
+  .elbow-tl { position:absolute;
+    top:calc(var(--gap) + var(--top-h));
+    left:calc(var(--gap) + var(--side-w));
+    width:var(--corner); height:var(--corner);
+    background:var(--lcars-amber);
+    border-bottom-right-radius:var(--corner);
+    pointer-events:none }
+  .elbow-bl { position:absolute;
+    bottom:calc(var(--gap) + var(--bot-h));
+    left:calc(var(--gap) + var(--side-w));
+    width:var(--corner); height:var(--corner);
+    background:var(--lcars-amber);
+    border-top-right-radius:var(--corner);
+    pointer-events:none }
+
+  /* ── BOTTOM BAR — full width, last row ────────────────────────── */
+  .lcars-bot { grid-column:1 / -1; height:var(--bot-h);
+    background:var(--lcars-amber);
+    border-radius:0 0 var(--corner) var(--corner);
+    padding:0 var(--corner);
+    display:flex; align-items:center; gap:18px;
+    color:#000; font-size:11px; letter-spacing:0.12em }
+  .lcars-bot .grow { flex:1 }
+  .lcars-bot .ref { color:rgba(0,0,0,.55); font-variant-numeric:tabular-nums;
+    text-transform:none; letter-spacing:0.04em }
+
+  /* ── MAIN STAGE (right column, mid row) ─────────────────────── */
+  .lcars-main { background:#000; color:var(--text);
+    overflow:hidden; display:flex; flex-direction:column;
+    gap:var(--gap); padding-left:0 }
+
+  /* ── STRIP — top of main, contains foldable telemetry ─────── */
+  .fold-state { display:none }
+
+  .strip { background:#000; height:34px; padding:0 0 0 0;
+    display:flex; align-items:center; gap:14px;
+    cursor:pointer;
+    border-bottom:1px solid #1a1a1a; transition:background .15s }
+  .strip:hover { background:#0a0a0a }
+
+  .strip-block { background:var(--lcars-orange); color:#000;
+    padding:0 18px 0 14px; height:100%;
+    display:flex; align-items:center; gap:8px;
+    border-radius:0 99px 99px 0;
+    font-size:12px; letter-spacing:0.1em }
+  .strip-pulse { width:8px; height:8px; border-radius:50%; background:#000;
+    animation:blink 1.4s ease-in-out infinite }
+  @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+  .strip-block .v { letter-spacing:0; text-transform:none;
+    font-variant-numeric:tabular-nums; font-size:13px }
+
+  .strip-stat { display:flex; align-items:center; gap:8px;
+    color:var(--dim); font-size:11px; letter-spacing:0.1em }
+  .strip-stat .lbl-ra  { color:var(--lcars-orange) }
+  .strip-stat .lbl-dec { color:var(--lcars-sky) }
+  .strip-stat .v { color:var(--text); text-transform:none; letter-spacing:0;
+    font-variant-numeric:tabular-nums; font-size:13px }
+  .strip-stat .v.warn { color:var(--lcars-yellow) }
+  .strip-stat .v.live { color:var(--lcars-peach) }
+  .mini { width:60px; height:18px; flex:none }
+
+  .strip-spacer { flex:1 }
+
+  .strip-eta { color:var(--dim); font-size:11px; letter-spacing:0.1em }
+  .strip-eta b { color:var(--text); font-variant-numeric:tabular-nums;
+    text-transform:none; letter-spacing:0; font-size:13px; margin-left:4px }
+
+  .strip-toggle { background:var(--lcars-violet); color:#000;
+    height:100%; padding:0 18px 0 14px;
+    display:flex; align-items:center; gap:10px;
+    border-radius:99px 0 0 99px;
+    font-size:11px; letter-spacing:0.14em }
+  .strip-toggle .chev {
+    width:7px; height:7px;
+    border-right:2px solid #000; border-bottom:2px solid #000;
+    transform:rotate(45deg) translateY(-2px);
+    transition:transform 320ms cubic-bezier(.4,0,.2,1) }
+  .fold-state:checked ~ .strip .strip-toggle .chev {
+    transform:rotate(-135deg) translateY(2px) }
+  .fold-state:checked ~ .strip .strip-toggle .lbl::before { content:"COLLAPSE" }
+  .fold-state:not(:checked) ~ .strip .strip-toggle .lbl::before { content:"EXPAND" }
+
+  /* ── FOLD PANEL ──────────────────────────────────────────────── */
+  .fold-body {
+    display:grid; grid-template-rows:0fr;
+    transition:grid-template-rows 320ms cubic-bezier(.4,0,.2,1) }
+  .fold-body > .panel {
+    min-height:0; overflow:hidden; opacity:0;
+    transition:opacity 220ms ease }
+  .fold-state:checked ~ .fold-body { grid-template-rows:1fr }
+  .fold-state:checked ~ .fold-body > .panel {
+    opacity:1; transition-delay:60ms }
+
+  .panel { background:#000; padding:var(--gap) 0;
+    display:flex; flex-direction:column; gap:var(--gap) }
+
+  /* panel header strip — small LCARS multi-block bar */
+  .panel-head { display:flex; gap:var(--gap); height:24px; align-items:stretch }
+  .panel-head .blk { padding:0 14px; display:flex; align-items:center;
+    color:#000; font-size:11px; letter-spacing:0.12em }
+  .panel-head .blk.label { background:var(--lcars-violet);
+    border-radius:0 99px 99px 0 }
+  .panel-head .blk.meta  { background:var(--lcars-tan);
+    color:#000; flex:1; justify-content:flex-end;
+    border-radius:99px 0 0 99px;
+    font-variant-numeric:tabular-nums }
+  .panel-head .blk.meta b { letter-spacing:0; text-transform:none;
+    margin:0 4px; font-size:12px }
+
+  .panel-grid { display:grid; grid-template-columns:1fr 280px;
+    gap:var(--gap) }
+
+  /* guider card */
+  .guider { background:#0a0a0a;
+    border-left:6px solid var(--lcars-orange) }
+  .guider-head { display:flex; align-items:center; gap:14px;
+    padding:10px 14px; border-bottom:1px solid #1a1a1a }
+  .guider-head .label { color:var(--lcars-orange); font-size:13px;
+    letter-spacing:0.14em }
+  .guider-head .sub { color:var(--dim); font-size:11px; letter-spacing:0.06em }
+  .gstats { display:flex; gap:14px; margin-left:auto;
+    color:var(--dim); font-size:11px; letter-spacing:0.08em }
+  .gstat { display:flex; align-items:center; gap:6px }
+  .gstat .swatch { width:12px; height:2px }
+  .gstat.ra .swatch { background:var(--lcars-orange) }
+  .gstat.dec .swatch { background:var(--lcars-sky) }
+  .gstat .v { color:var(--text); font-variant-numeric:tabular-nums;
+    letter-spacing:0; text-transform:none; font-size:13px }
+  .gstat.total { padding-left:14px; border-left:1px solid #2a2a2a;
+    color:var(--text) }
+  .gstat.total .v { color:var(--lcars-peach); font-size:14px }
+  .graph { height:220px; padding:8px 12px }
+  .graph svg { display:block; width:100%; height:100% }
+
+  /* trend charts */
+  .charts-row { display:grid; grid-template-columns:repeat(4,1fr);
+    gap:var(--gap) }
+  .chart-card { background:#0a0a0a;
+    border-left:6px solid var(--lcars-violet); padding:0 }
+  .chart-card.alt { border-left-color:var(--lcars-tan) }
+  .chart-card.alt2 { border-left-color:var(--lcars-magenta) }
+  .chart-card.alt3 { border-left-color:var(--lcars-blue) }
+  .chart-h { display:flex; align-items:baseline; gap:8px;
+    padding:8px 14px 4px }
+  .chart-h .k { color:var(--dim); font-size:11px; letter-spacing:0.12em }
+  .chart-h .v { margin-left:auto; color:var(--text);
+    font-variant-numeric:tabular-nums; letter-spacing:0;
+    text-transform:none; font-size:18px }
+  .chart-h .v.warn { color:var(--lcars-yellow) }
+  .chart-h .v.live { color:var(--lcars-peach) }
+  .chart-h .d { color:var(--dim); font-size:10px; letter-spacing:0.06em }
+  .chart-h .d.warn { color:var(--lcars-yellow) }
+  .chart-h .d.live { color:var(--lcars-peach) }
+  .chart-body { padding:0 12px 10px; height:80px }
+  .chart-body svg { display:block; width:100%; height:100% }
+
+  /* side column: stages */
+  .side-card { background:#0a0a0a;
+    border-left:6px solid var(--lcars-blue); padding:14px }
+  .side-card h4 { color:var(--lcars-blue); font-size:12px;
+    letter-spacing:0.14em; margin-bottom:12px;
+    display:flex; align-items:center; justify-content:space-between }
+  .side-card h4 .ref { color:var(--dim); font-size:10px;
+    text-transform:none; letter-spacing:0;
+    font-variant-numeric:tabular-nums }
+  .stages-list { display:flex; flex-direction:column; gap:5px;
+    font-size:12px; letter-spacing:0.04em }
+  .stages-list li { display:grid;
+    grid-template-columns:auto 1fr auto; gap:10px; align-items:center }
+  .stages-list .step { width:14px; height:14px;
+    display:grid; place-items:center; font-size:9px; border-radius:50% }
+  .stages-list .step.done { background:var(--lcars-peach); color:#000 }
+  .stages-list .step.live { background:var(--lcars-amber); color:#000 }
+  .stages-list .step.live::after { content:""; position:absolute;
+    inset:-2px; border-radius:50%; border:1px solid var(--lcars-amber);
+    animation:pulse 1.4s ease-in-out infinite }
+  @keyframes pulse { 0% { transform:scale(1); opacity:1 }
+                     100% { transform:scale(1.6); opacity:0 } }
+  .stages-list .step { position:relative }
+  .stages-list .step.pending { background:transparent;
+    border:1px dashed #2a2a2a }
+  .stages-list li.muted { color:var(--dim) }
+  .stages-list strong { color:var(--text) }
+  .stages-list .right { font-variant-numeric:tabular-nums; color:var(--dim);
+    text-transform:none; letter-spacing:0; font-size:11px }
+
+  /* ── content stream ──────────────────────────────────────────── */
+  .content { padding:var(--gap) 0;
+    display:flex; flex-direction:column; gap:var(--gap);
+    overflow-y:auto; flex:1 }
+
+  /* section header — multi-color bar */
+  .sec-h { display:flex; gap:var(--gap); height:26px; align-items:stretch }
+  .sec-h .blk { padding:0 14px; display:flex; align-items:center;
+    color:#000; font-size:11px; letter-spacing:0.14em }
+  .sec-h .blk.num   { background:var(--lcars-violet);
+    border-radius:0 99px 99px 0 }
+  .sec-h .blk.label { background:var(--lcars-orange) }
+  .sec-h .blk.meta  { background:var(--lcars-tan); flex:1;
+    justify-content:flex-end; border-radius:99px 0 0 99px;
+    font-variant-numeric:tabular-nums }
+  .sec-h .blk.meta b { letter-spacing:0; text-transform:none;
+    margin:0 4px; font-size:12px }
+
+  /* hero */
+  .hero { background:#0a0a0a;
+    display:grid; grid-template-columns:auto 1fr auto;
+    gap:24px; padding:18px 20px;
+    border-left:6px solid var(--lcars-amber) }
+
+  .hero-pct { width:120px;
+    background:var(--lcars-amber); color:#000;
+    border-radius:99px;
+    display:grid; place-items:center; padding:14px;
+    text-align:center }
+  .hero-pct .n { font-size:48px; line-height:1;
+    font-variant-numeric:tabular-nums; letter-spacing:-0.02em }
+  .hero-pct .lbl { font-size:11px; letter-spacing:0.16em; margin-top:2px }
+
+  .hero-body { min-width:0 }
+  .hero-tag { color:var(--lcars-amber); font-size:11px; letter-spacing:0.18em;
+    display:flex; align-items:center; gap:8px }
+  .hero-tag::before { content:""; width:8px; height:8px;
+    background:var(--lcars-amber); animation:blink 1.4s ease-in-out infinite }
+  .hero h1 { font-size:32px; letter-spacing:0.04em; margin:6px 0 4px;
+    color:var(--text) }
+  .hero h1 .dim { color:var(--dim) }
+  .hero .meta { color:var(--dim); font-size:11px; letter-spacing:0.08em }
+  .hero .meta b { color:var(--text); font-variant-numeric:tabular-nums;
+    text-transform:none; letter-spacing:0; font-size:12px }
+
+  .hero-stages { display:flex; gap:var(--gap); margin-top:14px }
+  .hero-stages li { padding:6px 16px; font-size:11px; letter-spacing:0.14em;
+    background:#1a1a1a; color:var(--dim); border-radius:99px }
+  .hero-stages li.done { background:var(--lcars-peach); color:#000 }
+  .hero-stages li.live { background:var(--lcars-amber); color:#000 }
+
+  .hero-actions { display:flex; flex-direction:column; gap:6px;
+    align-items:flex-end }
+  .btn { padding:8px 18px; font-size:11px; letter-spacing:0.14em;
+    color:#000; background:var(--lcars-tan);
+    border-radius:99px; transition:filter .15s }
+  .btn:hover { filter:brightness(1.15) }
+  .btn.danger { background:var(--lcars-red); color:#fff }
+
+  /* frame card */
+  .frame { background:#0a0a0a;
+    border-left:6px solid var(--lcars-magenta) }
+  .frame-h { padding:10px 14px; display:flex; align-items:center;
+    border-bottom:1px solid #1a1a1a; font-size:11px;
+    letter-spacing:0.08em; color:var(--dim) }
+  .frame-h .name { color:var(--text); font-size:14px; letter-spacing:0.04em }
+  .frame-h .meta { margin-left:14px; font-variant-numeric:tabular-nums;
+    text-transform:none; letter-spacing:0 }
+  .frame-h .actions { margin-left:auto; display:flex; gap:14px }
+  .frame-h .actions a:hover { color:var(--text) }
+  .frame-img { background:#000; aspect-ratio:16/9; position:relative }
+  .frame-img svg { position:absolute; inset:0; width:100%; height:100% }
+  .frame-ovl { position:absolute; bottom:12px; left:12px;
+    padding:5px 12px; background:#000; color:var(--text-soft, var(--text));
+    font-size:11px; letter-spacing:0.06em;
+    font-variant-numeric:tabular-nums; border:1px solid #2a2a2a }
+
+  /* timeline */
+  .tl { display:flex; flex-direction:column; gap:var(--gap) }
+  .tl-row { background:#0a0a0a; border-left:6px solid var(--lcars-blue) }
+  .tl-row.done { border-left-color:var(--lcars-peach) }
+  .tl-row.warn { border-left-color:var(--lcars-yellow) }
+  .tl-row.bad  { border-left-color:var(--lcars-red) }
+
+  details > summary { list-style:none; cursor:pointer }
+  details > summary::-webkit-details-marker { display:none }
+  details[open] .row-chev { transform:rotate(90deg) }
+  .row-chev { display:inline-block; width:7px; height:7px;
+    border-top:2px solid currentColor; border-right:2px solid currentColor;
+    transform:rotate(45deg); transition:transform .15s }
+  .tl-summary { padding:12px 14px; display:grid;
+    grid-template-columns:auto 1fr auto;
+    align-items:center; gap:14px; transition:background .12s }
+  .tl-summary:hover { background:#101010 }
+  .tl-summary .body { min-width:0 }
+  .tl-summary .row1 { display:flex; align-items:baseline; gap:14px }
+  .tl-summary .name { font-size:16px; letter-spacing:0.02em; color:var(--text) }
+  .tl-summary .name .dim { color:var(--dim) }
+  .tl-summary .when { font-size:11px; color:var(--dim); letter-spacing:0.06em }
+  .tl-summary .desc { font-size:11px; color:var(--dim); margin-top:3px;
+    letter-spacing:0.04em; text-transform:none }
+  .tl-pill { padding:5px 14px; font-size:11px; letter-spacing:0.14em;
+    color:#000; border-radius:99px }
+  .tl-pill.ok   { background:var(--lcars-peach) }
+  .tl-pill.warn { background:var(--lcars-yellow) }
+  .tl-pill.bad  { background:var(--lcars-red); color:#fff }
+
+  /* night-vision: red alert mode */
+  body:has(#night-vision:checked) {
+    filter: grayscale(1) sepia(1) hue-rotate(-50deg) saturate(7) brightness(0.7);
+  }
+</style>
+</head>
+<body>
+
+<div class="lcars-app">
+
+  <!-- TOP BAR -->
+  <div class="lcars-top">
+    <span class="logo">RP</span>
+    <span class="div">/</span>
+    <span class="title">RUSTY PHOTON · ACTIVITY</span>
+    <span class="ref">047 · M-04-2380</span>
+    <span class="stardate">STARDATE <b class="num">47634.44</b></span>
+    <label class="nv" title="Toggle red alert / night-vision">
+      <input type="checkbox" id="night-vision" hidden>
+      <span class="icon">☾</span>
+      <span>NIGHT</span>
+      <span class="dot"></span>
+    </label>
+  </div>
+
+  <!-- SIDEBAR -->
+  <div class="lcars-side">
+    <div class="pill amber active">ACTIVITY</div>
+    <div class="pill peach">EQUIPMENT</div>
+    <div class="pill peach">PLANS</div>
+    <div class="pill peach">LOGS</div>
+    <div class="pill peach">SETTINGS</div>
+    <div class="spacer tan"></div>
+    <div class="side-section-h">SESSION</div>
+    <div class="pill violet">M51</div>
+    <div class="pill violet" style="font-size:11px; padding-top:10px; padding-bottom:10px">NCC&#8209;04&#8209;2380</div>
+    <div class="spacer magenta"></div>
+    <div class="side-section-h">STATUS</div>
+    <ul class="side-status">
+      <li>CAMERA <span class="v">−10.0°</span></li>
+      <li>MOUNT <span class="v">0.62″</span></li>
+      <li>FOCUS <span class="v">14820</span></li>
+      <li>GUIDER <span class="v">SNR 32</span></li>
+      <li class="warn">SKY <span class="v">18% ↑</span></li>
+      <li class="warn">DEW <span class="v">4.8°</span></li>
+    </ul>
+    <div class="side-foot">
+      <div class="pill yellow">IV · IGOR V.N.</div>
+    </div>
+  </div>
+
+  <!-- ELBOWS — rounded inside corners of the L -->
+  <div class="elbow-tl"></div>
+  <div class="elbow-bl"></div>
+
+  <!-- MAIN STAGE -->
+  <div class="lcars-main">
+
+    <!-- LIVE TELEMETRY STRIP + FOLD PANEL -->
+    <input type="checkbox" id="fold-state" class="fold-state" hidden>
+
+    <label for="fold-state" class="strip">
+      <div class="strip-block">
+        <span class="strip-pulse"></span>
+        <span>M51 · L · 300S</span>
+      </div>
+      <div class="strip-stat">
+        <span class="lbl-ra">RA</span>
+        <svg class="mini" viewBox="0 0 200 18" preserveAspectRatio="none">
+          <line x1="0" y1="9" x2="200" y2="9" stroke="#332211" stroke-width=".5"/>
+          <path fill="none" stroke="#ff9966" stroke-width="1.1"
+                d="M0,9 L10,7 L20,11 L30,6 L40,12 L50,8 L60,13 L70,5 L80,8 L90,12 L100,6 L110,14 L120,8 L130,7 L140,13 L150,4 L160,11 L170,8 L180,14 L190,6 L200,9"/>
+        </svg>
+        <span class="v">0.42″</span>
+      </div>
+      <div class="strip-stat">
+        <span class="lbl-dec">DEC</span>
+        <svg class="mini" viewBox="0 0 200 18" preserveAspectRatio="none">
+          <line x1="0" y1="9" x2="200" y2="9" stroke="#332211" stroke-width=".5"/>
+          <path fill="none" stroke="#99ccff" stroke-width="1.1"
+                d="M0,9 L10,8 L20,12 L30,5 L40,11 L50,7 L60,12 L70,9 L80,5 L90,13 L100,7 L110,11 L120,4 L130,12 L140,6 L150,9 L160,14 L170,7 L180,11 L190,6 L200,9"/>
+        </svg>
+        <span class="v">0.51″</span>
+      </div>
+      <div class="strip-stat">HFR <span class="v warn">1.84″</span></div>
+      <div class="strip-stat">CCD <span class="v live">−10.0°</span></div>
+      <div class="strip-stat">SKY <span class="v warn">20.8</span></div>
+      <span class="strip-spacer"></span>
+      <span class="strip-eta">FINISH <b>01:42</b></span>
+      <span class="strip-toggle"><span class="lbl"></span><span class="chev"></span></span>
+    </label>
+
+    <div class="fold-body">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="blk label">// LIVE TELEMETRY</div>
+          <div class="blk meta">STREAMING · UPDATE <b>21:18:47</b> · WINDOW <b>5:00</b> · 047&#8209;Δ</div>
+        </div>
+
+        <div class="panel-grid">
+          <div>
+            <!-- guider -->
+            <section class="guider">
+              <div class="guider-head">
+                <span class="label">GUIDER</span>
+                <span class="sub">RA / DEC ERROR · ARCSEC · 5M</span>
+                <div class="gstats">
+                  <span class="gstat ra"><span class="swatch"></span>RA <span class="v">0.42″</span></span>
+                  <span class="gstat dec"><span class="swatch"></span>DEC <span class="v">0.51″</span></span>
+                  <span class="gstat total">RMS <span class="v">0.66″</span></span>
+                </div>
+              </div>
+              <div class="graph">
+                <svg viewBox="0 0 600 240" preserveAspectRatio="none">
+                  <rect x="0" y="60"  width="600" height="120" fill="#ff9966" fill-opacity=".035"/>
+                  <rect x="0" y="90"  width="600" height="60"  fill="#ff9966" fill-opacity=".05"/>
+                  <line x1="0" y1="120" x2="600" y2="120" stroke="#332211" stroke-width="1"/>
+                  <line x1="0" y1="60"  x2="600" y2="60"  stroke="#221a0e" stroke-width=".5" stroke-dasharray="2,4"/>
+                  <line x1="0" y1="180" x2="600" y2="180" stroke="#221a0e" stroke-width=".5" stroke-dasharray="2,4"/>
+                  <line x1="0" y1="90"  x2="600" y2="90"  stroke="#221a0e" stroke-width=".5" stroke-dasharray="1,5"/>
+                  <line x1="0" y1="150" x2="600" y2="150" stroke="#221a0e" stroke-width=".5" stroke-dasharray="1,5"/>
+                  <text x="6" y="20"  fill="#886655" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif" letter-spacing="0.1em">ARCSEC</text>
+                  <text x="6" y="64"  fill="#886655" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif">+1.0</text>
+                  <text x="6" y="94"  fill="#554433" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif">+0.5</text>
+                  <text x="6" y="124" fill="#886655" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif">  0</text>
+                  <text x="6" y="154" fill="#554433" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif">−0.5</text>
+                  <text x="6" y="184" fill="#886655" font-size="10" font-family="Helvetica Neue, Arial Narrow, sans-serif">−1.0</text>
+                  <text x="100" y="234" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="middle">−4M</text>
+                  <text x="200" y="234" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="middle">−3M</text>
+                  <text x="300" y="234" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="middle">−2M</text>
+                  <text x="400" y="234" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="middle">−1M</text>
+                  <text x="595" y="234" fill="#ffcc99" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="end">NOW</text>
+                  <path fill="none" stroke="#99ccff" stroke-width="1.4" stroke-linejoin="round"
+                        d="M0,120 L10,115 L20,129 L30,102 L40,124 L50,107 L60,129 L70,115 L80,102 L90,134 L100,111 L110,124 L120,98 L130,129 L140,107 L150,115 L160,138 L170,111 L180,124 L190,107 L200,115 L210,129 L220,102 L230,111 L240,124 L250,107 L260,142 L270,115 L280,102 L290,129 L300,107 L310,115 L320,124 L330,98 L340,134 L350,111 L360,102 L370,124 L380,107 L390,111 L400,134 L410,115 L420,102 L430,129 L440,107 L450,115 L460,138 L470,111 L480,107 L490,124 L500,102 L510,111 L520,129 L530,98 L540,124 L550,107 L560,115 L570,134 L580,102 L590,111"/>
+                  <path fill="none" stroke="#ff9966" stroke-width="1.4" stroke-linejoin="round"
+                        d="M0,120 L10,111 L20,124 L30,107 L40,129 L50,115 L60,134 L70,102 L80,115 L90,129 L100,107 L110,138 L120,115 L130,111 L140,134 L150,98 L160,124 L170,111 L180,138 L190,107 L200,115 L210,129 L220,102 L230,134 L240,111 L250,124 L260,107 L270,142 L280,111 L290,115 L300,134 L310,102 L320,129 L330,115 L340,107 L350,129 L360,102 L370,124 L380,111 L390,134 L400,115 L410,98 L420,129 L430,107 L440,124 L450,111 L460,138 L470,115 L480,107 L490,129 L500,102 L510,124 L520,111 L530,107 L540,124 L550,98 L560,134 L570,111 L580,124 L590,102"/>
+                  <line x1="595" y1="0" x2="595" y2="220" stroke="#ffcc66" stroke-width="1" stroke-opacity=".7"/>
+                  <circle cx="595" cy="102" r="2.4" fill="#ff9966"/>
+                  <circle cx="595" cy="111" r="2.4" fill="#99ccff"/>
+                </svg>
+              </div>
+            </section>
+
+            <!-- trend charts -->
+            <div class="charts-row" style="margin-top:var(--gap)">
+              <section class="chart-card">
+                <div class="chart-h">
+                  <span class="k">FOCUS HFR</span>
+                  <span class="d warn">↑ 0.06 / 30M</span>
+                  <span class="v warn">1.84″</span>
+                </div>
+                <div class="chart-body">
+                  <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+                    <line x1="0" y1="40" x2="200" y2="40" stroke="#221a0e" stroke-width=".5" stroke-dasharray="2,4"/>
+                    <text x="2" y="11" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">2.4″</text>
+                    <text x="2" y="76" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">1.4″</text>
+                    <path fill="none" stroke="#cc99cc" stroke-width="1.6" stroke-linejoin="round"
+                          d="M0,49 L11,47 L22,45 L33,43 L44,41 L55,39 L66,37 L77,34 L88,30 L99,27 L110,23
+                             M110,23 L121,60 L132,58 L143,56 L154,52 L165,50 L176,46 L187,44 L200,42"/>
+                    <circle cx="200" cy="42" r="2.5" fill="#cc99cc"/>
+                  </svg>
+                </div>
+              </section>
+
+              <section class="chart-card alt">
+                <div class="chart-h">
+                  <span class="k">CCD TEMP</span>
+                  <span class="d live">ON TARGET</span>
+                  <span class="v live">−10.0°</span>
+                </div>
+                <div class="chart-body">
+                  <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+                    <text x="2" y="11" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">−9.5</text>
+                    <text x="2" y="76" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">−10.5</text>
+                    <line x1="0" y1="40" x2="200" y2="40" stroke="#221a0e" stroke-width=".5" stroke-dasharray="2,4"/>
+                    <path fill="none" stroke="#cc9966" stroke-width="1.6"
+                          d="M0,40 L11,40 L22,38 L33,40 L44,42 L55,40 L66,40 L77,38 L88,40 L99,40 L110,42 L121,40 L132,40 L143,38 L154,40 L165,42 L176,40 L187,40 L200,40"/>
+                    <circle cx="200" cy="40" r="2.5" fill="#cc9966"/>
+                  </svg>
+                </div>
+              </section>
+
+              <section class="chart-card alt2">
+                <div class="chart-h">
+                  <span class="k">SKY BRIGHTNESS</span>
+                  <span class="d warn">−0.6 / 1H</span>
+                  <span class="v warn">20.8</span>
+                </div>
+                <div class="chart-body">
+                  <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+                    <text x="2" y="11" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">21.5</text>
+                    <text x="2" y="76" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">20.5</text>
+                    <path fill="none" stroke="#ffcc66" stroke-width="1.6"
+                          d="M0,14 L11,14 L22,21 L33,21 L44,21 L55,28 L66,28 L77,28 L88,35 L99,35 L110,42 L121,42 L132,49 L143,49 L154,49 L165,57 L176,57 L187,57 L200,57"/>
+                    <circle cx="200" cy="57" r="2.5" fill="#ffcc66"/>
+                  </svg>
+                </div>
+              </section>
+
+              <section class="chart-card alt3">
+                <div class="chart-h">
+                  <span class="k">DEW MARGIN</span>
+                  <span class="d warn">↓ 3.4 / 1H</span>
+                  <span class="v warn">4.8°</span>
+                </div>
+                <div class="chart-body">
+                  <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+                    <text x="2" y="11" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">10°</text>
+                    <text x="2" y="76" fill="#554433" font-size="9" font-family="Helvetica Neue, Arial Narrow, sans-serif">0°</text>
+                    <line x1="0" y1="71" x2="200" y2="71" stroke="#ff5544" stroke-width=".5" stroke-dasharray="2,4"/>
+                    <text x="198" y="69" fill="#aa3322" font-size="8" font-family="Helvetica Neue, Arial Narrow, sans-serif" text-anchor="end">DEW</text>
+                    <path fill="none" stroke="#9999ff" stroke-width="1.6"
+                          d="M0,15 L11,18 L22,19 L33,19 L44,21 L55,21 L66,25 L77,28 L88,32 L99,36 L110,39 L121,42 L132,45 L143,48 L154,52 L165,55 L176,58 L187,58 L200,61"/>
+                    <circle cx="200" cy="61" r="2.5" fill="#9999ff"/>
+                  </svg>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <!-- side: tonight's plan -->
+          <section class="side-card">
+            <h4>TONIGHT'S PLAN <span class="ref">04 / 10</span></h4>
+            <ol class="stages-list">
+              <li><span class="step done">✓</span> SLEW &amp; SOLVE <span class="right">2:04</span></li>
+              <li><span class="step done">✓</span> AUTO-FOCUS <span class="right">3:11</span></li>
+              <li><span class="step done">✓</span> PHD2 CALIBRATE <span class="right">1:47</span></li>
+              <li><span class="step live"></span> <strong>L · 300S × 10</strong> <span class="right" style="color:var(--text)">4 / 10</span></li>
+              <li class="muted"><span class="step pending"></span> R · 180S × 10 <span class="right">0 / 10</span></li>
+              <li class="muted"><span class="step pending"></span> G · 180S × 10 <span class="right">0 / 10</span></li>
+              <li class="muted"><span class="step pending"></span> B · 180S × 10 <span class="right">0 / 10</span></li>
+              <li class="muted"><span class="step pending"></span> PARK &amp; SHUTDOWN</li>
+            </ol>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACTIVITY STREAM CONTENT -->
+    <div class="content">
+
+      <!-- HERO -->
+      <section>
+        <div class="sec-h">
+          <div class="blk num">01</div>
+          <div class="blk label">CAPTURING NOW</div>
+          <div class="blk meta">STARTED <b>21:18</b> · REMAIN <b>26:14</b> · 047 · M&#8209;04&#8209;2380</div>
+        </div>
+        <div class="hero" style="margin-top:var(--gap)">
+          <div class="hero-pct">
+            <div>
+              <div class="n">42</div>
+              <div class="lbl">PERCENT</div>
+            </div>
+          </div>
+          <div class="hero-body">
+            <div class="hero-tag">CAPTURING · LUMINANCE · 300S</div>
+            <h1>M51 <span class="dim">— WHIRLPOOL</span></h1>
+            <div class="meta">FRAME <b>04 / 10</b> THIS FILTER · <b>30 / 40</b> ACROSS L R G B · FINISH <b>01:42</b></div>
+            <ul class="hero-stages">
+              <li class="done">SLEW</li>
+              <li class="done">FOCUS</li>
+              <li class="done">GUIDE</li>
+              <li class="live">L</li>
+              <li>R</li>
+              <li>G</li>
+              <li>B</li>
+              <li>PARK</li>
+            </ul>
+          </div>
+          <div class="hero-actions">
+            <button class="btn">PAUSE</button>
+            <button class="btn danger">ABORT</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- LATEST FRAME -->
+      <section>
+        <div class="sec-h">
+          <div class="blk num">02</div>
+          <div class="blk label">LATEST FRAME</div>
+          <div class="blk meta">FRAME <b>0042</b> · LANDED <b>21:18:04</b> · 047 · Δ</div>
+        </div>
+        <div class="frame" style="margin-top:var(--gap)">
+          <div class="frame-h">
+            <span class="name">M51 · L · 300S</span>
+            <span class="meta">FRAME 0042</span>
+            <div class="actions">
+              <a>OPEN</a>
+              <a>DOWNLOAD</a>
+            </div>
+          </div>
+          <div class="frame-img">
+            <svg viewBox="0 0 800 450" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <radialGradient id="neb10" cx="50%" cy="50%" r="60%">
+                  <stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/>
+                  <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="core10" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#fff7ed" stop-opacity=".95"/>
+                  <stop offset="35%" stop-color="#fbbf24" stop-opacity=".55"/>
+                  <stop offset="100%" stop-color="#7c2d12" stop-opacity="0"/>
+                </radialGradient>
+              </defs>
+              <rect width="800" height="450" fill="#03050b"/>
+              <ellipse cx="400" cy="225" rx="380" ry="200" fill="url(#neb10)"/>
+              <g transform="translate(400 225) rotate(-22)">
+                <ellipse rx="60" ry="40" fill="url(#core10)"/>
+                <path d="M 0 0 Q -150 -50 -240 -10 Q -290 20 -310 70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+                <path d="M 0 0 Q 150 50 240 10 Q 290 -20 310 -70" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+              </g>
+              <ellipse cx="610" cy="160" rx="20" ry="16" fill="#fef3c7" fill-opacity=".7"/>
+              <g fill="#fff">
+                <circle cx="50" cy="60" r="1"/><circle cx="120" cy="100" r=".8"/><circle cx="180" cy="40" r=".6"/>
+                <circle cx="240" cy="160" r="1.2"/><circle cx="300" cy="70" r=".7"/><circle cx="360" cy="140" r=".9"/>
+                <circle cx="420" cy="30" r=".6"/><circle cx="480" cy="180" r="1"/><circle cx="540" cy="50" r=".8"/>
+                <circle cx="600" cy="120" r="1.2"/><circle cx="660" cy="80" r=".7"/><circle cx="720" cy="140" r=".9"/>
+                <circle cx="80" cy="200" r=".6"/><circle cx="160" cy="240" r="1"/><circle cx="220" cy="300" r=".8"/>
+                <circle cx="340" cy="320" r="1.2"/><circle cx="460" cy="260" r=".9"/><circle cx="520" cy="340" r="1"/>
+                <circle cx="640" cy="360" r=".8"/><circle cx="700" cy="280" r="1.2"/><circle cx="60" cy="360" r=".9"/>
+                <circle cx="380" cy="430" r="1.2"/><circle cx="500" cy="430" r=".6"/><circle cx="770" cy="60" r=".7"/>
+              </g>
+            </svg>
+            <div class="frame-ovl">HFR 1.84″ · STARS 2941 · ADU 1247 · ECC 0.41</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PAST SESSIONS -->
+      <section>
+        <div class="sec-h">
+          <div class="blk num">03</div>
+          <div class="blk label">PAST SESSIONS</div>
+          <div class="blk meta">LAST <b>30D</b> · <b>12</b> SESSIONS · 047&#8209;Σ</div>
+        </div>
+        <div class="tl" style="margin-top:var(--gap)">
+          <details class="tl-row done">
+            <summary class="tl-summary">
+              <span class="row-chev"></span>
+              <div class="body">
+                <div class="row1">
+                  <span class="name">M101 <span class="dim">— PINWHEEL</span></span>
+                  <span class="when">LAST NIGHT · 22:14 → 03:48</span>
+                </div>
+                <div class="desc">L 20 · R 14 · G 14 · B 14 · 5h 34m on target · HFR 1.91″</div>
+              </div>
+              <span class="tl-pill ok">COMPLETE</span>
+            </summary>
+          </details>
+          <details class="tl-row warn">
+            <summary class="tl-summary">
+              <span class="row-chev"></span>
+              <div class="body">
+                <div class="row1">
+                  <span class="name">NGC 7000 <span class="dim">— NORTH AMERICA</span></span>
+                  <span class="when">3 DAYS AGO · 21:48 → 02:11</span>
+                </div>
+                <div class="desc">38 of 50 planned · aborted — clouds rose above 60%</div>
+              </div>
+              <span class="tl-pill warn">ABORTED</span>
+            </summary>
+          </details>
+          <details class="tl-row done">
+            <summary class="tl-summary">
+              <span class="row-chev"></span>
+              <div class="body">
+                <div class="row1">
+                  <span class="name">M31 <span class="dim">— ANDROMEDA</span></span>
+                  <span class="when">A WEEK AGO · 20:31 → 04:02</span>
+                </div>
+                <div class="desc">L 22 · R 20 · G 20 · B 20 · 7h 31m on target · HFR 1.78″</div>
+              </div>
+              <span class="tl-pill ok">COMPLETE</span>
+            </summary>
+          </details>
+          <details class="tl-row bad">
+            <summary class="tl-summary">
+              <span class="row-chev"></span>
+              <div class="body">
+                <div class="row1">
+                  <span class="name">IC 1396 <span class="dim">— ELEPHANT'S TRUNK</span></span>
+                  <span class="when">12 DAYS AGO · 22:02 → 23:00</span>
+                </div>
+                <div class="desc">12 of 60 planned · failed — guide loss after meridian flip</div>
+              </div>
+              <span class="tl-pill bad">FAILED</span>
+            </summary>
+          </details>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- BOTTOM BAR -->
+  <div class="lcars-bot">
+    <span>SYSTEM NOMINAL</span>
+    <span class="ref">04-22-2380 · 21:18:47</span>
+    <span class="ref">·</span>
+    <span class="ref">RP-NCC-04-2380-Δ-G</span>
+    <span class="grow"></span>
+    <span class="ref">047.7-Λ</span>
+    <span class="ref">SUBPROCESSOR 04 ACTIVE</span>
+  </div>
+
+</div>
+
+</body>
+</html>
