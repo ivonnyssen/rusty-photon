@@ -111,9 +111,19 @@ pub struct SkySurveyCamera {
 }
 
 impl SkySurveyCamera {
-    /// Construct in static-pointing mode. Used by tests and by
-    /// production when `pointing.telescope` is absent.
-    pub fn new(config: Config, survey_client: Arc<dyn SurveyClient>) -> Self {
+    /// Construct in static-pointing mode. Asserts that
+    /// `config.pointing.telescope` is `None` — follow-mode setup
+    /// requires fallible network construction (see
+    /// [`mount::AlpacaMountReader::from_config`]) and must go through
+    /// `lib::build_device`, which returns `Result`.
+    /// Tests that want to exercise follow mode against a mock
+    /// `MountReader` should call [`Self::from_parts`] directly.
+    pub fn new_static(config: Config, survey_client: Arc<dyn SurveyClient>) -> Self {
+        debug_assert!(
+            config.pointing.telescope.is_none(),
+            "SkySurveyCamera::new_static called with pointing.telescope set; \
+             use lib::build_device for follow mode (it returns Result)"
+        );
         let last_snapshot = Arc::new(SharedPointing::new(PointingState::new(
             config.pointing.initial_ra_deg,
             config.pointing.initial_dec_deg,
@@ -868,7 +878,7 @@ mod tests {
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
         let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
-        SkySurveyCamera::new(cfg, client)
+        SkySurveyCamera::new_static(cfg, client)
     }
 
     #[test]

@@ -58,7 +58,7 @@ async fn post_position(
 ) -> impl IntoResponse {
     let Json(req) = match body {
         Ok(json) => json,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::Value::Null)).into_response(),
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     if !state.connected.load(Ordering::Acquire) {

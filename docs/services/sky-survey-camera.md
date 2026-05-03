@@ -171,31 +171,41 @@ These are computed once at construction and exposed via debug logging.
 
 `PointingState { ra_deg, dec_deg, rotation_deg }` is the snapshot the
 exposure pipeline consumes. Where that snapshot comes from is decided
-once at construction by the `PointingSource` enum:
+once at construction (in `lib::build_device`) by the `PointingSource`
+enum:
 
 ```rust
 enum PointingSource {
-    Static(SharedPointing),       // pointing.telescope absent (v0 default)
-    Telescope(TelescopeFollow),   // pointing.telescope present
+    Static(Arc<SharedPointing>),   // pointing.telescope absent (v0 default)
+    Telescope(TelescopeFollow),    // pointing.telescope present
 }
 ```
 
-- **`Static`** — Holds the `PointingState` in an async `RwLock`. It
-  starts from `pointing.initial_*` and is updated by `POST
-  /sky-survey/position` (next section). `StartExposure` reads the
-  current value at the moment the exposure begins. This is the v0
-  behaviour and the default when `pointing.telescope` is absent.
-- **`Telescope`** — Holds an `Arc<dyn ascom_alpaca::api::Telescope>`
-  plus the configured offset. `StartExposure` reads `right_ascension`
-  and `declination` from the Telescope on every exposure (no
-  client-side cache — see F4), adds the offset, and uses the result
-  as the snapshot's RA/Dec. The snapshot's `rotation_deg` is sourced
-  from `pointing.initial_rotation_deg` (ASCOM Telescope has no
-  rotation property; rotation control is out of scope until a
-  connected ASCOM Rotator is added). `POST /sky-survey/position` is
-  rejected with `409 Conflict` in this mode (F6) — any write would
-  be silently overwritten by the next mount read, so refusing the
-  write is the honest answer.
+- **`Static`** — Holds an `Arc<SharedPointing>` whose inner
+  `RwLock<PointingState>` is shared with `DeviceState::last_snapshot`,
+  so `POST /sky-survey/position` writes are immediately visible to
+  the exposure pipeline and to `GET /sky-survey/position`. It starts
+  from `pointing.initial_*`. `StartExposure` reads the current value
+  at the moment the exposure begins. This is the v0 behaviour and
+  the default when `pointing.telescope` is absent.
+- **`Telescope`** — Wraps a `TelescopeFollow` whose `reader: Arc<dyn
+  MountReader>` is the production `AlpacaMountReader` in deployed
+  builds and a `mockall`-generated double in unit tests.
+  `MountReader` is a narrow in-crate trait around just the two ASCOM
+  reads we need (`right_ascension`, `declination`); it intentionally
+  hides the full `ascom_alpaca::api::Telescope` surface from this
+  module so unit tests don't have to mock 50+ unrelated methods.
+  `StartExposure` reads RA/Dec on every exposure (no client-side
+  cache — see F4), applies the configured offset, and uses the
+  result as the snapshot's RA/Dec. After a successful read the
+  exposure pipeline writes the result back into `last_snapshot` so
+  `GET /sky-survey/position` reflects the most recent snapshot
+  (F6). `rotation_deg` is sourced from
+  `pointing.initial_rotation_deg` (ASCOM Telescope has no rotation
+  property; rotation control is out of scope until a connected
+  ASCOM Rotator is added). `POST /sky-survey/position` is rejected
+  with `409 Conflict` in this mode (F6) — any write would be
+  silently overwritten by the next mount read.
 
 The mode is fixed for the life of the device. Switching at runtime
 would require teaching `POST /sky-survey/position` to "fall back" or
@@ -552,30 +562,41 @@ split, or rename modules so long as the BDD scenarios pass.
    FITS parse, cache I/O, invalid request).
 3. **`optics.rs`** — `Optics` struct: derived plate scales, FOV, helpers
    for cutout geometry.
-4. **`pointing.rs`** — `PointingState`, the static `SharedPointing`
-   primitive, and the `PointingSource` enum (`Static` / `Telescope`).
-   The `Telescope` variant owns a `TelescopeFollow` holding the
-   `Arc<dyn ascom_alpaca::api::Telescope>` plus the configured
-   offset, and implements the F1–F5 read path. A small in-crate
-   trait around the two ASCOM reads we need (`right_ascension`,
-   `declination`) keeps `TelescopeFollow` mockable for unit tests
-   without spawning an Alpaca server.
-5. **`survey.rs`** — `SurveyClient` trait
+4. **`pointing.rs`** — `PointingState`, `SharedPointing` (the
+   `RwLock` cache used as the static-mode source *and* the
+   most-recent-snapshot cache for follow mode), the narrow in-crate
+   `MountReader` trait around the two ASCOM reads we need
+   (`right_ascension`, `declination`), and the `PointingSource` enum
+   (`Static(Arc<SharedPointing>)` / `Telescope(TelescopeFollow)`).
+   `TelescopeFollow` owns an `Arc<dyn MountReader>` plus the
+   configured offset and implements the F1/F5 read path.
+5. **`mount.rs`** — `AlpacaMountReader`, the production
+   `MountReader` impl. Builds the `ascom_alpaca::Client` at
+   construction (cheap, no network) and resolves the Telescope
+   device lazily on first read; the resolved `Arc<dyn Telescope>` is
+   cached on success and re-resolved after failure so a transient
+   outage doesn't poison the client. Per F3, this never calls
+   `set_connected(true)` on the mount.
+6. **`survey.rs`** — `SurveyClient` trait
    (`health_check`, `fetch`), `SkyViewClient` HTTP backend, and
    the disk cache helpers (`try_cache_load` / `try_cache_store`).
-6. **`mock.rs`** (gated by the `mock` feature) — `MockSurveyClient`
+7. **`mock.rs`** (gated by the `mock` feature) — `MockSurveyClient`
    plus the `synthetic_fits` helper used by the ConformU
    integration test's stub backend.
-7. **`fits.rs`** — Thin shim over `rp_fits::reader::read_primary_as_i32`.
+8. **`fits.rs`** — Thin shim over `rp_fits::reader::read_primary_as_i32`.
    Returns `(Vec<i32>, width, height)` for SkyView responses. The
    workspace's FITS surface lives in `crates/rp-fits` per ADR-001
    Amendment A.
-8. **`camera.rs`** — `Device` + `Camera` trait impl.
-9. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
-   composed with the ASCOM server's router.
-10. **`lib.rs`** — `run` / `run_with_client` entry points and the
-    `SurveyClient` re-export.
-11. **`main.rs`** — Entry point.
+9. **`camera.rs`** — `Device` + `Camera` trait impl.
+10. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
+    composed with the ASCOM server's router.
+11. **`lib.rs`** — `run` / `run_with_client` entry points and the
+    `SurveyClient` re-export. `build_device` selects
+    `PointingSource::Static` or `PointingSource::Telescope` from
+    config and returns `Result` so follow-mode setup can fail
+    cleanly. The static-only `SkySurveyCamera::new_static` exists
+    for tests that don't exercise follow mode.
+12. **`main.rs`** — Entry point.
 
 ## Testing
 

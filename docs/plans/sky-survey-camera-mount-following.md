@@ -40,14 +40,16 @@ These are the load-bearing choices. They belong in `docs/services/sky-survey-cam
 
 ```rust
 pub enum PointingSource {
-    Static(SharedPointing),                  // v0 behaviour
+    Static(Arc<SharedPointing>),             // v0 behaviour
     Telescope(TelescopeFollow),              // new
 }
 ```
 
-`TelescopeFollow` owns the `Arc<dyn Telescope>` plus the configured offset. The enum is selected once in `SkySurveyCamera::new` from the parsed `Config` and never changes for the life of the device — switching modes at runtime would require teaching `POST /sky-survey/position` to "fall back" or "override," which is a feature creep we don't need.
+`TelescopeFollow` owns an `Arc<dyn MountReader>` (a narrow in-crate trait around `right_ascension` / `declination` — the only two ASCOM Telescope reads we need) plus the configured offset. The production impl is `mount::AlpacaMountReader`; unit tests use a `mockall`-generated double. Wrapping the giant `ascom_alpaca::api::Telescope` trait this way keeps unit tests trivial — a mock implements two methods, not the full ASCOM surface (50+ methods).
 
-The exposure pipeline calls `pointing_source.snapshot().await -> PointingState` regardless of variant. `Static` reads the `RwLock`; `Telescope` reads the mount and adds the offset. Both return the same `PointingState` shape so the rest of the pipeline (`build_full_sensor_request`, cache lookup, FITS fetch) is unchanged.
+The enum is selected once in `lib::build_device` from the parsed `Config` (returning `Result` so follow-mode setup can fail cleanly on an invalid Alpaca URL) and never changes for the life of the device — switching modes at runtime would require teaching `POST /sky-survey/position` to "fall back" or "override," which is a feature creep we don't need. The static-only `SkySurveyCamera::new_static` constructor exists for tests that don't exercise follow mode and `debug_assert!`s `pointing.telescope.is_none()` to catch accidental use.
+
+The exposure pipeline calls `pointing_source.snapshot().await -> Result<PointingState, MountReadError>` regardless of variant. `Static` reads the `Arc<SharedPointing>`'s `RwLock` and returns `Ok` unconditionally; `Telescope` reads the mount via the trait, adds the offset, and surfaces transport / timeout / ASCOM errors per F2. Both produce the same `PointingState` shape so the rest of the pipeline (`build_full_sensor_request`, cache lookup, FITS fetch) is unchanged.
 
 ### `POST /sky-survey/position` returns 409 in follow-mode
 

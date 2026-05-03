@@ -105,17 +105,17 @@ pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
 fn validate(config: &Config) -> Result<(), SkySurveyCameraError> {
     if let Some(t) = &config.pointing.telescope {
         if !t.offset_ra_arcsec.is_finite() {
-            return Err(SkySurveyCameraError::Server(
+            return Err(SkySurveyCameraError::ConfigInvalid(
                 "pointing.telescope.offset_ra_arcsec must be finite".into(),
             ));
         }
         if !t.offset_dec_arcsec.is_finite() {
-            return Err(SkySurveyCameraError::Server(
+            return Err(SkySurveyCameraError::ConfigInvalid(
                 "pointing.telescope.offset_dec_arcsec must be finite".into(),
             ));
         }
         if t.request_timeout.is_zero() {
-            return Err(SkySurveyCameraError::Server(
+            return Err(SkySurveyCameraError::ConfigInvalid(
                 "pointing.telescope.request_timeout must be > 0".into(),
             ));
         }
