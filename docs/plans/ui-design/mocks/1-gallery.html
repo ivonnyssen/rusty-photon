@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>rp — Gallery (Lightroom-style)</title>
+<style>
+  :root {
+    --bg:#0b0d12; --panel:#11141b; --edge:#1a1f2b;
+    --text:#e6e8ee; --dim:#8a93a6;
+    --hot:#10b981; --warn:#f59e0b; --bad:#ef4444; --accent:#60a5fa;
+  }
+  *,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+  html,body { height:100%; background:var(--bg); color:var(--text);
+    font-family: ui-sans-serif,system-ui,-apple-system,"SF Pro Text","Segoe UI",sans-serif;
+    font-size:14px; line-height:1.4; overflow:hidden;
+  }
+  .mono { font-family: ui-monospace,SFMono-Regular,Menlo,monospace }
+  button { font:inherit; color:inherit; background:none; border:0; cursor:pointer }
+
+  /* ── topbar ── */
+  .topbar { height:48px; padding:0 16px; display:flex; align-items:center; gap:16px;
+    border-bottom:1px solid var(--edge); background:var(--panel) }
+  .brand { display:flex; align-items:center; gap:8px; font-weight:600; letter-spacing:-.01em }
+  .logo { width:24px; height:24px; border-radius:5px;
+    background:linear-gradient(135deg,#6366f1,#d946ef) }
+  .crumb-sep { color:var(--dim); font-size:13px }
+  .session-name { font-size:13px } .session-name b { color:#fff; font-weight:600 }
+  .spacer { flex:1 }
+  .pill { display:inline-flex; align-items:center; gap:6px; font-size:11px;
+    padding:3px 8px; border-radius:999px;
+    background:rgba(16,185,129,.1); color:#34d399; box-shadow:inset 0 0 0 1px rgba(16,185,129,.3) }
+  .pulse { width:6px; height:6px; border-radius:999px; background:#34d399; animation:pulse 1.6s infinite }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .meta-strip { font-size:13px; color:var(--dim) }
+  .meta-strip b { color:#fff; font-weight:500 }
+  .progress-block { width:240px }
+  .progress-block .row { display:flex; justify-content:space-between; font-size:11px; color:var(--dim); margin-bottom:4px }
+  .progress-block .row b { color:#fff; font-weight:500 }
+  .bar { height:6px; border-radius:999px; background:var(--edge); overflow:hidden }
+  .bar > i { display:block; height:100%; background:#34d399 }
+
+  /* ── main layout ── */
+  main { display:flex; height:calc(100vh - 48px) }
+  .stage { flex:1; display:flex; align-items:center; justify-content:center;
+    padding:24px; position:relative; background:var(--bg) }
+  .stage-tools { position:absolute; top:16px; left:16px; display:flex; gap:6px }
+  .stage-info { position:absolute; top:16px; right:16px; font-size:11px; color:var(--dim);
+    background:rgba(17,20,27,.85); padding:4px 8px; border-radius:4px;
+    border:1px solid var(--edge) }
+  .btn-ghost { padding:5px 10px; font-size:12px; border-radius:4px;
+    background:rgba(17,20,27,.85); border:1px solid var(--edge); color:var(--text) }
+  .btn-ghost:hover { border-color:var(--accent) }
+  .photo { width:100%; height:100%; max-width:1400px; border-radius:6px;
+    overflow:hidden; border:1px solid var(--edge);
+    box-shadow:0 0 60px rgba(0,0,0,.6) }
+  .photo svg { display:block; width:100%; height:100% }
+
+  /* ── right rail ── */
+  .rail { width:320px; border-left:1px solid var(--edge); background:var(--panel);
+    overflow-y:auto }
+  .rail section { padding:16px; border-bottom:1px solid var(--edge) }
+  .rail-label { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--dim); margin-bottom:6px }
+  .frame-title { font-size:17px; font-weight:600 }
+  .frame-sub { font-size:11px; color:var(--dim); margin-top:2px }
+  .meta-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px }
+  .meta-grid dt { color:var(--dim) }
+  .meta-grid dd { font-family:ui-monospace,monospace }
+  .ok { color:#34d399 }
+  .seq-list, .equip-list { list-style:none }
+  .seq-list li { display:flex; justify-content:space-between; padding:3px 0 }
+  .seq-list li.muted { color:var(--dim) }
+  .equip-list li { font-size:12px; color:var(--dim); padding:2px 0; display:flex; align-items:center; gap:6px }
+  .led { width:8px; height:8px; border-radius:999px; flex:none }
+  .led.ok { background:#34d399 } .led.warn { background:#fbbf24 } .led.bad { background:#f87171 }
+
+  /* ── filmstrip ── */
+  details { position:fixed; bottom:0; left:0; right:320px;
+    background:var(--panel); border-top:1px solid var(--edge) }
+  details > summary { list-style:none; cursor:pointer }
+  details > summary::-webkit-details-marker { display:none }
+  .strip-bar { padding:0 16px; height:36px; display:flex; align-items:center;
+    justify-content:space-between; font-size:12px; color:var(--dim) }
+  .strip-bar .left { display:flex; align-items:center; gap:12px }
+  .strip-bar b { color:var(--text); font-weight:500 }
+  .strip-thumbs { padding:12px 16px; display:flex; gap:8px; overflow-x:auto }
+  .thumb { width:160px; height:100px; flex:none; border:1px solid var(--edge);
+    border-radius:6px; overflow:hidden; cursor:pointer; position:relative }
+  .thumb:hover { border-color:var(--accent) }
+  .thumb.active { outline:2px solid var(--accent); outline-offset:1px }
+  .thumb-label { position:absolute; bottom:4px; left:4px;
+    font-family:ui-monospace,monospace; font-size:10px;
+    color:rgba(255,255,255,.8); background:rgba(0,0,0,.4);
+    padding:1px 4px; border-radius:2px }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><div class="logo"></div><span>rusty&nbsp;photon</span></div>
+  <span class="crumb-sep">/</span>
+  <span class="session-name">Session — <b>M51 — Whirlpool</b></span>
+  <span class="spacer"></span>
+  <span class="pill"><span class="pulse"></span>CAPTURING</span>
+  <span class="meta-strip mono">L · 4&nbsp;/&nbsp;10 · <b>300s</b></span>
+  <div class="progress-block">
+    <div class="row"><span>Sequence</span><b class="mono">26m 14s remaining</b></div>
+    <div class="bar"><i style="width:42%"></i></div>
+  </div>
+  <button class="btn-ghost" style="background:transparent;border:0;color:var(--dim)">⋯</button>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="stage-tools">
+      <button class="btn-ghost">Fit</button>
+      <button class="btn-ghost">100%</button>
+      <button class="btn-ghost">Stretch</button>
+      <button class="btn-ghost">Stars</button>
+    </div>
+    <div class="stage-info mono">Frame 0042 · 21:18:04</div>
+    <div class="photo">
+      <!-- inline starfield SVG -->
+      <svg viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="neb" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/>
+            <stop offset="60%" stop-color="#1e1b4b" stop-opacity=".15"/>
+            <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="core" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fff7ed" stop-opacity=".95"/>
+            <stop offset="35%" stop-color="#fbbf24" stop-opacity=".55"/>
+            <stop offset="100%" stop-color="#7c2d12" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <rect width="800" height="600" fill="#03050b"/>
+        <ellipse cx="420" cy="300" rx="380" ry="260" fill="url(#neb)"/>
+        <g transform="translate(420 300) rotate(-22)">
+          <ellipse rx="70" ry="46" fill="url(#core)"/>
+          <path d="M 0 0 Q -160 -60 -260 -10 Q -310 20 -330 80" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+          <path d="M 0 0 Q  160  60  260  10 Q  310 -20  330 -80" stroke="#fde68a" stroke-opacity=".35" stroke-width="2" fill="none"/>
+          <path d="M 0 0 Q -100 -90 -180 -120" stroke="#fde68a" stroke-opacity=".25" stroke-width="1.5" fill="none"/>
+          <path d="M 0 0 Q  100  90  180  120" stroke="#fde68a" stroke-opacity=".25" stroke-width="1.5" fill="none"/>
+        </g>
+        <ellipse cx="640" cy="220" rx="22" ry="18" fill="#fef3c7" fill-opacity=".7"/>
+        <ellipse cx="640" cy="220" rx="40" ry="32" fill="#fbbf24" fill-opacity=".15"/>
+        <g fill="#fff">
+          <circle cx="50" cy="80" r="1"/><circle cx="120" cy="130" r=".8"/><circle cx="180" cy="60" r=".6"/>
+          <circle cx="240" cy="200" r="1.2"/><circle cx="300" cy="90" r=".7"/><circle cx="360" cy="180" r=".9"/>
+          <circle cx="420" cy="40" r=".6"/><circle cx="480" cy="220" r="1"/><circle cx="540" cy="70" r=".8"/>
+          <circle cx="600" cy="160" r="1.2"/><circle cx="660" cy="100" r=".7"/><circle cx="720" cy="180" r=".9"/>
+          <circle cx="80" cy="250" r=".6"/><circle cx="160" cy="300" r="1"/><circle cx="220" cy="380" r=".8"/>
+          <circle cx="280" cy="260" r=".6"/><circle cx="340" cy="420" r="1.2"/><circle cx="460" cy="340" r=".9"/>
+          <circle cx="520" cy="440" r="1"/><circle cx="580" cy="280" r=".6"/><circle cx="640" cy="460" r=".8"/>
+          <circle cx="700" cy="360" r="1.2"/><circle cx="60" cy="460" r=".9"/><circle cx="140" cy="540" r="1"/>
+          <circle cx="200" cy="480" r=".6"/><circle cx="260" cy="560" r=".8"/><circle cx="320" cy="500" r=".7"/>
+          <circle cx="380" cy="580" r="1.2"/><circle cx="440" cy="520" r=".9"/><circle cx="500" cy="580" r=".6"/>
+          <circle cx="560" cy="540" r="1"/><circle cx="620" cy="500" r=".8"/><circle cx="680" cy="580" r=".7"/>
+          <circle cx="740" cy="540" r=".9"/><circle cx="30" cy="180" r=".6"/><circle cx="90" cy="400" r=".8"/>
+          <circle cx="150" cy="220" r=".7"/><circle cx="210" cy="140" r="1"/><circle cx="270" cy="360" r=".6"/>
+          <circle cx="330" cy="260" r=".9"/><circle cx="390" cy="160" r=".8"/><circle cx="450" cy="420" r=".7"/>
+          <circle cx="510" cy="180" r="1.2"/><circle cx="570" cy="360" r=".6"/><circle cx="630" cy="220" r=".9"/>
+          <circle cx="690" cy="460" r=".8"/><circle cx="750" cy="300" r="1"/><circle cx="770" cy="80" r=".7"/>
+        </g>
+        <g transform="translate(160 460)">
+          <circle r="2.2" fill="#fff"/>
+          <line x1="-14" y1="0" x2="14" y2="0" stroke="#fff" stroke-opacity=".55" stroke-width=".6"/>
+          <line x1="0" y1="-14" x2="0" y2="14" stroke="#fff" stroke-opacity=".55" stroke-width=".6"/>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <aside class="rail">
+    <section>
+      <div class="rail-label">Current frame</div>
+      <div class="frame-title">M51 · L · 300s</div>
+      <div class="frame-sub mono">2026-05-03 21:18:04 · Frame 0042</div>
+    </section>
+    <section>
+      <dl class="meta-grid">
+        <dt>Target</dt><dd>M51</dd>
+        <dt>RA / Dec</dt><dd>13:29:53 +47°11′</dd>
+        <dt>Filter</dt><dd>Luminance</dd>
+        <dt>Exposure</dt><dd>300.0 s</dd>
+        <dt>Gain / Offset</dt><dd>100 / 30</dd>
+        <dt>CCD temp</dt><dd class="ok">−10.0 °C</dd>
+        <dt>HFR</dt><dd>1.84″</dd>
+        <dt>Stars</dt><dd>2,941</dd>
+        <dt>Mean ADU</dt><dd>1,247</dd>
+        <dt>Eccentricity</dt><dd>0.41</dd>
+      </dl>
+    </section>
+    <section>
+      <div class="rail-label">Sequence plan</div>
+      <ul class="seq-list">
+        <li><span>L · 300s × 10</span><span class="mono ok">4 / 10</span></li>
+        <li class="muted"><span>R · 180s × 10</span><span class="mono">0 / 10</span></li>
+        <li class="muted"><span>G · 180s × 10</span><span class="mono">0 / 10</span></li>
+        <li class="muted"><span>B · 180s × 10</span><span class="mono">0 / 10</span></li>
+      </ul>
+    </section>
+    <section>
+      <div class="rail-label">Equipment</div>
+      <ul class="equip-list">
+        <li><span class="led ok"></span>Camera — QHY268M · −10°C</li>
+        <li><span class="led ok"></span>Mount — tracking, RMS 0.62″</li>
+        <li><span class="led ok"></span>Focuser — pos 14,820 · 22.4°C</li>
+        <li><span class="led warn"></span>Sky — clouds 18% (rising)</li>
+      </ul>
+    </section>
+  </aside>
+</main>
+
+<details open>
+  <summary class="strip-bar">
+    <div class="left">
+      <b>History</b>
+      <span class="mono">42 frames · this session</span>
+      <button style="color:var(--dim)" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--dim)'">all sessions →</button>
+    </div>
+    <span>▾ collapse</span>
+  </summary>
+  <div class="strip-thumbs">
+    <div class="thumb active" style="background:linear-gradient(135deg,#1e1b4b,#312e81)"><div class="thumb-label">0042 · L</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0041 · L</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0040 · L</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0039 · L</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0038 · L</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#164e63,#020617)"><div class="thumb-label">0037 · R</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#312e81,#020617)"><div class="thumb-label">0036 · R</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#1e293b,#020617)"><div class="thumb-label">0035 · G</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#1e1b4b,#020617)"><div class="thumb-label">0034 · G</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#0f172a,#020617)"><div class="thumb-label">0033 · B</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#111827,#020617)"><div class="thumb-label">0032 · B</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#1f2937,#020617)"><div class="thumb-label">0031 · B</div></div>
+    <div class="thumb" style="background:linear-gradient(135deg,#0c4a6e,#020617)"><div class="thumb-label">0030 · L</div></div>
+  </div>
+</details>
+
+</body>
+</html>
