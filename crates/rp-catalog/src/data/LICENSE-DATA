@@ -1,0 +1,35 @@
+Catalog data sources
+====================
+
+The deep-sky object data embedded under `src/data/{messier,ngc,ic,aliases}.csv`
+is derived from the OpenNGC catalogue at:
+
+    https://github.com/mattiaverga/OpenNGC
+
+Specifically, `database_files/NGC.csv` was converted into the four files
+in this directory by the one-shot script preserved at
+`crates/rp-catalog/scripts/openngc_to_catalog.py`. Only the columns
+needed for `resolve_target` (canonical name, object type, ICRS RA/Dec,
+visual or B magnitude, major-axis size) were retained; the openNGC
+"common names" column populated `aliases.csv`.
+
+Licence
+-------
+
+OpenNGC is published under **Creative Commons Attribution-ShareAlike
+4.0 International (CC-BY-SA-4.0)** —
+https://creativecommons.org/licenses/by-sa/4.0/
+
+Attribution: openNGC by Mattia Verga, 2018-present.
+
+The `rp-catalog` crate code itself is dual-licensed MIT/Apache-2.0
+(workspace inheritance). The CC-BY-SA-4.0 attribution requirement
+applies only to the *embedded data* under `src/data/`. Distribution
+of the compiled crate must preserve this `LICENSE-DATA` file or
+include an equivalent attribution.
+
+CC-BY-SA-4.0's share-alike clause applies to derivative works *of the
+data*, not to the Rust code that consumes it. A downstream service
+that reads `Catalog::resolve(name)` and uses the returned coordinates
+for its own purposes is not creating a derivative work of the
+catalogue.
