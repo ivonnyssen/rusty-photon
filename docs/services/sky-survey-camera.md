@@ -89,7 +89,8 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
   "pointing": {
     "initial_ra_deg": 83.8221,
     "initial_dec_deg": -5.3911,
-    "initial_rotation_deg": 0.0
+    "initial_rotation_deg": 0.0,
+    "telescope": null
   },
   "survey": {
     "name": "DSS2 Red",
@@ -109,7 +110,44 @@ Configuration sections:
   `pixel_size_*_um` derive the plate scale; `sensor_*_px` set
   `CameraXSize` / `CameraYSize`.
 - **pointing** — Initial RA/Dec/rotation used until the runtime API
-  overrides them. Stored as plain `f64` degrees in J2000.
+  overrides them. Stored as plain `f64` degrees in J2000. The optional
+  `telescope` sub-block (next bullet) switches the camera into
+  *telescope-following mode*; when absent, the camera operates in
+  *static-pointing mode* (the v0 behaviour).
+- **pointing.telescope** *(optional)* — When present, switches the
+  camera into telescope-following mode: `StartExposure` reads RA/Dec
+  from the configured ASCOM Telescope (over Alpaca) instead of from
+  the cached `PointingState`, then adds a fixed angular offset to
+  simulate cone error / pointing-model residuals (see
+  *Pointing Offset Simulation*).
+
+  ```jsonc
+  "telescope": {
+    "alpaca_url": "http://127.0.0.1:32323",
+    "device_number": 0,                  // index of the Telescope on the Alpaca server
+    "offset_ra_arcsec": 0.0,             // signed; added to mount RA before SkyView request
+    "offset_dec_arcsec": 0.0,            // signed; added to mount Dec before SkyView request
+    "request_timeout": "2s",             // humantime; bound on each Telescope read
+    "auth": null                         // optional rp_auth ClientAuthConfig
+  }
+  ```
+
+  Field rules:
+
+  - `alpaca_url` + `device_number` resolve a single ASCOM Telescope.
+    The camera does **not** call `set_connected(true)` on the mount —
+    whoever owns the mount (typically `rp`) is responsible for
+    connecting it. A read against a disconnected Telescope surfaces
+    the standard ASCOM error via F2.
+  - `offset_*_arcsec` default to `0.0`. Non-finite values are rejected
+    at config load. The offset is applied as a constant in topocentric
+    RA/Dec; large RA offsets wrap modulo 360°, large Dec offsets are
+    clamped to ±90° with a `warn!` log (a clamp indicates a config
+    error worth surfacing).
+  - `request_timeout` defaults to `2s`, validated `> 0`. Bounds the
+    extra latency a wedged mount can add to `StartExposure`.
+  - `auth` reuses `rp_auth::config::ClientAuthConfig` for symmetry
+    with `rp`'s mount config.
 - **survey** — Backend selector + request timeout (humantime per the
   `Duration` convention) + on-disk cache directory.
 - **server** — Listening port. TLS and Basic Auth are added later via
@@ -131,11 +169,37 @@ These are computed once at construction and exposed via debug logging.
 
 ### Pointing State
 
-`PointingState { ra_deg, dec_deg, rotation_deg }` is held in an
-`ArcSwap<PointingState>` (or `RwLock`) inside the device. It starts from
-`pointing.initial_*` and is updated by the runtime API (next section).
-`StartExposure` snapshots the current pointing at the moment the exposure
-begins.
+`PointingState { ra_deg, dec_deg, rotation_deg }` is the snapshot the
+exposure pipeline consumes. Where that snapshot comes from is decided
+once at construction by the `PointingSource` enum:
+
+```rust
+enum PointingSource {
+    Static(SharedPointing),       // pointing.telescope absent (v0 default)
+    Telescope(TelescopeFollow),   // pointing.telescope present
+}
+```
+
+- **`Static`** — Holds the `PointingState` in an async `RwLock`. It
+  starts from `pointing.initial_*` and is updated by `POST
+  /sky-survey/position` (next section). `StartExposure` reads the
+  current value at the moment the exposure begins. This is the v0
+  behaviour and the default when `pointing.telescope` is absent.
+- **`Telescope`** — Holds an `Arc<dyn ascom_alpaca::api::Telescope>`
+  plus the configured offset. `StartExposure` reads `right_ascension`
+  and `declination` from the Telescope on every exposure (no
+  client-side cache — see F4), adds the offset, and uses the result
+  as the snapshot's RA/Dec. The snapshot's `rotation_deg` is sourced
+  from `pointing.initial_rotation_deg` (ASCOM Telescope has no
+  rotation property; rotation control is out of scope until a
+  connected ASCOM Rotator is added). `POST /sky-survey/position` is
+  rejected with `409 Conflict` in this mode (F6) — any write would
+  be silently overwritten by the next mount read, so refusing the
+  write is the honest answer.
+
+The mode is fixed for the life of the device. Switching at runtime
+would require teaching `POST /sky-survey/position` to "fall back" or
+"override," which is feature creep without a driving use case.
 
 ### `StartExposure` Pipeline
 
@@ -175,9 +239,47 @@ that depend on signal-vs-time behaviour.
 
 - `set_connected(true)` — validates the survey backend is reachable
   (HEAD request to SkyView), warms the optics-derived constants, and
-  arms the device.
+  arms the device. In telescope-following mode, this does **not**
+  probe the configured Telescope: a wedged or briefly-unreachable
+  mount must not block the camera from coming up (the same C3
+  reasoning that keeps SkyView's TLS handshake out of the Connect
+  path). The first `StartExposure` will surface a mount-read error
+  via F2.
 - `set_connected(false)` — drops any in-flight exposure future and
   returns `NotConnected` for subsequent operations.
+
+### Pointing Offset Simulation
+
+In telescope-following mode the camera adds a fixed angular offset to
+the mount-reported RA/Dec before forming the SkyView request:
+
+```text
+cutout_ra_deg  = (mount_ra_deg + offset_ra_arcsec  / 3600).rem_euclid(360)
+cutout_dec_deg = clamp(mount_dec_deg + offset_dec_arcsec / 3600, -90, +90)
+```
+
+**Why this exists.** OmniSim's Telescope is mechanically perfect: a
+slew to `(RA, Dec)` produces a mount that reports exactly `(RA, Dec)`.
+Without injected error, a centering loop (`slew → expose → plate-solve
+→ sync_mount`) has nothing to converge from — every iteration solves
+to the same coordinates the mount already reports. The offset is the
+simulator analog of cone error / a stale pointing model, the very
+thing centering corrects in production.
+
+**Sign convention.** Offsets are in topocentric RA/Dec arcseconds, the
+same units `sync_mount` corrects against. Positive `offset_ra_arcsec`
+shifts the rendered cutout east of where the mount thinks it's
+pointing; positive `offset_dec_arcsec` shifts it north. After the
+first `sync_mount` the mount's reported RA/Dec lines up with the
+solved center, so the offset's effect on subsequent iterations
+collapses and the loop converges in one corrective step (matching the
+"sync on first iteration only" invariant of `center_on_target`).
+
+**Static mode is unaffected.** When `pointing.telescope` is absent,
+the offset fields don't exist and `StartExposure` snapshots
+`PointingState` directly from the cached static value. There is no
+"static mode + offset" — it would just be a different static
+position.
 
 ## Custom HTTP Endpoints (Runtime Pointing API)
 
@@ -197,6 +299,11 @@ Validation:
 - `rotation_deg` is wrapped into [0, 360) before storage.
 - `POST` while disconnected returns 409 (the device must be connected
   to accept new pointing, mirroring ASCOM's `NotConnected` semantics).
+- `POST` while in telescope-following mode returns 409 (the next
+  exposure will overwrite any value written here by re-reading the
+  mount; refusing the write is the honest answer — see F6). `GET`
+  continues to work in both modes and returns the most recently
+  snapshotted pointing.
 
 Updates take effect on the **next** `StartExposure`; an in-flight
 exposure is not interrupted.
@@ -210,15 +317,25 @@ same operation via ASCOM's standard `Action` mechanism
 (`PUT /api/v1/camera/0/action` with `Action=setposition`); the JSON
 shape stays the same.
 
-### Why a custom endpoint instead of a connected ASCOM Telescope
+### Static mode and follow mode coexist
 
-A "real" simulator would query a connected ASCOM Telescope at exposure
-time. That doubles the scope (the service becomes both an Alpaca server
-and an Alpaca client) and couples test setups to a running mount
-service. The runtime pointing endpoint keeps the camera decoupled and
-lets test harnesses set position deterministically; a future
-`telescope_url` config option can be added for the realistic mode
-without breaking either path.
+Both modes are first-class:
+
+- **Static mode** (`pointing.telescope` absent) is the v0 default. It
+  keeps the camera decoupled from any mount, lets test harnesses set
+  position deterministically via `POST /sky-survey/position`, and
+  keeps the simulator usable in setups without a Telescope at all
+  (e.g. flat-frame rehearsal, pure ConformU runs).
+- **Telescope-following mode** (`pointing.telescope` present) is the
+  realistic-rig mode: the camera follows whatever the mount reports,
+  with an optional injected offset. This is what `center_on_target`
+  exercises end-to-end in BDD — the loop closes through real
+  `slew_to_coordinates_async` / `sync_to_coordinates` calls on the
+  same Telescope the camera reads from.
+
+The custom endpoint stays useful in both modes: in static mode for
+runtime pointing updates, in follow mode for read-back of the
+most-recently-snapshotted state via `GET`.
 
 ## Behavioral Contracts
 
@@ -259,7 +376,8 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 - **P5.** A malformed JSON body or a missing required field returns
   `400 Bad Request`.
 - **P6.** `POST /sky-survey/position` while disconnected returns
-  `409 Conflict` and the pointing state is unchanged.
+  `409 Conflict` and the pointing state is unchanged. (Follow-mode
+  produces a separate 409; see F6.)
 - **P7.** A pointing update issued during an in-flight exposure does
   not affect the in-flight exposure's snapshotted pointing; it takes
   effect on the next `StartExposure`.
@@ -312,6 +430,45 @@ setter because the spec defines a hard `[1, MaxBin]` range.
 - **A2.** `AbortExposure` or `StopExposure` with no exposure in
   progress returns `INVALID_OPERATION`.
 
+### Telescope follow mode
+
+Active only when `pointing.telescope` is present in config. F-contracts
+do not apply in static mode.
+
+- **F1.** With `pointing.telescope` set, every `StartExposure` reads
+  `right_ascension` and `declination` fresh from the configured
+  ASCOM Telescope and snapshots
+  `PointingState { ra: (mount_ra + offset_ra).rem_euclid(360),
+   dec: clamp(mount_dec + offset_dec, -90, +90),
+   rotation: pointing.initial_rotation_deg }`.
+  Rotation is **not** sourced from the mount (ASCOM Telescope has no
+  rotation property); future work could add a connected Rotator.
+- **F2.** A failed Telescope read (transport error, ASCOM error, or a
+  read that exceeds `pointing.telescope.request_timeout`) returns
+  `UNSPECIFIED_ERROR`, sets `last_error`, and leaves
+  `image_ready = false`. Logged at `warn!`. The next `StartExposure`
+  retries with a fresh read.
+- **F3.** `set_connected(true)` succeeds even if the mount is
+  unreachable. The mount is read fresh on the *next* `StartExposure`,
+  where any error surfaces via F2. (Same posture as C3 for SkyView:
+  ASCOM Connect must not block on slow upstream handshakes.)
+- **F4.** Mount RA/Dec are read fresh on every `StartExposure`. There
+  is no client-side cache — caching would mask `slew` events that
+  other Alpaca clients (notably `rp`) issued between exposures,
+  defeating follow-mode's purpose.
+- **F5.** The configured offset is applied as
+  `(mount_ra_deg + offset_ra_arcsec/3600).rem_euclid(360)` for RA and
+  `clamp(mount_dec_deg + offset_dec_arcsec/3600, -90, +90)` for Dec.
+  A clamp on Dec produces a `warn!` log (it indicates a config error
+  worth surfacing). Non-finite offsets are rejected at config load,
+  not at snapshot time.
+- **F6.** `POST /sky-survey/position` while `pointing.telescope` is
+  set returns `409 Conflict` and the snapshot source is unchanged.
+  The body identifies the mode so clients can distinguish this from
+  the disconnected-409 of P6. `GET /sky-survey/position` continues
+  to work in follow mode and returns the most recently snapshotted
+  pointing (mount-reported + offset).
+
 ## Architecture
 
 ```mermaid
@@ -321,8 +478,10 @@ graph TD;
     B --> C[SkySurveyCameraDevice];
     B2 --> C;
     C --> D[Optics Constants];
-    C --> E[PointingState];
+    C --> PS["PointingSource<br/>(Static | Telescope)"];
+    PS -. follow mode .-> M["ASCOM Telescope<br/>(over Alpaca)"];
     C --> F[Exposure Pipeline];
+    F --> PS;
     F --> G[SkyViewClient];
     G --> I[NASA SkyView HTTP];
     F --> J[FITS Cache];
@@ -393,7 +552,14 @@ split, or rename modules so long as the BDD scenarios pass.
    FITS parse, cache I/O, invalid request).
 3. **`optics.rs`** — `Optics` struct: derived plate scales, FOV, helpers
    for cutout geometry.
-4. **`pointing.rs`** — `PointingState` + concurrency primitive.
+4. **`pointing.rs`** — `PointingState`, the static `SharedPointing`
+   primitive, and the `PointingSource` enum (`Static` / `Telescope`).
+   The `Telescope` variant owns a `TelescopeFollow` holding the
+   `Arc<dyn ascom_alpaca::api::Telescope>` plus the configured
+   offset, and implements the F1–F5 read path. A small in-crate
+   trait around the two ASCOM reads we need (`right_ascension`,
+   `declination`) keeps `TelescopeFollow` mockable for unit tests
+   without spawning an Alpaca server.
 5. **`survey.rs`** — `SurveyClient` trait
    (`health_check`, `fetch`), `SkyViewClient` HTTP backend, and
    the disk cache helpers (`try_cache_load` / `try_cache_store`).
@@ -424,8 +590,13 @@ Layered per `docs/skills/testing.md`:
   trips, `StartExposure` returns a non-empty array of the configured
   dimensions when the survey backend is stubbed, the C1–C4 connection
   contracts including the warn-only behaviour for an unreachable
-  endpoint, and the S1–S6 survey-error paths against a stub HTTP
-  server.
+  endpoint, the S1–S6 survey-error paths against a stub HTTP server,
+  and the F1/F2/F5/F6 follow-mode contracts against a tiny in-test
+  axum stub serving the two ASCOM Telescope reads (`right_ascension`,
+  `declination`). The end-to-end `slew → expose → plate-solve →
+  sync_mount` integration lives in `services/rp/tests/features/` so
+  it can drive the real `center_on_target` MCP tool; this crate's
+  BDD covers the camera-side contracts in isolation.
 - **ConformU integration** (`tests/conformu_integration.rs`, gated by
   the `conformu` feature) — launches the production binary pointed
   at an in-process axum stub that serves
@@ -438,9 +609,19 @@ Layered per `docs/skills/testing.md`:
 
 ## Future Work
 
-- **Telescope-following mode.** Add `pointing.telescope_url` so the
-  camera queries a connected ASCOM Telescope at exposure time instead
-  of the fixed pointing.
+- **Telescope-following mode.** *(Done — see Configuration §
+  `pointing.telescope`, *Pointing Offset Simulation*, and the F1–F6
+  Behavioral Contracts.)*
+- **Rotator-driven `rotation_deg`.** When a connected ASCOM Rotator
+  is added, `TelescopeFollow` sources `rotation_deg` from
+  `Rotator.position_angle` instead of `pointing.initial_rotation_deg`.
+- **Non-linear pointing models.** Az/alt-dependent pointing residuals,
+  polar misalignment, atmospheric refraction. The constant offset of
+  *Pointing Offset Simulation* is enough to make the centering loop
+  non-vacuous; richer error models stress-test convergence under
+  realistic conditions.
+- **Sidereal drift during exposure.** Snapshot mount position at start
+  *and* end, interpolate. Today's pipeline snapshots only at start.
 - **Local resampling.** Request a slightly oversized cutout and
   resample with the requested rotation, removing the dependency on
   SkyView's resampler.
