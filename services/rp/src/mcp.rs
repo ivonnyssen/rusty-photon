@@ -274,6 +274,52 @@ pub struct MoveFocuserParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SlewParams {
+    /// Target right ascension in decimal hours, in `[0.0, 24.0)`.
+    /// Required (validated in body for deterministic error ordering).
+    #[serde(default)]
+    pub ra: Option<f64>,
+    /// Target declination in decimal degrees, in `[-90.0, 90.0]`.
+    /// Required (validated in body).
+    #[serde(default)]
+    pub dec: Option<f64>,
+    /// Optional per-call override for the post-`Slewing == false`
+    /// settle. `None` uses `mount.settle_after_slew` from config (which
+    /// itself defaults to zero). `Some("0s")` skips settle even when
+    /// the config sets a non-zero default.
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub settle_after: Option<Duration>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SyncMountParams {
+    /// Right ascension in decimal hours, in `[0.0, 24.0)`. Required
+    /// (validated in body).
+    #[serde(default)]
+    pub ra: Option<f64>,
+    /// Declination in decimal degrees, in `[-90.0, 90.0]`. Required
+    /// (validated in body).
+    #[serde(default)]
+    pub dec: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetTrackingParams {
+    /// New tracking state. `true` enables sidereal tracking; `false`
+    /// disables it.
+    pub enabled: bool,
+}
+
+/// Empty parameter struct for `get_tracking` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTrackingParams {}
+
+/// Empty parameter struct for `get_mount_position` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMountPositionParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AutoFocusToolParams {
     /// Camera device ID. Required (validated in body for deterministic
     /// error ordering — see `docs/services/rp.md` `auto_focus` Contract).
@@ -922,6 +968,90 @@ impl McpHandler {
         foc.position()
             .await
             .map_err(|e| format!("failed to read focuser position: {}", e))
+    }
+
+    /// Resolve the singular mount, returning the entry + connected device
+    /// or a string error matching the convention `resolve_device!` uses
+    /// for `id`-keyed devices ("no mount configured" / "mount not
+    /// connected"). Singular: no `id` parameter.
+    pub(crate) fn resolve_mount(
+        &self,
+    ) -> std::result::Result<
+        (
+            &crate::equipment::MountEntry,
+            Arc<dyn ascom_alpaca::api::Telescope>,
+        ),
+        String,
+    > {
+        let entry = self
+            .equipment
+            .find_mount()
+            .ok_or_else(|| "no mount configured".to_string())?;
+        let device = entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "mount not connected".to_string())?;
+        Ok((entry, device))
+    }
+
+    /// Resolve the mount, issue an async slew, poll `slewing()` until
+    /// idle (with a 300 s deadline), sleep `settle_after`, then read
+    /// the post-slew RA/Dec and return them.
+    ///
+    /// Best-effort `abort_slew()` on deadline expiry before returning
+    /// the timeout error — mount runaways have higher blast radius
+    /// than focuser runaways (cables, hard stops, sun in a flat
+    /// workflow).
+    ///
+    /// Mirrors `do_move_focuser_blocking`'s shape; same pass-through
+    /// error mapping. Does NOT touch `Tracking` (per `mount.feature`
+    /// + ASCOM contract — Tracking must already be on for
+    ///   `slew_to_coordinates_async`).
+    pub(crate) async fn do_slew_blocking(
+        &self,
+        ra: f64,
+        dec: f64,
+        settle_after: Duration,
+    ) -> std::result::Result<(f64, f64), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+
+        debug!(ra, dec, "slewing mount");
+        mount
+            .slew_to_coordinates_async(ra, dec)
+            .await
+            .map_err(|e| format!("failed to slew: {}", e))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match mount.slewing().await {
+                Ok(false) => break,
+                Ok(true) if tokio::time::Instant::now() < deadline => continue,
+                Ok(true) => {
+                    // Best-effort abort; ignore the abort's own result and
+                    // surface the timeout error as the primary failure.
+                    let _ = mount.abort_slew().await;
+                    return Err("timeout waiting for mount to settle".to_string());
+                }
+                Err(e) => return Err(format!("error polling mount slewing: {}", e)),
+            }
+        }
+
+        if !settle_after.is_zero() {
+            debug!(?settle_after, "waiting for mount settle");
+            tokio::time::sleep(settle_after).await;
+        }
+
+        let actual_ra = mount
+            .right_ascension()
+            .await
+            .map_err(|e| format!("failed to read mount right_ascension: {}", e))?;
+        let actual_dec = mount
+            .declination()
+            .await
+            .map_err(|e| format!("failed to read mount declination: {}", e))?;
+        Ok((actual_ra, actual_dec))
     }
 }
 
@@ -1670,6 +1800,174 @@ impl McpHandler {
     }
 
     // -------------------------------------------------------------------
+    // Mount tools
+    //
+    // The mount is singular per `rp` deployment (piggyback rigs share
+    // one mount across multiple optical trains). Tools take no
+    // `mount_id` / `telescope_id` parameter — there is nothing to
+    // disambiguate.
+    // -------------------------------------------------------------------
+
+    #[tool(
+        description = "Slew the mount to equatorial coordinates (RA hours, Dec degrees). Blocks until the mount reports Slewing == false plus the configured / per-call settle. Tracking must be on before calling — propagates the Alpaca error otherwise."
+    )]
+    async fn slew(
+        &self,
+        Parameters(params): Parameters<SlewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Body validation in input order (ra → dec → settle_after) so
+        // the error message points at the first missing or out-of-range
+        // field. Same convention as `auto_focus` / `measure_basic`.
+        let ra = match params.ra {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: ra")),
+        };
+        if !(0.0..24.0).contains(&ra) {
+            return Ok(tool_error!(
+                "ra out of range: {} (must be in [0.0, 24.0))",
+                ra
+            ));
+        }
+        let dec = match params.dec {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: dec")),
+        };
+        if !(-90.0..=90.0).contains(&dec) {
+            return Ok(tool_error!(
+                "dec out of range: {} (must be in [-90.0, 90.0])",
+                dec
+            ));
+        }
+
+        // Resolve the mount once before reading the settle config so
+        // "no mount configured" error wins over a config lookup.
+        let settle_after = match params.settle_after {
+            Some(d) => d,
+            None => match self.equipment.find_mount() {
+                Some(entry) => entry.config.settle_after_slew.unwrap_or_default(),
+                None => Duration::default(),
+            },
+        };
+
+        match self.do_slew_blocking(ra, dec, settle_after).await {
+            Ok((actual_ra, actual_dec)) => Ok(tool_success!({
+                "actual_ra": actual_ra,
+                "actual_dec": actual_dec,
+            })),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Sync the mount's reported position to the given equatorial coordinates (RA hours, Dec degrees). Immediate; no polling."
+    )]
+    async fn sync_mount(
+        &self,
+        Parameters(params): Parameters<SyncMountParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let ra = match params.ra {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: ra")),
+        };
+        if !(0.0..24.0).contains(&ra) {
+            return Ok(tool_error!(
+                "ra out of range: {} (must be in [0.0, 24.0))",
+                ra
+            ));
+        }
+        let dec = match params.dec {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: dec")),
+        };
+        if !(-90.0..=90.0).contains(&dec) {
+            return Ok(tool_error!(
+                "dec out of range: {} (must be in [-90.0, 90.0])",
+                dec
+            ));
+        }
+
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!(ra, dec, "syncing mount");
+        match mount.sync_to_coordinates(ra, dec).await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to sync mount: {}", e)),
+        }
+    }
+
+    #[tool(description = "Read the mount's current pointing as RA (hours) / Dec (degrees).")]
+    async fn get_mount_position(
+        &self,
+        Parameters(_params): Parameters<GetMountPositionParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let ra = match mount.right_ascension().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount right_ascension: {}", e)),
+        };
+        let dec = match mount.declination().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount declination: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "ra": ra,
+            "dec": dec,
+        }))
+    }
+
+    #[tool(
+        description = "Read the mount's tracking state and CanSetTracking capability. Fails loud if the Tracking read errors."
+    )]
+    async fn get_tracking(
+        &self,
+        Parameters(_params): Parameters<GetTrackingParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let tracking = match mount.tracking().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount tracking: {}", e)),
+        };
+        let can_set_tracking = match mount.can_set_tracking().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_set_tracking: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "tracking": tracking,
+            "can_set_tracking": can_set_tracking,
+        }))
+    }
+
+    #[tool(description = "Enable or disable the mount's sidereal tracking drive.")]
+    async fn set_tracking(
+        &self,
+        Parameters(params): Parameters<SetTrackingParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!(enabled = params.enabled, "setting mount tracking");
+        match mount.set_tracking(params.enabled).await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to set tracking: {}", e)),
+        }
+    }
+
+    // -------------------------------------------------------------------
     // Compound: auto_focus (V-curve)
     // -------------------------------------------------------------------
 
@@ -2247,6 +2545,165 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // MockTelescope — single configurable mock for Telescope (mount).
+    //
+    // Defaults are "happy path" (capable, tracking on, returns a fixed
+    // RA/Dec). Set fail_* fields to inject errors per test, or set
+    // tracking_value / can_set_tracking_value / ra_value / dec_value to
+    // shape the read responses.
+    // -----------------------------------------------------------------------
+
+    struct MockTelescope {
+        fail_slew: bool,
+        fail_slewing_poll: bool,
+        fail_sync: bool,
+        fail_right_ascension: bool,
+        fail_declination: bool,
+        fail_tracking: bool,
+        fail_can_set_tracking: bool,
+        fail_set_tracking: bool,
+        /// `slewing()` returns `true` forever — drives the timeout path.
+        stuck_slewing: bool,
+        tracking_value: bool,
+        can_set_tracking_value: bool,
+        ra_value: f64,
+        dec_value: f64,
+    }
+
+    impl Default for MockTelescope {
+        fn default() -> Self {
+            Self {
+                fail_slew: false,
+                fail_slewing_poll: false,
+                fail_sync: false,
+                fail_right_ascension: false,
+                fail_declination: false,
+                fail_tracking: false,
+                fail_can_set_tracking: false,
+                fail_set_tracking: false,
+                stuck_slewing: false,
+                tracking_value: true,
+                can_set_tracking_value: true,
+                ra_value: 0.0,
+                dec_value: 0.0,
+            }
+        }
+    }
+
+    impl_mock_device!(MockTelescope);
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::Telescope for MockTelescope {
+        async fn at_home(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(false)
+        }
+
+        async fn at_park(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(false)
+        }
+
+        async fn declination(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            if self.fail_declination {
+                return Err(ASCOMError::invalid_operation("encoder fault"));
+            }
+            Ok(self.dec_value)
+        }
+
+        async fn declination_rate(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Ok(0.0)
+        }
+
+        async fn equatorial_system(
+            &self,
+        ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::EquatorialCoordinateType>
+        {
+            Ok(ascom_alpaca::api::telescope::EquatorialCoordinateType::J2000)
+        }
+
+        async fn right_ascension(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            if self.fail_right_ascension {
+                return Err(ASCOMError::invalid_operation("encoder fault"));
+            }
+            Ok(self.ra_value)
+        }
+
+        async fn right_ascension_rate(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Ok(0.0)
+        }
+
+        async fn sidereal_time(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Ok(0.0)
+        }
+
+        async fn tracking(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_tracking {
+                return Err(ASCOMError::invalid_operation("tracking read failed"));
+            }
+            Ok(self.tracking_value)
+        }
+
+        async fn set_tracking(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_set_tracking {
+                return Err(ASCOMError::invalid_operation("CanSetTracking is false"));
+            }
+            Ok(())
+        }
+
+        async fn can_set_tracking(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_can_set_tracking {
+                return Err(ASCOMError::invalid_operation("capability read failed"));
+            }
+            Ok(self.can_set_tracking_value)
+        }
+
+        async fn tracking_rate(
+            &self,
+        ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::DriveRate> {
+            Ok(ascom_alpaca::api::telescope::DriveRate::Sidereal)
+        }
+
+        async fn axis_rates(
+            &self,
+            _axis: ascom_alpaca::api::telescope::TelescopeAxis,
+        ) -> ascom_alpaca::ASCOMResult<Vec<std::ops::RangeInclusive<f64>>> {
+            Ok(vec![])
+        }
+
+        async fn utc_date(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
+            Ok(std::time::SystemTime::UNIX_EPOCH)
+        }
+
+        async fn slewing(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_slewing_poll {
+                return Err(ASCOMError::invalid_operation("slewing poll failed"));
+            }
+            Ok(self.stuck_slewing)
+        }
+
+        async fn abort_slew(&self) -> ascom_alpaca::ASCOMResult<()> {
+            Ok(())
+        }
+
+        async fn slew_to_coordinates_async(
+            &self,
+            _ra: f64,
+            _dec: f64,
+        ) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_slew {
+                return Err(ASCOMError::invalid_operation("Tracking is off"));
+            }
+            Ok(())
+        }
+
+        async fn sync_to_coordinates(&self, _ra: f64, _dec: f64) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_sync {
+                return Err(ASCOMError::invalid_operation("sync failed"));
+            }
+            Ok(())
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Helper functions
     // -----------------------------------------------------------------------
 
@@ -2311,6 +2768,7 @@ mod tests {
             filter_wheels: vec![],
             cover_calibrators: vec![],
             focusers: vec![],
+            mount: None,
         }
     }
 
@@ -2334,6 +2792,7 @@ mod tests {
             }],
             cover_calibrators: vec![],
             focusers: vec![],
+            mount: None,
         }
     }
 
@@ -2356,6 +2815,7 @@ mod tests {
                 device: Some(cc),
             }],
             focusers: vec![],
+            mount: None,
         }
     }
 
@@ -2382,6 +2842,58 @@ mod tests {
                 },
                 device: Some(foc),
             }],
+            mount: None,
+        }
+    }
+
+    fn mount_registry(
+        mount: Arc<dyn ascom_alpaca::api::Telescope>,
+        settle_after_slew: Option<Duration>,
+    ) -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: Some(crate::equipment::MountEntry {
+                connected: true,
+                config: crate::config::MountConfig {
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    settle_after_slew,
+                    auth: None,
+                },
+                device: Some(mount),
+            }),
+        }
+    }
+
+    fn empty_registry() -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: None,
+        }
+    }
+
+    fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
+        crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: Some(crate::equipment::MountEntry {
+                connected: false,
+                config: crate::config::MountConfig {
+                    alpaca_url: "http://localhost:1".to_string(),
+                    device_number: 0,
+                    settle_after_slew: None,
+                    auth: None,
+                },
+                device: None,
+            }),
         }
     }
 
@@ -2750,6 +3262,7 @@ mod tests {
                 filter_wheels: vec![],
                 cover_calibrators: vec![],
                 focusers: vec![],
+                mount: None,
             }),
             Arc::new(crate::events::EventBus::from_config(&[])),
             SessionConfig {
@@ -2992,6 +3505,7 @@ mod tests {
             filter_wheels: vec![],
             cover_calibrators: vec![],
             focusers: vec![],
+            mount: None,
         });
         let result = handler
             .compute_image_stats(Parameters(ComputeImageStatsParams {
@@ -3223,6 +3737,7 @@ mod tests {
                 },
                 device: None,
             }],
+            mount: None,
         };
         let handler = test_handler(registry);
         let result = handler
@@ -3271,6 +3786,7 @@ mod tests {
                 },
                 device: None,
             }],
+            mount: None,
         };
         let handler = test_handler(registry);
         let result = handler
@@ -3343,5 +3859,355 @@ mod tests {
             }))
             .await;
         assert_tool_error(result, "failed to read focuser temperature");
+    }
+
+    // -----------------------------------------------------------------------
+    // Mount tool tests — slew / sync_mount / get_mount_position /
+    // get_tracking / set_tracking. Singular mount, no mount_id parameter.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_slew_success() {
+        let mount = MockTelescope {
+            ra_value: 10.6847,
+            dec_value: 41.2689,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(10.6847),
+                dec: Some(41.2689),
+                settle_after: None,
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["actual_ra"], 10.6847);
+        assert_eq!(json["actual_dec"], 41.2689);
+    }
+
+    #[tokio::test]
+    async fn test_slew_no_mount_configured() {
+        let handler = test_handler(empty_registry());
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    #[tokio::test]
+    async fn test_slew_mount_not_connected() {
+        let handler = test_handler(disconnected_mount_registry());
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "mount not connected");
+    }
+
+    #[tokio::test]
+    async fn test_slew_missing_ra() {
+        let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: None,
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "missing required parameter: ra");
+    }
+
+    #[tokio::test]
+    async fn test_slew_missing_dec() {
+        let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: None,
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "missing required parameter: dec");
+    }
+
+    #[tokio::test]
+    async fn test_slew_ra_out_of_range() {
+        let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(25.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "ra out of range");
+    }
+
+    #[tokio::test]
+    async fn test_slew_dec_out_of_range() {
+        let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(91.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "dec out of range");
+    }
+
+    /// Models the ASCOM `InvalidOperationException` that fires when
+    /// `Tracking == false` and the caller invokes
+    /// `SlewToCoordinatesAsync` — the natural error path the design
+    /// explicitly chose over a magical `ensure_tracking` parameter.
+    #[tokio::test]
+    async fn test_slew_alpaca_error_propagates() {
+        let mount = MockTelescope {
+            fail_slew: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "failed to slew");
+    }
+
+    /// Drives the timeout escalation path: `slewing()` returns `true`
+    /// indefinitely, the 300 s deadline expires, `abort_slew()` is
+    /// called (best-effort, ignored result), and the tool returns the
+    /// timeout error. `start_paused` lets tokio auto-advance virtual
+    /// time so the test runs in real-time milliseconds.
+    #[tokio::test(start_paused = true)]
+    async fn test_slew_timeout_returns_error_after_abort() {
+        let mount = MockTelescope {
+            stuck_slewing: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "timeout waiting for mount to settle");
+    }
+
+    /// Per-call `settle_after` overrides the config default. Passes
+    /// `Duration::ZERO` to skip an otherwise-non-zero config value;
+    /// behavior of the actual sleep is exercised in BDD where
+    /// wall-clock timing is observable.
+    #[tokio::test]
+    async fn test_slew_per_call_settle_overrides_config() {
+        let mount = MockTelescope::default();
+        let handler = test_handler(mount_registry(
+            Arc::new(mount),
+            Some(Duration::from_secs(60)),
+        ));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: Some(Duration::ZERO),
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_sync_mount_success() {
+        let mount = MockTelescope::default();
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .sync_mount(Parameters(SyncMountParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_sync_mount_no_mount_configured() {
+        let handler = test_handler(empty_registry());
+        let result = handler
+            .sync_mount(Parameters(SyncMountParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+            }))
+            .await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    #[tokio::test]
+    async fn test_sync_mount_alpaca_error() {
+        let mount = MockTelescope {
+            fail_sync: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .sync_mount(Parameters(SyncMountParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+            }))
+            .await;
+        assert_tool_error(result, "failed to sync mount");
+    }
+
+    #[tokio::test]
+    async fn test_sync_mount_ra_out_of_range() {
+        let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
+        let result = handler
+            .sync_mount(Parameters(SyncMountParams {
+                ra: Some(-1.0),
+                dec: Some(0.0),
+            }))
+            .await;
+        assert_tool_error(result, "ra out of range");
+    }
+
+    #[tokio::test]
+    async fn test_get_mount_position_returns_ra_dec() {
+        let mount = MockTelescope {
+            ra_value: 12.5,
+            dec_value: -23.4,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_mount_position(Parameters(GetMountPositionParams {}))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["ra"], 12.5);
+        assert_eq!(json["dec"], -23.4);
+    }
+
+    #[tokio::test]
+    async fn test_get_mount_position_no_mount() {
+        let handler = test_handler(empty_registry());
+        let result = handler
+            .get_mount_position(Parameters(GetMountPositionParams {}))
+            .await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    #[tokio::test]
+    async fn test_get_mount_position_ra_read_fails() {
+        let mount = MockTelescope {
+            fail_right_ascension: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_mount_position(Parameters(GetMountPositionParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount right_ascension");
+    }
+
+    #[tokio::test]
+    async fn test_get_tracking_returns_state_and_capability() {
+        let mount = MockTelescope {
+            tracking_value: true,
+            can_set_tracking_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_tracking(Parameters(GetTrackingParams {}))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["tracking"], true);
+        assert_eq!(json["can_set_tracking"], true);
+    }
+
+    /// Mount that reports `CanSetTracking == false` — surfaces in the
+    /// tool result rather than failing the call. Workflows can read
+    /// the field and decide whether to continue.
+    #[tokio::test]
+    async fn test_get_tracking_surfaces_can_set_tracking_false() {
+        let mount = MockTelescope {
+            tracking_value: false,
+            can_set_tracking_value: false,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_tracking(Parameters(GetTrackingParams {}))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["tracking"], false);
+        assert_eq!(json["can_set_tracking"], false);
+    }
+
+    /// Per the design decision: fail loud on `Tracking` read errors;
+    /// don't try to half-succeed by returning `can_set_tracking` alone.
+    #[tokio::test]
+    async fn test_get_tracking_fails_when_tracking_read_errors() {
+        let mount = MockTelescope {
+            fail_tracking: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.get_tracking(Parameters(GetTrackingParams {})).await;
+        assert_tool_error(result, "failed to read mount tracking");
+    }
+
+    #[tokio::test]
+    async fn test_set_tracking_enables() {
+        let mount = MockTelescope::default();
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_set_tracking_disables() {
+        let mount = MockTelescope::default();
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .set_tracking(Parameters(SetTrackingParams { enabled: false }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    /// Models a mount that responds to `set_tracking` with an
+    /// `InvalidOperationException` (e.g. `CanSetTracking == false`).
+    /// The error propagates with the friendly prefix.
+    #[tokio::test]
+    async fn test_set_tracking_alpaca_error() {
+        let mount = MockTelescope {
+            fail_set_tracking: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+            .await;
+        assert_tool_error(result, "failed to set tracking");
     }
 }

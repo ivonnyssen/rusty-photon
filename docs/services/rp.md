@@ -611,8 +611,11 @@ the exact parameter types and return structure.
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
-| `slew` | ra, dec | actual_ra, actual_dec | Slew mount to coordinates (blocks until settled) |
+| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise |
 | `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
+| `get_mount_position` | — | ra, dec | Read the mount's current pointing |
+| `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
+| `set_tracking` | enabled | — | Enable or disable sidereal tracking |
 | `set_filter` | filter_wheel_id, filter_name | — | Change filter wheel position |
 | `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
 | `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
@@ -2251,6 +2254,15 @@ ack/completion protocol.
 All configuration is in a single JSON file. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
 
+The `mount` field is singular: exactly one mount is the typical
+deployment. Piggyback rigs share that one mount across multiple optical
+trains — `cameras`, `focusers`, and `filter_wheels` stay plural for the
+trains; `mount` stays singular. Multi-mount support is in
+[Future Considerations](#future-considerations). `mount.settle_after_slew`
+is applied by `slew` after the mount reports `Slewing == false`; per-call
+`settle_after` on `slew` overrides this value (including `"0s"` to skip
+when the config sets a non-zero default).
+
 ```json
 {
   "session": {
@@ -2288,7 +2300,7 @@ connection details. Plugins register their webhook URLs and command endpoints.
     "mount": {
       "alpaca_url": "http://localhost:11122",
       "device_number": 0,
-      "settle_time_secs": 2
+      "settle_after_slew": "3s"
     },
     "focusers": [
       {
