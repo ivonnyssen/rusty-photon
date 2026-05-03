@@ -164,7 +164,7 @@ Each phase is its own PR. All four phases land on this branch (`worktree-trail-m
 
 ### Phase 1 — Service design doc update
 
-Status: **not started.**
+Status: **done** — landed in `4e7691d`.
 
 - [ ] Update `docs/services/sky-survey-camera.md`:
   - "Configuration" — add the `pointing.telescope` schema block with field-by-field description.
@@ -179,7 +179,7 @@ Status: **not started.**
 
 ### Phase 2 — `PointingSource` refactor + telescope-follow mode (no offset yet)
 
-Status: **not started.**
+Status: **done** — landed in `6ce90ae`.
 
 - [ ] `services/sky-survey-camera/src/pointing.rs` — introduce `PointingSource` enum. `Static(SharedPointing)` is the existing path, no behaviour change. `Telescope(TelescopeFollow)` is a new struct holding `Arc<dyn Telescope>` + its config; `snapshot()` reads RA/Dec from the mount, returns a `PointingState`. **Offset stays at zero in this phase** so the diff is bounded.
 - [ ] `services/sky-survey-camera/src/config.rs` — extend `PointingConfig` with the optional `telescope: Option<TelescopeFollowConfig>`. Wire `humantime_serde` for `request_timeout`. Reuse `rp_auth::config::ClientAuthConfig` (already a workspace dep transitively via `rp`; if not, add the workspace dep — no new crates.io download).
@@ -191,7 +191,11 @@ Status: **not started.**
 
 ### Phase 3 — Pointing offset injection + F5/F6 BDD
 
-Status: **not started.**
+Status: **done** — landed in `9d4f518`. The mount stub stayed in-crate
+(`tests/bdd/world.rs`) rather than landing in `bdd-infra`, since no
+other service-level BDD currently needs an ASCOM Telescope mock. If a
+second crate eventually needs one, the `MountStubBehavior` /
+`spawn_mount_stub` shape lifts cleanly into `bdd-infra`.
 
 - [ ] `services/sky-survey-camera/src/pointing.rs` — `TelescopeFollow::snapshot()` adds `offset_*_arcsec` to mount RA/Dec, applies RA `rem_euclid(360)`, clamps Dec to `[-90, +90]` (with `warn!` on clamp).
 - [ ] `services/sky-survey-camera/src/config.rs` — `offset_ra_arcsec` / `offset_dec_arcsec` (default 0.0). No validation beyond `f64::is_finite` — large offsets are legal; the clamp handles wrap.
@@ -204,7 +208,11 @@ Status: **not started.**
 
 ### Phase 4 — Closed-loop centering BDD
 
-Status: **not started.** Depends on Phase 6c-3 (`center_on_target` impl) landing first; if 6c-3 is still in flight when Phases 1–3 are ready, this phase can be parked behind a `@wip` tag and unblocked by the 6c-3 PR.
+Status: **parked, blocked on Phase 6c-3.** As of 2026-05-03 the
+`center_on_target` MCP tool is not yet implemented in `rp` (no entry
+in `services/rp/src/mcp.rs`, no `services/rp/src/imaging/tools/center_on_target.rs`).
+Phases 1–3 deliver the simulator infrastructure 6c-3 will need;
+this phase unblocks once 6c-3 lands. No code in this phase yet.
 
 - [ ] New feature file `services/rp/tests/features/center_on_target_e2e.feature` (or appended to `center_on_target.feature` if 6c-3 already created it). One scenario:
   - **Given** OmniSim is running and exposes a Telescope at index 0
