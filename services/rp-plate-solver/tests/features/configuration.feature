@@ -24,6 +24,7 @@ Feature: Configuration validation at startup
     Then the wrapper exits non-zero
     And the wrapper stderr names "astap_binary_path"
 
+  @unix
   Scenario: astap_binary_path pointing at a non-executable file rejects the config
     Given a config with astap_binary_path pointing at a non-executable file
     And a valid astap_db_directory

@@ -53,7 +53,7 @@ Feature: POST /api/v1/solve — request handling and error surface
     And the response field "error" is "invalid_request"
 
   Scenario: Unparseable timeout returns invalid_request
-    Given a writable FITS path "/tmp/m31.fits"
+    Given a writable FITS path
     When I POST to /api/v1/solve with that fits_path and timeout "not-a-duration"
     Then the response status is 400
     And the response field "error" is "invalid_request"

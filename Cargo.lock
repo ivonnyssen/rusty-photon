@@ -3694,7 +3694,6 @@ dependencies = [
  "cargo-husky",
  "clap",
  "cucumber",
- "humantime",
  "humantime-serde",
  "libc",
  "mockall",
