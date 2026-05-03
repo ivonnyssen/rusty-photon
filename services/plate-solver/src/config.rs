@@ -1,6 +1,6 @@
 //! Configuration types and startup validation.
 //!
-//! See `docs/services/rp-plate-solver.md` §"Configuration" for the field
+//! See `docs/services/plate-solver.md` §"Configuration" for the field
 //! semantics. Validation rules are exercised by Phase 3 BDD's
 //! `configuration.feature`.
 
@@ -63,20 +63,20 @@ pub enum ConfigError {
 
     #[error(
         "config parse error: {0}. \
-         See services/rp-plate-solver/README.md for install instructions \
+         See services/plate-solver/README.md for install instructions \
          and the configuration field reference."
     )]
     Parse(#[from] serde_json::Error),
 
     #[error(
         "invalid `astap_binary_path`: {message} (path: {path}). \
-         See services/rp-plate-solver/README.md for install instructions."
+         See services/plate-solver/README.md for install instructions."
     )]
     InvalidBinaryPath { path: String, message: String },
 
     #[error(
         "invalid `astap_db_directory`: {message} (path: {path}). \
-         See services/rp-plate-solver/README.md for install instructions."
+         See services/plate-solver/README.md for install instructions."
     )]
     InvalidDbDirectory { path: String, message: String },
 

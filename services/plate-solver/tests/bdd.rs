@@ -1,4 +1,4 @@
-//! BDD test entry point for rp-plate-solver.
+//! BDD test entry point for plate-solver.
 //!
 //! Two filter conditions:
 //!
@@ -10,7 +10,7 @@
 //! - `@requires-astap` — gates a small cross-platform real-ASTAP
 //!   smoke that fires only when `ASTAP_BINARY` is set in the
 //!   environment. PR jobs do not set it; the dedicated nightly
-//!   workflow does. See `docs/plans/rp-plate-solver.md` §"Real-ASTAP
+//!   workflow does. See `docs/plans/plate-solver.md` §"Real-ASTAP
 //!   coverage: cadence and gating".
 //!
 //! Both filter forms accept the tag with or without a leading `@`,

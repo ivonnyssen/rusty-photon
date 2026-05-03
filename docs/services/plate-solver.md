@@ -1,8 +1,8 @@
-# rp-plate-solver — Service Design
+# plate-solver — Service Design
 
 ## Overview
 
-`rp-plate-solver` is an **rp-managed service** that wraps an
+`plate-solver` is an **rp-managed service** that wraps an
 operator-supplied ASTAP CLI install and exposes a narrow HTTP solve
 API to `rp`. It exists so plate solving — a hang-prone, crash-prone
 external binary — runs in its own supervised process where its
@@ -16,7 +16,7 @@ between requests. Restart is always cheap and never costs more than
 one in-flight request — which is what makes the supervision posture
 described below safe.
 
-Operators install ASTAP themselves (BYO per ADR-005). `rp-plate-solver`
+Operators install ASTAP themselves (BYO per ADR-005). `plate-solver`
 ships no ASTAP binary, no index database, and no install script;
 operators point it at their install via two required config fields.
 
@@ -27,7 +27,7 @@ Apple Silicon, Windows x64 — matching ADR-005's hard constraints.
 
 ```mermaid
 graph LR
-    rp[rp gateway] -->|"POST /api/v1/solve"| solver[rp-plate-solver]
+    rp[rp gateway] -->|"POST /api/v1/solve"| solver[plate-solver]
     solver -->|"spawn astap_cli<br/>+ wall-clock deadline"| astap[ASTAP child process]
     astap -->|writes| wcs[".wcs sidecar"]
     solver -->|reads| wcs
@@ -63,7 +63,7 @@ Accessibility").
   ASTAP SIGSEGV, hang, or deadlock cannot threaten `rp`'s session
   state. This rationale is the load-bearing argument for choosing
   rp-managed-service over plugin shape; see
-  `docs/plans/rp-plate-solver.md` §"Stability and supervision" for
+  `docs/plans/plate-solver.md` §"Stability and supervision" for
   the full discriminator.
 - **Tenet 4 — Remote interfaces only.** HTTP between rp and the
   service. The service-to-ASTAP boundary is a CLI subprocess, not an
@@ -78,7 +78,7 @@ Accessibility").
 ### HTTP API
 
 The service exposes exactly two endpoints. The contract is frozen by
-`docs/plans/rp-plate-solver.md` §"HTTP contract"; this section
+`docs/plans/plate-solver.md` §"HTTP contract"; this section
 states the behavior, not the wire format details.
 
 #### `POST /api/v1/solve`
@@ -233,7 +233,7 @@ chain is:
 
    `rp`'s `plate_solve` MCP handler reads both via the equipment
    registry, performs the RA conversion, and forwards the request
-   to `rp-plate-solver` over HTTP. (MCP directionality: clients
+   to `plate-solver` over HTTP. (MCP directionality: clients
    call rp; rp calls the wrapper.) Mount-not-connected ⇒ no
    hints, blind solve.
 2. **`fov_hint_deg`** comes from the camera's pixel scale and
@@ -386,7 +386,7 @@ the real ASTAP binary, gated by a runtime check on the
 `ASTAP_BINARY` environment variable. Scenarios skip silently when
 the env var is unset (the PR-required path). They fire when the env
 var is set, which is the dedicated nightly cross-platform smoke
-workflow's job. See `docs/plans/rp-plate-solver.md` §"Real-ASTAP
+workflow's job. See `docs/plans/plate-solver.md` §"Real-ASTAP
 coverage: cadence and gating" for the rationale and the `bdd.rs`
 filter snippet.
 
@@ -395,7 +395,7 @@ filter snippet.
 The wrapper sits inside a layered supervision design with three
 distinct failure domains. **Today, the wrapper-and-rp domains are
 restarted by the operator's OS-level process supervisor** (systemd /
-launchd / NSSM); see the [README's per-OS recipes](../../services/rp-plate-solver/README.md#process-supervisor-recipes).
+launchd / NSSM); see the [README's per-OS recipes](../../services/plate-solver/README.md#process-supervisor-recipes).
 Automated Sentinel-driven restart of rp-managed services is a future
 design item — the current Sentinel
 ([`docs/services/sentinel.md`](sentinel.md)) is an Alpaca
@@ -408,7 +408,7 @@ a forward-looking design.
 | Domain | Today's supervisor | Detection | Action |
 |--------|--------------------|-----------|--------|
 | `rp` (gateway) | Operator's process supervisor (systemd / launchd / NSSM) | Process exit (panic, OOM, etc.) | Supervisor restarts per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
-| `rp-plate-solver` (this service) | Operator's process supervisor | Process exit; or external `/health` probe | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; the supervisor restarts it. |
+| `plate-solver` (this service) | Operator's process supervisor | Process exit; or external `/health` probe | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; the supervisor restarts it. |
 | `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
 
 ### Belt-and-Suspenders Outer Timeout
@@ -460,7 +460,7 @@ operational tooling (Prometheus blackbox exporter, Nagios, etc.).
 ## References
 
 - ADR-005 — `docs/decisions/005-plate-solver.md`
-- Implementation plan — `docs/plans/rp-plate-solver.md`
+- Implementation plan — `docs/plans/plate-solver.md`
 - rp design doc, §"Plate Solver" — `docs/services/rp.md`
 - rp design doc, §"Sentinel Watchdog Integration" — `docs/services/rp.md`
 - rp design doc, §"File Accessibility" — `docs/services/rp.md`

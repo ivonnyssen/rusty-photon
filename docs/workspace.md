@@ -14,7 +14,7 @@ belong in any single service design doc.
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
-| [rp-plate-solver](services/rp-plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/rp-plate-solver.md` |
+| [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
@@ -43,7 +43,7 @@ belong in any single service design doc.
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
 | [fits-library-consolidation.md](plans/fits-library-consolidation.md) | FITS library evaluation across the workspace |
-| [rp-plate-solver.md](plans/rp-plate-solver.md) | rp-plate-solver rp-managed service implementation (ADR-005 sequencing) |
+| [plate-solver.md](plans/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing) |
 | [rp-planning-tools.md](plans/rp-planning-tools.md) | rp planning & ephemeris tools: site config, `rp-ephemeris` + `rp-catalog` crates, primitive + convenience MCP tools |
 
 ## Shared Crates

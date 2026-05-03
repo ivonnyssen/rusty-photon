@@ -7,7 +7,7 @@ Feature: Configuration validation at startup
 
   Required fields exit on absence — `astap_binary_path` and
   `astap_db_directory` have no implicit defaults. The validation rules
-  are listed in `docs/services/rp-plate-solver.md` §"Configuration
+  are listed in `docs/services/plate-solver.md` §"Configuration
   Validation at Startup".
 
   Scenario: Missing astap_binary_path field rejects the config

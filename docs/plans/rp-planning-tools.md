@@ -3,7 +3,7 @@
 **Date:** 2026-05-03
 **Branch:** `worktree-planning-tools`
 **Parent design doc:** [`docs/services/rp.md`](../services/rp.md)
-**Closest precedent:** [`docs/plans/rp-plate-solver.md`](rp-plate-solver.md) (eight-phase, design-first plan)
+**Closest precedent:** [`docs/plans/plate-solver.md`](plate-solver.md) (eight-phase, design-first plan)
 
 ## Background
 
@@ -343,7 +343,7 @@ Status: **not started.**
       Decisions Resolved section, no ADR file needed unless a future
       swap warrants one. The "in-process, not a managed service"
       decision for ERFA is also captured there, with explicit
-      contrast to the rp-plate-solver supervision posture.
+      contrast to the plate-solver supervision posture.
 
 **Exit criteria:** updated docs reviewed and merged. No code yet.
 The `Ephemeris` trait sketched in prose in the design doc is the
@@ -669,7 +669,7 @@ Within that fixed scope, dependencies are mostly linear:
   — design-first, test-first phasing
 - [`docs/skills/testing.md`](../skills/testing.md) — BDD and unit
   test conventions; `@wip` filter (§2.7)
-- [`docs/plans/rp-plate-solver.md`](rp-plate-solver.md) — closest
+- [`docs/plans/plate-solver.md`](plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
 - [`docs/plans/image-evaluation-tools.md`](image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for

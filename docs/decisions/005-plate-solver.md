@@ -9,7 +9,7 @@ This ADR is the prerequisite called out in `docs/services/rp.md`
 research […] This decision will be captured in a separate ADR") and in
 `docs/plans/image-evaluation-tools.md` Phase 6c (`center_on_target` is
 blocked on it). Once accepted, Phase 6c is unblocked and a separate
-plan will sequence the `rp-plate-solver` rp-managed-service
+plan will sequence the `plate-solver` rp-managed-service
 implementation.
 
 ## Context
@@ -17,7 +17,7 @@ implementation.
 `rp` needs a plate solver to back two pieces of work:
 
 - A built-in `plate_solve` MCP tool that proxies to a supervised
-  `rp-plate-solver` rp-managed service (per the existing rp-managed-service
+  `plate-solver` rp-managed service (per the existing rp-managed-service
   pattern in `docs/services/rp.md` §"Service Boundaries" and §"Plate
   Solver").
 - The `center_on_target` compound built-in tool (Phase 6c), which calls
@@ -77,7 +77,7 @@ Windows x64, and Windows ARM64.
   2k×2k frames. Performance is well above our budget at typical
   amateur image scales.
 - **Stable interface.** The CLI surface and the `.wcs` output format
-  have been stable for years; the rp-plate-solver wrapper has a small,
+  have been stable for years; the plate-solver wrapper has a small,
   unchanging contract to honour.
 
 **Cons:**
@@ -245,7 +245,7 @@ Disqualified by the offline constraint.
 ## Decision
 
 Adopt **Option 1 — ASTAP, executed as a subprocess by a new
-`rp-plate-solver` rp-managed service, with the ASTAP binary and index
+`plate-solver` rp-managed service, with the ASTAP binary and index
 database supplied by the operator (BYO)** rather than bundled,
 mirrored, or fetched by `rp` itself.
 
@@ -262,13 +262,13 @@ The decision rests on three points:
    path entirely.** `rp` does not ship, bundle, mirror, or stage the
    ASTAP binary or index database. Operators install ASTAP from
    upstream (hnsky.org / SourceForge / their package manager) and
-   point `rp-plate-solver` at the install via required config fields.
+   point `plate-solver` at the install via required config fields.
    CI does the same via a local
    [`install-astap`](../../.github/actions/install-astap/action.yml)
    composite action that mirrors the existing `install-omnisim`
    pattern (CI is just acting as a normal user that installs ASTAP
    for itself). Working assumption pending the formal review listed
-   under [Open Questions](#open-questions-to-retire-before-rp-plate-solver-ships):
+   under [Open Questions](#open-questions-to-retire-before-plate-solver-ships):
    because `rp` never *conveys* the LGPL work, the LGPL-3.0 §4 / §6
    redistribution paths are not engaged at the `rp` boundary at all.
    The SEP/`sep-sys` rejection rationale ("LGPL + FFI burden") is
@@ -369,15 +369,15 @@ operators reading the file.
 
 End-to-end solve verification (D05 database + a known FITS) is left
 to the per-platform passes outlined under
-[Open Questions](#open-questions-to-retire-before-rp-plate-solver-ships).
+[Open Questions](#open-questions-to-retire-before-plate-solver-ships).
 
-### Open questions to retire before `rp-plate-solver` ships
+### Open questions to retire before `plate-solver` ships
 
-Each becomes a checkbox in the `rp-plate-solver` plan doc; status
+Each becomes a checkbox in the `plate-solver` plan doc; status
 below tracks which have been retired.
 
 1. **macOS Apple Silicon — end-to-end solve.** **Retired by Phase 6.**
-   The nightly `rp-plate-solver-smoke` workflow runs the
+   The nightly `plate-solver-smoke` workflow runs the
    `@requires-astap` BDD smoke against real ASTAP on `macos-latest`
    with `xattr -d com.apple.quarantine` cleared per run. Failure
    recovery → tracking issue. Happy-path m31 solve is `@manual`-tagged
@@ -421,7 +421,7 @@ below tracks which have been retired.
    portably query "how confident are you in your pointing?"
    The resolution is operator-supplied: `rp`'s plate-solver call
    passes `search_radius_deg` from rp config (recommended defaults
-   in `docs/services/rp-plate-solver.md` §"Hint sources and
+   in `docs/services/plate-solver.md` §"Hint sources and
    search-radius defaults"), and `ra_hint` / `dec_hint` come from
    the mount's current pointing via the standard properties — note
    that `RightAscension` is decimal hours per the Alpaca spec, so
@@ -434,7 +434,7 @@ below tracks which have been retired.
 
 ### Architecture
 
-- A new `services/rp-plate-solver/` workspace member is created later
+- A new `services/plate-solver/` workspace member is created later
   (separate plan), structured as an rp-managed service per the existing
   pattern (`services/sentinel`, `services/phd2-guider`).
 - The built-in `plate_solve` MCP tool in `rp` proxies to the service.
@@ -449,7 +449,7 @@ below tracks which have been retired.
 - `rp` ships **no** ASTAP code, binary, archive, or index database.
   Operator-supplied install via `astap_binary_path` and
   `astap_db_directory` is the contract.
-- Per-platform install instructions live in the `rp-plate-solver`
+- Per-platform install instructions live in the `plate-solver`
   README, linking out to hnsky.org / SourceForge by platform. The
   README also points operators at
   [`.github/actions/install-astap`](../../.github/actions/install-astap/action.yml)
@@ -469,13 +469,13 @@ compliant."
 - ASTAP's binaries are LGPL-3.0. **`rp` does not convey them.**
   Operators install ASTAP separately (from hnsky.org, SourceForge,
   their package manager, or their own build) and point
-  `rp-plate-solver` at it via required config fields:
+  `plate-solver` at it via required config fields:
   - `astap_binary_path` — absolute path to `astap_cli` (or
     `astap_cli.exe` on Windows).
   - `astap_db_directory` — directory containing the operator's
     chosen star database (D05 by default; operators can choose
     larger DBs for wider FOVs).
-- Both fields are validated at `rp-plate-solver` startup; missing or
+- Both fields are validated at `plate-solver` startup; missing or
   unreadable values produce an explicit error that names the field
   and links to install instructions.
 - CI installs ASTAP into its own runners via a local
@@ -528,7 +528,7 @@ conveying* — and conveying is defined in GPL-3.0 §0 (which LGPL-3.0
 §0 inherits) as "any kind of propagation that enables other parties
 to make or receive copies"
 ([FSF on mere aggregation vs. conveyance](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)).
-`rp` and `rp-plate-solver` neither make nor receive copies of
+`rp` and `plate-solver` neither make nor receive copies of
 `astap_cli`; they invoke an operator-installed binary by its
 configured path. The subprocess boundary puts §6 outside the
 runtime path entirely.
@@ -556,7 +556,7 @@ The dedicated `install-astap` smoke workflow
 (`.github/workflows/install-astap.yml`) sets `use-cache: "false"` on
 the composite action so each run does a genuinely fresh upstream
 download — there is no cache layer to call into question for that
-workflow at all. Other callers (the production `rp-plate-solver-smoke`
+workflow at all. Other callers (the production `plate-solver-smoke`
 nightly + path-triggered workflow) leave caching at its default;
 that cache is repo-internal CI infrastructure scoped to the runner
 (see Question 3 below).
@@ -591,7 +591,7 @@ same cache scope; they're not republishing.
 
 #### Posture summary
 
-- `rp` and `rp-plate-solver` never convey ASTAP. §4 and §6 do not
+- `rp` and `plate-solver` never convey ASTAP. §4 and §6 do not
   engage at the `rp` boundary.
 - The `install-astap` action is repo-internal CI tooling, not a
   distribution channel. It does not convey.
@@ -601,7 +601,7 @@ The wrapper's HTTP boundary, BYO config posture, and CI tooling
 shape are all consistent with this analysis. ADR-005 OQ #5 is
 **retired** with this conclusion. Future re-evaluation triggers:
 
-- A change in distribution model (e.g., `rp-plate-solver` starts
+- A change in distribution model (e.g., `plate-solver` starts
   bundling ASTAP — explicitly out of scope per ADR-005's BYO
   decision).
 - A decision to publish ASTAP archives via GitHub releases on this
@@ -615,7 +615,7 @@ shape are all consistent with this analysis. ADR-005 OQ #5 is
 - No new workspace dependency on a C library. The build matrix is
   unchanged; `cargo rail run --profile commit` continues to be the
   pre-push gate.
-- The rp-plate-solver crate's own tests will mock the binary subprocess
+- The plate-solver crate's own tests will mock the binary subprocess
   (per `docs/decisions/004-testing-strategy-for-http-client-error-paths.md`'s
   abstract-the-trait pattern). End-to-end ASTAP execution is verified
   by the `install-astap` smoke workflow plus the per-platform
@@ -674,3 +674,10 @@ shape are all consistent with this analysis. ADR-005 OQ #5 is
 - "Plate Solving with Astrometry.net on Raspberry Pi 5" —
   <https://astroisk.nl/unlocking-the-cosmos-plate-solving-with-astrometry-net-on-raspberry-pi-5/>.
   Confirms the Pi 5 native build path for the fallback option.
+
+---
+
+*Editorial note: the service was renamed from `rp-plate-solver` to
+`plate-solver` on 2026-05-03; this ADR's prose was updated in the
+same commit. The original wording referred to the service by its
+former name throughout — see git history for the verbatim text.*

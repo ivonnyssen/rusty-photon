@@ -10,7 +10,7 @@ members = [
   "services/qhy-focuser",
   "services/calibrator-flats",
   "services/rp",
-  "services/rp-plate-solver",
+  "services/plate-solver",
   "services/sentinel",
   "services/sentinel-app",
   "services/sky-survey-camera",

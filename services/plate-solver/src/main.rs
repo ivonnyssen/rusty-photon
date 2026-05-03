@@ -1,4 +1,4 @@
-//! rp-plate-solver service binary.
+//! plate-solver service binary.
 //!
 //! Reads a JSON config file passed via `--config`, validates it, builds
 //! the HTTP server, prints `bound_addr=<host>:<port>` to stdout (so
@@ -6,14 +6,14 @@
 //! until SIGTERM / Ctrl-C.
 
 use clap::Parser;
-use rp_plate_solver::{load_config, ServerBuilder};
+use plate_solver::{load_config, ServerBuilder};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "rp-plate-solver",
+    name = "plate-solver",
     version,
     about = "rp-managed plate solver service"
 )]
@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
     let config = match load_config(&cli.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("rp-plate-solver: {e}");
+            eprintln!("plate-solver: {e}");
             return ExitCode::from(2);
         }
     };
@@ -45,7 +45,7 @@ async fn main() -> ExitCode {
     let server = match ServerBuilder::new().with_config(config).build().await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("rp-plate-solver: {e}");
+            eprintln!("plate-solver: {e}");
             return ExitCode::from(2);
         }
     };
@@ -54,10 +54,10 @@ async fn main() -> ExitCode {
     // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
     // discover the test-spawned service's port. Must be on stdout.
     println!("bound_addr={addr}");
-    tracing::info!(%addr, "rp-plate-solver listening");
+    tracing::info!(%addr, "plate-solver listening");
 
     if let Err(e) = server.start().await {
-        eprintln!("rp-plate-solver: server error: {e}");
+        eprintln!("plate-solver: server error: {e}");
         return ExitCode::from(1);
     }
 

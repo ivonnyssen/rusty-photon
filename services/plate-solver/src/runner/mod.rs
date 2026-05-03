@@ -15,7 +15,7 @@ pub mod wcs;
 /// Inputs to one solve attempt. Hint fields use decimal degrees on the wire
 /// to match the response field `ra_center` (also degrees, sourced from
 /// `CRVAL1`); the runner converts to ASTAP's expected internal units before
-/// spawning. See `docs/services/rp-plate-solver.md` §"Hint Mapping".
+/// spawning. See `docs/services/plate-solver.md` §"Hint Mapping".
 #[derive(Debug, Clone)]
 pub struct SolveRequest {
     pub fits_path: PathBuf,

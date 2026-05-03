@@ -10,8 +10,8 @@
 //! `AstapCliRunner::with_env` builder, not via `std::env::set_var`,
 //! so concurrent tests in the same process don't race.
 
-use rp_plate_solver::runner::wcs::read_wcs_sidecar;
-use rp_plate_solver::{AstapCliRunner, AstapRunner, RunnerError, SolveRequest};
+use plate_solver::runner::wcs::read_wcs_sidecar;
+use plate_solver::{AstapCliRunner, AstapRunner, RunnerError, SolveRequest};
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -32,7 +32,7 @@ fn mock_astap_path() -> PathBuf {
     }
     panic!(
         "mock_astap binary not found. Tried MOCK_ASTAP_BINARY env var, then \
-         CARGO_BIN_EXE_mock_astap. Run `cargo build --tests -p rp-plate-solver`."
+         CARGO_BIN_EXE_mock_astap. Run `cargo build --tests -p plate-solver`."
     )
 }
 

@@ -2,8 +2,8 @@
 //! `GET /health`.
 //!
 //! Frozen contract details live in
-//! `docs/plans/rp-plate-solver.md` §"HTTP contract" and the
-//! behavior contract is in `docs/services/rp-plate-solver.md`.
+//! `docs/plans/plate-solver.md` §"HTTP contract" and the
+//! behavior contract is in `docs/services/plate-solver.md`.
 
 use crate::error::AppError;
 use crate::runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest};

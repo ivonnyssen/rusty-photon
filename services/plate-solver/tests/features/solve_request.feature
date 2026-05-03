@@ -5,7 +5,7 @@ Feature: POST /api/v1/solve — request handling and error surface
   returns the parsed WCS solution or one of the five frozen error codes.
 
   The complete HTTP contract — request fields, response fields, error
-  code table — lives in `docs/plans/rp-plate-solver.md` §"HTTP contract".
+  code table — lives in `docs/plans/plate-solver.md` §"HTTP contract".
   Each scenario below exercises that contract one branch at a time.
 
   Background:

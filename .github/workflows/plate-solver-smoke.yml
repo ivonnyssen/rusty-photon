@@ -1,4 +1,4 @@
-# Nightly cross-platform real-ASTAP smoke for rp-plate-solver.
+# Nightly cross-platform real-ASTAP smoke for plate-solver.
 #
 # Drives the wrapper end-to-end against a real ASTAP install on each
 # target OS. The wrapper's contract correctness is already covered on
@@ -12,10 +12,10 @@
 # PR (PRs already pay for the mock BDD; ASTAP install + DB download
 # would be ~100 MB per run × 3 OSes per PR for marginal benefit).
 #
-# See docs/plans/rp-plate-solver.md §"Real-ASTAP coverage: cadence
+# See docs/plans/plate-solver.md §"Real-ASTAP coverage: cadence
 # and gating" for the rationale and the bdd.rs filter snippet.
 
-name: rp-plate-solver-smoke
+name: plate-solver-smoke
 
 permissions:
   contents: read
@@ -29,9 +29,9 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "services/rp-plate-solver/**"
+      - "services/plate-solver/**"
       - ".github/actions/install-astap/**"
-      - ".github/workflows/rp-plate-solver-smoke.yml"
+      - ".github/workflows/plate-solver-smoke.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p services/rp-plate-solver/tests/fixtures
+          mkdir -p services/plate-solver/tests/fixtures
           python3 - <<'PY'
           # Single 2880-byte FITS header block.
           cards = [
@@ -96,7 +96,7 @@ jobs:
           data_bytes = 256 * 256 * 2
           # FITS data is padded to a 2880-byte boundary.
           pad = (2880 - data_bytes % 2880) % 2880
-          with open("services/rp-plate-solver/tests/fixtures/degenerate_no_stars.fits", "wb") as f:
+          with open("services/plate-solver/tests/fixtures/degenerate_no_stars.fits", "wb") as f:
               f.write(header.encode("ascii"))
               f.write(b"\x00" * (data_bytes + pad))
           PY
@@ -104,7 +104,7 @@ jobs:
       - name: Pre-build wrapper + mock_astap (BDD discovery)
         shell: bash
         run: |
-          cargo build -p rp-plate-solver --all-features --tests
+          cargo build -p plate-solver --all-features --tests
 
       - name: Run @requires-astap BDD scenarios
         shell: bash
@@ -112,10 +112,10 @@ jobs:
           # ASTAP_BINARY and ASTAP_DB_DIR are set by install-astap.
           # Their presence flips the bdd.rs filter to fire the
           # @requires-astap scenarios.
-          RUST_LOG: rp_plate_solver=debug
+          RUST_LOG: plate_solver=debug
         run: |
           set -euo pipefail
-          cargo test -p rp-plate-solver --all-features --test bdd
+          cargo test -p plate-solver --all-features --test bdd
 
       - name: Log timing reference
         # v1 just points at the BDD step output where per-scenario
@@ -144,7 +144,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const title = `nightly: rp-plate-solver real-ASTAP smoke failing`;
+            const title = `nightly: plate-solver real-ASTAP smoke failing`;
             const body = [
               `The nightly cross-platform real-ASTAP smoke workflow failed.`,
               ``,
@@ -159,7 +159,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: "open",
-              labels: "rp-plate-solver-nightly",
+              labels: "plate-solver-nightly",
             });
             const match = existing.find(i => i.title === title);
             if (match) {
@@ -175,6 +175,6 @@ jobs:
                 repo: context.repo.repo,
                 title,
                 body,
-                labels: ["rp-plate-solver-nightly", "ci-flake"],
+                labels: ["plate-solver-nightly", "ci-flake"],
               });
             }

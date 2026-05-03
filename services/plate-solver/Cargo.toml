@@ -1,5 +1,5 @@
 [package]
-name = "rp-plate-solver"
+name = "plate-solver"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -1,7 +1,7 @@
-//! rp-plate-solver — rp-managed service wrapping the ASTAP CLI.
+//! plate-solver — rp-managed service wrapping the ASTAP CLI.
 //!
-//! See `docs/services/rp-plate-solver.md` for the design contract and
-//! `docs/plans/rp-plate-solver.md` for sequencing.
+//! See `docs/services/plate-solver.md` for the design contract and
+//! `docs/plans/plate-solver.md` for sequencing.
 
 pub mod api;
 pub mod config;

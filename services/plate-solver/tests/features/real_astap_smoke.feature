@@ -7,7 +7,7 @@ Feature: Real-ASTAP smoke (mock-honesty backstop)
   cross-platform workflow sets that var via the `install-astap` action;
   PR jobs do not, so these scenarios are skipped on every PR.
 
-  See `docs/plans/rp-plate-solver.md` §"Real-ASTAP coverage: cadence
+  See `docs/plans/plate-solver.md` §"Real-ASTAP coverage: cadence
   and gating" for the rationale and the bdd.rs filter snippet.
 
   Note: the `@wip` tag is removed by Phase 4 along with all other
