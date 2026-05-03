@@ -23,10 +23,15 @@ site-location config with mount-side validation, and the MCP tool
 surface that exposes both as primitive operations a planner plugin can
 compose plus high-level convenience tools the default planner uses.
 
-The math choice — borrow `astro-math` behind a thin trait, with
-hand-rolled Meeus reserved as the fallback if upstream stalls — is
-settled by an out-of-band crate survey (April 2026). The trait wall is
-both the swap-out point and the seam against the MCP tool layer.
+The math choice — wrap `erfars` (the Rust FFI binding for ERFA, the
+BSD-licensed clean-room derivative of IAU SOFA used by Astropy and
+LSST) behind a thin trait, in-process — is settled by an
+out-of-band crate survey and a deep audit of the
+otherwise-plausible-looking `astro-math` crate (the audit found
+provably-wrong code in functions we'd ship). The trait wall is both
+the swap-out point if `erfars` ever proves problematic and the seam
+against the MCP tool layer. See "Decisions resolved" below for the
+in-process-vs-service rationale.
 
 ## Goals
 
@@ -38,10 +43,10 @@ both the swap-out point and the seam against the MCP tool layer.
    form a stable surface a planner plugin can compose; high-level
    convenience tools (`get_next_target`, `get_target_status`) are
    built on the same primitives, replaceable wholesale.
-3. **Insulate against upstream risk:** the `astro-math` dependency sits
-   behind an `Ephemeris` trait so it can be swapped (vendored, replaced
-   with hand-rolled Meeus, or replaced by a different crate) without
-   touching MCP plumbing or the planner.
+3. **Insulate against upstream risk:** the `erfars` dependency sits
+   behind an `Ephemeris` trait so it can be swapped (vendored,
+   replaced with hand-rolled Meeus, or extracted into a managed
+   service) without touching MCP plumbing or the planner.
 4. **Update `rp.md`** so the Dynamic Planner section actually
    specifies how altitude / transit / meridian-flip get computed, and
    the Configuration section carries the new `site` block.
@@ -52,26 +57,69 @@ These are the load-bearing design calls; they belong in `rp.md`'s
 "Planning and Ephemeris" section once Phase 1 lands and should not be
 re-litigated.
 
-### Borrow `astro-math`, behind a trait
+### Wrap `erfars` (ERFA / IAU SOFA), behind a trait, in-process
 
-`astro-math` (MIT/Apache, pure Rust, last release Aug 2025) covers
-sidereal time, ICRS→alt/az, sun/moon position, rise/set, and
-refraction in a single crate. The Rust astronomy ecosystem is thin
-enough that this is the only viable single-crate choice — every
-alternative is either AGPL-licensed (`siderust`, swiss-eph),
-abandoned (saurvs/`astro` from 2017), an FFI wrapper, or
-scope-mismatched (`nyx-space`).
+The math layer wraps **`erfars`**, the Rust FFI binding for ERFA
+(Essential Routines for Fundamental Astronomy — the BSD-licensed
+clean-room derivative of IAU SOFA, function-for-function compatible
+with SOFA C, used by Astropy, LSST/Rubin, and the gravity-wave
+pipelines). License: BSD 3-clause for ERFA, MIT for `erfars` —
+clean inside this workspace's MIT/Apache posture.
 
-Risk: single-contributor crate with low download numbers. Mitigation:
-the `Ephemeris` trait in `rp-ephemeris` is the only consumer of
-`astro-math` symbols — replacing it with a hand-rolled Meeus
-implementation (~1000 LOC) is mechanical if upstream stalls, with
-zero impact on the MCP tool layer.
+The `Ephemeris` trait in `rp-ephemeris` exposes only safe Rust;
+`erfars`'s `unsafe` is bounded inside the binding crate. Twilight
+and rise/set primitives are not in ERFA's surface — they live in
+`rp-ephemeris` as small root-finders over the ERFA-supplied sun /
+target altitude.
 
-Reference-value tests in Phase 2 validate the wrapped implementation
-against published Astropy/Stellarium values for ~10 named objects
-across multiple dates and sites; this catches both `astro-math` bugs
-and unit-conversion mistakes in our wrapping.
+#### Why not `astro-math`
+
+A deep audit of `astro-math` (April 2026, recorded in this PR's
+review thread) found a provably wrong `sun_rise_set` implementation
+(arguments to `atan2` swapped, off by up to ~6 hours), a silent
+wrong-answer in `alt_az_to_ra_dec` at the celestial poles, a silent
+fallback from the ERFA-backed alt/az path to a buggy hand-rolled
+path on ERFA error, no twilight functions at all, 137 transitive
+dependencies, 8 months without a commit, two GitHub stars, and
+hobby-tier commit messages. The earlier "borrow `astro-math` behind
+a trait" framing in this plan was wrong — the trait wall would
+isolate the dependency identity but not the algorithmic bugs we'd
+ship. Going directly to ERFA via `erfars` puts us on the same
+algorithmic foundation Astropy uses, with a much smaller binding
+surface to audit.
+
+#### Why in-process, not a managed service
+
+ERFA is in a fundamentally different risk class from ASTAP (which
+*is* a managed service, justified by its specific failure modes).
+ERFA is pure computation: no I/O, no file parsing, no allocation in
+the hot path, scalar-only inputs, ~25 years of heavy production use
+in safety-critical astronomy software. The realistic SIGSEGV
+surface is "binding bug we hit on first call and immediately fix,"
+not "crashes mysteriously at 3am during a session." The workspace
+already runs C code in-process for crypto (`aws-lc-rs` /
+`ring`); the engineering posture for well-bounded C deps is
+"in-process behind a safe Rust binding."
+
+Isolating `erfars` in a service would route every primitive call
+through HTTP. The planner makes many small ephemeris calls per
+decision (alt/az for every candidate target, transit times, sun
+altitude for twilight, moon position + separation per candidate,
+meridian-flip ETA). That's 20+ HTTP roundtrips per `get_next_target`
+call — meaningful complexity and latency for safety we don't
+actually need.
+
+If a real ERFA-related crash is ever observed in production, the
+trait wall makes service-extraction a mechanical follow-up.
+
+#### Reference-value tests
+
+Phase 2's reference-value tests assert `ErfarsEphemeris` outputs
+match canonical values (Astropy script-generated, since Astropy
+uses ERFA internally; agreement should be near-perfect, so
+tolerances can be tight — 0.1 arcsec for alt/az, 1 second for
+transit/rise/set). Disagreement is a wrapping bug, not an
+algorithmic one — caught at a fixed surface.
 
 ### Use `tzf-rs` for lat/lon → IANA timezone
 
@@ -181,8 +229,9 @@ embedded data; no service supervision, no HTTP surface.
 - `site` config block: `latitude_degrees`, `longitude_degrees`.
 - IANA timezone derivation at startup via `tzf-rs`, logged.
 - ASCOM mount site validation on connect, hard error on mismatch.
-- `rp-ephemeris` crate: `Ephemeris` trait + `AstroMathEphemeris`
-  impl + reference-value tests.
+- `rp-ephemeris` crate: `Ephemeris` trait + `ErfarsEphemeris`
+  impl (in-process, safe Rust over the `erfars` ERFA bindings) +
+  reference-value tests against Astropy.
 - `rp-catalog` crate: embedded Messier + NGC + IC; `resolve(name) →
   ResolvedTarget` (RA, Dec, type, magnitude).
 - Primitive MCP tools listed above (10 operations).
@@ -215,13 +264,14 @@ crates/rp-ephemeris/
   Cargo.toml
   src/
     lib.rs                # Ephemeris trait + ResolvedSky / SunInfo / MoonInfo / etc.
-    astro_math_impl.rs    # AstroMathEphemeris: Ephemeris-trait wrapper around astro-math
+    erfars_impl.rs        # ErfarsEphemeris: Ephemeris-trait wrapper around the erfars ERFA bindings
+    derived.rs            # Twilight + rise/set + meridian-flip: small root-finders over ERFA-supplied positions
     site.rs               # Site { lat, lon } + tzf-rs timezone derivation
   refvals/
-    *.json                # Reference Astropy/Stellarium values per object
+    *.json                # Reference Astropy values per object (Astropy uses ERFA — agreement should be near-perfect)
     gen.py                # Astropy generator script (run by hand, not CI)
   tests/
-    reference_values.rs   # Asserts AstroMathEphemeris output matches refvals/
+    reference_values.rs   # Asserts ErfarsEphemeris output matches refvals/
 
 crates/rp-catalog/
   Cargo.toml
@@ -288,10 +338,12 @@ Status: **not started.**
       the validation rule in the Planning section.
 - [ ] `docs/workspace.md`: add `rp-ephemeris` and `rp-catalog` to the
       Shared Crates table.
-- [ ] No new ADR. The `astro-math` and `tzf-rs` choices are tactical
+- [ ] No new ADR. The `erfars` and `tzf-rs` choices are tactical
       dep picks (similar to rmcp / fitsrs) — captured in this plan's
       Decisions Resolved section, no ADR file needed unless a future
-      swap warrants one.
+      swap warrants one. The "in-process, not a managed service"
+      decision for ERFA is also captured there, with explicit
+      contrast to the rp-plate-solver supervision posture.
 
 **Exit criteria:** updated docs reviewed and merged. No code yet.
 The `Ephemeris` trait sketched in prose in the design doc is the
@@ -305,7 +357,7 @@ Status: **not started.**
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
       version, edition, rust-version, lints).
 - [ ] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
-      tidy` after adding `astro-math` and `tzf-rs` to workspace deps.
+      tidy` after adding `erfars` and `tzf-rs` to workspace deps.
 - [ ] `src/lib.rs` — `Ephemeris` trait per the design doc. Methods are
       pure functions (`&self` only for any cached state inside an
       impl, no I/O). Surface:
@@ -320,11 +372,40 @@ Status: **not started.**
       moon_position(site, time) -> MoonInfo  // + phase, illumination
       moon_separation(target_icrs, time) -> AngleDeg
       ```
-- [ ] `src/astro_math_impl.rs` — `AstroMathEphemeris` implementing the
-      trait by delegating to `astro-math`. Each method documents its
-      `astro-math` call site. Unit-conversion (degrees ↔ hours, JD
-      handling, frame conventions) lives here, not in the trait
-      surface.
+      Inputs/outputs are concrete types in `rp_ephemeris::types`, not
+      `erfars`-shaped. The trait surface contains zero `unsafe` and
+      no `erfars` types — those stay inside `erfars_impl.rs`.
+- [ ] `src/erfars_impl.rs` — `ErfarsEphemeris` implementing the trait
+      by calling `erfars` for the ERFA-native operations:
+      - `sidereal_time` → ERFA `Gst06a` (apparent sidereal time) on
+        a UT1 input, with a documented note that ΔUT1 is treated as
+        zero (UT1 ≈ UTC error ≤ 0.9 s = ≤ 13″ of LST — well inside
+        what plate-solving will refine).
+      - `alt_az` → ERFA `Atco13` (the high-precision ICRS →
+        observed path; bundles precession, nutation, aberration,
+        polar motion, refraction). Returns a typed error if ERFA
+        signals one — no silent fallback.
+      - `sun_position` → ERFA `Epv00` (Earth heliocentric position) +
+        sign flip + ERFA frame-rotation routines for GCRS.
+      - `moon_position` → ERFA `Moon98`. Phase computed from
+        ecliptic-longitude difference with the Sun (~1° accuracy,
+        sufficient for "is the moon close to my target?" checks).
+      Unit-conversion (degrees ↔ radians, JD double-precision split,
+      time-scale handling) lives here, not in the trait surface.
+- [ ] `src/derived.rs` — Operations not in ERFA's surface, built as
+      small root-finders over ERFA-supplied positions:
+      - `transit` → solve for the time where the target's hour angle
+        is zero (closed form from LST and target RA).
+      - `rise_set` → bisection on target altitude, bracketed by the
+        transit and the previous/next anti-transit.
+      - `twilight` → bisection on sun altitude crossing −6 / −12 /
+        −18°, bracketed by sunset/sunrise.
+      - `meridian_flip` → closed-form from current hour angle and
+        side-of-pier convention.
+      Each function is unit-tested with an in-source `#[cfg(test)]
+      mod tests` block against a couple of known cases (e.g.,
+      Polaris never transits at the equator → returns `None`;
+      M31 transit time at Greenwich on the 2026 spring equinox).
 - [ ] `src/site.rs` — `Site { latitude_degrees, longitude_degrees }`
       with `pub fn iana_timezone(&self) -> &'static str` derived once
       at construction via `tzf-rs`. `Display` impl logs lat/lon + tz
@@ -334,17 +415,22 @@ Status: **not started.**
       891, IC 1396, the Sun, the Moon) at ~3 sites (a mid-northern, a
       mid-southern, an equatorial) at ~3 times (solstices and an
       equinox). For each (object, site, time) tuple, the canonical
-      Astropy/Stellarium value is committed in
-      `refvals/<object>.json` (crate root, alongside the generator),
-      and the test asserts
-      `AstroMathEphemeris` output is within tolerance (1 arcsec for
-      alt/az, 1 minute for transit/rise/set, 0.1° for moon phase).
-      Reference values are generated once via a documented Astropy
-      script committed under `crates/rp-ephemeris/refvals/gen.py` —
-      not run in CI; provenance is the commit message.
+      Astropy value is committed in `refvals/<object>.json` (crate
+      root, alongside the generator), and the test asserts
+      `ErfarsEphemeris` output is within tolerance (**0.1 arcsec**
+      for alt/az, **1 second** for transit/rise/set, 0.1° for moon
+      phase). Tolerances are tight because Astropy uses ERFA
+      internally — disagreement is a wrapping bug, not an
+      algorithmic one. Reference values are generated once via a
+      documented Astropy script committed under
+      `crates/rp-ephemeris/refvals/gen.py` — not run in CI;
+      provenance is the commit message.
 - [ ] No `mockall` here — the `Ephemeris` trait is consumed by rp's
       planner module, which mocks it there if needed. The trait
-      itself is tested via the real `AstroMathEphemeris` impl.
+      itself is tested via the real `ErfarsEphemeris` impl.
+- [ ] **No `unsafe` in `rp-ephemeris`'s own code.** `erfars` already
+      encapsulates the unsafe FFI; the wrapper exposes only safe
+      Rust. Enforced via `#![deny(unsafe_code)]` at the crate root.
 
 **Exit criteria:** `cargo build -p rp-ephemeris --all-features
 --all-targets` clean. `cargo nextest run -p rp-ephemeris
@@ -568,9 +654,15 @@ Within that fixed scope, dependencies are mostly linear:
 
 ## References
 
-- Crate survey (April 2026): `astro-math` is the only viable
-  single-crate option; `tzf-rs` is the right tz-from-coords pick. No
-  ADR — captured in this plan's Decisions Resolved.
+- Crate survey + deep audit (April 2026): the initial survey
+  flagged `astro-math` as the only single-crate option; the
+  follow-up code audit found provably-wrong `sun_rise_set` math, a
+  silent fallback from the ERFA path to a buggy hand-rolled path,
+  no twilight functions, 137 transitive deps, and 8 months of
+  inactivity. Conclusion: wrap `erfars` (ERFA / IAU SOFA) directly,
+  in-process, behind the `Ephemeris` trait. `tzf-rs` remains the
+  right tz-from-coords pick. No ADR — captured in this plan's
+  Decisions Resolved.
 - [`docs/services/rp.md`](../services/rp.md) §"Dynamic Planner",
   §"Configuration", §"Equipment Integration"
 - [`docs/skills/development-workflow.md`](../skills/development-workflow.md)
@@ -591,7 +683,12 @@ Within that fixed scope, dependencies are mostly linear:
   endpoints `/sitelatitude`, `/sitelongitude`, `/cangetsitelatitude`,
   `/cangetsitelongitude`). Phase 4 should extend the in-repo reference
   with a Telescope section as part of the work.
-- [astro-math on crates.io](https://crates.io/crates/astro-math)
+- [erfars on crates.io](https://crates.io/crates/erfars) — Rust FFI
+  binding for ERFA
+- [ERFA project (liberfa/erfa)](https://github.com/liberfa/erfa) —
+  the upstream BSD-licensed C library
+- [IAU SOFA](https://www.iausofa.org/) — the canonical reference
+  ERFA derives from
 - [tzf-rs on crates.io](https://crates.io/crates/tzf-rs)
 - [openNGC dataset](https://github.com/mattiaverga/OpenNGC) (candidate
   catalog source; CC-BY-SA-4.0)
