@@ -94,58 +94,13 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Add a `"main-cam"` camera on the given Alpaca URL (device 0) only if
-    /// no camera has been configured yet.
-    pub fn ensure_default_camera(&mut self, alpaca_url: &str) -> &mut Self {
-        if self.cameras.is_empty() {
-            self.cameras.push(CameraConfig {
-                id: "main-cam".to_string(),
-                alpaca_url: alpaca_url.to_string(),
-                device_number: 0,
-            });
-        }
-        self
-    }
-
     pub fn add_filter_wheel(&mut self, fw: FilterWheelConfig) -> &mut Self {
         self.filter_wheels.push(fw);
         self
     }
 
-    /// Add a `"main-fw"` filter wheel with LRGB filters on the given Alpaca
-    /// URL (device 0) only if no filter wheel has been configured yet.
-    pub fn ensure_default_filter_wheel(&mut self, alpaca_url: &str) -> &mut Self {
-        if self.filter_wheels.is_empty() {
-            self.filter_wheels.push(FilterWheelConfig {
-                id: "main-fw".to_string(),
-                alpaca_url: alpaca_url.to_string(),
-                device_number: 0,
-                filters: vec![
-                    "Luminance".to_string(),
-                    "Red".to_string(),
-                    "Green".to_string(),
-                    "Blue".to_string(),
-                ],
-            });
-        }
-        self
-    }
-
     pub fn add_cover_calibrator(&mut self, cc: CoverCalibratorConfig) -> &mut Self {
         self.cover_calibrators.push(cc);
-        self
-    }
-
-    /// Add a `"flat-panel"` cover calibrator on the given Alpaca URL (device
-    /// 0) only if none has been configured yet.
-    pub fn ensure_default_cover_calibrator(&mut self, alpaca_url: &str) -> &mut Self {
-        if self.cover_calibrators.is_empty() {
-            self.cover_calibrators.push(CoverCalibratorConfig {
-                id: "flat-panel".to_string(),
-                alpaca_url: alpaca_url.to_string(),
-                device_number: 0,
-            });
-        }
         self
     }
 
@@ -386,16 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_default_camera_is_idempotent() {
-        let mut b = RpConfigBuilder::new();
-        b.ensure_default_camera("http://127.0.0.1:1234");
-        b.ensure_default_camera("http://127.0.0.1:9999");
-        assert_eq!(b.cameras.len(), 1);
-        assert_eq!(b.cameras[0].alpaca_url, "http://127.0.0.1:1234");
-        assert_eq!(b.cameras[0].id, "main-cam");
-    }
-
-    #[test]
     fn filter_wheel_camera_id_follows_first_camera() {
         let mut b = RpConfigBuilder::new();
         b.add_camera(CameraConfig {
@@ -403,20 +348,17 @@ mod tests {
             alpaca_url: "http://127.0.0.1:1234".to_string(),
             device_number: 0,
         });
-        b.ensure_default_filter_wheel("http://127.0.0.1:1234");
+        b.add_filter_wheel(FilterWheelConfig {
+            id: "main-fw".to_string(),
+            alpaca_url: "http://127.0.0.1:1234".to_string(),
+            device_number: 0,
+            filters: vec!["Luminance".to_string()],
+        });
         let cfg = b.build();
         assert_eq!(
             cfg["equipment"]["filter_wheels"][0]["camera_id"],
             "imaging-cam"
         );
-    }
-
-    #[test]
-    fn default_filter_wheel_has_lrgb() {
-        let mut b = RpConfigBuilder::new();
-        b.ensure_default_filter_wheel("http://127.0.0.1:1234");
-        let filters = b.filter_wheels[0].filters.clone();
-        assert_eq!(filters, vec!["Luminance", "Red", "Green", "Blue"]);
     }
 
     #[test]
