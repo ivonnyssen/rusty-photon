@@ -208,11 +208,34 @@ second crate eventually needs one, the `MountStubBehavior` /
 
 ### Phase 4 — Closed-loop centering BDD
 
-Status: **parked, blocked on Phase 6c-3.** As of 2026-05-03 the
-`center_on_target` MCP tool is not yet implemented in `rp` (no entry
-in `services/rp/src/mcp.rs`, no `services/rp/src/imaging/tools/center_on_target.rs`).
-Phases 1–3 deliver the simulator infrastructure 6c-3 will need;
-this phase unblocks once 6c-3 lands. No code in this phase yet.
+Status: **parked, blocked on Phases 6c-2 and 6c-3.** As of
+2026-05-03, code-side audit confirms neither has landed:
+
+- **6c-2** (`plate_solve` MCP tool in `rp`) — `services/rp/src/plate_solver.rs`
+  doesn't exist; `services/rp/Cargo.toml` does not depend on the
+  `plate-solver` crate; no `plate_solve` tool registered in
+  `services/rp/src/mcp.rs`; no `plate_solve.feature` in
+  `services/rp/tests/features/`.
+- **6c-3** (`center_on_target` compound tool) —
+  `services/rp/src/imaging/tools/center_on_target.rs` doesn't exist;
+  the only references in `services/rp/src/` are two doc-comments
+  describing it as *planned* (`imaging/mod.rs:9`,
+  `imaging/tools/mod.rs:9`).
+
+Phase 4 needs both: 6c-2 because the centering scenario calls
+`rp.plate_solve` to wrap the plate-solver service's HTTP API, and
+6c-3 because the scenario asserts convergence through
+`rp.center_on_target`. Phases 1–3 deliver the simulator side
+(camera-follows-mount + injected offset); Phase 4 unblocks once
+both consumer-side phases land. No code in this phase yet.
+
+**Cheaper alternative if the orchestrator side is delayed
+indefinitely.** A "Phase 4-lite" BDD could drive the centering loop
+manually from test steps — `rp.slew` → camera expose → direct HTTP
+call to `plate-solver` → `rp.sync_mount` → repeat — exercising the
+camera-follows-mount integration without touching `rp.center_on_target`
+or `rp.plate_solve`. Worth considering only if 6c-2/6c-3 stall;
+otherwise the production-shaped variant is preferred.
 
 - [ ] New feature file `services/rp/tests/features/center_on_target_e2e.feature` (or appended to `center_on_target.feature` if 6c-3 already created it). One scenario:
   - **Given** OmniSim is running and exposes a Telescope at index 0
