@@ -122,7 +122,7 @@ impl SkySurveyCamera {
         debug_assert!(
             config.pointing.telescope.is_none(),
             "SkySurveyCamera::new_static called with pointing.telescope set; \
-             use lib::build_device for follow mode (it returns Result)"
+             use build_device (in src/lib.rs) for follow mode (it returns Result)"
         );
         let last_snapshot = Arc::new(SharedPointing::new(PointingState::new(
             config.pointing.initial_ra_deg,

@@ -171,7 +171,7 @@ These are computed once at construction and exposed via debug logging.
 
 `PointingState { ra_deg, dec_deg, rotation_deg }` is the snapshot the
 exposure pipeline consumes. Where that snapshot comes from is decided
-once at construction (in `lib::build_device`) by the `PointingSource`
+once at construction (by `build_device` in `src/lib.rs`) by the `PointingSource`
 enum:
 
 ```rust
