@@ -786,26 +786,29 @@ runs land after merge when the cron next fires (and via
 
 Status: **complete.**
 
-The original framing assumed `services/rp/src/equipment/mount.rs`
-existed (gated on Phase 6c-prep, an independent track that hasn't
-landed) and that the verification would observe real solve-time
-deltas in CI. Reality:
+The original framing assumed CI would observe real solve-time deltas
+unattended. Reality:
 
 1. **ASCOM doesn't standardize pointing uncertainty.** The Alpaca
-   Telescope spec exposes `RightAscension` / `Declination` (which
-   the wrapper's `ra_hint` / `dec_hint` will source from once
-   6c-prep lands) but no portable `PointingUncertainty` /
-   `SearchRadius` property. Mount drivers may have vendor-specific
-   accuracy estimates; the wrapper can't query them portably.
+   Telescope spec exposes `RightAscension` (decimal hours) and
+   `Declination` (decimal degrees), but no portable
+   `PointingUncertainty` / `SearchRadius` property. Mount drivers
+   may have vendor-specific accuracy estimates; the wrapper can't
+   query them portably.
 
-2. **`search_radius_deg` is therefore operator-supplied.** When
-   `rp`'s `plate_solve` MCP tool lands (Phase 6c-2), it'll source
-   the radius from rp config rather than from the mount. The
-   wrapper's HTTP contract already accepts `search_radius_deg` per
-   request; today, callers that don't pass it get ASTAP's blind-solve
-   fallback.
+2. **`ra_hint` requires hours→degrees conversion.** Alpaca returns
+   `RightAscension` as decimal hours; the wrapper's `ra_hint` is
+   decimal degrees. `rp`'s `plate_solve` MCP handler does the
+   `hours * 15` conversion before forwarding the request to the
+   wrapper. `Declination` passes through unchanged.
 
-3. **The CI hinted-vs-blind perf comparison can't run unattended**
+3. **`search_radius_deg` is operator-supplied.** When `rp`'s
+   `plate_solve` MCP tool lands (Phase 6c-2), it'll source the
+   radius from rp config rather than from the mount. The wrapper's
+   HTTP contract already accepts `search_radius_deg` per request;
+   callers that don't pass it get ASTAP's blind-solve fallback.
+
+4. **The CI hinted-vs-blind perf comparison can't run unattended**
    because the m31 happy-path fixture is `@manual`-tagged (Phase 6
    forward work). Operators verify the speed advantage on their own
    rig using the curl recipe documented in the design doc.
@@ -815,24 +818,26 @@ What this phase delivered:
 - [x] New §"Hint sources and search-radius defaults" in
       `docs/services/rp-plate-solver.md` §"Hint Mapping" — names
       the ASCOM gap, recommends per-mount-state defaults (1°-10°
-      depending on sync state), shows how `rp` will source each
-      hint when 6c-prep + 6c-2 land.
+      depending on sync state), shows how `rp` sources each hint
+      (including the `RightAscension` hours→degrees conversion).
 - [x] Operator perf-comparison runbook in the same section — a
       curl one-liner pair (hinted vs. blind) operators run against
       their own real fixture to verify the speed advantage.
 - [x] ADR-005 §"Open questions" item 6 marked retired with the
-      ASCOM-gap answer and pointers to the design-doc section.
+      ASCOM-gap answer and the conversion note.
 
 What this phase did **not** do (acknowledged forward work):
 
 - Automated nightly perf trending. Requires a committable solvable
   FITS or a synthetic fixture-generation step that produces real
   star data (hard). Operators verify locally per the runbook.
-- `services/rp/src/equipment/mount.rs` itself — that's
-  6c-prep's deliverable per the parent plan
-  (`docs/plans/image-evaluation-tools.md` §Phase 6c-prep).
-- `rp`'s `plate_solve` MCP tool implementation that sources
-  `search_radius_deg` from rp config — that's 6c-2.
+- `rp`'s `plate_solve` MCP tool implementation that performs the
+  hours→degrees conversion and sources `search_radius_deg` from rp
+  config — that's Phase 6c-2 in the parent plan
+  (`docs/plans/image-evaluation-tools.md`). 6c-prep (telescope
+  primitives — `Arc<dyn Telescope>` in `equipment.rs`, `slew` /
+  `sync_mount` MCP tools) has now landed on main, so 6c-2 has its
+  prerequisite.
 
 **Exit criteria met:** ADR-005 OQ 6 marked retired with the
 documented ASCOM-gap answer and the operator-supplied default policy.

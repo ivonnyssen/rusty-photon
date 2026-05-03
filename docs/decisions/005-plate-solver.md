@@ -420,9 +420,12 @@ below tracks which have been retired.
    passes `search_radius_deg` from rp config (recommended defaults
    in `docs/services/rp-plate-solver.md` §"Hint sources and
    search-radius defaults"), and `ra_hint` / `dec_hint` come from
-   the mount's current pointing via the standard properties. The
-   speed advantage is operator-verifiable via the curl recipe in
-   the same section.
+   the mount's current pointing via the standard properties — note
+   that `RightAscension` is decimal hours per the Alpaca spec, so
+   `rp`'s `plate_solve` handler multiplies by 15 to convert to the
+   wrapper's degrees-on-the-wire contract before forwarding the
+   request. The speed advantage is operator-verifiable via the curl
+   recipe in the same section.
 
 ## Consequences
 

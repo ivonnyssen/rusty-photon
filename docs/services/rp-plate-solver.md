@@ -223,9 +223,18 @@ the caller's concern; for `rp` (the canonical caller), the hint
 chain is:
 
 1. **`ra_hint` / `dec_hint`** come from the mount's current pointing
-   (ASCOM Alpaca Telescope `RightAscension` / `Declination`
-   properties). `rp` reads these via the equipment registry when
-   it makes the `plate_solve` MCP call. Mount-not-connected ⇒ no
+   via ASCOM Alpaca Telescope properties:
+   - `RightAscension` is returned in **decimal hours** per the
+     Alpaca spec — `rp`'s `plate_solve` MCP handler must multiply
+     by 15 to convert to the wrapper's degrees-on-the-wire
+     contract.
+   - `Declination` is already in decimal degrees, so it passes
+     through unchanged.
+
+   `rp`'s `plate_solve` MCP handler reads both via the equipment
+   registry, performs the RA conversion, and forwards the request
+   to `rp-plate-solver` over HTTP. (MCP directionality: clients
+   call rp; rp calls the wrapper.) Mount-not-connected ⇒ no
    hints, blind solve.
 2. **`fov_hint_deg`** comes from the camera's pixel scale and
    sensor dimensions (operator-supplied via camera calibration
