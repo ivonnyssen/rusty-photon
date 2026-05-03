@@ -47,6 +47,22 @@ async fn started_connected_follow(world: &mut SkySurveyCameraWorld) {
     expr = "after a successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float}"
 )]
 async fn position_after_exposure(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
+    drive_exposure_then_check_position(world, ra, dec).await;
+}
+
+#[cucumber::when(expr = "the mount is updated to RA {float} hours and Dec {float} degrees")]
+fn mount_updated(world: &mut SkySurveyCameraWorld, ra_hours: f64, dec_deg: f64) {
+    world.set_mount_stub_behavior(MountStubBehavior::Ok { ra_hours, dec_deg });
+}
+
+#[then(
+    expr = "after another successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float}"
+)]
+async fn position_after_another_exposure(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
+    drive_exposure_then_check_position(world, ra, dec).await;
+}
+
+async fn drive_exposure_then_check_position(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
     world.drive_start_exposure_default().await;
     if let Some(code) = world.last_ascom_error {
         panic!("StartExposure rejected with ASCOM {code:#X}");
@@ -60,7 +76,18 @@ async fn position_after_exposure(world: &mut SkySurveyCameraWorld, ra: f64, dec:
     let url = format!("{}/sky-survey/position", world.base_url());
     let client = world.http();
     let response = client.get(&url).send().await.expect("GET position failed");
-    let body: Value = response.json().await.expect("position body not JSON");
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .expect("failed to read GET position body");
+    assert!(
+        status.is_success(),
+        "GET /sky-survey/position returned {} (body: {body_text})",
+        status
+    );
+    let body: Value =
+        serde_json::from_str(&body_text).expect("position body not JSON: {body_text}");
     let actual_ra = body["ra_deg"].as_f64().expect("missing ra_deg");
     let actual_dec = body["dec_deg"].as_f64().expect("missing dec_deg");
     assert!(
@@ -70,5 +97,23 @@ async fn position_after_exposure(world: &mut SkySurveyCameraWorld, ra: f64, dec:
     assert!(
         (actual_dec - dec).abs() < 1e-4,
         "expected Dec ≈ {dec}, got {actual_dec}"
+    );
+}
+
+#[then(expr = "the response body identifies follow mode")]
+fn response_body_identifies_follow_mode(world: &mut SkySurveyCameraWorld) {
+    let body_text = world
+        .last_http_body
+        .as_deref()
+        .expect("no HTTP body captured");
+    let parsed: Value = serde_json::from_str(body_text).unwrap_or_else(|e| {
+        panic!("response body is not JSON: {e} (body: {body_text})");
+    });
+    let error = parsed["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing 'error' field in body: {body_text}"));
+    assert_eq!(
+        error, "follow_mode",
+        "expected error=follow_mode, got error={error} (body: {body_text})"
     );
 }
