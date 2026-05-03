@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::error::MountReadError;
 
@@ -103,27 +104,58 @@ impl SharedPointing {
 }
 
 /// Telescope-following snapshot source. Holds the [`MountReader`] plus
-/// the configured rotation. Phase 2 ignores the offset (kept at 0);
-/// Phase 3 plumbs it through here.
+/// the configured rotation and the constant pointing offset (F5, the
+/// cone-error analog). Per F1, the snapshot computes
+///
+/// ```text
+/// ra_deg  = (mount_ra_hours * 15 + offset_ra_arcsec  / 3600).rem_euclid(360)
+/// dec_deg = clamp(mount_dec_deg     + offset_dec_arcsec / 3600, -90, +90)
+/// ```
 #[derive(Debug)]
 pub struct TelescopeFollow {
     reader: Arc<dyn MountReader>,
     rotation_deg: f64,
+    offset_ra_arcsec: f64,
+    offset_dec_arcsec: f64,
 }
 
 impl TelescopeFollow {
-    pub fn new(reader: Arc<dyn MountReader>, rotation_deg: f64) -> Self {
+    pub fn new(
+        reader: Arc<dyn MountReader>,
+        rotation_deg: f64,
+        offset_ra_arcsec: f64,
+        offset_dec_arcsec: f64,
+    ) -> Self {
         Self {
             reader,
             rotation_deg: wrap_rotation(rotation_deg),
+            offset_ra_arcsec,
+            offset_dec_arcsec,
         }
     }
 
     pub async fn snapshot(&self) -> Result<PointingState, MountReadError> {
         let pos = self.reader.read_position().await?;
+        let raw_ra_deg = pos.ra_hours * 15.0 + self.offset_ra_arcsec / 3600.0;
+        let raw_dec_deg = pos.dec_deg + self.offset_dec_arcsec / 3600.0;
+        // F5: RA wraps; Dec clamps. A clamp on Dec produces a `warn!`
+        // because reaching ±90 on top of a sane mount usually means
+        // the offset is misconfigured.
+        let ra_deg = raw_ra_deg.rem_euclid(360.0);
+        let dec_deg = if !(-90.0..=90.0).contains(&raw_dec_deg) {
+            warn!(
+                offset_dec_arcsec = self.offset_dec_arcsec,
+                mount_dec_deg = pos.dec_deg,
+                raw_dec_deg,
+                "follow-mode Dec offset pushed past ±90°; clamping"
+            );
+            raw_dec_deg.clamp(-90.0, 90.0)
+        } else {
+            raw_dec_deg
+        };
         Ok(PointingState {
-            ra_deg: pos.ra_hours * 15.0,
-            dec_deg: pos.dec_deg,
+            ra_deg,
+            dec_deg,
             rotation_deg: self.rotation_deg,
         })
     }
@@ -207,16 +239,19 @@ mod tests {
         assert!((s.snapshot().await.rotation_deg - 30.0).abs() < 1e-9);
     }
 
+    fn mock_reader_returning(pos: MountPosition) -> MockMountReader {
+        let mut reader = MockMountReader::new();
+        reader.expect_read_position().returning(move || Ok(pos));
+        reader
+    }
+
     #[tokio::test]
     async fn telescope_follow_converts_hours_to_degrees() {
-        let mut reader = MockMountReader::new();
-        reader.expect_read_position().returning(|| {
-            Ok(MountPosition {
-                ra_hours: 10.0,
-                dec_deg: 30.0,
-            })
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 10.0,
+            dec_deg: 30.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 12.5);
+        let follow = TelescopeFollow::new(Arc::new(reader), 12.5, 0.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
         assert!((snap.ra_deg - 150.0).abs() < 1e-9);
         assert!((snap.dec_deg - 30.0).abs() < 1e-9);
@@ -229,9 +264,90 @@ mod tests {
         reader
             .expect_read_position()
             .returning(|| Err(MountReadError::Transport("oops".into())));
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 0.0);
         let err = follow.snapshot().await.unwrap_err();
         assert!(matches!(err, MountReadError::Transport(_)));
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_applies_ra_offset() {
+        // 60 arcsec = 1/60 degree
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 60.0, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert!((snap.ra_deg - (1.0 / 60.0)).abs() < 1e-9);
+        assert_eq!(snap.dec_deg, 0.0);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_applies_dec_offset() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 30.0,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, -45.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert_eq!(snap.ra_deg, 0.0);
+        assert!((snap.dec_deg - (30.0 - 45.0 / 3600.0)).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_wraps_ra_at_zero() {
+        // mount RA = 23h59m59.5s ≈ 359.997917°; +20 arcsec ≈ +0.005556°
+        // sum ≈ 360.0035°, wraps to ≈ 0.0035°
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 23.99986111, // exactly enough that +20 arcsec crosses 360
+            dec_deg: 0.0,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 20.0, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        // expected: (23.99986111 * 15 + 20/3600) mod 360
+        let expected = (23.99986111_f64 * 15.0 + 20.0 / 3600.0).rem_euclid(360.0);
+        assert!(
+            (snap.ra_deg - expected).abs() < 1e-9,
+            "got {} expected {}",
+            snap.ra_deg,
+            expected
+        );
+        assert!(snap.ra_deg >= 0.0 && snap.ra_deg < 360.0);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_wraps_negative_ra() {
+        // mount RA = 0h, offset = -3600 arcsec = -1°, expect 359°
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, -3600.0, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert!((snap.ra_deg - 359.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_clamps_dec_at_north_pole() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 89.99,
+        });
+        // +60 arcsec offset on Dec=89.99 = 89.99 + 0.01666... = 90.00666... → clamped 90
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 60.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert_eq!(snap.dec_deg, 90.0);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_clamps_dec_at_south_pole() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: -89.99,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, -60.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert_eq!(snap.dec_deg, -90.0);
     }
 
     #[tokio::test]
@@ -245,14 +361,11 @@ mod tests {
 
     #[tokio::test]
     async fn pointing_source_telescope_uses_reader() {
-        let mut reader = MockMountReader::new();
-        reader.expect_read_position().returning(|| {
-            Ok(MountPosition {
-                ra_hours: 0.0,
-                dec_deg: 0.0,
-            })
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 0.0);
         let src = PointingSource::Telescope(follow);
         assert!(src.is_follow_mode());
         src.snapshot().await.unwrap();

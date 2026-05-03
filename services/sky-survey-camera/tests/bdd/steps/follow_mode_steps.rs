@@ -1,0 +1,74 @@
+//! Step definitions for `follow_mode.feature` (contracts F1, F2, F5, F6).
+
+use crate::world::{MountStubBehavior, SkySurveyCameraWorld};
+use cucumber::{given, then};
+use serde_json::Value;
+
+#[given(expr = "a mount reports RA {float} hours and Dec {float} degrees")]
+async fn mount_reports(world: &mut SkySurveyCameraWorld, ra_hours: f64, dec_deg: f64) {
+    world
+        .spawn_mount_stub(MountStubBehavior::Ok { ra_hours, dec_deg })
+        .await;
+}
+
+#[given("a mount that errors on every read")]
+async fn mount_errors(world: &mut SkySurveyCameraWorld) {
+    world.spawn_mount_stub(MountStubBehavior::AscomError).await;
+}
+
+#[given("the camera is configured to follow that mount")]
+fn follow_with_zero_offset(_world: &mut SkySurveyCameraWorld) {
+    // `spawn_mount_stub` already set `telescope_endpoint_override`,
+    // and the world's offset fields default to 0.0. This step exists
+    // to make follow-mode wiring explicit in the feature file.
+}
+
+#[given(
+    expr = "the camera is configured to follow that mount with offset RA {float} arcsec and Dec {float} arcsec"
+)]
+fn follow_with_offset(world: &mut SkySurveyCameraWorld, ra_arcsec: f64, dec_arcsec: f64) {
+    world.telescope_offset_ra_arcsec = ra_arcsec;
+    world.telescope_offset_dec_arcsec = dec_arcsec;
+}
+
+#[given("the camera is started and connected in follow mode")]
+async fn started_connected_follow(world: &mut SkySurveyCameraWorld) {
+    world.spawn_skyview_stub_ok().await;
+    let fits = crate::world::make_zero_fits(640, 480);
+    world.set_stub_behavior(crate::world::StubBehavior::ServingFits(fits));
+    world.start_service().await;
+    world.set_camera_connected(true).await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected connect to succeed in follow-mode setup, got ASCOM {code:#X}");
+    }
+}
+
+#[then(
+    expr = "after a successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float}"
+)]
+async fn position_after_exposure(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
+    world.drive_start_exposure_default().await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("StartExposure rejected with ASCOM {code:#X}");
+    }
+    if !world
+        .wait_for_image_ready(std::time::Duration::from_secs(10))
+        .await
+    {
+        panic!("image never became ready within 10s");
+    }
+    let url = format!("{}/sky-survey/position", world.base_url());
+    let client = world.http();
+    let response = client.get(&url).send().await.expect("GET position failed");
+    let body: Value = response.json().await.expect("position body not JSON");
+    let actual_ra = body["ra_deg"].as_f64().expect("missing ra_deg");
+    let actual_dec = body["dec_deg"].as_f64().expect("missing dec_deg");
+    assert!(
+        (actual_ra - ra).abs() < 1e-4,
+        "expected RA ≈ {ra}, got {actual_ra}"
+    );
+    assert!(
+        (actual_dec - dec).abs() < 1e-4,
+        "expected Dec ≈ {dec}, got {actual_dec}"
+    );
+}

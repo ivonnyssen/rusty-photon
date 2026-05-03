@@ -113,11 +113,17 @@ fn build_device(
         None => PointingSource::Static(Arc::clone(&last_snapshot)),
         Some(t) => {
             let reader = mount::AlpacaMountReader::from_config(t)?;
-            let follow =
-                TelescopeFollow::new(Arc::new(reader), config.pointing.initial_rotation_deg);
+            let follow = TelescopeFollow::new(
+                Arc::new(reader),
+                config.pointing.initial_rotation_deg,
+                t.offset_ra_arcsec,
+                t.offset_dec_arcsec,
+            );
             tracing::debug!(
                 alpaca_url = %t.alpaca_url,
                 device_number = t.device_number,
+                offset_ra_arcsec = t.offset_ra_arcsec,
+                offset_dec_arcsec = t.offset_dec_arcsec,
                 "telescope follow mode armed"
             );
             PointingSource::Telescope(follow)
