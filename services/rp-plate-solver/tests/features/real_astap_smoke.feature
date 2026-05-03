@@ -1,4 +1,4 @@
-@wip @requires-astap
+@requires-astap
 Feature: Real-ASTAP smoke (mock-honesty backstop)
 
   Two scenarios exercise the wrapper against the operator's real ASTAP

@@ -49,7 +49,15 @@ bdd_infra::bdd_main! {
                     .iter()
                     .any(|t| t == "requires-astap" || t == "@requires-astap");
             let astap_available = std::env::var("ASTAP_BINARY").is_ok();
-            !is_wip && (!needs_astap || astap_available)
+            // `@unix` gates scenarios that depend on Unix-specific
+            // filesystem semantics (e.g., `chmod 000` to deny read).
+            // Windows file-permission denial requires DENY ACLs or
+            // file locks — not worth the complexity until a real
+            // Windows-specific failure mode surfaces.
+            let unix_only = feat.tags.iter().any(|t| t == "unix" || t == "@unix")
+                || sc.tags.iter().any(|t| t == "unix" || t == "@unix");
+            let is_unix = cfg!(unix);
+            !is_wip && (!needs_astap || astap_available) && (!unix_only || is_unix)
         })
         .await;
 }

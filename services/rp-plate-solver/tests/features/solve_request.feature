@@ -1,4 +1,3 @@
-@wip
 Feature: POST /api/v1/solve — request handling and error surface
 
   The solve endpoint accepts a FITS path plus optional pointing/FOV/
@@ -29,6 +28,20 @@ Feature: POST /api/v1/solve — request handling and error surface
     Then the response status is 404
     And the response field "error" is "fits_not_found"
 
+  Scenario: fits_path pointing at a directory returns fits_not_found
+    Given a fits_path pointing at a directory
+    When I POST to /api/v1/solve with that fits_path
+    Then the response status is 404
+    And the response field "error" is "fits_not_found"
+    And the response field "message" contains "not a regular file"
+
+  @unix
+  Scenario: fits_path with read permission denied returns fits_not_found
+    Given an unreadable FITS path
+    When I POST to /api/v1/solve with that fits_path
+    Then the response status is 404
+    And the response field "error" is "fits_not_found"
+
   Scenario: Non-absolute fits_path returns invalid_request
     When I POST to /api/v1/solve with fits_path "relative/path.fits"
     Then the response status is 400
@@ -40,7 +53,7 @@ Feature: POST /api/v1/solve — request handling and error surface
     And the response field "error" is "invalid_request"
 
   Scenario: Unparseable timeout returns invalid_request
-    Given a writable FITS path "/tmp/m31.fits"
+    Given a writable FITS path
     When I POST to /api/v1/solve with that fits_path and timeout "not-a-duration"
     Then the response status is 400
     And the response field "error" is "invalid_request"

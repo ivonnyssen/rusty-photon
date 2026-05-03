@@ -1,4 +1,3 @@
-@wip
 Feature: Subprocess supervision (timeout escalation, single-flight queueing)
 
   Every solve is bounded by a wall-clock deadline. On expiry the wrapper

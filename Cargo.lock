@@ -3692,6 +3692,7 @@ dependencies = [
  "axum",
  "bdd-infra",
  "cargo-husky",
+ "clap",
  "cucumber",
  "humantime-serde",
  "libc",
@@ -3704,6 +3705,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
