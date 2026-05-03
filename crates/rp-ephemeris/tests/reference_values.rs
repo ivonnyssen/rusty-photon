@@ -49,17 +49,15 @@ fn refvals_dir() -> PathBuf {
 
 #[test]
 fn alt_az_matches_astropy_within_tight_tolerance() {
-    // Tolerance: 0.1″ = 0.1/3600 ° ≈ 2.78e-5 °. Allow ~1″ headroom for
-    // refraction-model differences between Astropy and ERFA's defaults
-    // (Astropy's default is no refraction; ErfarsEphemeris applies a
-    // 1013.25 mb / 10 °C / 50 % / 0.55 µm model). Targets near the
-    // horizon would diverge meaningfully under different refraction
-    // assumptions; the gen.py script's expected output matches our
-    // refraction defaults via Astropy's IERS settings, so the test
-    // tolerance is set to reflect end-to-end agreement, not raw ERFA
-    // agreement.
-    const ALT_TOL_DEG: f64 = 0.1;
-    const AZ_TOL_DEG: f64 = 0.1;
+    // Astropy uses ERFA internally and `gen.py` passes the same
+    // 1013.25 mbar / 10 °C / 50 % / 0.55 µm refraction model that
+    // `ErfarsEphemeris` hard-codes, so end-to-end agreement should
+    // be near-perfect. 1e-4 ° = 0.36″ is well below any meaningful
+    // pointing tolerance and far above the f64 numerical noise the
+    // two paths could plausibly accumulate; tighter than this would
+    // start tripping on the last bit of double-precision rounding.
+    const ALT_TOL_DEG: f64 = 1e-4;
+    const AZ_TOL_DEG: f64 = 1e-4;
 
     let dir = refvals_dir();
     let entries: Vec<_> = match fs::read_dir(&dir) {

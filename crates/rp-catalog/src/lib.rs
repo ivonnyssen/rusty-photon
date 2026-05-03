@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 const MESSIER_CSV: &str = include_str!("data/messier.csv");
 const NGC_CSV: &str = include_str!("data/ngc.csv");
@@ -142,12 +143,33 @@ impl Catalog {
             })?;
             alias_pairs.push((normalize(&r.alias), normalize(&r.canonical_name)));
         }
+        // Track aliases we've already inserted from aliases.csv so a
+        // genuinely ambiguous common name (e.g. "Antennae Galaxies"
+        // covers a pair of interacting NGCs) doesn't silently
+        // overwrite the first-seen target. First-wins, with a debug
+        // log for forensic audits — predictable behaviour beats
+        // alphabetical lottery.
+        let mut alias_origins: HashMap<String, String> = HashMap::new();
         for (alias_key, canon_key) in alias_pairs {
             if by_normalized_name.contains_key(&alias_key) {
-                continue; // alias already a first-class entry
+                // alias collides with a first-class catalogue entry
+                // (M / NGC / IC); the canonical row always wins.
+                continue;
+            }
+            if let Some(prior) = alias_origins.get(&alias_key) {
+                if prior != &canon_key {
+                    debug!(
+                        alias = %alias_key,
+                        first = %prior,
+                        skipped = %canon_key,
+                        "ambiguous common-name alias maps to multiple targets; keeping first"
+                    );
+                }
+                continue;
             }
             if let Some(target) = by_normalized_name.get(&canon_key).cloned() {
-                by_normalized_name.insert(alias_key, target);
+                by_normalized_name.insert(alias_key.clone(), target);
+                alias_origins.insert(alias_key, canon_key);
             }
         }
 
@@ -173,20 +195,31 @@ impl Catalog {
     /// Up to `limit` canonical names with the smallest Levenshtein
     /// distance from the query (≤ 3). Used to populate "did you
     /// mean…?" suggestions on a lookup miss in the MCP wrapper.
+    /// Each returned string is the human-facing canonical name
+    /// (e.g. `"M 41"`, `"NGC 224"`) — never the internal lookup key
+    /// or an alias. Multiple lookup keys mapping to the same
+    /// canonical name (the alias case) are deduped so suggestions
+    /// don't fill up with the same target under different spellings.
     pub fn fuzzy_suggestions(&self, query: &str, limit: usize) -> Vec<String> {
         let q = normalize(query);
         let mut scored: Vec<(usize, &str)> = self
             .by_normalized_name
-            .keys()
-            .map(|k| (levenshtein(k, &q, 4), k.as_str()))
+            .iter()
+            .map(|(k, t)| (levenshtein(k, &q, 4), t.name.as_str()))
             .filter(|(d, _)| *d <= 3)
             .collect();
-        scored.sort_unstable_by_key(|(d, _)| *d);
-        scored
-            .into_iter()
-            .take(limit)
-            .map(|(_, s)| s.to_string())
-            .collect()
+        scored.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let mut out: Vec<String> = Vec::with_capacity(limit);
+        for (_, name) in scored {
+            let s = name.to_string();
+            if !out.contains(&s) {
+                out.push(s);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        out
     }
 }
 
@@ -311,15 +344,27 @@ mod tests {
     fn fuzzy_suggestions_finds_close_neighbours() {
         let suggestions = cat().fuzzy_suggestions("M 41", 5);
         assert!(
-            suggestions.iter().any(|s| s == "m41"),
-            "exact match should appear in fuzzy list: {:?}",
+            suggestions.iter().any(|s| s == "M 41"),
+            "exact match should appear in fuzzy list as canonical name: {:?}",
             suggestions
         );
         let typo = cat().fuzzy_suggestions("M 411", 5);
         assert!(
-            typo.iter().any(|s| s == "m41"),
-            "typo M 411 should suggest M 41: {:?}",
+            typo.iter().any(|s| s == "M 41"),
+            "typo M 411 should suggest M 41 by canonical name: {:?}",
             typo
+        );
+    }
+
+    #[test]
+    fn fuzzy_suggestions_dedup_canonical_names() {
+        // "Andromeda Galaxy" is an alias of NGC 224; a query close to
+        // it should yield the canonical "NGC 224" once, not twice.
+        let suggestions = cat().fuzzy_suggestions("NGC 224", 10);
+        let copies = suggestions.iter().filter(|s| *s == "NGC 224").count();
+        assert_eq!(
+            copies, 1,
+            "expected canonical name once, got {copies}: {suggestions:?}"
         );
     }
 

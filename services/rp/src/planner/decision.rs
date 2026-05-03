@@ -88,6 +88,14 @@ pub fn next_target(
         // Distinguish "we're in daylight" from "all targets are
         // below min altitude even though it's night". The Sun
         // elevation supplies that branch.
+        //
+        // `EndOfSession` is in the discriminant for forward
+        // compatibility but unreachable from this v1 code path: it
+        // belongs in a future revision that knows the difference
+        // between "all targets exhausted" (per-target progress
+        // counters all met) and "the night is over" (set times have
+        // all passed). Both require state we don't yet thread
+        // through — see rp.md §"Dynamic Planner" bullets 1, 3.
         let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
         let reason = if sun_alt > 0.0 {
             NextTargetReason::WaitForTwilight
@@ -133,8 +141,14 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 }
 
 /// Parse the top-level `targets` JSON (rp's `Config.targets: Value`)
-/// into typed entries, silently skipping rows that don't have the
-/// required fields. Used at McpHandler construction time.
+/// into typed entries, skipping (with a `debug!` log) rows that
+/// don't have the required `name` / `ra_hours` / `dec_degrees`
+/// fields *or* whose numeric fields are out of range. The latter
+/// would otherwise turn a config typo into a confusing runtime
+/// "no_targets_configured" / "all_below_min_altitude" outcome from
+/// `get_next_target` — flagging it at parse time keeps the failure
+/// mode close to the operator's edit. Used at McpHandler
+/// construction time.
 pub fn parse_targets_from_value(v: &Value) -> Vec<PlannerTarget> {
     let Some(arr) = v.as_array() else {
         return Vec::new();
@@ -142,15 +156,41 @@ pub fn parse_targets_from_value(v: &Value) -> Vec<PlannerTarget> {
     let mut out = Vec::with_capacity(arr.len());
     for entry in arr {
         let Some(name) = entry.get("name").and_then(|n| n.as_str()) else {
+            tracing::debug!(?entry, "skipping target row missing `name`");
             continue;
         };
         let Some(ra) = entry.get("ra_hours").and_then(|n| n.as_f64()) else {
+            tracing::debug!(target = %name, "skipping target row missing `ra_hours`");
             continue;
         };
         let Some(dec) = entry.get("dec_degrees").and_then(|n| n.as_f64()) else {
+            tracing::debug!(target = %name, "skipping target row missing `dec_degrees`");
             continue;
         };
+        if !(0.0..24.0).contains(&ra) {
+            tracing::debug!(
+                target = %name, ra_hours = ra,
+                "skipping target with ra_hours outside [0, 24)"
+            );
+            continue;
+        }
+        if !(-90.0..=90.0).contains(&dec) {
+            tracing::debug!(
+                target = %name, dec_degrees = dec,
+                "skipping target with dec_degrees outside [-90, 90]"
+            );
+            continue;
+        }
         let min_alt = entry.get("min_altitude_degrees").and_then(|n| n.as_f64());
+        if let Some(m) = min_alt {
+            if !(-90.0..=90.0).contains(&m) {
+                tracing::debug!(
+                    target = %name, min_altitude_degrees = m,
+                    "skipping target with min_altitude_degrees outside [-90, 90]"
+                );
+                continue;
+            }
+        }
         out.push(PlannerTarget {
             name: name.to_string(),
             ra_hours: ra,
@@ -388,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_targets_silently_skips_bad_entries() {
+    fn parse_targets_skips_bad_entries() {
         let v = serde_json::json!([
             {"name": "M31", "ra_hours": 0.7, "dec_degrees": 41.0},
             {"name": "no_coords"},
@@ -401,5 +441,25 @@ mod tests {
         assert_eq!(parsed[0].name, "M31");
         assert_eq!(parsed[1].name, "M42");
         assert_eq!(parsed[1].min_altitude_degrees, Some(25.0));
+    }
+
+    #[test]
+    fn parse_targets_skips_out_of_range_numerics() {
+        let v = serde_json::json!([
+            {"name": "good", "ra_hours": 1.0, "dec_degrees": 0.0},
+            {"name": "ra_too_low", "ra_hours": -1.0, "dec_degrees": 0.0},
+            {"name": "ra_too_high", "ra_hours": 25.0, "dec_degrees": 0.0},
+            {"name": "dec_too_low", "ra_hours": 1.0, "dec_degrees": -91.0},
+            {"name": "dec_too_high", "ra_hours": 1.0, "dec_degrees": 91.0},
+            {
+                "name": "min_alt_bad",
+                "ra_hours": 1.0,
+                "dec_degrees": 0.0,
+                "min_altitude_degrees": 200.0
+            },
+        ]);
+        let parsed = parse_targets_from_value(&v);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "good");
     }
 }

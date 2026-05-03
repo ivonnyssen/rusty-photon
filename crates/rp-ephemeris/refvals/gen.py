@@ -78,8 +78,28 @@ TIMES = {
 }
 
 
+# Atmospheric conditions must match the constants hard-coded in
+# `crates/rp-ephemeris/src/erfars_impl.rs::alt_az_at`. Astropy's
+# default is no refraction (zero pressure); without these the
+# generated reference values would diverge from `ErfarsEphemeris`
+# by tens of arcseconds near the horizon.
+PRESSURE = 1013.25 * u.hPa  # millibar (numerically identical to hPa)
+TEMPERATURE = 10.0 * u.deg_C
+RELATIVE_HUMIDITY = 0.5
+OBSWL = 0.55 * u.micron
+
+
 def _serialise_alt_az(coord: SkyCoord, location: EarthLocation, when: Time):
-    altaz = coord.transform_to(AltAz(obstime=when, location=location))
+    altaz = coord.transform_to(
+        AltAz(
+            obstime=when,
+            location=location,
+            pressure=PRESSURE,
+            temperature=TEMPERATURE,
+            relative_humidity=RELATIVE_HUMIDITY,
+            obswl=OBSWL,
+        )
+    )
     return {
         "altitude_degrees": float(altaz.alt.deg),
         "azimuth_degrees": float(altaz.az.deg),

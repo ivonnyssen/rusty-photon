@@ -237,7 +237,12 @@ impl EquipmentRegistry {
         };
 
         let lat_diff = (mount_lat - site.latitude_degrees).abs();
-        let lon_diff = (mount_lon - site.longitude_degrees).abs();
+        // Longitude is angular: 179.99° E and -179.99° E are the
+        // same meridian, not 360° apart. Take the modular distance
+        // around 360° so the antimeridian doesn't trigger a false
+        // mismatch.
+        let lon_raw = (mount_lon - site.longitude_degrees).abs();
+        let lon_diff = lon_raw.min(360.0 - lon_raw);
         if lat_diff > SITE_MATCH_TOLERANCE_DEG || lon_diff > SITE_MATCH_TOLERANCE_DEG {
             return Err(RpError::SiteMismatch {
                 config_lat: site.latitude_degrees,
@@ -1329,6 +1334,21 @@ mod tests {
             }
             other => panic!("expected SiteMismatch, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn validate_site_passes_across_antimeridian() {
+        // Configured at 179.999° E; mount reports -179.999° E. They
+        // describe meridians 0.002° apart going the short way — well
+        // within the 0.01° tolerance. Without the wraparound fix,
+        // raw subtraction would produce ~360° and SiteMismatch.
+        let stub = spawn_stub(mount_router_with_site(0.0, -179.999)).await;
+        let registry = registry_with_mount(&stub.url()).await;
+        let site = config::SiteConfig {
+            latitude_degrees: 0.0,
+            longitude_degrees: 179.999,
+        };
+        registry.validate_site(Some(&site)).await.unwrap();
     }
 
     #[tokio::test]

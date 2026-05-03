@@ -212,7 +212,15 @@ impl Ephemeris for ErfarsEphemeris {
         });
         let sun = sun_icrs(&jds);
         let phase_degrees = angular_separation_degrees(coords, sun);
-        let illumination_fraction = (1.0 + (phase_degrees * ERFA_DD2R).cos()) / 2.0;
+        // phase_degrees here is the Sun-Earth-Moon elongation:
+        //   0°   = new (Sun and Moon at same RA → 0% illuminated)
+        //   180° = full (Sun and Moon opposite → 100% illuminated)
+        // Illuminated fraction = (1 - cos(elongation)) / 2 — at
+        // elongation=0 this is 0, at elongation=180 it is 1, which
+        // is what users see in the sky. The `(1 + cos)/2` form is for
+        // the *phase angle* convention (vertex at Moon: 0° = full,
+        // 180° = new) — we don't use that convention here.
+        let illumination_fraction = (1.0 - (phase_degrees * ERFA_DD2R).cos()) / 2.0;
         MoonInfo {
             coords,
             alt_az,

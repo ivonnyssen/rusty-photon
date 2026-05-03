@@ -74,9 +74,10 @@ pub struct MoonInfo {
     /// degrees `[0, 180]`. 0 = new, 90 = quarter, 180 = full.
     pub phase_degrees: f64,
     /// Illuminated fraction of the disc, `[0, 1]`. Computed as
-    /// `(1 + cos(phase)) / 2`, which is the same approximation used
-    /// for amateur observing tools — good to ~1 % outside the
-    /// crescent regions.
+    /// `(1 - cos(phase)) / 2` over the Sun-Earth-Moon elongation —
+    /// 0 at new moon (elongation 0°), 1 at full moon (elongation
+    /// 180°). Good to ~1 % outside the crescent regions for amateur
+    /// observing.
     pub illumination_fraction: f64,
 }
 

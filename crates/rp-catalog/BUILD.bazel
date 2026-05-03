@@ -6,6 +6,9 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 rust_library(
     name = "rp-catalog",
     srcs = glob(["src/**/*.rs"]),
+    # The four CSVs are pulled in via `include_str!` at compile time;
+    # Bazel's sandbox only stages files declared as inputs.
+    compile_data = glob(["src/data/*.csv"]),
     aliases = aliases(),
     crate_name = "rp_catalog",
     edition = "2021",
