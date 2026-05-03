@@ -410,10 +410,22 @@ below tracks which have been retired.
    subprocess execution. This question is the formal closure of the
    ADR's working assumption — see [License Treatment](#license-treatment).
    Tracked under Phase 8.
-6. **Hint plumbing** — confirm the ASCOM mount driver exposes the
-   pointing accuracy ASTAP's `-r` (search radius) flag depends on.
-   The speed advantage over astrometry.net evaporates without good
-   hints. Tracked under Phase 7.
+6. **Hint plumbing** — **Retired by Phase 7.** Answer: the ASCOM
+   Alpaca Telescope spec does **not** standardize a pointing-
+   uncertainty / accuracy property — only `RightAscension` and
+   `Declination` are portable. Mount drivers may expose
+   vendor-specific accuracy estimates, but the wrapper cannot
+   portably query "how confident are you in your pointing?"
+   The resolution is operator-supplied: `rp`'s plate-solver call
+   passes `search_radius_deg` from rp config (recommended defaults
+   in `docs/services/rp-plate-solver.md` §"Hint sources and
+   search-radius defaults"), and `ra_hint` / `dec_hint` come from
+   the mount's current pointing via the standard properties — note
+   that `RightAscension` is decimal hours per the Alpaca spec, so
+   `rp`'s `plate_solve` handler multiplies by 15 to convert to the
+   wrapper's degrees-on-the-wire contract before forwarding the
+   request. The speed advantage is operator-verifiable via the curl
+   recipe in the same section.
 
 ## Consequences
 
