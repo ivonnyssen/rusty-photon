@@ -250,6 +250,11 @@ mod tests {
                 azimuth_degrees: 0.0,
             })
         }
+        // The decision logic only consults `alt_az` and
+        // `sun_position`; the remaining trait methods exist to satisfy
+        // the impl block but are never called from these tests.
+        // Mark them coverage-skip so they don't depress the patch %.
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn transit(
             &self,
             _site: &Site,
@@ -258,6 +263,7 @@ mod tests {
         ) -> Option<DateTime<Utc>> {
             None
         }
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn rise_set(
             &self,
             _site: &Site,
@@ -267,6 +273,7 @@ mod tests {
         ) -> Option<RiseSet> {
             None
         }
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn meridian_flip(
             &self,
             _site: &Site,
@@ -288,6 +295,7 @@ mod tests {
                 },
             }
         }
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn twilight(
             &self,
             _site: &Site,
@@ -299,6 +307,7 @@ mod tests {
                 end_utc: None,
             }
         }
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn moon_position(&self, _site: &Site, _t: DateTime<Utc>) -> MoonInfo {
             MoonInfo {
                 coords: IcrsCoord {
@@ -313,6 +322,7 @@ mod tests {
                 illumination_fraction: 0.5,
             }
         }
+        #[cfg_attr(coverage_nightly, coverage(off))]
         fn moon_separation(&self, _target: IcrsCoord, _t: DateTime<Utc>) -> f64 {
             0.0
         }

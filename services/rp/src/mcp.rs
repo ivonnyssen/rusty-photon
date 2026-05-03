@@ -5283,4 +5283,318 @@ mod tests {
         let result = handler.abort_slew(Parameters(AbortSlewParams {})).await;
         assert_tool_error(result, "failed to abort slew");
     }
+
+    // -----------------------------------------------------------------------
+    // Planner tools — error paths
+    //
+    // The new ephemeris/planner tools added in Phases 5-7 share two common
+    // failure shapes: missing site config (10 of the 12 tools require it)
+    // and parameter validation (range / format). One unit test per branch
+    // is enough to pin the wiring; the math itself is covered by the
+    // primitives.rs / decision.rs unit tests.
+    // -----------------------------------------------------------------------
+
+    fn test_handler_with_site(site: rp_ephemeris::Site) -> McpHandler {
+        McpHandler::new(
+            Arc::new(empty_registry()),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: std::env::temp_dir()
+                    .join("rp-planner-unit-test")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            Some(site),
+        )
+    }
+
+    fn test_site() -> rp_ephemeris::Site {
+        rp_ephemeris::Site::new(51.0786, -0.2944).unwrap()
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 0.7,
+                dec: 41.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_on_out_of_range_inputs() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 30.0,
+                dec: 0.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "ra_hours");
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_on_bad_time() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: Some("not a time".into()),
+            }))
+            .await;
+        assert_tool_error(r, "RFC3339");
+    }
+
+    #[tokio::test]
+    async fn compute_transit_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_transit(Parameters(TransitParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_transit_errors_on_bad_date() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_transit(Parameters(TransitParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "tomorrow".into(),
+            }))
+            .await;
+        assert_tool_error(r, "YYYY-MM-DD");
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_errors_on_out_of_range_min_alt() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+                min_alt_degrees: 200.0,
+            }))
+            .await;
+        assert_tool_error(r, "min_alt_degrees");
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+                min_alt_degrees: 0.0,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: None,
+                side_of_pier: "unknown".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_errors_on_bad_side_of_pier() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: None,
+                side_of_pier: "middle".into(),
+            }))
+            .await;
+        assert_tool_error(r, "side_of_pier");
+    }
+
+    #[tokio::test]
+    async fn get_sun_position_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_sun_position(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_twilight_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_twilight(Parameters(TwilightParams {
+                date: "2026-12-21".into(),
+                kind: "civil".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_moon_position_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_moon_position(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_moon_separation_errors_on_bad_inputs() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_moon_separation(Parameters(MoonSeparationParams {
+                ra: 100.0,
+                dec: 0.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "ra_hours");
+    }
+
+    #[tokio::test]
+    async fn get_local_sidereal_time_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_local_sidereal_time(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 31".into()),
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_on_unknown_name() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 999".into()),
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        // The catalog miss path returns a structured `target_not_found`
+        // payload as a CallToolResult::error.
+        let call_result = r.expect("tool returned protocol error");
+        assert!(call_result.is_error.unwrap_or(false));
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("target_not_found"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_when_neither_name_nor_radec_supplied() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: None,
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "supply exactly one");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_accepts_radec_form() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: None,
+                ra: Some(2.5301944),
+                dec: Some(89.2641111),
+                time: None,
+            }))
+            .await
+            .expect("tool returned protocol error");
+        assert!(!r.is_error.unwrap_or(false), "expected success");
+    }
+
+    #[tokio::test]
+    async fn get_next_target_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_next_target_with_no_targets_returns_no_targets_configured() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await
+            .expect("tool returned protocol error");
+        let text = r
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("no_targets_configured"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_meridian_status(Parameters(GetMeridianStatusParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_errors_when_mount_absent() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_meridian_status(Parameters(GetMeridianStatusParams { time: None }))
+            .await;
+        // empty_registry has no mount, so `resolve_mount` returns the
+        // standard "mount not configured" error.
+        assert_tool_error(r, "mount");
+    }
 }
