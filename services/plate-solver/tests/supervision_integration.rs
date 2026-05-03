@@ -15,7 +15,7 @@
 //! the env var automatically; Bazel sets it explicitly via the
 //! BUILD.bazel `env` attribute).
 
-use rp_plate_solver::supervision::{spawn_with_deadline, SpawnOutcome, GRACE_PERIOD};
+use plate_solver::supervision::{spawn_with_deadline, SpawnOutcome, GRACE_PERIOD};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -48,7 +48,7 @@ fn require_mock_astap() -> PathBuf {
         panic!(
             "mock_astap binary not found.\n  \
              Tried: MOCK_ASTAP_BINARY env var, then CARGO_BIN_EXE_mock_astap.\n  \
-             Under Cargo: run `cargo build --tests -p rp-plate-solver` first.\n  \
+             Under Cargo: run `cargo build --tests -p plate-solver` first.\n  \
              Under Bazel: set MOCK_ASTAP_BINARY in the test target's env."
         )
     })

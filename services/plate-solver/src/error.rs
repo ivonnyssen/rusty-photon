@@ -1,4 +1,4 @@
-//! Error types and HTTP error mapping for rp-plate-solver.
+//! Error types and HTTP error mapping for plate-solver.
 
 use axum::{
     http::StatusCode,

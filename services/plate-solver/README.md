@@ -1,11 +1,11 @@
-# rp-plate-solver
+# plate-solver
 
 rp-managed service that wraps the ASTAP CLI and exposes a narrow HTTP
 solve API to `rp`. Operator installs ASTAP separately (BYO per ADR-005);
-`rp-plate-solver` ships no ASTAP binary or index database.
+`plate-solver` ships no ASTAP binary or index database.
 
-See [`docs/services/rp-plate-solver.md`](../../docs/services/rp-plate-solver.md)
-for the design contract and [`docs/plans/rp-plate-solver.md`](../../docs/plans/rp-plate-solver.md)
+See [`docs/services/plate-solver.md`](../../docs/services/plate-solver.md)
+for the design contract and [`docs/plans/plate-solver.md`](../../docs/plans/plate-solver.md)
 for implementation sequencing.
 
 ## Status
@@ -31,7 +31,7 @@ per-OS table by hand:
 The D05 star database (~100 MB) is required for typical 0.6°–6° FOV
 imaging; download from the same SourceForge project.
 
-Configure `rp-plate-solver` to point at the install:
+Configure `plate-solver` to point at the install:
 
 ```json
 {
@@ -52,7 +52,7 @@ misconfiguration rather than masking it with a silent retry.
 ## Running
 
 ```sh
-rp-plate-solver --config /etc/rp-plate-solver/config.json
+plate-solver --config /etc/plate-solver/config.json
 ```
 
 The wrapper prints `bound_addr=<host>:<port>` to stdout once it has
@@ -88,15 +88,15 @@ below).
 
 ### Linux / systemd
 
-`/etc/systemd/system/rp-plate-solver.service`:
+`/etc/systemd/system/plate-solver.service`:
 
 ```ini
 [Unit]
-Description=rp-plate-solver
+Description=plate-solver
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/rp-plate-solver --config /etc/rp-plate-solver/config.json
+ExecStart=/usr/local/bin/plate-solver --config /etc/plate-solver/config.json
 Restart=on-failure
 RestartSec=2
 User=rp
@@ -108,17 +108,17 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Restart command: `systemctl restart rp-plate-solver`.
-Tail logs:     `journalctl -u rp-plate-solver -f`.
+Restart command: `systemctl restart plate-solver`.
+Tail logs:     `journalctl -u plate-solver -f`.
 
 ### macOS / launchd
 
 This recipe uses a **per-user LaunchAgent**. For a system-wide
 LaunchDaemon (root context, recommended for headless observatory
 machines), put the plist in `/Library/LaunchDaemons` instead and
-swap the log paths to `/var/log/rp-plate-solver.{out,err}.log`.
+swap the log paths to `/var/log/plate-solver.{out,err}.log`.
 
-`~/Library/LaunchAgents/com.rusty-photon.rp-plate-solver.plist`:
+`~/Library/LaunchAgents/com.rusty-photon.plate-solver.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -126,16 +126,16 @@ swap the log paths to `/var/log/rp-plate-solver.{out,err}.log`.
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>           <string>com.rusty-photon.rp-plate-solver</string>
+  <key>Label</key>           <string>com.rusty-photon.plate-solver</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/rp-plate-solver</string>
+    <string>/usr/local/bin/plate-solver</string>
     <string>--config</string>
-    <string>/etc/rp-plate-solver/config.json</string>
+    <string>/etc/plate-solver/config.json</string>
   </array>
   <key>KeepAlive</key>       <true/>
-  <key>StandardOutPath</key> <string>/Users/<USER>/Library/Logs/rp-plate-solver.out.log</string>
-  <key>StandardErrorPath</key><string>/Users/<USER>/Library/Logs/rp-plate-solver.err.log</string>
+  <key>StandardOutPath</key> <string>/Users/<USER>/Library/Logs/plate-solver.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/<USER>/Library/Logs/plate-solver.err.log</string>
 </dict>
 </plist>
 ```
@@ -143,8 +143,8 @@ swap the log paths to `/var/log/rp-plate-solver.{out,err}.log`.
 (Replace `<USER>` with the actual home directory — plist values
 don't expand `~` or `$HOME`.)
 
-Restart command: `launchctl kickstart -k gui/$(id -u)/com.rusty-photon.rp-plate-solver`.
-Tail logs:        `tail -f ~/Library/Logs/rp-plate-solver.err.log`.
+Restart command: `launchctl kickstart -k gui/$(id -u)/com.rusty-photon.plate-solver`.
+Tail logs:        `tail -f ~/Library/Logs/plate-solver.err.log`.
 
 ### Windows / NSSM
 
@@ -154,18 +154,18 @@ recipe also sets `AppStdout` / `AppStderr` and enables NSSM's
 built-in log rotation:
 
 ```cmd
-nssm install rp-plate-solver "C:\Program Files\rp-plate-solver\rp-plate-solver.exe"
-nssm set     rp-plate-solver AppParameters "--config C:\ProgramData\rp-plate-solver\config.json"
-nssm set     rp-plate-solver AppRestartDelay 2000
-nssm set     rp-plate-solver AppStdout "C:\ProgramData\rp-plate-solver\stdout.log"
-nssm set     rp-plate-solver AppStderr "C:\ProgramData\rp-plate-solver\stderr.log"
-nssm set     rp-plate-solver AppRotateFiles 1
-nssm set     rp-plate-solver AppRotateBytes 10485760
-nssm start   rp-plate-solver
+nssm install plate-solver "C:\Program Files\plate-solver\plate-solver.exe"
+nssm set     plate-solver AppParameters "--config C:\ProgramData\plate-solver\config.json"
+nssm set     plate-solver AppRestartDelay 2000
+nssm set     plate-solver AppStdout "C:\ProgramData\plate-solver\stdout.log"
+nssm set     plate-solver AppStderr "C:\ProgramData\plate-solver\stderr.log"
+nssm set     plate-solver AppRotateFiles 1
+nssm set     plate-solver AppRotateBytes 10485760
+nssm start   plate-solver
 ```
 
-Restart command: `nssm restart rp-plate-solver`.
-Tail logs (PowerShell): `Get-Content -Wait C:\ProgramData\rp-plate-solver\stderr.log`.
+Restart command: `nssm restart plate-solver`.
+Tail logs (PowerShell): `Get-Content -Wait C:\ProgramData\plate-solver\stderr.log`.
 
 ## Sentinel integration
 
@@ -205,5 +205,5 @@ top of the same `/health` endpoint this service already exposes.
 - `pixel_scale_arcsec`: arcseconds per pixel.
 - `rotation_deg`: degrees.
 
-Full HTTP contract in [`docs/plans/rp-plate-solver.md`](../../docs/plans/rp-plate-solver.md)
+Full HTTP contract in [`docs/plans/plate-solver.md`](../../docs/plans/plate-solver.md)
 §"HTTP contract".

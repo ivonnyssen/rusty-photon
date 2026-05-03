@@ -1596,9 +1596,9 @@ background solving (deferred to v2; v1 is request/response only).
 The choice of solver and the supervision posture are settled by
 [ADR-005](../decisions/005-plate-solver.md). The service's own design
 doc — HTTP contract, supervision contract, configuration, mock test
-double — lives at [`docs/services/rp-plate-solver.md`](rp-plate-solver.md).
+double — lives at [`docs/services/plate-solver.md`](plate-solver.md).
 Implementation sequencing is in
-[`docs/plans/rp-plate-solver.md`](../plans/rp-plate-solver.md).
+[`docs/plans/plate-solver.md`](../plans/plate-solver.md).
 
 ### File Accessibility
 

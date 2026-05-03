@@ -1,18 +1,18 @@
-# Plan: `rp-plate-solver` service
+# Plan: `plate-solver` service
 
 **Date:** 2026-05-02
 **Branch:** `worktree-astap`
 **ADR:** [005-plate-solver](../decisions/005-plate-solver.md)
-**Parent plan:** [image-evaluation-tools.md Phase 6c-1](image-evaluation-tools.md#phase-6c-1--rp-plate-solver-rp-managed-service)
+**Parent plan:** [image-evaluation-tools.md Phase 6c-1](image-evaluation-tools.md#phase-6c-1--plate-solver-rp-managed-service)
 
 ## Background
 
 ADR-005 adopted ASTAP, executed as a subprocess by a new
-`rp-plate-solver` rp-managed service, with the binary and index database
+`plate-solver` rp-managed service, with the binary and index database
 supplied by the operator (BYO). The ADR explicitly defers
 implementation sequencing to a separate plan — this is that plan.
 
-`rp-plate-solver` is the second rp-managed service in the workspace
+`plate-solver` is the second rp-managed service in the workspace
 (after `phd2-guider`) and the first one stood up entirely under the
 design-first / test-first workflow established in
 `docs/skills/development-workflow.md`. It exists so the upcoming
@@ -22,7 +22,7 @@ to call against.
 
 ## Goals
 
-1. **MVP:** stand up `rp-plate-solver` as a Sentinel-supervised wrapper
+1. **MVP:** stand up `plate-solver` as a Sentinel-supervised wrapper
    around ASTAP, exposing one HTTP solve endpoint plus a health probe,
    with all three failure domains (rp, wrapper, ASTAP child)
    independently bounded.
@@ -36,12 +36,12 @@ to call against.
 
 ## Decisions resolved (during design)
 
-These belong in `docs/services/rp-plate-solver.md` once Phase 1 lands
+These belong in `docs/services/plate-solver.md` once Phase 1 lands
 and should not be re-litigated.
 
 ### Stability and supervision — the load-bearing rationale
 
-`rp-plate-solver` is an **rp-managed service**, not a plugin, because
+`plate-solver` is an **rp-managed service**, not a plugin, because
 Tenet 1 ("robustness above all else") demands that ASTAP — a
 single-maintainer LGPL Pascal binary that can SIGSEGV on pathological
 star fields, wedge on a too-small `-r` search radius with bad hints, or
@@ -65,7 +65,7 @@ independently bounded by an explicit supervisor:
 | Domain | What dies | Supervisor | Mechanism |
 |--------|-----------|-----------|-----------|
 | `rp` (gateway) | session-state owner | Sentinel | event-stream disconnect → operator-configured restart command |
-| `rp-plate-solver` (wrapper) | one solver process; no session state | Sentinel | operator-configured restart command (e.g. `systemctl restart rp-plate-solver`) |
+| `plate-solver` (wrapper) | one solver process; no session state | Sentinel | operator-configured restart command (e.g. `systemctl restart plate-solver`) |
 | `astap_cli` (child) | one solve attempt | the wrapper itself | per-request wall-clock deadline → graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` then `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) then `TerminateProcess`. Pattern follows `crates/bdd-infra/src/lib.rs`. |
 
 Belt and suspenders: **rp's HTTP client to the wrapper has its own
@@ -146,8 +146,8 @@ themselves are caught by the existing `install-astap` smoke workflow
 (per ADR-005's `cache-key-suffix: github.run_id` posture); Phase 6
 catches *integration* regressions specifically.
 
-**Local developer experience:** running `cargo test -p rp-plate-solver
---test bdd` requires nothing beyond `cargo build -p rp-plate-solver
+**Local developer experience:** running `cargo test -p plate-solver
+--test bdd` requires nothing beyond `cargo build -p plate-solver
 --all-targets` (which builds `mock_astap` automatically). No ASTAP
 install needed for routine work. Same DX bar as phd2-guider with
 `mock_phd2`.
@@ -238,7 +238,7 @@ MIT/Apache). The wrapper uses both:
 Why this beats a hand-rolled parser:
 
 - No new dep — `wcs` is already in `Cargo.lock` transitively. Adding
-  it to `rp-plate-solver`'s direct deps just makes the dependency
+  it to `plate-solver`'s direct deps just makes the dependency
   explicit.
 - Library handles CD-matrix vs CDELT/CROTA representation
   differences. ASTAP today writes CDELT+CROTA2; if a future solver
@@ -354,7 +354,7 @@ This is the standard HTTP health-probe pattern, exposed for
 operational tooling and any future Sentinel probe path. Today,
 Sentinel's documented watchdog flow (`rp.md` §"Sentinel Watchdog
 Integration") only describes pinging Alpaca service endpoints, and
-`rp-plate-solver` is not Alpaca. Whether Sentinel is wired to use
+`plate-solver` is not Alpaca. Whether Sentinel is wired to use
 this `/health` (vs relying purely on event-stream signals and
 configured restart commands) is a Sentinel-side design question.
 Phase 5 below addresses the gap.
@@ -388,7 +388,7 @@ Phase 5 below addresses the gap.
 ## Module structure
 
 ```
-services/rp-plate-solver/
+services/plate-solver/
   Cargo.toml
   BUILD.bazel
   README.md                     # Per-platform install pointers, ops guide
@@ -457,7 +457,7 @@ Each phase is its own PR.
 
 Status: **not started.**
 
-- [ ] `docs/services/rp-plate-solver.md` (new). Sections: Overview,
+- [ ] `docs/services/plate-solver.md` (new). Sections: Overview,
       Architecture, Behavioral contracts (per HTTP endpoint, per error
       code, per supervision domain), Configuration, Subprocess test
       doubles, MVP scope, Out of scope.
@@ -472,7 +472,7 @@ Status: **not started.**
 
 Status: **not started.**
 
-- [ ] New workspace member `services/rp-plate-solver` registered in root
+- [ ] New workspace member `services/plate-solver` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
       version, edition, rust-version, lints).
 - [ ] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
@@ -562,7 +562,7 @@ Status: **not started.**
       `MOCK_ASTAP_ARGV_OUT`. Registered as a `[[bin]]` in
       `Cargo.toml`; not feature-gated.
 
-**Exit criteria:** `cargo build -p rp-plate-solver --all-features
+**Exit criteria:** `cargo build -p plate-solver --all-features
 --all-targets` clean. Unit tests for `config.rs`, `error.rs`,
 `runner/wcs.rs`, `supervision.rs` pass. The crate produces a `lib.rs`
 re-export surface but no `main.rs` yet (Phase 4 wires the binary).
@@ -641,12 +641,12 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       host an MCP server, so `rp-harness` is irrelevant.
 - [ ] **No CI install changes for BDD**: the BDD suite is fully
       self-contained because `mock_astap` is built by `cargo build
-      --all-targets -p rp-plate-solver`. cargo-rail's existing
+      --all-targets -p plate-solver`. cargo-rail's existing
       change-detection logic handles the rest. The `install-astap`
       action stays scoped to its existing smoke workflow and to
       Phase 6's cross-platform e2e workflow.
 
-**Exit criteria:** `cargo test -p rp-plate-solver --all-features --test
+**Exit criteria:** `cargo test -p plate-solver --all-features --test
 bdd` compiles and runs cleanly with `@wip` filtering all scenarios out
 (0 scenarios run, 0 failures). The compiled BDD harness is the gate
 that the next phase's implementation has to satisfy.
@@ -689,12 +689,12 @@ endpoint the wrapper already exposes.
 What this phase delivered:
 
 - [x] Per-OS process-supervisor recipes in
-      `services/rp-plate-solver/README.md` — systemd unit (Linux),
+      `services/plate-solver/README.md` — systemd unit (Linux),
       launchd plist (macOS), NSSM commands (Windows). Each entry
       gives the install snippet plus the operator's restart and
       log-tail commands.
 - [x] Honest "Sentinel integration" section in
-      `docs/services/rp-plate-solver.md` — drops the
+      `docs/services/plate-solver.md` — drops the
       "Sentinel-supervised" framing, retitles to "Supervision and
       recovery", names the OS process supervisor as today's
       recovery mechanism, and keeps the failure-domain table /
@@ -717,7 +717,7 @@ What this phase did **not** do (forward work):
   the wrapper relies on its own outer timeout for each request, not
   on `/health`).
 
-**Exit criteria met:** operator can stand up `rp-plate-solver` on any
+**Exit criteria met:** operator can stand up `plate-solver` on any
 target OS using the README's recipes; the wrapper's exit semantics
 play correctly with `Restart=on-failure` (systemd) / `KeepAlive`
 (launchd) / `nssm restart` policies.
@@ -728,9 +728,9 @@ Status: **complete.**
 
 What this phase delivered:
 
-- [x] `.github/workflows/rp-plate-solver-smoke.yml` — `schedule:
+- [x] `.github/workflows/plate-solver-smoke.yml` — `schedule:
       cron` nightly (03:30 UTC) plus `workflow_dispatch` and a
-      path-trigger on `services/rp-plate-solver/**` and
+      path-trigger on `services/plate-solver/**` and
       `.github/actions/install-astap/**`. Matrix:
       `ubuntu-latest`, `macos-latest`, `windows-latest`. Each leg
       installs ASTAP + D05 via `.github/actions/install-astap` with
@@ -745,8 +745,8 @@ What this phase delivered:
       runs explicitly per workflow run, so the lack of a Developer
       ID re-sign is documented as the v1 stance.
 - [x] On schedule failure (not on push or manual dispatch), opens
-      or updates a tracking issue labelled `rp-plate-solver-nightly`
-      titled `nightly: rp-plate-solver real-ASTAP smoke failing`.
+      or updates a tracking issue labelled `plate-solver-nightly`
+      titled `nightly: plate-solver real-ASTAP smoke failing`.
       Subsequent failures comment on the existing issue rather than
       opening duplicates.
 
@@ -816,7 +816,7 @@ unattended. Reality:
 What this phase delivered:
 
 - [x] New §"Hint sources and search-radius defaults" in
-      `docs/services/rp-plate-solver.md` §"Hint Mapping" — names
+      `docs/services/plate-solver.md` §"Hint Mapping" — names
       the ASCOM gap, recommends per-mount-state defaults (1°-10°
       depending on sync state), shows how `rp` sources each hint
       (including the `RightAscension` hours→degrees conversion).
@@ -876,7 +876,7 @@ finding, so no remediation issue is open.
 
 ## Sequencing notes
 
-**All eight phases land before `rp-plate-solver` is considered
+**All eight phases land before `plate-solver` is considered
 complete.** Phases 5–8 are not "harden later" work — they retire the
 six open questions ADR-005 explicitly defers to this plan, and Phase 5
 makes the supervision tenet (the load-bearing rationale for choosing
@@ -895,7 +895,7 @@ dependency structures:
 
 - Phases 5, 6, 7, 8 land in any order after Phase 4. None of them
   blocks the others; none of them blocks 6c-2 or 6c-3 from starting.
-  They do block declaring `rp-plate-solver` complete.
+  They do block declaring `plate-solver` complete.
 
 **Cross-plan unblocking** (consumers of this plan's output):
 

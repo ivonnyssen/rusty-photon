@@ -1,4 +1,4 @@
-//! BDD World struct and helpers for the rp-plate-solver suite.
+//! BDD World struct and helpers for the plate-solver suite.
 //!
 //! The world accumulates state across Given / When / Then steps:
 //! the spawned wrapper handle, the temp directory holding fixtures and
@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
 pub struct PlateSolverWorld {
-    /// Handle to the spawned `rp-plate-solver` binary. None until a
+    /// Handle to the spawned `plate-solver` binary. None until a
     /// Given step starts the wrapper. Stopped in the cucumber `after`
     /// hook in `tests/bdd.rs`.
     pub service_handle: Option<ServiceHandle>,
@@ -97,7 +97,7 @@ impl PlateSolverWorld {
         }
         panic!(
             "mock_astap binary not found. Tried MOCK_ASTAP_BINARY env var, then \
-             CARGO_BIN_EXE_mock_astap. Run `cargo build --tests -p rp-plate-solver`."
+             CARGO_BIN_EXE_mock_astap. Run `cargo build --tests -p plate-solver`."
         )
     }
 
@@ -182,9 +182,8 @@ impl PlateSolverWorld {
     /// binary-discovery logic inline and run the binary to completion
     /// via `tokio::process::Command::output()`.
     pub async fn run_wrapper_to_exit(&mut self, config_path: PathBuf) {
-        let binary = find_wrapper_binary().expect(
-            "rp-plate-solver binary not found. Run `cargo build -p rp-plate-solver` first.",
-        );
+        let binary = find_wrapper_binary()
+            .expect("plate-solver binary not found. Run `cargo build -p plate-solver` first.");
         let output = tokio::process::Command::new(binary)
             .arg("--config")
             .arg(&config_path)
@@ -196,11 +195,11 @@ impl PlateSolverWorld {
     }
 }
 
-/// Locate the `rp-plate-solver` binary. Mirrors `bdd_infra::find_binary`
+/// Locate the `plate-solver` binary. Mirrors `bdd_infra::find_binary`
 /// (whose impl is private) including the precedence rules the original
 /// uses for cross-compile / coverage / sanitizer builds:
 ///
-/// 1. Explicit `RP_PLATE_SOLVER_BINARY` env var.
+/// 1. Explicit `PLATE_SOLVER_BINARY` env var.
 /// 2. `CARGO_TARGET_DIR` or `CARGO_LLVM_COV_TARGET_DIR` (whichever
 ///    is set), with `CARGO_BUILD_TARGET` triple subdir prepended when
 ///    set. When either is set we honor it *exclusively* — falling
@@ -215,16 +214,16 @@ impl PlateSolverWorld {
 /// configuration scenarios spawn the wrapper themselves via this
 /// helper rather than going through `ServiceHandle`.
 fn find_wrapper_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("RP_PLATE_SOLVER_BINARY") {
+    if let Ok(path) = std::env::var("PLATE_SOLVER_BINARY") {
         let p = PathBuf::from(path);
         if p.exists() {
             return Some(p);
         }
     }
     let bin_name = if cfg!(target_os = "windows") {
-        "rp-plate-solver.exe"
+        "plate-solver.exe"
     } else {
-        "rp-plate-solver"
+        "plate-solver"
     };
     let triple = std::env::var("CARGO_BUILD_TARGET").ok();
 

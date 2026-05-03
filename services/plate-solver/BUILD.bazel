@@ -4,10 +4,10 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 rust_library(
-    name = "rp-plate-solver_lib",
+    name = "plate-solver_lib",
     srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
     aliases = aliases(),
-    crate_name = "rp_plate_solver",
+    crate_name = "plate_solver",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
@@ -21,17 +21,17 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":rp-plate-solver_lib"] + all_crate_deps(normal = True),
+    deps = [":plate-solver_lib"] + all_crate_deps(normal = True),
 )
 
 rust_test(
-    name = "rp-plate-solver_unit_test",
+    name = "plate-solver_unit_test",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     size = "small",
-    crate = ":rp-plate-solver_lib",
+    crate = ":plate-solver_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -61,7 +61,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rp-plate-solver_lib"] + all_crate_deps(
+    deps = [":plate-solver_lib"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

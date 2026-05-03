@@ -758,15 +758,15 @@ workspace-wide. `cargo fmt` clean. No new workspace deps; no
 drifts ~0.4 arcsec from internal coordinate transforms — well under
 any centering workflow's tolerance, well above OmniSim's drift.
 
-##### Phase 6c-1 — `rp-plate-solver` rp-managed service
+##### Phase 6c-1 — `plate-solver` rp-managed service
 
 Status: **not started.** Sequenced separately from this plan because
 of its size (subprocess supervision, ASTAP CLI argument layout, `.wcs`
 parsing, per-platform install verification) and because ADR-005
-already calls for "a separate plan to sequence the rp-plate-solver
+already calls for "a separate plan to sequence the plate-solver
 rp-managed-service implementation."
 
-- [ ] **`docs/plans/rp-plate-solver.md` (new)** sequences the service
+- [ ] **`docs/plans/plate-solver.md` (new)** sequences the service
       itself: workspace member skeleton, ASTAP subprocess wrapper,
       HTTP API, BDD scenarios, supervision integration with sentinel,
       and the per-platform end-to-end solve passes that retire ADR-005
@@ -780,7 +780,7 @@ rp-managed-service implementation."
       pixel bytes over HTTP.
 - [ ] **Service supervision** via the existing rp-managed-service
       pattern. The closest shape references in the workspace today are
-      `services/phd2-guider` and `services/sentinel`; `rp-plate-solver`
+      `services/phd2-guider` and `services/sentinel`; `plate-solver`
       mirrors their crate layout, lifecycle, and sentinel integration.
 
 This sub-phase is the largest in 6c by far. It is independent of
@@ -793,7 +793,7 @@ lands.
 Status: **not started.** Depends on the HTTP contract from 6c-1.
 
 - [ ] `services/rp/src/plate_solver.rs` — thin reqwest client to
-      `rp-plate-solver`'s `/api/v1/solve` endpoint. This is also the
+      `plate-solver`'s `/api/v1/solve` endpoint. This is also the
       first rp-managed-service client written on the `rp` side; the
       module shape it establishes will be reused when the planned
       `guider.rs` client lands later.
@@ -815,8 +815,8 @@ Status: **not started.** Depends on the HTTP contract from 6c-1.
       ~10 scenarios.
 - [ ] BDD harness: a small in-test axum stub returning canned WCS
       payloads (same shape Phase 6a used for `connect_focuser`). The
-      real `rp-plate-solver` process is **not** started in rp's BDD
-      suite; that lives in `rp-plate-solver`'s own BDD tests.
+      real `plate-solver` process is **not** started in rp's BDD
+      suite; that lives in `plate-solver`'s own BDD tests.
 
 **Exit criteria:** new BDD scenarios green, `wcs` section round-trips
 through the document API, `cargo rail run --profile commit -q` clean.
