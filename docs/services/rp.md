@@ -616,6 +616,10 @@ the exact parameter types and return structure.
 | `get_mount_position` | — | ra, dec | Read the mount's current pointing |
 | `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
 | `set_tracking` | enabled | — | Enable or disable sidereal tracking |
+| `park` | — | — | Park the mount (blocks until `Slewing == false` and `AtPark == true`, 300 s deadline). Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park |
+| `unpark` | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
+| `get_park_state` | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
+| `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
 | `set_filter` | filter_wheel_id, filter_name | — | Change filter wheel position |
 | `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
 | `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
