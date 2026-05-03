@@ -1,0 +1,20 @@
+[package]
+name = "rp-catalog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embedded Messier + NGC + IC catalog with name/alias resolution for Rusty Photon"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+csv = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

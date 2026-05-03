@@ -1,0 +1,59 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+rust_library(
+    name = "rp-ephemeris",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rp_ephemeris",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rp-ephemeris_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":rp-ephemeris",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Integration test: cross-check ErfarsEphemeris against committed
+# Astropy reference values. The CARGO_MANIFEST_DIR env var is set so
+# the test can locate `refvals/`; the directory is staged via `data`.
+rust_test(
+    name = "reference_values",
+    srcs = ["tests/reference_values.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    data = glob(["refvals/*.json"], allow_empty = True),
+    edition = "2021",
+    env = {
+        "CARGO_MANIFEST_DIR": "crates/rp-ephemeris",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rp-ephemeris"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

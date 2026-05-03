@@ -53,6 +53,11 @@ pub struct RpWorld {
     pub focusers: Vec<FocuserConfig>,
     /// Singular mount config — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
+    /// Optional `(latitude_degrees, longitude_degrees)` site for
+    /// ephemeris-driven scenarios; emitted as the `site` block in
+    /// the generated rp config. Used by `target_catalog`,
+    /// `ephemeris_primitives`, and `planner` BDD features.
+    pub site: Option<(f64, f64)>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -206,6 +211,9 @@ impl RpWorld {
         }
         if let Some(mount) = &self.mount {
             builder.with_mount(mount.clone());
+        }
+        if let Some((lat, lon)) = self.site {
+            builder.with_site(lat, lon);
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

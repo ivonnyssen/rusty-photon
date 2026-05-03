@@ -377,6 +377,119 @@ pub struct AutoFocusToolParams {
     pub min_fit_points: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveTargetParams {
+    /// Object name to resolve against the embedded Messier + NGC + IC
+    /// catalogue. Case- and whitespace-insensitive; common spellings
+    /// (`"M 31"`, `"M31"`, `"m 31"`, `"Messier 31"`) all collide on
+    /// the same key. Common-name aliases (`"Andromeda Galaxy"`,
+    /// `"Crab Nebula"`) are honoured.
+    pub name: String,
+}
+
+// --- Ephemeris primitives ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AltAzParams {
+    /// Right ascension, hours `[0, 24)`, ICRS / J2000.
+    pub ra: f64,
+    /// Declination, degrees `[-90, 90]`, ICRS / J2000.
+    pub dec: f64,
+    /// UTC timestamp as RFC3339 (e.g. `"2026-05-03T22:00:00Z"`).
+    /// Defaults to the server's wall clock if omitted.
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TransitParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC date as `YYYY-MM-DD`. The returned UT is the upper transit
+    /// during this UTC date (for practical observing latitudes).
+    pub date: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RiseSetParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC date as `YYYY-MM-DD`.
+    pub date: String,
+    /// Altitude threshold (degrees). Standard amateur-rig minimum is
+    /// 20°; horizon-touching rise/set uses 0° (refraction-naive).
+    pub min_alt_degrees: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MeridianFlipParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC timestamp as RFC3339; defaults to "now".
+    #[serde(default)]
+    pub time: Option<String>,
+    /// Mount's current side of pier: `"east"`, `"west"`, or
+    /// `"unknown"`. v1 ignores the value but accepts it for forward
+    /// compatibility.
+    #[serde(default = "default_side_of_pier")]
+    pub side_of_pier: String,
+}
+
+fn default_side_of_pier() -> String {
+    "unknown".to_string()
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TimeOnlyParams {
+    /// UTC timestamp as RFC3339; defaults to "now".
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TwilightParams {
+    /// UTC date as `YYYY-MM-DD` for the local night that covers it.
+    pub date: String,
+    /// `"civil"` (-6°), `"nautical"` (-12°), or `"astronomical"`
+    /// (-18°).
+    pub kind: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoonSeparationParams {
+    pub ra: f64,
+    pub dec: f64,
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTargetStatusParams {
+    /// Catalog name (`"M 31"`, `"NGC 224"`, common-name aliases) or
+    /// a raw RA/Dec via the alternate form below — exactly one of
+    /// `target_name` or (`ra` + `dec`) must be supplied.
+    #[serde(default)]
+    pub target_name: Option<String>,
+    #[serde(default)]
+    pub ra: Option<f64>,
+    #[serde(default)]
+    pub dec: Option<f64>,
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetNextTargetParams {
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMeridianStatusParams {
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -387,6 +500,20 @@ pub struct McpHandler {
     pub event_bus: Arc<EventBus>,
     pub session_config: SessionConfig,
     pub image_cache: ImageCache,
+    /// Configured observer site, if any. `None` when the deployment
+    /// has no `site` block (camera-only / flats rigs); ephemeris
+    /// tools that require a site (`compute_alt_az`, `get_twilight`,
+    /// etc.) error cleanly in that case.
+    pub site: Option<rp_ephemeris::Site>,
+    /// Targets parsed from `Config.targets` for the planner
+    /// convenience tools. Empty when `targets[]` is absent or none
+    /// of its rows carry the required `name` / `ra_hours` /
+    /// `dec_degrees` fields.
+    pub targets: Vec<crate::planner::decision::PlannerTarget>,
+    /// Planner-wide minimum altitude default (degrees). Read from
+    /// `Config.planner.min_altitude_degrees`, falling back to 20°
+    /// when omitted.
+    pub default_min_altitude_degrees: f64,
 }
 
 impl McpHandler {
@@ -395,13 +522,31 @@ impl McpHandler {
         event_bus: Arc<EventBus>,
         session_config: SessionConfig,
         image_cache: ImageCache,
+        site: Option<rp_ephemeris::Site>,
     ) -> Self {
         Self {
             equipment,
             event_bus,
             session_config,
             image_cache,
+            site,
+            targets: Vec::new(),
+            default_min_altitude_degrees: 20.0,
         }
+    }
+
+    /// Wire planner inputs after construction. The lib.rs build path
+    /// calls this with the parsed `targets[]` JSON and
+    /// `planner.min_altitude_degrees` (defaulting to 20°). Tests
+    /// can leave the defaults as-is.
+    pub fn with_planner_config(
+        mut self,
+        targets: Vec<crate::planner::decision::PlannerTarget>,
+        default_min_altitude_degrees: f64,
+    ) -> Self {
+        self.targets = targets;
+        self.default_min_altitude_degrees = default_min_altitude_degrees;
+        self
     }
 
     async fn measure_via_document(
@@ -2259,6 +2404,466 @@ impl McpHandler {
             Err(e) => Ok(tool_error!("{}", e)),
         }
     }
+
+    // -------------------------------------------------------------------
+    // Planner: catalog lookup
+    // -------------------------------------------------------------------
+
+    #[tool(
+        description = "Resolve a deep-sky object name to ICRS coordinates from \
+                       the embedded Messier + NGC + IC catalogue. Case- and \
+                       whitespace-insensitive; common-name aliases are honoured. \
+                       Returns ra_hours / dec_degrees / object_type / magnitude / \
+                       size_arcmin on hit, or a structured not-found payload with \
+                       the top three fuzzy suggestions on miss."
+    )]
+    async fn resolve_target(
+        &self,
+        Parameters(params): Parameters<ResolveTargetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match crate::planner::catalog::resolve(&params.name) {
+            crate::planner::catalog::ResolveOutcome::Resolved(view) => Ok(tool_success!({
+                "name": view.name,
+                "object_type": view.object_type,
+                "ra_hours": view.ra_hours,
+                "dec_degrees": view.dec_degrees,
+                "magnitude": view.magnitude,
+                "size_arcmin": view.size_arcmin,
+            })),
+            crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
+                // CallToolResult::error carries text content; we embed
+                // a small JSON payload so a planner plugin can pick out
+                // suggestions without string parsing.
+                Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::json!({
+                        "error": "target_not_found",
+                        "name": params.name,
+                        "suggestions": suggestions,
+                    })
+                    .to_string(),
+                )]))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Planner: ephemeris primitives — see docs/services/rp.md
+    // §"Primitive vs. Convenience MCP Tools"
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Topocentric altitude/azimuth for an ICRS target. \
+                       Refraction modelled with default amateur conditions. \
+                       Requires the deployment's `site` block.")]
+    async fn compute_alt_az(
+        &self,
+        Parameters(params): Parameters<AltAzParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        match crate::planner::primitives::compute_alt_az(site, target, time) {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(description = "UT of upper transit on a given UTC date. Requires `site`.")]
+    async fn compute_transit(
+        &self,
+        Parameters(params): Parameters<TransitParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_transit(site, target, date);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Rise / set times above min_alt_degrees on a given UTC date. \
+                       null bounds for circumpolar always-up or always-down. \
+                       Requires `site`."
+    )]
+    async fn compute_rise_set(
+        &self,
+        Parameters(params): Parameters<RiseSetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        if !(-90.0..=90.0).contains(&params.min_alt_degrees) {
+            return Ok(tool_error!(
+                "min_alt_degrees must be in [-90, 90]; got {}",
+                params.min_alt_degrees
+            ));
+        }
+        let v = crate::planner::primitives::compute_rise_set(
+            site,
+            target,
+            date,
+            params.min_alt_degrees,
+        );
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Time-to-flip (seconds) until the target next reaches the meridian \
+                       (HA = 0). v1 ignores side_of_pier but accepts it for forward \
+                       compatibility. Requires `site`."
+    )]
+    async fn compute_meridian_flip(
+        &self,
+        Parameters(params): Parameters<MeridianFlipParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let side = match crate::planner::primitives::parse_side_of_pier(&params.side_of_pier) {
+            Ok(s) => s,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_meridian_flip(site, target, time, side);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Geocentric astrometric Sun position + topocentric alt/az. Requires `site`."
+    )]
+    async fn get_sun_position(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_sun_position(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Civil / nautical / astronomical twilight bounds for the local \
+                       night that covers `date` (UTC). null bound at high latitudes \
+                       where the Sun never crosses the threshold. Requires `site`."
+    )]
+    async fn get_twilight(
+        &self,
+        Parameters(params): Parameters<TwilightParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let kind = match crate::planner::primitives::parse_twilight_kind(&params.kind) {
+            Ok(k) => k,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_twilight(site, date, kind);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Geocentric Moon position + topocentric alt/az + Sun-Moon \
+                       elongation (phase) + illuminated fraction. Requires `site`."
+    )]
+    async fn get_moon_position(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_moon_position(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Angular separation (degrees) between an ICRS target and the \
+                       Moon. Geocentric — does not depend on `site`."
+    )]
+    async fn compute_moon_separation(
+        &self,
+        Parameters(params): Parameters<MoonSeparationParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_moon_separation(target, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(description = "Local apparent sidereal time at the configured site. Requires `site`.")]
+    async fn get_local_sidereal_time(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_local_sidereal_time(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    // -------------------------------------------------------------------
+    // Planner: convenience tools (get_target_status, get_next_target,
+    // get_meridian_status) — see docs/services/rp.md §"Dynamic Planner"
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Sky position + progress for a target. Accepts either \
+                       target_name (resolved via the embedded catalog) or a \
+                       raw ra/dec pair. progress is null in v1 (per-target \
+                       record_exposure tracking is not yet wired into the \
+                       planner). Requires `site`.")]
+    async fn get_target_status(
+        &self,
+        Parameters(params): Parameters<GetTargetStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let (target, name) = match (params.target_name.as_ref(), params.ra, params.dec) {
+            (Some(name), None, None) => match crate::planner::catalog::resolve(name) {
+                crate::planner::catalog::ResolveOutcome::Resolved(view) => (
+                    rp_ephemeris::IcrsCoord {
+                        ra_hours: view.ra_hours,
+                        dec_degrees: view.dec_degrees,
+                    },
+                    view.name,
+                ),
+                crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        serde_json::json!({
+                            "error": "target_not_found",
+                            "name": name,
+                            "suggestions": suggestions,
+                        })
+                        .to_string(),
+                    )]));
+                }
+            },
+            (None, Some(ra), Some(dec)) => {
+                match crate::planner::primitives::validate_icrs(ra, dec) {
+                    Ok(c) => (c, format!("ICRS({ra:.4}, {dec:.4})")),
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
+            }
+            _ => {
+                return Ok(tool_error!(
+                    "supply exactly one of `target_name` or (`ra` + `dec`)"
+                ))
+            }
+        };
+        match crate::planner::convenience::target_status_view(
+            site,
+            target,
+            &name,
+            time,
+            self.default_min_altitude_degrees,
+        ) {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Recommend the next target from `targets[]` config based on \
+                       altitude / approaching transit / sun-elevation gating. \
+                       Returns target=null and a structured reason \
+                       (no_targets_configured / all_below_min_altitude / \
+                       wait_for_twilight / end_of_session) when no candidate is \
+                       viable. Requires `site`."
+    )]
+    async fn get_next_target(
+        &self,
+        Parameters(params): Parameters<GetNextTargetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let eph = rp_ephemeris::ErfarsEphemeris::new();
+        let rec = crate::planner::decision::next_target(
+            &eph,
+            site,
+            time,
+            &self.targets,
+            self.default_min_altitude_degrees,
+        );
+        let v = crate::planner::convenience::next_target_view(rec);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Time-to-flip plus side-of-pier for the mount's current \
+                       pointing. Reads RA/Dec/SideOfPier from the configured \
+                       mount, then runs the meridian-flip primitive. Requires \
+                       `site` and a connected mount."
+    )]
+    async fn get_meridian_status(
+        &self,
+        Parameters(params): Parameters<GetMeridianStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let ra = match mount.right_ascension().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount right_ascension: {}", e)),
+        };
+        let dec = match mount.declination().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount declination: {}", e)),
+        };
+        // ASCOM SideOfPier returns `NOT_IMPLEMENTED` on mounts that
+        // don't expose the property — treat that specifically as
+        // `Unknown` so the flip ETA still surfaces. Any other read
+        // failure (network error, transient Alpaca issue, etc.) is
+        // surfaced loudly: a "valid-looking but stale" payload is
+        // worse than a clean error the operator can act on.
+        let side = match mount.side_of_pier().await {
+            Ok(ascom_alpaca::api::telescope::PierSide::East) => rp_ephemeris::SideOfPier::East,
+            Ok(ascom_alpaca::api::telescope::PierSide::West) => rp_ephemeris::SideOfPier::West,
+            Ok(_) => rp_ephemeris::SideOfPier::Unknown,
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {
+                rp_ephemeris::SideOfPier::Unknown
+            }
+            Err(e) => return Ok(tool_error!("failed to read mount side_of_pier: {}", e)),
+        };
+        let v = crate::planner::convenience::meridian_status_view(site, ra, dec, time, side);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
 }
 
 /// Adapter that satisfies all three [`auto_focus`] traits
@@ -2935,6 +3540,7 @@ mod tests {
                     .to_string(),
             },
             ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            None,
         )
     }
 
@@ -3335,6 +3941,7 @@ mod tests {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
             ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3370,6 +3977,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3419,6 +4027,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache,
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3486,6 +4095,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
+            None,
         );
 
         let doc = ExposureDocument {
@@ -4672,5 +5282,540 @@ mod tests {
         let handler = test_handler(mount_registry(Arc::new(mount), None));
         let result = handler.abort_slew(Parameters(AbortSlewParams {})).await;
         assert_tool_error(result, "failed to abort slew");
+    }
+
+    // -----------------------------------------------------------------------
+    // Planner tools — error paths
+    //
+    // The new ephemeris/planner tools added in Phases 5-7 share two common
+    // failure shapes: missing site config (10 of the 12 tools require it)
+    // and parameter validation (range / format). One unit test per branch
+    // is enough to pin the wiring; the math itself is covered by the
+    // primitives.rs / decision.rs unit tests.
+    // -----------------------------------------------------------------------
+
+    fn test_handler_with_site(site: rp_ephemeris::Site) -> McpHandler {
+        McpHandler::new(
+            Arc::new(empty_registry()),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: std::env::temp_dir()
+                    .join("rp-planner-unit-test")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            Some(site),
+        )
+    }
+
+    fn test_site() -> rp_ephemeris::Site {
+        rp_ephemeris::Site::new(51.0786, -0.2944).unwrap()
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 0.7,
+                dec: 41.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_on_out_of_range_inputs() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 30.0,
+                dec: 0.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "ra_hours");
+    }
+
+    #[tokio::test]
+    async fn compute_alt_az_errors_on_bad_time() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_alt_az(Parameters(AltAzParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: Some("not a time".into()),
+            }))
+            .await;
+        assert_tool_error(r, "RFC3339");
+    }
+
+    #[tokio::test]
+    async fn compute_transit_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_transit(Parameters(TransitParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_transit_errors_on_bad_date() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_transit(Parameters(TransitParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "tomorrow".into(),
+            }))
+            .await;
+        assert_tool_error(r, "YYYY-MM-DD");
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_errors_on_out_of_range_min_alt() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+                min_alt_degrees: 200.0,
+            }))
+            .await;
+        assert_tool_error(r, "min_alt_degrees");
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.0,
+                dec: 0.0,
+                date: "2026-05-03".into(),
+                min_alt_degrees: 0.0,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: None,
+                side_of_pier: "unknown".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_errors_on_bad_side_of_pier() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.0,
+                dec: 0.0,
+                time: None,
+                side_of_pier: "middle".into(),
+            }))
+            .await;
+        assert_tool_error(r, "side_of_pier");
+    }
+
+    #[tokio::test]
+    async fn get_sun_position_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_sun_position(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_twilight_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_twilight(Parameters(TwilightParams {
+                date: "2026-12-21".into(),
+                kind: "civil".into(),
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_moon_position_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_moon_position(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn compute_moon_separation_errors_on_bad_inputs() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .compute_moon_separation(Parameters(MoonSeparationParams {
+                ra: 100.0,
+                dec: 0.0,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "ra_hours");
+    }
+
+    #[tokio::test]
+    async fn get_local_sidereal_time_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_local_sidereal_time(Parameters(TimeOnlyParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 31".into()),
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_on_unknown_name() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 999".into()),
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        // The catalog miss path returns a structured `target_not_found`
+        // payload as a CallToolResult::error.
+        let call_result = r.expect("tool returned protocol error");
+        assert!(call_result.is_error.unwrap_or(false));
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("target_not_found"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_errors_when_neither_name_nor_radec_supplied() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: None,
+                ra: None,
+                dec: None,
+                time: None,
+            }))
+            .await;
+        assert_tool_error(r, "supply exactly one");
+    }
+
+    #[tokio::test]
+    async fn get_target_status_accepts_radec_form() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_target_status(Parameters(GetTargetStatusParams {
+                target_name: None,
+                ra: Some(2.5301944),
+                dec: Some(89.2641111),
+                time: None,
+            }))
+            .await
+            .expect("tool returned protocol error");
+        assert!(!r.is_error.unwrap_or(false), "expected success");
+    }
+
+    #[tokio::test]
+    async fn get_next_target_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_next_target_with_no_targets_returns_no_targets_configured() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await
+            .expect("tool returned protocol error");
+        let text = r
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("no_targets_configured"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_errors_when_site_absent() {
+        let h = test_handler(empty_registry());
+        let r = h
+            .get_meridian_status(Parameters(GetMeridianStatusParams { time: None }))
+            .await;
+        assert_tool_error(r, "site not configured");
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_errors_when_mount_absent() {
+        let h = test_handler_with_site(test_site());
+        let r = h
+            .get_meridian_status(Parameters(GetMeridianStatusParams { time: None }))
+            .await;
+        // empty_registry has no mount, so `resolve_mount` returns the
+        // standard "mount not configured" error.
+        assert_tool_error(r, "mount");
+    }
+
+    // -----------------------------------------------------------------------
+    // Planner tools — happy paths (cover the success-return arms in mcp.rs;
+    // value correctness is covered by primitives.rs / convenience.rs unit
+    // tests).
+    // -----------------------------------------------------------------------
+
+    fn handler_with_site_and_mount() -> McpHandler {
+        let mock = MockTelescope::default();
+        let mount_cfg = crate::config::MountConfig {
+            alpaca_url: "http://unused".into(),
+            device_number: 0,
+            settle_after_slew: None,
+            auth: None,
+        };
+        // Skip the connect-time HTTP fetch by hand-building a registry
+        // with the mock device wired in directly.
+        let registry = crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: Some(crate::equipment::MountEntry {
+                connected: true,
+                config: mount_cfg,
+                device: Some(Arc::new(mock)),
+            }),
+        };
+        McpHandler::new(
+            Arc::new(registry),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: std::env::temp_dir()
+                    .join("rp-planner-happy-test")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            Some(test_site()),
+        )
+    }
+
+    /// Yank the JSON payload from a successful CallToolResult.
+    fn ok_json(r: Result<CallToolResult, rmcp::ErrorData>) -> serde_json::Value {
+        let call_result = r.expect("tool returned protocol error");
+        assert!(
+            !call_result.is_error.unwrap_or(false),
+            "expected success, got error: {:?}",
+            call_result
+        );
+        let text = call_result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .expect("expected text content");
+        serde_json::from_str(&text).expect("response was not valid JSON")
+    }
+
+    const TEST_TIME: &str = "2026-05-03T22:00:00Z";
+
+    #[tokio::test]
+    async fn compute_alt_az_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_alt_az(Parameters(AltAzParams {
+                ra: 2.5301944,
+                dec: 89.2641111,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["altitude_degrees"].as_f64().is_some());
+        assert!(v["azimuth_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_transit_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_transit(Parameters(TransitParams {
+                ra: 0.7123,
+                dec: 41.27,
+                date: "2026-11-01".into(),
+            }))
+            .await,
+        );
+        assert!(v.get("transit_utc").is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_rise_set_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_rise_set(Parameters(RiseSetParams {
+                ra: 0.7123,
+                dec: 41.27,
+                date: "2026-11-01".into(),
+                min_alt_degrees: 30.0,
+            }))
+            .await,
+        );
+        assert!(v.get("rise_utc").is_some());
+        assert!(v.get("set_utc").is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_meridian_flip_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_meridian_flip(Parameters(MeridianFlipParams {
+                ra: 0.7123,
+                dec: 41.27,
+                time: Some(TEST_TIME.into()),
+                side_of_pier: "east".into(),
+            }))
+            .await,
+        );
+        assert!(v["time_to_flip_seconds"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_sun_position_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_sun_position(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["ra_hours"].as_f64().is_some());
+        assert!(v["dec_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_twilight_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_twilight(Parameters(TwilightParams {
+                date: "2026-12-21".into(),
+                kind: "civil".into(),
+            }))
+            .await,
+        );
+        assert_eq!(v["kind"], "civil");
+    }
+
+    #[tokio::test]
+    async fn get_moon_position_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_moon_position(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["phase_degrees"].as_f64().is_some());
+        assert!(v["illumination_fraction"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn compute_moon_separation_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.compute_moon_separation(Parameters(MoonSeparationParams {
+                ra: 0.7123,
+                dec: 41.27,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        let sep = v["separation_degrees"].as_f64().unwrap();
+        assert!((0.0..=180.0).contains(&sep));
+    }
+
+    #[tokio::test]
+    async fn get_local_sidereal_time_happy_path() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_local_sidereal_time(Parameters(TimeOnlyParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        let lst = v["lst_hours"].as_f64().unwrap();
+        assert!((0.0..24.0).contains(&lst));
+    }
+
+    #[tokio::test]
+    async fn get_target_status_happy_path_via_catalog() {
+        let h = test_handler_with_site(test_site());
+        let v = ok_json(
+            h.get_target_status(Parameters(GetTargetStatusParams {
+                target_name: Some("M 31".into()),
+                ra: None,
+                dec: None,
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert_eq!(v["target_name"], "M 31");
+        assert!(v["altitude_degrees"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_meridian_status_happy_path() {
+        // MockTelescope doesn't implement side_of_pier, which returns
+        // NOT_IMPLEMENTED — get_meridian_status maps that to "unknown"
+        // and surfaces the JSON. Exercises the success arm + the
+        // NOT_IMPLEMENTED → Unknown branch in one shot.
+        let h = handler_with_site_and_mount();
+        let v = ok_json(
+            h.get_meridian_status(Parameters(GetMeridianStatusParams {
+                time: Some(TEST_TIME.into()),
+            }))
+            .await,
+        );
+        assert!(v["time_to_flip_seconds"].is_number());
+        assert_eq!(v["side_of_pier"], "unknown");
+        assert!(v["mount_ra_hours"].as_f64().is_some());
     }
 }

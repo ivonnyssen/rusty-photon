@@ -7,6 +7,7 @@ pub mod hash_password_cmd;
 pub mod imaging;
 pub mod mcp;
 pub mod persistence;
+pub mod planner;
 pub mod routes;
 pub mod session;
 pub mod tls_cmd;
@@ -54,6 +55,14 @@ impl ServerBuilder {
         debug!("initializing equipment registry");
         let equipment = Arc::new(EquipmentRegistry::new(&config.equipment).await);
 
+        // Validate the configured site against the mount's reported
+        // SiteLatitude/SiteLongitude. A mismatch beyond 0.01° aborts
+        // startup — see docs/services/rp.md §"Site Validation Against
+        // the ASCOM Mount". When site config is omitted, the mount
+        // lacks the property, or no mount is configured, this is a
+        // debug-logged no-op.
+        equipment.validate_site(config.site.as_ref()).await?;
+
         debug!("initializing event bus");
         let event_bus = Arc::new(EventBus::from_config(&config.plugins));
 
@@ -70,12 +79,47 @@ impl ServerBuilder {
             std::path::PathBuf::from(&config.session.data_directory),
         );
 
+        // Build the observer site (if configured) once, here, so the
+        // tzf-rs DefaultFinder is constructed exactly once per process
+        // and the IANA timezone is logged on the same path that
+        // populates McpHandler.
+        let site = if let Some(site_cfg) = config.site.as_ref() {
+            let site =
+                rp_ephemeris::Site::new(site_cfg.latitude_degrees, site_cfg.longitude_degrees)
+                    .map_err(|e| crate::error::RpError::Config(format!("site: {e}")))?;
+            tracing::info!("{}", site);
+            Some(site)
+        } else {
+            None
+        };
+
+        let targets = crate::planner::decision::parse_targets_from_value(&config.targets);
+        // `planner.min_altitude_degrees` is the planner-wide default
+        // floor for `get_next_target` (per-target overrides apply).
+        // Range-validate at startup so a config typo (e.g. `200`) fails
+        // loud rather than silently changing planner behaviour.
+        let default_min_alt = match config
+            .planner
+            .get("min_altitude_degrees")
+            .and_then(|v| v.as_f64())
+        {
+            Some(v) if (-90.0..=90.0).contains(&v) => v,
+            Some(v) => {
+                return Err(crate::error::RpError::Config(format!(
+                    "planner.min_altitude_degrees must be in [-90, 90]; got {v}"
+                )));
+            }
+            None => 20.0,
+        };
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
             session_config,
             image_cache.clone(),
-        );
+            site,
+        )
+        .with_planner_config(targets, default_min_alt);
 
         let state = AppState {
             equipment,

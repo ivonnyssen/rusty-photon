@@ -30,4 +30,19 @@ pub enum RpError {
 
     #[error("imaging error: {0}")]
     Imaging(String),
+
+    /// Configured site does not match the mount's reported
+    /// `SiteLatitude` / `SiteLongitude`. Threshold is fixed at 0.01°
+    /// in either dimension; see `docs/services/rp.md` §"Site
+    /// Validation Against the ASCOM Mount" for the rationale.
+    #[error(
+        "site mismatch: config lat={config_lat:.4}° lon={config_lon:.4}°, \
+         mount lat={mount_lat:.4}° lon={mount_lon:.4}° (threshold 0.01°)"
+    )]
+    SiteMismatch {
+        config_lat: f64,
+        config_lon: f64,
+        mount_lat: f64,
+        mount_lon: f64,
+    },
 }

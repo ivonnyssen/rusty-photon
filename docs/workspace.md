@@ -53,6 +53,8 @@ belong in any single service design doc.
 | [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. Config read from each service's `[package.metadata.bdd]` in Cargo.toml. See [testing.md](skills/testing.md) Section 5.1. |
 | [rp-tls](../crates/rp-tls/) | `crates/rp-tls` | Opt-in TLS for inter-service communication: certificate generation, dual-stack TCP binding, TLS/plain serving, and client CA trust. See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
+| [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`rp-planning-tools.md`](plans/rp-planning-tools.md). |
+| [rp-catalog](../crates/rp-catalog/) | `crates/rp-catalog` | Embedded Messier + NGC + IC catalog (~13k objects, openNGC source, CC-BY-SA-4.0 attribution). `Catalog::resolve(name)` does case- and whitespace-insensitive lookup with alias support. See [`rp-planning-tools.md`](plans/rp-planning-tools.md). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 
