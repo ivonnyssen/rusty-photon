@@ -3786,6 +3786,8 @@ dependencies = [
  "rmcp",
  "rmpfit",
  "rp-auth",
+ "rp-catalog",
+ "rp-ephemeris",
  "rp-fits",
  "rp-tls",
  "rpassword",

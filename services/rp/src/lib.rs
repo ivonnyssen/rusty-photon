@@ -7,6 +7,7 @@ pub mod hash_password_cmd;
 pub mod imaging;
 pub mod mcp;
 pub mod persistence;
+pub mod planner;
 pub mod routes;
 pub mod session;
 pub mod tls_cmd;

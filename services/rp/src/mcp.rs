@@ -377,6 +377,16 @@ pub struct AutoFocusToolParams {
     pub min_fit_points: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveTargetParams {
+    /// Object name to resolve against the embedded Messier + NGC + IC
+    /// catalogue. Case- and whitespace-insensitive; common spellings
+    /// (`"M 31"`, `"M31"`, `"m 31"`, `"Messier 31"`) all collide on
+    /// the same key. Common-name aliases (`"Andromeda Galaxy"`,
+    /// `"Crab Nebula"`) are honoured.
+    pub name: String,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -2257,6 +2267,47 @@ impl McpHandler {
                 }))
             }
             Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Planner: catalog lookup
+    // -------------------------------------------------------------------
+
+    #[tool(
+        description = "Resolve a deep-sky object name to ICRS coordinates from \
+                       the embedded Messier + NGC + IC catalogue. Case- and \
+                       whitespace-insensitive; common-name aliases are honoured. \
+                       Returns ra_hours / dec_degrees / object_type / magnitude / \
+                       size_arcmin on hit, or a structured not-found payload with \
+                       the top three fuzzy suggestions on miss."
+    )]
+    async fn resolve_target(
+        &self,
+        Parameters(params): Parameters<ResolveTargetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match crate::planner::catalog::resolve(&params.name) {
+            crate::planner::catalog::ResolveOutcome::Resolved(view) => Ok(tool_success!({
+                "name": view.name,
+                "object_type": view.object_type,
+                "ra_hours": view.ra_hours,
+                "dec_degrees": view.dec_degrees,
+                "magnitude": view.magnitude,
+                "size_arcmin": view.size_arcmin,
+            })),
+            crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
+                // CallToolResult::error carries text content; we embed
+                // a small JSON payload so a planner plugin can pick out
+                // suggestions without string parsing.
+                Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::json!({
+                        "error": "target_not_found",
+                        "name": params.name,
+                        "suggestions": suggestions,
+                    })
+                    .to_string(),
+                )]))
+            }
         }
     }
 }
