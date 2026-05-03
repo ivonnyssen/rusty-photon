@@ -94,11 +94,23 @@ impl ServerBuilder {
         };
 
         let targets = crate::planner::decision::parse_targets_from_value(&config.targets);
-        let default_min_alt = config
+        // `planner.min_altitude_degrees` is the planner-wide default
+        // floor for `get_next_target` (per-target overrides apply).
+        // Range-validate at startup so a config typo (e.g. `200`) fails
+        // loud rather than silently changing planner behaviour.
+        let default_min_alt = match config
             .planner
             .get("min_altitude_degrees")
             .and_then(|v| v.as_f64())
-            .unwrap_or(20.0);
+        {
+            Some(v) if (-90.0..=90.0).contains(&v) => v,
+            Some(v) => {
+                return Err(crate::error::RpError::Config(format!(
+                    "planner.min_altitude_degrees must be in [-90, 90]; got {v}"
+                )));
+            }
+            None => 20.0,
+        };
 
         let mcp = McpHandler::new(
             equipment.clone(),

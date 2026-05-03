@@ -32,14 +32,27 @@ pub fn target_status_view(
     let lst = eph.sidereal_time(site, now).lst_hours;
     let ha = signed_hour_angle(lst, target.ra_hours);
 
-    let date = now.date_naive();
-    let rs = eph.rise_set(site, target, date, min_altitude_degrees);
-    let time_to_set_seconds = rs.and_then(|r| {
-        if r.set_utc > now {
-            Some((r.set_utc - now).num_seconds())
-        } else {
-            None
-        }
+    // `rise_set` answers for transits within a single UTC date. A
+    // target that was up at the start of the UTC day (transit happened
+    // late on the previous calendar day) reports a `set_utc` that may
+    // already be in the past for *today's* date — what the caller
+    // actually wants is "the next set, possibly from yesterday's
+    // visibility window". Try today; if its set is in the past or
+    // missing, look at the previous UTC date too.
+    let today = now.date_naive();
+    let yesterday = today.pred_opt();
+    let pick_set = |rs: Option<rp_ephemeris::RiseSet>| {
+        rs.and_then(|r| {
+            if r.set_utc > now {
+                Some((r.set_utc - now).num_seconds())
+            } else {
+                None
+            }
+        })
+    };
+    let today_rs = eph.rise_set(site, target, today, min_altitude_degrees);
+    let time_to_set_seconds = pick_set(today_rs).or_else(|| {
+        yesterday.and_then(|d| pick_set(eph.rise_set(site, target, d, min_altitude_degrees)))
     });
 
     Ok(json!({

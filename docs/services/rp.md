@@ -683,12 +683,12 @@ hours, `dec` is degrees. See
 |--------|-----------|---------|-------------|
 | `resolve_target` | name | ra_hours, dec_degrees, object_type, magnitude, size_arcmin | Catalog lookup against embedded Messier + NGC + IC |
 | `compute_alt_az` | ra, dec, time (optional) | altitude_degrees, azimuth_degrees | Topocentric alt/az for an ICRS target |
-| `compute_transit` | ra, dec, date | transit_utc | UT of upper transit on a given local date |
-| `compute_rise_set` | ra, dec, date, min_alt_degrees | rise_utc, set_utc | Rise/set times above a given altitude (None for circumpolar / never-up) |
-| `compute_meridian_flip` | ra, dec, time, side_of_pier | time_to_flip | Time-to-flip from current side of pier |
+| `compute_transit` | ra, dec, date (UTC `YYYY-MM-DD`) | transit_utc | UT of upper transit on a given UTC date |
+| `compute_rise_set` | ra, dec, date (UTC), min_alt_degrees | rise_utc, set_utc | Rise/set times above a given altitude (null for circumpolar / never-up) |
+| `compute_meridian_flip` | ra, dec, time, side_of_pier | time_to_flip_seconds | Time-to-flip from current side of pier (seconds) |
 | `get_sun_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees | Sun position |
-| `get_twilight` | date, kind | begin_utc, end_utc | Civil / nautical / astronomical twilight window |
-| `get_moon_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees, phase, illumination | Moon position + phase |
+| `get_twilight` | date (UTC), kind | kind, begin_utc, end_utc | Civil / nautical / astronomical twilight window |
+| `get_moon_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees, phase_degrees, illumination_fraction | Moon position + Sun-Moon elongation (phase) |
 | `compute_moon_separation` | ra, dec, time (optional) | separation_degrees | Angular separation between target and Moon |
 | `get_local_sidereal_time` | time (optional) | lst_hours | Local sidereal time at the configured site |
 
@@ -2243,6 +2243,23 @@ table.
 
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
+
+> **v1 implementation status.** Bullets 1, 2, and 6 are implemented
+> in full (altitude / set-time elimination, smallest-|HA| transit
+> preference, twilight + end-of-session fallback distinguished by
+> Sun elevation). Bullet 3 (least-progress preference) and bullet 4
+> (filter-change minimisation) currently no-op because `rp` does
+> not yet thread per-target `record_exposure` counters or the
+> last-frame filter into the planner. Bullet 5 (meridian-flip
+> avoidance with `compute_meridian_flip`) is satisfied indirectly:
+> a target whose transit was in the recent past has a large
+> positive HA and ranks lower than a target approaching transit,
+> but the planner does not check `time_to_flip` against
+> `exposures[].duration_secs`. `EndOfSession` is wired in the
+> reason-discriminant for forward compatibility but unreachable
+> from the v1 code path; `WaitForTwilight` covers the daytime
+> case. A follow-up will close these gaps once session state is
+> wired through.
 
 ### Target Definition
 

@@ -2533,6 +2533,12 @@ impl McpHandler {
             Ok(d) => d,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
+        if !(-90.0..=90.0).contains(&params.min_alt_degrees) {
+            return Ok(tool_error!(
+                "min_alt_degrees must be in [-90, 90]; got {}",
+                params.min_alt_degrees
+            ));
+        }
         let v = crate::planner::primitives::compute_rise_set(
             site,
             target,
@@ -2840,13 +2846,20 @@ impl McpHandler {
             Ok(v) => v,
             Err(e) => return Ok(tool_error!("failed to read mount declination: {}", e)),
         };
-        // ASCOM SideOfPier returns NOT_IMPLEMENTED on mounts that
-        // don't expose it; treat as `Unknown` so the flip ETA still
-        // surfaces.
+        // ASCOM SideOfPier returns `NOT_IMPLEMENTED` on mounts that
+        // don't expose the property — treat that specifically as
+        // `Unknown` so the flip ETA still surfaces. Any other read
+        // failure (network error, transient Alpaca issue, etc.) is
+        // surfaced loudly: a "valid-looking but stale" payload is
+        // worse than a clean error the operator can act on.
         let side = match mount.side_of_pier().await {
             Ok(ascom_alpaca::api::telescope::PierSide::East) => rp_ephemeris::SideOfPier::East,
             Ok(ascom_alpaca::api::telescope::PierSide::West) => rp_ephemeris::SideOfPier::West,
-            Ok(_) | Err(_) => rp_ephemeris::SideOfPier::Unknown,
+            Ok(_) => rp_ephemeris::SideOfPier::Unknown,
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {
+                rp_ephemeris::SideOfPier::Unknown
+            }
+            Err(e) => return Ok(tool_error!("failed to read mount side_of_pier: {}", e)),
         };
         let v = crate::planner::convenience::meridian_status_view(site, ra, dec, time, side);
         Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
