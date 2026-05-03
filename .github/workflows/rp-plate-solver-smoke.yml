@@ -19,7 +19,6 @@ name: rp-plate-solver-smoke
 
 permissions:
   contents: read
-  issues: write
 
 on:
   schedule:
@@ -82,7 +81,6 @@ jobs:
           set -euo pipefail
           mkdir -p services/rp-plate-solver/tests/fixtures
           python3 - <<'PY'
-          import struct
           # Single 2880-byte FITS header block.
           cards = [
               "SIMPLE  =                    T",
@@ -119,15 +117,17 @@ jobs:
           set -euo pipefail
           cargo test -p rp-plate-solver --all-features --test bdd
 
-      - name: Capture median solve time
-        # The BDD scenarios emit timing in their assertions; this step
-        # extracts it from the test output for trending. v1: just log
-        # to the workflow run; future work could push to a metrics
-        # store.
+      - name: Log timing reference
+        # v1 just points at the BDD step output where per-scenario
+        # timing lives. Real per-platform median extraction and
+        # threshold-based assertions are forward work tracked in the
+        # plan's Phase 7 (alongside the hint-plumbing perf
+        # comparison). Once a baseline trend exists, a future step
+        # can parse the timing out and fail on regressions.
         if: always()
         shell: bash
         run: |
-          echo "::notice::Real-ASTAP smoke completed on ${{ matrix.os }} — see step above for per-scenario timing."
+          echo "::notice::Real-ASTAP smoke completed on ${{ matrix.os }} — see the BDD step above for per-scenario timing."
 
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so
@@ -140,7 +140,6 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/checkout@v5
       - name: Open or update tracking issue
         uses: actions/github-script@v7
         with:
