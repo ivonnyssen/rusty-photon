@@ -7,6 +7,7 @@ pub mod error;
 pub mod fits;
 #[cfg(feature = "mock")]
 pub mod mock;
+pub mod mount;
 pub mod pointing;
 pub mod routes;
 pub mod survey;
@@ -37,7 +38,7 @@ pub async fn run_with_client(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
 ) -> Result<(), SkySurveyCameraError> {
-    let device = camera::SkySurveyCamera::new(config.clone(), survey_client);
+    let device = build_device(config.clone(), survey_client)?;
     let shared_state = device.shared_state();
 
     let mut server = Server::new(CargoServerInfo!());
@@ -88,6 +89,47 @@ fn build_survey_client(config: &Config) -> Result<Arc<dyn SurveyClient>, SkySurv
     let client = survey::SkyViewClient::new(&config.survey)
         .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
     Ok(Arc::new(client))
+}
+
+/// Construct a [`camera::SkySurveyCamera`] from config, selecting
+/// `PointingSource::{Static, Telescope}` based on whether
+/// `pointing.telescope` is set. F3 — telescope-following construction
+/// must succeed even if the mount is unreachable; the Alpaca client
+/// build is offline and the actual mount discovery happens lazily on
+/// the first exposure.
+fn build_device(
+    config: Config,
+    survey_client: Arc<dyn SurveyClient>,
+) -> Result<camera::SkySurveyCamera, SkySurveyCameraError> {
+    use crate::pointing::{PointingSource, PointingState, SharedPointing, TelescopeFollow};
+
+    let last_snapshot = Arc::new(SharedPointing::new(PointingState::new(
+        config.pointing.initial_ra_deg,
+        config.pointing.initial_dec_deg,
+        config.pointing.initial_rotation_deg,
+    )));
+
+    let pointing_source = match &config.pointing.telescope {
+        None => PointingSource::Static(Arc::clone(&last_snapshot)),
+        Some(t) => {
+            let reader = mount::AlpacaMountReader::from_config(t)?;
+            let follow =
+                TelescopeFollow::new(Arc::new(reader), config.pointing.initial_rotation_deg);
+            tracing::debug!(
+                alpaca_url = %t.alpaca_url,
+                device_number = t.device_number,
+                "telescope follow mode armed"
+            );
+            PointingSource::Telescope(follow)
+        }
+    };
+
+    Ok(camera::SkySurveyCamera::from_parts(
+        config,
+        survey_client,
+        pointing_source,
+        last_snapshot,
+    ))
 }
 
 async fn shutdown_signal() {

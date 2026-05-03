@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::fits::parse_primary_hdu;
-use crate::pointing::{PointingState, SharedPointing};
+use crate::pointing::{PointingSource, PointingState, SharedPointing};
 use crate::survey::{try_cache_load, try_cache_store, SurveyClient, SurveyError, SurveyRequest};
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
@@ -78,7 +78,17 @@ pub struct ExposureOutcome {
 pub struct DeviceState {
     pub config: Config,
     pub connected: AtomicBool,
-    pub pointing: SharedPointing,
+    /// Snapshot source. `Static` reads `last_snapshot` directly;
+    /// `Telescope` reads the configured ASCOM mount and writes the
+    /// result into `last_snapshot` for `GET /sky-survey/position`.
+    pub pointing_source: PointingSource,
+    /// Most-recently-snapshotted pointing. Both modes use this as the
+    /// source for `GET /sky-survey/position` (F6 — "most recently
+    /// snapshotted") and the in-flight cutout request. In `Static`
+    /// mode the inner `Arc` is shared with `pointing_source`, so
+    /// `POST` writes are visible immediately; in `Telescope` mode the
+    /// exposure pipeline writes back after a successful mount read.
+    pub last_snapshot: Arc<SharedPointing>,
     pub bin_x: AtomicU8,
     pub bin_y: AtomicU8,
     pub num_x: AtomicU32,
@@ -101,18 +111,34 @@ pub struct SkySurveyCamera {
 }
 
 impl SkySurveyCamera {
+    /// Construct in static-pointing mode. Used by tests and by
+    /// production when `pointing.telescope` is absent.
     pub fn new(config: Config, survey_client: Arc<dyn SurveyClient>) -> Self {
-        let pointing = SharedPointing::new(PointingState::new(
+        let last_snapshot = Arc::new(SharedPointing::new(PointingState::new(
             config.pointing.initial_ra_deg,
             config.pointing.initial_dec_deg,
             config.pointing.initial_rotation_deg,
-        ));
+        )));
+        let pointing_source = PointingSource::Static(Arc::clone(&last_snapshot));
+        Self::from_parts(config, survey_client, pointing_source, last_snapshot)
+    }
+
+    /// Construct from a fully-prepared [`PointingSource`]. Used by
+    /// `lib.rs::run_with_client` when follow mode is configured, and
+    /// by tests that want to inject a mock `MountReader`.
+    pub fn from_parts(
+        config: Config,
+        survey_client: Arc<dyn SurveyClient>,
+        pointing_source: PointingSource,
+        last_snapshot: Arc<SharedPointing>,
+    ) -> Self {
         let sensor_w = config.optics.sensor_width_px;
         let sensor_h = config.optics.sensor_height_px;
         let state = DeviceState {
             config,
             connected: AtomicBool::new(false),
-            pointing,
+            pointing_source,
+            last_snapshot,
             bin_x: AtomicU8::new(1),
             bin_y: AtomicU8::new(1),
             num_x: AtomicU32::new(sensor_w),
@@ -209,7 +235,18 @@ async fn run_exposure_inner(
         });
     }
 
-    let pointing = state.pointing.snapshot().await;
+    // F1/F4: in follow mode, read the mount fresh on every exposure;
+    // in static mode this is the cached `SharedPointing`. After a
+    // successful follow-mode read, write back to `last_snapshot` so
+    // `GET /sky-survey/position` reflects what the camera last saw.
+    let pointing = state
+        .pointing_source
+        .snapshot()
+        .await
+        .map_err(|e| format!("mount read failed: {e}"))?;
+    if state.pointing_source.is_follow_mode() {
+        state.last_snapshot.store(pointing).await;
+    }
     let request = build_full_sensor_request(&state.config, pointing, bx, by);
     let cache_dir = state.config.survey.cache_dir.clone();
     let cache_key = request.cache_key();
@@ -758,6 +795,7 @@ mod tests {
                 initial_ra_deg: 0.0,
                 initial_dec_deg: 0.0,
                 initial_rotation_deg: 0.0,
+                telescope: None,
             },
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),

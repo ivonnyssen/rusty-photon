@@ -1,5 +1,9 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use crate::error::MountReadError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PointingState {
@@ -18,12 +22,28 @@ impl PointingState {
     }
 }
 
-/// Shared pointing state behind a `tokio::sync::RwLock`. Both
-/// readers (the spawned exposure task) and the single writer (the
-/// `POST /sky-survey/position` axum handler) live in async contexts,
-/// so an async-aware lock keeps the runtime cooperative under
-/// future concurrent load and avoids the std-lock poisoning
-/// surface area.
+/// Position read from an ASCOM Telescope. RA in hours per the ASCOM
+/// spec; Dec in degrees. The `TelescopeFollow` snapshot converts hours
+/// to degrees (× 15) before constructing a [`PointingState`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MountPosition {
+    pub ra_hours: f64,
+    pub dec_deg: f64,
+}
+
+/// Narrow trait around the two ASCOM Telescope reads `TelescopeFollow`
+/// needs. Wrapping the giant `ascom_alpaca::api::Telescope` trait this
+/// way keeps unit tests trivial: a `mockall`-generated mock implements
+/// just two methods, not the entire ASCOM Telescope surface. Per
+/// ADR-004, traits ≤ 10 methods at a service boundary may be mocked.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait MountReader: Send + Sync + std::fmt::Debug {
+    async fn read_position(&self) -> Result<MountPosition, MountReadError>;
+}
+
+/// Static `PointingState` cache. Used directly by `PointingSource::Static`
+/// and as the most-recent-snapshot cache for `Static` mode's `GET`.
 #[derive(Debug)]
 pub struct SharedPointing {
     state: RwLock<PointingState>,
@@ -76,6 +96,63 @@ impl SharedPointing {
         };
         Ok(*guard)
     }
+
+    pub async fn store(&self, value: PointingState) {
+        *self.state.write().await = value;
+    }
+}
+
+/// Telescope-following snapshot source. Holds the [`MountReader`] plus
+/// the configured rotation. Phase 2 ignores the offset (kept at 0);
+/// Phase 3 plumbs it through here.
+#[derive(Debug)]
+pub struct TelescopeFollow {
+    reader: Arc<dyn MountReader>,
+    rotation_deg: f64,
+}
+
+impl TelescopeFollow {
+    pub fn new(reader: Arc<dyn MountReader>, rotation_deg: f64) -> Self {
+        Self {
+            reader,
+            rotation_deg: wrap_rotation(rotation_deg),
+        }
+    }
+
+    pub async fn snapshot(&self) -> Result<PointingState, MountReadError> {
+        let pos = self.reader.read_position().await?;
+        Ok(PointingState {
+            ra_deg: pos.ra_hours * 15.0,
+            dec_deg: pos.dec_deg,
+            rotation_deg: self.rotation_deg,
+        })
+    }
+}
+
+/// Pointing snapshot source. Selected once at construction from
+/// `pointing.telescope`. Switching at runtime would require teaching
+/// `POST /sky-survey/position` to fall back / override; that's
+/// feature creep without a driving use case.
+#[derive(Debug)]
+pub enum PointingSource {
+    Static(Arc<SharedPointing>),
+    Telescope(TelescopeFollow),
+}
+
+impl PointingSource {
+    pub fn is_follow_mode(&self) -> bool {
+        matches!(self, Self::Telescope(_))
+    }
+
+    /// Snapshot the current pointing. In `Static` mode this is
+    /// infallible. In `Telescope` mode, a failed mount read surfaces
+    /// per F2.
+    pub async fn snapshot(&self) -> Result<PointingState, MountReadError> {
+        match self {
+            Self::Static(s) => Ok(s.snapshot().await),
+            Self::Telescope(t) => t.snapshot().await,
+        }
+    }
 }
 
 fn wrap_rotation(rotation_deg: f64) -> f64 {
@@ -90,6 +167,7 @@ fn wrap_rotation(rotation_deg: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -127,5 +205,56 @@ mod tests {
         let s = SharedPointing::new(PointingState::new(0.0, 0.0, 0.0));
         s.update(0.0, 0.0, Some(390.0)).await.unwrap();
         assert!((s.snapshot().await.rotation_deg - 30.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_converts_hours_to_degrees() {
+        let mut reader = MockMountReader::new();
+        reader.expect_read_position().returning(|| {
+            Ok(MountPosition {
+                ra_hours: 10.0,
+                dec_deg: 30.0,
+            })
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 12.5);
+        let snap = follow.snapshot().await.unwrap();
+        assert!((snap.ra_deg - 150.0).abs() < 1e-9);
+        assert!((snap.dec_deg - 30.0).abs() < 1e-9);
+        assert!((snap.rotation_deg - 12.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_propagates_read_error() {
+        let mut reader = MockMountReader::new();
+        reader
+            .expect_read_position()
+            .returning(|| Err(MountReadError::Transport("oops".into())));
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0);
+        let err = follow.snapshot().await.unwrap_err();
+        assert!(matches!(err, MountReadError::Transport(_)));
+    }
+
+    #[tokio::test]
+    async fn pointing_source_static_snapshot_infallible() {
+        let s = Arc::new(SharedPointing::new(PointingState::new(1.0, 2.0, 3.0)));
+        let src = PointingSource::Static(Arc::clone(&s));
+        assert!(!src.is_follow_mode());
+        let snap = src.snapshot().await.unwrap();
+        assert_eq!(snap.ra_deg, 1.0);
+    }
+
+    #[tokio::test]
+    async fn pointing_source_telescope_uses_reader() {
+        let mut reader = MockMountReader::new();
+        reader.expect_read_position().returning(|| {
+            Ok(MountPosition {
+                ra_hours: 0.0,
+                dec_deg: 0.0,
+            })
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), 0.0);
+        let src = PointingSource::Telescope(follow);
+        assert!(src.is_follow_mode());
+        src.snapshot().await.unwrap();
     }
 }

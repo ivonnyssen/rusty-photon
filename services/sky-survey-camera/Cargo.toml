@@ -21,7 +21,7 @@ conformu = ["mock", "ascom-alpaca/test"]
 workspace = true
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "camera", "client"] }
+ascom-alpaca = { workspace = true, features = ["server", "camera", "client", "telescope"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -34,8 +34,10 @@ tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 ndarray = { workspace = true }
+rp-auth = { workspace = true }
 rp-fits = { workspace = true }
 tempfile = { workspace = true }
+base64 = { workspace = true }
 
 [package.metadata.conformu]
 command = "cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --ignored --nocapture"
@@ -46,6 +48,7 @@ cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 proptest = { workspace = true }
+mockall = { workspace = true }
 cargo-husky = { workspace = true }
 
 [[test]]
