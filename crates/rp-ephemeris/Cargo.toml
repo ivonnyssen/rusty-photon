@@ -1,0 +1,23 @@
+[package]
+name = "rp-ephemeris"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Astronomical math for Rusty Photon: Ephemeris trait + ErfarsEphemeris (ERFA wrapper) + Site (lat/lon → IANA tz)"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+erfars = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tzf-rs = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
