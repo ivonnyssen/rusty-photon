@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ascom_alpaca::api::{Camera, CoverCalibrator, FilterWheel, Focuser, TypedDevice};
+use ascom_alpaca::api::{Camera, CoverCalibrator, FilterWheel, Focuser, Telescope, TypedDevice};
 use ascom_alpaca::Client;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -39,11 +39,21 @@ pub struct FocuserEntry {
     pub device: Option<Arc<dyn Focuser>>,
 }
 
+/// Singular mount entry. Piggyback rigs share one mount across multiple
+/// optical trains, so `EquipmentRegistry.mount` is an `Option`, not a
+/// `Vec`. No `id` field — there is nothing to disambiguate.
+pub struct MountEntry {
+    pub connected: bool,
+    pub config: config::MountConfig,
+    pub device: Option<Arc<dyn Telescope>>,
+}
+
 pub struct EquipmentRegistry {
     pub cameras: Vec<CameraEntry>,
     pub filter_wheels: Vec<FilterWheelEntry>,
     pub cover_calibrators: Vec<CoverCalibratorEntry>,
     pub focusers: Vec<FocuserEntry>,
+    pub mount: Option<MountEntry>,
 }
 
 #[derive(Serialize)]
@@ -52,11 +62,18 @@ pub struct EquipmentStatus {
     pub filter_wheels: Vec<DeviceStatus>,
     pub cover_calibrators: Vec<DeviceStatus>,
     pub focusers: Vec<DeviceStatus>,
+    pub mount: Option<MountStatus>,
 }
 
 #[derive(Serialize)]
 pub struct DeviceStatus {
     pub id: String,
+    pub connected: bool,
+}
+
+/// Singular wire-format counterpart to [`MountEntry`] — no `id`.
+#[derive(Serialize)]
+pub struct MountStatus {
     pub connected: bool,
 }
 
@@ -87,11 +104,17 @@ impl EquipmentRegistry {
             focusers.push(entry);
         }
 
+        let mount = match &equipment_config.mount {
+            Some(mount_config) => Some(connect_mount(mount_config).await),
+            None => None,
+        };
+
         Self {
             cameras,
             filter_wheels,
             cover_calibrators,
             focusers,
+            mount,
         }
     }
 
@@ -129,6 +152,9 @@ impl EquipmentRegistry {
                     connected: f.connected,
                 })
                 .collect(),
+            mount: self.mount.as_ref().map(|m| MountStatus {
+                connected: m.connected,
+            }),
         }
     }
 
@@ -146,6 +172,12 @@ impl EquipmentRegistry {
 
     pub fn find_focuser(&self, id: &str) -> Option<&FocuserEntry> {
         self.focusers.iter().find(|f| f.id == id)
+    }
+
+    /// Returns the singular mount entry, or `None` when no mount is
+    /// configured. Singular: there is no `id` parameter.
+    pub fn find_mount(&self) -> Option<&MountEntry> {
+        self.mount.as_ref()
     }
 }
 
@@ -517,6 +549,89 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
     }
 }
 
+async fn connect_mount(config: &config::MountConfig) -> MountEntry {
+    debug!(alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to mount");
+
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            debug!(error = %e, "failed to create Alpaca client for mount");
+            return MountEntry {
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => {
+            debug!(error = %e, "failed to get devices from Alpaca server");
+            return MountEntry {
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+        Err(_) => {
+            debug!("timeout connecting to Alpaca server");
+            return MountEntry {
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    let mut mount_index = 0u32;
+    let mut found_mount: Option<Arc<dyn Telescope>> = None;
+
+    for device in devices {
+        if let TypedDevice::Telescope(t) = device {
+            if mount_index == config.device_number {
+                found_mount = Some(t);
+                break;
+            }
+            mount_index += 1;
+        }
+    }
+
+    let t = match found_mount {
+        Some(t) => t,
+        None => {
+            debug!(
+                device_number = config.device_number,
+                "mount not found on Alpaca server"
+            );
+            return MountEntry {
+                connected: false,
+                config: config.clone(),
+                device: None,
+            };
+        }
+    };
+
+    match t.set_connected(true).await {
+        Ok(()) => {
+            debug!("mount connected successfully");
+            MountEntry {
+                connected: true,
+                config: config.clone(),
+                device: Some(t),
+            }
+        }
+        Err(e) => {
+            debug!(error = %e, "failed to connect mount");
+            MountEntry {
+                connected: false,
+                config: config.clone(),
+                device: None,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -796,7 +911,7 @@ mod tests {
         let stub = spawn_stub(ok_focuser_router()).await;
         let equipment_cfg = config::EquipmentConfig {
             cameras: vec![],
-            mount: serde_json::Value::Null,
+            mount: None,
             focusers: vec![focuser_config_for(&stub.url())],
             filter_wheels: vec![],
             cover_calibrators: vec![],
@@ -815,5 +930,164 @@ mod tests {
         assert_eq!(status.focusers.len(), 1);
         assert_eq!(status.focusers[0].id, "main-focuser");
         assert!(status.focusers[0].connected);
+        assert!(
+            status.mount.is_none(),
+            "mount should be None when unconfigured"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mount tests — same pattern as focuser tests above. Five failure arms
+    // + one success arm + one EquipmentRegistry end-to-end test.
+    // -----------------------------------------------------------------------
+
+    fn mount_config_for(url: &str) -> config::MountConfig {
+        config::MountConfig {
+            alpaca_url: url.to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+            auth: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_mount_invalid_url_returns_disconnected_entry() {
+        let cfg = mount_config_for("not-a-url");
+        let entry = connect_mount(&cfg).await;
+        assert!(!entry.connected);
+        assert!(entry.device.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_mount_unreachable_returns_disconnected_entry() {
+        let cfg = mount_config_for("http://127.0.0.1:1");
+        let entry = connect_mount(&cfg).await;
+        assert!(!entry.connected);
+        assert!(entry.device.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_mount_no_telescope_in_devices_returns_disconnected_entry() {
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async {
+                Json(serde_json::json!({
+                    "Value": [],
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        );
+        let stub = spawn_stub(app).await;
+        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        assert!(!entry.connected);
+        assert!(entry.device.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_mount_set_connected_fails_returns_disconnected_entry() {
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "Telescope 0",
+                            "DeviceType": "Telescope",
+                            "DeviceNumber": 0,
+                            "UniqueID": "test-mount-uid"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/connected",
+                put(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 1024,
+                        "ErrorMessage": "simulated set_connected failure"
+                    }))
+                }),
+            );
+        let stub = spawn_stub(app).await;
+        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        assert!(!entry.connected);
+        assert!(entry.device.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_mount_timeout_returns_disconnected_entry() {
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
+        );
+        let stub = spawn_stub(app).await;
+        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        assert!(!entry.connected);
+        assert!(entry.device.is_none());
+    }
+
+    fn ok_mount_router() -> Router {
+        Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "Telescope 0",
+                            "DeviceType": "Telescope",
+                            "DeviceNumber": 0,
+                            "UniqueID": "test-mount-uid"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/connected",
+                put(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+    }
+
+    #[tokio::test]
+    async fn connect_mount_success_returns_connected_entry() {
+        let stub = spawn_stub(ok_mount_router()).await;
+        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        assert!(entry.connected, "expected entry to be connected");
+        assert!(entry.device.is_some(), "expected entry to hold a device");
+    }
+
+    #[tokio::test]
+    async fn equipment_registry_surfaces_connected_mount_in_status_and_lookup() {
+        let stub = spawn_stub(ok_mount_router()).await;
+        let equipment_cfg = config::EquipmentConfig {
+            cameras: vec![],
+            mount: Some(mount_config_for(&stub.url())),
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![],
+        };
+        let registry = EquipmentRegistry::new(&equipment_cfg).await;
+
+        let found = registry
+            .find_mount()
+            .expect("find_mount should return the configured mount");
+        assert!(found.connected);
+
+        let status = registry.status();
+        let mount_status = status
+            .mount
+            .as_ref()
+            .expect("EquipmentStatus.mount should be Some when configured");
+        assert!(mount_status.connected);
     }
 }

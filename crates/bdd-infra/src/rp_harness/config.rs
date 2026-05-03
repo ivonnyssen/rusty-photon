@@ -53,6 +53,18 @@ pub struct FocuserConfig {
     pub max_position: Option<i32>,
 }
 
+/// Singular mount equipment entry. `rp` deployments have at most one
+/// mount — piggyback rigs share one across multiple optical trains —
+/// so the builder field below is `Option<MountConfig>`, not a `Vec`.
+#[derive(Debug, Clone)]
+pub struct MountConfig {
+    pub alpaca_url: String,
+    pub device_number: u32,
+    /// Optional post-`Slewing == false` settle time. `None` ⇒ rp's
+    /// default (zero). Per-call `settle_after` on `slew` overrides.
+    pub settle_after_slew: Option<std::time::Duration>,
+}
+
 /// Accumulates equipment and plugin entries, then emits rp's JSON config.
 #[derive(Debug, Default, Clone)]
 pub struct RpConfigBuilder {
@@ -60,6 +72,8 @@ pub struct RpConfigBuilder {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub focusers: Vec<FocuserConfig>,
+    /// Singular mount — at most one per `rp` deployment.
+    pub mount: Option<MountConfig>,
     pub plugin_configs: Vec<Value>,
     /// Override `session.data_directory`. When `None`, the builder
     /// generates a fresh per-call path. The cross-restart BDD scenarios
@@ -137,6 +151,12 @@ impl RpConfigBuilder {
 
     pub fn add_focuser(&mut self, foc: FocuserConfig) -> &mut Self {
         self.focusers.push(foc);
+        self
+    }
+
+    /// Set the singular mount config (overwrites any prior call).
+    pub fn with_mount(&mut self, mount: MountConfig) -> &mut Self {
+        self.mount = Some(mount);
         self
     }
 
@@ -242,6 +262,20 @@ impl RpConfigBuilder {
                 .to_string()
         });
 
+        let mount_value: Value = match &self.mount {
+            Some(m) => {
+                let mut obj = serde_json::json!({
+                    "alpaca_url": m.alpaca_url,
+                    "device_number": m.device_number,
+                });
+                if let Some(d) = m.settle_after_slew {
+                    obj["settle_after_slew"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                }
+                obj
+            }
+            None => Value::Null,
+        };
+
         let mut config = serde_json::json!({
             "session": {
                 "data_directory": data_directory,
@@ -253,7 +287,7 @@ impl RpConfigBuilder {
             },
             "equipment": {
                 "cameras": cameras,
-                "mount": null,
+                "mount": mount_value,
                 "focusers": focusers,
                 "filter_wheels": filter_wheels,
                 "cover_calibrators": cover_calibrators,
@@ -395,6 +429,39 @@ mod tests {
         assert_eq!(plugins.len(), 2);
         assert_eq!(plugins[0]["name"], "a");
         assert_eq!(plugins[1]["name"], "b");
+    }
+
+    #[test]
+    fn empty_builder_emits_null_mount() {
+        let cfg = RpConfigBuilder::new().build();
+        assert!(cfg["equipment"]["mount"].is_null());
+    }
+
+    #[test]
+    fn with_mount_emits_typed_block() {
+        let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: Some(std::time::Duration::from_millis(150)),
+        });
+        let cfg = b.build();
+        let mount = &cfg["equipment"]["mount"];
+        assert_eq!(mount["alpaca_url"], "http://127.0.0.1:11122");
+        assert_eq!(mount["device_number"], 0);
+        assert_eq!(mount["settle_after_slew"], "150ms");
+    }
+
+    #[test]
+    fn with_mount_omits_settle_when_none() {
+        let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+        let cfg = b.build();
+        assert!(cfg["equipment"]["mount"]["settle_after_slew"].is_null());
     }
 
     #[test]
