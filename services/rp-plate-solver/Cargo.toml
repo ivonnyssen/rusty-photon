@@ -34,3 +34,10 @@ tokio-test = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
+cucumber = { workspace = true }
+bdd-infra = { workspace = true }
+reqwest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
