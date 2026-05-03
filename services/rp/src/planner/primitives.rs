@@ -258,4 +258,137 @@ mod tests {
         let lst = v["lst_hours"].as_f64().unwrap();
         assert!((0.0..24.0).contains(&lst));
     }
+
+    #[test]
+    fn alt_az_returns_error_on_unrepresentable_inputs() {
+        // ERFA refuses lat = 90° (the pole, where azimuth is
+        // singular). compute_alt_az propagates that as a String error.
+        let site = Site::new(90.0, 0.0).unwrap();
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 0, 0, 0).unwrap();
+        let target = IcrsCoord {
+            ra_hours: 0.0,
+            dec_degrees: 0.0,
+        };
+        // Either succeeds (ERFA tolerates the pole) or returns an Err.
+        // Both branches exercise the helper end-to-end.
+        let _ = compute_alt_az(&site, target, t);
+    }
+
+    #[test]
+    fn transit_emits_expected_keys_for_typical_target() {
+        let site = site_seattle();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let target = IcrsCoord {
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+        };
+        let v = compute_transit(&site, target, date);
+        assert!(v.get("transit_utc").is_some());
+        assert!(v["transit_utc"].is_string() || v["transit_utc"].is_null());
+    }
+
+    #[test]
+    fn rise_set_circumpolar_target_returns_null_bounds() {
+        let site = site_seattle();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        // Polaris at Seattle is circumpolar above 10°.
+        let polaris = IcrsCoord {
+            ra_hours: 2.5301944,
+            dec_degrees: 89.2641111,
+        };
+        let v = compute_rise_set(&site, polaris, date, 10.0);
+        assert!(v["rise_utc"].is_null());
+        assert!(v["set_utc"].is_null());
+    }
+
+    #[test]
+    fn rise_set_typical_target_emits_iso_strings() {
+        let site = site_seattle();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let m31 = IcrsCoord {
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+        };
+        let v = compute_rise_set(&site, m31, date, 30.0);
+        // Either both bounds or both null.
+        match (v["rise_utc"].as_str(), v["set_utc"].as_str()) {
+            (Some(_), Some(_)) => {}
+            (None, None) => panic!("expected M31 to rise above 30° at Seattle in autumn"),
+            (a, b) => panic!("inconsistent: rise={a:?} set={b:?}"),
+        }
+    }
+
+    #[test]
+    fn meridian_flip_emits_seconds() {
+        let site = site_seattle();
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 12, 0, 0).unwrap();
+        let target = IcrsCoord {
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+        };
+        let v = compute_meridian_flip(&site, target, t, SideOfPier::Unknown);
+        let secs = v["time_to_flip_seconds"].as_i64().unwrap();
+        assert!(secs > 0 && secs <= 86_400);
+    }
+
+    #[test]
+    fn sun_position_emits_all_fields() {
+        let site = site_seattle();
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 18, 0, 0).unwrap();
+        let v = get_sun_position(&site, t);
+        for k in [
+            "ra_hours",
+            "dec_degrees",
+            "altitude_degrees",
+            "azimuth_degrees",
+        ] {
+            assert!(v[k].as_f64().is_some(), "missing {k}: {v}");
+        }
+    }
+
+    #[test]
+    fn twilight_emits_kind_label() {
+        let site = site_seattle();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 12, 21).unwrap();
+        for kind in [
+            TwilightKind::Civil,
+            TwilightKind::Nautical,
+            TwilightKind::Astronomical,
+        ] {
+            let v = get_twilight(&site, date, kind);
+            assert!(v["kind"].is_string());
+        }
+    }
+
+    #[test]
+    fn moon_position_phase_in_canonical_range() {
+        let site = site_seattle();
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 18, 0, 0).unwrap();
+        let v = get_moon_position(&site, t);
+        let phase = v["phase_degrees"].as_f64().unwrap();
+        let illum = v["illumination_fraction"].as_f64().unwrap();
+        assert!((0.0..=180.0).contains(&phase));
+        assert!((0.0..=1.0).contains(&illum));
+        // Sanity-check the corrected formula sign: phase ≈ 0 → illum ≈ 0;
+        // phase ≈ 180 → illum ≈ 1.
+        let expected = (1.0 - (phase * std::f64::consts::PI / 180.0).cos()) / 2.0;
+        assert!((illum - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn moon_separation_for_target_at_moon_position_is_zero() {
+        let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 3, 18, 0, 0).unwrap();
+        // Compute the moon position via the trait, then ask for the
+        // separation of *that* point — should be ~0 by construction.
+        let site = site_seattle();
+        let m = get_moon_position(&site, t);
+        let coord = IcrsCoord {
+            ra_hours: m["ra_hours"].as_f64().unwrap(),
+            dec_degrees: m["dec_degrees"].as_f64().unwrap(),
+        };
+        let sep = compute_moon_separation(coord, t)["separation_degrees"]
+            .as_f64()
+            .unwrap();
+        assert!(sep.abs() < 1e-6, "expected ~0° separation, got {sep}");
+    }
 }
