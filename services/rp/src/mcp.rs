@@ -319,6 +319,22 @@ pub struct GetTrackingParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMountPositionParams {}
 
+/// Empty parameter struct for `park` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParkParams {}
+
+/// Empty parameter struct for `unpark` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UnparkParams {}
+
+/// Empty parameter struct for `get_park_state` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetParkStateParams {}
+
+/// Empty parameter struct for `abort_slew` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AbortSlewParams {}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AutoFocusToolParams {
     /// Camera device ID. Required (validated in body for deterministic
@@ -1022,19 +1038,16 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to slew: {}", e))?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
-        loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            match mount.slewing().await {
-                Ok(false) => break,
-                Ok(true) if tokio::time::Instant::now() < deadline => continue,
-                Ok(true) => {
-                    // Best-effort abort; ignore the abort's own result and
-                    // surface the timeout error as the primary failure.
-                    let _ = mount.abort_slew().await;
-                    return Err("timeout waiting for mount to settle".to_string());
-                }
-                Err(e) => return Err(format!("error polling mount slewing: {}", e)),
+        match poll_slewing_until_idle(mount.as_ref()).await {
+            Ok(()) => {}
+            Err(PollIdleError::Timeout) => {
+                // Best-effort abort; ignore the abort's own result and
+                // surface the timeout error as the primary failure.
+                let _ = mount.abort_slew().await;
+                return Err("timeout waiting for mount to settle".to_string());
+            }
+            Err(PollIdleError::Read(e)) => {
+                return Err(format!("error polling mount slewing: {}", e));
             }
         }
 
@@ -1052,6 +1065,73 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to read mount declination: {}", e))?;
         Ok((actual_ra, actual_dec))
+    }
+
+    /// Resolve the mount, issue `park()`, poll `slewing()` until idle
+    /// (300 s deadline), and verify `at_park()` returns true before
+    /// returning.
+    ///
+    /// Unlike `do_slew_blocking`, this does NOT auto-abort on timeout
+    /// — a partially-completed park is closer to safe than an
+    /// aborted one (the mount is actively trying to reach a known
+    /// safe position; aborting leaves it in an unknown state
+    /// mid-traversal). Callers that want to interrupt a stuck park
+    /// can call the `abort_slew` MCP tool explicitly.
+    ///
+    /// Per ASCOM, a successful `park()` clears `Tracking`. We don't
+    /// touch tracking ourselves; the contract is the driver's.
+    pub(crate) async fn do_park_blocking(&self) -> std::result::Result<(), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+
+        debug!("parking mount");
+        mount
+            .park()
+            .await
+            .map_err(|e| format!("failed to park: {}", e))?;
+
+        match poll_slewing_until_idle(mount.as_ref()).await {
+            Ok(()) => {}
+            Err(PollIdleError::Timeout) => {
+                return Err("timeout waiting for mount to park".to_string());
+            }
+            Err(PollIdleError::Read(e)) => {
+                return Err(format!("error polling mount slewing: {}", e));
+            }
+        }
+
+        match mount.at_park().await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("park completed but mount is not at park".to_string()),
+            Err(e) => Err(format!("failed to verify mount at_park: {}", e)),
+        }
+    }
+}
+
+/// Outcome variants for [`poll_slewing_until_idle`].
+enum PollIdleError {
+    /// Deadline expired with `slewing()` still returning `true`.
+    Timeout,
+    /// `slewing()` itself returned an Alpaca error.
+    Read(ascom_alpaca::ASCOMError),
+}
+
+/// Poll `mount.slewing()` every 100 ms until it returns `false`,
+/// bounded by a 300 s deadline. Shared by `do_slew_blocking` and
+/// `do_park_blocking`. Caller decides what to do on
+/// [`PollIdleError::Timeout`] (e.g. best-effort `abort_slew()` for
+/// `slew`; surface the timeout for `park`).
+async fn poll_slewing_until_idle(
+    mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
+) -> std::result::Result<(), PollIdleError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        match mount.slewing().await {
+            Ok(false) => return Ok(()),
+            Ok(true) if tokio::time::Instant::now() < deadline => continue,
+            Ok(true) => return Err(PollIdleError::Timeout),
+            Err(e) => return Err(PollIdleError::Read(e)),
+        }
     }
 }
 
@@ -1969,6 +2049,89 @@ impl McpHandler {
         }
     }
 
+    #[tool(
+        description = "Park the mount: invoke ASCOM Park, poll Slewing until idle (300 s deadline), and verify AtPark == true. Per ASCOM, a successful park clears Tracking. Unlike slew, park does NOT auto-abort on timeout — call abort_slew explicitly to interrupt a stuck park."
+    )]
+    async fn park(
+        &self,
+        Parameters(_params): Parameters<ParkParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.do_park_blocking().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Unpark the mount. Returns immediately (no Slewing poll — most drivers just clear the AtPark flag). Does NOT auto-enable Tracking; call set_tracking explicitly before slewing."
+    )]
+    async fn unpark(
+        &self,
+        Parameters(_params): Parameters<UnparkParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!("unparking mount");
+        match mount.unpark().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to unpark: {}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Read the mount's park state and capabilities: AtPark, CanPark, CanUnpark. Fails loud on the AtPark read error (the load-bearing field)."
+    )]
+    async fn get_park_state(
+        &self,
+        Parameters(_params): Parameters<GetParkStateParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let at_park = match mount.at_park().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount at_park: {}", e)),
+        };
+        let can_park = match mount.can_park().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_park: {}", e)),
+        };
+        let can_unpark = match mount.can_unpark().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_unpark: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "at_park": at_park,
+            "can_park": can_park,
+            "can_unpark": can_unpark,
+        }))
+    }
+
+    #[tool(
+        description = "Abort an in-progress mount slew or park. Per ASCOM, only valid while Slewing == true; the natural Alpaca error propagates otherwise."
+    )]
+    async fn abort_slew(
+        &self,
+        Parameters(_params): Parameters<AbortSlewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!("aborting mount slew");
+        match mount.abort_slew().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to abort slew: {}", e)),
+        }
+    }
+
     // -------------------------------------------------------------------
     // Compound: auto_focus (V-curve)
     // -------------------------------------------------------------------
@@ -2564,10 +2727,19 @@ mod tests {
         fail_tracking: bool,
         fail_can_set_tracking: bool,
         fail_set_tracking: bool,
+        fail_park: bool,
+        fail_unpark: bool,
+        fail_at_park: bool,
+        fail_can_park: bool,
+        fail_can_unpark: bool,
+        fail_abort_slew: bool,
         /// `slewing()` returns `true` forever — drives the timeout path.
         stuck_slewing: bool,
         tracking_value: bool,
         can_set_tracking_value: bool,
+        at_park_value: bool,
+        can_park_value: bool,
+        can_unpark_value: bool,
         ra_value: f64,
         dec_value: f64,
     }
@@ -2583,9 +2755,18 @@ mod tests {
                 fail_tracking: false,
                 fail_can_set_tracking: false,
                 fail_set_tracking: false,
+                fail_park: false,
+                fail_unpark: false,
+                fail_at_park: false,
+                fail_can_park: false,
+                fail_can_unpark: false,
+                fail_abort_slew: false,
                 stuck_slewing: false,
                 tracking_value: true,
                 can_set_tracking_value: true,
+                at_park_value: false,
+                can_park_value: true,
+                can_unpark_value: true,
                 ra_value: 0.0,
                 dec_value: 0.0,
             }
@@ -2601,7 +2782,38 @@ mod tests {
         }
 
         async fn at_park(&self) -> ascom_alpaca::ASCOMResult<bool> {
-            Ok(false)
+            if self.fail_at_park {
+                return Err(ASCOMError::invalid_operation("at_park read failed"));
+            }
+            Ok(self.at_park_value)
+        }
+
+        async fn can_park(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_can_park {
+                return Err(ASCOMError::invalid_operation("can_park read failed"));
+            }
+            Ok(self.can_park_value)
+        }
+
+        async fn can_unpark(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            if self.fail_can_unpark {
+                return Err(ASCOMError::invalid_operation("can_unpark read failed"));
+            }
+            Ok(self.can_unpark_value)
+        }
+
+        async fn park(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_park {
+                return Err(ASCOMError::invalid_operation("park failed"));
+            }
+            Ok(())
+        }
+
+        async fn unpark(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_unpark {
+                return Err(ASCOMError::invalid_operation("unpark failed"));
+            }
+            Ok(())
         }
 
         async fn declination(&self) -> ascom_alpaca::ASCOMResult<f64> {
@@ -2683,6 +2895,9 @@ mod tests {
         }
 
         async fn abort_slew(&self) -> ascom_alpaca::ASCOMResult<()> {
+            if self.fail_abort_slew {
+                return Err(ASCOMError::invalid_operation("abort_slew failed"));
+            }
             Ok(())
         }
 
@@ -4211,5 +4426,251 @@ mod tests {
             .set_tracking(Parameters(SetTrackingParams { enabled: true }))
             .await;
         assert_tool_error(result, "failed to set tracking");
+    }
+
+    // -----------------------------------------------------------------------
+    // Mount park / unpark / get_park_state / abort_slew tests.
+    // Singular mount, no params on any of these tools.
+    // -----------------------------------------------------------------------
+
+    /// Mock's `slewing()` returns false immediately; `at_park()` is
+    /// overridden to true so the post-park verify arm passes.
+    #[tokio::test]
+    async fn test_park_success() {
+        let mount = MockTelescope {
+            at_park_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_park_no_mount_configured() {
+        let handler = test_handler(empty_registry());
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    #[tokio::test]
+    async fn test_park_mount_not_connected() {
+        let handler = test_handler(disconnected_mount_registry());
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "mount not connected");
+    }
+
+    #[tokio::test]
+    async fn test_park_alpaca_error_propagates() {
+        let mount = MockTelescope {
+            fail_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "failed to park");
+    }
+
+    /// Slew completes (slewing() returns false), but at_park() reports
+    /// false — the mount finished its motion but isn't actually parked.
+    /// This is the "rare driver bug" arm that the post-condition guards
+    /// against.
+    #[tokio::test]
+    async fn test_park_completes_but_not_at_park() {
+        let mount = MockTelescope {
+            at_park_value: false,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "park completed but mount is not at park");
+    }
+
+    /// 300 s deadline expires while `slewing()` keeps returning `true`.
+    /// Unlike `slew`, `park` does NOT auto-abort — it surfaces the
+    /// timeout and lets the caller decide. `start_paused` lets tokio
+    /// auto-advance virtual time so the test runs in real-time
+    /// milliseconds.
+    #[tokio::test(start_paused = true)]
+    async fn test_park_timeout_does_not_auto_abort() {
+        let mount = MockTelescope {
+            stuck_slewing: true,
+            at_park_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "timeout waiting for mount to park");
+    }
+
+    #[tokio::test]
+    async fn test_unpark_success() {
+        let mount = MockTelescope {
+            at_park_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_unpark_no_mount_configured() {
+        let handler = test_handler(empty_registry());
+        let result = handler.unpark(Parameters(UnparkParams {})).await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    #[tokio::test]
+    async fn test_unpark_alpaca_error() {
+        let mount = MockTelescope {
+            fail_unpark: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.unpark(Parameters(UnparkParams {})).await;
+        assert_tool_error(result, "failed to unpark");
+    }
+
+    #[tokio::test]
+    async fn test_get_park_state_returns_all_fields() {
+        let mount = MockTelescope {
+            at_park_value: true,
+            can_park_value: true,
+            can_unpark_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["at_park"], true);
+        assert_eq!(json["can_park"], true);
+        assert_eq!(json["can_unpark"], true);
+    }
+
+    /// Per the design decision: fail loud on `at_park` read errors;
+    /// don't try to half-succeed by returning `can_park` alone.
+    #[tokio::test]
+    async fn test_get_park_state_fails_when_at_park_read_errors() {
+        let mount = MockTelescope {
+            fail_at_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount at_park");
+    }
+
+    #[tokio::test]
+    async fn test_get_park_state_fails_when_can_park_read_errors() {
+        let mount = MockTelescope {
+            fail_can_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount can_park");
+    }
+
+    #[tokio::test]
+    async fn test_get_park_state_fails_when_can_unpark_read_errors() {
+        let mount = MockTelescope {
+            fail_can_unpark: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .get_park_state(Parameters(GetParkStateParams {}))
+            .await;
+        assert_tool_error(result, "failed to read mount can_unpark");
+    }
+
+    /// `park()` succeeds, `slewing()` returns false, but `at_park()`
+    /// itself errors during the post-park verification — distinct from
+    /// `at_park()` returning `Ok(false)` (which is the "completed but
+    /// not at park" arm). Pins the third arm of the post-condition
+    /// check.
+    #[tokio::test]
+    async fn test_park_at_park_read_fails_during_verify() {
+        let mount = MockTelescope {
+            fail_at_park: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "failed to verify mount at_park");
+    }
+
+    /// Polling `slewing()` itself errors during the park wait —
+    /// covers the `PollIdleError::Read` arm in `do_park_blocking`.
+    #[tokio::test]
+    async fn test_park_polling_error_propagates() {
+        let mount = MockTelescope {
+            fail_slewing_poll: true,
+            at_park_value: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.park(Parameters(ParkParams {})).await;
+        assert_tool_error(result, "error polling mount slewing");
+    }
+
+    /// Same coverage for `do_slew_blocking`'s `PollIdleError::Read`
+    /// arm — the helper is shared with park, but the slew callsite
+    /// has its own error-mapping path.
+    #[tokio::test]
+    async fn test_slew_polling_error_propagates() {
+        let mount = MockTelescope {
+            fail_slewing_poll: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .slew(Parameters(SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            }))
+            .await;
+        assert_tool_error(result, "error polling mount slewing");
+    }
+
+    #[tokio::test]
+    async fn test_abort_slew_success() {
+        let mount = MockTelescope::default();
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler
+            .abort_slew(Parameters(AbortSlewParams {}))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_abort_slew_no_mount_configured() {
+        let handler = test_handler(empty_registry());
+        let result = handler.abort_slew(Parameters(AbortSlewParams {})).await;
+        assert_tool_error(result, "no mount configured");
+    }
+
+    /// Models a mount that returns `InvalidOperation` from `abort_slew`
+    /// (e.g. when not currently slewing). The error propagates with
+    /// the friendly prefix.
+    #[tokio::test]
+    async fn test_abort_slew_alpaca_error() {
+        let mount = MockTelescope {
+            fail_abort_slew: true,
+            ..Default::default()
+        };
+        let handler = test_handler(mount_registry(Arc::new(mount), None));
+        let result = handler.abort_slew(Parameters(AbortSlewParams {})).await;
+        assert_tool_error(result, "failed to abort slew");
     }
 }

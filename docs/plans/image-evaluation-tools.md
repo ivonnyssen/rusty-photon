@@ -730,10 +730,9 @@ Built-in Tools — Hardware) and should not be re-litigated:
 
 **Out of scope (deferred or never):**
 
-- `park` / `unpark` MCP tools. Add when a workflow needs them.
-- `abort_slew` as a standalone MCP tool. Sentinel's safety path
-  already terminates the orchestrator on unsafe transitions; no
-  caller for an MCP `abort_slew` yet.
+- `set_park` MCP tool (sets the current position as the new park
+  position). Power-user feature with no workflow consumer in sight;
+  defer until one surfaces.
 - `tracking_rate` (sidereal / lunar / solar / king). Sidereal is the
   only rate deep-sky workflows need; defer until a planetary or
   comet-tracking workflow surfaces.
@@ -741,6 +740,10 @@ Built-in Tools — Hardware) and should not be re-litigated:
 - `side_of_pier` exposure. The original stub mentioned it on
   `get_mount_position`; deferred until a meridian-flip workflow
   surfaces.
+
+**Follow-up landed:** `park`, `unpark`, `get_park_state`, and
+`abort_slew` MCP tools landed in the next PR after Phase 6c-prep.
+The previous "deferred" entries for these tools have been removed.
 
 **Exit criteria met:** 14 new BDD scenarios green (187/187 total in
 rp's BDD suite, was 173/173 pre-Phase-6c-prep); 33 new lib tests

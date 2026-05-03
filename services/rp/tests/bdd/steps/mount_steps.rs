@@ -169,6 +169,40 @@ async fn mcp_call_set_tracking(world: &mut RpWorld, enabled: String) {
     world.last_tool_result = Some(result);
 }
 
+#[when("the MCP client calls \"park\"")]
+async fn mcp_call_park(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world.mcp().call_tool("park", serde_json::json!({})).await;
+    world.last_tool_result = Some(result);
+}
+
+#[when("the MCP client calls \"unpark\"")]
+async fn mcp_call_unpark(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world.mcp().call_tool("unpark", serde_json::json!({})).await;
+    world.last_tool_result = Some(result);
+}
+
+#[when("the MCP client calls \"get_park_state\"")]
+async fn mcp_call_get_park_state(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_park_state", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[when("the MCP client calls \"abort_slew\"")]
+async fn mcp_call_abort_slew(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("abort_slew", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
 // --- Then steps ---
 
 /// OmniSim's slew echo carries sub-arcsecond drift (likely from
@@ -256,6 +290,24 @@ fn get_tracking_can_set_tracking(world: &mut RpWorld, expected: String) {
     assert_eq!(
         actual, expected,
         "expected can_set_tracking={expected}, got {actual}"
+    );
+}
+
+#[then(expr = "the get_park_state result {word} should be {word}")]
+fn get_park_state_field(world: &mut RpWorld, field: String, expected: String) {
+    let result = unwrap_ok(world);
+    let expected: bool = match expected.as_str() {
+        "true" => true,
+        "false" => false,
+        other => panic!("expected true|false, got {other}"),
+    };
+    let actual = result
+        .get(&field)
+        .and_then(|v| v.as_bool())
+        .unwrap_or_else(|| panic!("expected {field} bool field, got: {result:?}"));
+    assert_eq!(
+        actual, expected,
+        "expected {field}={expected}, got {actual}"
     );
 }
 

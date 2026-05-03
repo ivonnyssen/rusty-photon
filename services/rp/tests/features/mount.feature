@@ -28,6 +28,10 @@ Feature: Mount tools
     And the tool list should include "get_mount_position"
     And the tool list should include "get_tracking"
     And the tool list should include "set_tracking"
+    And the tool list should include "park"
+    And the tool list should include "unpark"
+    And the tool list should include "get_park_state"
+    And the tool list should include "abort_slew"
 
   Scenario: slew drives the mount to absolute equatorial coordinates
     Given a running Alpaca simulator
@@ -149,3 +153,60 @@ Feature: Mount tools
     And the MCP client calls "get_tracking"
     Then the tool call should succeed
     And the get_tracking result tracking should be false
+
+  Scenario: park stows the mount and reports at_park == true
+    Given a running Alpaca simulator
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "park"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the get_park_state result at_park should be true
+
+  Scenario: park with no mount configured returns an error
+    Given a running Alpaca simulator
+    And rp is running without a mount
+    And an MCP client connected to rp
+    When the MCP client calls "park"
+    Then the tool call should return an error
+    And the error message should contain "no mount configured"
+
+  Scenario: unpark clears the mount's parked flag
+    Given a running Alpaca simulator
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "park"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the get_park_state result at_park should be true
+    When the MCP client calls "unpark"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the get_park_state result at_park should be false
+
+  # Unparks first to pin a deterministic at_park == false starting
+  # state — earlier scenarios in this feature park the singleton
+  # OmniSim mount, so the round-trip-from-default assumption can't
+  # hold without an explicit reset.
+  Scenario: get_park_state returns at_park, can_park, and can_unpark
+    Given a running Alpaca simulator
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "unpark"
+    Then the tool call should succeed
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the get_park_state result at_park should be false
+    And the get_park_state result can_park should be true
+    And the get_park_state result can_unpark should be true
+
+  Scenario: abort_slew with no mount configured returns an error
+    Given a running Alpaca simulator
+    And rp is running without a mount
+    And an MCP client connected to rp
+    When the MCP client calls "abort_slew"
+    Then the tool call should return an error
+    And the error message should contain "no mount configured"
