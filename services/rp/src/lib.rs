@@ -79,11 +79,26 @@ impl ServerBuilder {
             std::path::PathBuf::from(&config.session.data_directory),
         );
 
+        // Build the observer site (if configured) once, here, so the
+        // tzf-rs DefaultFinder is constructed exactly once per process
+        // and the IANA timezone is logged on the same path that
+        // populates McpHandler.
+        let site = if let Some(site_cfg) = config.site.as_ref() {
+            let site =
+                rp_ephemeris::Site::new(site_cfg.latitude_degrees, site_cfg.longitude_degrees)
+                    .map_err(|e| crate::error::RpError::Config(format!("site: {e}")))?;
+            tracing::info!("{}", site);
+            Some(site)
+        } else {
+            None
+        };
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
             session_config,
             image_cache.clone(),
+            site,
         );
 
         let state = AppState {

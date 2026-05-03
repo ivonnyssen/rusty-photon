@@ -265,6 +265,7 @@ mod tests {
                 data_directory: "/tmp".to_string(),
             },
             image_cache.clone(),
+            None,
         );
         AppState {
             equipment,

@@ -387,6 +387,82 @@ pub struct ResolveTargetParams {
     pub name: String,
 }
 
+// --- Ephemeris primitives ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AltAzParams {
+    /// Right ascension, hours `[0, 24)`, ICRS / J2000.
+    pub ra: f64,
+    /// Declination, degrees `[-90, 90]`, ICRS / J2000.
+    pub dec: f64,
+    /// UTC timestamp as RFC3339 (e.g. `"2026-05-03T22:00:00Z"`).
+    /// Defaults to the server's wall clock if omitted.
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TransitParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC date as `YYYY-MM-DD`. The returned UT is the upper transit
+    /// during this UTC date (for practical observing latitudes).
+    pub date: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RiseSetParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC date as `YYYY-MM-DD`.
+    pub date: String,
+    /// Altitude threshold (degrees). Standard amateur-rig minimum is
+    /// 20°; horizon-touching rise/set uses 0° (refraction-naive).
+    pub min_alt_degrees: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MeridianFlipParams {
+    pub ra: f64,
+    pub dec: f64,
+    /// UTC timestamp as RFC3339; defaults to "now".
+    #[serde(default)]
+    pub time: Option<String>,
+    /// Mount's current side of pier: `"east"`, `"west"`, or
+    /// `"unknown"`. v1 ignores the value but accepts it for forward
+    /// compatibility.
+    #[serde(default = "default_side_of_pier")]
+    pub side_of_pier: String,
+}
+
+fn default_side_of_pier() -> String {
+    "unknown".to_string()
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TimeOnlyParams {
+    /// UTC timestamp as RFC3339; defaults to "now".
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TwilightParams {
+    /// UTC date as `YYYY-MM-DD` for the local night that covers it.
+    pub date: String,
+    /// `"civil"` (-6°), `"nautical"` (-12°), or `"astronomical"`
+    /// (-18°).
+    pub kind: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoonSeparationParams {
+    pub ra: f64,
+    pub dec: f64,
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // McpHandler
 // ---------------------------------------------------------------------------
@@ -397,6 +473,11 @@ pub struct McpHandler {
     pub event_bus: Arc<EventBus>,
     pub session_config: SessionConfig,
     pub image_cache: ImageCache,
+    /// Configured observer site, if any. `None` when the deployment
+    /// has no `site` block (camera-only / flats rigs); ephemeris
+    /// tools that require a site (`compute_alt_az`, `get_twilight`,
+    /// etc.) error cleanly in that case.
+    pub site: Option<rp_ephemeris::Site>,
 }
 
 impl McpHandler {
@@ -405,12 +486,14 @@ impl McpHandler {
         event_bus: Arc<EventBus>,
         session_config: SessionConfig,
         image_cache: ImageCache,
+        site: Option<rp_ephemeris::Site>,
     ) -> Self {
         Self {
             equipment,
             event_bus,
             session_config,
             image_cache,
+            site,
         }
     }
 
@@ -2310,6 +2393,257 @@ impl McpHandler {
             }
         }
     }
+
+    // -------------------------------------------------------------------
+    // Planner: ephemeris primitives — see docs/services/rp.md
+    // §"Primitive vs. Convenience MCP Tools"
+    // -------------------------------------------------------------------
+
+    #[tool(description = "Topocentric altitude/azimuth for an ICRS target. \
+                       Refraction modelled with default amateur conditions. \
+                       Requires the deployment's `site` block.")]
+    async fn compute_alt_az(
+        &self,
+        Parameters(params): Parameters<AltAzParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        match crate::planner::primitives::compute_alt_az(site, target, time) {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(description = "UT of upper transit on a given UTC date. Requires `site`.")]
+    async fn compute_transit(
+        &self,
+        Parameters(params): Parameters<TransitParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_transit(site, target, date);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Rise / set times above min_alt_degrees on a given UTC date. \
+                       null bounds for circumpolar always-up or always-down. \
+                       Requires `site`."
+    )]
+    async fn compute_rise_set(
+        &self,
+        Parameters(params): Parameters<RiseSetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_rise_set(
+            site,
+            target,
+            date,
+            params.min_alt_degrees,
+        );
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Time-to-flip (seconds) until the target next reaches the meridian \
+                       (HA = 0). v1 ignores side_of_pier but accepts it for forward \
+                       compatibility. Requires `site`."
+    )]
+    async fn compute_meridian_flip(
+        &self,
+        Parameters(params): Parameters<MeridianFlipParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let side = match crate::planner::primitives::parse_side_of_pier(&params.side_of_pier) {
+            Ok(s) => s,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_meridian_flip(site, target, time, side);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Geocentric astrometric Sun position + topocentric alt/az. Requires `site`."
+    )]
+    async fn get_sun_position(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_sun_position(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Civil / nautical / astronomical twilight bounds for the local \
+                       night that covers `date` (UTC). null bound at high latitudes \
+                       where the Sun never crosses the threshold. Requires `site`."
+    )]
+    async fn get_twilight(
+        &self,
+        Parameters(params): Parameters<TwilightParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let date = match crate::planner::primitives::parse_date(&params.date) {
+            Ok(d) => d,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let kind = match crate::planner::primitives::parse_twilight_kind(&params.kind) {
+            Ok(k) => k,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_twilight(site, date, kind);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Geocentric Moon position + topocentric alt/az + Sun-Moon \
+                       elongation (phase) + illuminated fraction. Requires `site`."
+    )]
+    async fn get_moon_position(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_moon_position(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(
+        description = "Angular separation (degrees) between an ICRS target and the \
+                       Moon. Geocentric — does not depend on `site`."
+    )]
+    async fn compute_moon_separation(
+        &self,
+        Parameters(params): Parameters<MoonSeparationParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::compute_moon_separation(target, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
+
+    #[tool(description = "Local apparent sidereal time at the configured site. Requires `site`.")]
+    async fn get_local_sidereal_time(
+        &self,
+        Parameters(params): Parameters<TimeOnlyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let v = crate::planner::primitives::get_local_sidereal_time(site, time);
+        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+    }
 }
 
 /// Adapter that satisfies all three [`auto_focus`] traits
@@ -2986,6 +3320,7 @@ mod tests {
                     .to_string(),
             },
             ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            None,
         )
     }
 
@@ -3386,6 +3721,7 @@ mod tests {
                 data_directory: blocker.path().to_string_lossy().to_string(),
             },
             ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3421,6 +3757,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3470,6 +3807,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache,
+            None,
         );
         let result = handler
             .capture(Parameters(CaptureParams {
@@ -3537,6 +3875,7 @@ mod tests {
                 data_directory: temp.path().to_string_lossy().to_string(),
             },
             cache.clone(),
+            None,
         );
 
         let doc = ExposureDocument {
