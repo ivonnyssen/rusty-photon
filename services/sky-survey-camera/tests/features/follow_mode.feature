@@ -20,13 +20,13 @@ Feature: Telescope-following pointing mode (F1, F2, F5, F6)
     When I StartExposure with default parameters
     Then the exposure fails with ASCOM UNSPECIFIED_ERROR
 
-  Scenario: F5 — RA offset is applied to the snapshot
+  Scenario: F5a — RA offset shifts the snapshot east-west
     Given a mount reports RA 10.0 hours and Dec 30.0 degrees
     And the camera is configured to follow that mount with offset RA 3600 arcsec and Dec 0 arcsec
     And the camera is started and connected in follow mode
     Then after a successful exposure, the position endpoint reports RA approximately 151.0 Dec approximately 30.0
 
-  Scenario: F5 — Dec offset is applied to the snapshot
+  Scenario: F5b — Dec offset shifts the snapshot north-south
     Given a mount reports RA 10.0 hours and Dec 30.0 degrees
     And the camera is configured to follow that mount with offset RA 0 arcsec and Dec -3600 arcsec
     And the camera is started and connected in follow mode

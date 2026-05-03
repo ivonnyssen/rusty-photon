@@ -43,8 +43,18 @@ pub trait MountReader: Send + Sync + std::fmt::Debug {
     async fn read_position(&self) -> Result<MountPosition, MountReadError>;
 }
 
-/// Static `PointingState` cache. Used directly by `PointingSource::Static`
-/// and as the most-recent-snapshot cache for `Static` mode's `GET`.
+/// Shared `PointingState` snapshot store. Wrapped in an
+/// `Arc<SharedPointing>` and used in two roles:
+/// - As `DeviceState::last_snapshot`: the source for
+///   `GET /sky-survey/position` in **both** static and follow modes.
+///   In static mode, `POST` writes go through `update()`; in follow
+///   mode, the exposure pipeline writes the post-offset mount RA/Dec
+///   here via `store()` after each successful read so the GET
+///   response reflects what the camera last saw (F6).
+/// - As the inner Arc carried by `PointingSource::Static`: shared
+///   with `last_snapshot` so static-mode reads in the exposure
+///   pipeline see `POST` writes immediately, no separate writeback
+///   needed.
 #[derive(Debug)]
 pub struct SharedPointing {
     state: RwLock<PointingState>,
