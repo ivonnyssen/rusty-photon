@@ -31,14 +31,16 @@ graph LR
     solver -->|"spawn astap_cli<br/>+ wall-clock deadline"| astap[ASTAP child process]
     astap -->|writes| wcs[".wcs sidecar"]
     solver -->|reads| wcs
-    sentinel[Sentinel] -->|"GET /health"| solver
-    sentinel -.->|configured restart command| solver
-    sentinel -.->|configured restart command| rp
+    supervisor[OS process supervisor<br/>systemd / launchd / NSSM] -.->|restart on exit| solver
+    supervisor -.->|restart on exit| rp
 ```
 
-Three independent processes, three independent failure domains,
-three independent supervisors. See [Sentinel
-Integration](#sentinel-integration) below for the detail.
+Three independent processes, three independent failure domains.
+The operator's OS process supervisor restarts the wrapper and rp
+on exit; the wrapper supervises the ASTAP child via per-request
+deadlines. See [Supervision and recovery](#supervision-and-recovery)
+below for the detail and the path to future Sentinel-driven
+restart.
 
 ### Inputs and Outputs
 
@@ -306,19 +308,26 @@ workflow's job. See `docs/plans/rp-plate-solver.md` §"Real-ASTAP
 coverage: cadence and gating" for the rationale and the `bdd.rs`
 filter snippet.
 
-## Sentinel Integration
+## Supervision and recovery
 
-The service is supervised by Sentinel via the standard
-rp-managed-service supervision flow described in `rp.md`
-§"Sentinel Watchdog Integration".
+The wrapper sits inside a layered supervision design with three
+distinct failure domains. **Today, the wrapper-and-rp domains are
+restarted by the operator's OS-level process supervisor** (systemd /
+launchd / NSSM); see the [README's per-OS recipes](../../services/rp-plate-solver/README.md#process-supervisor-recipes).
+Automated Sentinel-driven restart of rp-managed services is a future
+design item — the current Sentinel
+([`docs/services/sentinel.md`](sentinel.md)) is an Alpaca
+SafetyMonitor poller and notifier, not a generic HTTP service
+supervisor. The "Sentinel Watchdog Integration" section in `rp.md` is
+a forward-looking design.
 
 ### Failure Domains
 
-| Domain | Supervisor | Detection | Action |
-|--------|-----------|-----------|--------|
-| `rp` (gateway) | Sentinel | event-stream disconnect | Operator-configured restart command |
-| `rp-plate-solver` (this service) | Sentinel | `GET /health` non-200 or no response within Sentinel's HTTP timeout | Operator-configured restart command (e.g., `systemctl restart rp-plate-solver`) |
-| `astap_cli` (child) | This service | per-request wall-clock deadline | graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
+| Domain | Today's supervisor | Detection | Action |
+|--------|--------------------|-----------|--------|
+| `rp` (gateway) | Operator's process supervisor (systemd / launchd / NSSM) | Process exit (panic, OOM, etc.) | Supervisor restarts per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
+| `rp-plate-solver` (this service) | Operator's process supervisor | Process exit; or external `/health` probe | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; the supervisor restarts it. |
+| `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
 
 ### Belt-and-Suspenders Outer Timeout
 
@@ -328,13 +337,22 @@ internal timeout regresses, `rp` does not hang on a `plate_solve`
 call. The wrapper's deadline is the primary control; rp's is the
 backstop.
 
-### What Sentinel Restart Recovers From
+### What restart recovers from
 
 Stateless-across-requests is the property that makes restart safe.
 Restarting the wrapper costs the in-flight request (which gets a
 transient error and may be retried by the orchestrator) and nothing
 else — no session state, no warm caches, no in-memory artifacts the
 operator cares about.
+
+### Forward work: Sentinel extension
+
+When Sentinel grows generic HTTP service supervision — periodic
+`GET /health` probes, configurable restart commands per service —
+this wrapper's `/health` endpoint and graceful-shutdown semantics are
+already shaped to fit. Until then, the operator's process supervisor
+is the sanctioned recovery mechanism, and `/health` is exposed for
+operational tooling (Prometheus blackbox exporter, Nagios, etc.).
 
 ## MVP Scope
 
