@@ -142,14 +142,27 @@ jobs:
               `notification cadence stays low. Close it once the underlying issue is`,
               `resolved; the next failure will reopen.`,
             ].join("\n");
+            // Search both open AND closed so the body's "the next failure
+            // will reopen" promise is honored. If a maintainer closes the
+            // tracking issue thinking the failure is resolved and the
+            // upstream rotation re-breaks us, we want one continuous
+            // thread per failure mode rather than a fresh issue each time.
             const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: "open",
+              state: "all",
               labels: "install-astap-nightly",
             });
             const match = existing.find(i => i.title === title);
             if (match) {
+              if (match.state === "closed") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: "open",
+                });
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
