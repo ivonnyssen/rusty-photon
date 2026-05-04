@@ -67,9 +67,9 @@ Windows x64, and Windows ARM64.
   hint flags; writes a `.wcs` sidecar that is straightforward to parse.
 - **Cross-platform, including Pi 5 and Apple Silicon.** Verified by
   the [`install-astap`](../../.github/actions/install-astap/action.yml)
-  smoke workflow on Linux x64 + macOS arm64 + Windows x64, plus a
-  manual Linux aarch64 install captured at ADR-time. See
-  [Verification Spike](#verification-spike) for the table of results.
+  smoke workflow on Linux x64, Linux ARM64, macOS arm64, and
+  Windows x64. See [Verification Spike](#verification-spike) for the
+  table of results.
 - **Active.** Releases through 2026-04-26 on the Windows line, 2026-04-28
   on Linux. The dominant default solver in the current amateur stack
   (N.I.N.A., APT, CCDciel).
@@ -312,29 +312,46 @@ ASCOM simulator.
 
 ### Pinned SHA-256 + refresh procedure
 
-The action's per-OS table pins a SHA-256 for each downloaded archive
-(snapshot last refreshed 2026-05-04 against ASTAP CLI-2026.05.03)
-and the optional D05 database. Every
-download is verified before extraction; mismatch fails the action
-closed. ASTAP's URLs are unversioned ("latest" filenames), so
+The action's per-OS table pins a SHA-256 for each downloaded ASTAP
+CLI archive (last refreshed 2026-05-04 against ASTAP CLI-2026.05.03)
+and a separate SHA-256 for the optional D05 star database (still
+pinned against the original 2026-05-02 snapshot — D05 has not
+rotated). Every download is verified before extraction; mismatch
+fails the action closed. ASTAP's URLs are unversioned ("latest" filenames), so
 upstream rotates the bytes without bumping the URL — the SHA pin
 turns that rotation into a deliberate, reviewed event rather than a
 silent supply-chain drift.
 
-**Refresh procedure** (when ASTAP releases an upstream update and the
-verify step starts failing):
+**Refresh procedure for the per-OS ASTAP CLI archives** (when
+ASTAP releases an upstream update and the verify step starts
+failing):
 
 1. Download each archive listed in the action's per-OS table from
-   SourceForge (and `d05_star_database.zip` if the database SHA is
-   what failed).
+   SourceForge.
 2. `sha256sum` each (or `shasum -a 256` on macOS).
 3. Update the corresponding `SHA256=` line in
-   `.github/actions/install-astap/action.yml` and the
-   `astap-d05-database-<8-hex-prefix>` cache-key prefix if applicable.
-4. Run the smoke workflow on the change to confirm the new pin
-   verifies cleanly on all three runner OSes.
+   `.github/actions/install-astap/action.yml`.
+4. Push to a PR branch — the `install-astap` smoke workflow will
+   then verify the new pins on every supported smoke-matrix OS
+   (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`,
+   `windows-latest`). The Windows-ARM64 pin is unsmoked; cross-mirror
+   pulls are the only verification.
 5. Land the PR with a brief note of which ASTAP CLI version the new
    bytes correspond to (read from the binary's `astap_cli` banner).
+
+**Refresh procedure for the D05 star database** (when upstream
+rotates `d05_star_database.zip` and the verify step starts failing
+in `plate-solver-smoke` — `install-astap` does **not** download D05,
+so a D05 refresh has to be smoked through `plate-solver-smoke`,
+which passes `download-database: "true"`):
+
+1. Download `d05_star_database.zip` from SourceForge.
+2. `sha256sum` it (or `shasum -a 256` on macOS).
+3. Update the `EXPECTED=` value in the database verify step **and**
+   the `astap-d05-database-<8-hex-prefix>` cache-key prefix in
+   `.github/actions/install-astap/action.yml`.
+4. Push to a PR branch — `plate-solver-smoke` exercises the
+   downloader on `ubuntu-latest` / `macos-latest` / `windows-latest`.
 
 ### Operator verification, after a BYO install
 
@@ -366,8 +383,8 @@ operators reading the file.
 
 | Platform | ASTAP CLI version | Source | Result |
 |----------|------------------|--------|--------|
-| Linux aarch64 | CLI-2026.02.09 | manual download from SourceForge (2026-05-01) | banner OK |
 | Linux x64 | latest | `install-astap` smoke workflow | banner OK |
+| Linux aarch64 | latest | `install-astap` smoke workflow (`ubuntu-24.04-arm`) | banner OK |
 | macOS arm64 | latest | `install-astap` smoke workflow | banner OK |
 | Windows x64 | CLI-2026.03.05 | `install-astap` smoke workflow | banner OK |
 

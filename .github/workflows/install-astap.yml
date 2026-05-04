@@ -4,10 +4,10 @@
 # invokes it and asserts the banner string is present.
 #
 # This is the regression target ADR-005 references: each row in this
-# matrix corresponds to one of the ADR's per-platform open questions
-# (macOS Apple Silicon, Windows x64, Linux x64). When a row goes red,
-# operators following the same install recipe by hand would also see
-# the breakage.
+# matrix corresponds to one of the ADR's supported platforms — Linux
+# x64, Linux ARM64 (Raspberry Pi 5), macOS Apple Silicon, and Windows
+# x64. When a row goes red, operators following the same install
+# recipe by hand would also see the breakage.
 permissions:
   contents: read
 on:
