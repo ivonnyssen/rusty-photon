@@ -1,13 +1,41 @@
-name: ConformU
-
+# ASCOM ConformU conformance suite for every service that opts in via
+# `[package.metadata.conformu]` in its Cargo.toml.
+#
+# Cadence: nightly cron + workflow_dispatch (manual) + paths-filtered
+# PR/push on this workflow file itself. ConformU exercises the running
+# Alpaca server end-to-end across three OSes, so it is the single most
+# expensive workflow we have. Running it on every push and PR was
+# overkill: conformance regressions are real but rare, and the faster
+# `check`/`test` workflows already gate the unit-level changes that
+# would most often break conformance. A nightly run catches drift
+# without paying the matrix on every PR; `workflow_dispatch` covers the
+# "I just touched the Alpaca interface, run it now" case. The paths
+# filter keeps PR-time validation on edits to this workflow itself,
+# so a YAML or github-script regression is caught before merge rather
+# than only at the next cron fire. The `notify-on-failure` job opens
+# or updates a tracking issue so a red nightly does not sit unnoticed
+# in the Actions tab.
 permissions:
   contents: read
 
 on:
+  schedule:
+    # Daily at 05:30 UTC. Offset from install-astap (04:30) and
+    # plate-solver-smoke (03:30) so the three nightly suites do not
+    # contend for the same hosted-runner pool minute.
+    - cron: "30 5 * * *"
+  workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/conformu.yml"
   pull_request:
-  workflow_dispatch:
+    paths:
+      - ".github/workflows/conformu.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   plan:
@@ -18,53 +46,27 @@ jobs:
       has_services: ${{ steps.discover.outputs.has_services }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: loadingalias/cargo-rail-action@v4
-        id: rail
-        with:
-          since: ${{ github.event.pull_request.base.sha || github.event.before }}
-      - name: Discover affected ConformU services
+      - name: Discover ConformU services
         id: discover
         run: |
-          # Find all packages with conformu metadata
-          ALL_SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
+          # Nightly + on-demand cadence runs every conformu-tagged
+          # service unconditionally; there is no PR base to diff against
+          # and the whole point of the run is to catch drift across the
+          # full surface.
+          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
-
-          # Intersect against the affected-crate list from `cargo rail
-          # plan --json` directly. The cargo-rail-action's `crates`
-          # output isn't populated by v4, and falling back to its
-          # `infra` / `test` surface flags missed real changes — the
-          # plan binary's `scope.crates` is the source of truth.
-          BASE='${{ github.event.pull_request.base.sha || github.event.before }}'
-          PLAN_JSON=$(cargo rail plan --since "$BASE" --json --quiet)
-          INFRA=$(echo "$PLAN_JSON" | jq -r '.scope.surfaces.infra // false')
-          AFFECTED_JSON=$(echo "$PLAN_JSON" | jq -c '.scope.crates // []')
-
-          if [ "$INFRA" = "true" ]; then
-            # Infra-touching change (e.g. workspace Cargo.toml, CI files,
-            # rail config): re-run every conformu service, not just the
-            # nominally-affected ones.
-            SERVICES="$ALL_SERVICES"
-          else
-            SERVICES=$(echo "$ALL_SERVICES" | jq -c --argjson affected "$AFFECTED_JSON" \
-              '[.[] | select(.name as $n | $affected | index($n))]')
-          fi
 
           COUNT=$(echo "$SERVICES" | jq 'length')
           echo "services=$SERVICES" >> $GITHUB_OUTPUT
           echo "has_services=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
           echo "ConformU services ($COUNT): $(echo "$SERVICES" | jq -r '[.[].name] | join(", ")')"
 
-  # Ubuntu and macOS: run all affected conformu tests in parallel within a single job.
+  # Ubuntu and macOS: run all conformu tests in parallel within a single job.
   conformu:
     name: ${{ matrix.os }}
     needs: plan
     if: needs.plan.outputs.has_services == 'true'
     runs-on: ${{ matrix.os }}
-    concurrency:
-      group: ${{ github.workflow }}-${{ matrix.os }}-${{ github.head_ref || github.run_id }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -129,9 +131,6 @@ jobs:
     needs: plan
     if: needs.plan.outputs.has_services == 'true'
     runs-on: windows-latest
-    concurrency:
-      group: ${{ github.workflow }}-windows-${{ matrix.service.name }}-${{ github.head_ref || github.run_id }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -165,3 +164,70 @@ jobs:
           echo "::group::ConformU: ${{ matrix.service.name }}"
           ${{ matrix.service.command }}
           echo "::endgroup::"
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly run fails so
+    # conformance regressions surface without depending on someone
+    # reading scheduled-workflow logs. Skipped on workflow_dispatch
+    # so manual debugging runs do not churn the issue.
+    needs: [conformu, conformu-windows]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: ConformU conformance suite failing`;
+            const body = [
+              `The nightly ConformU workflow failed on at least one OS or service.`,
+              ``,
+              `Likely causes: a recent change broke an ASCOM Alpaca contract on a`,
+              `service that opts in via \`[package.metadata.conformu]\`, a ConformU`,
+              `release tightened a check, or a hosted-runner environmental drift`,
+              `is producing a flake. Inspect the failed jobs in the linked run for`,
+              `the per-service ConformU report.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on schedule.`,
+              `It will be updated (rather than re-opened) on subsequent failures so the`,
+              `notification cadence stays low. Close it once the underlying issue is`,
+              `resolved; the next failure will reopen.`,
+            ].join("\n");
+            // Search both open AND closed so the body's "the next failure
+            // will reopen" promise is honored. Mirrors the
+            // install-astap.yml pattern.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              labels: "conformu-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              if (match.state === "closed") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: "open",
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["conformu-nightly", "ci-flake"],
+              });
+            }
