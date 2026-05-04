@@ -100,8 +100,16 @@ pub struct Optics {
 impl Optics {
     /// Compute pixel scale + FOV from the operator-supplied focal length
     /// and the camera-reported pixel size + sensor dimensions. Returns
-    /// `None` when any input is non-finite or non-positive — callers log
-    /// at `debug!` and persist the document without an `optics` block.
+    /// `None` when any input — or any derived value — is non-finite or
+    /// non-positive. Callers log at `debug!` and persist the document
+    /// without an `optics` block.
+    ///
+    /// Derived values are validated because `serde_json` rejects
+    /// non-finite floats: a sub-normal `focal_length_mm` could push the
+    /// pixel scale to `inf`, which would then fail the *entire* sidecar
+    /// write — breaking capture's persistence contract for an auxiliary
+    /// metadata block. Defense in depth keeps the failure scoped to the
+    /// `optics` field.
     pub fn from_camera_geometry(
         focal_length_mm: f64,
         pixel_size_x_um: f64,
@@ -120,6 +128,15 @@ impl Optics {
         }
         let pixel_scale_x = 206.265 * pixel_size_x_um / focal_length_mm;
         let pixel_scale_y = 206.265 * pixel_size_y_um / focal_length_mm;
+        let fov_width_deg = pixel_scale_x * f64::from(sensor_width_px) / 3600.0;
+        let fov_height_deg = pixel_scale_y * f64::from(sensor_height_px) / 3600.0;
+        if !positive(pixel_scale_x)
+            || !positive(pixel_scale_y)
+            || !positive(fov_width_deg)
+            || !positive(fov_height_deg)
+        {
+            return None;
+        }
         Some(Self {
             focal_length_mm,
             pixel_size_x_um,
@@ -128,8 +145,8 @@ impl Optics {
             sensor_height_px,
             pixel_scale_x_arcsec_per_pixel: pixel_scale_x,
             pixel_scale_y_arcsec_per_pixel: pixel_scale_y,
-            fov_width_deg: pixel_scale_x * f64::from(sensor_width_px) / 3600.0,
-            fov_height_deg: pixel_scale_y * f64::from(sensor_height_px) / 3600.0,
+            fov_width_deg,
+            fov_height_deg,
         })
     }
 }
@@ -389,12 +406,17 @@ mod tests {
 
     #[test]
     fn serialization_skips_none_optics() {
+        // Parse the JSON and check the top-level key is absent — `contains`
+        // would false-pass if a future field name happened to embed
+        // "optics" as a substring.
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
         doc.optics = None;
         let body = serde_json::to_string(&doc).unwrap();
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        let obj = parsed.as_object().expect("top-level should be an object");
         assert!(
-            !body.contains("optics"),
-            "optics should be omitted when None, got: {}",
+            !obj.contains_key("optics"),
+            "optics key should be omitted when None, got: {}",
             body
         );
     }
@@ -453,5 +475,33 @@ mod tests {
         assert!(Optics::from_camera_geometry(1000.0, 3.76, 3.76, 1024, 0).is_none());
         assert!(Optics::from_camera_geometry(f64::NAN, 3.76, 3.76, 1024, 1024).is_none());
         assert!(Optics::from_camera_geometry(f64::INFINITY, 3.76, 3.76, 1024, 1024).is_none());
+    }
+
+    #[test]
+    fn optics_rejects_when_derived_overflows_to_infinity() {
+        // A sub-normal focal length passes the input filter (it's finite
+        // and > 0) but pushes the derived pixel scale and FOV to `inf`.
+        // `serde_json` rejects non-finite floats, so persisting this in
+        // the sidecar would fail the entire exposure-document write —
+        // breaking capture's persistence contract for an auxiliary block.
+        // The constructor must guard against it and return `None`.
+        let optics = Optics::from_camera_geometry(f64::MIN_POSITIVE, 3.76, 3.76, 1024, 1024);
+        assert!(
+            optics.is_none(),
+            "derivation must reject inputs that overflow to infinity, got: {:?}",
+            optics
+        );
+    }
+
+    #[test]
+    fn optics_with_overflow_inputs_does_not_break_sidecar_serialization() {
+        // Smoke test: even when a hypothetical buggy mock returned wild
+        // values, building the document and serializing must succeed —
+        // because `from_camera_geometry` returns `None` and the doc's
+        // `optics` field is `skip_serializing_if = Option::is_none`.
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.optics = Optics::from_camera_geometry(f64::MIN_POSITIVE, 1.0, 1.0, 1, 1);
+        assert!(doc.optics.is_none());
+        serde_json::to_string(&doc).expect("doc must serialize when optics derivation declined");
     }
 }

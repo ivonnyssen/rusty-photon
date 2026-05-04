@@ -1065,7 +1065,31 @@ impl McpHandler {
                     sensor_height_px,
                 ) {
                     (Some(px), Some(py), Some(sw), Some(sh)) => {
-                        persistence::Optics::from_camera_geometry(focal_length_mm, px, py, sw, sh)
+                        let derived = persistence::Optics::from_camera_geometry(
+                            focal_length_mm,
+                            px,
+                            py,
+                            sw,
+                            sh,
+                        );
+                        if derived.is_none() {
+                            // All Alpaca reads succeeded but the derivation
+                            // declined — typically a non-positive or
+                            // wild-magnitude reading that would have
+                            // overflowed the derived pixel scale / FOV.
+                            // Surface enough to diagnose bad camera state
+                            // or a misconfigured focal length.
+                            debug!(
+                                camera_id,
+                                focal_length_mm,
+                                pixel_size_x_um = px,
+                                pixel_size_y_um = py,
+                                sensor_width_px = sw,
+                                sensor_height_px = sh,
+                                "optics derivation declined; omitting block"
+                            );
+                        }
+                        derived
                     }
                     _ => None,
                 }
@@ -4174,9 +4198,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         let image_path = json["image_path"].as_str().unwrap().to_string();
         let sidecar = persistence::sidecar_path(&image_path);
-        // Keep `temp` alive until after the read by leaking into a path we
-        // already extracted; it drops at the end of the function regardless.
         let doc = persistence::read_sidecar_sync(&sidecar).unwrap();
+        // Explicit drop pins the TempDir lifetime past the sidecar read
+        // — without it the borrow checker is happy but the temp dir could
+        // be cleaned up at any drop point the optimizer chose.
         drop(temp);
         doc
     }
