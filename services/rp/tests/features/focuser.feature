@@ -12,6 +12,17 @@ Feature: Focuser tools
   the operator-configured min_position / max_position bounds before
   issuing the Alpaca call.
 
+  # Test position convention: target focuser positions in these
+  # scenarios are chosen to land within ~500 steps of OmniSim's
+  # default focuser position (25000). At OmniSim's simulated slew
+  # rate (~400 steps/sec), a 20k-step move costs ~50s; the BDD
+  # before(scenario) hook resets the focuser to the default before
+  # every scenario, so a "round number" target like 5000 turns the
+  # whole feature into a multi-minute slewfest. See
+  # docs/references/omnisim.md (Focuser section). Keep new
+  # focuser-motion scenarios near 25000 unless the test specifically
+  # cares about the absolute value.
+
   Scenario: Tool catalog includes Focuser tools
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
@@ -25,27 +36,27 @@ Feature: Focuser tools
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 5000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
     Then the tool call should succeed
-    And the move_focuser result actual_position should be 5000
+    And the move_focuser result actual_position should be 25000
 
   Scenario: move_focuser with target equal to current position succeeds
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 4000
-    And the MCP client calls "move_focuser" with focuser "main-focuser" to position 4000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24000
+    And the MCP client calls "move_focuser" with focuser "main-focuser" to position 24000
     Then the tool call should succeed
-    And the move_focuser result actual_position should be 4000
+    And the move_focuser result actual_position should be 24000
 
   Scenario: get_focuser_position reads the current absolute position
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 7500
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25500
     And the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the tool call should succeed
-    And the get_focuser_position result position should be 7500
+    And the get_focuser_position result position should be 25500
 
   Scenario: get_focuser_temperature returns a temperature_c field
     Given a running Alpaca simulator
