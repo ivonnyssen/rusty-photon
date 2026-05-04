@@ -310,6 +310,27 @@ both cache load and save) so upstream regressions surface within a
 CI cycle. This mirrors the model `install-omnisim` follows for the
 ASCOM simulator.
 
+### Trigger surface
+
+The smoke workflow runs on a nightly cron (04:30 UTC, offset from
+`plate-solver-smoke`'s 03:30 UTC), `workflow_dispatch` for manual
+re-runs, and on `push`/`pull_request` filtered to changes that touch
+`.github/actions/install-astap/**` or
+`.github/workflows/install-astap.yml`. The workflow's only failure
+mode is an upstream SourceForge rotation invalidating a SHA pin —
+that happens on the order of weeks-to-months, so paying for the
+full matrix on every PR would be a deterministic replay of the
+merge-base run. The paths filter preserves PR-time verification on
+the only PRs that *can* affect the install (the action itself, this
+workflow, or a SHA-refresh PR), and the nightly cron catches
+upstream rotations that arrive between install-touching PRs.
+
+A `notify-on-failure` job in the same workflow opens (or updates) a
+tracking issue labeled `install-astap-nightly` when a scheduled run
+fails, gated on `if: failure() && github.event_name == 'schedule'`
+so manual debugging runs and refresh-PR verification runs don't
+churn the issue.
+
 ### Pinned SHA-256 + refresh procedure
 
 The action's per-OS table pins a SHA-256 for each downloaded ASTAP
