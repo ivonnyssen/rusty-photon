@@ -70,12 +70,6 @@ runs:
             BIN="astap_cli"
             SHA256="0e8015112548dac31302bfeea2f607bce0306a7731e92121da001b7a11b8de0f"
             ;;
-          macOS-X64)
-            ARCHIVE="astap_command-line_version_macOS_x86_64.zip"
-            SUBDIR="macOS%20installer"
-            BIN="astap_cli"
-            SHA256="ff95c60988fd1ff100d27f5943ff15bfd13935122549246b5115038f0001601e"
-            ;;
           Windows-X64)
             ARCHIVE="astap_command-line_version_win64.zip"
             SUBDIR="windows_installer"
