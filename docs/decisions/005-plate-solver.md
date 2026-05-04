@@ -302,15 +302,17 @@ composite action plus the
 workflow that exercises it on `ubuntu-latest`, `macos-latest`, and
 `windows-latest`. The action is itself the install recipe — its per-OS
 table names the SourceForge archive each platform downloads from. The
-smoke workflow forces a fresh upstream download on every run (via
-`cache-key-suffix: github.run_id`) so upstream regressions surface
-within a CI cycle. This mirrors the model `install-omnisim` follows
-for the ASCOM simulator.
+smoke workflow forces a fresh upstream download on every run (by
+passing `use-cache: "false"` to the composite action, which skips
+both cache load and save) so upstream regressions surface within a
+CI cycle. This mirrors the model `install-omnisim` follows for the
+ASCOM simulator.
 
 ### Pinned SHA-256 + refresh procedure
 
 The action's per-OS table pins a SHA-256 for each downloaded archive
-(snapshot captured 2026-05-02) and the optional D05 database. Every
+(snapshot last refreshed 2026-05-04 against ASTAP CLI-2026.05.03)
+and the optional D05 database. Every
 download is verified before extraction; mismatch fails the action
 closed. ASTAP's URLs are unversioned ("latest" filenames), so
 upstream rotates the bytes without bumping the URL — the SHA pin
