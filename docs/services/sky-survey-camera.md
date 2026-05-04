@@ -46,8 +46,6 @@ to *Future Work*.
 
 **Deferred (see *Future Work*).**
 
-- Telescope-following mode (camera querying an attached ASCOM
-  Telescope at exposure time).
 - Local resampling / rotation independent of SkyView's sampler.
 - Signal model: exposure-time scaling, Poisson + Gaussian noise,
   bias offset, dark current, hot pixels.
@@ -448,9 +446,9 @@ do not apply in static mode.
 - **F1.** With `pointing.telescope` set, every `StartExposure` reads
   `right_ascension` and `declination` fresh from the configured
   ASCOM Telescope and snapshots
-  `PointingState { ra: (mount_ra + offset_ra).rem_euclid(360),
-   dec: clamp(mount_dec + offset_dec, -90, +90),
-   rotation: pointing.initial_rotation_deg }`.
+  `PointingState { ra_deg: (mount_ra + offset_ra).rem_euclid(360),
+   dec_deg: clamp(mount_dec + offset_dec, -90, +90),
+   rotation_deg: pointing.initial_rotation_deg }`.
   Rotation is **not** sourced from the mount (ASCOM Telescope has no
   rotation property); future work could add a connected Rotator.
 - **F2.** A failed Telescope read (transport error, ASCOM error, or a

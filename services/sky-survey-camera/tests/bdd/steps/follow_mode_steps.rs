@@ -86,8 +86,8 @@ async fn drive_exposure_then_check_position(world: &mut SkySurveyCameraWorld, ra
         "GET /sky-survey/position returned {} (body: {body_text})",
         status
     );
-    let body: Value =
-        serde_json::from_str(&body_text).expect("position body not JSON: {body_text}");
+    let body: Value = serde_json::from_str(&body_text)
+        .unwrap_or_else(|e| panic!("position body not JSON: {e} (body: {body_text})"));
     let actual_ra = body["ra_deg"].as_f64().expect("missing ra_deg");
     let actual_dec = body["dec_deg"].as_f64().expect("missing dec_deg");
     assert!(

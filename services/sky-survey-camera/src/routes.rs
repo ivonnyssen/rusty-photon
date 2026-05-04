@@ -43,7 +43,9 @@ pub fn build_router(state: Arc<DeviceState>) -> Router {
 async fn get_position(State(state): State<Arc<DeviceState>>) -> impl IntoResponse {
     // F6: returns the most recently snapshotted pointing in either
     // mode. In static mode this is the value updated by POST; in
-    // follow mode it's whatever the last successful exposure read.
+    // follow mode it's the last successful mount read (written
+    // before the SkyView fetch, so it reflects mount state even if
+    // a later exposure step fails).
     let snap = state.last_snapshot.snapshot().await;
     Json(PositionResponse {
         ra_deg: snap.ra_deg,
