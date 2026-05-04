@@ -42,7 +42,8 @@ runs:
   using: composite
   steps:
     # Per-OS table. SHA-256 values are pinned against the snapshot
-    # captured 2026-05-02 from upstream SourceForge. See
+    # captured 2026-05-04 from upstream SourceForge (ASTAP CLI
+    # version CLI-2026.05.03). See
     # docs/decisions/005-plate-solver.md §Verification Spike for
     # how/when to refresh these (any upstream release rotates the
     # archive and breaks this check by design).
@@ -55,37 +56,31 @@ runs:
             ARCHIVE="astap_command-line_version_Linux_amd64.zip"
             SUBDIR="linux_installer"
             BIN="astap_cli"
-            SHA256="424e9bcba8ad84b4125d4858f2de07822eff2f6710618f9312e4443de3b1c697"
+            SHA256="9d25e3f92a39863fb7e5762eb46cc3fcd3eb0d6554fda89136606af38d1904a2"
             ;;
           Linux-ARM64)
             ARCHIVE="astap_command-line_version_Linux_aarch64.zip"
             SUBDIR="linux_installer"
             BIN="astap_cli"
-            SHA256="0216f84430b6c2c9b3c0f061476755a6768319be02819447e2e3a7b6a7339267"
+            SHA256="c5391a0561ca71b4dbf0663bd82793dacc9160e78bb0d9961c447b8a074ec76c"
             ;;
           macOS-ARM64)
             ARCHIVE="astap_command-line_version_macOS_M1.zip"
             SUBDIR="macOS%20installer"
             BIN="astap_cli"
-            SHA256="5d8e5083bd6a5dd75a96592f847db20da528bab2e3ad55066bfe3da5cbf66829"
-            ;;
-          macOS-X64)
-            ARCHIVE="astap_command-line_version_macOS_x86_64.zip"
-            SUBDIR="macOS%20installer"
-            BIN="astap_cli"
-            SHA256="b4b1123a470cc324167be0fa375b1f6bd09357719115baa7e7d02198ae379ab4"
+            SHA256="0e8015112548dac31302bfeea2f607bce0306a7731e92121da001b7a11b8de0f"
             ;;
           Windows-X64)
             ARCHIVE="astap_command-line_version_win64.zip"
             SUBDIR="windows_installer"
             BIN="astap_cli.exe"
-            SHA256="ac0bb228e46c25809c17c4a48e8e02e59d064067ab728cdd2b3e9b22b2093d91"
+            SHA256="5e0e222668e19ce0b187c91ece1a63389ad2b822b7913a7e7136908fc91e75d2"
             ;;
           Windows-ARM64)
             ARCHIVE="astap_command-line_version_win11_aarch64.zip"
             SUBDIR="windows_installer"
             BIN="astap_cli.exe"
-            SHA256="5ed42b4b7e5221aeca19953561ecc2f53f62ab5f122cd0dc5bdd28f086b86afc"
+            SHA256="4ac1298c07fbe9ededfbac260684fce45ab2c04425f11ac6aa2dd4c28951570d"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
