@@ -8,16 +8,43 @@
 # (macOS Apple Silicon, Windows x64, Linux x64). When a row goes red,
 # operators following the same install recipe by hand would also see
 # the breakage.
+#
+# Cadence: nightly cron + workflow_dispatch (manual) + paths-filtered
+# PR/push. The workflow's only failure mode is an upstream SourceForge
+# rotation that invalidates a SHA pin — that happens on the order of
+# weeks-to-months, so paying for the matrix on every PR is mostly a
+# deterministic replay. The paths filter keeps PR-time verification on
+# changes that *can* affect the install (the action itself or this
+# workflow), so a SHA-refresh PR still runs the smoke before merge.
+# The nightly cron catches upstream rotations that arrive between
+# install-touching PRs, and notify-on-failure opens a tracking issue
+# so divergence is visible without trawling scheduled-workflow logs.
+name: install-astap
+
 permissions:
   contents: read
+
 on:
+  schedule:
+    # Daily at 04:30 UTC. Offset from plate-solver-smoke's 03:30 UTC so
+    # the two install-astap consumers don't hit the same SourceForge
+    # endpoint at the same minute.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - ".github/actions/install-astap/**"
+      - ".github/workflows/install-astap.yml"
   pull_request:
+    paths:
+      - ".github/actions/install-astap/**"
+      - ".github/workflows/install-astap.yml"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-name: install-astap
+
 jobs:
   smoke:
     name: install-astap / ${{ matrix.os }}
@@ -81,3 +108,59 @@ jobs:
             Write-Error "ASTAP banner not detected in output"
             exit 1
           }
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly run fails so an
+    # upstream SHA rotation surfaces without depending on someone reading
+    # scheduled-workflow logs. Skipped on push, pull_request, and
+    # workflow_dispatch so manual debugging runs and refresh-PR
+    # verification don't churn an issue.
+    needs: smoke
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly: install-astap smoke failing (likely upstream SHA rotation)`;
+            const body = [
+              `The nightly install-astap smoke workflow failed.`,
+              ``,
+              `Most likely cause: ASTAP upstream rotated a SourceForge archive`,
+              `without us refreshing the SHA pin in`,
+              `\`.github/actions/install-astap/action.yml\`. See ADR-005`,
+              `§"Pinned SHA-256 + refresh procedure" for the refresh steps.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on schedule.`,
+              `It will be updated (rather than re-opened) on subsequent failures so the`,
+              `notification cadence stays low. Close it once the underlying issue is`,
+              `resolved; the next failure will reopen.`,
+            ].join("\n");
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "install-astap-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["install-astap-nightly", "ci-flake"],
+              });
+            }
