@@ -299,9 +299,11 @@ The verification work has a single artefact: the local
 [`install-astap`](../../.github/actions/install-astap/action.yml)
 composite action plus the
 [`install-astap.yml`](../../.github/workflows/install-astap.yml)
-workflow that exercises it on `ubuntu-latest`, `macos-latest`, and
-`windows-latest`. The action is itself the install recipe — its per-OS
-table names the SourceForge archive each platform downloads from. The
+workflow that exercises it on `ubuntu-latest`, `ubuntu-24.04-arm`,
+`macos-latest`, and `windows-latest` — covering Linux-X64, Linux-ARM64
+(Raspberry Pi 5 target), macOS-ARM64, and Windows-X64. The action is
+itself the install recipe — its per-OS table names the SourceForge
+archive each platform downloads from. The
 smoke workflow forces a fresh upstream download on every run (by
 passing `use-cache: "false"` to the composite action, which skips
 both cache load and save) so upstream regressions surface within a

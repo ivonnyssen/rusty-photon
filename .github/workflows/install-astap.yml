@@ -25,7 +25,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm covers the Linux-ARM64 row of the action's
+        # per-OS table — Raspberry Pi 5 is a documented plate-solver
+        # target, so its SHA pin needs CI exercise like the others.
+        # Windows-ARM64 and macOS-X64 rows remain pinned-but-unexercised
+        # (not currently supported targets).
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
       - name: Install ASTAP
