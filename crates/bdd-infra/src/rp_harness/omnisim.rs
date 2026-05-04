@@ -53,14 +53,59 @@ impl OmniSimHandle {
         }
     }
 
-    /// Reset the telescope simulator device to its OmniSim default state
-    /// without restarting the simulator process.
+    /// Reset the telescope simulator device 0 to its OmniSim default state.
+    /// See [`Self::restart_device`] for the underlying mechanism.
+    pub async fn reset_telescope() {
+        Self::restart_device("telescope", 0).await;
+    }
+
+    /// Reset the camera simulator device 0 to its OmniSim default state.
+    pub async fn reset_camera() {
+        Self::restart_device("camera", 0).await;
+    }
+
+    /// Reset the filter-wheel simulator device 0 to its OmniSim default state.
+    pub async fn reset_filter_wheel() {
+        Self::restart_device("filterwheel", 0).await;
+    }
+
+    /// Reset the focuser simulator device 0 to its OmniSim default state.
+    pub async fn reset_focuser() {
+        Self::restart_device("focuser", 0).await;
+    }
+
+    /// Reset the cover-calibrator simulator device 0 to its OmniSim default state.
+    pub async fn reset_cover_calibrator() {
+        Self::restart_device("covercalibrator", 0).await;
+    }
+
+    /// Reset every device class our BDD suites currently exercise
+    /// (telescope, camera, filter wheel, focuser, cover calibrator) to
+    /// OmniSim defaults. Issued in parallel — total wall-time is
+    /// dominated by a single localhost round-trip.
     ///
-    /// Posts to OmniSim's private `PUT /simulator/v1/telescope/{n}/restart`
-    /// endpoint, which calls `DriverManager.LoadTelescope(0)` server-side.
-    /// The result is equivalent to OmniSim having just started: AtPark
-    /// false, Tracking false, position at the configured startup
-    /// alt/az (default ≈ alt 38.9° az 165° — above horizon).
+    /// Other device classes (dome, rotator, switch, observingconditions,
+    /// safetymonitor) also expose `/restart`, but our scenarios don't
+    /// touch them yet; add a call here when that changes.
+    pub async fn reset_all_devices() {
+        tokio::join!(
+            Self::reset_telescope(),
+            Self::reset_camera(),
+            Self::reset_filter_wheel(),
+            Self::reset_focuser(),
+            Self::reset_cover_calibrator(),
+        );
+    }
+
+    /// Reset a single OmniSim device by class and instance number to
+    /// its default state without restarting the simulator process.
+    ///
+    /// Posts to OmniSim's private `PUT /simulator/v1/{class}/{n}/restart`
+    /// endpoint, which calls `DriverManager.Load{Class}(n)` server-side.
+    /// The result is equivalent to OmniSim having just started for that
+    /// device — e.g. for telescope: AtPark false, Tracking false,
+    /// position at the configured startup alt/az (default ≈ alt 38.9°
+    /// az 165° — above horizon).
     ///
     /// No-op if OmniSim is not yet running (e.g. invoked from a
     /// pre-scenario hook before any scenario has spawned the
@@ -73,11 +118,16 @@ impl OmniSimHandle {
     /// endpoint is OmniSim-only (not part of standard Alpaca), so
     /// older or alternative simulators may 404 — that's expected and
     /// non-fatal.
-    pub async fn reset_telescope() {
+    ///
+    /// `class` must match one of OmniSim's device class slugs:
+    /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
+    /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
+    /// `switch`.
+    pub async fn restart_device(class: &str, n: u32) {
         let Some(process) = OMNISIM.get() else {
             return;
         };
-        let url = format!("{}/simulator/v1/telescope/0/restart", process.base_url);
+        let url = format!("{}/simulator/v1/{}/{}/restart", process.base_url, class, n);
         let Ok(client) = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()

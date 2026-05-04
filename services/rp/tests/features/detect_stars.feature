@@ -1,3 +1,4 @@
+@serial
 Feature: Star detection tool
   The detect_stars MCP tool returns the per-star list that measure_basic
   produces internally -- coordinates, flux, peak, and saturation flags --

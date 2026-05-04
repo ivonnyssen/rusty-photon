@@ -16,20 +16,17 @@ bdd_infra::bdd_main! {
     RpWorld::cucumber()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset the OmniSim telescope to defaults before each
-                // scenario. The shared OmniSim is a singleton across the
-                // BDD process, so mount state (AtPark, Tracking,
-                // position) leaks between scenarios; a leak that
-                // leaves the mount below the horizon is exactly what
-                // hung the `park` scenario in issue #143. The reset is
-                // a no-op for the very first scenario (OmniSim hasn't
-                // been spawned yet) and an HTTP PUT for subsequent
-                // ones — fast enough to run unconditionally.
-                //
-                // Other device classes (camera, focuser, filter wheel,
-                // cover calibrator) have analogous reset endpoints but
-                // are not yet wired up here. Tracked separately.
-                bdd_infra::rp_harness::OmniSimHandle::reset_telescope().await;
+                // Reset every OmniSim device class our scenarios touch
+                // (telescope, camera, filter wheel, focuser, cover
+                // calibrator) to defaults before each scenario. The
+                // shared OmniSim is a singleton across the BDD process,
+                // so device state leaks between scenarios; the mount
+                // leak that hung `park` in issue #143 is the case we
+                // already hit. Each reset is a localhost PUT, all run
+                // in parallel, so the per-scenario overhead is one
+                // round-trip. No-op the first time through (OmniSim
+                // hasn't been spawned yet).
+                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {

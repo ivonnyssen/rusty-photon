@@ -1,3 +1,4 @@
+@serial
 Feature: Basic image measurement tool
   The measure_basic MCP tool detects stars in an image and reports aggregate
   HFR, star count, and sigma-clipped background statistics. It accepts either

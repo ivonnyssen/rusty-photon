@@ -1,3 +1,4 @@
+@serial
 Feature: Camera info tool
   The get_camera_info MCP tool reads camera capabilities from the connected
   ASCOM Alpaca device. It returns max_adu (full well depth in ADU),

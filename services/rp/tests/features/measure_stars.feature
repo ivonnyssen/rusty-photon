@@ -1,3 +1,4 @@
+@serial
 Feature: Per-star photometry and PSF metrics
   The measure_stars MCP tool runs detect_stars internally and then fits a 2D
   Gaussian to each star to report per-star HFR, FWHM, eccentricity, and flux,

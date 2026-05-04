@@ -1,3 +1,4 @@
+@serial
 Feature: Image HTTP API
   The /api/images/{document_id} routes expose an exposure's image metadata
   and raw pixel data to plugins, frontends, and external consumers. Metadata

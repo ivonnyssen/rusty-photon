@@ -1,3 +1,4 @@
+@serial
 Feature: MCP tool execution against equipment
   rp exposes equipment operations as MCP tools. Workflow plugins call
   tools via the MCP server endpoint. Each tool validates parameters,
@@ -11,7 +12,6 @@ Feature: MCP tool execution against equipment
     Then the tool result should contain an image path
     And the tool result should contain a document id
 
-  @serial
   Scenario: Set filter changes the active filter
     Given a running Alpaca simulator
     And rp is running with a filter wheel on the simulator

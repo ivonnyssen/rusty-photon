@@ -1,3 +1,4 @@
+@serial
 Feature: Equipment connectivity
   rp connects to ASCOM Alpaca devices at startup and reports their status
   through the REST API. Equipment configuration is read from the config
