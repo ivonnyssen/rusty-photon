@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OmniSim covercalibrator profile shipped by bdd-infra. This file is
+  the source of truth for the per-test simulator defaults; bdd-infra
+  copies the entire `crates/bdd-infra/omnisim-config/ascom/alpaca/...`
+  tree to a per-build XDG_CONFIG_HOME under the cargo target directory
+  before spawning OmniSim, so the simulator's own write-back on
+  startup goes there and never touches this checked-in copy.
+
+  Tunables relevant to BDD wall-clock:
+    Cover Opening Time            seconds; OmniSim uses asynchronous
+                                  behavior whenever this is > 0.5 s,
+                                  synchronous otherwise. We keep it
+                                  asynchronous (and just shorter than
+                                  the upstream default of 5.0) so the
+                                  production-mirroring cover-state
+                                  polling path is exercised.
+    Calibrator Stabilisation Time seconds; same > 0.5 s async rule
+                                  applies. Default upstream is 2.0.
+-->
+<ArrayOfSettingsPair xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SettingsPair>
+    <Key>UniqueID</Key>
+    <Value>fd25fce9-1a64-4c20-852f-6dff9014aebf</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>Cover Opening Time</Key>
+    <Value>0.6</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>Calibrator Stabilisation Time</Key>
+    <Value>0.6</Value>
+  </SettingsPair>
+</ArrayOfSettingsPair>

@@ -181,6 +181,7 @@ async fn configure_default_equipment(world: &mut CalibratorFlatsWorld) {
                 id: "flat-panel".to_string(),
                 alpaca_url,
                 device_number: 0,
+                poll_interval: Some(std::time::Duration::from_millis(100)),
             });
     }
 }

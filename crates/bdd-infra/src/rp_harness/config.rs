@@ -40,6 +40,15 @@ pub struct CoverCalibratorConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
+    /// Override `cover_calibrator.poll_interval` in the emitted rp
+    /// config. `None` ⇒ rp's default (3 s). The BDD harness pins this
+    /// to a short duration (~100 ms) so cover/calibrator scenarios
+    /// don't sit through 3-second polls; production rp deployments use
+    /// the upstream default. The OmniSim profile we ship at
+    /// `crates/bdd-infra/omnisim-config/...` keeps the simulator-side
+    /// transitions short too — both knobs need to be small for the
+    /// scenario wall-clock to drop.
+    pub poll_interval: Option<std::time::Duration>,
 }
 
 /// Focuser equipment entry. `min_position` / `max_position` are the
@@ -193,11 +202,15 @@ impl RpConfigBuilder {
             .cover_calibrators
             .iter()
             .map(|cc| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "id": cc.id,
                     "alpaca_url": cc.alpaca_url,
-                    "device_number": cc.device_number
-                })
+                    "device_number": cc.device_number,
+                });
+                if let Some(poll) = cc.poll_interval {
+                    obj["poll_interval"] = serde_json::json!(format!("{}ms", poll.as_millis()));
+                }
+                obj
             })
             .collect();
 

@@ -165,8 +165,44 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 ### Cover calibrator
 
 - **Default state: cover closed (`CoverState=1`), calibrator off
-  (`CalibratorState=1`).** Both transitions are effectively
-  instantaneous in the simulator (~10 ms). Reset is free.
+  (`CalibratorState=1`).** The cover then transitions through
+  `Moving (2)` → `Open (3)` over the configured `Cover Opening
+  Time` (upstream default **5.0 s**); the calibrator transitions
+  through `NotReady (4)` → `Ready (3)` over `Calibrator
+  Stabilisation Time` (default **2.0 s**). Both kept asynchronous
+  whenever those values are `> 0.5 s`; OmniSim flips to a
+  synchronous-blocking response when the configured time is
+  `≤ 0.5 s` (`SYNCHRONOUS_BEHAVIOUR_LIMIT`, see
+  `CoverCalibratorSimulator.cs:19`).
+- **Override via XML profile, not via HTTP.** OmniSim does not
+  expose a setter for these timings — `SimulatorController.cs`
+  only has `/reset`, `/restart`, and a read-only `/xmlprofile` —
+  so we ship test-friendly defaults as a checked-in profile under
+  `crates/bdd-infra/omnisim-config/ascom/alpaca/ascom-alpaca-simulator/covercalibrator/v1/instance-0.xml`.
+  Before spawning the simulator, `bdd-infra` recursively copies
+  that tree to `$CARGO_TARGET_DIR/bdd-infra-omnisim/` (with the
+  prior copy wiped first to avoid leakage between runs) and
+  points OmniSim at the target-tree copy via `XDG_CONFIG_HOME`.
+  The simulator emits UniqueIDs and persists full default
+  profiles for every other device on its first startup; those
+  writes land in the build directory, so the checked-in source
+  stays clean across normal test runs and `cargo clean` reaps
+  the persisted state.
+- **Test defaults.** Both timings are pinned to `0.6 s` — fast
+  enough that BDD scenarios don't sit through 5-second cover
+  slews, but still `> 0.5 s` so OmniSim keeps the asynchronous
+  state-machine path alive (rp's polling code still gets
+  exercised). Edit the XML to dial them in differently for local
+  experiments.
+- **Pair the XML override with rp's `poll_interval`.** rp polls
+  cover/calibrator state every 3 s by default
+  (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).
+  Without overriding it, even a 0.6-second OmniSim transition
+  ends up bounded by rp's 3-second poll. The BDD harness sets
+  `cover_calibrator.poll_interval = 100ms` on every
+  `CoverCalibratorConfig` it builds (see
+  `crates/bdd-infra/src/rp_harness/config.rs`); production rp
+  deployments keep the upstream 3-second default.
 
 ### Camera
 

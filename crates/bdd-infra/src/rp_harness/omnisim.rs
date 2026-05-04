@@ -4,6 +4,7 @@
 //! via a [`tokio::sync::OnceCell`]. If an OmniSim is already listening on
 //! the default port it is reused; otherwise one is spawned.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -165,6 +166,20 @@ impl OmniSimProcess {
             .env_remove("ASAN_OPTIONS")
             .env_remove("LSAN_OPTIONS");
 
+        // Point OmniSim at a per-build XDG_CONFIG_HOME under cargo's
+        // target dir, seeded from the checked-in profile templates in
+        // `crates/bdd-infra/omnisim-config/...`. The seed copy is the
+        // ONLY runtime write involved — subsequent OmniSim startup
+        // writes (UniqueID emission, full-profile persistence) all
+        // land in the per-build dir and never touch the checked-in
+        // source. Failures here are non-fatal: if the seed dir can't
+        // be prepared we just skip the override, OmniSim falls back
+        // to the user's `$HOME/.config/...`, and tests run with
+        // upstream defaults instead of our tuned ones.
+        if let Some(xdg) = Self::prepare_xdg_config_home() {
+            cmd.env("XDG_CONFIG_HOME", xdg);
+        }
+
         // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
         // child when the test process exits (normal, panic, or SIGKILL).
         #[cfg(target_os = "linux")]
@@ -189,6 +204,57 @@ impl OmniSimProcess {
         };
         process.wait_healthy().await;
         process
+    }
+
+    /// Seed a per-build `XDG_CONFIG_HOME` for OmniSim and return its
+    /// path. The seed is a recursive copy of the checked-in
+    /// `crates/bdd-infra/omnisim-config/...` tree. OmniSim writes back
+    /// to this directory on startup (e.g. emitting missing UniqueIDs,
+    /// persisting full default profiles), so we MUST copy the source
+    /// into a target-tree location and never let OmniSim see the
+    /// repository copy directly.
+    ///
+    /// The destination lives under `$CARGO_TARGET_DIR/bdd-infra-omnisim/`
+    /// (or `target/bdd-infra-omnisim/` if `CARGO_TARGET_DIR` is unset),
+    /// so it ends up in the same place `cargo clean` already reaches.
+    /// We fully reseed on every spawn so an OmniSim write-back from a
+    /// prior run can't leak into the next one.
+    ///
+    /// Returns `None` (and the caller proceeds without the override) on
+    /// any I/O failure — the simulator still works, just with upstream
+    /// defaults.
+    fn prepare_xdg_config_home() -> Option<PathBuf> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("omnisim-config");
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|workspace| workspace.join("target"))
+                    .unwrap_or_else(|| PathBuf::from("target"))
+            });
+        let dest = target_dir.join("bdd-infra-omnisim");
+        // Wipe whatever a prior run left behind so an OmniSim write-back
+        // from then can't survive into this run's profile.
+        let _ = std::fs::remove_dir_all(&dest);
+        Self::copy_dir_recursive(&src, &dest).ok()?;
+        Some(dest)
+    }
+
+    fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let from = entry.path();
+            let to = dest.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                Self::copy_dir_recursive(&from, &to)?;
+            } else {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+        Ok(())
     }
 
     fn find_binary() -> String {
