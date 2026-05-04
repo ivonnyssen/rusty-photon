@@ -5,6 +5,7 @@ members = [
   "crates/rp-catalog",
   "crates/rp-ephemeris",
   "crates/rp-fits",
+  "crates/rp-plate-solver",
   "crates/rp-tls",
   "services/filemonitor",
   "services/phd2-guider",
@@ -63,6 +64,7 @@ rp-auth = { path = "crates/rp-auth" }
 rp-catalog = { path = "crates/rp-catalog" }
 rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }
+rp-plate-solver = { path = "crates/rp-plate-solver" }
 rp-tls = { path = "crates/rp-tls" }
 erfars = "0.2"
 tzf-rs = "1"

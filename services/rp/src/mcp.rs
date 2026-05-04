@@ -377,6 +377,64 @@ pub struct AutoFocusToolParams {
     pub min_fit_points: Option<usize>,
 }
 
+/// Nested pointing-hint object passed to `plate_solve`. The
+/// both-or-neither contract for ra/dec is structural — supplying
+/// only one of `ra_deg` / `dec_deg` is a serde-level deserialization
+/// error rather than a runtime check. Field names carry units to
+/// preempt the Alpaca-hours / wrapper-degrees gotcha at the call
+/// site.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PointingHint {
+    pub ra_deg: f64,
+    pub dec_deg: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlateSolveParams {
+    /// Document id of a previously-captured frame. Resolves to
+    /// `file_path` via the image cache (with on-disk fallback).
+    /// Either this or `image_path` is required (validated in body
+    /// for deterministic error ordering — see `docs/services/rp.md`
+    /// `plate_solve` Contract). When both are supplied,
+    /// `document_id` takes precedence per the imaging-tool
+    /// convention.
+    #[serde(default)]
+    pub document_id: Option<String>,
+    /// Absolute path to a FITS file on rp's local disk. Forwarded
+    /// verbatim to the wrapper.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// Explicit pointing hint. Mutually exclusive with
+    /// `use_mount_hints == true`.
+    #[serde(default)]
+    pub pointing_hint: Option<PointingHint>,
+    /// Convenience flag: read the current mount position via Alpaca
+    /// (RA hours × 15 → degrees, Dec degrees pass-through) and
+    /// forward as the wrapper's `ra_hint` / `dec_hint`. Mutually
+    /// exclusive with `pointing_hint`. Requires a configured and
+    /// connected mount; failures error to the caller rather than
+    /// silently dropping to blind solve.
+    #[serde(default)]
+    pub use_mount_hints: Option<bool>,
+    /// Field-of-view hint in decimal degrees. Forwarded verbatim.
+    #[serde(default)]
+    pub fov_hint_deg: Option<f64>,
+    /// Per-call search-radius override. When `None`, falls back to
+    /// `plate_solver.default_search_radius_deg` from rp config; when
+    /// both are absent the wrapper uses ASTAP's own default.
+    #[serde(default)]
+    pub search_radius_deg: Option<f64>,
+    /// Per-call wall-clock deadline forwarded to the wrapper's
+    /// `timeout` field (humantime). Distinct from
+    /// `plate_solver.timeout` in rp config, which is the rp
+    /// HTTP-client outer timeout. Omitted ⇒ wrapper applies its
+    /// own `default_solve_timeout`.
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub timeout: Option<Duration>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ResolveTargetParams {
     /// Object name to resolve against the embedded Messier + NGC + IC
@@ -514,6 +572,15 @@ pub struct McpHandler {
     /// `Config.planner.min_altitude_degrees`, falling back to 20°
     /// when omitted.
     pub default_min_altitude_degrees: f64,
+    /// Optional plate-solver HTTP client. `None` ⇒ `plate_solve`
+    /// MCP tool returns "plate solver not configured". Wired by
+    /// `with_plate_solver` from the `plate_solver` block in rp
+    /// config.
+    pub plate_solver: Option<Arc<dyn rp_plate_solver::PlateSolveClient>>,
+    /// Operator-set default applied when the per-call
+    /// `search_radius_deg` parameter is omitted. Mirrors
+    /// `PlateSolverConfig::default_search_radius_deg`.
+    pub plate_solver_default_search_radius_deg: Option<f64>,
 }
 
 impl McpHandler {
@@ -532,6 +599,8 @@ impl McpHandler {
             site,
             targets: Vec::new(),
             default_min_altitude_degrees: 20.0,
+            plate_solver: None,
+            plate_solver_default_search_radius_deg: None,
         }
     }
 
@@ -546,6 +615,21 @@ impl McpHandler {
     ) -> Self {
         self.targets = targets;
         self.default_min_altitude_degrees = default_min_altitude_degrees;
+        self
+    }
+
+    /// Wire the plate-solver HTTP client + operator-set search-radius
+    /// default. `None` for `client` keeps the MCP tool reporting
+    /// "not configured"; `None` for the radius means the wrapper
+    /// falls through to ASTAP's own default when the per-call
+    /// parameter is also omitted.
+    pub fn with_plate_solver(
+        mut self,
+        client: Option<Arc<dyn rp_plate_solver::PlateSolveClient>>,
+        default_search_radius_deg: Option<f64>,
+    ) -> Self {
+        self.plate_solver = client;
+        self.plate_solver_default_search_radius_deg = default_search_radius_deg;
         self
     }
 
@@ -2491,6 +2575,175 @@ impl McpHandler {
             }
             Err(e) => Ok(tool_error!("{}", e)),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Compound: plate_solve (proxy to plate-solver rp-managed service)
+    // -------------------------------------------------------------------
+
+    /// Read the current mount pointing for `plate_solve`'s
+    /// `use_mount_hints` convenience. Converts Alpaca's decimal
+    /// hours `RightAscension` to the wrapper's degrees-on-the-wire
+    /// contract (`× 15`); `Declination` passes through. Failure
+    /// modes — no mount configured, mount not connected, Alpaca
+    /// read error — surface as a single string the caller appends
+    /// to its diagnostic.
+    pub(crate) async fn read_mount_hints_for_plate_solve(&self) -> Result<(f64, f64), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+        let ra_hours = mount
+            .right_ascension()
+            .await
+            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
+        let dec_deg = mount
+            .declination()
+            .await
+            .map_err(|e| format!("failed to read mount declination: {e}"))?;
+        Ok((ra_hours * 15.0, dec_deg))
+    }
+
+    #[tool(
+        description = "Plate-solve a captured frame by proxying to the plate-solver rp-managed service. Accepts document_id or image_path; document_id wins. Hints are explicit (pointing_hint object) or sourced from the mount via use_mount_hints=true. Persists a `wcs` section to the exposure document when one resolves."
+    )]
+    async fn plate_solve(
+        &self,
+        Parameters(params): Parameters<PlateSolveParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
+
+        // Hint validation: pointing_hint and use_mount_hints=true are
+        // mutually exclusive. Validated up front so a caller mixing
+        // both gets the same error regardless of mount state.
+        let use_mount_hints = params.use_mount_hints.unwrap_or(false);
+        if params.pointing_hint.is_some() && use_mount_hints {
+            return Ok(tool_error!(
+                "plate_solve: provide explicit pointing_hint or use_mount_hints, not both"
+            ));
+        }
+
+        let client = match self.plate_solver.as_ref() {
+            Some(c) => c.clone(),
+            None => return Ok(tool_error!("plate_solve: plate solver not configured")),
+        };
+
+        // Resolve fits_path: document_id wins when both supplied.
+        let (fits_path, target_doc_id) = match params.document_id.as_deref() {
+            Some(doc_id) => match self.image_cache.resolve_document(doc_id).await {
+                Some(doc) => (doc.file_path.clone(), Some(doc_id.to_string())),
+                None => return Ok(tool_error!("plate_solve: document not found: {}", doc_id)),
+            },
+            None => {
+                let path = params
+                    .image_path
+                    .as_deref()
+                    .expect("checked image_path xor document_id above");
+                (path.to_string(), None)
+            }
+        };
+
+        // Resolve hints. The wrapper takes flat ra_hint/dec_hint in
+        // decimal degrees; rp converts the mount's Alpaca hours by
+        // ×15 here so the conversion lives in exactly one place.
+        let (ra_hint, dec_hint) = if let Some(p) = params.pointing_hint.as_ref() {
+            (Some(p.ra_deg), Some(p.dec_deg))
+        } else if use_mount_hints {
+            match self.read_mount_hints_for_plate_solve().await {
+                Ok((ra_deg, dec_deg)) => (Some(ra_deg), Some(dec_deg)),
+                Err(e) => {
+                    return Ok(tool_error!(
+                        "plate_solve: use_mount_hints requested but {}",
+                        e
+                    ))
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        // search_radius_deg: per-call value > config default > absent.
+        let search_radius_deg = params
+            .search_radius_deg
+            .or(self.plate_solver_default_search_radius_deg);
+
+        let request = rp_plate_solver::SolveRequest {
+            fits_path: fits_path.clone(),
+            ra_hint,
+            dec_hint,
+            fov_hint_deg: params.fov_hint_deg,
+            search_radius_deg,
+            timeout: params.timeout,
+        };
+
+        let outcome = match client.solve(request).await {
+            Ok(o) => o,
+            Err(rp_plate_solver::SolveError::ServiceUnreachable(reason)) => {
+                return Ok(tool_error!("plate_solve: service unreachable: {}", reason));
+            }
+            Err(rp_plate_solver::SolveError::Wrapper {
+                code,
+                message,
+                details,
+            }) => {
+                if details.is_null() {
+                    return Ok(tool_error!("plate_solve: {}: {}", code, message));
+                }
+                return Ok(tool_error!(
+                    "plate_solve: {}: {} (details: {})",
+                    code,
+                    message,
+                    details
+                ));
+            }
+            Err(rp_plate_solver::SolveError::Internal(reason)) => {
+                return Ok(tool_error!("plate_solve: internal: {}", reason));
+            }
+        };
+
+        // Persist `wcs` section. document_id mode targets the
+        // resolved document directly; image_path mode attempts a
+        // UUID-8 reverse lookup so the late-solve workflow's call
+        // (path-only, no document_id known to the caller) still
+        // updates the matching sidecar.
+        let payload = serde_json::json!({
+            "ra_center": outcome.ra_center,
+            "dec_center": outcome.dec_center,
+            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
+            "rotation_deg": outcome.rotation_deg,
+            "solver": outcome.solver,
+        });
+        let persist_doc_id = match target_doc_id {
+            Some(id) => Some(id),
+            None => self
+                .image_cache
+                .resolve_document_by_path(&fits_path)
+                .await
+                .map(|d| d.id.clone()),
+        };
+        if let Some(doc_id) = persist_doc_id {
+            if let Err(e) = self
+                .image_cache
+                .put_section(&doc_id, "wcs", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
+            }
+        } else {
+            debug!(
+                fits_path = %fits_path,
+                "image_path did not resolve to a known document; skipping wcs persistence"
+            );
+        }
+
+        Ok(tool_success!({
+            "ra_center": outcome.ra_center,
+            "dec_center": outcome.dec_center,
+            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
+            "rotation_deg": outcome.rotation_deg,
+            "solver": outcome.solver,
+        }))
     }
 
     // -------------------------------------------------------------------
@@ -5998,5 +6251,437 @@ mod tests {
         assert!(v["time_to_flip_seconds"].is_number());
         assert_eq!(v["side_of_pier"], "unknown");
         assert!(v["mount_ra_hours"].as_f64().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // plate_solve tests
+    // -----------------------------------------------------------------------
+    //
+    // These exercise the MCP handler against `MockPlateSolveClient`. The
+    // handler resolves devices, validates hints, calls the client, maps
+    // SolveError → MCP error, and attempts persistence. End-to-end
+    // wire-format coverage lives in the BDD suite (`plate_solve.feature`)
+    // against `PlateSolverStub`; the unit layer pins the per-code error
+    // shape and the mount-hint conversion deterministically.
+
+    use rp_plate_solver::{MockPlateSolveClient, SolveError, SolveOutcome};
+
+    fn ok_outcome() -> SolveOutcome {
+        SolveOutcome {
+            ra_center: 10.6848,
+            dec_center: 41.269,
+            pixel_scale_arcsec: 1.05,
+            rotation_deg: 12.3,
+            solver: "stub".to_string(),
+        }
+    }
+
+    /// Build a handler with a configured plate-solver client. Pass
+    /// `expectations` to wire up `mock.expect_solve()` calls before the
+    /// handler is built; pass `None` for `default_search_radius_deg`
+    /// when the test doesn't care about the config-default path.
+    fn handler_with_plate_solver(
+        registry: crate::equipment::EquipmentRegistry,
+        configure: impl FnOnce(&mut MockPlateSolveClient),
+        default_search_radius_deg: Option<f64>,
+    ) -> McpHandler {
+        let mut mock = MockPlateSolveClient::new();
+        configure(&mut mock);
+        let client: Arc<dyn rp_plate_solver::PlateSolveClient> = Arc::new(mock);
+        test_handler(registry).with_plate_solver(Some(client), default_search_radius_deg)
+    }
+
+    #[tokio::test]
+    async fn plate_solve_happy_path_image_path() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| req.fits_path == "/tmp/x.fits")
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["ra_center"], 10.6848);
+        assert_eq!(json["dec_center"], 41.269);
+        assert_eq!(json["pixel_scale_arcsec"], 1.05);
+        assert_eq!(json["rotation_deg"], 12.3);
+        assert_eq!(json["solver"], "stub");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_neither_document_id_nor_image_path_errors() {
+        let handler = handler_with_plate_solver(empty_registry(), |_| {}, None);
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: None,
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "image_path");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_unconfigured_returns_not_configured_error() {
+        // No `with_plate_solver` call ⇒ tool reports not configured
+        // even when a path is supplied.
+        let handler = test_handler(empty_registry());
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "plate solver not configured");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_pointing_hint_and_use_mount_hints_are_mutually_exclusive() {
+        let handler = handler_with_plate_solver(empty_registry(), |_| {}, None);
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: Some(PointingHint {
+                    ra_deg: 1.0,
+                    dec_deg: 2.0,
+                }),
+                use_mount_hints: Some(true),
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "pointing_hint or use_mount_hints");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_use_mount_hints_with_no_mount_errors() {
+        let handler = handler_with_plate_solver(empty_registry(), |_| {}, None);
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: Some(true),
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "use_mount_hints");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_use_mount_hints_reads_mount_and_converts_ra_to_degrees() {
+        // Mount at RA=10.6848h, Dec=41.269° — matches the plate-solver.md
+        // M31 example. The handler should send ra_hint=160.272° (10.6848*15)
+        // and dec_hint=41.269° to the wrapper.
+        let mount = MockTelescope {
+            ra_value: 10.6848,
+            dec_value: 41.269,
+            ..Default::default()
+        };
+        let registry = mount_registry(Arc::new(mount), None);
+        let handler = handler_with_plate_solver(
+            registry,
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| {
+                        let ra = req.ra_hint.unwrap_or_default();
+                        let dec = req.dec_hint.unwrap_or_default();
+                        (ra - 160.272).abs() < 1e-3 && (dec - 41.269).abs() < 1e-3
+                    })
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: Some(true),
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_explicit_pointing_hint_forwards_verbatim() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| req.ra_hint == Some(120.5) && req.dec_hint == Some(-30.1))
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: Some(PointingHint {
+                    ra_deg: 120.5,
+                    dec_deg: -30.1,
+                }),
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_optional_fields_forwarded_verbatim() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| {
+                        req.fov_hint_deg == Some(1.5)
+                            && req.search_radius_deg == Some(2.0)
+                            && req.timeout == Some(Duration::from_secs(45))
+                    })
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: Some(1.5),
+                search_radius_deg: Some(2.0),
+                timeout: Some(Duration::from_secs(45)),
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_config_default_search_radius_applied_when_omitted() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| req.search_radius_deg == Some(4.0))
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            Some(4.0),
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_per_call_search_radius_overrides_config_default() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| req.search_radius_deg == Some(2.5))
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            Some(4.0),
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: Some(2.5),
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_no_hints_produces_blind_request() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .withf(|req| {
+                        req.ra_hint.is_none()
+                            && req.dec_hint.is_none()
+                            && req.fov_hint_deg.is_none()
+                            && req.search_radius_deg.is_none()
+                    })
+                    .returning(|_| Ok(ok_outcome()));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn plate_solve_propagates_wrapper_solve_failed() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve().returning(|_| {
+                    Err(SolveError::Wrapper {
+                        code: "solve_failed".to_string(),
+                        message: "ASTAP exited with code 1".to_string(),
+                        details: serde_json::Value::Null,
+                    })
+                });
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "solve_failed");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_propagates_wrapper_solve_failed_with_details() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve().returning(|_| {
+                    Err(SolveError::Wrapper {
+                        code: "solve_failed".to_string(),
+                        message: "ASTAP exited with code 1".to_string(),
+                        details: serde_json::json!({"stderr_tail": "no stars found"}),
+                    })
+                });
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "no stars found");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_maps_service_unreachable_to_distinct_error() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve().returning(|_| {
+                    Err(SolveError::ServiceUnreachable(
+                        "connection refused".to_string(),
+                    ))
+                });
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "service unreachable");
+    }
+
+    #[tokio::test]
+    async fn plate_solve_maps_internal_error_with_internal_prefix() {
+        let handler = handler_with_plate_solver(
+            empty_registry(),
+            |mock| {
+                mock.expect_solve()
+                    .returning(|_| Err(SolveError::Internal("broken pipe".to_string())));
+            },
+            None,
+        );
+        let result = handler
+            .plate_solve(Parameters(PlateSolveParams {
+                document_id: None,
+                image_path: Some("/tmp/x.fits".to_string()),
+                pointing_hint: None,
+                use_mount_hints: None,
+                fov_hint_deg: None,
+                search_radius_deg: None,
+                timeout: None,
+            }))
+            .await;
+        assert_tool_error(result, "internal");
     }
 }

@@ -28,6 +28,7 @@ base64 = { workspace = true }
 rp-auth = { workspace = true }
 rp-catalog = { workspace = true }
 rp-ephemeris = { workspace = true }
+rp-plate-solver = { workspace = true }
 rp-tls = { workspace = true }
 rpassword = { workspace = true }
 rp-fits = { workspace = true }
@@ -46,6 +47,11 @@ bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
+# Re-declared in dev-deps with the `mock` feature so unit tests in
+# mcp.rs can build against MockPlateSolveClient. The non-test build
+# pulls the same crate without the feature, keeping mockall out of
+# the production binary.
+rp-plate-solver = { workspace = true, features = ["mock"] }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }
 

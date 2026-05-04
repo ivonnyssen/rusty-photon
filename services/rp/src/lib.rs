@@ -112,6 +112,26 @@ impl ServerBuilder {
             None => 20.0,
         };
 
+        // Build the plate-solver HTTP client when the operator
+        // configured one. Failure to build (e.g. invalid TLS bag in
+        // reqwest's builder) aborts startup loud rather than
+        // silently disabling the tool — same posture as Phase 6c-1
+        // wrapper config validation.
+        let (plate_solver_client, plate_solver_default_radius) = match &config.plate_solver {
+            Some(ps_cfg) => {
+                let client =
+                    rp_plate_solver::PlateSolverClient::new(ps_cfg.url.clone(), ps_cfg.timeout)
+                        .map_err(|e| {
+                            crate::error::RpError::Config(format!(
+                                "plate_solver: failed to build HTTP client: {e}"
+                            ))
+                        })?;
+                let arc: Arc<dyn rp_plate_solver::PlateSolveClient> = Arc::new(client);
+                (Some(arc), ps_cfg.default_search_radius_deg)
+            }
+            None => (None, None),
+        };
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
@@ -119,7 +139,8 @@ impl ServerBuilder {
             image_cache.clone(),
             site,
         )
-        .with_planner_config(targets, default_min_alt);
+        .with_planner_config(targets, default_min_alt)
+        .with_plate_solver(plate_solver_client, plate_solver_default_radius);
 
         let state = AppState {
             equipment,

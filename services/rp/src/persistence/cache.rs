@@ -285,6 +285,27 @@ impl ImageCache {
             .flatten()
     }
 
+    /// Resolve a FITS file path to its `ExposureDocument` by reading
+    /// the sibling `.json` sidecar. Used by the `plate_solve` MCP
+    /// tool's `image_path` mode so the late-solve workflow (rp
+    /// captures frame N → starts capture N+1 → solves frame N) can
+    /// update the original sidecar without needing the document id
+    /// threaded through the call site. Returns `None` when the
+    /// sidecar is missing, unreadable, or doesn't parse as an
+    /// `ExposureDocument` — the typical "external FITS / not an
+    /// rp-produced frame" case.
+    ///
+    /// The path-to-sidecar mapping is `<base>.fits` → `<base>.json`;
+    /// this mirrors how `mcp.rs:capture` writes the pair atomically
+    /// (Phase 7 Step 1).
+    pub async fn resolve_document_by_path(&self, fits_path: &str) -> Option<ExposureDocument> {
+        let sidecar_path = derive_sidecar_path(fits_path)?;
+        tokio::task::spawn_blocking(move || super::document::read_sidecar_sync(&sidecar_path).ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Write `value` into `sections[name]` on the cached document and
     /// persist the updated sidecar JSON atomically. The per-entry write
     /// lock is held across the sidecar write so concurrent updates
@@ -489,6 +510,18 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
         return Some(CachedImage::new(cp, width, height, fits_path, max_adu, doc));
     }
     None
+}
+
+/// Map `<base>.fits` → `Some(PathBuf("<base>.json"))`. Returns
+/// `None` when the path doesn't end in `.fits`, mirroring the rp
+/// capture-side filename convention. Case-sensitive — operators
+/// who supply `.FITS` are out of contract.
+fn derive_sidecar_path(fits_path: &str) -> Option<PathBuf> {
+    let path = Path::new(fits_path);
+    if path.extension().and_then(|e| e.to_str()) != Some("fits") {
+        return None;
+    }
+    Some(path.with_extension("json"))
 }
 
 /// Disk-resolve to just the `ExposureDocument`. Used when callers need
@@ -972,5 +1005,58 @@ mod tests {
         assert!(!matches_uuid8_suffix("deadbeef.fits", "550e8400"));
         // Wrong extension → reject.
         assert!(!matches_uuid8_suffix("550e8400.json", "550e8400"));
+    }
+
+    // ---------------------------------------------------------------
+    // resolve_document_by_path helpers (Phase 6c-2 Step 3)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn derive_sidecar_path_replaces_fits_with_json() {
+        let p = derive_sidecar_path("/data/lights/abcd1234.fits").unwrap();
+        assert_eq!(p, PathBuf::from("/data/lights/abcd1234.json"));
+    }
+
+    #[test]
+    fn derive_sidecar_path_rejects_non_fits_extensions() {
+        assert!(derive_sidecar_path("/tmp/x.json").is_none());
+        assert!(derive_sidecar_path("/tmp/x.txt").is_none());
+        assert!(derive_sidecar_path("/tmp/x").is_none());
+        assert!(derive_sidecar_path("/tmp/x.FITS").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_document_by_path_returns_doc_for_known_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let fits_path = dir
+            .path()
+            .join(format!("{}.fits", &doc_uuid[..8]))
+            .to_string_lossy()
+            .into_owned();
+        let resolved = cache.resolve_document_by_path(&fits_path).await.unwrap();
+        assert_eq!(resolved.id, doc_uuid);
+    }
+
+    #[tokio::test]
+    async fn resolve_document_by_path_returns_none_for_external_fits() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        // Path doesn't exist on disk and has no UUID-8 suffix; the
+        // late-solve workflow's "external FITS" case.
+        let result = cache
+            .resolve_document_by_path("/tmp/external-no-sidecar.fits")
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_document_by_path_returns_none_for_non_fits_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let result = cache.resolve_document_by_path("/tmp/no-extension").await;
+        assert!(result.is_none());
     }
 }
