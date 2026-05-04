@@ -74,6 +74,22 @@ pub struct MountConfig {
     pub settle_after_slew: Option<std::time::Duration>,
 }
 
+/// Plate-solver service config — emitted as the top-level
+/// `plate_solver` block in rp's JSON config (parallel to `mount`,
+/// `guider`, etc.; the plate solver is an rp-managed service, not
+/// equipment).
+#[derive(Debug, Clone)]
+pub struct PlateSolverConfig {
+    pub url: String,
+    /// rp HTTP-client outer timeout (the connection-side backstop).
+    /// `None` ⇒ rp's default (`60s`).
+    pub timeout: Option<std::time::Duration>,
+    /// Operator-set search radius applied when the per-call MCP
+    /// parameter is omitted. `None` ⇒ omit from rp config (wrapper
+    /// falls through to ASTAP's own default).
+    pub default_search_radius_deg: Option<f64>,
+}
+
 /// Accumulates equipment and plugin entries, then emits rp's JSON config.
 #[derive(Debug, Default, Clone)]
 pub struct RpConfigBuilder {
@@ -83,6 +99,10 @@ pub struct RpConfigBuilder {
     pub focusers: Vec<FocuserConfig>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
+    /// Optional plate-solver service config. `None` ⇒ omit the
+    /// top-level `plate_solver` block from the emitted config so
+    /// rp's `plate_solve` MCP tool reports "not configured".
+    pub plate_solver: Option<PlateSolverConfig>,
     /// Optional `(latitude_degrees, longitude_degrees)` site block.
     /// Required for ephemeris-driven scenarios (planner, twilight,
     /// alt/az MCP tools) and for exercising the mount-side site
@@ -126,6 +146,15 @@ impl RpConfigBuilder {
     /// Set the singular mount config (overwrites any prior call).
     pub fn with_mount(&mut self, mount: MountConfig) -> &mut Self {
         self.mount = Some(mount);
+        self
+    }
+
+    /// Set the plate-solver service config (overwrites any prior
+    /// call). When unset, the emitted rp config has no
+    /// `plate_solver` block and the `plate_solve` MCP tool reports
+    /// "not configured".
+    pub fn with_plate_solver(&mut self, plate_solver: PlateSolverConfig) -> &mut Self {
+        self.plate_solver = Some(plate_solver);
         self
     }
 
@@ -308,6 +337,19 @@ impl RpConfigBuilder {
             });
         }
 
+        if let Some(ps) = &self.plate_solver {
+            let mut block = serde_json::json!({
+                "url": ps.url,
+            });
+            if let Some(t) = ps.timeout {
+                block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+            }
+            if let Some(r) = ps.default_search_radius_deg {
+                block["default_search_radius_deg"] = serde_json::json!(r);
+            }
+            config["plate_solver"] = block;
+        }
+
         config
     }
 }
@@ -457,6 +499,52 @@ mod tests {
         });
         let cfg = b.build();
         assert!(cfg["equipment"]["mount"]["settle_after_slew"].is_null());
+    }
+
+    #[test]
+    fn plate_solver_block_omitted_by_default() {
+        let cfg = RpConfigBuilder::new().build();
+        assert!(
+            cfg.get("plate_solver").is_none(),
+            "expected plate_solver key to be absent when not set, got: {:?}",
+            cfg.get("plate_solver")
+        );
+    }
+
+    #[test]
+    fn with_plate_solver_emits_url_only_block() {
+        let mut b = RpConfigBuilder::new();
+        b.with_plate_solver(PlateSolverConfig {
+            url: "http://127.0.0.1:11131".to_string(),
+            timeout: None,
+            default_search_radius_deg: None,
+        });
+        let cfg = b.build();
+        let ps = &cfg["plate_solver"];
+        assert_eq!(ps["url"], "http://127.0.0.1:11131");
+        assert!(
+            ps.get("timeout").is_none(),
+            "expected timeout to be omitted when None"
+        );
+        assert!(
+            ps.get("default_search_radius_deg").is_none(),
+            "expected default_search_radius_deg to be omitted when None"
+        );
+    }
+
+    #[test]
+    fn with_plate_solver_emits_timeout_and_default_search_radius() {
+        let mut b = RpConfigBuilder::new();
+        b.with_plate_solver(PlateSolverConfig {
+            url: "http://127.0.0.1:11131".to_string(),
+            timeout: Some(std::time::Duration::from_secs(30)),
+            default_search_radius_deg: Some(3.5),
+        });
+        let cfg = b.build();
+        let ps = &cfg["plate_solver"];
+        assert_eq!(ps["url"], "http://127.0.0.1:11131");
+        assert_eq!(ps["timeout"], "30000ms");
+        assert_eq!(ps["default_search_radius_deg"], 3.5);
     }
 
     #[test]
