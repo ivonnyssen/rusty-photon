@@ -56,6 +56,7 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
             initial_ra_deg: world.initial_ra_deg,
             initial_dec_deg: world.initial_dec_deg,
             initial_rotation_deg: world.initial_rotation_deg,
+            telescope: None,
         },
         survey: SurveyConfig {
             name: world

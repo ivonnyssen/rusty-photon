@@ -37,6 +37,27 @@ pub struct StubState {
     pub get_count: Arc<AtomicU32>,
 }
 
+/// Behaviour the in-test ASCOM Telescope stub serves on each
+/// `right_ascension` / `declination` read. Drives the F1/F2/F5
+/// follow-mode scenarios.
+#[derive(Debug, Clone)]
+pub enum MountStubBehavior {
+    /// Serve `Value=<ra_hours>` / `Value=<dec_deg>` with `ErrorNumber=0`.
+    Ok { ra_hours: f64, dec_deg: f64 },
+    /// Serve `ErrorNumber=1024` ("driver-specific") on every read —
+    /// drives F2.
+    AscomError,
+    /// `/management/v1/configureddevices` returns an empty list, so
+    /// device resolution fails — drives the DeviceNotFound branch.
+    NoTelescope,
+}
+
+#[derive(Debug)]
+pub struct MountStubState {
+    pub behavior: Arc<RwLock<MountStubBehavior>>,
+    pub read_count: Arc<AtomicU32>,
+}
+
 /// Build a minimal valid FITS payload of the given dimensions filled
 /// with zero pixels (BITPIX = 32). Suitable for both happy-path tests
 /// and cache-hit pre-seeding.
@@ -101,6 +122,19 @@ pub struct SkySurveyCameraWorld {
     /// Shared state of the SkyView stub server (None until spawned).
     pub stub_state: Option<Arc<StubState>>,
 
+    /// Shared state of the ASCOM Telescope stub (None until spawned).
+    pub mount_stub_state: Option<Arc<MountStubState>>,
+
+    /// When set, the camera is configured in telescope-follow mode
+    /// pointing at this URL. Built by `spawn_mount_stub`.
+    pub telescope_endpoint_override: Option<String>,
+
+    /// Configured RA offset for follow mode (arcsec, signed).
+    pub telescope_offset_ra_arcsec: f64,
+
+    /// Configured Dec offset for follow mode (arcsec, signed).
+    pub telescope_offset_dec_arcsec: f64,
+
     /// Survey backend choice.
     pub survey_name: Option<String>,
 
@@ -149,6 +183,20 @@ impl SkySurveyCameraWorld {
         if let Some(endpoint) = &self.survey_endpoint_override {
             survey["endpoint"] = Value::String(endpoint.clone());
         }
+        let mut pointing = serde_json::json!({
+            "initial_ra_deg": self.initial_ra_deg,
+            "initial_dec_deg": self.initial_dec_deg,
+            "initial_rotation_deg": self.initial_rotation_deg,
+        });
+        if let Some(url) = &self.telescope_endpoint_override {
+            pointing["telescope"] = serde_json::json!({
+                "alpaca_url": url,
+                "device_number": 0,
+                "offset_ra_arcsec": self.telescope_offset_ra_arcsec,
+                "offset_dec_arcsec": self.telescope_offset_dec_arcsec,
+                "request_timeout": "2s",
+            });
+        }
         serde_json::json!({
             "device": {
                 "name": "Test Sky Survey Camera",
@@ -162,11 +210,7 @@ impl SkySurveyCameraWorld {
                 "sensor_width_px": self.sensor_width_px.unwrap_or(640),
                 "sensor_height_px": self.sensor_height_px.unwrap_or(480),
             },
-            "pointing": {
-                "initial_ra_deg": self.initial_ra_deg,
-                "initial_dec_deg": self.initial_dec_deg,
-                "initial_rotation_deg": self.initial_rotation_deg,
-            },
+            "pointing": pointing,
             "survey": survey,
             "server": {
                 "port": 0,
@@ -203,6 +247,52 @@ impl SkySurveyCameraWorld {
     /// the connection-time HEAD reachability check.
     pub async fn spawn_skyview_stub_ok(&mut self) {
         self.spawn_skyview_stub().await;
+    }
+
+    /// Spawn a tiny ASCOM Alpaca Telescope stub on `127.0.0.1:0`.
+    /// Serves only the three endpoints `AlpacaMountReader` exercises:
+    /// `GET /management/v1/configureddevices`,
+    /// `GET /api/v1/telescope/0/rightascension`,
+    /// `GET /api/v1/telescope/0/declination`.
+    /// Records the initial behaviour and points
+    /// `telescope_endpoint_override` at the bound address so
+    /// `build_config_json` emits `pointing.telescope`.
+    pub async fn spawn_mount_stub(&mut self, behavior: MountStubBehavior) {
+        let state = Arc::new(MountStubState {
+            behavior: Arc::new(RwLock::new(behavior)),
+            read_count: Arc::new(AtomicU32::new(0)),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind mount stub listener");
+        let addr = listener.local_addr().expect("local_addr");
+        let app = axum::Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                axum::routing::get(handle_configured_devices),
+            )
+            .route(
+                "/api/v1/telescope/0/rightascension",
+                axum::routing::get(handle_right_ascension),
+            )
+            .route(
+                "/api/v1/telescope/0/declination",
+                axum::routing::get(handle_declination),
+            )
+            .with_state(Arc::clone(&state));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        self.telescope_endpoint_override = Some(format!("http://{addr}/"));
+        self.mount_stub_state = Some(state);
+    }
+
+    pub fn set_mount_stub_behavior(&mut self, behavior: MountStubBehavior) {
+        let state = self
+            .mount_stub_state
+            .as_ref()
+            .expect("mount stub not spawned — call spawn_mount_stub first");
+        *state.behavior.write().expect("mount stub rwlock") = behavior;
     }
 
     pub fn set_stub_behavior(&mut self, behavior: StubBehavior) {
@@ -494,5 +584,73 @@ async fn handle_stub(
             .header("content-type", "application/fits")
             .body(Body::from(b"this is definitely not a fits file".to_vec()))
             .expect("response build"),
+    }
+}
+
+async fn handle_configured_devices(
+    axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
+) -> axum::Json<Value> {
+    let behavior = state.behavior.read().expect("mount stub rwlock").clone();
+    let devices = match behavior {
+        MountStubBehavior::NoTelescope => Vec::new(),
+        _ => vec![serde_json::json!({
+            "DeviceName": "Telescope 0",
+            "DeviceType": "Telescope",
+            "DeviceNumber": 0,
+            "UniqueID": "test-mount-uid"
+        })],
+    };
+    axum::Json(serde_json::json!({
+        "Value": devices,
+        "ErrorNumber": 0,
+        "ErrorMessage": ""
+    }))
+}
+
+async fn handle_right_ascension(
+    axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
+) -> axum::Json<Value> {
+    state.read_count.fetch_add(1, Ordering::Relaxed);
+    let behavior = state.behavior.read().expect("mount stub rwlock").clone();
+    match behavior {
+        MountStubBehavior::Ok { ra_hours, .. } => axum::Json(serde_json::json!({
+            "Value": ra_hours,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })),
+        MountStubBehavior::AscomError => axum::Json(serde_json::json!({
+            "Value": 0.0,
+            "ErrorNumber": 1024,
+            "ErrorMessage": "simulated mount read failure"
+        })),
+        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
+            "Value": 0.0,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })),
+    }
+}
+
+async fn handle_declination(
+    axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
+) -> axum::Json<Value> {
+    state.read_count.fetch_add(1, Ordering::Relaxed);
+    let behavior = state.behavior.read().expect("mount stub rwlock").clone();
+    match behavior {
+        MountStubBehavior::Ok { dec_deg, .. } => axum::Json(serde_json::json!({
+            "Value": dec_deg,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })),
+        MountStubBehavior::AscomError => axum::Json(serde_json::json!({
+            "Value": 0.0,
+            "ErrorNumber": 1024,
+            "ErrorMessage": "simulated mount read failure"
+        })),
+        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
+            "Value": 0.0,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })),
     }
 }
