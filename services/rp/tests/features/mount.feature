@@ -37,6 +37,7 @@ Feature: Mount tools
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     And the mount tracking is set to true
     When the MCP client calls "slew" with ra "10.6847" dec "41.2689"
     Then the tool call should succeed
@@ -47,6 +48,7 @@ Feature: Mount tools
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     And the mount tracking is set to false
     When the MCP client calls "slew" with ra "10.6847" dec "41.2689"
     Then the tool call should return an error
@@ -154,10 +156,16 @@ Feature: Mount tools
     Then the tool call should succeed
     And the get_tracking result tracking should be false
 
+  # Pin at_park == false explicitly: earlier scenarios in this
+  # feature park the singleton OmniSim mount, so we can't assume the
+  # default. The bare `park` call would still succeed if invoked while
+  # already at_park == true, but pre-parking masks the actual park
+  # transition this scenario is meant to exercise.
   Scenario: park stows the mount and reports at_park == true
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     When the MCP client calls "park"
     Then the tool call should succeed
     When the MCP client calls "get_park_state"
@@ -172,10 +180,15 @@ Feature: Mount tools
     Then the tool call should return an error
     And the error message should contain "no mount configured"
 
+  # `the mount is unparked` Given enables tracking before the
+  # scenario's first park — without it, OmniSim's slew loop wouldn't
+  # advance the park slew (tracking gets cleared by ASCOM after the
+  # previous park scenario), and the When step would deadline out.
   Scenario: unpark clears the mount's parked flag
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     When the MCP client calls "park"
     Then the tool call should succeed
     When the MCP client calls "get_park_state"
