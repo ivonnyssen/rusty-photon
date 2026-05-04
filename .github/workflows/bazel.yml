@@ -149,7 +149,7 @@ jobs:
       # once the action-key delta is identified and fixed.
       - name: Upload BDD execution log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bdd-exec-log-${{ matrix.os }}-${{ github.event_name }}
           path: ${{ runner.temp }}/bdd-exec.log.zst
