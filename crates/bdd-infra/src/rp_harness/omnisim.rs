@@ -52,6 +52,40 @@ impl OmniSimHandle {
             port: process.port,
         }
     }
+
+    /// Reset the telescope simulator device to its OmniSim default state
+    /// without restarting the simulator process.
+    ///
+    /// Posts to OmniSim's private `PUT /simulator/v1/telescope/{n}/restart`
+    /// endpoint, which calls `DriverManager.LoadTelescope(0)` server-side.
+    /// The result is equivalent to OmniSim having just started: AtPark
+    /// false, Tracking false, position at the configured startup
+    /// alt/az (default ≈ alt 38.9° az 165° — above horizon).
+    ///
+    /// No-op if OmniSim is not yet running (e.g. invoked from a
+    /// pre-scenario hook before any scenario has spawned the
+    /// simulator). The shared `OMNISIM` singleton is checked via
+    /// `OnceCell::get`, which never blocks.
+    ///
+    /// Errors are silently ignored: a failed reset shouldn't sink the
+    /// scenario; if state pollution caused by a missed reset breaks a
+    /// later assertion, the scenario will fail loudly there. The
+    /// endpoint is OmniSim-only (not part of standard Alpaca), so
+    /// older or alternative simulators may 404 — that's expected and
+    /// non-fatal.
+    pub async fn reset_telescope() {
+        let Some(process) = OMNISIM.get() else {
+            return;
+        };
+        let url = format!("{}/simulator/v1/telescope/0/restart", process.base_url);
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+        else {
+            return;
+        };
+        let _ = client.put(&url).send().await;
+    }
 }
 
 impl OmniSimProcess {

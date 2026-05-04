@@ -1212,9 +1212,15 @@ impl McpHandler {
         Ok((actual_ra, actual_dec))
     }
 
-    /// Resolve the mount, issue `park()`, poll `slewing()` until idle
-    /// (300 s deadline), and verify `at_park()` returns true before
-    /// returning.
+    /// Resolve the mount, issue `park()`, then poll `at_park()` every
+    /// 100 ms until it returns `true` (300 s deadline).
+    ///
+    /// `AtPark` is the ASCOM-canonical "park is complete" signal — set
+    /// in exactly one code path (the slew-to-park completion handler).
+    /// Polling `Slewing` would be over-conservative: ASCOM's
+    /// `IsSlewing` is sticky on `MoveAxis`-driven rate state and any
+    /// non-idle `SlewState`, so unrelated prior activity can keep it
+    /// `true` even after `ChangePark(true)` has fired.
     ///
     /// Unlike `do_slew_blocking`, this does NOT auto-abort on timeout
     /// — a partially-completed park is closer to safe than an
@@ -1234,20 +1240,16 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to park: {}", e))?;
 
-        match poll_slewing_until_idle(mount.as_ref()).await {
-            Ok(()) => {}
-            Err(PollIdleError::Timeout) => {
-                return Err("timeout waiting for mount to park".to_string());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            match mount.at_park().await {
+                Ok(true) => return Ok(()),
+                Ok(false) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Ok(false) => return Err("timeout waiting for mount to park".to_string()),
+                Err(e) => return Err(format!("error polling mount at_park: {}", e)),
             }
-            Err(PollIdleError::Read(e)) => {
-                return Err(format!("error polling mount slewing: {}", e));
-            }
-        }
-
-        match mount.at_park().await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("park completed but mount is not at park".to_string()),
-            Err(e) => Err(format!("failed to verify mount at_park: {}", e)),
         }
     }
 }
@@ -5043,8 +5045,8 @@ mod tests {
     // Singular mount, no params on any of these tools.
     // -----------------------------------------------------------------------
 
-    /// Mock's `slewing()` returns false immediately; `at_park()` is
-    /// overridden to true so the post-park verify arm passes.
+    /// Mock's `at_park()` returns true immediately, so the polling
+    /// loop exits on the first iteration.
     #[tokio::test]
     async fn test_park_success() {
         let mount = MockTelescope {
@@ -5081,22 +5083,7 @@ mod tests {
         assert_tool_error(result, "failed to park");
     }
 
-    /// Slew completes (slewing() returns false), but at_park() reports
-    /// false — the mount finished its motion but isn't actually parked.
-    /// This is the "rare driver bug" arm that the post-condition guards
-    /// against.
-    #[tokio::test]
-    async fn test_park_completes_but_not_at_park() {
-        let mount = MockTelescope {
-            at_park_value: false,
-            ..Default::default()
-        };
-        let handler = test_handler(mount_registry(Arc::new(mount), None));
-        let result = handler.park(Parameters(ParkParams {})).await;
-        assert_tool_error(result, "park completed but mount is not at park");
-    }
-
-    /// 300 s deadline expires while `slewing()` keeps returning `true`.
+    /// 300 s deadline expires while `at_park()` keeps returning `false`.
     /// Unlike `slew`, `park` does NOT auto-abort — it surfaces the
     /// timeout and lets the caller decide. `start_paused` lets tokio
     /// auto-advance virtual time so the test runs in real-time
@@ -5104,8 +5091,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_park_timeout_does_not_auto_abort() {
         let mount = MockTelescope {
-            stuck_slewing: true,
-            at_park_value: true,
+            at_park_value: false,
             ..Default::default()
         };
         let handler = test_handler(mount_registry(Arc::new(mount), None));
@@ -5202,39 +5188,24 @@ mod tests {
         assert_tool_error(result, "failed to read mount can_unpark");
     }
 
-    /// `park()` succeeds, `slewing()` returns false, but `at_park()`
-    /// itself errors during the post-park verification — distinct from
-    /// `at_park()` returning `Ok(false)` (which is the "completed but
-    /// not at park" arm). Pins the third arm of the post-condition
-    /// check.
+    /// `park()` succeeds, but the very first `at_park()` poll errors
+    /// — covers the `Err` arm of the polling loop. The previous
+    /// implementation polled `Slewing` and then verified `AtPark`
+    /// separately; now both arms collapse into the single at_park
+    /// poll error path.
     #[tokio::test]
-    async fn test_park_at_park_read_fails_during_verify() {
+    async fn test_park_at_park_poll_fails() {
         let mount = MockTelescope {
             fail_at_park: true,
             ..Default::default()
         };
         let handler = test_handler(mount_registry(Arc::new(mount), None));
         let result = handler.park(Parameters(ParkParams {})).await;
-        assert_tool_error(result, "failed to verify mount at_park");
+        assert_tool_error(result, "error polling mount at_park");
     }
 
-    /// Polling `slewing()` itself errors during the park wait —
-    /// covers the `PollIdleError::Read` arm in `do_park_blocking`.
-    #[tokio::test]
-    async fn test_park_polling_error_propagates() {
-        let mount = MockTelescope {
-            fail_slewing_poll: true,
-            at_park_value: true,
-            ..Default::default()
-        };
-        let handler = test_handler(mount_registry(Arc::new(mount), None));
-        let result = handler.park(Parameters(ParkParams {})).await;
-        assert_tool_error(result, "error polling mount slewing");
-    }
-
-    /// Same coverage for `do_slew_blocking`'s `PollIdleError::Read`
-    /// arm — the helper is shared with park, but the slew callsite
-    /// has its own error-mapping path.
+    /// `do_slew_blocking` polls `Slewing`; this covers the
+    /// `PollIdleError::Read` arm.
     #[tokio::test]
     async fn test_slew_polling_error_propagates() {
         let mount = MockTelescope {

@@ -66,6 +66,25 @@ async fn rp_running_with_mount_and_settle(world: &mut RpWorld, settle_ms: i64) {
     start_rp(world).await;
 }
 
+/// Given step pinning the mount to `at_park == false`.
+///
+/// Used by slew-and-related scenarios as a self-documenting
+/// precondition ("this scenario requires the mount to be unparked").
+/// The per-scenario `before` hook in `bdd.rs` calls
+/// `OmniSimHandle::reset_telescope`, which already leaves OmniSim's
+/// telescope at AtPark=false — so this step is functionally
+/// redundant on the standard run path. It exists for readability and
+/// as a safety net if the reset endpoint ever changes or is bypassed.
+#[given("the mount is unparked")]
+async fn mount_is_unparked(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    world
+        .mcp()
+        .call_tool("unpark", serde_json::json!({}))
+        .await
+        .expect("unpark should succeed in scenario setup");
+}
+
 #[given(expr = "the mount tracking is set to {word}")]
 async fn mount_tracking_set_to(world: &mut RpWorld, value: String) {
     let enabled: bool = match value.as_str() {
