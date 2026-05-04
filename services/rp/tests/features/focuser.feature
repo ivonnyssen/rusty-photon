@@ -36,9 +36,9 @@ Feature: Focuser tools
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25100
     Then the tool call should succeed
-    And the move_focuser result actual_position should be 25000
+    And the move_focuser result actual_position should be 25100
 
   Scenario: move_focuser with target equal to current position succeeds
     Given a running Alpaca simulator

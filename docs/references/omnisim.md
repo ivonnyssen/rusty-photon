@@ -198,11 +198,17 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   cover/calibrator state every 3 s by default
   (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).
   Without overriding it, even a 0.6-second OmniSim transition
-  ends up bounded by rp's 3-second poll. The BDD harness sets
-  `cover_calibrator.poll_interval = 100ms` on every
-  `CoverCalibratorConfig` it builds (see
-  `crates/bdd-infra/src/rp_harness/config.rs`); production rp
-  deployments keep the upstream 3-second default.
+  ends up bounded by rp's 3-second poll.
+  `bdd_infra::rp_harness::CoverCalibratorConfig` exposes a
+  `poll_interval: Option<Duration>` field
+  (`crates/bdd-infra/src/rp_harness/config.rs`) that the
+  builder serialises into the rp config JSON; the actual
+  100 ms override is set at the BDD step call sites that
+  construct `CoverCalibratorConfig`
+  (`services/rp/tests/bdd/steps/cover_calibrator_steps.rs`
+  and
+  `services/calibrator-flats/tests/bdd/steps/flat_calibration_steps.rs`).
+  Production rp deployments keep the upstream 3-second default.
 
 ### Camera
 
