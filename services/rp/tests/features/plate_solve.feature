@@ -1,4 +1,3 @@
-@wip
 @serial
 Feature: Plate solve MCP tool
   The plate_solve MCP tool proxies to the plate-solver rp-managed service

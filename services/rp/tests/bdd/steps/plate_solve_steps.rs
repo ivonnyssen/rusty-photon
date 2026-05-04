@@ -340,14 +340,21 @@ async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hin
         .get("dec_hint")
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("expected dec_hint in request, got: {:?}", request));
+    // Tolerance 0.01° (~36 arcsec) covers OmniSim's mount-echo
+    // float drift (~0.001° / ~3.6 arcsec, same root cause as
+    // mount.feature's slew tolerance) while still catching a missed
+    // ×15 hours-to-degrees conversion (which would put RA off by
+    // an order of magnitude). The wrapper itself searches around
+    // the hint with the configured search_radius_deg, so sub-arcsec
+    // hint precision isn't load-bearing.
     assert!(
-        (actual_ra - ra_hint).abs() < 1e-3,
+        (actual_ra - ra_hint).abs() < 0.01,
         "expected ra_hint ≈ {}, got {}",
         ra_hint,
         actual_ra
     );
     assert!(
-        (actual_dec - dec_hint).abs() < 1e-3,
+        (actual_dec - dec_hint).abs() < 0.01,
         "expected dec_hint ≈ {}, got {}",
         dec_hint,
         actual_dec

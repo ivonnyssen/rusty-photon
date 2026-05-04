@@ -790,8 +790,13 @@ lands.
 
 ##### Phase 6c-2 — `plate_solve` built-in MCP tool
 
-Status: **planned (2026-05-04).** Depends on Phase 6c-1 (plate-solver
-service, shipped) and Phase 6c-prep (mount primitives, shipped).
+Status: **complete (2026-05-05).** All four steps landed; 235/235
+BDD scenarios green (was 216/216 pre-Phase-6c-2 + 19 new), 879
+tests pass workspace-wide via `cargo rail run --profile commit -q`.
+New crate `crates/rp-plate-solver` carries the HTTP client +
+mockall mock; `services/rp` adds the `plate_solver` config block,
+the `plate_solve` MCP tool, and the `resolve_document_by_path`
+helper for the late-solve workflow's image_path persistence.
 
 ###### Decisions resolved during Phase 6c-2 planning
 
@@ -905,7 +910,7 @@ Step 1) and should not be re-litigated:
 
 **Step 1 — Design doc updates (Phase 1 of dev workflow).**
 
-- [ ] `docs/services/rp.md` updates:
+- [x] `docs/services/rp.md` updates:
    - Built-in Tools — Image Analysis table: add `plate_solve` row
      with the final input shape (`document_id` | `image_path`,
      optional `pointing_hint` / `use_mount_hints` / `fov_hint_deg` /
@@ -923,7 +928,7 @@ Step 1) and should not be re-litigated:
      section to `wcs`, update field names to wrapper's response
      shape (`ra_center`, `dec_center`, `pixel_scale_arcsec`,
      `rotation_deg`, `solver`).
-- [ ] `docs/services/plate-solver.md` §"Hint sources and
+- [x] `docs/services/plate-solver.md` §"Hint sources and
   search-radius defaults": flip the auto-sourcing description ("rp's
   `plate_solve` MCP handler reads both via the equipment registry,
   performs the RA conversion, and forwards the request") to "rp's
@@ -934,7 +939,7 @@ Step 1) and should not be re-litigated:
 **Step 2 — BDD feature + step defs (Phase 2 of dev workflow, with
 `@wip`).**
 
-- [ ] `services/rp/tests/features/plate_solve.feature` (~17
+- [x] `services/rp/tests/features/plate_solve.feature` (~17
   scenarios, `@wip` tag at top per `testing.md` §2.6):
   1. Catalog includes `plate_solve` (1)
   2. Happy path — `image_path` mode against in-test stub returns
@@ -967,7 +972,7 @@ Step 1) and should not be re-litigated:
 
   (Final count likely 18–19 with the Scenario Outline; tighten in
   Step 2 implementation.)
-- [ ] `services/rp/tests/bdd/steps/plate_solve_steps.rs` reusing
+- [x] `services/rp/tests/bdd/steps/plate_solve_steps.rs` reusing
   `tool_steps.rs` shared steps. New steps:
   - `Given(a stub plate solver returning a canned WCS)` — spawns
     axum router on `127.0.0.1:0`, holds receiver-side request log
@@ -981,18 +986,18 @@ Step 1) and should not be re-litigated:
     interprets `MISSING` sentinel as omitted field.
   - `Then(the plate solver received hints ra=<f> dec=<f>)` and the
     negative variant.
-- [ ] `RpWorld` additions: `last_plate_solver_stub:
+- [x] `RpWorld` additions: `last_plate_solver_stub:
   Option<PlateSolverStub>` (handle wrapping the stub server for
   inspection), `last_plate_solve_result: Option<Value>`. Wire into
   `tests/bdd/steps/mod.rs`.
-- [ ] `bdd_infra::rp_harness::RpConfigBuilder::with_plate_solver(url,
+- [x] `bdd_infra::rp_harness::RpConfigBuilder::with_plate_solver(url,
   timeout, default_search_radius_deg: Option<f64>)` builder method,
   mirroring `with_mount`. Builder emits `"plate_solver": null | { …
   }` so existing scenarios that don't set it stay unaffected.
 
 **Step 3 — Implementation (Phase 3 of dev workflow).**
 
-- [ ] `crates/rp-plate-solver/` (new workspace member):
+- [x] `crates/rp-plate-solver/` (new workspace member):
   - `Cargo.toml` mirroring the other `rp-*` crates' shape.
     Workspace deps only (`reqwest`, `serde`, `serde_json`,
     `thiserror`, `humantime-serde`, `tracing`, `mockall` for tests).
@@ -1008,10 +1013,10 @@ Step 1) and should not be re-litigated:
     `equipment.rs:connect_focuser` tests at line 791+): happy path,
     each of the 5 wrapper error codes round-trip, connection-refused,
     body-parse-failure (200 with malformed JSON ⇒ `Internal`).
-- [ ] `services/rp/Cargo.toml`: add `rp-plate-solver = { workspace =
+- [x] `services/rp/Cargo.toml`: add `rp-plate-solver = { workspace =
   true }` dep. Workspace `Cargo.toml`: register the new crate as a
   workspace member and dep.
-- [ ] `services/rp/src/config.rs`:
+- [x] `services/rp/src/config.rs`:
   - New `PlateSolverConfig { url: String, timeout: Duration
     (humantime, default `"60s"`), default_search_radius_deg:
     Option<f64> }`.
@@ -1019,7 +1024,7 @@ Step 1) and should not be re-litigated:
     `Config` with `#[serde(default)]`.
   - 2 unit tests: minimal-fields (just `url`, defaults applied),
     with-default-search-radius.
-- [ ] `services/rp/src/mcp.rs`:
+- [x] `services/rp/src/mcp.rs`:
   - New `PlateSolveParams { document_id, image_path, pointing_hint:
     Option<PointingHint>, use_mount_hints: Option<bool>,
     fov_hint_deg, search_radius_deg, timeout }` struct (all optional
@@ -1052,21 +1057,21 @@ Step 1) and should not be re-litigated:
     path, hint validation arms, document_id resolution,
     `image_path`-with/without-UUID-match persistence, each wrapper
     error propagated, missing-param errors.
-- [ ] `services/rp/src/lib.rs` / `main.rs`: wire the new
+- [x] `services/rp/src/lib.rs` / `main.rs`: wire the new
   `PlateSolverConfig` into a `Option<Box<dyn PlateSolveClient>>`
   field on `AppState` (trait-typed so tests can swap in the mock).
 
 **Step 4 — Activate BDD + cleanup.**
 
-- [ ] Remove `@wip` tag from `plate_solve.feature` line 1.
-- [ ] Run full suite (`cargo rail run --profile commit -q` per
+- [x] Remove `@wip` tag from `plate_solve.feature` line 1.
+- [x] Run full suite (`cargo rail run --profile commit -q` per
   CLAUDE.md rule 4); confirm BDD count: 187 + ~18 = ~205 scenarios
   green.
-- [ ] `cargo fmt`. `cargo build --all --all-targets --all-features
+- [x] `cargo fmt`. `cargo build --all --all-targets --all-features
   --locked` for linker-visible code per CLAUDE.md rule 4.
   `CARGO_BAZEL_REPIN=1 bazel mod tidy` only if new crates.io deps
   landed (none expected).
-- [ ] Plan-doc bookkeeping: flip Phase 6c-2 status to **complete**
+- [x] Plan-doc bookkeeping: flip Phase 6c-2 status to **complete**
   with the work-breakdown checkboxes ticked, exit-criteria block
   populated with concrete BDD/unit-test counts.
 
