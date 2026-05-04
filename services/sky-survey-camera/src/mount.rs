@@ -125,12 +125,7 @@ fn build_alpaca_client(
         Some(a) => {
             let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
             let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                "authorization",
-                format!("Basic {encoded}")
-                    .parse()
-                    .expect("valid header value"),
-            );
+            headers.insert("authorization", format!("Basic {encoded}").parse()?);
             let http = reqwest::Client::builder()
                 .default_headers(headers)
                 .build()?;

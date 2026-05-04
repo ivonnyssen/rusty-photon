@@ -443,14 +443,18 @@ setter because the spec defines a hard `[1, MaxBin]` range.
 Active only when `pointing.telescope` is present in config. F-contracts
 do not apply in static mode.
 
-- **F1.** With `pointing.telescope` set, every `StartExposure` reads
-  `right_ascension` and `declination` fresh from the configured
-  ASCOM Telescope and snapshots
+- **F1.** With `pointing.telescope` set, every light `StartExposure`
+  (`Light = true`) reads `right_ascension` and `declination` fresh
+  from the configured ASCOM Telescope and snapshots
   `PointingState { ra_deg: (mount_ra + offset_ra).rem_euclid(360),
    dec_deg: clamp(mount_dec + offset_dec, -90, +90),
    rotation_deg: pointing.initial_rotation_deg }`.
   Rotation is **not** sourced from the mount (ASCOM Telescope has no
   rotation property); future work could add a connected Rotator.
+  Dark exposures (`Light = false`) skip the mount read entirely —
+  they produce a zero-filled frame per S2 and have no sky to render,
+  so the read would only add latency. `last_snapshot` is therefore
+  not refreshed by a dark frame.
 - **F2.** A failed Telescope read (transport error, ASCOM error, or a
   read that exceeds `pointing.telescope.request_timeout`) returns
   `UNSPECIFIED_ERROR`, sets `last_error`, and leaves
@@ -460,10 +464,11 @@ do not apply in static mode.
   unreachable. The mount is read fresh on the *next* `StartExposure`,
   where any error surfaces via F2. (Same posture as C3 for SkyView:
   ASCOM Connect must not block on slow upstream handshakes.)
-- **F4.** Mount RA/Dec are read fresh on every `StartExposure`. There
-  is no client-side cache — caching would mask `slew` events that
-  other Alpaca clients (notably `rp`) issued between exposures,
-  defeating follow-mode's purpose.
+- **F4.** Mount RA/Dec are read fresh on every light `StartExposure`
+  (see F1 on dark exposures). There is no client-side cache —
+  caching would mask `slew` events that other Alpaca clients
+  (notably `rp`) issued between exposures, defeating follow-mode's
+  purpose.
 - **F5.** The configured offset is applied as
   `(mount_ra_deg + offset_ra_arcsec/3600).rem_euclid(360)` for RA and
   `clamp(mount_dec_deg + offset_dec_arcsec/3600, -90, +90)` for Dec.

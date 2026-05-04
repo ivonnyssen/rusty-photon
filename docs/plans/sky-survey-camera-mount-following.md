@@ -124,7 +124,7 @@ The `mount.feature` scenarios that mutate Telescope state (e.g. `park`) are alre
 Schema rules:
 
 - `pointing.telescope` absent → static mode, today's behaviour.
-- `pointing.telescope` present → follow mode. `initial_*` fields are still parsed but used only as a one-time fallback if the very first mount read fails (so the camera doesn't hard-error before `rp` has finished its own connect handshake).
+- `pointing.telescope` present → follow mode. `initial_ra_deg` and `initial_dec_deg` seed `last_snapshot` so a `GET /sky-survey/position` issued before the first exposure returns *something* (and so static-mode tests can reuse the same `Config`); they are *not* used as a fallback when a mount read fails — F2 fails the exposure outright. `initial_rotation_deg` is the rotation source on every snapshot in this mode (F1; rotation is not read from the Telescope).
 - `offset_*_arcsec` default to 0, so following mode without an offset is the realistic-mount case (no error to converge from — that's a config choice, not a default behaviour).
 - `request_timeout` is humantime, defaults `2s`, validated `> 0`.
 - `auth` reuses `rp_auth::config::ClientAuthConfig` for symmetry with `rp`'s mount config.
