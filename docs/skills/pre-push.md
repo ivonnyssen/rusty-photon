@@ -58,7 +58,9 @@ act -W .github/workflows/scheduled.yml -j beta &
 act -W .github/workflows/scheduled.yml -j update &
 wait
 act -W .github/workflows/scheduled.yml -j discover-miri -j miri  # slow
-act -W .github/workflows/conformu.yml -j plan -j conformu        # nightly + on-demand
+# conformu.yml only triggers on schedule/workflow_dispatch, so act needs
+# the workflow_dispatch event explicitly:
+act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # nightly + on-demand
 ```
 
 > **Note:** `act` runs Linux Docker containers, so the `os-check` job
@@ -203,6 +205,7 @@ Current services and their commands:
 - **filemonitor**: `cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture`
 - **ppba-driver**: `cargo test -p ppba-driver --features conformu --test conformu_integration -- --ignored --nocapture`
 - **qhy-focuser**: `cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored --nocapture`
+- **sky-survey-camera**: `cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --ignored --nocapture`
 
 ### scheduled.yml (rolling)
 

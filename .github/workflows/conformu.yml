@@ -1,16 +1,20 @@
 # ASCOM ConformU conformance suite for every service that opts in via
 # `[package.metadata.conformu]` in its Cargo.toml.
 #
-# Cadence: nightly cron + workflow_dispatch (manual). ConformU exercises
-# the running Alpaca server end-to-end across three OSes, so it is the
-# single most expensive workflow we have. Running it on every push and
-# PR was overkill: conformance regressions are real but rare, and the
-# faster `check`/`test` workflows already gate the unit-level changes
-# that would most often break conformance. A nightly run catches drift
+# Cadence: nightly cron + workflow_dispatch (manual) + paths-filtered
+# PR/push on this workflow file itself. ConformU exercises the running
+# Alpaca server end-to-end across three OSes, so it is the single most
+# expensive workflow we have. Running it on every push and PR was
+# overkill: conformance regressions are real but rare, and the faster
+# `check`/`test` workflows already gate the unit-level changes that
+# would most often break conformance. A nightly run catches drift
 # without paying the matrix on every PR; `workflow_dispatch` covers the
-# "I just touched the Alpaca interface, run it now" case. The
-# `notify-on-failure` job opens or updates a tracking issue so a red
-# nightly does not sit unnoticed in the Actions tab.
+# "I just touched the Alpaca interface, run it now" case. The paths
+# filter keeps PR-time validation on edits to this workflow itself,
+# so a YAML or github-script regression is caught before merge rather
+# than only at the next cron fire. The `notify-on-failure` job opens
+# or updates a tracking issue so a red nightly does not sit unnoticed
+# in the Actions tab.
 permissions:
   contents: read
 
@@ -21,10 +25,17 @@ on:
     # contend for the same hosted-runner pool minute.
     - cron: "30 5 * * *"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/conformu.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/conformu.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.run_id }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   plan:
