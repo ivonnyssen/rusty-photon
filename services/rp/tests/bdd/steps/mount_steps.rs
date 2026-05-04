@@ -66,77 +66,23 @@ async fn rp_running_with_mount_and_settle(world: &mut RpWorld, settle_ms: i64) {
     start_rp(world).await;
 }
 
-/// Given step pinning the mount to a clean, ready-to-slew state:
-/// not slewing, not parked, tracking enabled.
+/// Given step pinning the mount to `at_park == false`.
 ///
-/// OmniSim is a singleton across the BDD process, so mount state
-/// leaks between scenarios. Three distinct kinds of pollution have
-/// to be cleared before a subsequent slew (including `Park()`,
-/// which slews to the park position) can succeed:
-///
-/// 1. **Residual slew state.** A prior scenario can leave OmniSim
-///    with `SlewState != SlewNone`. Calling `abort_slew` first
-///    clears it. The abort is best-effort: ASCOM's `AbortSlew`
-///    errors when no slew is in progress, and we ignore that error.
-///
-/// 2. **Parked flag.** `Unpark()` sets `AtPark = false`. Idempotent
-///    on OmniSim and required so the next slew doesn't trip the
-///    parked-mount rejection.
-///
-/// 3. **Tracking.** OmniSim's slew-progress loop only advances the
-///    mount while `Tracking == true`. With tracking off (e.g. left
-///    that way by a prior `set_tracking disables` scenario), Park
-///    enters `SlewType.SlewPark` but the simulator never advances
-///    toward the park position, so `AtPark` stays `false`
-///    indefinitely. Setting tracking on here unblocks the park
-///    slew; ASCOM clears it again once park completes.
-///
-/// Scenarios that rely on a clean ready-to-slew state (slew, park,
-/// unpark) should call this Given to make the precondition explicit
-/// rather than depending on inherited state. Scenarios that
-/// specifically test tracking-off behavior should follow this Given
-/// with an explicit `the mount tracking is set to false`.
+/// Used by slew-and-related scenarios as a self-documenting
+/// precondition ("this scenario requires the mount to be unparked").
+/// The per-scenario `before` hook in `bdd.rs` calls
+/// `OmniSimHandle::reset_telescope`, which already leaves OmniSim's
+/// telescope at AtPark=false — so this step is functionally
+/// redundant on the standard run path. It exists for readability and
+/// as a safety net if the reset endpoint ever changes or is bypassed.
 #[given("the mount is unparked")]
 async fn mount_is_unparked(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
-    let _ = world
-        .mcp()
-        .call_tool("abort_slew", serde_json::json!({}))
-        .await;
     world
         .mcp()
         .call_tool("unpark", serde_json::json!({}))
         .await
         .expect("unpark should succeed in scenario setup");
-    world
-        .mcp()
-        .call_tool("set_tracking", serde_json::json!({ "enabled": true }))
-        .await
-        .expect("set_tracking(true) should succeed in scenario setup");
-}
-
-/// Given step pinning the mount's parked state to `at_park == true`.
-///
-/// Mirrors `the mount is unparked`: aborts any in-flight slew and
-/// enables tracking so OmniSim's park slew can advance, then issues
-/// `park`. The MCP `park` tool blocks polling `AtPark` until true.
-#[given("the mount is parked")]
-async fn mount_is_parked(world: &mut RpWorld) {
-    ensure_mcp_client(world).await;
-    let _ = world
-        .mcp()
-        .call_tool("abort_slew", serde_json::json!({}))
-        .await;
-    world
-        .mcp()
-        .call_tool("set_tracking", serde_json::json!({ "enabled": true }))
-        .await
-        .expect("set_tracking(true) should succeed in scenario setup");
-    world
-        .mcp()
-        .call_tool("park", serde_json::json!({}))
-        .await
-        .expect("park should succeed in scenario setup");
 }
 
 #[given(expr = "the mount tracking is set to {word}")]
