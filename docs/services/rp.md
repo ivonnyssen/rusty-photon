@@ -152,7 +152,18 @@ The document accumulates data as it flows through the system.
   "file_path": "/data/lights/M31/M31_L_300s_001.fits",
   "session_id": "session-2026-03-01",
   "sequence_number": 42,
-  "max_adu": 65535
+  "max_adu": 65535,
+  "optics": {
+    "focal_length_mm": 1000.0,
+    "pixel_size_x_um": 3.76,
+    "pixel_size_y_um": 3.76,
+    "sensor_width_px": 9576,
+    "sensor_height_px": 6388,
+    "pixel_scale_x_arcsec_per_pixel": 0.7756,
+    "pixel_scale_y_arcsec_per_pixel": 0.7756,
+    "fov_width_deg": 2.0630,
+    "fov_height_deg": 1.3762
+  }
 }
 ```
 
@@ -164,6 +175,45 @@ uses it to choose the `CachedPixels::U16` vs `I32` variant without
 needing the originating camera to be connected. `null` (omitted on
 serialize) when the read failed at capture time; in that case the
 cache insert is skipped and the entry serves from disk on demand.
+
+`optics` carries the camera + optical-train geometry that consumers
+need to interpret the frame without re-deriving it from a plate
+solve. Built at capture time from three sources:
+
+1. `focal_length_mm` is operator-supplied via `equipment.cameras[].focal_length_mm`.
+   It captures the optical train (telescope, reducers, extenders) which has no
+   ASCOM Alpaca property — even the optional `Telescope.FocalLength` ignores
+   anything screwed in front of the camera.
+2. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
+   `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns).
+3. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
+   `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`).
+
+Pixel scale and FOV are derived (`fov_width_deg` corresponds to
+`sensor_width_px`; height likewise):
+
+```
+pixel_scale_arcsec_per_pixel = 206.265 × pixel_size_um / focal_length_mm
+fov_deg                       = pixel_scale_arcsec_per_pixel × sensor_size_px / 3600
+```
+
+The block is omitted (serializes as absent, not `null`) when any of
+its inputs is unavailable: `focal_length_mm` was not configured for
+this camera, the camera's `pixel_size_*` read failed, or the camera's
+`camera_*_size` read failed. Each missing input is logged at `debug!`.
+Capture continues — `optics` is auxiliary metadata, not gating.
+
+Per-frame variation (binning swaps, focal reducers screwed in
+mid-session) is out of scope. The persisted block reflects the
+operator-declared static optical train and the camera's reported
+sensor geometry at capture time. This is sufficient for `plate_solve`
+hint sourcing and for consumers like annotation and mosaic planning.
+
+When the Phase 6c-2 `plate_solve` built-in tool lands (see
+`docs/plans/image-evaluation-tools.md`), its `document_id` mode uses
+`optics.fov_height_deg` as the default `fov_hint_deg` — `fov_height_deg`
+matches ASTAP's `-fov` semantics ("image height in degrees"). Callers
+keep the option to override with an explicit `fov_hint_deg` parameter.
 
 ### Plugin Sections (contributed via API)
 
@@ -2540,6 +2590,7 @@ when the config sets a non-zero default).
         "cooler_target_c": -10,
         "gain": 100,
         "offset": 50,
+        "focal_length_mm": 1000.0,
         "auth": {
           "username": "observatory",
           "password": "secret"
@@ -2553,7 +2604,8 @@ when the config sets a non-zero default).
         "device_number": 0,
         "cooler_target_c": -10,
         "gain": 200,
-        "offset": 30
+        "offset": 30,
+        "focal_length_mm": 200.0
       }
     ],
     "mount": {

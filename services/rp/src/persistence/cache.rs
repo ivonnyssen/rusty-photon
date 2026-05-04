@@ -530,6 +530,7 @@ mod tests {
             camera_id: None,
             duration: None,
             max_adu: None,
+            optics: None,
             sections: Map::new(),
         }
     }

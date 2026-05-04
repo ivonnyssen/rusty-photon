@@ -956,6 +956,10 @@ impl McpHandler {
             .as_ref()
             .cloned()
             .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
+        // Snapshot the configured focal length now — `cam_entry` is a
+        // borrow off `self.equipment` and we want the f64 (Copy) without
+        // hanging on to that borrow across the `await`s below.
+        let focal_length_mm = cam_entry.config.focal_length_mm;
 
         let document_id = Uuid::new_v4().to_string();
         // The 8-char UUID suffix is the on-disk reverse-lookup key used by
@@ -1018,6 +1022,87 @@ impl McpHandler {
             }
         };
 
+        // Optical geometry for the sidecar's `optics` block. Combines the
+        // operator-supplied focal length with raw Alpaca pixel-size and
+        // sensor-dimension reads. Any missing piece (focal length not
+        // configured, camera read failed) drops the whole block — see
+        // `docs/services/rp.md` §"Core Fields". Failures are isolated to
+        // this auxiliary metadata; capture itself proceeds.
+        let optics = match focal_length_mm {
+            Some(focal_length_mm) => {
+                let pixel_size_x_um = match cam.pixel_size_x().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "pixel_size_x unavailable for this capture");
+                        None
+                    }
+                };
+                let pixel_size_y_um = match cam.pixel_size_y().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "pixel_size_y unavailable for this capture");
+                        None
+                    }
+                };
+                let sensor_width_px = match cam.camera_x_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "camera_x_size unavailable for this capture");
+                        None
+                    }
+                };
+                let sensor_height_px = match cam.camera_y_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "camera_y_size unavailable for this capture");
+                        None
+                    }
+                };
+                match (
+                    pixel_size_x_um,
+                    pixel_size_y_um,
+                    sensor_width_px,
+                    sensor_height_px,
+                ) {
+                    (Some(px), Some(py), Some(sw), Some(sh)) => {
+                        let derived = persistence::Optics::from_camera_geometry(
+                            focal_length_mm,
+                            px,
+                            py,
+                            sw,
+                            sh,
+                        );
+                        if derived.is_none() {
+                            // All Alpaca reads succeeded but the derivation
+                            // declined — typically a non-positive or
+                            // wild-magnitude reading that would have
+                            // overflowed the derived pixel scale / FOV.
+                            // Surface enough to diagnose bad camera state
+                            // or a misconfigured focal length.
+                            debug!(
+                                camera_id,
+                                focal_length_mm,
+                                pixel_size_x_um = px,
+                                pixel_size_y_um = py,
+                                sensor_width_px = sw,
+                                sensor_height_px = sh,
+                                "optics derivation declined; omitting block"
+                            );
+                        }
+                        derived
+                    }
+                    _ => None,
+                }
+            }
+            None => {
+                debug!(
+                    camera_id,
+                    "focal_length_mm not configured; omitting optics block"
+                );
+                None
+            }
+        };
+
         // Dispatch on max_adu, collecting pixels directly into the
         // narrowest type each path needs and reusing the same buffer
         // for the cache insert.
@@ -1054,6 +1139,7 @@ impl McpHandler {
             camera_id: Some(camera_id.to_string()),
             duration: Some(duration),
             max_adu: captured_max_adu,
+            optics,
             sections: serde_json::Map::new(),
         };
         self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
@@ -2995,6 +3081,7 @@ mod tests {
         fail_image_array: bool,
         fail_max_adu: bool,
         fail_camera_size: bool,
+        fail_pixel_size: bool,
         fail_exposure_range: bool,
         /// `0` ⇒ default 65535. Any other value is returned verbatim — set
         /// to `> u16::MAX` to exercise the I32 cache-insert path.
@@ -3080,10 +3167,16 @@ mod tests {
         }
 
         async fn pixel_size_x(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            if self.fail_pixel_size {
+                return Err(ASCOMError::invalid_operation("pixel size unavailable"));
+            }
             Ok(3.76)
         }
 
         async fn pixel_size_y(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            if self.fail_pixel_size {
+                return Err(ASCOMError::invalid_operation("pixel size unavailable"));
+            }
             Ok(3.76)
         }
 
@@ -3573,6 +3666,13 @@ mod tests {
     fn camera_registry(
         cam: Arc<dyn ascom_alpaca::api::Camera>,
     ) -> crate::equipment::EquipmentRegistry {
+        camera_registry_with_focal_length(cam, None)
+    }
+
+    fn camera_registry_with_focal_length(
+        cam: Arc<dyn ascom_alpaca::api::Camera>,
+        focal_length_mm: Option<f64>,
+    ) -> crate::equipment::EquipmentRegistry {
         crate::equipment::EquipmentRegistry {
             cameras: vec![crate::equipment::CameraEntry {
                 id: "cam".to_string(),
@@ -3586,6 +3686,7 @@ mod tests {
                     cooler_target_c: None,
                     gain: None,
                     offset: None,
+                    focal_length_mm,
                     auth: None,
                 },
                 device: Some(cam),
@@ -4064,6 +4165,114 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // capture — optics block in sidecar
+    // -----------------------------------------------------------------------
+
+    async fn capture_and_read_sidecar(
+        registry: crate::equipment::EquipmentRegistry,
+    ) -> ExposureDocument {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let handler = McpHandler::new(
+            Arc::new(registry),
+            Arc::new(crate::events::EventBus::from_config(&[])),
+            SessionConfig {
+                data_directory: temp.path().to_string_lossy().to_string(),
+            },
+            cache,
+            None,
+        );
+        let result = handler
+            .capture(Parameters(CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            }))
+            .await
+            .unwrap();
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|tc| tc.text.clone())
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let image_path = json["image_path"].as_str().unwrap().to_string();
+        let sidecar = persistence::sidecar_path(&image_path);
+        let doc = persistence::read_sidecar_sync(&sidecar).unwrap();
+        // Explicit drop pins the TempDir lifetime past the sidecar read
+        // — without it the borrow checker is happy but the temp dir could
+        // be cleaned up at any drop point the optimizer chose.
+        drop(temp);
+        doc
+    }
+
+    #[tokio::test]
+    async fn test_capture_persists_optics_when_focal_length_configured() {
+        // Mock returns 3.76 µm pixels and 1024×1024 sensor; with a 1000 mm
+        // focal length the derivation gives:
+        //   pixel_scale = 206.265 × 3.76 / 1000 ≈ 0.7755564 arcsec/px
+        //   fov         = 0.7755564 × 1024 / 3600 ≈ 0.220603 deg
+        let cam = MockCamera::default();
+        let registry = camera_registry_with_focal_length(Arc::new(cam), Some(1000.0));
+        let doc = capture_and_read_sidecar(registry).await;
+        let optics = doc.optics.expect("optics block should be present");
+        assert_eq!(optics.focal_length_mm, 1000.0);
+        assert_eq!(optics.pixel_size_x_um, 3.76);
+        assert_eq!(optics.pixel_size_y_um, 3.76);
+        assert_eq!(optics.sensor_width_px, 1024);
+        assert_eq!(optics.sensor_height_px, 1024);
+        assert!(
+            (optics.pixel_scale_x_arcsec_per_pixel - 0.7755564).abs() < 1e-6,
+            "pixel_scale_x = {}",
+            optics.pixel_scale_x_arcsec_per_pixel
+        );
+        assert!(
+            (optics.fov_height_deg - 0.220603).abs() < 1e-4,
+            "fov_height_deg = {}",
+            optics.fov_height_deg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capture_omits_optics_when_focal_length_missing() {
+        let cam = MockCamera::default();
+        let registry = camera_registry_with_focal_length(Arc::new(cam), None);
+        let doc = capture_and_read_sidecar(registry).await;
+        assert!(
+            doc.optics.is_none(),
+            "optics must be omitted when focal_length_mm is not configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capture_omits_optics_when_pixel_size_unavailable() {
+        let cam = MockCamera {
+            fail_pixel_size: true,
+            ..Default::default()
+        };
+        let registry = camera_registry_with_focal_length(Arc::new(cam), Some(1000.0));
+        let doc = capture_and_read_sidecar(registry).await;
+        assert!(
+            doc.optics.is_none(),
+            "optics must be omitted when pixel size read fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capture_omits_optics_when_sensor_size_unavailable() {
+        let cam = MockCamera {
+            fail_camera_size: true,
+            ..Default::default()
+        };
+        let registry = camera_registry_with_focal_length(Arc::new(cam), Some(1000.0));
+        let doc = capture_and_read_sidecar(registry).await;
+        assert!(
+            doc.optics.is_none(),
+            "optics must be omitted when sensor size read fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // persist_capture_artifact — sidecar failure skips cache
     // -----------------------------------------------------------------------
 
@@ -4109,6 +4318,7 @@ mod tests {
             camera_id: Some("cam".into()),
             duration: Some(Duration::from_millis(100)),
             max_adu: Some(65535),
+            optics: None,
             sections: serde_json::Map::new(),
         };
         let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], (2, 2), 65535);

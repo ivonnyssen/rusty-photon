@@ -309,6 +309,7 @@ mod tests {
             camera_id: None,
             duration: None,
             max_adu: None,
+            optics: None,
             sections: serde_json::Map::new(),
         }
     }
@@ -437,6 +438,7 @@ mod tests {
             camera_id: None,
             duration: None,
             max_adu: None,
+            optics: None,
             sections: serde_json::Map::new(),
         };
         std::fs::write(
