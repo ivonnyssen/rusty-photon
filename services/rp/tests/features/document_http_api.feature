@@ -1,3 +1,4 @@
+@serial
 Feature: Document HTTP API
   The /api/documents/{document_id} route exposes the exposure document --
   capture metadata plus any sections that image-analysis tools or plugins

@@ -1,3 +1,4 @@
+@serial
 Feature: Session lifecycle with flat calibration orchestrator
   A session is started via the REST API. rp invokes the configured
   orchestrator plugin, which connects to rp's MCP server and drives
@@ -54,7 +55,6 @@ Feature: Session lifecycle with flat calibration orchestrator
     Then the test orchestrator should have been cancelled
     And the session status should be "idle"
 
-  @serial
   Scenario: Flat calibration orchestrator captures flats across filters
     Given a running Alpaca simulator
     And a test flat-calibration orchestrator configured for 2 "Luminance" flats and 2 "Red" flats

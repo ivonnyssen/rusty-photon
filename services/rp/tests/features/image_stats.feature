@@ -1,3 +1,4 @@
+@serial
 Feature: Image statistics tool
   The compute_image_stats MCP tool reads a FITS file from disk and computes
   pixel statistics: median, mean, min, and max ADU values. If a document_id

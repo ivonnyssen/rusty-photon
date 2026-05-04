@@ -4,6 +4,7 @@
 //! via a [`tokio::sync::OnceCell`]. If an OmniSim is already listening on
 //! the default port it is reused; otherwise one is spawned.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -53,19 +54,59 @@ impl OmniSimHandle {
         }
     }
 
-    /// Reset the telescope simulator device to its OmniSim default state
-    /// without restarting the simulator process.
+    /// Reset the telescope simulator device 0 to its OmniSim default state.
+    /// See [`Self::restart_device`] for the underlying mechanism.
+    pub async fn reset_telescope() {
+        Self::restart_device("telescope", 0).await;
+    }
+
+    /// Reset the camera simulator device 0 to its OmniSim default state.
+    pub async fn reset_camera() {
+        Self::restart_device("camera", 0).await;
+    }
+
+    /// Reset the filter-wheel simulator device 0 to its OmniSim default state.
+    pub async fn reset_filter_wheel() {
+        Self::restart_device("filterwheel", 0).await;
+    }
+
+    /// Reset the focuser simulator device 0 to its OmniSim default state.
+    pub async fn reset_focuser() {
+        Self::restart_device("focuser", 0).await;
+    }
+
+    /// Reset the cover-calibrator simulator device 0 to its OmniSim default state.
+    pub async fn reset_cover_calibrator() {
+        Self::restart_device("covercalibrator", 0).await;
+    }
+
+    /// Reset every device class our BDD suites currently exercise
+    /// (telescope, camera, filter wheel, focuser, cover calibrator) to
+    /// OmniSim defaults. Issued in parallel — total wall-time is
+    /// dominated by a single localhost round-trip.
     ///
-    /// Posts to OmniSim's private `PUT /simulator/v1/telescope/{n}/restart`
-    /// endpoint, which calls `DriverManager.LoadTelescope(0)` server-side.
-    /// The result is equivalent to OmniSim having just started: AtPark
-    /// false, Tracking false, position at the configured startup
-    /// alt/az (default ≈ alt 38.9° az 165° — above horizon).
+    /// Other device classes (dome, rotator, switch, observingconditions,
+    /// safetymonitor) also expose `/restart`, but our scenarios don't
+    /// touch them yet; add a call here when that changes.
+    pub async fn reset_all_devices() {
+        tokio::join!(
+            Self::reset_telescope(),
+            Self::reset_camera(),
+            Self::reset_filter_wheel(),
+            Self::reset_focuser(),
+            Self::reset_cover_calibrator(),
+        );
+    }
+
+    /// Reset a single OmniSim device by class and instance number to
+    /// its default state without restarting the simulator process.
     ///
-    /// No-op if OmniSim is not yet running (e.g. invoked from a
-    /// pre-scenario hook before any scenario has spawned the
-    /// simulator). The shared `OMNISIM` singleton is checked via
-    /// `OnceCell::get`, which never blocks.
+    /// Posts to OmniSim's private `PUT /simulator/v1/{class}/{n}/restart`
+    /// endpoint, which calls `DriverManager.Load{Class}(n)` server-side.
+    /// The result is equivalent to OmniSim having just started for that
+    /// device — e.g. for telescope: AtPark false, Tracking false,
+    /// position at the configured startup alt/az (default ≈ alt 38.9°
+    /// az 165° — above horizon).
     ///
     /// Errors are silently ignored: a failed reset shouldn't sink the
     /// scenario; if state pollution caused by a missed reset breaks a
@@ -73,11 +114,25 @@ impl OmniSimHandle {
     /// endpoint is OmniSim-only (not part of standard Alpaca), so
     /// older or alternative simulators may 404 — that's expected and
     /// non-fatal.
-    pub async fn reset_telescope() {
-        let Some(process) = OMNISIM.get() else {
-            return;
-        };
-        let url = format!("{}/simulator/v1/telescope/0/restart", process.base_url);
+    ///
+    /// If the shared `OMNISIM` singleton has not been initialised yet
+    /// (i.e. no scenario has gone through `OmniSimHandle::start()`),
+    /// the request is sent to the default base URL anyway. This lets a
+    /// `before(scenario)` hook reset a pre-existing OmniSim that the
+    /// suite is about to reuse, eliminating state leakage into the
+    /// very first scenario from a prior dev session. Connection
+    /// failures (no OmniSim on that port) are non-fatal — see above.
+    ///
+    /// `class` must match one of OmniSim's device class slugs:
+    /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
+    /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
+    /// `switch`.
+    pub async fn restart_device(class: &str, n: u32) {
+        let base_url = OMNISIM
+            .get()
+            .map(|p| p.base_url.clone())
+            .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
+        let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let Ok(client) = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -111,6 +166,20 @@ impl OmniSimProcess {
             .env_remove("ASAN_OPTIONS")
             .env_remove("LSAN_OPTIONS");
 
+        // Point OmniSim at a per-build XDG_CONFIG_HOME under cargo's
+        // target dir, seeded from the checked-in profile templates in
+        // `crates/bdd-infra/omnisim-config/...`. The seed copy is the
+        // ONLY runtime write involved — subsequent OmniSim startup
+        // writes (UniqueID emission, full-profile persistence) all
+        // land in the per-build dir and never touch the checked-in
+        // source. Failures here are non-fatal: if the seed dir can't
+        // be prepared we just skip the override, OmniSim falls back
+        // to the user's `$HOME/.config/...`, and tests run with
+        // upstream defaults instead of our tuned ones.
+        if let Some(xdg) = Self::prepare_xdg_config_home() {
+            cmd.env("XDG_CONFIG_HOME", xdg);
+        }
+
         // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
         // child when the test process exits (normal, panic, or SIGKILL).
         #[cfg(target_os = "linux")]
@@ -135,6 +204,57 @@ impl OmniSimProcess {
         };
         process.wait_healthy().await;
         process
+    }
+
+    /// Seed a per-build `XDG_CONFIG_HOME` for OmniSim and return its
+    /// path. The seed is a recursive copy of the checked-in
+    /// `crates/bdd-infra/omnisim-config/...` tree. OmniSim writes back
+    /// to this directory on startup (e.g. emitting missing UniqueIDs,
+    /// persisting full default profiles), so we MUST copy the source
+    /// into a target-tree location and never let OmniSim see the
+    /// repository copy directly.
+    ///
+    /// The destination lives under `$CARGO_TARGET_DIR/bdd-infra-omnisim/`
+    /// (or `target/bdd-infra-omnisim/` if `CARGO_TARGET_DIR` is unset),
+    /// so it ends up in the same place `cargo clean` already reaches.
+    /// We fully reseed on every spawn so an OmniSim write-back from a
+    /// prior run can't leak into the next one.
+    ///
+    /// Returns `None` (and the caller proceeds without the override) on
+    /// any I/O failure — the simulator still works, just with upstream
+    /// defaults.
+    fn prepare_xdg_config_home() -> Option<PathBuf> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("omnisim-config");
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|workspace| workspace.join("target"))
+                    .unwrap_or_else(|| PathBuf::from("target"))
+            });
+        let dest = target_dir.join("bdd-infra-omnisim");
+        // Wipe whatever a prior run left behind so an OmniSim write-back
+        // from then can't survive into this run's profile.
+        let _ = std::fs::remove_dir_all(&dest);
+        Self::copy_dir_recursive(&src, &dest).ok()?;
+        Some(dest)
+    }
+
+    fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let from = entry.path();
+            let to = dest.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                Self::copy_dir_recursive(&from, &to)?;
+            } else {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+        Ok(())
     }
 
     fn find_binary() -> String {

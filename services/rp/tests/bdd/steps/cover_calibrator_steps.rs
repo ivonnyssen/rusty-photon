@@ -24,6 +24,7 @@ async fn rp_running_with_cover_calibrator_at(world: &mut RpWorld, url: String, d
         id: "flat-panel".to_string(),
         alpaca_url: url,
         device_number: device_number as u32,
+        poll_interval: Some(std::time::Duration::from_millis(100)),
     });
     start_rp(world).await;
 }
@@ -99,6 +100,7 @@ pub fn add_cover_calibrator(world: &mut RpWorld) {
             id: "flat-panel".to_string(),
             alpaca_url: url,
             device_number: 0,
+            poll_interval: Some(std::time::Duration::from_millis(100)),
         });
     }
 }

@@ -127,9 +127,98 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 
 - **Default startup position** is approximately altitude 38.9°, azimuth 165° (configurable via the setup UI). Above horizon for any reasonable observer/time, so a park slew from defaults always succeeds.
 
-### Other devices
+### Focuser
 
-(To be filled in as we learn — issue #149 tracks extending the BDD reset hook to non-mount devices, which will also surface their quirks.)
+- **Default position is 25000, not 0.** OmniSim's focuser starts up
+  (and re-initializes after `/simulator/v1/focuser/0/restart`) at
+  position **25000** out of `MaxStep=50000`. New tests that pick a
+  "neat" target like 5000 will appear to hang because of the next
+  point.
+- **Slew rate is ~400 steps/sec.** A `Move()` request blocks until
+  `IsMoving == false`; the simulator advances the position at a
+  fixed rate that works out to roughly 400 steps/sec on Linux. A
+  20,000-step move (default → 5000) takes ~51 s wall-clock. Verified
+  against OmniSim v0.5.0 (`PUT /api/v1/focuser/0/move` from the
+  default position).
+- **Implication for BDD scenarios:** with the per-scenario reset
+  wired into `before(scenario)` (issue #149), the focuser is set
+  back to 25000 before every scenario. Test target positions in
+  `services/rp/tests/features/{focuser,auto_focus}.feature` are
+  anchored near 25000 (typically `25000`, `24500`, `25500`, plus
+  bounds like `24900..25100`) so each `move_focuser` call slews ≤
+  ~500 steps and completes in ~1 s. Without that anchoring the rp
+  BDD suite picks up ~5 minutes of pure focuser slew wait.
+- **Don't fight the default — anchor near it.** The absolute
+  position value is rarely what the test cares about; what matters
+  is that the position changes in response to a tool call, lies
+  within the configured bounds, and round-trips through
+  `get_focuser_position`. Picking targets near 25000 satisfies all
+  of that without paying the slew cost. Both feature files carry an
+  inline comment to that effect.
+
+### Filter wheel
+
+- **Default position is 0.** Restart resets to slot 0. Slew between
+  adjacent slots is ~500 ms; full traversal (slot 0 → 4) is ~2 s.
+  Cheap enough that resetting between scenarios is free.
+
+### Cover calibrator
+
+- **Default state: cover closed (`CoverState=1`), calibrator off
+  (`CalibratorState=1`).** The cover then transitions through
+  `Moving (2)` → `Open (3)` over the configured `Cover Opening
+  Time` (upstream default **5.0 s**); the calibrator transitions
+  through `NotReady (4)` → `Ready (3)` over `Calibrator
+  Stabilisation Time` (default **2.0 s**). Both kept asynchronous
+  whenever those values are `> 0.5 s`; OmniSim flips to a
+  synchronous-blocking response when the configured time is
+  `≤ 0.5 s` (`SYNCHRONOUS_BEHAVIOUR_LIMIT`, see
+  `CoverCalibratorSimulator.cs:19`).
+- **Override via XML profile, not via HTTP.** OmniSim does not
+  expose a setter for these timings — `SimulatorController.cs`
+  only has `/reset`, `/restart`, and a read-only `/xmlprofile` —
+  so we ship test-friendly defaults as a checked-in profile under
+  `crates/bdd-infra/omnisim-config/ascom/alpaca/ascom-alpaca-simulator/covercalibrator/v1/instance-0.xml`.
+  Before spawning the simulator, `bdd-infra` recursively copies
+  that tree to `$CARGO_TARGET_DIR/bdd-infra-omnisim/` (with the
+  prior copy wiped first to avoid leakage between runs) and
+  points OmniSim at the target-tree copy via `XDG_CONFIG_HOME`.
+  The simulator emits UniqueIDs and persists full default
+  profiles for every other device on its first startup; those
+  writes land in the build directory, so the checked-in source
+  stays clean across normal test runs and `cargo clean` reaps
+  the persisted state.
+- **Test defaults.** Both timings are pinned to `0.6 s` — fast
+  enough that BDD scenarios don't sit through 5-second cover
+  slews, but still `> 0.5 s` so OmniSim keeps the asynchronous
+  state-machine path alive (rp's polling code still gets
+  exercised). Edit the XML to dial them in differently for local
+  experiments.
+- **Pair the XML override with rp's `poll_interval`.** rp polls
+  cover/calibrator state every 3 s by default
+  (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).
+  Without overriding it, even a 0.6-second OmniSim transition
+  ends up bounded by rp's 3-second poll.
+  `bdd_infra::rp_harness::CoverCalibratorConfig` exposes a
+  `poll_interval: Option<Duration>` field
+  (`crates/bdd-infra/src/rp_harness/config.rs`) that the
+  builder serialises into the rp config JSON; the actual
+  100 ms override is set at the BDD step call sites that
+  construct `CoverCalibratorConfig`
+  (`services/rp/tests/bdd/steps/cover_calibrator_steps.rs`
+  and
+  `services/calibrator-flats/tests/bdd/steps/flat_calibration_steps.rs`).
+  Production rp deployments keep the upstream 3-second default.
+
+### Camera
+
+- **Reset is instantaneous.** Restart re-instantiates the device
+  but doesn't run any slow setup. The CCD parameters return to
+  defaults; `Connected` goes back to false. rp re-issues
+  `set_connected(true)` on its next startup, so callers see a
+  short-lived disconnect window during the per-scenario reset and
+  serialization (`@serial`) is required to keep concurrent
+  scenarios from observing it.
 
 ## Cucumber-rs `@serial` tag
 
@@ -149,11 +238,22 @@ Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially.
 
 ## Integration in this repo
 
-- `crates/bdd-infra/src/rp_harness/omnisim.rs` — process management. `OmniSimHandle::start` is a singleton-spawning shim; `OmniSimHandle::reset_telescope` wraps the `/simulator/v1/telescope/0/restart` endpoint.
+- `crates/bdd-infra/src/rp_harness/omnisim.rs` — process management.
+  `OmniSimHandle::start` is a singleton-spawning shim;
+  `OmniSimHandle::reset_telescope` / `reset_camera` /
+  `reset_filter_wheel` / `reset_focuser` /
+  `reset_cover_calibrator` each wrap the matching
+  `/simulator/v1/{class}/0/restart` endpoint, and
+  `reset_all_devices` issues them in parallel.
 
-- `services/rp/tests/bdd.rs` — the cucumber `before(scenario)` hook calls `reset_telescope` to give every scenario a clean default state. Other device classes are not yet wired up (issue #149).
+- `services/rp/tests/bdd.rs` and
+  `services/calibrator-flats/tests/bdd.rs` — the cucumber
+  `before(scenario)` hook calls `reset_all_devices` to give every
+  scenario a clean default state.
 
-- `services/rp/tests/features/mount.feature` — the `@serial` tag at file level forces sequential execution.
+- All BDD feature files that touch OmniSim are tagged `@serial`
+  (file-level) so the per-scenario reset can't disconnect a device
+  while another scenario is mid-flight.
 
 ## References
 

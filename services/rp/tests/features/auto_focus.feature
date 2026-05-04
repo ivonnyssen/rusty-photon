@@ -1,4 +1,13 @@
 @serial
+# Test position convention: focus targets in this feature land within
+# ~500 steps of OmniSim's default focuser position (25000). At
+# OmniSim's simulated slew rate (~400 steps/sec), a 20k-step move
+# costs ~50s; the BDD before(scenario) hook resets the focuser to
+# the default before every scenario, so a round-number target like
+# 5000 turns auto_focus's multi-step sweeps into a multi-minute
+# wait. See docs/references/omnisim.md (Focuser section). Keep new
+# auto_focus scenarios anchored near 25000 unless the test
+# specifically depends on the absolute value.
 Feature: Auto-focus compound tool
   The auto_focus MCP tool drives a V-curve focus sweep using move_focuser,
   capture, and measure_basic internally. It captures one frame at each
@@ -105,9 +114,9 @@ Feature: Auto-focus compound tool
 
   Scenario: auto_focus rejects sweep grid too small after focuser bounds clamp
     Given a running Alpaca simulator
-    And rp is running with a camera and a focuser on the simulator with bounds 4900..5100
+    And rp is running with a camera and a focuser on the simulator with bounds 24900..25100
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 5000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
     And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 500 min_area 5 max_area 65536
     Then the tool call should return an error
     And the error message should contain "min_fit_points"
@@ -117,7 +126,7 @@ Feature: Auto-focus compound tool
     And a running Alpaca simulator
     And rp is running with a camera and a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 5000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
     And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536
     Then 5 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "image_analysis" section

@@ -611,6 +611,62 @@ temporarily replacing `debug!("did not exit after SIGTERM, sending SIGKILL", ...
 in `bdd-infra` with `eprintln!` and re-running BDD with stderr captured. A
 SIGKILL count > 0 means the lifecycle ordering is wrong somewhere.
 
+#### 5.5 Reset OmniSim devices in the `before(scenario)` hook
+
+**Critical for isolation.** OmniSim is a per-process singleton — every
+scenario shares the same simulator instance, so device state (mount
+position, AtPark/Tracking, cover position, calibrator brightness, filter
+slot, focuser position, camera config) leaks from scenario N into
+scenario N+1. The mount-state leak that hung `mount.feature::park` in
+issue #143 is the specific case we already hit; the fix generalises to
+every device class.
+
+The pattern is to call `OmniSimHandle::reset_all_devices()` from a
+cucumber `before(scenario)` hook. The helper issues parallel
+`PUT /simulator/v1/{class}/{n}/restart` requests to OmniSim's private
+restart endpoint for every class our suites touch (`telescope`,
+`camera`, `filterwheel`, `focuser`, `covercalibrator`); see
+`crates/bdd-infra/src/rp_harness/omnisim.rs`. Total per-scenario
+overhead is one localhost round-trip. Before the singleton has been
+initialised the helper falls back to the default OmniSim base URL
+(`http://127.0.0.1:32323`), so a pre-existing OmniSim from a prior
+dev session is reset before scenario 1 reuses it; if no OmniSim is
+listening, the request fails silently and the hook is effectively a
+no-op. Either way the hook is safe to wire up unconditionally.
+
+```rust
+MyWorld::cucumber()
+    .before(|_feature, _rule, _scenario, _world| {
+        Box::pin(async move {
+            bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+        })
+    })
+    .after(/* ... */)
+```
+
+If your scenarios start exercising additional device classes (dome,
+rotator, switch, observingconditions, safetymonitor — all of which
+expose the same `/restart` endpoint shape), add the corresponding
+helper call to `OmniSimHandle::reset_all_devices` so future
+contributors get the isolation for free.
+
+**Why scenarios that touch OmniSim must serialize.** A `before(scenario)`
+reset that disconnects the shared simulator's devices is unsafe to
+issue while another scenario is mid-flight against the same singleton —
+scenario N+1 would yank Connected back to false out from under scenario
+N's `StartExposure`. cucumber-rs draws at most one `@serial` scenario
+at a time and refuses to drain Concurrent scenarios while a Serial
+scenario is queued, so tagging every OmniSim-touching feature with
+`@serial` (file-level) is sufficient. Look at
+`services/rp/tests/features/*.feature` and
+`services/calibrator-flats/tests/features/*.feature` for the expected
+pattern: a single `@serial` tag on the line above `Feature:`. Adding
+a new feature that touches OmniSim? Tag it `@serial` too. (Other
+features in this repo are already tagged `@serial` for their own
+reasons — auth tests share an Argon2id keying constant, TLS / ACME
+tests touch shared cert directories — so don't take their tagging as
+evidence one way or the other about OmniSim.)
+
 ---
 
 ### 6. Unit Test Rules

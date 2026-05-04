@@ -1,3 +1,4 @@
+@serial
 Feature: Sigma-clipped background estimation tool
   The estimate_background MCP tool returns sigma-clipped mean, stddev, and
   median of the image background. It accepts either document_id (resolved via

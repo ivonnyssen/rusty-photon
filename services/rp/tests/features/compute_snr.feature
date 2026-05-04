@@ -1,3 +1,4 @@
+@serial
 Feature: Signal-to-noise summary tool
   The compute_snr MCP tool runs detect_stars internally and returns the
   median per-star signal-to-noise ratio via the CCD-equation
