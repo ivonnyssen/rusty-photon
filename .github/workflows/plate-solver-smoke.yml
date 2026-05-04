@@ -141,7 +141,7 @@ jobs:
       issues: write
     steps:
       - name: Open or update tracking issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = `nightly: plate-solver real-ASTAP smoke failing`;
