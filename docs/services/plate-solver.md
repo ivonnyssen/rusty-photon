@@ -222,30 +222,48 @@ neither queries the mount nor maintains a default. Hint sources are
 the caller's concern; for `rp` (the canonical caller), the hint
 chain is:
 
-1. **`ra_hint` / `dec_hint`** come from the mount's current pointing
-   via ASCOM Alpaca Telescope properties:
-   - `RightAscension` is returned in **decimal hours** per the
-     Alpaca spec — `rp`'s `plate_solve` MCP handler must multiply
-     by 15 to convert to the wrapper's degrees-on-the-wire
-     contract.
-   - `Declination` is already in decimal degrees, so it passes
-     through unchanged.
+1. **`ra_hint` / `dec_hint`** come from the caller. `rp`'s
+   `plate_solve` MCP tool is **explicit by default** — it does not
+   silently auto-source from the mount. Two ways to provide them:
+   - Pass an explicit `pointing_hint: { ra_deg, dec_deg }` object
+     on the MCP call. Both values are decimal degrees on the wire
+     (the `_deg` suffix in the field names is intentional — it
+     preempts the Alpaca-hours / wrapper-degrees confusion at the
+     call site). The nested-object shape makes the both-or-neither
+     contract structural.
+   - Pass `use_mount_hints: true` as a convenience opt-in. rp reads
+     the mount's current pointing via ASCOM Alpaca Telescope
+     properties:
+     - `RightAscension` is returned in **decimal hours** per the
+       Alpaca spec — rp multiplies by 15 to convert to the
+       wrapper's degrees-on-the-wire contract.
+     - `Declination` is already in decimal degrees and passes
+       through unchanged.
+     Mount absent / not connected / Alpaca read failure ⇒ error to
+     the caller (the caller explicitly opted in, so failures are
+     surfaced rather than silently dropping to blind solve).
 
-   `rp`'s `plate_solve` MCP handler reads both via the equipment
-   registry, performs the RA conversion, and forwards the request
-   to `plate-solver` over HTTP. (MCP directionality: clients
-   call rp; rp calls the wrapper.) Mount-not-connected ⇒ no
-   hints, blind solve.
-2. **`fov_hint_deg`** comes from the camera's pixel scale and
-   sensor dimensions (operator-supplied via camera calibration
-   data) — it doesn't change between sessions, so it's typically a
-   per-camera config field rather than a per-request lookup.
+   The two modes are mutually exclusive — supplying both is a
+   caller error. Neither supplied ⇒ wrapper falls back to blind
+   solve. (MCP directionality: clients call rp; rp calls the
+   wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
+   for the full input shape and validation rules.
+2. **`fov_hint_deg`** comes from the caller as an MCP parameter in
+   v1. The eventually-right home is per-camera config — FOV is a
+   fixed property of camera + optics and doesn't change between
+   sessions — but that requires extending `CameraConfig` and a
+   "which camera produced this image" lookup. Tracked by
+   [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153);
+   defer until a workflow is blocked without it.
 3. **`search_radius_deg`** is the harder field. **The ASCOM Alpaca
    Telescope spec does not standardize a "pointing uncertainty"
    property.** Mount drivers may expose vendor-specific accuracy
    estimates, but there is no portable way to ask "how confident
    are you in your pointing?" Operators provide this number via
-   their rp config (or accept rp's default).
+   their rp config (`plate_solver.default_search_radius_deg`) for
+   fresh captures on the configured rig; per-call MCP
+   `search_radius_deg` overrides for loaded-from-disk images where
+   the configured default may not match the originating rig.
 
 Recommended `search_radius_deg` defaults — operators tune per their
 rig:
@@ -262,9 +280,9 @@ Smaller radius means faster solve. ASTAP's documented sweet spot is
 
 ADR-005 §"Open questions" item 6 is retired by this section: the
 ASCOM gap is documented, the operator-supplied default is
-recommended, and `rp`'s eventual `plate_solve` tool implementation
-will source `search_radius_deg` from rp config rather than from a
-nonexistent ASCOM property.
+recommended, and `rp`'s `plate_solve` MCP tool sources
+`search_radius_deg` from rp config (or a per-call override) rather
+than from a nonexistent ASCOM property.
 
 #### Operator perf comparison (manual)
 
