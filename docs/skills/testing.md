@@ -654,13 +654,15 @@ scenario N+1 would yank Connected back to false out from under scenario
 N's `StartExposure`. cucumber-rs draws at most one `@serial` scenario
 at a time and refuses to drain Concurrent scenarios while a Serial
 scenario is queued, so tagging every OmniSim-touching feature with
-`@serial` (file-level) is sufficient — non-OmniSim scenarios (auth,
-hash-password, TLS setup, ACME setup) stay Concurrent and run after the
-Serial queue empties. Look at `services/rp/tests/features/*.feature`
-and `services/calibrator-flats/tests/features/*.feature` for the
-expected pattern: a single `@serial` tag on the line above
-`Feature:`. Adding a new feature that touches OmniSim? Tag it
-`@serial` too.
+`@serial` (file-level) is sufficient. Look at
+`services/rp/tests/features/*.feature` and
+`services/calibrator-flats/tests/features/*.feature` for the expected
+pattern: a single `@serial` tag on the line above `Feature:`. Adding
+a new feature that touches OmniSim? Tag it `@serial` too. (Other
+features in this repo are already tagged `@serial` for their own
+reasons — auth tests share an Argon2id keying constant, TLS / ACME
+tests touch shared cert directories — so don't take their tagging as
+evidence one way or the other about OmniSim.)
 
 ---
 

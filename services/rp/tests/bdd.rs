@@ -24,8 +24,9 @@ bdd_infra::bdd_main! {
                 // leak that hung `park` in issue #143 is the case we
                 // already hit. Each reset is a localhost PUT, all run
                 // in parallel, so the per-scenario overhead is one
-                // round-trip. No-op the first time through (OmniSim
-                // hasn't been spawned yet).
+                // round-trip. The first call also targets the default
+                // OmniSim port, so a pre-existing OmniSim from a prior
+                // dev session is reset before scenario 1 reuses it.
                 bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
             })
         })

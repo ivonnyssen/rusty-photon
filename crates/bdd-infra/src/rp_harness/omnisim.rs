@@ -107,11 +107,6 @@ impl OmniSimHandle {
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
-    /// No-op if OmniSim is not yet running (e.g. invoked from a
-    /// pre-scenario hook before any scenario has spawned the
-    /// simulator). The shared `OMNISIM` singleton is checked via
-    /// `OnceCell::get`, which never blocks.
-    ///
     /// Errors are silently ignored: a failed reset shouldn't sink the
     /// scenario; if state pollution caused by a missed reset breaks a
     /// later assertion, the scenario will fail loudly there. The
@@ -119,15 +114,24 @@ impl OmniSimHandle {
     /// older or alternative simulators may 404 — that's expected and
     /// non-fatal.
     ///
+    /// If the shared `OMNISIM` singleton has not been initialised yet
+    /// (i.e. no scenario has gone through `OmniSimHandle::start()`),
+    /// the request is sent to the default base URL anyway. This lets a
+    /// `before(scenario)` hook reset a pre-existing OmniSim that the
+    /// suite is about to reuse, eliminating state leakage into the
+    /// very first scenario from a prior dev session. Connection
+    /// failures (no OmniSim on that port) are non-fatal — see above.
+    ///
     /// `class` must match one of OmniSim's device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
     /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
     /// `switch`.
     pub async fn restart_device(class: &str, n: u32) {
-        let Some(process) = OMNISIM.get() else {
-            return;
-        };
-        let url = format!("{}/simulator/v1/{}/{}/restart", process.base_url, class, n);
+        let base_url = OMNISIM
+            .get()
+            .map(|p| p.base_url.clone())
+            .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
+        let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let Ok(client) = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
