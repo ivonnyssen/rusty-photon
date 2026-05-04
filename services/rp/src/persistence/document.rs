@@ -56,8 +56,82 @@ pub struct ExposureDocument {
     /// Document Cache section of `docs/services/rp.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_adu: Option<u32>,
+    /// Optical-train geometry resolved at capture time. Carries both the raw
+    /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
+    /// derived pixel scale and FOV that consumers like `plate_solve` and
+    /// annotation tools want without re-deriving from the FITS header.
+    /// Omitted when any input was missing — see `docs/services/rp.md`
+    /// §"Core Fields".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optics: Option<Optics>,
     #[serde(default)]
     pub sections: Map<String, Value>,
+}
+
+/// Optical-train geometry persisted on the exposure document at capture
+/// time. See [`ExposureDocument::optics`] and `docs/services/rp.md`
+/// §"Core Fields" for the derivation, the failure modes, and the
+/// `plate_solve` consumer contract.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Optics {
+    /// Operator-supplied effective focal length of the optical train,
+    /// in millimetres (verbatim from `equipment.cameras[].focal_length_mm`).
+    pub focal_length_mm: f64,
+    /// Raw Alpaca `PixelSizeX` reading at capture time, in microns.
+    pub pixel_size_x_um: f64,
+    /// Raw Alpaca `PixelSizeY` reading at capture time, in microns.
+    pub pixel_size_y_um: f64,
+    /// Raw Alpaca `CameraXSize` reading at capture time, in pixels.
+    pub sensor_width_px: u32,
+    /// Raw Alpaca `CameraYSize` reading at capture time, in pixels.
+    pub sensor_height_px: u32,
+    /// Derived: `206.265 × pixel_size_x_um / focal_length_mm`.
+    pub pixel_scale_x_arcsec_per_pixel: f64,
+    /// Derived: `206.265 × pixel_size_y_um / focal_length_mm`.
+    pub pixel_scale_y_arcsec_per_pixel: f64,
+    /// Derived: `pixel_scale_x_arcsec_per_pixel × sensor_width_px / 3600`.
+    pub fov_width_deg: f64,
+    /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
+    /// Matches ASTAP's `-fov` semantics ("image height in degrees"); used
+    /// as the `plate_solve` `fov_hint_deg` default in `document_id` mode.
+    pub fov_height_deg: f64,
+}
+
+impl Optics {
+    /// Compute pixel scale + FOV from the operator-supplied focal length
+    /// and the camera-reported pixel size + sensor dimensions. Returns
+    /// `None` when any input is non-finite or non-positive — callers log
+    /// at `debug!` and persist the document without an `optics` block.
+    pub fn from_camera_geometry(
+        focal_length_mm: f64,
+        pixel_size_x_um: f64,
+        pixel_size_y_um: f64,
+        sensor_width_px: u32,
+        sensor_height_px: u32,
+    ) -> Option<Self> {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        if !positive(focal_length_mm)
+            || !positive(pixel_size_x_um)
+            || !positive(pixel_size_y_um)
+            || sensor_width_px == 0
+            || sensor_height_px == 0
+        {
+            return None;
+        }
+        let pixel_scale_x = 206.265 * pixel_size_x_um / focal_length_mm;
+        let pixel_scale_y = 206.265 * pixel_size_y_um / focal_length_mm;
+        Some(Self {
+            focal_length_mm,
+            pixel_size_x_um,
+            pixel_size_y_um,
+            sensor_width_px,
+            sensor_height_px,
+            pixel_scale_x_arcsec_per_pixel: pixel_scale_x,
+            pixel_scale_y_arcsec_per_pixel: pixel_scale_y,
+            fov_width_deg: pixel_scale_x * f64::from(sensor_width_px) / 3600.0,
+            fov_height_deg: pixel_scale_y * f64::from(sensor_height_px) / 3600.0,
+        })
+    }
 }
 
 /// Sidecar JSON path for a given FITS file path (`/foo/<uuid8>.fits` →
@@ -157,6 +231,7 @@ mod tests {
             camera_id: Some("cam".to_string()),
             duration: Some(Duration::from_secs(1)),
             max_adu: Some(65535),
+            optics: None,
             sections: Map::new(),
         }
     }
@@ -310,5 +385,73 @@ mod tests {
             "max_adu should be omitted when None, got: {}",
             body
         );
+    }
+
+    #[test]
+    fn serialization_skips_none_optics() {
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.optics = None;
+        let body = serde_json::to_string(&doc).unwrap();
+        assert!(
+            !body.contains("optics"),
+            "optics should be omitted when None, got: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn optics_round_trips_through_json() {
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        let optics = Optics::from_camera_geometry(1000.0, 3.76, 3.76, 9576, 6388).unwrap();
+        doc.optics = Some(optics.clone());
+        let body = serde_json::to_string(&doc).unwrap();
+        let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.optics, Some(optics));
+    }
+
+    #[test]
+    fn optics_derives_pixel_scale_and_fov() {
+        // 1000 mm focal length, 3.76 µm pixels, IMX455-class sensor.
+        // Pixel scale = 206.265 × 3.76 / 1000  ≈ 0.7755564 arcsec/px
+        // Width FOV   = 0.7755564 × 9576 / 3600 ≈ 2.062980 deg
+        // Height FOV  = 0.7755564 × 6388 / 3600 ≈ 1.376181 deg
+        let optics = Optics::from_camera_geometry(1000.0, 3.76, 3.76, 9576, 6388).unwrap();
+        assert!(
+            (optics.pixel_scale_x_arcsec_per_pixel - 0.7755564).abs() < 1e-6,
+            "pixel_scale_x_arcsec_per_pixel = {}",
+            optics.pixel_scale_x_arcsec_per_pixel
+        );
+        assert!(
+            (optics.fov_width_deg - 2.062980).abs() < 1e-5,
+            "fov_width_deg = {}",
+            optics.fov_width_deg
+        );
+        assert!(
+            (optics.fov_height_deg - 1.376181).abs() < 1e-5,
+            "fov_height_deg = {}",
+            optics.fov_height_deg
+        );
+    }
+
+    #[test]
+    fn optics_supports_anisotropic_pixels() {
+        let optics = Optics::from_camera_geometry(1000.0, 4.0, 5.0, 100, 100).unwrap();
+        assert!(
+            optics.pixel_scale_x_arcsec_per_pixel < optics.pixel_scale_y_arcsec_per_pixel,
+            "wider pixels in y must produce a larger y pixel scale"
+        );
+        assert!(optics.fov_width_deg < optics.fov_height_deg);
+    }
+
+    #[test]
+    fn optics_rejects_non_positive_inputs() {
+        assert!(Optics::from_camera_geometry(0.0, 3.76, 3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(-1.0, 3.76, 3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(1000.0, 0.0, 3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(1000.0, 3.76, -3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(1000.0, 3.76, 3.76, 0, 1024).is_none());
+        assert!(Optics::from_camera_geometry(1000.0, 3.76, 3.76, 1024, 0).is_none());
+        assert!(Optics::from_camera_geometry(f64::NAN, 3.76, 3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(f64::INFINITY, 3.76, 3.76, 1024, 1024).is_none());
     }
 }
