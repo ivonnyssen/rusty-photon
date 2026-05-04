@@ -52,15 +52,13 @@ act -W .github/workflows/test.yml -j plan -j coverage &
 act -W .github/workflows/safety.yml -j plan -j sanitizers &
 wait
 
-# Then run jobs with dependencies
-act -W .github/workflows/conformu.yml -j plan -j conformu
-
 # Optional: rolling jobs (these only run on main/scheduled, not PRs)
 act -W .github/workflows/scheduled.yml -j nightly &
 act -W .github/workflows/scheduled.yml -j beta &
 act -W .github/workflows/scheduled.yml -j update &
 wait
 act -W .github/workflows/scheduled.yml -j discover-miri -j miri  # slow
+act -W .github/workflows/conformu.yml -j plan -j conformu        # nightly + on-demand
 ```
 
 > **Note:** `act` runs Linux Docker containers, so the `os-check` job
@@ -174,15 +172,27 @@ RUSTFLAGS="-Z sanitizer=leak" \
 > Locally you can either do the same (and revert), or accept slightly different
 > behavior. The sanitizer results are still meaningful without the opt-level tweak.
 
-### conformu.yml
+### conformu.yml (rolling)
+
+ConformU runs on a nightly cron (05:30 UTC) and `workflow_dispatch` --
+**not on PRs or push**. Conformance regressions are real but rare, and
+the matrix is the most expensive workflow we have, so paying for it on
+every PR is overkill. The faster `check`/`test` workflows already gate
+the unit-level changes that would most often break conformance; the
+nightly catches drift, and `workflow_dispatch` covers the "I just
+touched the Alpaca interface, run it now" case. A `notify-on-failure`
+job opens or updates a `conformu-nightly` labeled tracking issue when
+a scheduled run fails.
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **plan** | `cargo rail plan --merge-base` | cargo-rail | Yes (gates other jobs) |
+| **plan** | `cargo metadata` + jq (see below) | jq | -- |
 | **conformu** | Per-service command (see below) | ConformU | Optional |
 
-ConformU services are discovered dynamically via `[package.metadata.conformu]`
-in each service's `Cargo.toml`. To list them:
+The `plan` job no longer uses `cargo rail` filtering: nightly + on-demand
+runs always exercise every conformu-tagged service. ConformU services are
+discovered dynamically via `[package.metadata.conformu]` in each service's
+`Cargo.toml`. To list them:
 
 ```bash
 cargo metadata --format-version 1 --no-deps | \
