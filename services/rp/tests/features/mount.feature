@@ -37,6 +37,7 @@ Feature: Mount tools
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     And the mount tracking is set to true
     When the MCP client calls "slew" with ra "10.6847" dec "41.2689"
     Then the tool call should succeed
@@ -47,6 +48,7 @@ Feature: Mount tools
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount is unparked
     And the mount tracking is set to false
     When the MCP client calls "slew" with ra "10.6847" dec "41.2689"
     Then the tool call should return an error
@@ -85,10 +87,15 @@ Feature: Mount tools
       | MISSING | 0.0     | missing required parameter: ra |
       | 0.0     | MISSING | missing required parameter: dec|
 
+  # OmniSim rejects SyncToCoordinates with `InvalidOperationException`
+  # when tracking is off, so this scenario explicitly enables tracking
+  # before the sync. (Previously the test passed only because earlier
+  # scenarios incidentally left tracking enabled.)
   Scenario: sync_mount sets the mount's reported position
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the mount tracking is set to true
     When the MCP client calls "sync_mount" with ra "5.0" dec "10.0"
     Then the tool call should succeed
 
@@ -187,16 +194,10 @@ Feature: Mount tools
     Then the tool call should succeed
     And the get_park_state result at_park should be false
 
-  # Unparks first to pin a deterministic at_park == false starting
-  # state — earlier scenarios in this feature park the singleton
-  # OmniSim mount, so the round-trip-from-default assumption can't
-  # hold without an explicit reset.
   Scenario: get_park_state returns at_park, can_park, and can_unpark
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "unpark"
-    Then the tool call should succeed
     When the MCP client calls "get_park_state"
     Then the tool call should succeed
     And the get_park_state result at_park should be false
