@@ -627,9 +627,12 @@ cucumber `before(scenario)` hook. The helper issues parallel
 restart endpoint for every class our suites touch (`telescope`,
 `camera`, `filterwheel`, `focuser`, `covercalibrator`); see
 `crates/bdd-infra/src/rp_harness/omnisim.rs`. Total per-scenario
-overhead is one localhost round-trip. The first call is a no-op
-because OmniSim hasn't been spawned yet — the `OnceCell` is empty —
-so it is safe to wire up unconditionally.
+overhead is one localhost round-trip. Before the singleton has been
+initialised the helper falls back to the default OmniSim base URL
+(`http://127.0.0.1:32323`), so a pre-existing OmniSim from a prior
+dev session is reset before scenario 1 reuses it; if no OmniSim is
+listening, the request fails silently and the hook is effectively a
+no-op. Either way the hook is safe to wire up unconditionally.
 
 ```rust
 MyWorld::cucumber()

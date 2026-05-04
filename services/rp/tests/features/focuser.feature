@@ -44,10 +44,10 @@ Feature: Focuser tools
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24000
-    And the MCP client calls "move_focuser" with focuser "main-focuser" to position 24000
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24500
+    And the MCP client calls "move_focuser" with focuser "main-focuser" to position 24500
     Then the tool call should succeed
-    And the move_focuser result actual_position should be 24000
+    And the move_focuser result actual_position should be 24500
 
   Scenario: get_focuser_position reads the current absolute position
     Given a running Alpaca simulator
