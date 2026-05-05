@@ -511,16 +511,28 @@ Status: **complete**.
       (issue #160). `Fits::from_reader` accepts ASTAP's header-only
       `.wcs` (NAXIS=0 is supported upstream; an explicit fitsrs
       regression test covers it). A small defensive pre-processor
-      pads inputs out to a 2880-byte FITS block before handing them
-      to `fitsrs`, so test fixtures and any future solver emitting
-      just enough cards to satisfy the contract reach the same code
-      path as full ASTAP output. After parsing, the wrapper checks
-      `WCSParams.crval1 / crval2 / cdelt1` for presence (returning a
-      named `MissingKeyword(...)` error so the HTTP contract surfaces
-      which key was absent) and defaults `crota2` to 0. The HISTORY /
-      COMMENT scan for the solver banner walks `Header::cards()`
-      directly. Public surface: `read_wcs_sidecar(&Path) -> Result<
-      SolveOutcome, _>`.
+      pads inputs whose card stream stops exactly at the END card
+      (no trailing 2880-byte FITS-block padding) out to the next
+      block boundary before handing them to `fitsrs`. The
+      pre-processor does **not** lower the WCS-keyword bar — the
+      parser still requires a complete primary HDU header (`SIMPLE`,
+      `BITPIX`, `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution.
+      Field extraction order, by design: (1) `CRVAL1` and `CRVAL2`
+      are read directly from the parsed `Header` via
+      `read_required_float`, so type errors surface as named
+      `NonNumeric { key, value }` rather than the generic serde
+      error `WCSParams::deserialize` would emit; (2)
+      `pixel_scale_arcsec` prefers `|CDELT1| × 3600` and falls back
+      to `√(CD1_1² + CD2_1²) × 3600` (CD-matrix convention); (3)
+      `rotation_deg` prefers `CROTA2` and falls back to
+      `atan2(CD2_1, CD1_1)`, defaulting to 0 when neither
+      representation is present; (4) `WCSParams::deserialize` runs
+      last as a structural validator (catches missing CTYPE1,
+      missing NAXIS, type errors on non-contract WCS keywords like
+      SIP coefficients) before the wrapper builds a `SolveOutcome`.
+      The HISTORY / COMMENT scan for the solver banner walks
+      `Header::cards()` directly. Public surface:
+      `read_wcs_sidecar(&Path) -> Result<SolveOutcome, _>`.
 - [x] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
       `tokio::process::Command` configured with `kill_on_drop(true)`
       (and on Windows also placed in a job object via the `windows`
