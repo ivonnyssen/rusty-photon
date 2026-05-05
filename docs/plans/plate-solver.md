@@ -249,12 +249,22 @@ Why this beats a hand-rolled parser:
   computes residual arcsec, it can use `WCS::proj` instead of
   reimplementing the trigonometry.
 
-The Phase 2 implementation includes a spike to verify `fitsrs`
-parses a real ASTAP `.wcs` cleanly — ASTAP's sidecar is FITS-style
-but may have quirks (line endings, padding, ASTAP-specific
-non-standard keys). If quirks surface, a thin pre-processor stays
-inside `runner/wcs.rs`; the parser/deserializer pipeline does not
-change.
+A small pre-processor inside `runner/wcs.rs` pads inputs whose card
+stream stops exactly at the END card out to the next 2880-byte FITS
+block boundary before handing them to `fitsrs`. Real ASTAP output is
+already aligned, so this is a no-op on the production path; it exists
+to keep test fixtures and the production shape on the same parser
+code path. The pre-processor does **not** lower the WCS-keyword bar
+— the parser still requires a complete primary HDU header (`SIMPLE`,
+`BITPIX`, `NAXIS`, `CTYPE1`/`CTYPE2`).
+
+Pixel scale and rotation accept either WCS convention: prefer
+`|CDELT1|` and `CROTA2` (what ASTAP writes today), fall back to
+`√(CD1_1² + CD2_1²)` and `atan2(CD2_1, CD1_1)` when only the CD
+matrix is present. `CRVAL1` / `CRVAL2` are required either way and
+return a named `MissingKeyword(...)` when absent so the HTTP
+contract can surface which key is missing; `CROTA2` defaults to 0
+when neither representation is present.
 
 ### HTTP, not MCP
 
@@ -470,7 +480,7 @@ Status: **complete.**
 
 ### Phase 2 — Crate scaffolding + `AstapRunner` trait + `.wcs` parser
 
-Status: **complete** (with one open spike — see below).
+Status: **complete**.
 
 - [x] New workspace member `services/plate-solver` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
@@ -497,17 +507,32 @@ Status: **complete** (with one open spike — see below).
       matches expected. No spawning. This is the only unit-level
       coverage of the hint-flag pass-through contract; BDD asserts
       end-to-end behavior, not argv shape.
-- [~] `runner/wcs.rs` — **shipped, but as a hand-rolled card parser
-      rather than the planned `fitsrs` + `wcs::params::WCSParams`
-      adapter.** `fitsrs::Fits::from_reader` expects a full FITS
-      file, not a header-only `.wcs` sidecar; the spike to validate
-      it against an actual ASTAP-emitted sidecar was deferred. The
-      hand-rolled parser is small (<100 lines), exhaustively tested,
-      and exposes the same `read_wcs_sidecar(&Path) -> Result<
-      SolveOutcome, _>` surface the planned implementation would
-      have, so the swap is a non-breaking refactor when the spike
-      retires. Tracked by
-      [issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160).
+- [x] `runner/wcs.rs` — `fitsrs` + `wcs::params::WCSParams` adapter
+      (issue #160). `Fits::from_reader` accepts ASTAP's header-only
+      `.wcs` (NAXIS=0 is supported upstream; an explicit fitsrs
+      regression test covers it). A small defensive pre-processor
+      pads inputs whose card stream stops exactly at the END card
+      (no trailing 2880-byte FITS-block padding) out to the next
+      block boundary before handing them to `fitsrs`. The
+      pre-processor does **not** lower the WCS-keyword bar — the
+      parser still requires a complete primary HDU header (`SIMPLE`,
+      `BITPIX`, `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution.
+      Field extraction order, by design: (1) `CRVAL1` and `CRVAL2`
+      are read directly from the parsed `Header` via
+      `read_required_float`, so type errors surface as named
+      `NonNumeric { key, value }` rather than the generic serde
+      error `WCSParams::deserialize` would emit; (2)
+      `pixel_scale_arcsec` prefers `|CDELT1| × 3600` and falls back
+      to `√(CD1_1² + CD2_1²) × 3600` (CD-matrix convention); (3)
+      `rotation_deg` prefers `CROTA2` and falls back to
+      `atan2(CD2_1, CD1_1)`, defaulting to 0 when neither
+      representation is present; (4) `WCSParams::deserialize` runs
+      last as a structural validator (catches missing CTYPE1,
+      missing NAXIS, type errors on non-contract WCS keywords like
+      SIP coefficients) before the wrapper builds a `SolveOutcome`.
+      The HISTORY / COMMENT scan for the solver banner walks
+      `Header::cards()` directly. Public surface:
+      `read_wcs_sidecar(&Path) -> Result<SolveOutcome, _>`.
 - [x] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
       `tokio::process::Command` configured with `kill_on_drop(true)`
       (and on Windows also placed in a job object via the `windows`

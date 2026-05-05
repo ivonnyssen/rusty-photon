@@ -23,12 +23,16 @@ use std::path::PathBuf;
 /// Canned `.wcs` sidecar content for `MOCK_ASTAP_MODE=normal`. Inlined
 /// rather than `include_str!`-ed from `tests/fixtures/` so Bazel's
 /// sandboxed compilation doesn't need a `data` dependency to find it.
-/// Each card is exactly 80 ASCII characters; total length is a multiple
-/// of 80.
+/// Shape mirrors ASTAP's real `.wcs` output: a header-only FITS primary
+/// HDU (`NAXIS = 0`, so no data block follows), padded to one 2880-byte
+/// FITS block. Includes `CTYPE1`/`CTYPE2` so `wcs::WCSParams`'s
+/// mandatory fields deserialize cleanly.
 const CANNED_WCS: &str = concat!(
     "SIMPLE  =                    T                                                  ",
-    "BITPIX  =                   16                                                  ",
+    "BITPIX  =                    8                                                  ",
     "NAXIS   =                    0                                                  ",
+    "CTYPE1  = 'RA---TAN'                                                            ",
+    "CTYPE2  = 'DEC--TAN'                                                            ",
     "CRVAL1  =              10.6848                                                  ",
     "CRVAL2  =              41.2690                                                  ",
     "CDELT1  =         -0.000291667                                                  ",
@@ -36,14 +40,40 @@ const CANNED_WCS: &str = concat!(
     "CROTA2  =                 12.3                                                  ",
     "COMMENT ASTAP-CLI mock_astap test double                                        ",
     "END                                                                             ",
+    // 2880-byte FITS block padding: 12 cards × 80 = 960 bytes; pad
+    // 1920 bytes (24 × 80) of spaces to reach the next block.
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
 );
 
 #[cfg(debug_assertions)]
 const _: () = {
-    // Compile-time guard: every card in CANNED_WCS must be exactly 80 ASCII
-    // bytes. Total length must be a multiple of 80. The parser depends on
-    // this layout; a stray space here would propagate as a silent bug.
-    assert!(CANNED_WCS.len().is_multiple_of(80));
+    // Compile-time guard: total length must be exactly 2880 bytes (one
+    // FITS block). The parser depends on this layout; a stray space
+    // here would propagate as a silent bug.
+    assert!(CANNED_WCS.len() == 2880);
 };
 
 fn main() -> std::process::ExitCode {
@@ -162,14 +192,27 @@ fn run_malformed_wcs(args: &[String]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     };
     let wcs_path = fits.with_extension("wcs");
-    // Write a .wcs missing CRVAL2 (and the parser should reject it).
-    let mut content = String::new();
-    let card = format!("{:<80}", "CRVAL1  =              10.6848");
-    content.push_str(&card);
-    let card = format!("{:<80}", "CDELT1  =        -0.000291667");
-    content.push_str(&card);
-    let card = format!("{:<80}", "END");
-    content.push_str(&card);
+    // Write a header-only FITS primary HDU matching real ASTAP shape
+    // (`NAXIS = 0`, no data block) but missing CRVAL2. The parser must
+    // surface "CRVAL2" in its error so the HTTP contract names the
+    // missing key.
+    let cards = [
+        "SIMPLE  =                    T",
+        "BITPIX  =                    8",
+        "NAXIS   =                    0",
+        "CTYPE1  = 'RA---TAN'",
+        "CTYPE2  = 'DEC--TAN'",
+        "CRVAL1  =              10.6848",
+        "CDELT1  =         -0.000291667",
+        "END",
+    ];
+    let mut content = String::with_capacity(2880);
+    for c in cards {
+        content.push_str(&format!("{c:<80}"));
+    }
+    while content.len() < 2880 {
+        content.push(' ');
+    }
     if let Err(e) = std::fs::write(&wcs_path, content) {
         eprintln!("mock_astap: failed to write {}: {e}", wcs_path.display());
         return std::process::ExitCode::from(2);

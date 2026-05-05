@@ -3001,6 +3001,7 @@ dependencies = [
  "cargo-husky",
  "clap",
  "cucumber",
+ "fitsrs",
  "humantime-serde",
  "libc",
  "mockall",
@@ -3013,6 +3014,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "wcs",
 ]
 
 [[package]]

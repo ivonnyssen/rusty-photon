@@ -96,23 +96,24 @@ states the behavior, not the wire format details.
    (see [hint mapping](#hint-mapping) below).
 5. Service waits for the child under the request's `timeout`
    (defaulting to `default_solve_timeout` from config).
-6. On clean exit with zero status, service reads the `.wcs` sidecar
-   ASTAP wrote next to the FITS and extracts the response fields:
-   `ra_center` (CRVAL1), `dec_center` (CRVAL2),
-   `pixel_scale_arcsec` (`|CDELT1|` × 3600), `rotation_deg`
-   (CROTA2, defaulting to 0 if absent), plus a `solver` banner
-   string read from the file's HISTORY / COMMENT cards (falls back
-   to `"astap-cli"` when no banner is found).
-
-   **Implementation note:** the design intent is parsing via
-   `fitsrs` + `wcs::params::WCSParams` (cds-astro/wcs-rs); the
-   shipped code currently uses a small hand-rolled card parser
-   while the Phase 2 `fitsrs` spike resolves header-only-input
-   support. Tracked by
-   [issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160)
-   and the implementation plan §"WCS parsing via `fitsrs` + `wcs`,
-   not hand-rolled". The `read_wcs_sidecar` public surface is stable
-   either way.
+6. On clean exit with zero status, the service reads the `.wcs`
+   sidecar ASTAP wrote next to the FITS via `fitsrs` (the workspace's
+   existing FITS library), deserializes the header into
+   `wcs::params::WCSParams` (cds-astro/wcs-rs, already a transitive
+   dep of `fitsrs`), and extracts the response fields: `ra_center`
+   (CRVAL1), `dec_center` (CRVAL2), `pixel_scale_arcsec` (`|CDELT1|`
+   × 3600, falling back to `√(CD1_1² + CD2_1²)` × 3600 when CDELT1 is
+   absent and the CD matrix is present), `rotation_deg` (CROTA2,
+   falling back to `atan2(CD2_1, CD1_1)` and defaulting to 0 when
+   neither representation is present), plus a `solver` banner string
+   read from the file's HISTORY / COMMENT cards (falls back to
+   `"astap-cli"` when no banner is found). A defensive 2880-byte
+   block padder in `runner/wcs.rs` accepts test fixtures whose card
+   stream stops exactly at the END card without trailing FITS-block
+   padding; it does **not** lower the WCS-keyword bar — the parser
+   still requires a complete primary HDU header (`SIMPLE`, `BITPIX`,
+   `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution. The wrapper
+   does not hand-roll FITS-header parsing.
 7. Service releases the semaphore.
 
 **Error paths** all return the structured error envelope frozen in
