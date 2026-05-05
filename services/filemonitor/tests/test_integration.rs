@@ -85,7 +85,8 @@ async fn test_server_loop_stop_and_reload() {
                 "case_sensitive": false
             },
             "server": {
-                "port": 0
+                "port": 0,
+                "discovery_port": null
             }
         });
 
@@ -129,7 +130,8 @@ async fn test_server_loop_stop_and_reload() {
                 "case_sensitive": false
             },
             "server": {
-                "port": 0
+                "port": 0,
+                "discovery_port": null
             }
         });
 
