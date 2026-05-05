@@ -291,19 +291,37 @@ impl ImageCache {
     /// captures frame N → starts capture N+1 → solves frame N) can
     /// update the original sidecar without needing the document id
     /// threaded through the call site. Returns `None` when the
-    /// sidecar is missing, unreadable, or doesn't parse as an
-    /// `ExposureDocument` — the typical "external FITS / not an
-    /// rp-produced frame" case.
+    /// sidecar is missing, unreadable, doesn't parse as an
+    /// `ExposureDocument`, or carries a `file_path` whose basename
+    /// disagrees with the requested FITS — that last guard catches
+    /// the cross-rig-mixed-sidecars case (operator hand-copies a
+    /// sidecar from another rig's data directory; UUID-8 collision
+    /// would otherwise drive `put_section`'s disk-fallback to write
+    /// to the wrong file). Basename-only — full-path equality would
+    /// false-positive when an operator archives a session to NAS.
     ///
     /// The path-to-sidecar mapping is `<base>.fits` → `<base>.json`;
     /// this mirrors how `mcp.rs:capture` writes the pair atomically
     /// (Phase 7 Step 1).
     pub async fn resolve_document_by_path(&self, fits_path: &str) -> Option<ExposureDocument> {
         let sidecar_path = derive_sidecar_path(fits_path)?;
-        tokio::task::spawn_blocking(move || super::document::read_sidecar_sync(&sidecar_path).ok())
-            .await
-            .ok()
-            .flatten()
+        let request_basename = Path::new(fits_path).file_name()?.to_owned();
+        let doc = tokio::task::spawn_blocking(move || {
+            super::document::read_sidecar_sync(&sidecar_path).ok()
+        })
+        .await
+        .ok()
+        .flatten()?;
+        let doc_basename = Path::new(&doc.file_path).file_name();
+        if doc_basename != Some(request_basename.as_os_str()) {
+            debug!(
+                requested = %fits_path,
+                doc_file_path = %doc.file_path,
+                "resolve_document_by_path: sidecar basename mismatch, declining"
+            );
+            return None;
+        }
+        Some(doc)
     }
 
     /// Write `value` into `sections[name]` on the document and persist
@@ -1127,6 +1145,58 @@ mod tests {
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
         let result = cache.resolve_document_by_path("/tmp/no-extension").await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_document_by_path_rejects_sidecar_with_mismatched_basename() {
+        // Cross-rig-mixed-sidecars guard: a sidecar whose `file_path`
+        // basename disagrees with the requested FITS is declined,
+        // even though the sidecar itself parses fine. Catches the
+        // hand-copied-from-another-rig mistake that would otherwise
+        // drive `put_section`'s disk-fallback to the wrong file.
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar_path = dir.path().join("local.json");
+        let mut foreign_doc = dummy_document("ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb");
+        // Sidecar claims it belongs to a *different* FITS file in
+        // some other directory — exactly the cross-rig case.
+        foreign_doc.file_path = "/data/other-rig/foreign.fits".to_string();
+        std::fs::write(&sidecar_path, serde_json::to_vec(&foreign_doc).unwrap()).unwrap();
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let local_fits = dir.path().join("local.fits").to_string_lossy().into_owned();
+        let result = cache.resolve_document_by_path(&local_fits).await;
+        assert!(
+            result.is_none(),
+            "sidecar with mismatched basename must be declined"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_document_by_path_accepts_archived_session_directory() {
+        // Archive workflow: operator copies the FITS+sidecar pair to a
+        // new location (e.g. NAS). Basenames stay consistent; only
+        // `doc.file_path` (which records the original capture path)
+        // diverges. The guard accepts this — basename match suffices.
+        let dir = tempfile::tempdir().unwrap();
+        let basename = "abcd1234";
+        let sidecar_path = dir.path().join(format!("{basename}.json"));
+        let mut doc = dummy_document("550e8400-e29b-41d4-a716-446655440000");
+        // Original capture path was elsewhere; the operator moved
+        // the pair to the archive directory.
+        doc.file_path = format!("/old/location/{basename}.fits");
+        std::fs::write(&sidecar_path, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let archived_fits = dir
+            .path()
+            .join(format!("{basename}.fits"))
+            .to_string_lossy()
+            .into_owned();
+        let resolved = cache
+            .resolve_document_by_path(&archived_fits)
+            .await
+            .expect("archive workflow must resolve despite path divergence");
+        assert_eq!(resolved.id, "550e8400-e29b-41d4-a716-446655440000");
     }
 
     // ---------------------------------------------------------------

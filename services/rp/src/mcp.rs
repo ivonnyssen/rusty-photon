@@ -2703,10 +2703,11 @@ impl McpHandler {
         };
 
         // Persist `wcs` section. document_id mode targets the
-        // resolved document directly; image_path mode attempts a
-        // UUID-8 reverse lookup so the late-solve workflow's call
-        // (path-only, no document_id known to the caller) still
-        // updates the matching sidecar.
+        // resolved document directly; image_path mode reads the
+        // sibling `<base>.json` sidecar via
+        // `ImageCache::resolve_document_by_path` so the late-solve
+        // workflow's call (path-only, no document_id known to the
+        // caller) still updates the matching sidecar.
         let payload = serde_json::json!({
             "ra_center": outcome.ra_center,
             "dec_center": outcome.dec_center,
