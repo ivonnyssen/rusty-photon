@@ -3789,6 +3789,7 @@ dependencies = [
  "rp-catalog",
  "rp-ephemeris",
  "rp-fits",
+ "rp-plate-solver",
  "rp-tls",
  "rpassword",
  "schemars 1.2.1",
@@ -3849,6 +3850,22 @@ dependencies = [
  "fitsrs",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "rp-plate-solver"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "humantime-serde",
+ "mockall",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 

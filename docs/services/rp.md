@@ -225,11 +225,11 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
   "id": "...",
   "...core fields...",
   "sections": {
-    "plate_solve": {
-      "solved_ra": 10.6848,
-      "solved_dec": 41.2690,
-      "rotation": 12.3,
-      "scale_arcsec_per_pixel": 1.05,
+    "wcs": {
+      "ra_center": 10.6848,
+      "dec_center": 41.2690,
+      "pixel_scale_arcsec": 1.05,
+      "rotation_deg": 12.3,
       "solver": "astap-0.9.1"
     },
     "image_analysis": {
@@ -581,11 +581,13 @@ POST /api/documents/{document_id}/sections
 Content-Type: application/json
 
 {
-  "section_name": "plate_solve",
+  "section_name": "wcs",
   "data": {
-    "solved_ra": 10.6848,
-    "solved_dec": 41.2690,
-    "rotation": 12.3
+    "ra_center": 10.6848,
+    "dec_center": 41.2690,
+    "pixel_scale_arcsec": 1.05,
+    "rotation_deg": 12.3,
+    "solver": "astap-0.9.1"
   }
 }
 ```
@@ -708,7 +710,7 @@ accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `plate_solve` | image_path or document_id, hint (optional) | ra, dec, rotation, scale | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP / astrometry.net). |
+| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
 
 **Compound (built-in)**
 
@@ -2018,6 +2020,137 @@ and read their `image_analysis` sections.
   shadow logged at startup. Two plugins both claiming
   `auto_focus` remains a config-time error.
 
+#### `plate_solve` Contract
+
+A built-in tool that proxies to the `plate-solver` rp-managed
+service over HTTP. The wrapper hides ASTAP's subprocess details and
+returns a parsed WCS solution. See
+[`docs/services/plate-solver.md`](plate-solver.md) for the wrapper's
+own contract.
+
+**Input**:
+- `document_id` *or* `image_path` — at least one required. Both
+  fields are optional at the serde level so the tool can produce
+  consistent error messages mentioning `image_path` when both are
+  omitted (matching the imaging-tool convention). When both are
+  supplied, **`document_id` takes precedence** (consistent with
+  `measure_basic` et al. — see [Built-in Tools](#built-in-tools)).
+- `pointing_hint` — optional nested object
+  `{ ra_deg: f64, dec_deg: f64 }`. Decimal degrees on the wire for
+  both fields (the `_deg` suffix is intentional — Alpaca returns
+  `RightAscension` in **hours**, but the wrapper takes degrees).
+  Both inner fields are required when the object is present; the
+  nested-object shape makes the both-or-neither contract structural
+  rather than runtime-validated.
+- `use_mount_hints` — optional `bool`, default `false`. When
+  `true`, rp reads the current mount position
+  (`right_ascension()` × 15 → degrees, `declination()` pass-through)
+  and forwards as the wrapper's `ra_hint` / `dec_hint`.
+  - Mutually exclusive with `pointing_hint`. Both supplied ⇒ error
+    `provide explicit pointing_hint or use_mount_hints, not both`.
+  - Requires a configured and connected mount. Mount absent / not
+    connected / Alpaca read failure ⇒ error to caller (the caller
+    explicitly opted in, so failures are surfaced rather than
+    silently dropping to blind solve).
+- `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
+  wrapper's `fov_hint_deg`. v1 has no per-camera FOV stash on the
+  exposure document — callers pass this per request. Tracked by
+  [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153).
+- `search_radius_deg` — optional `f64`. Per-call value overrides
+  `plate_solver.default_search_radius_deg` from rp config. Both
+  absent ⇒ omit from wrapper request ⇒ ASTAP uses its own default.
+  The override matters for loaded-from-disk images where the
+  configured rig default may not match.
+- `timeout` — optional humantime string (e.g. `"30s"`). Forwarded
+  to the wrapper's `timeout` field. Omitted ⇒ wrapper applies its
+  own `default_solve_timeout`. **Distinct from**
+  `plate_solver.timeout` in rp config, which is the rp HTTP-client
+  outer timeout (the connection-side backstop per Tenet 1).
+
+When neither `pointing_hint` nor `use_mount_hints` is supplied, the
+wrapper falls back to a blind solve.
+
+**Output** (matches the wrapper's `SolveResponseBody` field-for-field):
+- `ra_center` (f64) — image-center right ascension in decimal
+  degrees.
+- `dec_center` (f64) — image-center declination in decimal degrees.
+- `pixel_scale_arcsec` (f64) — arcseconds per pixel from the
+  parsed `.wcs` `|CDELT1|`.
+- `rotation_deg` (f64) — field rotation from `.wcs` `CROTA2`.
+- `solver` (String) — solver banner from the wrapper (e.g.
+  `"astap-2026.05.03"`).
+
+**Persistence**:
+- `document_id` mode: writes a `wcs` section to the exposure
+  document via `ImageCache::put_section`. Section payload mirrors
+  the output verbatim.
+- `image_path` mode: after a successful solve, derives the sibling
+  sidecar path (`<base>.fits` → `<base>.json`) and resolves it to
+  an `ExposureDocument` via `ImageCache::resolve_document_by_path`.
+  If the sidecar exists and parses (the **late-solve workflow**:
+  capture frame N → start capture N+1 → solve frame N → update the
+  original sidecar), `wcs` is written via `put_section`. If no
+  sidecar is present (external FITS, missing sidecar, non-`.fits`
+  path), the result is returned without persistence and the cache
+  miss is `debug!()`-logged. `put_section` itself falls back to a
+  disk-only write when the cache entry is absent (post-eviction or
+  post-`rp` restart) so the sidecar always sees the section update.
+- Persistence failure (sidecar write error) is logged at `debug!()`
+  and does *not* fail the tool — same shape as the imaging-tool
+  convention.
+
+**Error policy**:
+- Configuration errors before the call:
+  - rp `plate_solver` config absent ⇒
+    `plate_solve: plate solver not configured`.
+  - Hint mutual-exclusion violated ⇒
+    `plate_solve: provide explicit pointing_hint or use_mount_hints,
+    not both`.
+  - `use_mount_hints: true` with mount issue ⇒
+    `plate_solve: use_mount_hints requested but mount is <reason>`.
+  - Neither `document_id` nor `image_path` ⇒ MCP error mentioning
+    `image_path`.
+- HTTP-client failures (DNS, refused, connection timeout) ⇒
+  `plate_solve: service unreachable: <reason>`.
+- Wrapper structured errors (`invalid_request`, `fits_not_found`,
+  `solve_failed`, `solve_timeout`, `internal`) propagate verbatim
+  as `plate_solve: <code>: <message>`. For `solve_failed`, the
+  wrapper's `details.stderr_tail` is appended for diagnostics. rp
+  does **not** pre-validate `fits_path` — the wrapper is
+  authoritative.
+
+**Algorithm**:
+1. Validate `document_id` xor `image_path` (at least one). Validate
+   hint shape (mutual exclusion + `use_mount_hints` requires
+   connected mount).
+2. Resolve `PlateSolveClient` from `AppState`. Error if absent.
+3. Resolve `fits_path`:
+   - `document_id` mode: `ImageCache::resolve_document(doc_id)` →
+     `doc.file_path`.
+   - `image_path` mode: forward verbatim.
+4. Resolve hints into the wrapper's flat `ra_hint` / `dec_hint`
+   pair. Explicit `pointing_hint` maps directly; `use_mount_hints`
+   reads the mount and applies the ×15 RA conversion.
+5. Resolve `search_radius_deg`: per-call value > config default >
+   absent.
+6. Build `SolveRequest`, call `client.solve(req)`. Map `SolveError`
+   variants to MCP errors per the policy above.
+7. On success: in `document_id` mode, persist the `wcs` section to
+   that document. In `image_path` mode, attempt UUID-8 reverse-
+   lookup; persist if matched, debug-log if not.
+8. Return the solver output as the MCP tool result.
+
+**Compound caller note**: `center_on_target` (planned, Phase 6c-3)
+sets `use_mount_hints: true` on its inner `plate_solve` calls
+rather than calling a Rust-side mount-read helper. That keeps the
+hours→degrees conversion in one place (this contract) and avoids a
+parallel code path for the same data flow.
+
+`plate_solve` is a built-in tool and may be **shadowed** by a
+tool-provider plugin advertising the same `plate_solve` name; the
+plugin wins per Config-Time Validation, with the shadow logged at
+startup.
+
 #### Example: `auto_focus` (V-curve)
 
 See [`auto_focus` Contract](#auto_focus-contract) for the full parameter
@@ -2660,13 +2793,14 @@ when the config sets a non-zero default).
   "guider": {
     "url": "http://localhost:11130",
     "settle_threshold_arcsec": 0.8,
-    "settle_time_secs": 10,
+    "settle_time": "10s",
     "dither_pixels": 5,
     "dither_every_n_exposures": 3
   },
   "plate_solver": {
     "url": "http://localhost:11131",
-    "timeout_secs": 60
+    "timeout": "60s",
+    "default_search_radius_deg": 3.0
   },
   "imaging": {
     "cache_max_mib": 1024,
@@ -2774,10 +2908,16 @@ services/rp/src/
     cover_calibrator.rs CoverCalibrator wrapper (cover open/close, calibrator on/off)
 
   # Services (non-Alpaca integrations, backing built-in MCP tools)
+  # Per-service HTTP clients live in workspace crates following the
+  # `crates/rp-*` convention (e.g. crates/rp-plate-solver). The
+  # services/ sub-tree here remains the in-rp glue (lifecycle, MCP
+  # adapter shell). plate_solve's MCP tool wiring lives in mcp.rs;
+  # the transport/types live in crates/rp-plate-solver.
   services/
     mod.rs              Service trait, service manager
-    guider.rs           Guider service client (backs start/stop/dither tools)
-    plate_solver.rs     Plate solver client (backs plate_solve tool)
+    guider.rs           Guider service client (planned — to follow
+                        rp-plate-solver as crates/rp-guider when the
+                        guider client work lands)
 
   # Safety enforcement
   safety.rs             SafetyMonitor polling, park/resume, orchestrator cancellation

@@ -790,36 +790,330 @@ lands.
 
 ##### Phase 6c-2 — `plate_solve` built-in MCP tool
 
-Status: **not started.** Depends on the HTTP contract from 6c-1.
+Status: **complete (2026-05-05).** All four steps landed; 235/235
+BDD scenarios green (was 216/216 pre-Phase-6c-2 + 19 new), 879
+tests pass workspace-wide via `cargo rail run --profile commit -q`.
+New crate `crates/rp-plate-solver` carries the HTTP client +
+mockall mock; `services/rp` adds the `plate_solver` config block,
+the `plate_solve` MCP tool, and the `resolve_document_by_path`
+helper for the late-solve workflow's image_path persistence.
 
-- [ ] `services/rp/src/plate_solver.rs` — thin reqwest client to
-      `plate-solver`'s `/api/v1/solve` endpoint. This is also the
-      first rp-managed-service client written on the `rp` side; the
-      module shape it establishes will be reused when the planned
-      `guider.rs` client lands later.
-- [ ] MCP tool wiring in `mcp.rs`: `plate_solve` accepts `document_id`
-      *or* `image_path` (the imaging-tool convention), optional
-      pointing hints (`ra_hint`, `dec_hint`, `fov_hint_deg`,
-      `search_radius_deg`, `timeout`), resolves a `fits_path` from the
-      document or argument, calls the service, returns the WCS
-      solution.
-- [ ] **Persistence:** when called with `document_id`, write a `wcs`
-      section into the exposure document with the full solver result.
-      Distinct from existing imaging sections (`image_analysis`,
-      `background`, `detected_stars`, `measured_stars`, `snr`) so all
-      tools coexist on one document.
-- [ ] `services/rp/tests/features/plate_solve.feature` — catalog,
-      happy path against an in-test stub solver, document_id and
-      image_path resolution paths, `wcs` section persistence anchor,
-      service-unreachable error, missing-parameter outline. Target
-      ~10 scenarios.
-- [ ] BDD harness: a small in-test axum stub returning canned WCS
-      payloads (same shape Phase 6a used for `connect_focuser`). The
-      real `plate-solver` process is **not** started in rp's BDD
-      suite; that lives in `plate-solver`'s own BDD tests.
+###### Decisions resolved during Phase 6c-2 planning
 
-**Exit criteria:** new BDD scenarios green, `wcs` section round-trips
-through the document API, `cargo rail run --profile commit -q` clean.
+These will be captured in `docs/services/rp.md` (Built-in Tools — Image
+Analysis; Configuration; new `plate_solve` Contract subsection added by
+Step 1) and should not be re-litigated:
+
+- **Persistence section name: `wcs`.** Payload mirrors the wrapper's
+  response field-for-field: `{ra_center, dec_center,
+  pixel_scale_arcsec, rotation_deg, solver}`. Matches what the result
+  *is* (a WCS solution), not what produced it. Distinct from the
+  existing `image_analysis`, `background`, `detected_stars`,
+  `measured_stars`, `snr` sections so all tools coexist on one
+  document. The historical `plate_solve` section name in `rp.md`
+  Document Model (line ~178) is updated to `wcs` in Step 1.
+- **`document_id` and `image_path`: not strict xor.** Mirrors the
+  existing imaging-tool convention (`rp.md` line 645–646; confirmed in
+  `mcp.rs:1422` for `measure_basic`): both fields optional at the
+  serde level, at least one required, **`document_id` takes
+  precedence when both supplied**. Persistence behavior:
+  - `document_id` mode: persist `wcs` section to that document via
+    `ImageCache::put_section`.
+  - `image_path` mode: solve runs; on success, derive the sibling
+    sidecar path (`<base>.fits` → `<base>.json`) and resolve via
+    the new `ImageCache::resolve_document_by_path`. Match found
+    (rp-produced FITS with sidecar on disk — the late-solve
+    workflow's case) ⇒ persist `wcs` to its sidecar. No match
+    (external FITS, missing sidecar, non-`.fits` path) ⇒ return
+    result without persistence and `debug!()` log it. The
+    late-solve workflow (capture frame N → start capture N+1 →
+    solve frame N → update the original sidecar) falls in the
+    first bucket. `put_section` itself falls back to a disk-only
+    write when the cache entry is absent (post-eviction or
+    post-`rp` restart) so persistence is durable across cache
+    misses; the original UUID-8 reverse-lookup proposal in the
+    plan-stub was superseded during implementation by this cleaner
+    sibling-sidecar derivation.
+- **Hints: explicit by default, `use_mount_hints` is the opt-in
+  convenience.** No auto-sourcing from the mount in the default path
+  (per the operator preference: explicit beats auto-magic). MCP shape:
+  - `pointing_hint: { ra_deg: f64, dec_deg: f64 }` — nested object so
+    the both-or-neither contract is structural, not runtime-validated.
+    Field names carry units to preempt the Alpaca-hours / wrapper-
+    degrees gotcha at the call site.
+  - `use_mount_hints: bool` — convenience flag that reads the current
+    mount position (`right_ascension()` × 15 → degrees, `declination()`
+    pass-through) and forwards as the wrapper's `ra_hint` / `dec_hint`.
+  - Mutually exclusive: `pointing_hint` + `use_mount_hints == true` ⇒
+    error (`provide explicit pointing_hint or use_mount_hints, not
+    both`).
+  - `use_mount_hints == true` with no mount configured / not connected
+    / Alpaca read failure ⇒ error to caller (caller asked, fail loud).
+  - Both absent ⇒ wrapper falls back to blind solve.
+  - rp handler maps `pointing_hint.ra_deg` → wrapper's `ra_hint`,
+    `pointing_hint.dec_deg` → wrapper's `dec_hint`. The hours→degrees
+    conversion lives in the rp handler (mount Alpaca returns hours;
+    wrapper takes degrees per `plate-solver.md` §"Hint Mapping").
+  - `center_on_target` (Phase 6c-3) sets `use_mount_hints: true`
+    rather than calling a Rust-side mount-read helper.
+- **`fov_hint_deg`: optional MCP parameter, no per-camera config in
+  v1.** Same shape as the rest of the optional hints. Per-camera FOV
+  stash (the eventually-right home for this value) is tracked by
+  [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153)
+  — defer until a workflow is blocked without it.
+- **`search_radius_deg`: optional MCP parameter overrides
+  `plate_solver.default_search_radius_deg` config.** Operator-set
+  default in config (no default — operator opt-in) for fresh captures
+  on the configured rig; per-call MCP parameter overrides for
+  loaded-from-disk images where the configured default may not match.
+  Both absent ⇒ omit from wrapper request ⇒ ASTAP uses its own
+  default.
+- **Two timeouts.** Solve-side: per-call MCP `timeout` (humantime
+  string) forwarded to wrapper's `timeout` field via
+  `humantime_serde::option`. Omitted ⇒ wrapper applies its own
+  `default_solve_timeout`. Connection-side: `plate_solver.timeout:
+  Duration` (`humantime_serde`, default `"60s"`) is the rp HTTP-client
+  outer timeout — required-with-default per Tenet 1; the backstop is
+  non-optional. Maps to `reqwest::ClientBuilder::timeout()` at client
+  build time so it covers connection + total request.
+- **`pub plate_solver: Option<PlateSolverConfig>` on top-level
+  `Config`.** Mirrors `mount: Option<MountConfig>` (Phase 6c-prep):
+  the service is optional infrastructure; configs without it remain
+  valid. Absent ⇒ `plate_solve` tool returns `plate_solve: plate
+  solver not configured`. `#[serde(default)]` so existing rp configs
+  load.
+- **HTTP client: `reqwest`.** Already a workspace dep used heavily by
+  rp (`events.rs` webhooks, `equipment.rs` Alpaca clients,
+  `session.rs`). One client built once at AppState construction from
+  `PlateSolverConfig`, held as `Option<PlateSolverClient>` inside
+  `AppState`. Connection pooling matters even for a single endpoint.
+- **Error mapping at the MCP boundary: plain string `plate_solve:
+  <code>: <message>`.** Symmetric with existing imaging-tool errors
+  (no structured code field). Propagate all wrapper errors verbatim
+  (`invalid_request`, `fits_not_found`, `solve_failed`,
+  `solve_timeout`, `internal`); wrapper's `details` (when present, for
+  `solve_failed`) appended. Connection-level failures surface as
+  `plate_solve: service unreachable: <reason>` so they're
+  distinguishable from solver-side failures. No defensive
+  pre-validation in rp — wrapper is authoritative on `fits_path`.
+- **Module location: new `crates/rp-plate-solver` workspace member.**
+  Matches the established `crates/rp-*` convention (`rp-auth`,
+  `rp-catalog`, `rp-ephemeris`, `rp-fits`, `rp-tls` — "shared
+  utilities for Rusty Photon services"). Forward-positions for
+  `rp-guider` and any future rp-managed-service client. Single-
+  direction client — `services/plate-solver` does **not** depend on
+  it; Tenet 4 (remote interfaces only) preserved by HTTP staying as
+  the only inter-service contract. Crate exports a `PlateSolveClient`
+  trait + `MockPlateSolveClient` (mockall) so the MCP handler can be
+  unit-tested without standing up an axum stub — same shape
+  `auto_focus.rs` uses with its `FocuserOps`/`CaptureOps`/`MeasureOps`
+  trait adapters.
+- **No new feature gates.** `rp-plate-solver` is an unconditional dep
+  of `services/rp`; the `Option<PlateSolverConfig>` is the only knob
+  — present means available, absent means tool returns "not
+  configured."
+
+###### Work breakdown (in order)
+
+**Step 1 — Design doc updates (Phase 1 of dev workflow).**
+
+- [x] `docs/services/rp.md` updates:
+   - Built-in Tools — Image Analysis table: add `plate_solve` row
+     with the final input shape (`document_id` | `image_path`,
+     optional `pointing_hint` / `use_mount_hints` / `fov_hint_deg` /
+     `search_radius_deg` / `timeout`); returns `ra_center`,
+     `dec_center`, `pixel_scale_arcsec`, `rotation_deg`, `solver`.
+   - New `plate_solve` Contract subsection (parallel to
+     `measure_basic` Contract): inputs, hint shape with the
+     mutually-exclusive validation rules and the hours→degrees
+     conversion called out, error-code propagation, persistence
+     rules for `document_id` mode and `image_path`-with-UUID-8-match
+     mode.
+   - Configuration block (already updated for `timeout: "60s"`):
+     extend with `default_search_radius_deg` (optional).
+   - Document Model example (line ~178): rename `plate_solve`
+     section to `wcs`, update field names to wrapper's response
+     shape (`ra_center`, `dec_center`, `pixel_scale_arcsec`,
+     `rotation_deg`, `solver`).
+- [x] `docs/services/plate-solver.md` §"Hint sources and
+  search-radius defaults": flip the auto-sourcing description ("rp's
+  `plate_solve` MCP handler reads both via the equipment registry,
+  performs the RA conversion, and forwards the request") to "rp's
+  `plate_solve` MCP handler accepts explicit hints from the caller;
+  the `use_mount_hints` convenience opts into reading the current
+  mount position (with hours→degrees conversion)."
+
+**Step 2 — BDD feature + step defs (Phase 2 of dev workflow, with
+`@wip`).**
+
+- [x] `services/rp/tests/features/plate_solve.feature` (~17
+  scenarios, `@wip` tag at top per `testing.md` §2.6):
+  1. Catalog includes `plate_solve` (1)
+  2. Happy path — `image_path` mode against in-test stub returns
+     expected fields (1)
+  3. Happy path — `document_id` mode resolves to file_path via
+     cache, returns same shape (1)
+  4. `wcs` section persistence anchor — `document_id` mode (1)
+  5. `wcs` section persistence — `image_path` mode against an
+     rp-produced FITS (UUID-8 suffix matches a known document) (1)
+  6. `image_path` mode against an external FITS (no UUID-8 match) ⇒
+     no persistence, result returned (1)
+  7. `document_id` precedence — both supplied, document_id wins (1)
+  8. Explicit `pointing_hint` forwarded verbatim (stub request log
+     pinned) (1)
+  9. `use_mount_hints: true` reads mount, forwards converted RA
+     (×15 → degrees) and Dec (1)
+  10. `use_mount_hints: true` with no mount configured ⇒ error (1)
+  11. `use_mount_hints: true` with mount disconnected ⇒ error (1)
+  12. `pointing_hint` + `use_mount_hints: true` ⇒ error (1)
+  13. No hints ⇒ blind solve (request omits hint fields) (1)
+  14. Per-call `fov_hint_deg` / `search_radius_deg` / `timeout`
+      forwarded verbatim (1)
+  15. Config `default_search_radius_deg` applied when MCP parameter
+      omitted; per-call value overrides (1)
+  16. `plate solver not configured` error when config absent (1)
+  17. `service unreachable` error — config points at unbound port (1)
+  18. Wrapper error round-trip — stub returns each of the 5 error
+      codes (Scenario Outline) (1)
+  19. Missing-parameter — neither `document_id` nor `image_path` (1)
+
+  (Final count likely 18–19 with the Scenario Outline; tighten in
+  Step 2 implementation.)
+- [x] `services/rp/tests/bdd/steps/plate_solve_steps.rs` reusing
+  `tool_steps.rs` shared steps. New steps:
+  - `Given(a stub plate solver returning a canned WCS)` — spawns
+    axum router on `127.0.0.1:0`, holds receiver-side request log
+    so subsequent steps can assert hint plumbing.
+  - `Given(a stub plate solver returning <error_code>)` — variant
+    returning a structured ErrorResponse envelope.
+  - `Given(rp is configured to point at a port with no plate
+    solver)` — sets `plate_solver.url` to an unbound port for the
+    unreachable scenario.
+  - `When(I call plate_solve with <table>)` — JSON-RPC call; table
+    interprets `MISSING` sentinel as omitted field.
+  - `Then(the plate solver received hints ra=<f> dec=<f>)` and the
+    negative variant.
+- [x] `RpWorld` additions: `last_plate_solver_stub:
+  Option<PlateSolverStub>` (handle wrapping the stub server for
+  inspection), `last_plate_solve_result: Option<Value>`. Wire into
+  `tests/bdd/steps/mod.rs`.
+- [x] `bdd_infra::rp_harness::RpConfigBuilder::with_plate_solver(url,
+  timeout, default_search_radius_deg: Option<f64>)` builder method,
+  mirroring `with_mount`. Builder emits `"plate_solver": null | { …
+  }` so existing scenarios that don't set it stay unaffected.
+
+**Step 3 — Implementation (Phase 3 of dev workflow).**
+
+- [x] `crates/rp-plate-solver/` (new workspace member):
+  - `Cargo.toml` mirroring the other `rp-*` crates' shape.
+    Workspace deps only (`reqwest`, `serde`, `serde_json`,
+    `thiserror`, `humantime-serde`, `tracing`, `mockall` for tests).
+  - `BUILD.bazel`. `CARGO_BAZEL_REPIN=1 bazel mod tidy` if any new
+    crates.io deps land — none expected.
+  - `lib.rs` — public API: `PlateSolveClient` trait, `SolveRequest`,
+    `SolveOutcome`, `SolveError`. Concrete `PlateSolverClient`
+    implementing the trait via `reqwest::Client`.
+    `MockPlateSolveClient` via `#[cfg_attr(test, mockall::automock)]`.
+  - Local types do **not** depend on the `plate-solver` crate (Tenet
+    4). Wire types match the wrapper's HTTP contract verbatim.
+  - Unit tests via in-test axum stub (same pattern as
+    `equipment.rs:connect_focuser` tests at line 791+): happy path,
+    each of the 5 wrapper error codes round-trip, connection-refused,
+    body-parse-failure (200 with malformed JSON ⇒ `Internal`).
+- [x] `services/rp/Cargo.toml`: add `rp-plate-solver = { workspace =
+  true }` dep. Workspace `Cargo.toml`: register the new crate as a
+  workspace member and dep.
+- [x] `services/rp/src/config.rs`:
+  - New `PlateSolverConfig { url: String, timeout: Duration
+    (humantime, default `"60s"`), default_search_radius_deg:
+    Option<f64> }`.
+  - `pub plate_solver: Option<PlateSolverConfig>` on top-level
+    `Config` with `#[serde(default)]`.
+  - 2 unit tests: minimal-fields (just `url`, defaults applied),
+    with-default-search-radius.
+- [x] `services/rp/src/mcp.rs`:
+  - New `PlateSolveParams { document_id, image_path, pointing_hint:
+    Option<PointingHint>, use_mount_hints: Option<bool>,
+    fov_hint_deg, search_radius_deg, timeout }` struct (all optional
+    at serde for the same error-message-ordering reason as
+    `MeasureBasicParams`). New nested `PointingHint { ra_deg: f64,
+    dec_deg: f64 }`.
+  - New `#[tool] async fn plate_solve(...)` handler:
+    1. Validate `document_id` xor `image_path` (matching existing
+       imaging-tools error message shape mentioning `image_path`).
+    2. Validate hint mutual-exclusion + `use_mount_hints` ⇒
+       connected mount.
+    3. Resolve plate solver client (`tool_error!("plate_solve: plate
+       solver not configured")` if absent on `AppState`).
+    4. Resolve `fits_path`: `document_id` mode goes through
+       `image_cache.resolve_document(doc_id)` then reads
+       `doc.file_path`; `image_path` mode forwards verbatim.
+    5. Resolve hints: explicit `pointing_hint` → wrapper's flat
+       fields; `use_mount_hints` → mount read + ×15 RA conversion.
+    6. Resolve `search_radius_deg`: per-call value > config default >
+       `None`.
+    7. Build `SolveRequest`, call client, map `SolveError` → MCP
+       error per Decision 9.
+    8. Persistence: `document_id` mode → `image_cache.put_section
+       (doc_id, "wcs", payload)`. `image_path` mode → attempt UUID-8
+       reverse-lookup; persist if matched, debug-log if not.
+       Failure of persistence logged at `debug!()`, does not fail
+       the tool (matches imaging-tool convention).
+  - ~14 unit tests against `MockPlateSolveClient` (paralleling the
+    existing `MockTelescope` and `MockFocuser` patterns): happy
+    path, hint validation arms, document_id resolution,
+    `image_path`-with/without-UUID-match persistence, each wrapper
+    error propagated, missing-param errors.
+- [x] `services/rp/src/lib.rs` / `main.rs`: wire the new
+  `PlateSolverConfig` into a `Option<Box<dyn PlateSolveClient>>`
+  field on `AppState` (trait-typed so tests can swap in the mock).
+
+**Step 4 — Activate BDD + cleanup.**
+
+- [x] Remove `@wip` tag from `plate_solve.feature` line 1.
+- [x] Run full suite (`cargo rail run --profile commit -q` per
+  CLAUDE.md rule 4); confirm BDD count: 187 + ~18 = ~205 scenarios
+  green.
+- [x] `cargo fmt`. `cargo build --all --all-targets --all-features
+  --locked` for linker-visible code per CLAUDE.md rule 4.
+  `CARGO_BAZEL_REPIN=1 bazel mod tidy` only if new crates.io deps
+  landed (none expected).
+- [x] Plan-doc bookkeeping: flip Phase 6c-2 status to **complete**
+  with the work-breakdown checkboxes ticked, exit-criteria block
+  populated with concrete BDD/unit-test counts.
+
+###### Out of scope / deferred
+
+- **Per-camera FOV stash.** Tracked by issue #153.
+- **Explicit `pointing_hint` *plus* mount-fallback.** v1 is "explicit
+  or mount, not both." A blended mode (`pointing_hint` overrides what
+  `use_mount_hints` would have pulled, missing fields fall through
+  to mount) is the natural extension when a caller needs it.
+- **Background solve via `exposure_complete` subscription.** Already
+  deferred in `plate-solver.md` MVP scope.
+- **Solve cache / warm process pool.** Wrapper is stateless-across-
+  requests by design.
+- **Multi-target solve / batch endpoint.** Wrapper exposes a
+  single-flight endpoint; no batching contract to wrap.
+
+###### Exit criteria
+
+- ~18 new BDD scenarios green (~205/205 total in rp's BDD suite, was
+  187/187).
+- ~14 new lib tests across `services/rp/src/config` (2),
+  `services/rp/src/mcp::plate_solve` (~12); plus ~9 unit tests in the
+  new `crates/rp-plate-solver` crate (happy path + 5 wrapper error
+  arms + connection-refused + body-parse-failure + mockall
+  scaffolding test).
+- `cargo rail run --profile commit -q` clean workspace-wide,
+  `cargo fmt` clean. New workspace member registered; no new
+  crates.io deps expected (so no `bazel mod tidy` required —
+  confirm before committing).
+- `wcs` section round-trips through `GET /api/documents/{id}` for
+  both `document_id` and `image_path`-with-UUID-match modes.
+- Phase 6c-3 (`center_on_target`) is now unblocked — its
+  `PlateSolveOps` adapter wraps `PlateSolveClient` directly and its
+  hint plumbing sets `use_mount_hints: true`.
 
 ##### Phase 6c-3 — `center_on_target` design + BDD + impl
 

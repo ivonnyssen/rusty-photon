@@ -27,14 +27,16 @@ mod launcher;
 mod mcp_client;
 mod omnisim;
 mod orchestrator;
+mod plate_solver_stub;
 mod webhook;
 
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
-    FocuserConfig, MountConfig, RpConfigBuilder,
+    FocuserConfig, MountConfig, PlateSolverConfig, RpConfigBuilder,
 };
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
+pub use plate_solver_stub::{PlateSolverStub, StubBehavior};
 pub use webhook::{ReceivedEvent, WebhookReceiver};
