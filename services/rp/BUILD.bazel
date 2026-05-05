@@ -8,9 +8,15 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-catalog:rp-catalog",
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
-    "//crates/rp-plate-solver:rp-plate-solver",
     "//crates/rp-tls:rp-tls",
 ]
+
+# rp-plate-solver ships two Bazel variants — production-clean for
+# library/binary targets and `_with_mock` for tests that need
+# MockPlateSolveClient. See docs/plans/bazel-migration.md
+# ("Mockall mock variants") for the pattern.
+_RP_PLATE_SOLVER = "//crates/rp-plate-solver:rp-plate-solver"
+_RP_PLATE_SOLVER_WITH_MOCK = "//crates/rp-plate-solver:rp-plate-solver_with_mock"
 
 rust_library(
     name = "rp_lib",
@@ -20,7 +26,24 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
+)
+
+# Test-only twin of `rp_lib` linking the `_with_mock` plate-solver
+# variant so unit tests in mcp.rs can use MockPlateSolveClient.
+# Same crate_name as `rp_lib` — they are never linked into the same
+# binary. rules_rust merges `crate=`'s parent deps with the test's
+# own, so the test must reach the with-mock plate-solver through
+# this twin (not by overriding deps on the rust_test directly,
+# which produces an `E0464 multiple candidates` link conflict).
+rust_library(
+    name = "rp_lib_with_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "rp",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER_WITH_MOCK] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -30,7 +53,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -40,12 +63,12 @@ rust_test(
         proc_macro_dev = True,
     ),
     size = "small",
-    crate = ":rp_lib",
+    crate = ":rp_lib_with_mock",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER_WITH_MOCK] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -84,7 +107,7 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "rp"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":rp_lib", "//crates/bdd-infra:bdd-infra_rp_harness"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [":rp_lib", "//crates/bdd-infra:bdd-infra_rp_harness"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

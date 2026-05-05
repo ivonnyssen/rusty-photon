@@ -163,6 +163,54 @@ Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel'
 
 Not a migration blocker — 227 of 244 tests across these four targets pass; the failures are confined to code that tests cargo-integration machinery which is inherently Cargo-specific.
 
+### Mockall mock variants (cross-crate)
+
+Some workspace crates expose mockall-generated types so downstream
+test code in *other* crates can mock them. Cargo handles this with a
+`mock` feature gated on `dep:mockall` plus a dev-dependency
+re-declaration:
+
+```toml
+[features]
+mock = ["dep:mockall"]
+
+[dev-dependencies]
+some-crate = { workspace = true, features = ["mock"] }
+```
+
+Cargo unifies the dep declarations so test compilations see the mock
+symbol while production binaries link a feature-free version. Bazel
+has no equivalent — `crate_features` is a compile-time attribute of
+the library output. The pattern:
+
+1. Production-clean `rust_library` named `<crate>` with **no**
+   `crate_features`.
+2. Test-only `rust_library` variant named `<crate>_with_mock` with
+   `crate_features = ["mock"]`. Same `crate_name` as the production
+   target — they are never linked into the same binary.
+3. Downstream `rust_library` / `rust_binary` targets depend on the
+   production variant. (Not both: two crates with the same
+   `crate_name` in one closure produces an `E0464 multiple
+   candidates` link conflict.)
+4. Downstream consumers whose unit tests reuse the library's sources
+   via `rust_test(crate = ":<lib>")` need a **twin** `rust_library`
+   target (`<lib>_with_mock`) that swaps in the `_with_mock` variant
+   of the mock-providing dep. rules_rust merges the parent crate's
+   deps with the rust_test's deps, so swapping deps only on the
+   `rust_test` is not sufficient — the parent must already be on
+   the test-only dep. The twin shares all attributes with the
+   production library except for the swapped dep.
+5. The mock-providing crate's own `rust_test` points at
+   `crate = ":<crate>_with_mock"` so `cfg(test)` and
+   `feature = "mock"` agree.
+
+Today only `crates/rp-plate-solver` exposes mocks across crate
+boundaries (`MockPlateSolveClient` for `services/rp:rp_unit_test`).
+`crates/rp-tls` uses `#[cfg_attr(test, mockall::automock)]` —
+single-crate scope, no cross-crate consumer, no `_with_mock` variant
+needed. New crates that expose mockall mocks for downstream tests
+follow the variant pattern.
+
 ### BDD conventions under Bazel (post Phase 3)
 
 Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:

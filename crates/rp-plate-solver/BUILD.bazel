@@ -3,8 +3,28 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
+# Production-clean library: no `mock` feature, no mockall in the
+# linked binary. Use this from rust_library / rust_binary targets.
+# Cargo gets the same shape via `[dev-dependencies] rp-plate-solver
+# = { features = ["mock"] }`; Bazel needs an explicit second target
+# because crate_features is a compile-time attribute of the library
+# output (see docs/plans/bazel-migration.md "Mockall mock variants").
 rust_library(
     name = "rp-plate-solver",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rp_plate_solver",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+# Test-only variant exposing `MockPlateSolveClient` to downstream
+# rust_test targets. Depend on this from `rust_test` only — never
+# from `rust_library` or `rust_binary`.
+rust_library(
+    name = "rp-plate-solver_with_mock",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
     crate_features = ["mock"],
@@ -22,8 +42,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     size = "small",
-    crate = ":rp-plate-solver",
-    crate_features = ["mock"],
+    crate = ":rp-plate-solver_with_mock",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
