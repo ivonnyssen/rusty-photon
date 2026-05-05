@@ -186,20 +186,24 @@ the library output. The pattern:
 1. Production-clean `rust_library` named `<crate>` with **no**
    `crate_features`.
 2. Test-only `rust_library` variant named `<crate>_with_mock` with
-   `crate_features = ["mock"]`. Same `crate_name` as the production
-   target — they are never linked into the same binary.
+   `crate_features = ["mock"]` and `testonly = True`. Same
+   `crate_name` as the production target — they are never linked
+   into the same binary. `testonly = True` makes Bazel reject any
+   production `rust_library` / `rust_binary` that tries to depend
+   on the variant, so the convention is enforced at build time.
 3. Downstream `rust_library` / `rust_binary` targets depend on the
    production variant. (Not both: two crates with the same
    `crate_name` in one closure produces an `E0464 multiple
    candidates` link conflict.)
 4. Downstream consumers whose unit tests reuse the library's sources
    via `rust_test(crate = ":<lib>")` need a **twin** `rust_library`
-   target (`<lib>_with_mock`) that swaps in the `_with_mock` variant
-   of the mock-providing dep. rules_rust merges the parent crate's
-   deps with the rust_test's deps, so swapping deps only on the
-   `rust_test` is not sufficient — the parent must already be on
-   the test-only dep. The twin shares all attributes with the
-   production library except for the swapped dep.
+   target (`<lib>_with_mock`, also `testonly = True`) that swaps in
+   the `_with_mock` variant of the mock-providing dep. rules_rust
+   merges the parent crate's deps with the rust_test's deps, so
+   swapping deps only on the `rust_test` is not sufficient — the
+   parent must already be on the test-only dep. The twin shares all
+   attributes with the production library except for the swapped
+   dep and the `testonly` flag.
 5. The mock-providing crate's own `rust_test` points at
    `crate = ":<crate>_with_mock"` so `cfg(test)` and
    `feature = "mock"` agree.

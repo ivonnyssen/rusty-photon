@@ -21,8 +21,10 @@ rust_library(
 )
 
 # Test-only variant exposing `MockPlateSolveClient` to downstream
-# rust_test targets. Depend on this from `rust_test` only — never
-# from `rust_library` or `rust_binary`.
+# rust_test targets. `testonly = True` blocks production
+# rust_library / rust_binary targets from depending on it at
+# Bazel-build time, so the convention isn't only enforced by code
+# review.
 rust_library(
     name = "rp-plate-solver_with_mock",
     srcs = glob(["src/**/*.rs"]),
@@ -31,6 +33,7 @@ rust_library(
     crate_name = "rp_plate_solver",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    testonly = True,
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
 )

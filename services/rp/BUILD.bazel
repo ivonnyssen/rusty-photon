@@ -36,6 +36,8 @@ rust_library(
 # own, so the test must reach the with-mock plate-solver through
 # this twin (not by overriding deps on the rust_test directly,
 # which produces an `E0464 multiple candidates` link conflict).
+# `testonly = True` is also required here because the twin depends
+# on the testonly `:rp-plate-solver_with_mock`.
 rust_library(
     name = "rp_lib_with_mock",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
@@ -43,6 +45,7 @@ rust_library(
     crate_name = "rp",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    testonly = True,
     deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER_WITH_MOCK] + all_crate_deps(normal = True),
 )
 
