@@ -59,10 +59,13 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
         .ok_or_else(|| WcsParseError::Malformed("empty header".into()))?
         .map_err(|e| WcsParseError::Malformed(format!("primary HDU parse failed: {e}")))?;
 
+    // fitsrs's `Fits::next()` always produces `HDU::Primary` on the
+    // first iteration (other variants only come from `new_xtension`,
+    // which fires from the second iteration onward), so the else arm
+    // here is API-unreachable — keep it as a hard panic rather than a
+    // typed error path that downstream code would have to consider.
     let HDU::Primary(primary) = hdu else {
-        return Err(WcsParseError::Malformed(
-            "expected primary HDU in .wcs sidecar".into(),
-        ));
+        unreachable!("fitsrs returns HDU::Primary for the first HDU");
     };
     let header = primary.get_header();
 
@@ -408,6 +411,136 @@ mod tests {
         assert_ne!(unpadded.len() % FITS_BLOCK, 0, "test setup precondition");
         let out = parse_wcs_bytes(&unpadded).unwrap();
         assert!((out.ra_center - 10.6848).abs() < 1e-6);
+    }
+
+    #[test]
+    fn read_wcs_sidecar_reads_from_disk() {
+        // Cover the public file-IO entry point. `parse_wcs_bytes` is
+        // exercised by every other test; this one writes a fixture to a
+        // temp dir and confirms `read_wcs_sidecar` reads + parses it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("solve.wcs");
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        std::fs::write(&path, bytes).unwrap();
+        let out = read_wcs_sidecar(&path).unwrap();
+        assert!((out.ra_center - 10.6848).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_input_returns_malformed() {
+        let err = parse_wcs_bytes(&[]).unwrap_err();
+        match err {
+            WcsParseError::Malformed(_) => {}
+            other => panic!("expected Malformed for empty input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integer_typed_crval1_is_coerced_to_float() {
+        // FITS values without a decimal point parse as `Value::Integer`;
+        // coerce_float must lift them into f64. Build a card with an
+        // integer-shaped CRVAL1 value.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "11"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert!((out.ra_center - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn logical_crval1_returns_non_numeric() {
+        // Bare `T` in the value column parses as `Value::Logical`; bad
+        // input shape from a wrong-tooling sidecar must surface as a
+        // named NonNumeric error rather than reach `WCSParams::deserialize`.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "T"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, .. } => assert_eq!(key, "CRVAL1"),
+            other => panic!("expected NonNumeric for logical CRVAL1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_value_crval1_returns_non_numeric() {
+        // A value column starting with a non-quote, non-T/F, non-digit
+        // character lands fitsrs in `Value::Invalid` (FITSv4 4.1.2.3).
+        // coerce_float must surface that as a named error.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "abc"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, .. } => assert_eq!(key, "CRVAL1"),
+            other => panic!("expected NonNumeric for invalid CRVAL1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn undefined_value_crval1_returns_non_numeric() {
+        // Empty value column parses as `Value::Undefined`; coerce_float
+        // must surface that as a named error rather than a generic one.
+        let bytes = build_wcs(&[
+            ("CRVAL1", ""),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, value } => {
+                assert_eq!(key, "CRVAL1");
+                assert_eq!(value, "undefined");
+            }
+            other => panic!("expected NonNumeric for empty CRVAL1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn banner_falls_back_when_comment_lacks_astap() {
+        // A COMMENT card present but unrelated to ASTAP must NOT become
+        // the banner; the wrapper falls back to "astap-cli". Covers the
+        // find_banner false branch (the if-condition's else path).
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let mut spliced = bytes;
+        let end_idx = (0..spliced.len())
+            .step_by(80)
+            .find(|i| &spliced[*i..*i + 8] == b"END     ")
+            .expect("END card not found");
+        let comment = format!("{:<80}", "COMMENT unrelated note about flat darks");
+        spliced.splice(end_idx..end_idx, comment.into_bytes());
+        let out = parse_wcs_bytes(&spliced).unwrap();
+        assert_eq!(out.solver, "astap-cli");
+    }
+
+    #[test]
+    fn non_finite_crval1_returns_non_numeric() {
+        // Float overflow → infinity. coerce_float's finite guard catches
+        // it before WCSParams::deserialize would silently accept Inf.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "1e400"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, .. } => assert_eq!(key, "CRVAL1"),
+            other => panic!("expected NonNumeric for non-finite CRVAL1, got {other:?}"),
+        }
     }
 
     #[test]
