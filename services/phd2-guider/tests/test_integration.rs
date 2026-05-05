@@ -1661,20 +1661,38 @@ fn spawn_mock_server() -> (ProcessGuard, u16) {
     spawn_mock_server_with_mode("normal")
 }
 
-/// Spawn the mock_phd2 server with a specific mode
+/// Spawn the mock_phd2 server with a specific mode.
+///
+/// Uses `MOCK_PHD2_PORT=0` so the kernel assigns a port at bind time, and
+/// reads the actual port back from the mock's stdout. This avoids a TOCTOU
+/// race where another process could claim a previously probed "free" port
+/// between probe and bind. Stderr is discarded — mock_phd2 logs every
+/// request/response, and an undrained pipe buffer would deadlock the mock
+/// once full.
 fn spawn_mock_server_with_mode(mode: &str) -> (ProcessGuard, u16) {
-    let port = get_available_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_mock_phd2"))
-        .env("MOCK_PHD2_PORT", port.to_string())
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mock_phd2"))
+        .env("MOCK_PHD2_PORT", "0")
         .env("MOCK_PHD2_MODE", mode)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .expect("Failed to start mock_phd2 server");
 
+    let stdout = child.stdout.take().expect("stdout piped");
+    let port = BufReader::new(stdout)
+        .lines()
+        .find_map(|line| {
+            line.ok().and_then(|l| {
+                l.strip_prefix("MOCK_PHD2_PORT:")
+                    .and_then(|p| p.parse::<u16>().ok())
+            })
+        })
+        .expect("Mock PHD2 did not announce its port on stdout");
+
     let guard = ProcessGuard::new(child, "mock_phd2");
 
-    // Wait for server to be ready
+    // Server is bound by the time the port line is printed, but wait for the
+    // accept queue to settle before handing the port to the test.
     if !wait_for_server_ready(port, Duration::from_secs(5)) {
         panic!("Mock server did not start within timeout on port {}", port);
     }
