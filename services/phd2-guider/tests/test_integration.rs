@@ -582,7 +582,6 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
 /// failure logs in test output, or `Stdio::null()` to discard them (necessary
 /// when many of these run in parallel — mock_phd2 is verbose enough that an
 /// undrained piped stderr can fill the pipe buffer and deadlock the mock).
-#[cfg(not(miri))]
 fn spawn_mock_phd2_dynamic_port(
     binary: impl AsRef<std::path::Path>,
     mode: &str,
