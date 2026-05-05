@@ -23,6 +23,8 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 libc = { workspace = true }
+fitsrs = { workspace = true }
+wcs = { workspace = true }
 
 [[bin]]
 name = "mock_astap"

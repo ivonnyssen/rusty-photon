@@ -22,12 +22,6 @@ solves through a single-flight semaphore. ASTAP is invoked as an
 operator-installed subprocess per request; no ASTAP binary or
 index database is bundled.
 
-One known divergence from the design intent: `runner/wcs.rs` ships
-a hand-rolled FITS-card parser instead of `fitsrs` +
-`wcs::params::WCSParams`, pending the Phase 2 spike. Tracked by
-[issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160).
-The `read_wcs_sidecar` public surface is stable across the swap.
-
 ## Operator install
 
 ASTAP is operator-supplied. The

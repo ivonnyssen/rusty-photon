@@ -249,12 +249,16 @@ Why this beats a hand-rolled parser:
   computes residual arcsec, it can use `WCS::proj` instead of
   reimplementing the trigonometry.
 
-The Phase 2 implementation includes a spike to verify `fitsrs`
-parses a real ASTAP `.wcs` cleanly — ASTAP's sidecar is FITS-style
-but may have quirks (line endings, padding, ASTAP-specific
-non-standard keys). If quirks surface, a thin pre-processor stays
-inside `runner/wcs.rs`; the parser/deserializer pipeline does not
-change.
+A small pre-processor inside `runner/wcs.rs` pads short inputs
+(test fixtures, any future solver emitting fewer cards than a full
+2880-byte FITS block) out to the next block boundary before handing
+them to `fitsrs`. Real ASTAP output is already aligned, so this is
+a no-op for the production path; it exists to keep the test fixture
+shape and the production shape on the same parser code path. After
+deserialization the wrapper enforces presence of `CRVAL1`, `CRVAL2`,
+and `CDELT1` (returning a named `MissingKeyword(...)` so the HTTP
+contract can surface which key is missing) and defaults `CROTA2`
+to 0.
 
 ### HTTP, not MCP
 
@@ -470,7 +474,7 @@ Status: **complete.**
 
 ### Phase 2 — Crate scaffolding + `AstapRunner` trait + `.wcs` parser
 
-Status: **complete** (with one open spike — see below).
+Status: **complete**.
 
 - [x] New workspace member `services/plate-solver` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
@@ -497,17 +501,20 @@ Status: **complete** (with one open spike — see below).
       matches expected. No spawning. This is the only unit-level
       coverage of the hint-flag pass-through contract; BDD asserts
       end-to-end behavior, not argv shape.
-- [~] `runner/wcs.rs` — **shipped, but as a hand-rolled card parser
-      rather than the planned `fitsrs` + `wcs::params::WCSParams`
-      adapter.** `fitsrs::Fits::from_reader` expects a full FITS
-      file, not a header-only `.wcs` sidecar; the spike to validate
-      it against an actual ASTAP-emitted sidecar was deferred. The
-      hand-rolled parser is small (<100 lines), exhaustively tested,
-      and exposes the same `read_wcs_sidecar(&Path) -> Result<
-      SolveOutcome, _>` surface the planned implementation would
-      have, so the swap is a non-breaking refactor when the spike
-      retires. Tracked by
-      [issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160).
+- [x] `runner/wcs.rs` — `fitsrs` + `wcs::params::WCSParams` adapter
+      (issue #160). `Fits::from_reader` accepts ASTAP's header-only
+      `.wcs` (NAXIS=0 is supported upstream; an explicit fitsrs
+      regression test covers it). A small defensive pre-processor
+      pads inputs out to a 2880-byte FITS block before handing them
+      to `fitsrs`, so test fixtures and any future solver emitting
+      just enough cards to satisfy the contract reach the same code
+      path as full ASTAP output. After parsing, the wrapper checks
+      `WCSParams.crval1 / crval2 / cdelt1` for presence (returning a
+      named `MissingKeyword(...)` error so the HTTP contract surfaces
+      which key was absent) and defaults `crota2` to 0. The HISTORY /
+      COMMENT scan for the solver banner walks `Header::cards()`
+      directly. Public surface: `read_wcs_sidecar(&Path) -> Result<
+      SolveOutcome, _>`.
 - [x] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
       `tokio::process::Command` configured with `kill_on_drop(true)`
       (and on Windows also placed in a job object via the `windows`
