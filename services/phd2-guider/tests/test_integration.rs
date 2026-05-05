@@ -571,38 +571,59 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
     Some(child)
 }
 
-/// Start the mock PHD2 server with auto-assigned port and specified mode.
+/// Spawn mock_phd2 with `MOCK_PHD2_PORT=0` and parse the actual bound port
+/// back from stdout. The kernel assigns a free port at bind time, eliminating
+/// the TOCTOU window of probe-then-spawn schemes.
 ///
-/// This function spawns the mock with port 0, reads the actual assigned port
-/// from stdout, and returns (port, child). This avoids port collision issues
-/// in parallel test execution.
+/// Returns `(port, child)` on success; `None` if the binary can't be spawned
+/// or the mock exits before announcing its port.
+///
+/// Stderr policy is left to the caller: pass `Stdio::inherit()` to surface
+/// failure logs in test output, or `Stdio::null()` to discard them (necessary
+/// when many of these run in parallel — mock_phd2 is verbose enough that an
+/// undrained piped stderr can fill the pipe buffer and deadlock the mock).
 #[cfg(not(miri))]
-fn start_mock_phd2_auto_port(mode: &str) -> Option<(u16, Child)> {
-    let binary = find_mock_phd2_binary()?;
-
-    let mut child = Command::new(binary)
+fn spawn_mock_phd2_dynamic_port(
+    binary: impl AsRef<std::path::Path>,
+    mode: &str,
+    stderr: Stdio,
+) -> Option<(u16, Child)> {
+    let mut child = Command::new(binary.as_ref())
         .env("MOCK_PHD2_PORT", "0")
         .env("MOCK_PHD2_MODE", mode)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .spawn()
         .ok()?;
 
-    // Read stdout to get the actual port
     let stdout = child.stdout.take()?;
-    let reader = BufReader::new(stdout);
+    let port = BufReader::new(stdout).lines().find_map(|line| {
+        line.ok().and_then(|l| {
+            l.strip_prefix("MOCK_PHD2_PORT:")
+                .and_then(|p| p.parse::<u16>().ok())
+        })
+    });
 
-    for line in reader.lines() {
-        let line = line.ok()?;
-        if let Some(port_str) = line.strip_prefix("MOCK_PHD2_PORT:") {
-            let port: u16 = port_str.parse().ok()?;
-            return Some((port, child));
+    match port {
+        Some(p) => Some((p, child)),
+        None => {
+            // Mock exited before announcing its port; reap it and report failure.
+            let _ = child.kill();
+            let _ = child.wait();
+            None
         }
     }
+}
 
-    // If we didn't find the port line, the mock failed to start
-    let _ = child.kill();
-    None
+/// Start the mock PHD2 server with auto-assigned port and specified mode.
+///
+/// Wrapper used by the older tokio integration tests that locate the mock
+/// binary via [`find_mock_phd2_binary`] and prefer inherited stderr for
+/// debugging.
+#[cfg(not(miri))]
+fn start_mock_phd2_auto_port(mode: &str) -> Option<(u16, Child)> {
+    let binary = find_mock_phd2_binary()?;
+    spawn_mock_phd2_dynamic_port(binary, mode, Stdio::inherit())
 }
 
 #[tokio::test]
@@ -1663,31 +1684,15 @@ fn spawn_mock_server() -> (ProcessGuard, u16) {
 
 /// Spawn the mock_phd2 server with a specific mode.
 ///
-/// Uses `MOCK_PHD2_PORT=0` so the kernel assigns a port at bind time, and
-/// reads the actual port back from the mock's stdout. This avoids a TOCTOU
-/// race where another process could claim a previously probed "free" port
-/// between probe and bind. Stderr is discarded — mock_phd2 logs every
-/// request/response, and an undrained pipe buffer would deadlock the mock
-/// once full.
+/// Delegates to [`spawn_mock_phd2_dynamic_port`] for the actual spawn-and-parse;
+/// this wrapper just handles binary lookup (via cargo's `CARGO_BIN_EXE_*`),
+/// silences mock stderr (these CLI tests run 38+ in parallel — an undrained
+/// piped stderr would deadlock the mock), and wraps the child in a
+/// [`ProcessGuard`] for cleanup.
 fn spawn_mock_server_with_mode(mode: &str) -> (ProcessGuard, u16) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mock_phd2"))
-        .env("MOCK_PHD2_PORT", "0")
-        .env("MOCK_PHD2_MODE", mode)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("Failed to start mock_phd2 server");
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let port = BufReader::new(stdout)
-        .lines()
-        .find_map(|line| {
-            line.ok().and_then(|l| {
-                l.strip_prefix("MOCK_PHD2_PORT:")
-                    .and_then(|p| p.parse::<u16>().ok())
-            })
-        })
-        .expect("Mock PHD2 did not announce its port on stdout");
+    let (port, child) =
+        spawn_mock_phd2_dynamic_port(env!("CARGO_BIN_EXE_mock_phd2"), mode, Stdio::null())
+            .expect("Failed to start mock_phd2 server");
 
     let guard = ProcessGuard::new(child, "mock_phd2");
 
@@ -1723,6 +1728,9 @@ fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
             Ok(None) => {
                 if start.elapsed() > timeout {
                     child.kill().expect("Failed to kill timed-out process");
+                    // Reap the kill'd child before panicking so we don't leave
+                    // a zombie hanging around for the rest of the test binary.
+                    let _ = child.wait();
                     panic!("CLI command timed out after {:?}", timeout);
                 }
                 std::thread::sleep(Duration::from_millis(100));
