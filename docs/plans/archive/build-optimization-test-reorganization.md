@@ -1,7 +1,47 @@
 # Plan: Reorganize Test Suite to Reduce Build Times
 
+**Status: COMPLETE (archived 2026-05-05).** All four test-reorganization phases
+landed; both linker (mold) and debug-info knobs from "Additional build
+optimizations" are now applied. See **Outcomes** below.
+
 **Date:** 2026-03-28 (updated after TLS merge into main)
 **Baseline:** clean build 2m 46s, 55 test binaries, 1050s total CPU time
+
+## Outcomes (2026-05-05)
+
+- **Phase 1** (unit tests → `src/`): done. All 13 files moved to inline
+  `#[cfg(test)]` modules.
+- **Phase 2** (mock-based tests → `src/`): done. All 7 files moved.
+- **Phase 3** (filemonitor consolidation + qhy-focuser redundant test
+  deletion): done. filemonitor's three integration tests merged into a single
+  `tests/test_integration.rs`.
+- **Phase 4** (phd2-guider integration consolidation): done.
+- Test binary count: **55 → 21**, beating the plan's 32 target (extra
+  reduction from plate-solver / sky-survey work that landed afterward).
+
+Additional build optimizations:
+
+- **mold linker:** applied via `~/.cargo/config.toml` (user-global, personal
+  to dev box) and `user.bazelrc` (gitignored, per-worktree).
+- **Reduced debug info:** committed to workspace `Cargo.toml` —
+  `[profile.dev] debug = "line-tables-only"` plus
+  `[profile.dev.package."*"] debug = false`.
+- **cargo-nextest:** done previously (configured in `.config/nextest.toml`).
+
+Measured impact on this dev box (16-core arm64 Linux, rustc 1.95):
+
+| Scenario              | default ld + full debug | mold + line-tables-only |
+|-----------------------|------------------------:|------------------------:|
+| Clean build           | 43s                     | 28s (-35%)              |
+| Touch + rebuild (rp)  | 4s                      | <1s                     |
+| `target/` size        | ~13G                    | 4.7G (-64%)             |
+
+Note: this box's clean-build baseline is much faster than the original 2m 46s
+plan baseline, so absolute savings are smaller in seconds, but the percentage
+gains hold and the `target/` size win was bigger than the 20–30% projection
+(most of the bloat was dep debug info).
+
+Out-of-scope follow-up: phd2-guider BDD suite remains a separate initiative.
 
 ## Context
 

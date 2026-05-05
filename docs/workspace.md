@@ -39,7 +39,6 @@ belong in any single service design doc.
 | [ADR-005](decisions/005-plate-solver.md) | Plate solver: ASTAP via subprocess + verification spike |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
-| [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
 | [plate-solver.md](plans/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing) |
