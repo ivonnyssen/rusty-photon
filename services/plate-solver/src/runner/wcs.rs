@@ -14,7 +14,8 @@
 //! a separate code path.
 
 use super::SolveOutcome;
-use fitsrs::card::Card;
+use fitsrs::card::{Card, Value};
+use fitsrs::hdu::header::{Header, Xtension};
 use fitsrs::hdu::HDU;
 use fitsrs::Fits;
 use serde::de::IntoDeserializer;
@@ -65,38 +66,22 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     };
     let header = primary.get_header();
 
-    let params = WCSParams::deserialize(header.into_deserializer())
+    // Pre-extract the four contract-required fields directly off the
+    // parsed header so type errors on CRVAL1/CRVAL2/CDELT1/CROTA2
+    // surface as named `NonNumeric { key, value }` rather than as the
+    // generic serde error `WCSParams::deserialize` would emit.
+    let crval1 = read_required_float(header, "CRVAL1")?;
+    let crval2 = read_required_float(header, "CRVAL2")?;
+    let cdelt1 = read_required_float(header, "CDELT1")?;
+    let crota2 = read_optional_float(header, "CROTA2")?.unwrap_or(0.0);
+
+    // Run `WCSParams::deserialize` as the canonical structural validator
+    // — catches missing CTYPE1, missing NAXIS, type errors on any other
+    // WCS keyword (CD-matrix, SIP, etc.) before we hand the wrapper a
+    // `SolveOutcome` derived from a half-broken header. Forward-compatible
+    // with future consumers that need the full `WCSParams`.
+    WCSParams::deserialize(header.into_deserializer())
         .map_err(|e| WcsParseError::Malformed(format!("WCS deserialization failed: {e}")))?;
-
-    let crval1 = params
-        .crval1
-        .ok_or(WcsParseError::MissingKeyword("CRVAL1"))?;
-    let crval2 = params
-        .crval2
-        .ok_or(WcsParseError::MissingKeyword("CRVAL2"))?;
-    let cdelt1 = params
-        .cdelt1
-        .ok_or(WcsParseError::MissingKeyword("CDELT1"))?;
-    let crota2 = params.crota2.unwrap_or(0.0);
-
-    if !crval1.is_finite() {
-        return Err(WcsParseError::NonNumeric {
-            key: "CRVAL1",
-            value: crval1.to_string(),
-        });
-    }
-    if !crval2.is_finite() {
-        return Err(WcsParseError::NonNumeric {
-            key: "CRVAL2",
-            value: crval2.to_string(),
-        });
-    }
-    if !cdelt1.is_finite() {
-        return Err(WcsParseError::NonNumeric {
-            key: "CDELT1",
-            value: cdelt1.to_string(),
-        });
-    }
 
     let solver = find_banner(header).unwrap_or_else(|| "astap-cli".to_string());
 
@@ -133,9 +118,9 @@ fn pad_to_fits_block(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// Walk the header's cards looking for a HISTORY or COMMENT mentioning
 /// "ASTAP". The banner is informational; the HTTP contract falls back
 /// to a default when none is found.
-fn find_banner<X>(header: &fitsrs::hdu::header::Header<X>) -> Option<String>
+fn find_banner<X>(header: &Header<X>) -> Option<String>
 where
-    X: fitsrs::hdu::header::Xtension + std::fmt::Debug,
+    X: Xtension + std::fmt::Debug,
 {
     for card in header.cards() {
         let text = match card {
@@ -147,6 +132,63 @@ where
         }
     }
     None
+}
+
+/// Read a contract-required numeric keyword. Returns
+/// [`WcsParseError::MissingKeyword`] when the key is absent and
+/// [`WcsParseError::NonNumeric`] when the card carries a non-numeric
+/// value (string, logical, undefined, invalid).
+fn read_required_float<X>(header: &Header<X>, key: &'static str) -> Result<f64, WcsParseError>
+where
+    X: Xtension + std::fmt::Debug,
+{
+    match header.get(key) {
+        None => Err(WcsParseError::MissingKeyword(key)),
+        Some(value) => coerce_float(key, value),
+    }
+}
+
+/// Read an optional numeric keyword. `None` when absent. Returns
+/// [`WcsParseError::NonNumeric`] when the card is present but carries a
+/// non-numeric value.
+fn read_optional_float<X>(
+    header: &Header<X>,
+    key: &'static str,
+) -> Result<Option<f64>, WcsParseError>
+where
+    X: Xtension + std::fmt::Debug,
+{
+    match header.get(key) {
+        None => Ok(None),
+        Some(value) => coerce_float(key, value).map(Some),
+    }
+}
+
+fn coerce_float(key: &'static str, value: &Value) -> Result<f64, WcsParseError> {
+    match value {
+        Value::Float { value, .. } if value.is_finite() => Ok(*value),
+        Value::Integer { value, .. } => Ok(*value as f64),
+        Value::Float { value, .. } => Err(WcsParseError::NonNumeric {
+            key,
+            value: value.to_string(),
+        }),
+        Value::String { value, .. } => Err(WcsParseError::NonNumeric {
+            key,
+            value: value.clone(),
+        }),
+        Value::Logical { value, .. } => Err(WcsParseError::NonNumeric {
+            key,
+            value: value.to_string(),
+        }),
+        Value::Invalid(s) => Err(WcsParseError::NonNumeric {
+            key,
+            value: s.clone(),
+        }),
+        Value::Undefined => Err(WcsParseError::NonNumeric {
+            key,
+            value: "undefined".to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +277,61 @@ mod tests {
             WcsParseError::MissingKeyword(k) => assert_eq!(k, "CDELT1"),
             other => panic!("expected MissingKeyword, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn non_numeric_crval1_returns_named_error() {
+        // ASTAP would never emit this, but a corrupt or wrong-tooling
+        // sidecar might land here. The wrapper must surface the bad
+        // keyword by name rather than collapsing to a generic
+        // deserialization failure (issue #160 review feedback).
+        let bytes = build_wcs(&[
+            ("CRVAL1", "'oops'"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, value } => {
+                assert_eq!(key, "CRVAL1");
+                assert!(
+                    value.contains("oops"),
+                    "value didn't include 'oops': {value}"
+                );
+            }
+            other => panic!("expected NonNumeric, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn naxis_zero_header_only_sidecar_parses() {
+        // Real ASTAP writes a `.wcs` whose primary HDU has no data block
+        // (`NAXIS = 0`). Confirm the parser accepts that production
+        // shape — issue #160 review feedback. `build_wcs` emits a
+        // `NAXIS = 2` preamble for `WCSParams`'s mandatory keywords, so
+        // construct this case by hand.
+        let cards = [
+            card("SIMPLE", "T"),
+            card("BITPIX", "8"),
+            card("NAXIS", "0"),
+            card("CTYPE1", "'RA---TAN'"),
+            card("CTYPE2", "'DEC--TAN'"),
+            card("CRVAL1", "10.6848"),
+            card("CRVAL2", "41.2690"),
+            card("CDELT1", "-0.000291667"),
+            card("CDELT2", "0.000291667"),
+            card("CROTA2", "5.0"),
+            format!("{:<80}", "END"),
+        ];
+        let mut bytes: Vec<u8> = cards.into_iter().flat_map(String::into_bytes).collect();
+        let pad = FITS_BLOCK - (bytes.len() % FITS_BLOCK);
+        if pad < FITS_BLOCK {
+            bytes.resize(bytes.len() + pad, b' ');
+        }
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert!((out.ra_center - 10.6848).abs() < 1e-6);
+        assert!((out.dec_center - 41.2690).abs() < 1e-6);
+        assert!((out.rotation_deg - 5.0).abs() < 1e-6);
     }
 
     #[test]
