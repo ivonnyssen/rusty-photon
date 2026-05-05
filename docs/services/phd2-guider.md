@@ -701,9 +701,8 @@ rp-fits = { workspace = true }
 
 ```
 services/phd2-guider/tests/
-├── test_main_integration.rs   # CLI integration tests (38 tests)
-├── test_integration.rs        # Library integration tests with mock server
-└── test_mock_server.rs        # Mock server protocol tests
+├── test_integration.rs        # End-to-end tests: library + CLI subprocess
+└── test_mock_server.rs        # Mock server protocol tests (TCP binding + client internals)
 # Unit and mock-based tests are in src/ as #[cfg(test)] modules
 ```
 
