@@ -723,8 +723,7 @@ async fn test_focuser_position_not_connected() {
 #### 6.4 Test File Organization
 
 - `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit and mock-based component tests (inline with source)
-- `test_cli.rs` -- CLI argument parsing
-- `test_server.rs` / `test_lib.rs` -- Server integration tests
+- `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; some services (phd2-guider, plate-solver) still split by concern where the categories don't share helpers.
 - `conformu_integration.rs` -- ASCOM conformance (always `#[ignore]`)
 
 #### 6.5 Mock Infrastructure Lives in Test Files
