@@ -88,7 +88,8 @@ states the behavior, not the wire format details.
 1. Service deserializes the request body. `fits_path` must be an
    absolute path; `timeout` must parse as humantime; hint fields are
    optional.
-2. Service confirms `fits_path` exists and is readable.
+2. Service confirms `fits_path` exists, is a regular file (not a
+   directory), and is readable.
 3. Service acquires the single-flight semaphore (default
    concurrency = 1). Overlapping requests queue; they do not error.
 4. Service spawns `astap_cli` with argv mapped from the request body
@@ -96,13 +97,22 @@ states the behavior, not the wire format details.
 5. Service waits for the child under the request's `timeout`
    (defaulting to `default_solve_timeout` from config).
 6. On clean exit with zero status, service reads the `.wcs` sidecar
-   ASTAP wrote next to the FITS via `fitsrs` (the workspace's
-   existing FITS library), deserializes the header into
-   `wcs::params::WCSParams` (cds-astro/wcs-rs, already a transitive
-   dep), and extracts the four fields the response requires (CRVAL1,
-   CRVAL2, |CDELT1|, CROTA2). The wrapper does not hand-roll
-   FITS-header parsing — see the implementation plan §"WCS parsing
-   via `fitsrs` + `wcs`, not hand-rolled".
+   ASTAP wrote next to the FITS and extracts the response fields:
+   `ra_center` (CRVAL1), `dec_center` (CRVAL2),
+   `pixel_scale_arcsec` (`|CDELT1|` × 3600), `rotation_deg`
+   (CROTA2, defaulting to 0 if absent), plus a `solver` banner
+   string read from the file's HISTORY / COMMENT cards (falls back
+   to `"astap-cli"` when no banner is found).
+
+   **Implementation note:** the design intent is parsing via
+   `fitsrs` + `wcs::params::WCSParams` (cds-astro/wcs-rs); the
+   shipped code currently uses a small hand-rolled card parser
+   while the Phase 2 `fitsrs` spike resolves header-only-input
+   support. Tracked by
+   [issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160)
+   and the implementation plan §"WCS parsing via `fitsrs` + `wcs`,
+   not hand-rolled". The `read_wcs_sidecar` public surface is stable
+   either way.
 7. Service releases the semaphore.
 
 **Error paths** all return the structured error envelope frozen in
@@ -332,6 +342,8 @@ Validation rules:
 - `default_solve_timeout` must be ≤ `max_solve_timeout` (otherwise
   the request-supplied timeout could exceed `max_solve_timeout`,
   defeating the bound).
+- `max_concurrency` must be ≥ 1 (a zero-capacity semaphore would
+  permanently stall every request).
 
 The `astap_binary_path` validation runs again on every `/health`
 probe, so a binary removed after startup is detected.
@@ -348,7 +360,8 @@ The service reads a single JSON config file passed via `--config`.
   "astap_db_directory": "/opt/astap/d05",
   "max_concurrency": 1,
   "default_solve_timeout": "30s",
-  "max_solve_timeout": "120s"
+  "max_solve_timeout": "120s",
+  "astap_extra_env": {}
 }
 ```
 
@@ -361,6 +374,7 @@ The service reads a single JSON config file passed via `--config`.
 | `max_concurrency` | no | `1` | Capacity of the single-flight semaphore. v1 ships at 1; tuning above 1 is operator-driven and unsupported by the v1 budget assertions. |
 | `default_solve_timeout` | no | `30s` | Applies when the request body omits `timeout`. |
 | `max_solve_timeout` | no | `120s` | Caps any caller-supplied `timeout`. |
+| `astap_extra_env` | no | `{}` | Map of environment variables set on every spawned `astap_cli` child. Use for operator-controlled tunables (locale, library paths) and for BDD tests that drive `mock_astap`'s `MOCK_ASTAP_MODE` per scenario without process-wide `env::set_var` races. |
 
 Required fields exit the process on absence (no implicit defaults
 for "where is ASTAP" — see [Configuration Validation](#configuration-validation-at-startup)).
