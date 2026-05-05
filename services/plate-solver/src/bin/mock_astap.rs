@@ -23,17 +23,14 @@ use std::path::PathBuf;
 /// Canned `.wcs` sidecar content for `MOCK_ASTAP_MODE=normal`. Inlined
 /// rather than `include_str!`-ed from `tests/fixtures/` so Bazel's
 /// sandboxed compilation doesn't need a `data` dependency to find it.
-/// Shape is a complete FITS primary HDU header — `SIMPLE`, `BITPIX`,
-/// `NAXIS`/`NAXISn`, `CTYPE1`/`CTYPE2`, the WCS keywords the wrapper
-/// returns, then `END`, padded to one 2880-byte FITS block. The
-/// wrapper's parser (`runner/wcs.rs`) goes through `fitsrs` +
-/// `wcs::WCSParams`; both expect a real FITS primary HDU.
+/// Shape mirrors ASTAP's real `.wcs` output: a header-only FITS primary
+/// HDU (`NAXIS = 0`, so no data block follows), padded to one 2880-byte
+/// FITS block. Includes `CTYPE1`/`CTYPE2` so `wcs::WCSParams`'s
+/// mandatory fields deserialize cleanly.
 const CANNED_WCS: &str = concat!(
     "SIMPLE  =                    T                                                  ",
-    "BITPIX  =                   16                                                  ",
-    "NAXIS   =                    2                                                  ",
-    "NAXIS1  =                 1024                                                  ",
-    "NAXIS2  =                 1024                                                  ",
+    "BITPIX  =                    8                                                  ",
+    "NAXIS   =                    0                                                  ",
     "CTYPE1  = 'RA---TAN'                                                            ",
     "CTYPE2  = 'DEC--TAN'                                                            ",
     "CRVAL1  =              10.6848                                                  ",
@@ -43,8 +40,10 @@ const CANNED_WCS: &str = concat!(
     "CROTA2  =                 12.3                                                  ",
     "COMMENT ASTAP-CLI mock_astap test double                                        ",
     "END                                                                             ",
-    // 2880-byte FITS block padding: 14 cards × 80 = 1120 bytes; pad
-    // 1760 bytes (22 × 80) of spaces to reach the next block.
+    // 2880-byte FITS block padding: 12 cards × 80 = 960 bytes; pad
+    // 1920 bytes (24 × 80) of spaces to reach the next block.
+    "                                                                                ",
+    "                                                                                ",
     "                                                                                ",
     "                                                                                ",
     "                                                                                ",
@@ -193,15 +192,14 @@ fn run_malformed_wcs(args: &[String]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     };
     let wcs_path = fits.with_extension("wcs");
-    // Write a structurally-valid FITS primary HDU but missing CRVAL2.
-    // The parser must surface "CRVAL2" in its error so the HTTP
-    // contract names the missing key.
+    // Write a header-only FITS primary HDU matching real ASTAP shape
+    // (`NAXIS = 0`, no data block) but missing CRVAL2. The parser must
+    // surface "CRVAL2" in its error so the HTTP contract names the
+    // missing key.
     let cards = [
         "SIMPLE  =                    T",
-        "BITPIX  =                   16",
-        "NAXIS   =                    2",
-        "NAXIS1  =                 1024",
-        "NAXIS2  =                 1024",
+        "BITPIX  =                    8",
+        "NAXIS   =                    0",
         "CTYPE1  = 'RA---TAN'",
         "CTYPE2  = 'DEC--TAN'",
         "CRVAL1  =              10.6848",
