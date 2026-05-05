@@ -4,14 +4,19 @@
 //! containing the World Coordinate System keywords as a FITS primary
 //! HDU header (no data block — `NAXIS = 0` or all `NAXISn = 0`). Parsing
 //! goes through [`fitsrs`] for the FITS-card layer and
-//! [`wcs::WCSParams`] for the keyword-to-field mapping.
+//! [`wcs::WCSParams`] for the keyword-to-field mapping. The wrapper
+//! accepts either CDELT/CROTA or CD-matrix WCS conventions for the
+//! pixel-scale and rotation response fields; CRVAL1/CRVAL2 are always
+//! required.
 //!
 //! The only divergence from a vanilla `Fits::from_reader` call is a
 //! defensive pre-processor that pads short inputs out to the next
 //! 2880-byte FITS block boundary. ASTAP's own output is already padded;
-//! the pre-processor exists so test fixtures (and any future solver
-//! emitting just enough cards to satisfy the contract) parse without
-//! a separate code path.
+//! the pre-processor exists so test fixtures whose card stream stops
+//! exactly at the END card still parse without a separate code path.
+//! It does **not** lower the WCS-keyword bar — the parser still requires
+//! a complete FITS primary HDU header (`SIMPLE`, `BITPIX`, `NAXIS`,
+//! `CTYPE1`/`CTYPE2`, plus the WCS solution).
 
 use super::SolveOutcome;
 use fitsrs::card::{Card, Value};
@@ -69,20 +74,25 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     };
     let header = primary.get_header();
 
-    // Pre-extract the four contract-required fields directly off the
-    // parsed header so type errors on CRVAL1/CRVAL2/CDELT1/CROTA2
-    // surface as named `NonNumeric { key, value }` rather than as the
-    // generic serde error `WCSParams::deserialize` would emit.
+    // Pre-extract the contract-required pointing fields directly off
+    // the parsed header so type errors on CRVAL1/CRVAL2 surface as
+    // named `NonNumeric { key, value }` rather than the generic serde
+    // error `WCSParams::deserialize` would emit.
     let crval1 = read_required_float(header, "CRVAL1")?;
     let crval2 = read_required_float(header, "CRVAL2")?;
-    let cdelt1 = read_required_float(header, "CDELT1")?;
-    let crota2 = read_optional_float(header, "CROTA2")?.unwrap_or(0.0);
+
+    // Pixel scale and rotation: prefer CDELT1/CROTA2 (the convention
+    // ASTAP writes today), but fall back to deriving them from the
+    // CD matrix when present. Either representation alone is
+    // sufficient for these two response fields.
+    let pixel_scale_arcsec = derive_pixel_scale_arcsec(header)?;
+    let rotation_deg = derive_rotation_deg(header)?;
 
     // Run `WCSParams::deserialize` as the canonical structural validator
     // — catches missing CTYPE1, missing NAXIS, type errors on any other
-    // WCS keyword (CD-matrix, SIP, etc.) before we hand the wrapper a
-    // `SolveOutcome` derived from a half-broken header. Forward-compatible
-    // with future consumers that need the full `WCSParams`.
+    // WCS keyword (SIP, etc.) before we hand the wrapper a `SolveOutcome`
+    // derived from a half-broken header. Forward-compatible with future
+    // consumers that need the full `WCSParams`.
     WCSParams::deserialize(header.into_deserializer())
         .map_err(|e| WcsParseError::Malformed(format!("WCS deserialization failed: {e}")))?;
 
@@ -91,10 +101,50 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     Ok(SolveOutcome {
         ra_center: crval1,
         dec_center: crval2,
-        pixel_scale_arcsec: cdelt1.abs() * 3600.0,
-        rotation_deg: crota2,
+        pixel_scale_arcsec,
+        rotation_deg,
         solver,
     })
+}
+
+/// Pixel scale in arcsec. Prefers `|CDELT1| × 3600`; if `CDELT1` is
+/// absent, falls back to `√(CD1_1² + CD2_1²) × 3600` per the FITS WCS
+/// CD-matrix convention. Returns `MissingKeyword("CDELT1")` only when
+/// neither representation is present.
+fn derive_pixel_scale_arcsec<X>(header: &Header<X>) -> Result<f64, WcsParseError>
+where
+    X: Xtension + std::fmt::Debug,
+{
+    if let Some(cdelt1) = read_optional_float(header, "CDELT1")? {
+        return Ok(cdelt1.abs() * 3600.0);
+    }
+    if let (Some(cd1_1), Some(cd2_1)) = (
+        read_optional_float(header, "CD1_1")?,
+        read_optional_float(header, "CD2_1")?,
+    ) {
+        return Ok((cd1_1 * cd1_1 + cd2_1 * cd2_1).sqrt() * 3600.0);
+    }
+    Err(WcsParseError::MissingKeyword("CDELT1"))
+}
+
+/// Rotation in degrees. Prefers `CROTA2`; if absent, falls back to
+/// `atan2(CD2_1, CD1_1)` (FITS WCS CD-matrix convention). Defaults to
+/// 0 when neither representation is present (rotation is optional in
+/// the HTTP contract).
+fn derive_rotation_deg<X>(header: &Header<X>) -> Result<f64, WcsParseError>
+where
+    X: Xtension + std::fmt::Debug,
+{
+    if let Some(crota2) = read_optional_float(header, "CROTA2")? {
+        return Ok(crota2);
+    }
+    if let (Some(cd1_1), Some(cd2_1)) = (
+        read_optional_float(header, "CD1_1")?,
+        read_optional_float(header, "CD2_1")?,
+    ) {
+        return Ok(cd2_1.atan2(cd1_1).to_degrees());
+    }
+    Ok(0.0)
 }
 
 /// Pad `bytes` (zero-copy when already aligned) to the next 2880-byte
@@ -274,12 +324,73 @@ mod tests {
 
     #[test]
     fn missing_cdelt1_is_named_error() {
+        // No CDELT1 and no CD-matrix — both representations absent
+        // surfaces as MissingKeyword("CDELT1") (the canonical name the
+        // HTTP contract uses for pixel scale).
         let bytes = build_wcs(&[("CRVAL1", "10.6848"), ("CRVAL2", "41.2690")]);
         let err = parse_wcs_bytes(&bytes).unwrap_err();
         match err {
             WcsParseError::MissingKeyword(k) => assert_eq!(k, "CDELT1"),
             other => panic!("expected MissingKeyword, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cd_matrix_drives_pixel_scale_when_cdelt1_absent() {
+        // FITS WCS CD-matrix convention: pixel_scale = √(CD1_1² + CD2_1²)
+        // along NAXIS1. With CD1_1 = -2.91667e-4 and CD2_1 = 0 (unrotated),
+        // |CDELT1| = 2.91667e-4 deg ≈ 1.05 arcsec/pixel.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CD1_1", "-0.000291667"),
+            ("CD1_2", "0.0"),
+            ("CD2_1", "0.0"),
+            ("CD2_2", "0.000291667"),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert!(
+            (out.pixel_scale_arcsec - 1.05).abs() < 1e-3,
+            "got pixel_scale_arcsec={}",
+            out.pixel_scale_arcsec
+        );
+        // Unrotated CD matrix: rotation falls out as atan2(0, CD1_1).
+        // CD1_1 < 0 → atan2 returns π (180°) — that's the convention
+        // for an x-axis flip, which RA-decreasing-rightward implies.
+        assert!(
+            (out.rotation_deg.abs() - 180.0).abs() < 1e-6 || out.rotation_deg.abs() < 1e-6,
+            "got rotation_deg={}",
+            out.rotation_deg
+        );
+    }
+
+    #[test]
+    fn cd_matrix_rotation_derives_when_crota2_absent() {
+        // 30° rotated CD matrix: CD1_1 = s·cos(30°), CD2_1 = s·sin(30°).
+        // atan2(CD2_1, CD1_1) = 30°.
+        let s: f64 = 0.000291667; // pixel scale in deg
+        let theta_deg = 30.0_f64;
+        let cd1_1 = s * theta_deg.to_radians().cos();
+        let cd2_1 = s * theta_deg.to_radians().sin();
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CD1_1", &format!("{cd1_1:.10}")),
+            ("CD2_1", &format!("{cd2_1:.10}")),
+            ("CD1_2", &format!("{:.10}", -cd2_1)),
+            ("CD2_2", &format!("{cd1_1:.10}")),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert!(
+            (out.rotation_deg - 30.0).abs() < 1e-3,
+            "got rotation_deg={}",
+            out.rotation_deg
+        );
+        assert!(
+            (out.pixel_scale_arcsec - s.abs() * 3600.0).abs() < 1e-3,
+            "got pixel_scale_arcsec={}",
+            out.pixel_scale_arcsec
+        );
     }
 
     #[test]

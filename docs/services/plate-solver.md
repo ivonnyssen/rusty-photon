@@ -101,14 +101,18 @@ states the behavior, not the wire format details.
    existing FITS library), deserializes the header into
    `wcs::params::WCSParams` (cds-astro/wcs-rs, already a transitive
    dep of `fitsrs`), and extracts the response fields: `ra_center`
-   (CRVAL1), `dec_center` (CRVAL2), `pixel_scale_arcsec`
-   (`|CDELT1|` × 3600), `rotation_deg` (CROTA2, defaulting to 0 if
-   absent), plus a `solver` banner string read from the file's
-   HISTORY / COMMENT cards (falls back to `"astap-cli"` when no
-   banner is found). A defensive 2880-byte block padder in
-   `runner/wcs.rs` keeps minimal sidecars (test fixtures, future
-   solvers that emit just enough cards to satisfy the contract)
-   parsing through the same path as full ASTAP output. The wrapper
+   (CRVAL1), `dec_center` (CRVAL2), `pixel_scale_arcsec` (`|CDELT1|`
+   × 3600, falling back to `√(CD1_1² + CD2_1²)` × 3600 when CDELT1 is
+   absent and the CD matrix is present), `rotation_deg` (CROTA2,
+   falling back to `atan2(CD2_1, CD1_1)` and defaulting to 0 when
+   neither representation is present), plus a `solver` banner string
+   read from the file's HISTORY / COMMENT cards (falls back to
+   `"astap-cli"` when no banner is found). A defensive 2880-byte
+   block padder in `runner/wcs.rs` accepts test fixtures whose card
+   stream stops exactly at the END card without trailing FITS-block
+   padding; it does **not** lower the WCS-keyword bar — the parser
+   still requires a complete primary HDU header (`SIMPLE`, `BITPIX`,
+   `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution. The wrapper
    does not hand-roll FITS-header parsing.
 7. Service releases the semaphore.
 

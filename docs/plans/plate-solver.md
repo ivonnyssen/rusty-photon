@@ -249,16 +249,22 @@ Why this beats a hand-rolled parser:
   computes residual arcsec, it can use `WCS::proj` instead of
   reimplementing the trigonometry.
 
-A small pre-processor inside `runner/wcs.rs` pads short inputs
-(test fixtures, any future solver emitting fewer cards than a full
-2880-byte FITS block) out to the next block boundary before handing
-them to `fitsrs`. Real ASTAP output is already aligned, so this is
-a no-op for the production path; it exists to keep the test fixture
-shape and the production shape on the same parser code path. After
-deserialization the wrapper enforces presence of `CRVAL1`, `CRVAL2`,
-and `CDELT1` (returning a named `MissingKeyword(...)` so the HTTP
-contract can surface which key is missing) and defaults `CROTA2`
-to 0.
+A small pre-processor inside `runner/wcs.rs` pads inputs whose card
+stream stops exactly at the END card out to the next 2880-byte FITS
+block boundary before handing them to `fitsrs`. Real ASTAP output is
+already aligned, so this is a no-op on the production path; it exists
+to keep test fixtures and the production shape on the same parser
+code path. The pre-processor does **not** lower the WCS-keyword bar
+— the parser still requires a complete primary HDU header (`SIMPLE`,
+`BITPIX`, `NAXIS`, `CTYPE1`/`CTYPE2`).
+
+Pixel scale and rotation accept either WCS convention: prefer
+`|CDELT1|` and `CROTA2` (what ASTAP writes today), fall back to
+`√(CD1_1² + CD2_1²)` and `atan2(CD2_1, CD1_1)` when only the CD
+matrix is present. `CRVAL1` / `CRVAL2` are required either way and
+return a named `MissingKeyword(...)` when absent so the HTTP
+contract can surface which key is missing; `CROTA2` defaults to 0
+when neither representation is present.
 
 ### HTTP, not MCP
 
