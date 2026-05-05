@@ -8,6 +8,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-catalog:rp-catalog",
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
+    "//crates/rp-plate-solver:rp-plate-solver",
     "//crates/rp-tls:rp-tls",
 ]
 
