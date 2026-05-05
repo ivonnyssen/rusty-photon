@@ -455,40 +455,40 @@ Each phase is its own PR.
 
 ### Phase 1 — Service design doc
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `docs/services/plate-solver.md` (new). Sections: Overview,
+- [x] `docs/services/plate-solver.md` (new). Sections: Overview,
       Architecture, Behavioral contracts (per HTTP endpoint, per error
       code, per supervision domain), Configuration, Subprocess test
       doubles, MVP scope, Out of scope.
-- [ ] Update `docs/services/rp.md` §"Plate Solver" to point at the new
+- [x] Update `docs/services/rp.md` §"Plate Solver" to point at the new
       service doc and to drop the "decision pending" note (now retired
       by ADR-005).
-- [ ] Update `docs/workspace.md` if the services index lives there.
+- [x] Update `docs/workspace.md` if the services index lives there.
 
-**Exit criteria:** new doc reviewed and merged. No code yet.
+**Exit criteria met:** doc reviewed and merged.
 
 ### Phase 2 — Crate scaffolding + `AstapRunner` trait + `.wcs` parser
 
-Status: **not started.**
+Status: **complete** (with one open spike — see below).
 
-- [ ] New workspace member `services/plate-solver` registered in root
+- [x] New workspace member `services/plate-solver` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
       version, edition, rust-version, lints).
-- [ ] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
+- [x] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
       tidy` if any new crates.io deps land here.
-- [ ] `config.rs` — `Config` with `astap_binary_path`,
+- [x] `config.rs` — `Config` with `astap_binary_path`,
       `astap_db_directory`, `bind_address`, `port`, `max_concurrency`,
       `default_solve_timeout`, `max_solve_timeout`. `load_config(path)`
       + startup validation. Unit-tested.
-- [ ] `error.rs` — `AppError` enum + `ErrorResponse` shape + axum
+- [x] `error.rs` — `AppError` enum + `ErrorResponse` shape + axum
       `IntoResponse` mapping to the frozen error code table.
-- [ ] `runner/mod.rs` — `AstapRunner` trait with one method:
+- [x] `runner/mod.rs` — `AstapRunner` trait with one method:
       `async fn solve(&self, request: SolveRequest) -> Result<SolveOutcome, RunnerError>`.
       `#[cfg_attr(test, mockall::automock)]`. The trait abstracts the
       subprocess; `SolveRequest` carries the parsed config + hints,
       `SolveOutcome` carries the parsed `.wcs` values + solver banner.
-- [ ] `runner/astap.rs` — real implementation. Builds the `Command`
+- [x] `runner/astap.rs` — real implementation. Builds the `Command`
       argument vector (mapping HTTP fields to ASTAP flags per the
       contract table), spawns under the supervision module, reads the
       sidecar `.wcs`, returns `SolveOutcome`. **Argv-mapping unit
@@ -497,25 +497,18 @@ Status: **not started.**
       matches expected. No spawning. This is the only unit-level
       coverage of the hint-flag pass-through contract; BDD asserts
       end-to-end behavior, not argv shape.
-- [ ] `runner/wcs.rs` — thin adapter that reads the `.wcs` sidecar
-      via the existing `fitsrs` (add `fitsrs` and `wcs` to the new
-      crate's `Cargo.toml`; both are already transitive via
-      `rp-fits`, so no new download) and deserializes the FITS
-      header into `wcs::params::WCSParams`. Returns the four
-      fields the HTTP contract requires (CRVAL1, CRVAL2, |CDELT1|,
-      CROTA2), pulled either directly from `WCSParams` or via a
-      `wcs::WCS::new(&params)` projection wrapper (the latter buys
-      `field_of_view()` / `proj()` / `unproj()` for any future
-      consumer; see [Decisions resolved](#decisions-resolved-during-design)
-      §"WCS parsing"). Banner string read from the file's `COMMENT`
-      line via `WCSParams` debug or a separate header lookup.
-      **Phase 2 spike:** verify `fitsrs` parses an actual ASTAP
-      `.wcs` cleanly (line endings, ASTAP-specific keys). If quirks
-      surface, a thin pre-processor stays inside this module. Unit
-      tests cover: valid ASTAP `.wcs` → expected fields; missing
-      required key → named error; ASTAP-specific extra keys →
-      ignored; the spike's specific quirk path if any.
-- [ ] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
+- [~] `runner/wcs.rs` — **shipped, but as a hand-rolled card parser
+      rather than the planned `fitsrs` + `wcs::params::WCSParams`
+      adapter.** `fitsrs::Fits::from_reader` expects a full FITS
+      file, not a header-only `.wcs` sidecar; the spike to validate
+      it against an actual ASTAP-emitted sidecar was deferred. The
+      hand-rolled parser is small (<100 lines), exhaustively tested,
+      and exposes the same `read_wcs_sidecar(&Path) -> Result<
+      SolveOutcome, _>` surface the planned implementation would
+      have, so the swap is a non-breaking refactor when the spike
+      retires. Tracked by
+      [issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160).
+- [x] `supervision.rs` — `spawn_with_deadline()` helper. Spawns a
       `tokio::process::Command` configured with `kill_on_drop(true)`
       (and on Windows also placed in a job object via the `windows`
       crate so OS cleanup catches dropped handles), races
@@ -529,7 +522,7 @@ Status: **not started.**
       `TimedOutKilled`). The pure-logic side of supervision
       (deadline arithmetic, outcome decoding) is unit-tested
       `#[cfg(test)] mod tests` in-source.
-- [ ] `tests/supervision_integration.rs` — integration tests for
+- [x] `tests/supervision_integration.rs` — integration tests for
       the spawn-based supervision arms (the only place real child
       processes are spawned in this crate's test surface). Three
       arms drive `mock_astap`:
@@ -552,7 +545,7 @@ Status: **not started.**
       `CARGO_BIN_EXE_*` is unset for `#[cfg(test)] mod tests`
       inside `src/` and unset under Bazel entirely — the `option_env!
       ` + `MOCK_ASTAP_BINARY` fallback handles both.
-- [ ] `src/bin/mock_astap.rs` — the `[[bin]]` itself. Implements the
+- [x] `src/bin/mock_astap.rs` — the `[[bin]]` itself. Implements the
       six `MOCK_ASTAP_MODE` modes from the design decision above. On
       Windows, `ignore_sigterm` uses `SetConsoleCtrlHandler` to
       ignore `CTRL_BREAK_EVENT` (the closest equivalent the
@@ -562,26 +555,26 @@ Status: **not started.**
       `MOCK_ASTAP_ARGV_OUT`. Registered as a `[[bin]]` in
       `Cargo.toml`; not feature-gated.
 
-**Exit criteria:** `cargo build -p plate-solver --all-features
+**Exit criteria met:** `cargo build -p plate-solver --all-features
 --all-targets` clean. Unit tests for `config.rs`, `error.rs`,
 `runner/wcs.rs`, `supervision.rs` pass. The crate produces a `lib.rs`
-re-export surface but no `main.rs` yet (Phase 4 wires the binary).
+re-export surface; `main.rs` was wired in Phase 4.
 
 ### Phase 3 — BDD scenarios (with `@wip`)
 
-Status: **not started.**
+Status: **complete.**
 
 All four feature files run against **`mock_astap`**. Each scenario
 configures `MOCK_ASTAP_MODE` for the wrapper's `astap_binary_path`
 config so the wrapper spawns a mock that produces the failure mode the
 scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
 
-- [ ] `tests/features/configuration.feature` — startup validation:
+- [x] `tests/features/configuration.feature` — startup validation:
       missing binary path → exit non-zero with field-naming error;
       binary path not executable → ditto; database directory missing
       → ditto; happy-path validation accepts `mock_astap` as a valid
       binary path. Target ~6 scenarios.
-- [ ] `tests/features/solve_request.feature` — happy path
+- [x] `tests/features/solve_request.feature` — happy path
       (`MOCK_ASTAP_MODE=normal` returns the four expected fields from
       the canned `.wcs`); each error code from the frozen table
       (`solve_failed` via `exit_failure`, `solve_timeout` via `hang`,
@@ -591,7 +584,7 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       `no_wcs` → `solve_failed` with sidecar-missing message). End-to-end
       argv-flow assertion via `MOCK_ASTAP_ARGV_OUT` for one scenario
       per hint flag. Target ~10 scenarios.
-- [ ] `tests/features/subprocess_supervision.feature` — `solve_timeout`
+- [x] `tests/features/subprocess_supervision.feature` — `solve_timeout`
       (terminated) via `MOCK_ASTAP_MODE=hang` with `timeout: 100ms`;
       `solve_timeout` (killed) via `MOCK_ASTAP_MODE=ignore_sigterm`
       with the same deadline (the SIGKILL-escalation path now lives
@@ -599,11 +592,11 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       (two concurrent `hang`-mode requests; assert second observed
       start time is after first observed end time, via mock_astap
       timestamp side-channel writes). Target ~5 scenarios.
-- [ ] `tests/features/health.feature` — `/health` returns `200` after
+- [x] `tests/features/health.feature` — `/health` returns `200` after
       startup validation; returns `503` if the configured binary path
       is removed between startup and the probe (use a temp-dir copy
       of `mock_astap`, then delete the copy). Target ~3 scenarios.
-- [ ] `tests/features/real_astap_smoke.feature` — tagged
+- [x] `tests/features/real_astap_smoke.feature` — tagged
       `@requires-astap` at the feature level, so PR jobs skip it
       automatically and the nightly job (Phase 6) runs it. Target ~2
       scenarios:
@@ -616,18 +609,19 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       2. **Real `solve_failed`** — real ASTAP on a degenerate FITS
          (committed alongside `m31_known.fits`); assert
          `solve_failed` with non-empty stderr embedded.
-- [ ] `bdd.rs` — `filter_run` extends the existing `@wip` filter to
+- [x] `bdd.rs` — `filter_run` extends the existing `@wip` filter to
       also filter `@requires-astap` based on `ASTAP_BINARY`
       presence (snippet in the design decision section above).
-- [ ] `tests/fixtures/degenerate_no_stars.fits` — small all-zeros
+- [x] `tests/fixtures/degenerate_no_stars.fits` — small all-zeros
       FITS for the real `solve_failed` scenario. Re-uses the existing
       `m31_known.fits` for the happy path so we don't ship two
       multi-MB fixtures.
-- [ ] All four feature files tagged `@wip`. `bdd.rs` uses
+- [x] All four feature files tagged `@wip`. `bdd.rs` uses
       `filter_run` to skip `@wip` so the workspace BDD suite stays
       green until Phase 4 lands. Convention per
-      `docs/skills/testing.md` §2.7.
-- [ ] `tests/bdd/world.rs` — `PlateSolverWorld` with
+      `docs/skills/testing.md` §2.7. (`@wip` tags removed in Phase 4
+      once the implementation landed.)
+- [x] `tests/bdd/world.rs` — `PlateSolverWorld` with
       `service_handle: Option<ServiceHandle>`, `last_response:
       Option<reqwest::Response>`, `temp_dir: Option<TempDir>`.
       Resolves the `mock_astap` path in this order:
@@ -635,43 +629,43 @@ scenario targets. Real ASTAP is not in the loop here; that's Phase 6.
       `option_env!("CARGO_BIN_EXE_mock_astap")` (Cargo). Same
       lookup the supervision integration tests use; falls back
       cleanly across both build systems.
-- [ ] `tests/bdd/steps/*.rs` — step definitions. Reuse the
+- [x] `tests/bdd/steps/*.rs` — step definitions. Reuse the
       `bdd-infra` `ServiceHandle` for the wrapper spawn/stop. No new
       feature flag on `bdd-infra` is needed — the wrapper does not
       host an MCP server, so `rp-harness` is irrelevant.
-- [ ] **No CI install changes for BDD**: the BDD suite is fully
+- [x] **No CI install changes for BDD**: the BDD suite is fully
       self-contained because `mock_astap` is built by `cargo build
       --all-targets -p plate-solver`. cargo-rail's existing
       change-detection logic handles the rest. The `install-astap`
       action stays scoped to its existing smoke workflow and to
       Phase 6's cross-platform e2e workflow.
 
-**Exit criteria:** `cargo test -p plate-solver --all-features --test
-bdd` compiles and runs cleanly with `@wip` filtering all scenarios out
-(0 scenarios run, 0 failures). The compiled BDD harness is the gate
-that the next phase's implementation has to satisfy.
+**Exit criteria met:** `cargo test -p plate-solver --all-features
+--test bdd` compiled and ran cleanly with `@wip` filtering all
+scenarios out at the end of Phase 3. The compiled BDD harness was
+the gate Phase 4's implementation had to satisfy.
 
 ### Phase 4 — HTTP server + supervision impl + remove `@wip`
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `api.rs` — axum router with `POST /api/v1/solve` and
+- [x] `api.rs` — axum router with `POST /api/v1/solve` and
       `GET /health`. Request body deserialization via `serde_json`,
       response serialization to the frozen schema, error mapping per
       the frozen table. Single-flight semaphore wired here.
-- [ ] `lib.rs` — `ServerBuilder`/`BoundServer` two-phase API
+- [x] `lib.rs` — `ServerBuilder`/`BoundServer` two-phase API
       mirroring `phd2-guider`'s shape (avoids port-TOCTOU race called
       out in `docs/skills/development-workflow.md` §"Phase 4
       Stabilization").
-- [ ] `main.rs` — CLI (clap), reads `--config`, prints
+- [x] `main.rs` — CLI (clap), reads `--config`, prints
       `bound_addr=<host>:<port>` to stdout (per `bdd-infra` convention
       so `parse_bound_port` works), installs SIGTERM handler for
       graceful shutdown.
-- [ ] Remove `@wip` from all four feature files in the same commit
+- [x] Remove `@wip` from all four feature files in the same commit
       that lands the implementation.
 
-**Exit criteria:** all BDD scenarios pass. `cargo rail run --profile
-commit -q` clean. `cargo fmt` clean.
+**Exit criteria met:** all BDD scenarios pass. `cargo rail run
+--profile commit -q` clean. `cargo fmt` clean.
 
 ### Phase 5 — Process-supervisor integration (Sentinel forward work)
 

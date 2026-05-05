@@ -10,11 +10,23 @@ for implementation sequencing.
 
 ## Status
 
-This crate is at **Phase 4 complete** — HTTP server (`POST /api/v1/solve`,
-`GET /health`), per-request supervision (graceful signal → 2 s grace →
-force-kill), single-flight semaphore, and the full BDD suite are live.
-ASTAP is invoked as an operator-installed subprocess per request; no
-ASTAP binary or index database is bundled.
+All eight phases of the [implementation plan](../../docs/plans/plate-solver.md#phases)
+have shipped: design doc, crate scaffolding + `AstapRunner` trait +
+`.wcs` parser, BDD scenarios, HTTP server + supervision,
+process-supervisor recipes, nightly cross-platform real-ASTAP smoke,
+hint-plumbing verification, and LGPL §4/§6 review under BYO. The
+service exposes `POST /api/v1/solve` and `GET /health`, supervises
+each spawned `astap_cli` child with the documented graceful-signal
+→ 2 s grace → force-kill escalation, and serializes overlapping
+solves through a single-flight semaphore. ASTAP is invoked as an
+operator-installed subprocess per request; no ASTAP binary or
+index database is bundled.
+
+One known divergence from the design intent: `runner/wcs.rs` ships
+a hand-rolled FITS-card parser instead of `fitsrs` +
+`wcs::params::WCSParams`, pending the Phase 2 spike. Tracked by
+[issue #160](https://github.com/ivonnyssen/rusty-photon/issues/160).
+The `read_wcs_sidecar` public surface is stable across the swap.
 
 ## Operator install
 
