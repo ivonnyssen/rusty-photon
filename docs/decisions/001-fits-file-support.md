@@ -410,7 +410,7 @@ Neither spike crate ships in `main` to keep the workspace lean.
   bypassable via the cfitsio-vcpkg spike's recipe but not chosen for
   workload reasons.
 - [Issue #107: Pick a workspace FITS library](https://github.com/ivonnyssen/rusty-photon/issues/107)
-- [`docs/plans/fits-library-consolidation.md`](../plans/fits-library-consolidation.md)
+- [`docs/plans/archive/fits-library-consolidation.md`](../plans/archive/fits-library-consolidation.md)
 - [`docs/plans/fits-spike.md`](../plans/fits-spike.md) /
   [`fits-spike-report.md`](../plans/fits-spike-report.md) — fitsrs read-side spike
 - [`docs/plans/fits-cfitsio-vcpkg-spike.md`](../plans/fits-cfitsio-vcpkg-spike.md) /

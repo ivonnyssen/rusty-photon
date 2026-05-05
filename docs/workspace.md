@@ -42,7 +42,6 @@ belong in any single service design doc.
 | [build-optimization-test-reorganization.md](plans/build-optimization-test-reorganization.md) | Build/test reorganization |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
-| [fits-library-consolidation.md](plans/fits-library-consolidation.md) | FITS library evaluation across the workspace |
 | [plate-solver.md](plans/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing) |
 | [rp-planning-tools.md](plans/rp-planning-tools.md) | rp planning & ephemeris tools: site config, `rp-ephemeris` + `rp-catalog` crates, primitive + convenience MCP tools |
 
