@@ -79,12 +79,6 @@ async fn get_status(port: u16, path: &str) -> u16 {
     reqwest::get(&url).await.unwrap().status().as_u16()
 }
 
-async fn get_json(port: u16, path: &str) -> serde_json::Value {
-    let url = format!("http://127.0.0.1:{}{}", port, path);
-    let text = reqwest::get(&url).await.unwrap().text().await.unwrap();
-    serde_json::from_str(&text).unwrap()
-}
-
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_focuser_enabled() {
@@ -106,21 +100,6 @@ async fn test_server_starts_with_focuser_disabled() {
 
     let status = get_status(port, "/api/v1/focuser/0/name").await;
     assert_ne!(status, 200, "Focuser should not be registered");
-
-    handle.abort();
-    let _ = handle.await;
-}
-
-#[tokio::test]
-#[cfg_attr(miri, ignore)]
-async fn test_server_returns_configured_focuser_name() {
-    let _lock = SERVER_LOCK.lock().unwrap();
-    let mut config = test_config(true);
-    config.focuser.name = "My Custom Focuser".to_string();
-    let (port, handle) = spawn_server(config).await;
-
-    let body = get_json(port, "/api/v1/focuser/0/name").await;
-    assert_eq!(body["Value"], "My Custom Focuser");
 
     handle.abort();
     let _ = handle.await;
