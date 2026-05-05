@@ -2084,15 +2084,17 @@ wrapper falls back to a blind solve.
 - `document_id` mode: writes a `wcs` section to the exposure
   document via `ImageCache::put_section`. Section payload mirrors
   the output verbatim.
-- `image_path` mode: after a successful solve, attempts a UUID-8
-  reverse-lookup of the filename via
-  `ImageCache::resolve_document`. If the path corresponds to an
-  rp-produced FITS with a sidecar on disk (the **late-solve
-  workflow**: capture frame N → start capture N+1 → solve frame N
-  → update the original sidecar), `wcs` is written. If the path
-  does not match a known document (external FITS, missing sidecar,
-  no UUID-8 suffix), the result is returned without persistence
-  and the cache miss is `debug!()`-logged.
+- `image_path` mode: after a successful solve, derives the sibling
+  sidecar path (`<base>.fits` → `<base>.json`) and resolves it to
+  an `ExposureDocument` via `ImageCache::resolve_document_by_path`.
+  If the sidecar exists and parses (the **late-solve workflow**:
+  capture frame N → start capture N+1 → solve frame N → update the
+  original sidecar), `wcs` is written via `put_section`. If no
+  sidecar is present (external FITS, missing sidecar, non-`.fits`
+  path), the result is returned without persistence and the cache
+  miss is `debug!()`-logged. `put_section` itself falls back to a
+  disk-only write when the cache entry is absent (post-eviction or
+  post-`rp` restart) so the sidecar always sees the section update.
 - Persistence failure (sidecar write error) is logged at `debug!()`
   and does *not* fail the tool — same shape as the imaging-tool
   convention.

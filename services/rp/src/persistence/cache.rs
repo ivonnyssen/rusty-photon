@@ -306,24 +306,53 @@ impl ImageCache {
             .flatten()
     }
 
-    /// Write `value` into `sections[name]` on the cached document and
-    /// persist the updated sidecar JSON atomically. The per-entry write
-    /// lock is held across the sidecar write so concurrent updates
-    /// serialize at the entry level.
+    /// Write `value` into `sections[name]` on the document and persist
+    /// the updated sidecar JSON atomically.
     ///
-    /// Failure semantics: when the sidecar write fails the in-memory
-    /// section is rolled back to its prior value, mirroring the old
-    /// `DocumentStore::put_section` contract. The cache budget is updated
-    /// only after a successful write.
+    /// **Cached entry path (the hot path).** The per-entry write lock
+    /// is held across the sidecar write so concurrent updates
+    /// serialize at the entry level. On sidecar-write failure the
+    /// in-memory section is rolled back to its prior value, mirroring
+    /// the old `DocumentStore::put_section` contract. The cache budget
+    /// is updated only after a successful write.
+    ///
+    /// **Disk-fallback path.** When the cache entry is absent (post-
+    /// eviction or a fresh `rp` restart), `put_section` rehydrates the
+    /// document from its sidecar on disk, applies the section update,
+    /// and writes back atomically. This is what makes the late-solve
+    /// workflow's `image_path`-mode persistence durable across cache
+    /// misses — the rare race between two concurrent fallback writers
+    /// is benign because `write_sidecar_at` uses an atomic rename, so
+    /// last writer wins with no torn state. The cache itself is left
+    /// untouched on this path (no rehydration of pixels, no eviction
+    /// budget shuffle); a subsequent `resolve(doc_id)` will pick up
+    /// the new section the next time the document is hot.
     pub async fn put_section(
         &self,
         document_id: &str,
         name: &str,
         value: serde_json::Value,
     ) -> crate::error::Result<()> {
-        let image = self.get(document_id).ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", document_id))
-        })?;
+        if let Some(image) = self.get(document_id) {
+            return self
+                .put_section_cached(image, document_id, name, value)
+                .await;
+        }
+        debug!(
+            document_id, section = %name,
+            "put_section: cache miss, attempting disk fallback"
+        );
+        self.put_section_disk_fallback(document_id, name, value)
+            .await
+    }
+
+    async fn put_section_cached(
+        &self,
+        image: Arc<CachedImage>,
+        document_id: &str,
+        name: &str,
+        value: serde_json::Value,
+    ) -> crate::error::Result<()> {
         let mut doc = image.document.write().await;
         let prior = doc.sections.insert(name.to_string(), value);
         match super::document::write_sidecar(&doc).await {
@@ -337,7 +366,7 @@ impl ImageCache {
                     section = %name,
                     new_json_bytes,
                     old_json_bytes,
-                    "ImageCache put_section"
+                    "ImageCache put_section (cached)"
                 );
                 Ok(())
             }
@@ -353,6 +382,46 @@ impl ImageCache {
                 Err(e)
             }
         }
+    }
+
+    async fn put_section_disk_fallback(
+        &self,
+        document_id: &str,
+        name: &str,
+        value: serde_json::Value,
+    ) -> crate::error::Result<()> {
+        // Same disk-scan path resolve_document uses on miss: locate
+        // the sidecar by UUID-8 filename suffix + DOC_ID/sidecar id
+        // verification. Returns the parsed document or None.
+        let dir = self.data_directory.clone();
+        let id = document_id.to_string();
+        let doc_opt = tokio::task::spawn_blocking(move || disk_resolve_document(&dir, &id))
+            .await
+            .map_err(|e| {
+                crate::error::RpError::Imaging(format!(
+                    "disk-fallback put_section: join error: {e}"
+                ))
+            })?;
+        let mut doc = doc_opt.ok_or_else(|| {
+            crate::error::RpError::Imaging(format!("document not found: {}", document_id))
+        })?;
+        doc.sections.insert(name.to_string(), value);
+        // Reuse the document's own `file_path` to derive the sidecar
+        // path — the same convention `mcp.rs:capture` writes.
+        let sidecar_path = derive_sidecar_path(&doc.file_path).ok_or_else(|| {
+            crate::error::RpError::Imaging(format!(
+                "disk-fallback put_section: file_path is not a .fits path: {}",
+                doc.file_path
+            ))
+        })?;
+        super::document::write_sidecar_at(&sidecar_path, &doc).await?;
+        debug!(
+            document_id = %document_id,
+            section = %name,
+            sidecar_path = %sidecar_path.display(),
+            "ImageCache put_section (disk fallback)"
+        );
+        Ok(())
     }
 
     /// Apply a signed delta to the running cache `bytes` total under the
@@ -1058,5 +1127,58 @@ mod tests {
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
         let result = cache.resolve_document_by_path("/tmp/no-extension").await;
         assert!(result.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // put_section disk-fallback (Phase 6c-2 review fix)
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn put_section_falls_back_to_disk_when_cache_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        // Build a fresh cache that has *not* loaded the document.
+        // This simulates the post-eviction / post-restart state the
+        // late-solve workflow hits.
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        assert_eq!(cache.len(), 0);
+
+        let payload = serde_json::json!({"ra_center": 10.6848, "solver": "test"});
+        cache
+            .put_section(doc_uuid, "wcs", payload.clone())
+            .await
+            .expect("put_section disk-fallback should succeed");
+
+        // Cache was not rehydrated — disk fallback writes the
+        // sidecar without inserting into the in-memory map.
+        assert_eq!(cache.len(), 0, "disk fallback must not rehydrate the cache");
+
+        // Verify the section landed on disk by reading the sidecar
+        // back via the existing helper.
+        let resolved = cache
+            .resolve_document(doc_uuid)
+            .await
+            .expect("document still resolvable from disk");
+        let stored = resolved
+            .sections
+            .get("wcs")
+            .expect("wcs section must be present after disk-fallback write");
+        assert_eq!(stored, &payload);
+    }
+
+    #[tokio::test]
+    async fn put_section_disk_fallback_returns_not_found_for_unknown_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let err = cache
+            .put_section(
+                "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
+                "wcs",
+                serde_json::json!({}),
+            )
+            .await
+            .expect_err("unknown document id should error");
+        assert!(err.to_string().contains("document not found"), "got: {err}");
     }
 }

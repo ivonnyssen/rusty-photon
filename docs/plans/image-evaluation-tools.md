@@ -819,14 +819,21 @@ Step 1) and should not be re-litigated:
   precedence when both supplied**. Persistence behavior:
   - `document_id` mode: persist `wcs` section to that document via
     `ImageCache::put_section`.
-  - `image_path` mode: solve runs; on success, attempt UUID-8
-    reverse-lookup of the filename via `ImageCache::resolve_document`.
-    Match found (rp-produced FITS with sidecar on disk — the
-    late-solve workflow's case) ⇒ persist `wcs` to its sidecar.
-    No match (external FITS, missing sidecar, no UUID-8 suffix) ⇒
-    return result without persistence and `debug!()` log it. The
-    late-solve workflow (capture frame N → start capture N+1 → solve
-    frame N → update the original sidecar) falls in the first bucket.
+  - `image_path` mode: solve runs; on success, derive the sibling
+    sidecar path (`<base>.fits` → `<base>.json`) and resolve via
+    the new `ImageCache::resolve_document_by_path`. Match found
+    (rp-produced FITS with sidecar on disk — the late-solve
+    workflow's case) ⇒ persist `wcs` to its sidecar. No match
+    (external FITS, missing sidecar, non-`.fits` path) ⇒ return
+    result without persistence and `debug!()` log it. The
+    late-solve workflow (capture frame N → start capture N+1 →
+    solve frame N → update the original sidecar) falls in the
+    first bucket. `put_section` itself falls back to a disk-only
+    write when the cache entry is absent (post-eviction or
+    post-`rp` restart) so persistence is durable across cache
+    misses; the original UUID-8 reverse-lookup proposal in the
+    plan-stub was superseded during implementation by this cleaner
+    sibling-sidecar derivation.
 - **Hints: explicit by default, `use_mount_hints` is the opt-in
   convenience.** No auto-sourcing from the mount in the default path
   (per the operator preference: explicit beats auto-magic). MCP shape:
