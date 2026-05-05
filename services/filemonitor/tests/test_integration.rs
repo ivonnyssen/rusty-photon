@@ -51,9 +51,11 @@ async fn test_start_server_creation() {
     assert!(result.is_err());
 }
 
-// Both halves of this test bind the ASCOM Alpaca discovery port, so they must
-// run sequentially. We combine them into a single test to avoid parallel port
-// conflicts.
+// Stop-signal and reload-signal exercises share most of the run-loop scaffolding
+// (config, monitor file, shutdown future). Bundling them into one test keeps the
+// shared setup in one place rather than duplicating it across two tests.
+// Discovery is disabled in both halves (`discovery_port: null`), so this could be
+// split into two `#[tokio::test]` functions if a future change makes that useful.
 #[tokio::test(flavor = "multi_thread")]
 #[cfg(not(miri))]
 async fn test_server_loop_stop_and_reload() {
