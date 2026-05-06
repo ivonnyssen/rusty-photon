@@ -22,10 +22,12 @@ bdd_infra::bdd_main! {
                 // is a per-process singleton; without this, state from
                 // scenario N (cover position, calibrator brightness,
                 // filter slot, camera config) leaks into scenario N+1.
-                // Each reset is a localhost PUT, all run in parallel,
-                // so the overhead is one round-trip. We panic on any
-                // reset failure so a flaky reset surfaces loudly here
-                // rather than as a confusing downstream step failure.
+                // Each reset is a localhost PUT, run sequentially
+                // (parallel resets raced OmniSim's unsynchronised
+                // `AlpacaDevices` list — see `reset_all_devices` for
+                // the writeup). We panic on any reset failure so a
+                // flaky reset surfaces loudly here rather than as a
+                // confusing downstream step failure.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {

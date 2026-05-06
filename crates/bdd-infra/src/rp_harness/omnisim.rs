@@ -82,8 +82,22 @@ impl OmniSimHandle {
 
     /// Reset every device class our BDD suites currently exercise
     /// (telescope, camera, filter wheel, focuser, cover calibrator) to
-    /// OmniSim defaults. Issued in parallel — total wall-time is
-    /// dominated by a single localhost round-trip.
+    /// OmniSim defaults. Issued **sequentially** — one PUT at a time.
+    ///
+    /// Why not parallel? OmniSim's `DriverManager.Load{Class}(n)`
+    /// mutates a process-wide `static List<AlpacaConfiguredDevice>
+    /// AlpacaDevices` via unsynchronised `List.Remove(...)` +
+    /// `List.Add(...)`. When two of our 5 PUTs landed on different
+    /// Kestrel threads they raced inside that list, leaving a `null`
+    /// entry that the management endpoint then serialised verbatim
+    /// into `configureddevices` responses. rp's deserialiser hit
+    /// `invalid type: null, expected struct ConfiguredDevice` and
+    /// silently registered the device as disconnected — which is the
+    /// camera/calibrator/focuser "not connected" cascade in #171.
+    /// Sequential PUTs eliminate that race.
+    ///
+    /// The wall-time cost is small: 5 localhost round-trips serialised
+    /// is ~10-25 ms per scenario depending on runner.
     ///
     /// Errors are collected and returned. **Exception:** when the
     /// shared `OMNISIM` singleton has not been initialised yet (i.e.
@@ -102,17 +116,19 @@ impl OmniSimHandle {
     /// touch them yet; add a call here when that changes.
     pub async fn reset_all_devices() -> Result<(), Vec<String>> {
         let omnisim_was_started = OMNISIM.get().is_some();
-        let (telescope, camera, filter_wheel, focuser, cover_calibrator) = tokio::join!(
-            Self::reset_telescope(),
-            Self::reset_camera(),
-            Self::reset_filter_wheel(),
-            Self::reset_focuser(),
-            Self::reset_cover_calibrator(),
-        );
-        let errors: Vec<String> = [telescope, camera, filter_wheel, focuser, cover_calibrator]
-            .into_iter()
-            .filter_map(Result::err)
-            .collect();
+        let mut errors: Vec<String> = Vec::new();
+        let results = [
+            Self::reset_telescope().await,
+            Self::reset_camera().await,
+            Self::reset_filter_wheel().await,
+            Self::reset_focuser().await,
+            Self::reset_cover_calibrator().await,
+        ];
+        for result in results {
+            if let Err(e) = result {
+                errors.push(e);
+            }
+        }
         if errors.is_empty() || !omnisim_was_started {
             Ok(())
         } else {

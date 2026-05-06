@@ -22,11 +22,13 @@ bdd_infra::bdd_main! {
                 // shared OmniSim is a singleton across the BDD process,
                 // so device state leaks between scenarios; the mount
                 // leak that hung `park` in issue #143 is the case we
-                // already hit. Each reset is a localhost PUT, all run
-                // in parallel, so the per-scenario overhead is one
-                // round-trip. We panic on any reset failure so a flaky
-                // reset surfaces loudly here rather than as a confusing
-                // downstream step failure.
+                // already hit. Each reset is a localhost PUT, run
+                // sequentially (parallel resets raced OmniSim's
+                // unsynchronised `AlpacaDevices` list — see
+                // `reset_all_devices` for the writeup). We panic on
+                // any reset failure so a flaky reset surfaces loudly
+                // here rather than as a confusing downstream step
+                // failure.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {
