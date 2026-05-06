@@ -90,6 +90,19 @@ jobs:
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+      # OmniSim's stdout/stderr now lands in target/bdd-infra-omnisim-logs/
+      # (see crates/bdd-infra/src/rp_harness/omnisim.rs::OmniSimProcess::log_dir).
+      # Uploading on failure preserves the only off-runner copy of those logs
+      # so the next intermittent BDD failure can be investigated rather than
+      # re-guessed.
+      - name: Upload OmniSim logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnisim-logs-ubuntu-stable
+          path: '**/bdd-infra-omnisim-logs/**'
+          if-no-files-found: ignore
+          retention-days: 14
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
@@ -122,6 +135,14 @@ jobs:
         run: cargo build --locked --package filemonitor --package rp --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+      - name: Upload OmniSim logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnisim-logs-macos-latest
+          path: '**/bdd-infra-omnisim-logs/**'
+          if-no-files-found: ignore
+          retention-days: 14
   windows:
     # Windows nextest (unit + integration tests, no BDD).
     # BDD tests are split into per-service parallel jobs below to avoid
@@ -191,6 +212,14 @@ jobs:
         run: cargo build --locked --package rp --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
+      - name: Upload OmniSim logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnisim-logs-windows-bdd-${{ matrix.package }}
+          path: '**/bdd-infra-omnisim-logs/**'
+          if-no-files-found: ignore
+          retention-days: 14
   coverage:
     # use llvm-cov to build and collect coverage and upload to codecov.io
     # with per-package flags for README badges.
@@ -229,6 +258,14 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --sh)
           cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+      - name: Upload OmniSim logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnisim-logs-coverage
+          path: '**/bdd-infra-omnisim-logs/**'
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Generate per-package coverage reports
         run: |
           source <(cargo llvm-cov show-env --sh)

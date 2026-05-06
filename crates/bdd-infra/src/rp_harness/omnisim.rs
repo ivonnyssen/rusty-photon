@@ -177,11 +177,19 @@ impl OmniSimProcess {
 
         let binary = Self::find_binary();
 
+        // Capture OmniSim's stdout/stderr to per-run log files under the
+        // cargo target tree. The previous `Stdio::null()` dropped every
+        // line OmniSim emitted, which left CI failures with no insight
+        // into what the simulator was doing — see #171 for the
+        // diagnostic gap. Failures here fall back to `Stdio::null` so a
+        // log-write problem can't stop the test suite from running.
+        let (stdout_target, stderr_target) = Self::open_log_files();
+
         // Clear sanitizer-related env vars so the .NET runtime isn't broken
         // by LD_PRELOAD injection from ASAN/LSAN.
         let mut cmd = std::process::Command::new(&binary);
-        cmd.stdout(Stdio::null())
-            .stderr(Stdio::null())
+        cmd.stdout(stdout_target)
+            .stderr(stderr_target)
             .env_remove("LD_PRELOAD")
             .env_remove("ASAN_OPTIONS")
             .env_remove("LSAN_OPTIONS");
@@ -260,6 +268,48 @@ impl OmniSimProcess {
         let _ = std::fs::remove_dir_all(&dest);
         Self::copy_dir_recursive(&src, &dest).ok()?;
         Some(dest)
+    }
+
+    /// Resolve the log directory for OmniSim's captured stdout/stderr.
+    /// Lives at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
+    /// `<workspace>/target/bdd-infra-omnisim-logs/` if unset). Kept
+    /// outside the seeded XDG dir so `prepare_xdg_config_home`'s
+    /// `remove_dir_all` can't sweep the previous run's logs.
+    ///
+    /// Returns `None` (caller falls back to `Stdio::null`) only if the
+    /// directory can't be created.
+    fn log_dir() -> Option<PathBuf> {
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|workspace| workspace.join("target"))
+                    .unwrap_or_else(|| PathBuf::from("target"))
+            });
+        let dest = target_dir.join("bdd-infra-omnisim-logs");
+        std::fs::create_dir_all(&dest).ok()?;
+        Some(dest)
+    }
+
+    /// Open fresh (truncating) log files for OmniSim's stdout and
+    /// stderr, returning `Stdio` handles ready to attach to the
+    /// `Command`. Falls back to `Stdio::null()` for either stream
+    /// individually if its file can't be opened.
+    fn open_log_files() -> (Stdio, Stdio) {
+        let dir = Self::log_dir();
+        let stdout = dir
+            .as_ref()
+            .and_then(|d| std::fs::File::create(d.join("omnisim.stdout.log")).ok())
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null);
+        let stderr = dir
+            .as_ref()
+            .and_then(|d| std::fs::File::create(d.join("omnisim.stderr.log")).ok())
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null);
+        (stdout, stderr)
     }
 
     fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {

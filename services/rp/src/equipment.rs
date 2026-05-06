@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rp_auth::config::ClientAuthConfig;
 use serde::Serialize;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::config;
 use crate::error::RpError;
@@ -295,7 +295,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
     let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
-            debug!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
+            error!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
             return CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -308,7 +308,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
     let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
         Ok(Ok(devices)) => devices,
         Ok(Err(e)) => {
-            debug!(camera_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            error!(camera_id = %config.id, error = %e, "failed to get devices from Alpaca server");
             return CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -317,7 +317,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
             };
         }
         Err(_) => {
-            debug!(camera_id = %config.id, "timeout connecting to Alpaca server");
+            error!(camera_id = %config.id, "timeout connecting to Alpaca server");
             return CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -343,7 +343,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
     let cam = match found_camera {
         Some(c) => c,
         None => {
-            debug!(camera_id = %config.id, device_number = config.device_number, "camera not found on Alpaca server");
+            error!(camera_id = %config.id, device_number = config.device_number, "camera not found on Alpaca server");
             return CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -364,7 +364,7 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
             }
         }
         Err(e) => {
-            debug!(camera_id = %config.id, error = %e, "failed to connect camera");
+            error!(camera_id = %config.id, error = %e, "failed to connect camera");
             CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -381,7 +381,7 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
     let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
-            debug!(fw_id = %config.id, error = %e, "failed to create Alpaca client for filter wheel");
+            error!(fw_id = %config.id, error = %e, "failed to create Alpaca client for filter wheel");
             return FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -394,7 +394,7 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
     let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
         Ok(Ok(devices)) => devices,
         Ok(Err(e)) => {
-            debug!(fw_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            error!(fw_id = %config.id, error = %e, "failed to get devices from Alpaca server");
             return FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -403,7 +403,7 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
             };
         }
         Err(_) => {
-            debug!(fw_id = %config.id, "timeout connecting to Alpaca server");
+            error!(fw_id = %config.id, "timeout connecting to Alpaca server");
             return FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -429,7 +429,7 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
     let fw = match found_fw {
         Some(f) => f,
         None => {
-            debug!(fw_id = %config.id, device_number = config.device_number, "filter wheel not found on Alpaca server");
+            error!(fw_id = %config.id, device_number = config.device_number, "filter wheel not found on Alpaca server");
             return FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -450,7 +450,7 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
             }
         }
         Err(e) => {
-            debug!(fw_id = %config.id, error = %e, "failed to connect filter wheel");
+            error!(fw_id = %config.id, error = %e, "failed to connect filter wheel");
             FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -467,7 +467,7 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
     let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
-            debug!(cc_id = %config.id, error = %e, "failed to create Alpaca client for cover calibrator");
+            error!(cc_id = %config.id, error = %e, "failed to create Alpaca client for cover calibrator");
             return CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -480,7 +480,7 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
     let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
         Ok(Ok(devices)) => devices,
         Ok(Err(e)) => {
-            debug!(cc_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            error!(cc_id = %config.id, error = %e, "failed to get devices from Alpaca server");
             return CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -489,7 +489,7 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
             };
         }
         Err(_) => {
-            debug!(cc_id = %config.id, "timeout connecting to Alpaca server");
+            error!(cc_id = %config.id, "timeout connecting to Alpaca server");
             return CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -515,7 +515,7 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
     let cc = match found_cc {
         Some(c) => c,
         None => {
-            debug!(cc_id = %config.id, device_number = config.device_number, "cover calibrator not found on Alpaca server");
+            error!(cc_id = %config.id, device_number = config.device_number, "cover calibrator not found on Alpaca server");
             return CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -536,7 +536,7 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
             }
         }
         Err(e) => {
-            debug!(cc_id = %config.id, error = %e, "failed to connect cover calibrator");
+            error!(cc_id = %config.id, error = %e, "failed to connect cover calibrator");
             CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -553,7 +553,7 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
     let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
-            debug!(focuser_id = %config.id, error = %e, "failed to create Alpaca client for focuser");
+            error!(focuser_id = %config.id, error = %e, "failed to create Alpaca client for focuser");
             return FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -566,7 +566,7 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
     let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
         Ok(Ok(devices)) => devices,
         Ok(Err(e)) => {
-            debug!(focuser_id = %config.id, error = %e, "failed to get devices from Alpaca server");
+            error!(focuser_id = %config.id, error = %e, "failed to get devices from Alpaca server");
             return FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -575,7 +575,7 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
             };
         }
         Err(_) => {
-            debug!(focuser_id = %config.id, "timeout connecting to Alpaca server");
+            error!(focuser_id = %config.id, "timeout connecting to Alpaca server");
             return FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -601,7 +601,7 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
     let foc = match found_focuser {
         Some(f) => f,
         None => {
-            debug!(focuser_id = %config.id, device_number = config.device_number, "focuser not found on Alpaca server");
+            error!(focuser_id = %config.id, device_number = config.device_number, "focuser not found on Alpaca server");
             return FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -622,7 +622,7 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
             }
         }
         Err(e) => {
-            debug!(focuser_id = %config.id, error = %e, "failed to connect focuser");
+            error!(focuser_id = %config.id, error = %e, "failed to connect focuser");
             FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -639,7 +639,7 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
     let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
         Ok(c) => c,
         Err(e) => {
-            debug!(error = %e, "failed to create Alpaca client for mount");
+            error!(error = %e, "failed to create Alpaca client for mount");
             return MountEntry {
                 connected: false,
                 config: config.clone(),
@@ -651,7 +651,7 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
     let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
         Ok(Ok(devices)) => devices,
         Ok(Err(e)) => {
-            debug!(error = %e, "failed to get devices from Alpaca server");
+            error!(error = %e, "failed to get devices from Alpaca server");
             return MountEntry {
                 connected: false,
                 config: config.clone(),
@@ -659,7 +659,7 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
             };
         }
         Err(_) => {
-            debug!("timeout connecting to Alpaca server");
+            error!("timeout connecting to Alpaca server");
             return MountEntry {
                 connected: false,
                 config: config.clone(),
@@ -684,7 +684,7 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
     let t = match found_mount {
         Some(t) => t,
         None => {
-            debug!(
+            error!(
                 device_number = config.device_number,
                 "mount not found on Alpaca server"
             );
@@ -706,7 +706,7 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
             }
         }
         Err(e) => {
-            debug!(error = %e, "failed to connect mount");
+            error!(error = %e, "failed to connect mount");
             MountEntry {
                 connected: false,
                 config: config.clone(),
