@@ -147,6 +147,14 @@ impl OmniSimHandle {
             .get()
             .map(|p| p.base_url.clone())
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
+        Self::restart_device_at(&base_url, class, n).await
+    }
+
+    /// `restart_device` extracted to take an explicit `base_url` so unit
+    /// tests can drive the HTTP path against an axum stub without
+    /// touching the global `OMNISIM` singleton. See the `tests` module
+    /// at the bottom of this file.
+    async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
         let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -298,16 +306,24 @@ impl OmniSimProcess {
     /// stderr, returning `Stdio` handles ready to attach to the
     /// `Command`. Falls back to `Stdio::null()` for either stream
     /// individually if its file can't be opened.
+    ///
+    /// File names embed the BDD test binary's PID so concurrent runs
+    /// (e.g. `cargo test --workspace --test bdd`, where each package's
+    /// BDD binary is a separate process sharing one `CARGO_TARGET_DIR`)
+    /// don't truncate each other's logs. On Windows, file-locking on a
+    /// shared name would also fail one of the spawns outright; the PID
+    /// suffix avoids that.
     fn open_log_files() -> (Stdio, Stdio) {
         let dir = Self::log_dir();
+        let pid = std::process::id();
         let stdout = dir
             .as_ref()
-            .and_then(|d| std::fs::File::create(d.join("omnisim.stdout.log")).ok())
+            .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stdout.log"))).ok())
             .map(Stdio::from)
             .unwrap_or_else(Stdio::null);
         let stderr = dir
             .as_ref()
-            .and_then(|d| std::fs::File::create(d.join("omnisim.stderr.log")).ok())
+            .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stderr.log"))).ok())
             .map(Stdio::from)
             .unwrap_or_else(Stdio::null);
         (stdout, stderr)
@@ -372,7 +388,7 @@ mod tests {
     use super::*;
 
     use axum::http::StatusCode;
-    use axum::routing::get;
+    use axum::routing::{get, put};
     use axum::Router;
 
     async fn spawn_stub(status: StatusCode) -> (String, tokio::sync::oneshot::Sender<()>) {
@@ -380,6 +396,32 @@ mod tests {
             "/api/v1/camera/0/connected",
             get(move || async move { status }),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{}", port), tx)
+    }
+
+    /// Stub server that responds to `PUT /simulator/v1/{class}/{n}/restart`
+    /// with the given `status`. The route is registered at the exact
+    /// `class`/`n` the test will hit, so a request to a different
+    /// device falls through to a 404 (which is what `restart_device`
+    /// will surface as an error — useful for one of the tests below).
+    async fn spawn_restart_stub(
+        class: &str,
+        n: u32,
+        status: StatusCode,
+    ) -> (String, tokio::sync::oneshot::Sender<()>) {
+        let route = format!("/simulator/v1/{class}/{n}/restart");
+        let app = Router::new().route(&route, put(move || async move { status }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -415,5 +457,52 @@ mod tests {
         drop(listener);
         let base_url = format!("http://127.0.0.1:{}", port);
         assert!(!OmniSimProcess::is_healthy(&base_url).await);
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_ok_on_success() {
+        let (base_url, shutdown) = spawn_restart_stub("camera", 0, StatusCode::OK).await;
+        let result = OmniSimHandle::restart_device_at(&base_url, "camera", 0).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_on_404() {
+        // Stub registers /camera/0/restart but the test hits /telescope/0/restart.
+        let (base_url, shutdown) = spawn_restart_stub("camera", 0, StatusCode::OK).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "telescope", 0)
+            .await
+            .expect_err("expected an error for unrouted path");
+        assert!(err.contains("404"), "expected 404 in error: {err}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_on_server_error() {
+        let (base_url, shutdown) =
+            spawn_restart_stub("camera", 0, StatusCode::INTERNAL_SERVER_ERROR).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .expect_err("expected an error for 500 response");
+        assert!(err.contains("500"), "expected 500 in error: {err}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_when_connection_refused() {
+        // Bind a listener to grab a free port, then drop it so subsequent
+        // connects refuse — mirrors the is_healthy_returns_false test.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let base_url = format!("http://127.0.0.1:{port}");
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .expect_err("expected a transport error");
+        assert!(
+            err.starts_with("PUT ") && err.contains("failed"),
+            "unexpected transport error format: {err}"
+        );
     }
 }
