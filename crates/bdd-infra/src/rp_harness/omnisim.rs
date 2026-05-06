@@ -85,22 +85,23 @@ impl OmniSimHandle {
     /// OmniSim defaults. Issued in parallel — total wall-time is
     /// dominated by a single localhost round-trip.
     ///
-    /// Returns `Ok(())` when no scenario has yet started OmniSim — the
-    /// `before(scenario)` hook fires for the very first scenario before
-    /// `OmniSimHandle::start()` has spawned anything, and at that point
-    /// there is nothing to reset. Otherwise, returns the collected
-    /// error messages from any per-device reset that didn't return 2xx.
-    /// Errors used to be silently swallowed here, which masked
-    /// intermittent macOS reset failures and let state leak between
-    /// scenarios — see PR #172 / `bug/bdd-investigation`.
+    /// Errors are collected and returned. **Exception:** when the
+    /// shared `OMNISIM` singleton has not been initialised yet (i.e.
+    /// no scenario has gone through `OmniSimHandle::start()`), errors
+    /// are non-fatal — the PUTs still fire against the default
+    /// `127.0.0.1:32323` URL so a pre-existing OmniSim from a prior
+    /// dev session is reset before scenario 1 reuses it, but
+    /// connection-refused (no OmniSim there yet) is the expected case
+    /// and we don't want to panic the very first before-hook over it.
+    /// Once the suite has called `OmniSimHandle::start()`, every reset
+    /// failure is fatal — that's the loud-reset behaviour from #172
+    /// that catches state leakage between scenarios.
     ///
     /// Other device classes (dome, rotator, switch, observingconditions,
     /// safetymonitor) also expose `/restart`, but our scenarios don't
     /// touch them yet; add a call here when that changes.
     pub async fn reset_all_devices() -> Result<(), Vec<String>> {
-        if OMNISIM.get().is_none() {
-            return Ok(());
-        }
+        let omnisim_was_started = OMNISIM.get().is_some();
         let (telescope, camera, filter_wheel, focuser, cover_calibrator) = tokio::join!(
             Self::reset_telescope(),
             Self::reset_camera(),
@@ -112,7 +113,7 @@ impl OmniSimHandle {
             .into_iter()
             .filter_map(Result::err)
             .collect();
-        if errors.is_empty() {
+        if errors.is_empty() || !omnisim_was_started {
             Ok(())
         } else {
             Err(errors)

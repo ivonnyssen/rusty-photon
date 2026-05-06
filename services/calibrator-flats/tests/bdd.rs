@@ -24,8 +24,8 @@ bdd_infra::bdd_main! {
                 // filter slot, camera config) leaks into scenario N+1.
                 // Each reset is a localhost PUT, all run in parallel,
                 // so the overhead is one round-trip. We panic on any
-                // reset failure so an intermittently-flaky reset
-                // surfaces here instead of as a downstream step failure.
+                // reset failure so a flaky reset surfaces loudly here
+                // rather than as a confusing downstream step failure.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {

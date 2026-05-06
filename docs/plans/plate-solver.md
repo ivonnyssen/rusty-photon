@@ -196,7 +196,7 @@ before it pollutes a release. No separate weekly tier.
 
 **Gating mechanism — `@requires-astap` cucumber tag.** The pattern
 mirrors `@wip` (already in `bdd.rs` per `docs/skills/testing.md` §2.7).
-The runner's `filter_run` skips any scenario tagged `@requires-astap`
+The runner's `filter_run_and_exit` skips any scenario tagged `@requires-astap`
 unless the `ASTAP_BINARY` env var is set:
 
 ```rust

@@ -24,10 +24,9 @@ bdd_infra::bdd_main! {
                 // leak that hung `park` in issue #143 is the case we
                 // already hit. Each reset is a localhost PUT, all run
                 // in parallel, so the per-scenario overhead is one
-                // round-trip. We panic on any reset failure so an
-                // intermittently-flaky reset (the macOS "camera not
-                // connected" cascade in #171) surfaces here instead of
-                // as a confusing downstream step failure.
+                // round-trip. We panic on any reset failure so a flaky
+                // reset surfaces loudly here rather than as a confusing
+                // downstream step failure.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {
