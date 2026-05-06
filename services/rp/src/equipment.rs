@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,10 +8,93 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rp_auth::config::ClientAuthConfig;
 use serde::Serialize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::config;
 use crate::error::RpError;
+
+/// Maximum attempts each `connect_*` makes for the get-devices +
+/// set-connected pair. Backoff between attempts is 1 s, then 2 s
+/// (see [`retry_connect_attempt`]), so the worst-case wait per device
+/// before giving up is 3 s of sleep plus up to 3 ×
+/// [`GET_DEVICES_TIMEOUT`] of in-flight HTTP. Three attempts is
+/// enough to ride out a transient OmniSim stall (e.g. a long .NET
+/// full GC) without making BDD scenarios that intentionally point at
+/// unreachable URLs pay too high a wall-clock cost.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// Per-call timeout on `client.get_devices()`. Short enough that a stuck
+/// Alpaca server falls into the retry loop instead of hanging the whole
+/// rp startup.
+const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Result of a single attempt inside [`retry_connect_attempt`]. The
+/// `Permanent` / `Transient` split is what makes this a retry helper
+/// rather than a sleep-and-hope wrapper: the connect closures map each
+/// failure mode to its own variant, so config-level problems
+/// (unreachable URL, device-not-found at requested index) bail out
+/// after one attempt while truly-transient failures (HTTP timeouts,
+/// transport hiccups, OmniSim under GC pressure) get the retry loop.
+enum AttemptOutcome<T> {
+    Ok(T),
+    Permanent(String),
+    Transient(String),
+}
+
+/// Drive `operation` up to [`CONNECT_ATTEMPTS`] times with exponential
+/// backoff between attempts: 1 s, then 2 s. Returns the first `Ok`
+/// result, or the last transient error wrapped with attempt count if
+/// every attempt returned `Transient`. Returns immediately on
+/// `Permanent`.
+///
+/// `label` is used purely for log lines so the operator can see which
+/// device is retrying — e.g. `"camera main-cam"`.
+async fn retry_connect_attempt<T, F, Fut>(label: &str, operation: F) -> Result<T, String>
+where
+    F: Fn(u32) -> Fut,
+    Fut: Future<Output = AttemptOutcome<T>>,
+{
+    let mut last_transient = String::from("no attempts made");
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        match operation(attempt).await {
+            AttemptOutcome::Ok(value) => {
+                if attempt > 1 {
+                    // Worth surfacing at info: the user will want to
+                    // know the system had to retry but did recover.
+                    info!(label, attempt, "connect succeeded after retry");
+                }
+                return Ok(value);
+            }
+            AttemptOutcome::Permanent(msg) => return Err(msg),
+            AttemptOutcome::Transient(msg) => {
+                last_transient = msg;
+                if attempt < CONNECT_ATTEMPTS {
+                    // 1 s, then 2 s — bounded total backoff of 3 s per
+                    // device keeps unreachable-URL BDD scenarios fast
+                    // while still smoothing over a transient stall.
+                    let delay = Duration::from_secs(1u64 << (attempt - 1));
+                    // Each retry is at info level: a transient
+                    // connect failure that the system is recovering
+                    // from is something the operator should see in
+                    // default-verbosity logs without having to enable
+                    // debug.
+                    info!(
+                        label,
+                        attempt,
+                        max = CONNECT_ATTEMPTS,
+                        ?delay,
+                        error = %last_transient,
+                        "transient connect failure, retrying after backoff"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    Err(format!(
+        "gave up after {CONNECT_ATTEMPTS} attempts (last error: {last_transient})"
+    ))
+}
 
 pub struct CameraEntry {
     pub id: String,
@@ -305,56 +389,50 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
         }
     };
 
-    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => {
-            error!(camera_id = %config.id, error = %e, "failed to get devices from Alpaca server");
-            return CameraEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-        Err(_) => {
-            error!(camera_id = %config.id, "timeout connecting to Alpaca server");
-            return CameraEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let mut camera_index = 0u32;
-    let mut found_camera: Option<Arc<dyn Camera>> = None;
-
-    for device in devices {
-        if let TypedDevice::Camera(cam) = device {
-            if camera_index == config.device_number {
-                found_camera = Some(cam);
-                break;
+    let label = format!("camera {}", config.id);
+    let outcome = retry_connect_attempt(&label, |_attempt| async {
+        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
+            Err(_) => {
+                return AttemptOutcome::Transient(format!(
+                    "get_devices: timeout after {:?}",
+                    GET_DEVICES_TIMEOUT
+                ));
             }
-            camera_index += 1;
-        }
-    }
+        };
 
-    let cam = match found_camera {
-        Some(c) => c,
-        None => {
-            error!(camera_id = %config.id, device_number = config.device_number, "camera not found on Alpaca server");
-            return CameraEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
+        let mut camera_index = 0u32;
+        let mut found_camera: Option<Arc<dyn Camera>> = None;
+        for device in devices {
+            if let TypedDevice::Camera(cam) = device {
+                if camera_index == config.device_number {
+                    found_camera = Some(cam);
+                    break;
+                }
+                camera_index += 1;
+            }
         }
-    };
 
-    match cam.set_connected(true).await {
-        Ok(()) => {
+        let cam = match found_camera {
+            Some(c) => c,
+            None => {
+                return AttemptOutcome::Permanent(format!(
+                    "camera at index {} not found on Alpaca server",
+                    config.device_number
+                ));
+            }
+        };
+
+        match cam.set_connected(true).await {
+            Ok(()) => AttemptOutcome::Ok(cam),
+            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(cam) => {
             debug!(camera_id = %config.id, "camera connected successfully");
             CameraEntry {
                 id: config.id.clone(),
@@ -363,8 +441,8 @@ async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
                 device: Some(cam),
             }
         }
-        Err(e) => {
-            error!(camera_id = %config.id, error = %e, "failed to connect camera");
+        Err(msg) => {
+            error!(camera_id = %config.id, error = %msg, "failed to connect camera");
             CameraEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -391,56 +469,50 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
         }
     };
 
-    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => {
-            error!(fw_id = %config.id, error = %e, "failed to get devices from Alpaca server");
-            return FilterWheelEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-        Err(_) => {
-            error!(fw_id = %config.id, "timeout connecting to Alpaca server");
-            return FilterWheelEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let mut fw_index = 0u32;
-    let mut found_fw: Option<Arc<dyn FilterWheel>> = None;
-
-    for device in devices {
-        if let TypedDevice::FilterWheel(fw) = device {
-            if fw_index == config.device_number {
-                found_fw = Some(fw);
-                break;
+    let label = format!("filter wheel {}", config.id);
+    let outcome = retry_connect_attempt(&label, |_attempt| async {
+        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
+            Err(_) => {
+                return AttemptOutcome::Transient(format!(
+                    "get_devices: timeout after {:?}",
+                    GET_DEVICES_TIMEOUT
+                ));
             }
-            fw_index += 1;
-        }
-    }
+        };
 
-    let fw = match found_fw {
-        Some(f) => f,
-        None => {
-            error!(fw_id = %config.id, device_number = config.device_number, "filter wheel not found on Alpaca server");
-            return FilterWheelEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
+        let mut fw_index = 0u32;
+        let mut found_fw: Option<Arc<dyn FilterWheel>> = None;
+        for device in devices {
+            if let TypedDevice::FilterWheel(fw) = device {
+                if fw_index == config.device_number {
+                    found_fw = Some(fw);
+                    break;
+                }
+                fw_index += 1;
+            }
         }
-    };
 
-    match fw.set_connected(true).await {
-        Ok(()) => {
+        let fw = match found_fw {
+            Some(f) => f,
+            None => {
+                return AttemptOutcome::Permanent(format!(
+                    "filter wheel at index {} not found on Alpaca server",
+                    config.device_number
+                ));
+            }
+        };
+
+        match fw.set_connected(true).await {
+            Ok(()) => AttemptOutcome::Ok(fw),
+            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(fw) => {
             debug!(fw_id = %config.id, "filter wheel connected successfully");
             FilterWheelEntry {
                 id: config.id.clone(),
@@ -449,8 +521,8 @@ async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheel
                 device: Some(fw),
             }
         }
-        Err(e) => {
-            error!(fw_id = %config.id, error = %e, "failed to connect filter wheel");
+        Err(msg) => {
+            error!(fw_id = %config.id, error = %msg, "failed to connect filter wheel");
             FilterWheelEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -477,56 +549,50 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
         }
     };
 
-    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => {
-            error!(cc_id = %config.id, error = %e, "failed to get devices from Alpaca server");
-            return CoverCalibratorEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-        Err(_) => {
-            error!(cc_id = %config.id, "timeout connecting to Alpaca server");
-            return CoverCalibratorEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let mut cc_index = 0u32;
-    let mut found_cc: Option<Arc<dyn CoverCalibrator>> = None;
-
-    for device in devices {
-        if let TypedDevice::CoverCalibrator(cc) = device {
-            if cc_index == config.device_number {
-                found_cc = Some(cc);
-                break;
+    let label = format!("cover calibrator {}", config.id);
+    let outcome = retry_connect_attempt(&label, |_attempt| async {
+        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
+            Err(_) => {
+                return AttemptOutcome::Transient(format!(
+                    "get_devices: timeout after {:?}",
+                    GET_DEVICES_TIMEOUT
+                ));
             }
-            cc_index += 1;
-        }
-    }
+        };
 
-    let cc = match found_cc {
-        Some(c) => c,
-        None => {
-            error!(cc_id = %config.id, device_number = config.device_number, "cover calibrator not found on Alpaca server");
-            return CoverCalibratorEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
+        let mut cc_index = 0u32;
+        let mut found_cc: Option<Arc<dyn CoverCalibrator>> = None;
+        for device in devices {
+            if let TypedDevice::CoverCalibrator(cc) = device {
+                if cc_index == config.device_number {
+                    found_cc = Some(cc);
+                    break;
+                }
+                cc_index += 1;
+            }
         }
-    };
 
-    match cc.set_connected(true).await {
-        Ok(()) => {
+        let cc = match found_cc {
+            Some(c) => c,
+            None => {
+                return AttemptOutcome::Permanent(format!(
+                    "cover calibrator at index {} not found on Alpaca server",
+                    config.device_number
+                ));
+            }
+        };
+
+        match cc.set_connected(true).await {
+            Ok(()) => AttemptOutcome::Ok(cc),
+            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(cc) => {
             debug!(cc_id = %config.id, "cover calibrator connected successfully");
             CoverCalibratorEntry {
                 id: config.id.clone(),
@@ -535,8 +601,8 @@ async fn connect_cover_calibrator(config: &config::CoverCalibratorConfig) -> Cov
                 device: Some(cc),
             }
         }
-        Err(e) => {
-            error!(cc_id = %config.id, error = %e, "failed to connect cover calibrator");
+        Err(msg) => {
+            error!(cc_id = %config.id, error = %msg, "failed to connect cover calibrator");
             CoverCalibratorEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -563,56 +629,50 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
         }
     };
 
-    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => {
-            error!(focuser_id = %config.id, error = %e, "failed to get devices from Alpaca server");
-            return FocuserEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-        Err(_) => {
-            error!(focuser_id = %config.id, "timeout connecting to Alpaca server");
-            return FocuserEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let mut focuser_index = 0u32;
-    let mut found_focuser: Option<Arc<dyn Focuser>> = None;
-
-    for device in devices {
-        if let TypedDevice::Focuser(foc) = device {
-            if focuser_index == config.device_number {
-                found_focuser = Some(foc);
-                break;
+    let label = format!("focuser {}", config.id);
+    let outcome = retry_connect_attempt(&label, |_attempt| async {
+        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
+            Err(_) => {
+                return AttemptOutcome::Transient(format!(
+                    "get_devices: timeout after {:?}",
+                    GET_DEVICES_TIMEOUT
+                ));
             }
-            focuser_index += 1;
-        }
-    }
+        };
 
-    let foc = match found_focuser {
-        Some(f) => f,
-        None => {
-            error!(focuser_id = %config.id, device_number = config.device_number, "focuser not found on Alpaca server");
-            return FocuserEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
+        let mut focuser_index = 0u32;
+        let mut found_focuser: Option<Arc<dyn Focuser>> = None;
+        for device in devices {
+            if let TypedDevice::Focuser(foc) = device {
+                if focuser_index == config.device_number {
+                    found_focuser = Some(foc);
+                    break;
+                }
+                focuser_index += 1;
+            }
         }
-    };
 
-    match foc.set_connected(true).await {
-        Ok(()) => {
+        let foc = match found_focuser {
+            Some(f) => f,
+            None => {
+                return AttemptOutcome::Permanent(format!(
+                    "focuser at index {} not found on Alpaca server",
+                    config.device_number
+                ));
+            }
+        };
+
+        match foc.set_connected(true).await {
+            Ok(()) => AttemptOutcome::Ok(foc),
+            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(foc) => {
             debug!(focuser_id = %config.id, "focuser connected successfully");
             FocuserEntry {
                 id: config.id.clone(),
@@ -621,8 +681,8 @@ async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
                 device: Some(foc),
             }
         }
-        Err(e) => {
-            error!(focuser_id = %config.id, error = %e, "failed to connect focuser");
+        Err(msg) => {
+            error!(focuser_id = %config.id, error = %msg, "failed to connect focuser");
             FocuserEntry {
                 id: config.id.clone(),
                 connected: false,
@@ -648,56 +708,49 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
         }
     };
 
-    let devices = match tokio::time::timeout(Duration::from_secs(5), client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => {
-            error!(error = %e, "failed to get devices from Alpaca server");
-            return MountEntry {
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-        Err(_) => {
-            error!("timeout connecting to Alpaca server");
-            return MountEntry {
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let mut mount_index = 0u32;
-    let mut found_mount: Option<Arc<dyn Telescope>> = None;
-
-    for device in devices {
-        if let TypedDevice::Telescope(t) = device {
-            if mount_index == config.device_number {
-                found_mount = Some(t);
-                break;
+    let outcome = retry_connect_attempt("mount", |_attempt| async {
+        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
+            Err(_) => {
+                return AttemptOutcome::Transient(format!(
+                    "get_devices: timeout after {:?}",
+                    GET_DEVICES_TIMEOUT
+                ));
             }
-            mount_index += 1;
-        }
-    }
+        };
 
-    let t = match found_mount {
-        Some(t) => t,
-        None => {
-            error!(
-                device_number = config.device_number,
-                "mount not found on Alpaca server"
-            );
-            return MountEntry {
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
+        let mut mount_index = 0u32;
+        let mut found_mount: Option<Arc<dyn Telescope>> = None;
+        for device in devices {
+            if let TypedDevice::Telescope(t) = device {
+                if mount_index == config.device_number {
+                    found_mount = Some(t);
+                    break;
+                }
+                mount_index += 1;
+            }
         }
-    };
 
-    match t.set_connected(true).await {
-        Ok(()) => {
+        let t = match found_mount {
+            Some(t) => t,
+            None => {
+                return AttemptOutcome::Permanent(format!(
+                    "mount at index {} not found on Alpaca server",
+                    config.device_number
+                ));
+            }
+        };
+
+        match t.set_connected(true).await {
+            Ok(()) => AttemptOutcome::Ok(t),
+            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(t) => {
             debug!("mount connected successfully");
             MountEntry {
                 connected: true,
@@ -705,8 +758,8 @@ async fn connect_mount(config: &config::MountConfig) -> MountEntry {
                 device: Some(t),
             }
         }
-        Err(e) => {
-            error!(error = %e, "failed to connect mount");
+        Err(msg) => {
+            error!(error = %msg, "failed to connect mount");
             MountEntry {
                 connected: false,
                 config: config.clone(),
