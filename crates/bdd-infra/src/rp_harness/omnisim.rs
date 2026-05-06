@@ -129,13 +129,20 @@ impl OmniSimHandle {
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
-    /// Returns `Err(_)` on any non-success response or transport error,
-    /// with a string suitable for inclusion in a panic message. The
-    /// endpoint is OmniSim-only (not part of standard Alpaca), so
-    /// older or alternative simulators may 404 — those are surfaced as
-    /// errors today; we run only against OmniSim and want to know if
-    /// that ever changes. Errors used to be silently swallowed here,
-    /// which masked intermittent macOS failures.
+    /// `DriverManager.Load{Class}(n)` runs server-side and the PUT can
+    /// return 200 before the reload has finished. We then poll the
+    /// standard Alpaca `GET /api/v1/{class}/{n}/connected` until it
+    /// returns 2xx with `Value: false` — that's the post-reload default
+    /// state and confirms the device is ready for the next scenario's
+    /// rp startup to call `set_connected(true)` against it. Without
+    /// this wait, the next rp's `connect_camera` races the reload,
+    /// silently fails, and downstream test steps panic with "camera
+    /// not connected: main-cam" (#171).
+    ///
+    /// Returns `Err(_)` on any non-success response, transport error,
+    /// or if the reload doesn't complete within the polling timeout.
+    /// Errors used to be silently swallowed here, which masked
+    /// intermittent macOS / Windows failures.
     ///
     /// `class` must match one of OmniSim's device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
@@ -146,21 +153,72 @@ impl OmniSimHandle {
             .get()
             .map(|p| p.base_url.clone())
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
-        let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
+        let restart_url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
         let resp = client
-            .put(&url)
+            .put(&restart_url)
             .send()
             .await
-            .map_err(|e| format!("PUT {url} failed: {e}"))?;
+            .map_err(|e| format!("PUT {restart_url} failed: {e}"))?;
         if !resp.status().is_success() {
-            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+            return Err(format!("PUT {restart_url} returned HTTP {}", resp.status()));
         }
-        Ok(())
+        wait_for_device_reloaded(&client, &base_url, class, n).await
     }
+}
+
+/// Poll the standard Alpaca `GET /api/v1/{class}/{n}/connected` until
+/// it returns 2xx with `Value: false`. Called after a successful
+/// `PUT /simulator/v1/{class}/{n}/restart` to wait for OmniSim's
+/// async device reload to finish. See [`OmniSimHandle::restart_device`]
+/// for the full race description.
+async fn wait_for_device_reloaded(
+    client: &reqwest::Client,
+    base_url: &str,
+    class: &str,
+    n: u32,
+) -> Result<(), String> {
+    let url = format!("{}/api/v1/{}/{}/connected", base_url, class, n);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut last_observation = String::from("never received a response");
+    while std::time::Instant::now() < deadline {
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(json) => match json.get("Value").and_then(serde_json::Value::as_bool) {
+                            Some(false) => return Ok(()),
+                            Some(true) => {
+                                last_observation =
+                                    "Value=true (reload not yet visible)".to_string();
+                            }
+                            None => {
+                                last_observation =
+                                    format!("missing/non-bool Value field in body: {json}");
+                            }
+                        },
+                        Err(e) => {
+                            last_observation = format!("response body not JSON: {e}");
+                        }
+                    }
+                } else {
+                    last_observation = format!("HTTP {status}");
+                }
+            }
+            Err(e) => {
+                last_observation = format!("transport error: {e}");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!(
+        "{} did not return Value:false within 5s after restart (last: {})",
+        url, last_observation
+    ))
 }
 
 impl OmniSimProcess {
