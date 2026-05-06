@@ -56,28 +56,28 @@ impl OmniSimHandle {
 
     /// Reset the telescope simulator device 0 to its OmniSim default state.
     /// See [`Self::restart_device`] for the underlying mechanism.
-    pub async fn reset_telescope() {
-        Self::restart_device("telescope", 0).await;
+    pub async fn reset_telescope() -> Result<(), String> {
+        Self::restart_device("telescope", 0).await
     }
 
     /// Reset the camera simulator device 0 to its OmniSim default state.
-    pub async fn reset_camera() {
-        Self::restart_device("camera", 0).await;
+    pub async fn reset_camera() -> Result<(), String> {
+        Self::restart_device("camera", 0).await
     }
 
     /// Reset the filter-wheel simulator device 0 to its OmniSim default state.
-    pub async fn reset_filter_wheel() {
-        Self::restart_device("filterwheel", 0).await;
+    pub async fn reset_filter_wheel() -> Result<(), String> {
+        Self::restart_device("filterwheel", 0).await
     }
 
     /// Reset the focuser simulator device 0 to its OmniSim default state.
-    pub async fn reset_focuser() {
-        Self::restart_device("focuser", 0).await;
+    pub async fn reset_focuser() -> Result<(), String> {
+        Self::restart_device("focuser", 0).await
     }
 
     /// Reset the cover-calibrator simulator device 0 to its OmniSim default state.
-    pub async fn reset_cover_calibrator() {
-        Self::restart_device("covercalibrator", 0).await;
+    pub async fn reset_cover_calibrator() -> Result<(), String> {
+        Self::restart_device("covercalibrator", 0).await
     }
 
     /// Reset every device class our BDD suites currently exercise
@@ -85,17 +85,38 @@ impl OmniSimHandle {
     /// OmniSim defaults. Issued in parallel — total wall-time is
     /// dominated by a single localhost round-trip.
     ///
+    /// Returns `Ok(())` when no scenario has yet started OmniSim — the
+    /// `before(scenario)` hook fires for the very first scenario before
+    /// `OmniSimHandle::start()` has spawned anything, and at that point
+    /// there is nothing to reset. Otherwise, returns the collected
+    /// error messages from any per-device reset that didn't return 2xx.
+    /// Errors used to be silently swallowed here, which masked
+    /// intermittent macOS reset failures and let state leak between
+    /// scenarios — see PR #172 / `bug/bdd-investigation`.
+    ///
     /// Other device classes (dome, rotator, switch, observingconditions,
     /// safetymonitor) also expose `/restart`, but our scenarios don't
     /// touch them yet; add a call here when that changes.
-    pub async fn reset_all_devices() {
-        tokio::join!(
+    pub async fn reset_all_devices() -> Result<(), Vec<String>> {
+        if OMNISIM.get().is_none() {
+            return Ok(());
+        }
+        let (telescope, camera, filter_wheel, focuser, cover_calibrator) = tokio::join!(
             Self::reset_telescope(),
             Self::reset_camera(),
             Self::reset_filter_wheel(),
             Self::reset_focuser(),
             Self::reset_cover_calibrator(),
         );
+        let errors: Vec<String> = [telescope, camera, filter_wheel, focuser, cover_calibrator]
+            .into_iter()
+            .filter_map(Result::err)
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Reset a single OmniSim device by class and instance number to
@@ -108,38 +129,37 @@ impl OmniSimHandle {
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
-    /// Errors are silently ignored: a failed reset shouldn't sink the
-    /// scenario; if state pollution caused by a missed reset breaks a
-    /// later assertion, the scenario will fail loudly there. The
+    /// Returns `Err(_)` on any non-success response or transport error,
+    /// with a string suitable for inclusion in a panic message. The
     /// endpoint is OmniSim-only (not part of standard Alpaca), so
-    /// older or alternative simulators may 404 — that's expected and
-    /// non-fatal.
-    ///
-    /// If the shared `OMNISIM` singleton has not been initialised yet
-    /// (i.e. no scenario has gone through `OmniSimHandle::start()`),
-    /// the request is sent to the default base URL anyway. This lets a
-    /// `before(scenario)` hook reset a pre-existing OmniSim that the
-    /// suite is about to reuse, eliminating state leakage into the
-    /// very first scenario from a prior dev session. Connection
-    /// failures (no OmniSim on that port) are non-fatal — see above.
+    /// older or alternative simulators may 404 — those are surfaced as
+    /// errors today; we run only against OmniSim and want to know if
+    /// that ever changes. Errors used to be silently swallowed here,
+    /// which masked intermittent macOS failures.
     ///
     /// `class` must match one of OmniSim's device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
     /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
     /// `switch`.
-    pub async fn restart_device(class: &str, n: u32) {
+    pub async fn restart_device(class: &str, n: u32) -> Result<(), String> {
         let base_url = OMNISIM
             .get()
             .map(|p| p.base_url.clone())
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
         let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
-        let Ok(client) = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
-        else {
-            return;
-        };
-        let _ = client.put(&url).send().await;
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .put(&url)
+            .send()
+            .await
+            .map_err(|e| format!("PUT {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+        }
+        Ok(())
     }
 }
 

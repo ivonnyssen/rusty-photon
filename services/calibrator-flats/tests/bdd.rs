@@ -23,11 +23,14 @@ bdd_infra::bdd_main! {
                 // scenario N (cover position, calibrator brightness,
                 // filter slot, camera config) leaks into scenario N+1.
                 // Each reset is a localhost PUT, all run in parallel,
-                // so the overhead is one round-trip. The first call
-                // also targets the default OmniSim port, so a
-                // pre-existing OmniSim from a prior dev session is
-                // reset before scenario 1 reuses it.
-                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                // so the overhead is one round-trip. We panic on any
+                // reset failure so an intermittently-flaky reset
+                // surfaces here instead of as a downstream step failure.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {

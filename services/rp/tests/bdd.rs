@@ -24,10 +24,15 @@ bdd_infra::bdd_main! {
                 // leak that hung `park` in issue #143 is the case we
                 // already hit. Each reset is a localhost PUT, all run
                 // in parallel, so the per-scenario overhead is one
-                // round-trip. The first call also targets the default
-                // OmniSim port, so a pre-existing OmniSim from a prior
-                // dev session is reset before scenario 1 reuses it.
-                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                // round-trip. We panic on any reset failure so an
+                // intermittently-flaky reset (the macOS "camera not
+                // connected" cascade in #171) surfaces here instead of
+                // as a confusing downstream step failure.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
