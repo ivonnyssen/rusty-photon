@@ -95,3 +95,13 @@ site-root = "target/site"
 site-pkg-dir = "pkg"
 site-addr = "127.0.0.1:11114"
 reload-port = 11115
+
+# Trim debug info to keep `target/` small and link fast. Workspace code keeps
+# line tables so panic backtraces still resolve to file:line; deps get nothing
+# (we don't step into tokio/serde). Override per-build with
+# `RUSTFLAGS="-C debuginfo=2" cargo build` if you need full debug info.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

@@ -229,15 +229,24 @@ implementation lands, **remove the tag** in the same commit that turns
 the scenarios on for real.
 
 To enable this in a service's `bdd.rs`, swap `.run_and_exit("tests/features")`
-for `.filter_run("tests/features", filter_fn)`:
+for `.filter_run_and_exit("tests/features", filter_fn)`:
 
 ```rust
-.filter_run("tests/features", |feat, _rule, sc| {
+.filter_run_and_exit("tests/features", |feat, _rule, sc| {
     let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
         || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
     !is_wip
 })
 ```
+
+**Use `_and_exit` — never plain `filter_run` / `run`.** The bare variants
+return the cucumber summary and let the test binary exit 0 even when
+scenarios fail. Because BDD tests use `harness = false`, `cargo test --test
+bdd` only fails when the binary exits non-zero, so plain `filter_run` makes
+scenario failures silently green in CI. See issue #171 for the precedent
+where 81 failed rp scenarios passed CI for months. The `_and_exit` variants
+have identical signatures plus the side effect of `process::exit(1)` on
+failure — there is no reason to prefer the bare form.
 
 Use `@wip` only for not-yet-implemented behavior. A scenario that fails
 intermittently belongs in an issue, not behind `@wip`. A scenario that
@@ -589,7 +598,7 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .filter_run("tests/features", |_, _, _| true)
+        .filter_run_and_exit("tests/features", |_, _, _| true)
         .await;
 }
 ```
