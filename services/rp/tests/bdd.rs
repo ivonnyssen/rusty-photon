@@ -44,7 +44,7 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .filter_run("tests/features", |feat, _rule, sc| {
+        .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
             !is_wip
