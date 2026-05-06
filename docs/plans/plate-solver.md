@@ -200,7 +200,7 @@ The runner's `filter_run` skips any scenario tagged `@requires-astap`
 unless the `ASTAP_BINARY` env var is set:
 
 ```rust
-.filter_run("tests/features", |feat, _rule, sc| {
+.filter_run_and_exit("tests/features", |feat, _rule, sc| {
     let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
         || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
     let needs_astap = feat.tags.iter().any(|t| t == "requires-astap" || t == "@requires-astap")
