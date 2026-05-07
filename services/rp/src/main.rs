@@ -141,7 +141,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn init_tracing(log_level: &str) {
+    // Tracing goes to stderr, not stdout. rp's stdout is reserved for
+    // the `Bound rp server bound_addr=...` line that the BDD harness
+    // and ServiceHandle parse to discover the bound port; if tracing
+    // landed on stdout, the harness's drain task would silently
+    // swallow every log line (which is exactly what was happening
+    // before — rp's `error!()` and `info!()` from `connect_*` retry
+    // logging never reached CI logs). Stderr is also the conventional
+    // place for diagnostics, and a child process's stderr is
+    // inherited by default, so rp's logs flow to the same destination
+    // as the test binary's own output without any extra wiring.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
         )

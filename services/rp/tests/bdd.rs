@@ -22,12 +22,23 @@ bdd_infra::bdd_main! {
                 // shared OmniSim is a singleton across the BDD process,
                 // so device state leaks between scenarios; the mount
                 // leak that hung `park` in issue #143 is the case we
-                // already hit. Each reset is a localhost PUT, all run
-                // in parallel, so the per-scenario overhead is one
-                // round-trip. The first call also targets the default
-                // OmniSim port, so a pre-existing OmniSim from a prior
-                // dev session is reset before scenario 1 reuses it.
-                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                // already hit. Each reset is a localhost PUT, run
+                // sequentially (parallel resets raced OmniSim's
+                // unsynchronised `AlpacaDevices` list — see
+                // `reset_all_devices` for the writeup). We panic on
+                // any reset failure that happens *after* the suite has
+                // started its OmniSim — that's the loud-reset
+                // diagnostic from #172. Failures from the very first
+                // scenario's hook (before any Given step has called
+                // `OmniSimHandle::start()`) are non-fatal:
+                // connection-refused against the default port is the
+                // expected case there and we don't want scenario 1 to
+                // panic just because no stale OmniSim is around.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
@@ -44,7 +55,7 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .filter_run("tests/features", |feat, _rule, sc| {
+        .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
             !is_wip

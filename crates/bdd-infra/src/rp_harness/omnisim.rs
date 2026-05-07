@@ -56,46 +56,84 @@ impl OmniSimHandle {
 
     /// Reset the telescope simulator device 0 to its OmniSim default state.
     /// See [`Self::restart_device`] for the underlying mechanism.
-    pub async fn reset_telescope() {
-        Self::restart_device("telescope", 0).await;
+    pub async fn reset_telescope() -> Result<(), String> {
+        Self::restart_device("telescope", 0).await
     }
 
     /// Reset the camera simulator device 0 to its OmniSim default state.
-    pub async fn reset_camera() {
-        Self::restart_device("camera", 0).await;
+    pub async fn reset_camera() -> Result<(), String> {
+        Self::restart_device("camera", 0).await
     }
 
     /// Reset the filter-wheel simulator device 0 to its OmniSim default state.
-    pub async fn reset_filter_wheel() {
-        Self::restart_device("filterwheel", 0).await;
+    pub async fn reset_filter_wheel() -> Result<(), String> {
+        Self::restart_device("filterwheel", 0).await
     }
 
     /// Reset the focuser simulator device 0 to its OmniSim default state.
-    pub async fn reset_focuser() {
-        Self::restart_device("focuser", 0).await;
+    pub async fn reset_focuser() -> Result<(), String> {
+        Self::restart_device("focuser", 0).await
     }
 
     /// Reset the cover-calibrator simulator device 0 to its OmniSim default state.
-    pub async fn reset_cover_calibrator() {
-        Self::restart_device("covercalibrator", 0).await;
+    pub async fn reset_cover_calibrator() -> Result<(), String> {
+        Self::restart_device("covercalibrator", 0).await
     }
 
     /// Reset every device class our BDD suites currently exercise
     /// (telescope, camera, filter wheel, focuser, cover calibrator) to
-    /// OmniSim defaults. Issued in parallel — total wall-time is
-    /// dominated by a single localhost round-trip.
+    /// OmniSim defaults. Issued **sequentially** — one PUT at a time.
+    ///
+    /// Why not parallel? OmniSim's `DriverManager.Load{Class}(n)`
+    /// mutates a process-wide `static List<AlpacaConfiguredDevice>
+    /// AlpacaDevices` via unsynchronised `List.Remove(...)` +
+    /// `List.Add(...)`. When two of our 5 PUTs landed on different
+    /// Kestrel threads they raced inside that list, leaving a `null`
+    /// entry that the management endpoint then serialised verbatim
+    /// into `configureddevices` responses. rp's deserialiser hit
+    /// `invalid type: null, expected struct ConfiguredDevice` and
+    /// silently registered the device as disconnected — which is the
+    /// camera/calibrator/focuser "not connected" cascade in #171.
+    /// Sequential PUTs eliminate that race.
+    ///
+    /// The wall-time cost is small: 5 localhost round-trips serialised
+    /// is ~10-25 ms per scenario depending on runner.
+    ///
+    /// Errors are collected and returned. **Exception:** when the
+    /// shared `OMNISIM` singleton has not been initialised yet (i.e.
+    /// no scenario has gone through `OmniSimHandle::start()`), errors
+    /// are non-fatal — the PUTs still fire against the default
+    /// `127.0.0.1:32323` URL so a pre-existing OmniSim from a prior
+    /// dev session is reset before scenario 1 reuses it, but
+    /// connection-refused (no OmniSim there yet) is the expected case
+    /// and we don't want to panic the very first before-hook over it.
+    /// Once the suite has called `OmniSimHandle::start()`, every reset
+    /// failure is fatal — that's the loud-reset behaviour from #172
+    /// that catches state leakage between scenarios.
     ///
     /// Other device classes (dome, rotator, switch, observingconditions,
     /// safetymonitor) also expose `/restart`, but our scenarios don't
     /// touch them yet; add a call here when that changes.
-    pub async fn reset_all_devices() {
-        tokio::join!(
-            Self::reset_telescope(),
-            Self::reset_camera(),
-            Self::reset_filter_wheel(),
-            Self::reset_focuser(),
-            Self::reset_cover_calibrator(),
-        );
+    pub async fn reset_all_devices() -> Result<(), Vec<String>> {
+        let omnisim_was_started = OMNISIM.get().is_some();
+        let mut errors: Vec<String> = Vec::new();
+        let results = [
+            Self::reset_telescope().await,
+            Self::reset_camera().await,
+            Self::reset_filter_wheel().await,
+            Self::reset_focuser().await,
+            Self::reset_cover_calibrator().await,
+        ];
+        for result in results {
+            if let Err(e) = result {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() || !omnisim_was_started {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Reset a single OmniSim device by class and instance number to
@@ -108,38 +146,45 @@ impl OmniSimHandle {
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
-    /// Errors are silently ignored: a failed reset shouldn't sink the
-    /// scenario; if state pollution caused by a missed reset breaks a
-    /// later assertion, the scenario will fail loudly there. The
+    /// Returns `Err(_)` on any non-success response or transport error,
+    /// with a string suitable for inclusion in a panic message. The
     /// endpoint is OmniSim-only (not part of standard Alpaca), so
-    /// older or alternative simulators may 404 — that's expected and
-    /// non-fatal.
-    ///
-    /// If the shared `OMNISIM` singleton has not been initialised yet
-    /// (i.e. no scenario has gone through `OmniSimHandle::start()`),
-    /// the request is sent to the default base URL anyway. This lets a
-    /// `before(scenario)` hook reset a pre-existing OmniSim that the
-    /// suite is about to reuse, eliminating state leakage into the
-    /// very first scenario from a prior dev session. Connection
-    /// failures (no OmniSim on that port) are non-fatal — see above.
+    /// older or alternative simulators may 404 — those are surfaced as
+    /// errors today; we run only against OmniSim and want to know if
+    /// that ever changes. Errors used to be silently swallowed here,
+    /// which masked intermittent macOS failures.
     ///
     /// `class` must match one of OmniSim's device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
     /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
     /// `switch`.
-    pub async fn restart_device(class: &str, n: u32) {
+    pub async fn restart_device(class: &str, n: u32) -> Result<(), String> {
         let base_url = OMNISIM
             .get()
             .map(|p| p.base_url.clone())
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
+        Self::restart_device_at(&base_url, class, n).await
+    }
+
+    /// `restart_device` extracted to take an explicit `base_url` so unit
+    /// tests can drive the HTTP path against an axum stub without
+    /// touching the global `OMNISIM` singleton. See the `tests` module
+    /// at the bottom of this file.
+    async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
         let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
-        let Ok(client) = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
-        else {
-            return;
-        };
-        let _ = client.put(&url).send().await;
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .put(&url)
+            .send()
+            .await
+            .map_err(|e| format!("PUT {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+        }
+        Ok(())
     }
 }
 
@@ -157,11 +202,19 @@ impl OmniSimProcess {
 
         let binary = Self::find_binary();
 
+        // Capture OmniSim's stdout/stderr to per-run log files under the
+        // cargo target tree. The previous `Stdio::null()` dropped every
+        // line OmniSim emitted, which left CI failures with no insight
+        // into what the simulator was doing — see #171 for the
+        // diagnostic gap. Failures here fall back to `Stdio::null` so a
+        // log-write problem can't stop the test suite from running.
+        let (stdout_target, stderr_target) = Self::open_log_files();
+
         // Clear sanitizer-related env vars so the .NET runtime isn't broken
         // by LD_PRELOAD injection from ASAN/LSAN.
         let mut cmd = std::process::Command::new(&binary);
-        cmd.stdout(Stdio::null())
-            .stderr(Stdio::null())
+        cmd.stdout(stdout_target)
+            .stderr(stderr_target)
             .env_remove("LD_PRELOAD")
             .env_remove("ASAN_OPTIONS")
             .env_remove("LSAN_OPTIONS");
@@ -242,6 +295,56 @@ impl OmniSimProcess {
         Some(dest)
     }
 
+    /// Resolve the log directory for OmniSim's captured stdout/stderr.
+    /// Lives at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
+    /// `<workspace>/target/bdd-infra-omnisim-logs/` if unset). Kept
+    /// outside the seeded XDG dir so `prepare_xdg_config_home`'s
+    /// `remove_dir_all` can't sweep the previous run's logs.
+    ///
+    /// Returns `None` (caller falls back to `Stdio::null`) only if the
+    /// directory can't be created.
+    fn log_dir() -> Option<PathBuf> {
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|workspace| workspace.join("target"))
+                    .unwrap_or_else(|| PathBuf::from("target"))
+            });
+        let dest = target_dir.join("bdd-infra-omnisim-logs");
+        std::fs::create_dir_all(&dest).ok()?;
+        Some(dest)
+    }
+
+    /// Open fresh (truncating) log files for OmniSim's stdout and
+    /// stderr, returning `Stdio` handles ready to attach to the
+    /// `Command`. Falls back to `Stdio::null()` for either stream
+    /// individually if its file can't be opened.
+    ///
+    /// File names embed the BDD test binary's PID so concurrent runs
+    /// (e.g. `cargo test --workspace --test bdd`, where each package's
+    /// BDD binary is a separate process sharing one `CARGO_TARGET_DIR`)
+    /// don't truncate each other's logs. On Windows, file-locking on a
+    /// shared name would also fail one of the spawns outright; the PID
+    /// suffix avoids that.
+    fn open_log_files() -> (Stdio, Stdio) {
+        let dir = Self::log_dir();
+        let pid = std::process::id();
+        let stdout = dir
+            .as_ref()
+            .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stdout.log"))).ok())
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null);
+        let stderr = dir
+            .as_ref()
+            .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stderr.log"))).ok())
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null);
+        (stdout, stderr)
+    }
+
     fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dest)?;
         for entry in std::fs::read_dir(src)? {
@@ -301,7 +404,7 @@ mod tests {
     use super::*;
 
     use axum::http::StatusCode;
-    use axum::routing::get;
+    use axum::routing::{get, put};
     use axum::Router;
 
     async fn spawn_stub(status: StatusCode) -> (String, tokio::sync::oneshot::Sender<()>) {
@@ -309,6 +412,32 @@ mod tests {
             "/api/v1/camera/0/connected",
             get(move || async move { status }),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{}", port), tx)
+    }
+
+    /// Stub server that responds to `PUT /simulator/v1/{class}/{n}/restart`
+    /// with the given `status`. The route is registered at the exact
+    /// `class`/`n` the test will hit, so a request to a different
+    /// device falls through to a 404 (which is what `restart_device`
+    /// will surface as an error — useful for one of the tests below).
+    async fn spawn_restart_stub(
+        class: &str,
+        n: u32,
+        status: StatusCode,
+    ) -> (String, tokio::sync::oneshot::Sender<()>) {
+        let route = format!("/simulator/v1/{class}/{n}/restart");
+        let app = Router::new().route(&route, put(move || async move { status }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -344,5 +473,52 @@ mod tests {
         drop(listener);
         let base_url = format!("http://127.0.0.1:{}", port);
         assert!(!OmniSimProcess::is_healthy(&base_url).await);
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_ok_on_success() {
+        let (base_url, shutdown) = spawn_restart_stub("camera", 0, StatusCode::OK).await;
+        let result = OmniSimHandle::restart_device_at(&base_url, "camera", 0).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_on_404() {
+        // Stub registers /camera/0/restart but the test hits /telescope/0/restart.
+        let (base_url, shutdown) = spawn_restart_stub("camera", 0, StatusCode::OK).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "telescope", 0)
+            .await
+            .expect_err("expected an error for unrouted path");
+        assert!(err.contains("404"), "expected 404 in error: {err}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_on_server_error() {
+        let (base_url, shutdown) =
+            spawn_restart_stub("camera", 0, StatusCode::INTERNAL_SERVER_ERROR).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .expect_err("expected an error for 500 response");
+        assert!(err.contains("500"), "expected 500 in error: {err}");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_returns_err_when_connection_refused() {
+        // Bind a listener to grab a free port, then drop it so subsequent
+        // connects refuse — mirrors the is_healthy_returns_false test.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let base_url = format!("http://127.0.0.1:{port}");
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .expect_err("expected a transport error");
+        assert!(
+            err.starts_with("PUT ") && err.contains("failed"),
+            "unexpected transport error format: {err}"
+        );
     }
 }

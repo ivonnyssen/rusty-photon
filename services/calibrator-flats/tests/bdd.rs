@@ -22,12 +22,22 @@ bdd_infra::bdd_main! {
                 // is a per-process singleton; without this, state from
                 // scenario N (cover position, calibrator brightness,
                 // filter slot, camera config) leaks into scenario N+1.
-                // Each reset is a localhost PUT, all run in parallel,
-                // so the overhead is one round-trip. The first call
-                // also targets the default OmniSim port, so a
-                // pre-existing OmniSim from a prior dev session is
-                // reset before scenario 1 reuses it.
-                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                // Each reset is a localhost PUT, run sequentially
+                // (parallel resets raced OmniSim's unsynchronised
+                // `AlpacaDevices` list — see `reset_all_devices` for
+                // the writeup). We panic on any reset failure that
+                // happens *after* the suite has started its OmniSim
+                // — that's the loud-reset diagnostic from #172.
+                // Failures from the very first scenario's hook
+                // (before any Given step has called
+                // `OmniSimHandle::start()`) are non-fatal:
+                // connection-refused against the default port is the
+                // expected case there.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
