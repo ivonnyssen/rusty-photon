@@ -2972,41 +2972,49 @@ services/rp/src/
                           PollIdleError) plus free fns clip_outcome,
                           detect_outcome, star_to_json,
                           poll_slewing_until_idle.
-    test_support.rs     `#[cfg(test)]`-gated shared fixtures:
-                          test_handler, *_registry builders
-                          (camera/filter_wheel/calibrator/focuser/mount/
-                          empty/disconnected_mount), assert_tool_error,
-                          ok_text, ok_json. Used by every category's
-                          test module.
+    tests.rs            Current home for the full mcp test module
+                          (~3,400 lines including six mock-device
+                          types, six EquipmentRegistry builders, and
+                          the assert_tool_error / ok_text / ok_json
+                          helpers). A planned follow-up (see below)
+                          will distribute these tests across each
+                          built_in/<category>.rs file matching the
+                          imaging/ convention, and split the shared
+                          mock-device fixtures into a sibling
+                          test_support.rs module.
     built_in/
       mod.rs            Declares the per-category submodules.
       camera.rs         CaptureParams, CameraIdParams + capture +
-                          get_camera_info + tests.
+                          get_camera_info.
       imaging.rs        6 imaging param structs + compute_image_stats,
                           measure_basic, estimate_background,
-                          detect_stars, measure_stars, compute_snr +
-                          tests.
+                          detect_stars, measure_stars, compute_snr.
       filter_wheel.rs   SetFilterParams, FilterWheelIdParams +
-                          set_filter, get_filter + tests.
+                          set_filter, get_filter.
       cover_calibrator.rs CalibratorIdParams, CalibratorOnParams +
                           close_cover, open_cover, calibrator_on,
-                          calibrator_off + tests.
+                          calibrator_off.
       focuser.rs        FocuserIdParams, MoveFocuserParams +
                           move_focuser, get_focuser_position,
-                          get_focuser_temperature + tests.
+                          get_focuser_temperature.
       mount.rs          SlewParams, SyncMountParams, SetTrackingParams,
                           GetTrackingParams, GetMountPositionParams,
                           ParkParams, UnparkParams, GetParkStateParams,
-                          AbortSlewParams + the 9 mount tools + tests.
+                          AbortSlewParams + the 9 mount tools.
       auto_focus.rs     AutoFocusToolParams + auto_focus tool +
                           AutoFocusAdapter (binds the imaging::tools::auto_focus
-                          traits to the handler's primitives) + tests.
+                          traits to the handler's primitives).
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
-                          tool + tests.
+                          tool.
       planner.rs        13 planner param structs + 10 ephemeris
                           primitive tools + 3 convenience tools
                           (get_target_status, get_next_target,
-                          get_meridian_status) + tests.
+                          get_meridian_status).
+    # Planned follow-up: distribute the centralized tests.rs into
+    # per-category `#[cfg(test)] mod tests` blocks inside each
+    # built_in/<category>.rs (matching the imaging/ test-colocation
+    # convention) and extract the shared mock-device fixtures and
+    # registry builders into a sibling test_support.rs module.
     aggregator.rs       Connects to plugin MCP servers, proxies their
                           tools. (Planned — not yet implemented; lands
                           when the third-party plugin protocol does.)
