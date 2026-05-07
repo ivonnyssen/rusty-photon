@@ -1,0 +1,312 @@
+use std::time::Duration;
+
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
+use rmcp::{tool, tool_router};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use tracing::debug;
+
+use super::super::handler::McpHandler;
+use super::super::{tool_error, tool_success};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SlewParams {
+    /// Right ascension in decimal hours, [0, 24).
+    #[serde(default)]
+    pub ra: Option<f64>,
+    /// Declination in decimal degrees, [-90, 90].
+    #[serde(default)]
+    pub dec: Option<f64>,
+    /// Optional per-call settle override. Wins over the mount config's
+    /// `settle_after_slew`. Pass `"0s"` to skip the configured default.
+    #[serde(default, with = "humantime_serde::option")]
+    #[schemars(with = "Option<String>")]
+    pub settle_after: Option<Duration>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SyncMountParams {
+    /// Right ascension in decimal hours, [0, 24).
+    #[serde(default)]
+    pub ra: Option<f64>,
+    /// Declination in decimal degrees, [-90, 90].
+    #[serde(default)]
+    pub dec: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetTrackingParams {
+    pub enabled: bool,
+}
+
+/// Empty parameter struct for `get_tracking` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTrackingParams {}
+
+/// Empty parameter struct for `get_mount_position` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMountPositionParams {}
+
+/// Empty parameter struct for `park` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParkParams {}
+
+/// Empty parameter struct for `unpark` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UnparkParams {}
+
+/// Empty parameter struct for `get_park_state` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetParkStateParams {}
+
+/// Empty parameter struct for `abort_slew` — the tool takes no input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AbortSlewParams {}
+
+#[tool_router(router = tool_router_mount, vis = "pub")]
+impl McpHandler {
+    #[tool(
+        description = "Slew the mount to equatorial coordinates (RA hours, Dec degrees). Blocks until the mount reports Slewing == false plus the configured / per-call settle. Tracking must be on before calling — propagates the Alpaca error otherwise."
+    )]
+    pub(crate) async fn slew(
+        &self,
+        Parameters(params): Parameters<SlewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Body validation in input order (ra → dec → settle_after) so
+        // the error message points at the first missing or out-of-range
+        // field. Same convention as `auto_focus` / `measure_basic`.
+        let ra = match params.ra {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: ra")),
+        };
+        if !(0.0..24.0).contains(&ra) {
+            return Ok(tool_error!(
+                "ra out of range: {} (must be in [0.0, 24.0))",
+                ra
+            ));
+        }
+        let dec = match params.dec {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: dec")),
+        };
+        if !(-90.0..=90.0).contains(&dec) {
+            return Ok(tool_error!(
+                "dec out of range: {} (must be in [-90.0, 90.0])",
+                dec
+            ));
+        }
+
+        // Resolve `settle_after`: explicit per-call value wins; otherwise
+        // pull the mount's configured default (or zero if no mount is
+        // configured — `do_slew_blocking` below calls `resolve_mount`
+        // and surfaces the "no mount configured" error in that case).
+        let settle_after = match params.settle_after {
+            Some(d) => d,
+            None => match self.equipment.find_mount() {
+                Some(entry) => entry.config.settle_after_slew.unwrap_or_default(),
+                None => Duration::default(),
+            },
+        };
+
+        match self.do_slew_blocking(ra, dec, settle_after).await {
+            Ok((actual_ra, actual_dec)) => Ok(tool_success!({
+                "actual_ra": actual_ra,
+                "actual_dec": actual_dec,
+            })),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Sync the mount's reported position to the given equatorial coordinates (RA hours, Dec degrees). Immediate; no polling."
+    )]
+    pub(crate) async fn sync_mount(
+        &self,
+        Parameters(params): Parameters<SyncMountParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let ra = match params.ra {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: ra")),
+        };
+        if !(0.0..24.0).contains(&ra) {
+            return Ok(tool_error!(
+                "ra out of range: {} (must be in [0.0, 24.0))",
+                ra
+            ));
+        }
+        let dec = match params.dec {
+            Some(v) => v,
+            None => return Ok(tool_error!("missing required parameter: dec")),
+        };
+        if !(-90.0..=90.0).contains(&dec) {
+            return Ok(tool_error!(
+                "dec out of range: {} (must be in [-90.0, 90.0])",
+                dec
+            ));
+        }
+
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!(ra, dec, "syncing mount");
+        match mount.sync_to_coordinates(ra, dec).await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to sync mount: {}", e)),
+        }
+    }
+
+    #[tool(description = "Read the mount's current pointing as RA (hours) / Dec (degrees).")]
+    pub(crate) async fn get_mount_position(
+        &self,
+        Parameters(_params): Parameters<GetMountPositionParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let ra = match mount.right_ascension().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount right_ascension: {}", e)),
+        };
+        let dec = match mount.declination().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount declination: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "ra": ra,
+            "dec": dec,
+        }))
+    }
+
+    #[tool(
+        description = "Read the mount's tracking state and CanSetTracking capability. Fails loud if the Tracking read errors."
+    )]
+    pub(crate) async fn get_tracking(
+        &self,
+        Parameters(_params): Parameters<GetTrackingParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let tracking = match mount.tracking().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount tracking: {}", e)),
+        };
+        let can_set_tracking = match mount.can_set_tracking().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_set_tracking: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "tracking": tracking,
+            "can_set_tracking": can_set_tracking,
+        }))
+    }
+
+    #[tool(description = "Enable or disable the mount's sidereal tracking drive.")]
+    pub(crate) async fn set_tracking(
+        &self,
+        Parameters(params): Parameters<SetTrackingParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!(enabled = params.enabled, "setting mount tracking");
+        match mount.set_tracking(params.enabled).await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to set tracking: {}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Park the mount: invoke ASCOM Park, poll Slewing until idle (300 s deadline), and verify AtPark == true. Per ASCOM, a successful park clears Tracking. Unlike slew, park does NOT auto-abort on timeout — call abort_slew explicitly to interrupt a stuck park."
+    )]
+    pub(crate) async fn park(
+        &self,
+        Parameters(_params): Parameters<ParkParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.do_park_blocking().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("{}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Unpark the mount. Returns immediately (no Slewing poll — most drivers just clear the AtPark flag). Does NOT auto-enable Tracking; call set_tracking explicitly before slewing."
+    )]
+    pub(crate) async fn unpark(
+        &self,
+        Parameters(_params): Parameters<UnparkParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!("unparking mount");
+        match mount.unpark().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to unpark: {}", e)),
+        }
+    }
+
+    #[tool(
+        description = "Read the mount's park state and capabilities: AtPark, CanPark, CanUnpark. Fails loud on the AtPark read error (the load-bearing field)."
+    )]
+    pub(crate) async fn get_park_state(
+        &self,
+        Parameters(_params): Parameters<GetParkStateParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        let at_park = match mount.at_park().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount at_park: {}", e)),
+        };
+        let can_park = match mount.can_park().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_park: {}", e)),
+        };
+        let can_unpark = match mount.can_unpark().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("failed to read mount can_unpark: {}", e)),
+        };
+
+        Ok(tool_success!({
+            "at_park": at_park,
+            "can_park": can_park,
+            "can_unpark": can_unpark,
+        }))
+    }
+
+    #[tool(
+        description = "Abort an in-progress mount slew or park. Per ASCOM, only valid while Slewing == true; the natural Alpaca error propagates otherwise."
+    )]
+    pub(crate) async fn abort_slew(
+        &self,
+        Parameters(_params): Parameters<AbortSlewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_entry, mount) = match self.resolve_mount() {
+            Ok(p) => p,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
+        debug!("aborting mount slew");
+        match mount.abort_slew().await {
+            Ok(()) => Ok(tool_success!({})),
+            Err(e) => Ok(tool_error!("failed to abort slew: {}", e)),
+        }
+    }
+}
