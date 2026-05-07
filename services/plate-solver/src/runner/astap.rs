@@ -76,7 +76,10 @@ impl AstapCliRunner {
 
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
+            // `tokio::process::Command::creation_flags` is an inherent
+            // method on Windows; no `CommandExt` trait import needed
+            // (importing the std-process one would just trip
+            // unused_imports under -D warnings).
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
 

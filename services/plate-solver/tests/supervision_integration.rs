@@ -64,7 +64,9 @@ fn cmd_with_mode(mode: &str) -> Command {
     cmd.arg("-f").arg("/tmp/unused.fits");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
+        // tokio::process::Command::creation_flags is inherent on
+        // Windows — no trait import needed (would trip unused_imports
+        // under -D warnings).
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
     cmd
