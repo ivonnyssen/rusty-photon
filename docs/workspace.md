@@ -40,6 +40,7 @@ belong in any single service design doc.
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
+| [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [image-evaluation-tools.md](plans/image-evaluation-tools.md) | rp image-evaluation MCP tool surface |
 | [plate-solver.md](plans/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing) |
 | [rp-planning-tools.md](plans/rp-planning-tools.md) | rp planning & ephemeris tools: site config, `rp-ephemeris` + `rp-catalog` crates, primitive + convenience MCP tools |
