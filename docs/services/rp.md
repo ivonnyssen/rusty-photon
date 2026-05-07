@@ -2942,10 +2942,74 @@ services/rp/src/
     webhook.rs          Webhook delivery (fire-and-forget HTTP POST)
 
   # MCP tool system
+  # Pattern: each tool category gets its own #[tool_router(router = X,
+  # vis = "pub")] impl block on McpHandler in its own file. McpHandler::new
+  # merges the per-category routers via `+`, and a single
+  # #[tool_handler(router = self.tool_router)] impl ServerHandler glues
+  # them into rmcp's transport. Adding a new tool category = one new
+  # file in built_in/, one line in built_in/mod.rs, one `+` in
+  # handler::McpHandler::new — no edits to existing categories.
   mcp/
-    mod.rs              MCP server setup, tool registry, config-time validation
-    built_in.rs         Built-in tool implementations (capture, move_focuser, etc.)
-    aggregator.rs       Connects to plugin MCP servers, proxies their tools
+    mod.rs              Module root: declares submodules, holds the
+                          shared private macros (tool_success!, tool_error!,
+                          resolve_device!) exposed via `pub(crate) use`,
+                          and the explicit
+                          `#[tool_handler(router = self.tool_router)]
+                           impl ServerHandler for McpHandler {}` block.
+                          Re-exports `McpHandler`.
+    handler.rs          The McpHandler struct (state fields plus
+                          `tool_router: ToolRouter<Self>`),
+                          `new()`/`with_planner_config()`/`with_plate_solver()`.
+                          `new()` merges per-category routers via
+                          `Self::tool_router_<category>() + …`.
+    internals.rs        Private/`pub(crate)` helpers shared across
+                          categories: do_capture, do_move_focuser_blocking,
+                          persist_capture_artifact,
+                          read_mount_hints_for_plate_solve,
+                          resolve_mount, the `*_via_document`/`*_via_path`
+                          dispatch helpers, and small private types
+                          (Resolved*Params, BackgroundOutcome,
+                          PollIdleError) plus free fns clip_outcome,
+                          detect_outcome, star_to_json,
+                          poll_slewing_until_idle.
+    test_support.rs     `#[cfg(test)]`-gated shared fixtures:
+                          test_handler, *_registry builders
+                          (camera/filter_wheel/calibrator/focuser/mount/
+                          empty/disconnected_mount), assert_tool_error,
+                          ok_text, ok_json. Used by every category's
+                          test module.
+    built_in/
+      mod.rs            Declares the per-category submodules.
+      camera.rs         CaptureParams, CameraIdParams + capture +
+                          get_camera_info + tests.
+      imaging.rs        6 imaging param structs + compute_image_stats,
+                          measure_basic, estimate_background,
+                          detect_stars, measure_stars, compute_snr +
+                          tests.
+      filter_wheel.rs   SetFilterParams, FilterWheelIdParams +
+                          set_filter, get_filter + tests.
+      cover_calibrator.rs CalibratorIdParams, CalibratorOnParams +
+                          close_cover, open_cover, calibrator_on,
+                          calibrator_off + tests.
+      focuser.rs        FocuserIdParams, MoveFocuserParams +
+                          move_focuser, get_focuser_position,
+                          get_focuser_temperature + tests.
+      mount.rs          SlewParams, SyncMountParams, SetTrackingParams,
+                          GetTrackingParams, GetMountPositionParams,
+                          ParkParams, UnparkParams, GetParkStateParams,
+                          AbortSlewParams + the 9 mount tools + tests.
+      auto_focus.rs     AutoFocusToolParams + auto_focus tool +
+                          AutoFocusAdapter (binds the imaging::tools::auto_focus
+                          traits to the handler's primitives) + tests.
+      plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
+                          tool + tests.
+      planner.rs        13 planner param structs + 10 ephemeris
+                          primitive tools + 3 convenience tools
+                          (get_target_status, get_next_target,
+                          get_meridian_status) + tests.
+    aggregator.rs       Connects to plugin MCP servers, proxies their
+                          tools. (Planned — not yet implemented; lands
+                          when the third-party plugin protocol does.)
 
   # Imaging (pure analysis kernels and the compositional tools that bind them)
   # Async, I/O, and on-disk layout live in `persistence/` so the analysis
