@@ -25,9 +25,14 @@ bdd_infra::bdd_main! {
                 // Each reset is a localhost PUT, run sequentially
                 // (parallel resets raced OmniSim's unsynchronised
                 // `AlpacaDevices` list — see `reset_all_devices` for
-                // the writeup). We panic on any reset failure so a
-                // flaky reset surfaces loudly here rather than as a
-                // confusing downstream step failure.
+                // the writeup). We panic on any reset failure that
+                // happens *after* the suite has started its OmniSim
+                // — that's the loud-reset diagnostic from #172.
+                // Failures from the very first scenario's hook
+                // (before any Given step has called
+                // `OmniSimHandle::start()`) are non-fatal:
+                // connection-refused against the default port is the
+                // expected case there.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {

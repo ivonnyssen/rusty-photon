@@ -31,10 +31,15 @@ const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// Result of a single attempt inside [`retry_connect_attempt`]. The
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
-/// failure mode to its own variant, so config-level problems
-/// (unreachable URL, device-not-found at requested index) bail out
-/// after one attempt while truly-transient failures (HTTP timeouts,
-/// transport hiccups, OmniSim under GC pressure) get the retry loop.
+/// failure mode to its own variant. Today only "device-not-found at
+/// the requested index in the Alpaca server's reply" is `Permanent`
+/// inside the closure — every other failure inside the retry loop
+/// (HTTP transport errors including connection-refused on an
+/// unreachable host, get_devices timeouts, set_connected errors,
+/// OmniSim under GC pressure) is `Transient` and goes through the
+/// retry/backoff path. Note: `Client::new` failures are filtered
+/// out *before* the retry loop, so that case never produces an
+/// `AttemptOutcome` at all.
 enum AttemptOutcome<T> {
     Ok(T),
     Permanent(String),
@@ -792,6 +797,105 @@ mod tests {
     fn build_alpaca_client_with_invalid_url_fails() {
         let result = build_alpaca_client("not-a-url", None);
         assert!(result.is_err());
+    }
+
+    // ----- retry_connect_attempt direct unit tests --------------------
+    //
+    // These exercise the retry helper independently of any of the
+    // `connect_*` callers, so a regression to the Permanent /
+    // Transient split or the backoff schedule shows up here rather
+    // than as a slow / flaky integration test. `start_paused = true`
+    // makes `tokio::time::sleep` advance virtual time only when
+    // awaited, so the 1 s / 2 s backoff doesn't slow the suite.
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_returns_immediately_on_permanent() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_closure = calls.clone();
+        let result: Result<u32, String> = retry_connect_attempt("test", |_attempt| {
+            let calls = calls_for_closure.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                AttemptOutcome::Permanent("config bad".to_string())
+            }
+        })
+        .await;
+        let err = result.expect_err("Permanent should propagate as Err");
+        assert_eq!(err, "config bad");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "Permanent must NOT trigger a retry"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_succeeds_after_transient_failures() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_for_closure = attempts.clone();
+        let result: Result<&'static str, String> = retry_connect_attempt("test", |attempt| {
+            let attempts = attempts_for_closure.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt < CONNECT_ATTEMPTS {
+                    AttemptOutcome::Transient(format!("attempt {attempt} flake"))
+                } else {
+                    AttemptOutcome::Ok("ok")
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), "ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), CONNECT_ATTEMPTS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_gives_up_after_all_transient() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_for_closure = attempts.clone();
+        let result: Result<u32, String> = retry_connect_attempt("test", |_| {
+            let attempts = attempts_for_closure.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                AttemptOutcome::Transient("always fails".to_string())
+            }
+        })
+        .await;
+        let err = result.expect_err("all-Transient must give up with Err");
+        assert!(
+            err.contains(&format!("gave up after {CONNECT_ATTEMPTS} attempts")),
+            "error should report attempt count, got: {err}"
+        );
+        assert!(
+            err.contains("always fails"),
+            "error should include last transient message, got: {err}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            CONNECT_ATTEMPTS,
+            "every attempt should have been tried"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_succeeds_first_try_does_not_sleep() {
+        // Belt-and-braces: the helper shouldn't even enter the
+        // backoff branch when the first attempt succeeds.
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_for_closure = attempts.clone();
+        let result: Result<u32, String> = retry_connect_attempt("test", |_| {
+            let attempts = attempts_for_closure.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                AttemptOutcome::Ok(42)
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     /// `connect_focuser` swallows every failure mode into a disconnected
