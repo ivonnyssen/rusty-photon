@@ -1,0 +1,873 @@
+//! Cross-category helper methods on `McpHandler` that more than one
+//! tool category needs, plus the small private types and free
+//! functions they share. Kept in one file so changes that touch the
+//! capture/measure pipeline land in one place.
+//!
+//! `pub(crate)` is the visibility we use for items called from sibling
+//! `built_in/<category>.rs` files (e.g. `do_capture` is called from
+//! both `built_in/camera.rs` and `built_in/auto_focus.rs`'s
+//! `AutoFocusAdapter`). The `crate::mcp` module is private to the
+//! crate, so `pub(crate)` does not widen the public API.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tracing::debug;
+use uuid::Uuid;
+
+use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
+use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
+
+use super::handler::McpHandler;
+
+// ---------------------------------------------------------------------------
+// Private helper types shared across imaging tool bodies. All
+// `pub(crate)` so individual category files can construct them.
+// ---------------------------------------------------------------------------
+
+/// `MeasureBasicParams` after schema-level optionals are validated by the
+/// tool body. Pure data, no `Option`s — passed to the imaging composer.
+pub(crate) struct ResolvedParams {
+    pub(crate) threshold_sigma: f64,
+    pub(crate) min_area: usize,
+    pub(crate) max_area: usize,
+}
+
+/// `EstimateBackgroundParams` after sign/range validation. Same pattern as
+/// `ResolvedParams`: schema-level optionals, validated in the tool body.
+pub(crate) struct ResolvedClipParams {
+    pub(crate) k: f64,
+    pub(crate) max_iters: usize,
+}
+
+/// Background stats paired with the input pixel area (rows × cols). The
+/// kernel's `BackgroundStats.n_pixels` is the *surviving* count after
+/// sigma-clipping; `total_pixels` is what we report as `pixel_count` in
+/// the tool's JSON contract — consistent with `measure_basic`.
+pub(crate) struct BackgroundOutcome {
+    pub(crate) stats: BackgroundStats,
+    pub(crate) total_pixels: u64,
+}
+
+/// `DetectStarsParams` after schema-level optionals are validated by the
+/// tool body. Pure data, no `Option`s — passed to the imaging composer.
+pub(crate) struct ResolvedDetectParams {
+    pub(crate) threshold_sigma: f64,
+    pub(crate) min_area: usize,
+    pub(crate) max_area: usize,
+}
+
+/// Detection outcome: the star list paired with the background stats used
+/// to set the threshold. The tool's JSON contract surfaces both.
+pub(crate) struct DetectStarsOutcome {
+    pub(crate) stars: Vec<Star>,
+    pub(crate) background: BackgroundStats,
+}
+
+/// `MeasureStarsParams` after schema-level optionals are validated by the
+/// tool body.
+pub(crate) struct ResolvedMeasureStarsParams {
+    pub(crate) threshold_sigma: f64,
+    pub(crate) min_area: usize,
+    pub(crate) max_area: usize,
+    pub(crate) stamp_half_size: usize,
+}
+
+// ---------------------------------------------------------------------------
+// `McpHandler` helper-method impl. Methods are `pub(crate)` so they're
+// callable from sibling category files.
+// ---------------------------------------------------------------------------
+
+impl McpHandler {
+    pub(crate) async fn measure_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedParams,
+    ) -> crate::error::Result<imaging::MeasureBasicResult> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            let max_adu = Some(cached.max_adu);
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_basic(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+            ));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        // No camera context here, so we can't reliably know max_adu — pass None
+        // (saturation flagging is best-effort; not a correctness issue).
+        self.measure_via_path(&doc.file_path, params).await
+    }
+
+    pub(crate) async fn measure_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedParams,
+    ) -> crate::error::Result<imaging::MeasureBasicResult> {
+        let path_owned = path.to_string();
+        let threshold = params.threshold_sigma;
+        let min_a = params.min_area;
+        let max_a = params.max_area;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            imaging::measure_basic(arr.view(), threshold, min_a, max_a, None)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    pub(crate) async fn estimate_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedClipParams,
+    ) -> crate::error::Result<BackgroundOutcome> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            return crate::dispatch_pixels!(&cached.pixels, |arr| clip_outcome(arr, params));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        self.estimate_via_path(&doc.file_path, params).await
+    }
+
+    pub(crate) async fn estimate_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedClipParams,
+    ) -> crate::error::Result<BackgroundOutcome> {
+        let path_owned = path.to_string();
+        let k = params.k;
+        let max_iters = params.max_iters;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            clip_outcome(arr.view(), &ResolvedClipParams { k, max_iters })
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    pub(crate) async fn detect_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<DetectStarsOutcome> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            let max_adu = Some(cached.max_adu);
+            return crate::dispatch_pixels!(&cached.pixels, |arr| detect_outcome(
+                arr, params, max_adu
+            ));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        // No camera context here — pass max_adu = None (matches measure_basic).
+        self.detect_via_path(&doc.file_path, params).await
+    }
+
+    pub(crate) async fn detect_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<DetectStarsOutcome> {
+        let path_owned = path.to_string();
+        let resolved = ResolvedDetectParams {
+            threshold_sigma: params.threshold_sigma,
+            min_area: params.min_area,
+            max_area: params.max_area,
+        };
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            detect_outcome(arr.view(), &resolved, None)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    pub(crate) async fn measure_stars_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedMeasureStarsParams,
+    ) -> crate::error::Result<imaging::MeasureStarsResult> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            let max_adu = Some(cached.max_adu);
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_stars(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+                params.stamp_half_size,
+            ));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        self.measure_stars_via_path(&doc.file_path, params).await
+    }
+
+    pub(crate) async fn measure_stars_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedMeasureStarsParams,
+    ) -> crate::error::Result<imaging::MeasureStarsResult> {
+        let path_owned = path.to_string();
+        let threshold = params.threshold_sigma;
+        let min_a = params.min_area;
+        let max_a = params.max_area;
+        let stamp = params.stamp_half_size;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            imaging::measure_stars(arr.view(), threshold, min_a, max_a, None, stamp)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    pub(crate) async fn snr_via_document(
+        &self,
+        doc_id: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<imaging::SnrResult> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            let max_adu = Some(cached.max_adu);
+            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::compute_snr(
+                arr,
+                params.threshold_sigma,
+                params.min_area,
+                params.max_area,
+                max_adu,
+            ));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        self.snr_via_path(&doc.file_path, params).await
+    }
+
+    pub(crate) async fn snr_via_path(
+        &self,
+        path: &str,
+        params: &ResolvedDetectParams,
+    ) -> crate::error::Result<imaging::SnrResult> {
+        let path_owned = path.to_string();
+        let threshold = params.threshold_sigma;
+        let min_a = params.min_area;
+        let max_a = params.max_area;
+        tokio::task::spawn_blocking(move || {
+            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
+            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+                .map_err(|e| {
+                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
+                })?;
+            imaging::compute_snr(arr.view(), threshold, min_a, max_a, None)
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
+    /// Persist the document and (on success) populate the image cache.
+    ///
+    /// Sidecar failure contract: if `write_sidecar` fails the cache insert
+    /// is skipped, a `document_persistence_failed` event is emitted, and
+    /// the function returns. The FITS file remains on disk; the
+    /// `document_id` is unreachable via cache or disk fallback (no
+    /// sidecar) until callers fall back to the FITS path directly. See
+    /// `docs/services/rp.md` → Capture Tool Details → Sidecar failure
+    /// contract.
+    pub(crate) async fn persist_capture_artifact(
+        &self,
+        doc: ExposureDocument,
+        cached_pixels: Option<CachedPixels>,
+        captured_max_adu: Option<u32>,
+    ) {
+        let document_id = doc.id.clone();
+        let image_path = doc.file_path.clone();
+        let width = doc.width;
+        let height = doc.height;
+
+        let document_persisted = match crate::persistence::write_sidecar(&doc).await {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(error = %e, "sidecar write failed, skipping cache insert");
+                self.event_bus.emit(
+                    "document_persistence_failed",
+                    serde_json::json!({
+                        "document_id": document_id,
+                        "file_path": image_path,
+                        "error": e.to_string(),
+                    }),
+                );
+                false
+            }
+        };
+
+        if document_persisted {
+            if let (Some(max_adu), Some(cp)) = (captured_max_adu, cached_pixels) {
+                self.image_cache.insert(
+                    document_id.clone(),
+                    CachedImage::new(
+                        cp,
+                        width,
+                        height,
+                        std::path::PathBuf::from(&image_path),
+                        max_adu,
+                        doc,
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Run the full capture pipeline against the named camera and return
+    /// `(image_path, document_id)`. Shared body of the `capture` MCP tool
+    /// and the `auto_focus` compound tool's per-step capture call —
+    /// both want the same exposure / FITS-write / cache-insert / event
+    /// flow.
+    pub(crate) async fn do_capture(
+        &self,
+        camera_id: &str,
+        duration: Duration,
+    ) -> std::result::Result<(String, String), String> {
+        let cam_entry = self
+            .equipment
+            .find_camera(camera_id)
+            .ok_or_else(|| format!("camera not found: {}", camera_id))?;
+        let cam = cam_entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
+        // Snapshot the configured focal length now — `cam_entry` is a
+        // borrow off `self.equipment` and we want the f64 (Copy) without
+        // hanging on to that borrow across the `await`s below.
+        let focal_length_mm = cam_entry.config.focal_length_mm;
+
+        let document_id = Uuid::new_v4().to_string();
+        // The 8-char UUID suffix is the on-disk reverse-lookup key used by
+        // the cache's disk-fallback resolution (see Phase 7 of
+        // `docs/plans/image-evaluation-tools.md` and `rp.md` Persistence).
+        // Operator-controlled `file_naming_pattern` rendering is reserved
+        // until a token resolver lands; for now capture writes
+        // `<uuid8>.fits` regardless of any configured template.
+        let uuid8 = &document_id[..8];
+        let image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
+
+        self.event_bus.emit(
+            "exposure_started",
+            serde_json::json!({
+                "camera_id": camera_id,
+                "duration": humantime::format_duration(duration).to_string(),
+            }),
+        );
+
+        cam.start_exposure(duration, true)
+            .await
+            .map_err(|e| format!("failed to start exposure: {}", e))?;
+
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match cam.image_ready().await {
+                Ok(true) => break,
+                Ok(false) => continue,
+                Err(e) => return Err(format!("error checking image ready: {}", e)),
+            }
+        }
+
+        let image_array = cam
+            .image_array()
+            .await
+            .map_err(|e| format!("failed to download image array: {}", e))?;
+
+        let (dim_x, dim_y, _planes) = image_array.dim();
+        let width = dim_x as u32;
+        let height = dim_y as u32;
+
+        // Read max_adu *before* collecting pixels: it decides whether
+        // we need a u16 or i32 buffer, so reading first lets us collect
+        // straight into the destination type and avoid the wasted
+        // i32→u16 round trip.
+        //
+        // max_adu feeds three consumers: on-disk FITS bit-depth, cache
+        // variant, and the exposure document's `max_adu` field
+        // (sidecar self-describing for rehydration/archival lineage).
+        // A transient Alpaca failure here is localized — the next
+        // capture re-reads independently. On failure we persist
+        // `max_adu: None`, write the FITS as i32 (lossless fallback),
+        // and skip the cache insert; the FITS file on disk plus the
+        // sidecar remain the durable record.
+        let captured_max_adu: Option<u32> = match cam.max_adu().await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                debug!(error = %e, "max_adu unavailable for this capture");
+                None
+            }
+        };
+
+        // Optical geometry for the sidecar's `optics` block. Combines the
+        // operator-supplied focal length with raw Alpaca pixel-size and
+        // sensor-dimension reads. Any missing piece (focal length not
+        // configured, camera read failed) drops the whole block — see
+        // `docs/services/rp.md` §"Core Fields". Failures are isolated to
+        // this auxiliary metadata; capture itself proceeds.
+        let optics = match focal_length_mm {
+            Some(focal_length_mm) => {
+                let pixel_size_x_um = match cam.pixel_size_x().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "pixel_size_x unavailable for this capture");
+                        None
+                    }
+                };
+                let pixel_size_y_um = match cam.pixel_size_y().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "pixel_size_y unavailable for this capture");
+                        None
+                    }
+                };
+                let sensor_width_px = match cam.camera_x_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "camera_x_size unavailable for this capture");
+                        None
+                    }
+                };
+                let sensor_height_px = match cam.camera_y_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(error = %e, "camera_y_size unavailable for this capture");
+                        None
+                    }
+                };
+                match (
+                    pixel_size_x_um,
+                    pixel_size_y_um,
+                    sensor_width_px,
+                    sensor_height_px,
+                ) {
+                    (Some(px), Some(py), Some(sw), Some(sh)) => {
+                        let derived = persistence::Optics::from_camera_geometry(
+                            focal_length_mm,
+                            px,
+                            py,
+                            sw,
+                            sh,
+                        );
+                        if derived.is_none() {
+                            // All Alpaca reads succeeded but the derivation
+                            // declined — typically a non-positive or
+                            // wild-magnitude reading that would have
+                            // overflowed the derived pixel scale / FOV.
+                            // Surface enough to diagnose bad camera state
+                            // or a misconfigured focal length.
+                            debug!(
+                                camera_id,
+                                focal_length_mm,
+                                pixel_size_x_um = px,
+                                pixel_size_y_um = py,
+                                sensor_width_px = sw,
+                                sensor_height_px = sh,
+                                "optics derivation declined; omitting block"
+                            );
+                        }
+                        derived
+                    }
+                    _ => None,
+                }
+            }
+            None => {
+                debug!(
+                    camera_id,
+                    "focal_length_mm not configured; omitting optics block"
+                );
+                None
+            }
+        };
+
+        // Dispatch on max_adu, collecting pixels directly into the
+        // narrowest type each path needs and reusing the same buffer
+        // for the cache insert.
+        let shape = (width as usize, height as usize);
+        let cached_pixels: Option<CachedPixels> = match captured_max_adu {
+            Some(max_adu) if max_adu <= u16::MAX as u32 => {
+                let max_adu_i32 = max_adu as i32;
+                let u16_pixels: Vec<u16> = image_array
+                    .iter()
+                    .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                    .collect();
+                drop(image_array);
+                persistence::write_fits_u16(&image_path, &u16_pixels, width, height, &document_id)
+                    .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                CachedPixels::from_u16_pixels(u16_pixels, shape)
+            }
+            _ => {
+                let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
+                drop(image_array);
+                persistence::write_fits_i32(&image_path, &i32_pixels, width, height, &document_id)
+                    .await
+                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                captured_max_adu.and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
+            }
+        };
+
+        let doc = ExposureDocument {
+            id: document_id.clone(),
+            captured_at: chrono::Utc::now().to_rfc3339(),
+            file_path: image_path.clone(),
+            width,
+            height,
+            camera_id: Some(camera_id.to_string()),
+            duration: Some(duration),
+            max_adu: captured_max_adu,
+            optics,
+            sections: serde_json::Map::new(),
+        };
+        self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
+            .await;
+
+        self.event_bus.emit(
+            "exposure_complete",
+            serde_json::json!({
+                "document_id": document_id,
+                "file_path": image_path,
+            }),
+        );
+
+        Ok((image_path, document_id))
+    }
+
+    /// Resolve a focuser, validate the requested `position` against the
+    /// operator-supplied `min_position`/`max_position` bounds, issue the
+    /// Alpaca move, poll `is_moving` until idle (with a 120 s deadline),
+    /// and return the focuser's reported `position` after settling.
+    ///
+    /// This is the shared body of the `move_focuser` MCP tool and the
+    /// `auto_focus` compound tool's per-step focuser drive — both want
+    /// the same bounds-check + blocking-poll semantics.
+    pub(crate) async fn do_move_focuser_blocking(
+        &self,
+        focuser_id: &str,
+        position: i32,
+    ) -> std::result::Result<i32, String> {
+        let foc_entry = self
+            .equipment
+            .find_focuser(focuser_id)
+            .ok_or_else(|| format!("focuser not found: {}", focuser_id))?;
+        let foc = foc_entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| format!("focuser not connected: {}", focuser_id))?;
+
+        if let Some(min) = foc_entry.config.min_position {
+            if position < min {
+                return Err(format!(
+                    "position out of range: {} < min_position {}",
+                    position, min
+                ));
+            }
+        }
+        if let Some(max) = foc_entry.config.max_position {
+            if position > max {
+                return Err(format!(
+                    "position out of range: {} > max_position {}",
+                    position, max
+                ));
+            }
+        }
+
+        debug!(focuser_id, position, "moving focuser");
+        foc.move_(position)
+            .await
+            .map_err(|e| format!("failed to move focuser: {}", e))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match foc.is_moving().await {
+                Ok(false) => break,
+                Ok(true) if tokio::time::Instant::now() < deadline => continue,
+                Ok(true) => return Err("timeout waiting for focuser to settle".to_string()),
+                Err(e) => return Err(format!("error polling focuser is_moving: {}", e)),
+            }
+        }
+
+        foc.position()
+            .await
+            .map_err(|e| format!("failed to read focuser position: {}", e))
+    }
+
+    /// Resolve the singular mount, returning the entry + connected device
+    /// or a string error matching the convention `resolve_device!` uses
+    /// for `id`-keyed devices ("no mount configured" / "mount not
+    /// connected"). Singular: no `id` parameter.
+    pub(crate) fn resolve_mount(
+        &self,
+    ) -> std::result::Result<
+        (
+            &crate::equipment::MountEntry,
+            Arc<dyn ascom_alpaca::api::Telescope>,
+        ),
+        String,
+    > {
+        let entry = self
+            .equipment
+            .find_mount()
+            .ok_or_else(|| "no mount configured".to_string())?;
+        let device = entry
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "mount not connected".to_string())?;
+        Ok((entry, device))
+    }
+
+    /// Resolve the mount, issue an async slew, poll `slewing()` until
+    /// idle (with a 300 s deadline), sleep `settle_after`, then read
+    /// the post-slew RA/Dec and return them.
+    ///
+    /// Best-effort `abort_slew()` on deadline expiry before returning
+    /// the timeout error — mount runaways have higher blast radius
+    /// than focuser runaways (cables, hard stops, sun in a flat
+    /// workflow).
+    ///
+    /// Mirrors `do_move_focuser_blocking`'s shape; same pass-through
+    /// error mapping. Does NOT touch `Tracking` (per `mount.feature`
+    /// + ASCOM contract — Tracking must already be on for
+    ///   `slew_to_coordinates_async`).
+    pub(crate) async fn do_slew_blocking(
+        &self,
+        ra: f64,
+        dec: f64,
+        settle_after: Duration,
+    ) -> std::result::Result<(f64, f64), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+
+        debug!(ra, dec, "slewing mount");
+        mount
+            .slew_to_coordinates_async(ra, dec)
+            .await
+            .map_err(|e| format!("failed to slew: {}", e))?;
+
+        match poll_slewing_until_idle(mount.as_ref()).await {
+            Ok(()) => {}
+            Err(PollIdleError::Timeout) => {
+                // Best-effort abort; ignore the abort's own result and
+                // surface the timeout error as the primary failure.
+                let _ = mount.abort_slew().await;
+                return Err("timeout waiting for mount to settle".to_string());
+            }
+            Err(PollIdleError::Read(e)) => {
+                return Err(format!("error polling mount slewing: {}", e));
+            }
+        }
+
+        if !settle_after.is_zero() {
+            debug!(?settle_after, "waiting for mount settle");
+            tokio::time::sleep(settle_after).await;
+        }
+
+        let actual_ra = mount
+            .right_ascension()
+            .await
+            .map_err(|e| format!("failed to read mount right_ascension: {}", e))?;
+        let actual_dec = mount
+            .declination()
+            .await
+            .map_err(|e| format!("failed to read mount declination: {}", e))?;
+        Ok((actual_ra, actual_dec))
+    }
+
+    /// Resolve the mount, issue `park()`, then poll `at_park()` every
+    /// 100 ms until it returns `true` (300 s deadline).
+    ///
+    /// `AtPark` is the ASCOM-canonical "park is complete" signal — set
+    /// in exactly one code path (the slew-to-park completion handler).
+    /// Polling `Slewing` would be over-conservative: ASCOM's
+    /// `IsSlewing` is sticky on `MoveAxis`-driven rate state and any
+    /// non-idle `SlewState`, so unrelated prior activity can keep it
+    /// `true` even after `ChangePark(true)` has fired.
+    ///
+    /// Unlike `do_slew_blocking`, this does NOT auto-abort on timeout
+    /// — a partially-completed park is closer to safe than an
+    /// aborted one (the mount is actively trying to reach a known
+    /// safe position; aborting leaves it in an unknown state
+    /// mid-traversal). Callers that want to interrupt a stuck park
+    /// can call the `abort_slew` MCP tool explicitly.
+    ///
+    /// Per ASCOM, a successful `park()` clears `Tracking`. We don't
+    /// touch tracking ourselves; the contract is the driver's.
+    pub(crate) async fn do_park_blocking(&self) -> std::result::Result<(), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+
+        debug!("parking mount");
+        mount
+            .park()
+            .await
+            .map_err(|e| format!("failed to park: {}", e))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            match mount.at_park().await {
+                Ok(true) => return Ok(()),
+                Ok(false) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Ok(false) => return Err("timeout waiting for mount to park".to_string()),
+                Err(e) => return Err(format!("error polling mount at_park: {}", e)),
+            }
+        }
+    }
+
+    /// Read the current mount pointing for `plate_solve`'s
+    /// `use_mount_hints` convenience. Converts Alpaca's decimal
+    /// hours `RightAscension` to the wrapper's degrees-on-the-wire
+    /// contract (`× 15`); `Declination` passes through. Failure
+    /// modes — no mount configured, mount not connected, Alpaca
+    /// read error — surface as a single string the caller appends
+    /// to its diagnostic.
+    pub(crate) async fn read_mount_hints_for_plate_solve(&self) -> Result<(f64, f64), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+        let ra_hours = mount
+            .right_ascension()
+            .await
+            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
+        let dec_deg = mount
+            .declination()
+            .await
+            .map_err(|e| format!("failed to read mount declination: {e}"))?;
+        Ok((ra_hours * 15.0, dec_deg))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Free helpers
+// ---------------------------------------------------------------------------
+
+pub(crate) fn clip_outcome<T: imaging::Pixel>(
+    view: ndarray::ArrayView2<T>,
+    params: &ResolvedClipParams,
+) -> crate::error::Result<BackgroundOutcome> {
+    let (rows, cols) = view.dim();
+    let total_pixels = (rows as u64) * (cols as u64);
+    let stats =
+        imaging::sigma_clipped_stats(view, params.k, params.max_iters).ok_or_else(|| {
+            crate::error::RpError::Imaging("background estimation failed".to_string())
+        })?;
+    Ok(BackgroundOutcome {
+        stats,
+        total_pixels,
+    })
+}
+
+pub(crate) fn detect_outcome<T: imaging::Pixel>(
+    view: ndarray::ArrayView2<T>,
+    params: &ResolvedDetectParams,
+    max_adu: Option<u32>,
+) -> crate::error::Result<DetectStarsOutcome> {
+    let background = imaging::estimate_background(view).ok_or_else(|| {
+        crate::error::RpError::Imaging("background estimation failed".to_string())
+    })?;
+
+    let detection = DetectionParams {
+        threshold_sigma: params.threshold_sigma,
+        smoothing_sigma: 1.0,
+        min_area: params.min_area,
+        max_area: params.max_area,
+        max_adu,
+    };
+    let stars = imaging::detect_stars(view, &background, &detection);
+    Ok(DetectStarsOutcome { stars, background })
+}
+
+pub(crate) fn star_to_json(s: &Star) -> serde_json::Value {
+    serde_json::json!({
+        "x": s.centroid_x,
+        "y": s.centroid_y,
+        "flux": s.total_flux,
+        "peak": s.peak,
+        "saturated_pixel_count": s.saturated_pixel_count,
+    })
+}
+
+/// Outcome variants for [`poll_slewing_until_idle`].
+pub(crate) enum PollIdleError {
+    /// Deadline expired with `slewing()` still returning `true`.
+    Timeout,
+    /// `slewing()` itself returned an Alpaca error.
+    Read(ascom_alpaca::ASCOMError),
+}
+
+/// Poll `mount.slewing()` every 100 ms until it returns `false`,
+/// bounded by a 300 s deadline. Used by `do_slew_blocking`. (The
+/// sibling `do_park_blocking` polls `at_park()` directly rather than
+/// `slewing()` because `IsSlewing` is sticky on `MoveAxis` rate
+/// state and `AtPark` is the ASCOM-canonical "park is complete"
+/// signal — see the comment on `do_park_blocking`.) On
+/// [`PollIdleError::Timeout`] the caller decides whether to
+/// best-effort `abort_slew()` (slew does) or just surface the
+/// timeout.
+pub(crate) async fn poll_slewing_until_idle(
+    mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
+) -> std::result::Result<(), PollIdleError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        match mount.slewing().await {
+            Ok(false) => return Ok(()),
+            Ok(true) if tokio::time::Instant::now() < deadline => continue,
+            Ok(true) => return Err(PollIdleError::Timeout),
+            Err(e) => return Err(PollIdleError::Read(e)),
+        }
+    }
+}

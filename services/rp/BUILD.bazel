@@ -41,6 +41,13 @@ rust_library(
 rust_library(
     name = "rp_lib_with_mock",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    # `mcp/tests.rs` embeds the auto_focus V-curve fixtures via
+    # `include_bytes!("../../tests/fixtures/auto_focus/*.fits")`;
+    # `compile_data` makes those files visible to rustc inside
+    # Bazel's compilation sandbox. Only needed on the test-twin
+    # because the embeds sit inside a `#[cfg(test)] mod tests`
+    # block — the production twin (`rp_lib`) skips them.
+    compile_data = glob(["tests/fixtures/**"]),
     aliases = aliases(),
     crate_name = "rp",
     edition = "2021",

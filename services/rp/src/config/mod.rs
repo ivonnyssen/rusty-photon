@@ -1,0 +1,141 @@
+//! Configuration types and JSON loader.
+//!
+//! Top-level [`Config`] is built by [`load_config`] from a JSON file.
+//! Each domain-specific block lives in a sibling module:
+//! [`session`], [`site`], [`equipment`] (plus the per-device-type
+//! configs [`camera`], [`focuser`], [`mount`], [`filter_wheel`],
+//! [`cover_calibrator`]), [`imaging`], [`plate_solver`], [`server`].
+//! The submodules' public types are re-exported here so existing
+//! `crate::config::CameraConfig` callsites keep working unchanged.
+
+pub mod camera;
+pub mod cover_calibrator;
+pub mod equipment;
+pub mod filter_wheel;
+pub mod focuser;
+pub mod imaging;
+pub mod mount;
+pub mod plate_solver;
+pub mod server;
+pub mod session;
+pub mod site;
+
+pub use camera::CameraConfig;
+pub use cover_calibrator::CoverCalibratorConfig;
+pub use equipment::EquipmentConfig;
+pub use filter_wheel::FilterWheelConfig;
+pub use focuser::FocuserConfig;
+pub use imaging::ImagingConfig;
+pub use mount::MountConfig;
+pub use plate_solver::PlateSolverConfig;
+pub use server::ServerConfig;
+pub use session::SessionConfig;
+pub use site::SiteConfig;
+
+use std::path::Path;
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::error::{Result, RpError};
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    pub session: SessionConfig,
+    pub equipment: EquipmentConfig,
+    /// Observer site (lat/lon). Required for ephemeris features
+    /// (`compute_alt_az`, `get_target_status`, etc.); optional otherwise.
+    /// When `Some` and a mount is configured, `rp` validates the
+    /// configured lat/lon against the mount's `SiteLatitude` /
+    /// `SiteLongitude` on connect — see `docs/services/rp.md`
+    /// §"Site Validation Against the ASCOM Mount".
+    #[serde(default)]
+    pub site: Option<SiteConfig>,
+    #[serde(default)]
+    pub plugins: Vec<Value>,
+    #[serde(default)]
+    pub targets: Value,
+    #[serde(default)]
+    pub planner: Value,
+    #[serde(default)]
+    pub safety: Value,
+    #[serde(default)]
+    pub imaging: ImagingConfig,
+    /// Optional plate-solver service. When `None`, the `plate_solve`
+    /// MCP tool returns `plate solver not configured`. Mirrors the
+    /// `Option<MountConfig>` pattern — the service is optional
+    /// infrastructure, not part of the equipment surface.
+    #[serde(default)]
+    pub plate_solver: Option<PlateSolverConfig>,
+    pub server: ServerConfig,
+}
+
+pub fn load_config(path: &Path) -> Result<Config> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        RpError::Config(format!(
+            "failed to read config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let config: Config = serde_json::from_str(&contents).map_err(|e| {
+        RpError::Config(format!(
+            "failed to parse config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    if let Some(site) = config.site.as_ref() {
+        site.validate()?;
+    }
+    for cam in &config.equipment.cameras {
+        cam.validate()?;
+    }
+    Ok(config)
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub const MINIMAL_CONFIG_JSON: &str = r#"{
+        "session": {"data_directory": "/tmp/rp-test"},
+        "equipment": {},
+        "server": {}
+    }"#;
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::test_support::MINIMAL_CONFIG_JSON;
+    use super::*;
+
+    #[test]
+    fn load_config_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.session.data_directory, "/tmp/rp-test");
+        assert_eq!(config.server.port, 11115);
+        assert_eq!(config.server.bind_address, "127.0.0.1");
+        assert_eq!(config.imaging.cache_max_mib, 1024);
+        assert_eq!(config.imaging.cache_max_images, 8);
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let err = load_config(Path::new("/nonexistent/rp/config.json")).unwrap_err();
+        assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn load_config_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("failed to parse config file"));
+    }
+}
