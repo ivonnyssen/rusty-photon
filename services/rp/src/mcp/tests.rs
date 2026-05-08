@@ -3704,17 +3704,14 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
 
 #[tokio::test]
 async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
-    // starting_position arbitrary — the test only asserts that the
-    // fitted vertex lands near it (the parabola in HFR is symmetric
-    // about d=0 → vertex ≈ starting_position). Kept around 1000 so
-    // the imaging::tools::auto_focus::fit_parabola design matrix
-    // (which uses raw position values directly) stays well-conditioned
-    // for f64. Realistic focusers run at 10k-50k positions, where
-    // fit_parabola hits its precision floor (`monotonic curve: design
-    // matrix is singular …`); fixing that requires the fit to subtract
-    // the mean position before solving the normal equations — tracked
-    // separately from this happy-path coverage test.
-    const STARTING_POSITION: i32 = 1_000;
+    // starting_position pinned at a realistic focuser scale (QHY
+    // M-series, Pegasus FocusCube, Robofocus all operate in the
+    // 5_000–100_000 range). fit_parabola recenters x by the weighted
+    // mean before solving the normal equations, so the design matrix
+    // stays well-conditioned at any plausible focuser scale (#174).
+    // The fitted vertex must land near `starting_position` because
+    // the synthesised parabola in HFR is symmetric about d=0.
+    const STARTING_POSITION: i32 = 11_000;
 
     // Sandbox the FITS writes do_capture performs in a per-test temp
     // dir so successive runs don't pollute /tmp.

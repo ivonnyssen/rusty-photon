@@ -168,18 +168,23 @@ pub fn build_grid(
     grid
 }
 
-/// Result of fitting `hfr = a·x² + b·x + c` with vertex at
-/// `(round(−b/2a), c − b²/(4a))`.
+/// Result of fitting `hfr = a·x'² + b·x' + c` where `x' = x − offset_x`.
+/// The fit is performed in the recentered frame so the normal-equations
+/// determinant doesn't lose precision at real-world focuser positions
+/// (~5_000–50_000 steps); see `fit_parabola` for the rationale. The
+/// vertex sits at `(round(−b/2a) + offset_x, c − b²/(4a))` in the
+/// original frame.
 #[derive(Debug, Clone, Copy)]
 pub struct ParabolaFit {
     pub a: f64,
     pub b: f64,
     pub c: f64,
+    pub offset_x: f64,
 }
 
 impl ParabolaFit {
     pub fn vertex_position(&self) -> i32 {
-        (-self.b / (2.0 * self.a)).round() as i32
+        (-self.b / (2.0 * self.a) + self.offset_x).round() as i32
     }
 
     pub fn vertex_value(&self) -> f64 {
@@ -206,9 +211,21 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
             needed: 3,
         });
     }
+    // Recenter x by the weighted mean before forming the normal
+    // equations. Without this, `m4 ~ N·p⁴` overflows f64's working
+    // precision (~16 digits) at real-world focuser positions
+    // (p ≳ 5_000 steps): the m4·m2·m0 product hits ~1e30, the actual
+    // determinant of a parabolic fit is much smaller, and roundoff
+    // swamps the cancellation — perfectly fittable V-curves get
+    // rejected as "design matrix is singular". The fit is
+    // translation-invariant in y, so we recover the original-frame
+    // vertex by adding `offset_x` back in `vertex_position`.
+    let total_w: f64 = filtered.iter().map(|(_, _, w)| *w).sum();
+    let offset_x: f64 = filtered.iter().map(|(x, _, w)| w * x).sum::<f64>() / total_w;
+
     // Normal equations Aᵀ W A · [a, b, c]ᵀ = Aᵀ W y, with
-    // A = [x², x, 1] per row, W = diag(weights). Solved via Cramer's
-    // rule on the 3×3 system below.
+    // A = [x'², x', 1] per row (x' = x − offset_x), W = diag(weights).
+    // Solved via Cramer's rule on the 3×3 system below.
     let mut m4 = 0.0;
     let mut m3 = 0.0;
     let mut m2 = 0.0;
@@ -218,16 +235,17 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     let mut t1 = 0.0;
     let mut t0 = 0.0;
     for (x, y, w) in &filtered {
-        let x2 = x * x;
-        let x3 = x2 * x;
-        let x4 = x3 * x;
-        m4 += w * x4;
-        m3 += w * x3;
-        m2 += w * x2;
-        m1 += w * x;
+        let xc = x - offset_x;
+        let xc2 = xc * xc;
+        let xc3 = xc2 * xc;
+        let xc4 = xc3 * xc;
+        m4 += w * xc4;
+        m3 += w * xc3;
+        m2 += w * xc2;
+        m1 += w * xc;
         m0 += w;
-        t2 += w * x2 * y;
-        t1 += w * x * y;
+        t2 += w * xc2 * y;
+        t1 += w * xc * y;
         t0 += w * y;
     }
     let det = m4 * (m2 * m0 - m1 * m1) - m3 * (m3 * m0 - m1 * m2) + m2 * (m3 * m1 - m2 * m2);
@@ -254,7 +272,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
             a
         )));
     }
-    Ok(ParabolaFit { a, b, c })
+    Ok(ParabolaFit { a, b, c, offset_x })
 }
 
 /// Drive the V-curve sweep against the supplied focuser/capturer/measurer
@@ -505,25 +523,31 @@ mod tests {
 
     #[test]
     fn fit_parabola_recovers_known_minimum_to_within_one_step() {
-        let samples = make_v_samples(1234, 1.5, 1e-4);
-        let fit = fit_parabola(&samples).unwrap();
-        let vx = fit.vertex_position();
-        assert!(
-            (vx - 1234).abs() <= 1,
-            "expected vertex_position within ±1 of 1234, got {}",
-            vx
-        );
-        let vy = fit.vertex_value();
-        assert!(
-            (vy - 1.5).abs() < 1e-6,
-            "expected vertex_value ≈ 1.5, got {}",
-            vy
-        );
+        // Cover the small-position case plus realistic focuser ranges
+        // (5_000–50_000 steps) where the un-recentered normal equations
+        // would lose precision and reject the fit as singular (#174).
+        for vertex_x in [1234, 11_000, 42_000] {
+            let samples = make_v_samples(vertex_x, 1.5, 1e-4);
+            let fit = fit_parabola(&samples).unwrap();
+            let vx = fit.vertex_position();
+            assert!(
+                (vx - vertex_x).abs() <= 1,
+                "expected vertex_position within ±1 of {vertex_x}, got {vx}"
+            );
+            let vy = fit.vertex_value();
+            assert!(
+                (vy - 1.5).abs() < 1e-6,
+                "expected vertex_value ≈ 1.5 at vertex_x={vertex_x}, got {vy}"
+            );
+        }
     }
 
     #[test]
     fn fit_parabola_rejects_flat_input() {
-        let samples: Vec<_> = (0..10).map(|i| (i * 100, 5.0, 100)).collect();
+        // Realistic focuser-position range — the rejection must
+        // still trigger at the scale where un-recentered moments
+        // would have overflowed f64 precision.
+        let samples: Vec<_> = (0..10).map(|i| (40_000 + i * 100, 5.0, 100)).collect();
         match fit_parabola(&samples) {
             Err(AutoFocusError::MonotonicCurve(_)) => {}
             other => panic!("expected MonotonicCurve, got {:?}", other),
@@ -534,8 +558,8 @@ mod tests {
     fn fit_parabola_rejects_concave_down_curve() {
         let samples: Vec<_> = (0..10)
             .map(|i| {
-                let x = i * 50;
-                let dx = (x - 100) as f64;
+                let x = 40_000 + i * 50;
+                let dx = (x - 40_100) as f64;
                 (x, 5.0 - 1e-4 * dx * dx, 100)
             })
             .collect();
