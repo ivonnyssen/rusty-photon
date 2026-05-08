@@ -95,7 +95,7 @@ impl McpHandler {
                 let path = params
                     .image_path
                     .as_deref()
-                    .expect("checked image_path xor document_id above");
+                    .expect("image_path is Some when document_id is None (validated above)");
                 (path.to_string(), None)
             }
         };

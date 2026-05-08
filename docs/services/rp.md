@@ -3015,9 +3015,11 @@ services/rp/src/
     # built_in/<category>.rs (matching the imaging/ test-colocation
     # convention) and extract the shared mock-device fixtures and
     # registry builders into a sibling test_support.rs module.
-    aggregator.rs       Connects to plugin MCP servers, proxies their
-                          tools. (Planned — not yet implemented; lands
-                          when the third-party plugin protocol does.)
+    #
+    # Planned (not in tree yet):
+    # - aggregator.rs    Connects to plugin MCP servers, proxies their
+    #                    tools. Lands when the third-party plugin
+    #                    protocol does.
 
   # Imaging (pure analysis kernels and the compositional tools that bind them)
   # Async, I/O, and on-disk layout live in `persistence/` so the analysis

@@ -61,9 +61,17 @@ impl XorShift64 {
         x
     }
     fn uniform_open(&mut self) -> f64 {
-        // Map to (0, 1] — Box-Muller needs strictly-positive.
-        let v = self.next_u64() | 1;
-        (v >> 11) as f64 / ((1u64 << 53) as f64)
+        // Map to (0, 1] — Box-Muller needs strictly-positive (`u1.ln()`
+        // would diverge to `-∞` on a 0.0 sample). The previous
+        // `next_u64() | 1` formulation set the lowest bit pre-shift;
+        // the `>> 11` then discarded that bit, so the 53-bit mantissa
+        // could still land at zero when the top 53 bits of the raw
+        // u64 happened to be zero (probability ≈ 2.2e-16, never
+        // observed in fixture generation but real). The OR-with-1
+        // moved to AFTER the shift forces the 53-bit integer to be
+        // at least 1, putting the result strictly in [2⁻⁵³, 1].
+        let bits = (self.next_u64() >> 11) | 1;
+        bits as f64 / ((1u64 << 53) as f64)
     }
     /// Standard Normal sample via Box-Muller. One per call (we
     /// throw the second of the pair away — fine for fixture use).
