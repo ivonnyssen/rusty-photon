@@ -172,8 +172,10 @@ pub fn build_grid(
 /// The fit is performed in the recentered frame so the normal-equations
 /// determinant doesn't lose precision at real-world focuser positions
 /// (~5_000–50_000 steps); see `fit_parabola` for the rationale. The
-/// vertex sits at `(round(−b/2a) + offset_x, c − b²/(4a))` in the
-/// original frame.
+/// vertex sits at `(round(−b/2a + offset_x), c − b²/(4a))` in the
+/// original frame — `vertex_position` rounds the recovered original-x
+/// after adding `offset_x` (which is generally non-integer because it's
+/// the weighted mean of the sample positions).
 #[derive(Debug, Clone, Copy)]
 pub struct ParabolaFit {
     pub a: f64,
@@ -192,9 +194,19 @@ impl ParabolaFit {
     }
 }
 
-/// Weighted least-squares fit of a parabola `y = a·x² + b·x + c` to
-/// `(position, hfr, weight)` samples. `weight` is typically the
-/// per-frame `star_count`; samples with `weight == 0` are dropped.
+/// Weighted least-squares fit of a parabola to `(position, hfr, weight)`
+/// samples. `weight` is typically the per-frame `star_count`; samples
+/// with `weight == 0` are dropped.
+///
+/// **Returned coefficients are in the recentered frame.** The fit
+/// solves `y = a·x'² + b·x' + c` where `x' = position − offset_x`;
+/// `offset_x` is the weighted mean of the input positions and is
+/// stored on `ParabolaFit`. Use `vertex_position()` and
+/// `vertex_value()` to recover the original-frame minimum without
+/// re-expanding the polynomial (re-expanding would re-introduce the
+/// precision loss this recentering exists to avoid). Callers that
+/// genuinely need to evaluate `y` at an original-frame `x` must
+/// subtract `offset_x` before substituting.
 ///
 /// Returns `MonotonicCurve` if `a ≤ 0` (the curve has no minimum) or if
 /// the design matrix is too ill-conditioned to invert (essentially
