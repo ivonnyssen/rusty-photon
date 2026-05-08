@@ -3444,29 +3444,39 @@ async fn plate_solve_maps_internal_error_with_internal_prefix() {
 
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
-/// Loads the 11 canonical V-curve fixtures from
-/// `tests/fixtures/auto_focus/` and returns them in sweep order
-/// (`-100, -80, …, +100`). Each fixture is reshaped to the
-/// `(width, height, 1)` `Array3<i32>` shape that
-/// `ascom_alpaca::api::camera::ImageArray::from` expects.
+/// The 11 canonical V-curve fixtures embedded at compile time via
+/// `include_bytes!` so the test runs under both Cargo and Bazel
+/// without filesystem access. Bazel sandboxes test execution and
+/// would need explicit `data` declarations in `BUILD.bazel` to make
+/// `tests/fixtures/**` visible at runtime — `include_bytes!` sidesteps
+/// that, matching the precedent set by
+/// `services/plate-solver/src/bin/mock_astap.rs`. Order matches the
+/// natural sweep order (`-100, -80, …, +100`) `run_auto_focus`
+/// produces, so the `FixtureCamera` counter indexes directly into
+/// this slice.
+const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 11] = [
+    include_bytes!("../../tests/fixtures/auto_focus/pos_m100.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_m080.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_m060.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_m040.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_m020.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p020.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p040.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p060.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p080.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p100.fits"),
+];
+
+/// Decode the embedded V-curve fixtures into `(width, height, 1)`
+/// `Array3<i32>` frames in sweep order. `ascom_alpaca`'s
+/// `ImageArray::from` expects that shape for monochrome data.
 fn load_auto_focus_fixtures() -> Vec<ndarray::Array3<i32>> {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir = manifest_dir
-        .join("tests")
-        .join("fixtures")
-        .join("auto_focus");
-    let offsets: [i32; 11] = [-100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100];
-    offsets
+    AUTO_FOCUS_FIXTURE_BYTES
         .iter()
-        .map(|&d| {
-            let name = if d < 0 {
-                format!("pos_m{:03}.fits", d.unsigned_abs())
-            } else {
-                format!("pos_p{:03}.fits", d as u32)
-            };
-            let path = dir.join(name);
-            let (pixels, w, h) = crate::persistence::read_fits_pixels(&path)
-                .unwrap_or_else(|e| panic!("load fixture {}: {e}", path.display()));
+        .map(|bytes| {
+            let (pixels, w, h) = rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(*bytes))
+                .expect("decode fixture");
             ndarray::Array3::from_shape_vec((w as usize, h as usize, 1), pixels)
                 .expect("fixture shape")
         })

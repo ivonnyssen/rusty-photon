@@ -100,7 +100,10 @@ macro_rules! tool_error {
 /// Look up a device by ID and return the entry + connected device, or
 /// early-return a `tool_error` `CallToolResult` from the enclosing function.
 ///
-/// Usage: `let (entry, device) = resolve_device!(self, find_camera, id, "camera");`
+/// Usage: `let (entry, device) = resolve_device!(self, find_camera, &id, "camera");`
+/// (the `id` argument is forwarded into `EquipmentRegistry::find_*`,
+/// which take `&str` — every real call site passes `&params.camera_id`,
+/// `&camera_id`, etc.)
 macro_rules! resolve_device {
     ($self:expr, $finder:ident, $id:expr, $kind:literal) => {{
         let entry = match $self.equipment.$finder($id) {

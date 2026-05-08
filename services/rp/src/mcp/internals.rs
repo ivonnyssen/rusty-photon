@@ -849,10 +849,14 @@ pub(crate) enum PollIdleError {
 }
 
 /// Poll `mount.slewing()` every 100 ms until it returns `false`,
-/// bounded by a 300 s deadline. Shared by `do_slew_blocking` and
-/// `do_park_blocking`. Caller decides what to do on
-/// [`PollIdleError::Timeout`] (e.g. best-effort `abort_slew()` for
-/// `slew`; surface the timeout for `park`).
+/// bounded by a 300 s deadline. Used by `do_slew_blocking`. (The
+/// sibling `do_park_blocking` polls `at_park()` directly rather than
+/// `slewing()` because `IsSlewing` is sticky on `MoveAxis` rate
+/// state and `AtPark` is the ASCOM-canonical "park is complete"
+/// signal — see the comment on `do_park_blocking`.) On
+/// [`PollIdleError::Timeout`] the caller decides whether to
+/// best-effort `abort_slew()` (slew does) or just surface the
+/// timeout.
 pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
 ) -> std::result::Result<(), PollIdleError> {
