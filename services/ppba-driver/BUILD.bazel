@@ -9,7 +9,11 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-tls:rp-tls",
 ]
 
-_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + ["i18n.toml"]
+# i18n-config (used by i18n-embed-fl's fl!() and fluent_language_loader!()) reads
+# Cargo.toml at proc-macro expand time to locate the consumer crate's package
+# name and i18n.toml. Bazel sandboxes everything not listed here, so all three
+# files have to be in compile_data for the macros to see them.
+_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + ["i18n.toml", "Cargo.toml"]
 
 rust_library(
     name = "ppba-driver_lib",
