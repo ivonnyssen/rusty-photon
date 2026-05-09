@@ -81,6 +81,7 @@ impl TransportManager {
     /// Reference-counted connect. Returns immediately on success; first
     /// caller pays the init-handshake latency. Sets [`is_available`] to
     /// true only after the handshake completes.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn connect(&self) -> Result<()> {
         let _ = self.connection_count.fetch_add(1, Ordering::SeqCst);
         unimplemented!(
@@ -92,6 +93,7 @@ impl TransportManager {
     /// Reference-counted disconnect. Last caller out triggers teardown:
     /// clears [`is_available`] before stopping the poll task and closing
     /// the transport.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn disconnect(&self) -> Result<()> {
         unimplemented!(
             "Phase 3: decrement count; on zero, self.available.store(false, ..), \
@@ -119,6 +121,7 @@ impl TransportManager {
 
     /// Send one command, return one reply. Does *not* update the snapshot —
     /// the background poller owns that responsibility.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn send(
         &self,
         _command: skywatcher_motor_protocol::Command,

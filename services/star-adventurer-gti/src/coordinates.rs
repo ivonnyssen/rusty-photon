@@ -24,24 +24,28 @@ pub const HOURS_PER_DAY: f64 = 24.0;
 
 /// Convert RA-axis encoder ticks to a mechanical hour-angle in the range
 /// `[-12, +12)` hours.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn ra_ticks_to_mechanical_ha(_ticks: i32, _cpr: u32) -> f64 {
     unimplemented!("Phase 3: ticks * 24 / cpr, then wrap to [-12, +12)")
 }
 
 /// Convert Dec-axis encoder ticks to a declination angle in degrees, range
 /// `[-90, +90]`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn dec_ticks_to_degrees(_ticks: i32, _cpr: u32) -> f64 {
     unimplemented!("Phase 3: ticks * 360 / cpr, fold through pole if needed")
 }
 
 /// Local apparent sidereal time in hours `[0, 24)` from the host's wall
 /// clock and the configured site longitude.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn local_sidereal_time_hours(_utc: std::time::SystemTime, _site_longitude_deg: f64) -> f64 {
     unimplemented!("Phase 3: erfa GMST + equation of equinoxes + longitude")
 }
 
 /// Mechanical hour angle (signed hours) → ASCOM right ascension (hours
 /// `[0, 24)`), given the LST.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn mechanical_ha_to_ra(_mech_ha: f64, _lst_hours: f64) -> f64 {
     unimplemented!("Phase 3: ra = lst - mech_ha, fold to [0, 24)")
 }
@@ -51,6 +55,7 @@ pub fn mechanical_ha_to_ra(_mech_ha: f64, _lst_hours: f64) -> f64 {
 ///
 /// In the northern hemisphere, mechanical HA in `[-6, +6)` is the East side
 /// (`PierSide::East`); the rest is West. Southern hemisphere inverts.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn side_of_pier(_mech_ha: f64, _site_latitude_deg: f64) -> PierSide {
     unimplemented!("Phase 3: hemisphere-aware quadrant test")
 }

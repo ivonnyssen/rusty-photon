@@ -19,11 +19,13 @@ use crate::error::{ProtocolError, Result};
 pub const POSITION_BIAS: u32 = 0x0080_0000;
 
 /// Encode a `u8` as two ASCII hex bytes (high nibble first).
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn encode_u8(_value: u8) -> [u8; 2] {
     unimplemented!("Phase 3: encode a single byte as two upper-case ASCII hex digits")
 }
 
 /// Decode two ASCII hex bytes into a `u8`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn decode_u8(_bytes: [u8; 2]) -> Result<u8> {
     let _ = ProtocolError::HexError(String::new());
     unimplemented!("Phase 3: parse two ASCII hex digits (case-insensitive) into a u8")
@@ -33,6 +35,7 @@ pub fn decode_u8(_bytes: [u8; 2]) -> Result<u8> {
 ///
 /// Only the low 24 bits of `value` are used. For example, `0x12_3456` encodes
 /// as `[b'5', b'6', b'3', b'4', b'1', b'2']`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn encode_u24(_value: u32) -> [u8; 6] {
     unimplemented!("Phase 3: low-byte-first 24-bit hex encode")
 }
@@ -40,6 +43,7 @@ pub fn encode_u24(_value: u32) -> [u8; 6] {
 /// Decode six ASCII hex bytes (low byte first) into a 24-bit unsigned value.
 ///
 /// The returned `u32` always has its high byte zeroed.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn decode_u24(_bytes: &[u8; 6]) -> Result<u32> {
     unimplemented!("Phase 3: low-byte-first 24-bit hex decode")
 }
@@ -49,6 +53,7 @@ pub fn decode_u24(_bytes: &[u8; 6]) -> Result<u32> {
 ///
 /// Returns [`ProtocolError::HexError`] when `ticks` is outside the
 /// representable signed-24-bit range `-2^23 ..= 2^23 - 1`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn encode_position(_ticks: i32) -> Result<[u8; 6]> {
     unimplemented!("Phase 3: bias-then-encode_u24")
 }
@@ -58,6 +63,7 @@ pub fn encode_position(_ticks: i32) -> Result<[u8; 6]> {
 /// The wire value is interpreted as a 24-bit unsigned integer, the
 /// `0x800000` bias is subtracted, and the result is returned as a signed
 /// [`i32`] in the range `-2^23 ..= 2^23 - 1`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn decode_position(_bytes: &[u8; 6]) -> Result<i32> {
     unimplemented!("Phase 3: decode_u24-then-debias")
 }
@@ -67,6 +73,7 @@ pub fn decode_position(_bytes: &[u8; 6]) -> Result<i32> {
 ///
 /// Used by the UDP transport on receive. Serial transports buffer up to the
 /// first `\r` and pass exactly the resulting slice in here.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn validate_frame(_frame: &[u8]) -> Result<()> {
     unimplemented!("Phase 3: enforce one well-formed `:...\\r` frame, nothing trailing")
 }

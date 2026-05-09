@@ -18,6 +18,7 @@ pub struct UdpTransport {
 }
 
 impl UdpTransport {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn connect(_config: UdpConfig) -> Result<Self> {
         unimplemented!("Phase 3: bind UdpSocket to (bind_address, 0), connect to (address, port)")
     }
@@ -25,10 +26,12 @@ impl UdpTransport {
 
 #[async_trait]
 impl Transport for UdpTransport {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn round_trip(&self, _request: &[u8], _timeout: Duration) -> Result<Vec<u8>> {
         unimplemented!("Phase 3: send_to + recv with timeout, validate single-frame UDP rule")
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn close(&self) -> Result<()> {
         unimplemented!("Phase 3: drop socket")
     }

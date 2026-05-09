@@ -72,11 +72,13 @@ pub enum Command {
 impl Command {
     /// Encode this command into `out`, including the leading `:` and the
     /// trailing `\r`. Appends; does not clear `out` first.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn encode_into(&self, _out: &mut Vec<u8>) -> Result<()> {
         unimplemented!("Phase 3: format `:<cmd><axis><payload?>\\r` per design doc table")
     }
 
     /// Convenience: allocate a fresh `Vec<u8>` and encode into it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(10);
         self.encode_into(&mut out)?;

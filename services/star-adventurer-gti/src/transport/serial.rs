@@ -15,6 +15,7 @@ pub struct SerialTransport {
 
 impl SerialTransport {
     /// Open the configured port and return a transport ready to round-trip.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn connect(_config: UsbConfig) -> Result<Self> {
         unimplemented!("Phase 3: open tokio-serial, set 8N1, raw mode")
     }
@@ -22,10 +23,12 @@ impl SerialTransport {
 
 #[async_trait]
 impl Transport for SerialTransport {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn round_trip(&self, _request: &[u8], _timeout: Duration) -> Result<Vec<u8>> {
         unimplemented!("Phase 3: write request, read until '\\r'")
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn close(&self) -> Result<()> {
         unimplemented!("Phase 3: drop port")
     }

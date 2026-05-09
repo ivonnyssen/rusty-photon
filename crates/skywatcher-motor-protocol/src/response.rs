@@ -54,6 +54,7 @@ impl Response {
     /// `=` reply) decodes differently depending on what was asked for —
     /// `:j1` returns a [`Response::Position`] (signed, debiased) whereas
     /// `:a1` returns a [`Response::U24`] (unsigned).
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn decode(_frame: &[u8], _in_reply_to: &Command) -> Result<Self> {
         unimplemented!(
             "Phase 3: validate framing, branch on '=' vs '!', dispatch on the original Command"

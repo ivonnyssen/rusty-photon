@@ -104,6 +104,7 @@ impl MockTransport {
 
 #[async_trait]
 impl Transport for MockTransport {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn round_trip(&self, _request: &[u8], _timeout: Duration) -> Result<Vec<u8>> {
         unimplemented!("Phase 3: parse :cmd<axis><payload>\\r, mutate state, emit =/! reply")
     }
