@@ -38,5 +38,5 @@ pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
-pub use plate_solver_stub::{PlateSolverStub, StubBehavior};
+pub use plate_solver_stub::{CannedWcs, PlateSolverStub, StubBehavior};
 pub use webhook::{ReceivedEvent, WebhookReceiver};

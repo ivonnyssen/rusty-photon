@@ -102,6 +102,8 @@ pub struct RpWorld {
     pub last_auto_focus_result: Option<Value>,
     /// Last plate_solve result
     pub last_plate_solve_result: Option<Value>,
+    /// Last center_on_target result
+    pub last_center_on_target_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
     /// Last response status from GET /api/images/{id}
