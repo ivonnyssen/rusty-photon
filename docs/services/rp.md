@@ -2220,7 +2220,7 @@ right now" from a name string, without the operator having to paste
 coordinates by hand or trust the mount's pointing model.
 
 The implementation plan that introduces both crates lives at
-[`docs/plans/rp-planning-tools.md`](../plans/rp-planning-tools.md).
+[`docs/plans/archive/rp-planning-tools.md`](../plans/archive/rp-planning-tools.md).
 This section describes the resulting design as it appears to MCP
 clients and to operators editing the config file.
 

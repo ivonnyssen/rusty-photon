@@ -1,9 +1,48 @@
 # Plan: rp planning & ephemeris tools
 
+**Status: COMPLETE (archived 2026-05-09).** All seven phases shipped in
+PR #139 (commit `cc27c82`, "feat(rp): Phases 1–7 — planner & ephemeris
+tools"). See **Outcomes** below.
+
 **Date:** 2026-05-03
 **Branch:** `worktree-planning-tools`
-**Parent design doc:** [`docs/services/rp.md`](../services/rp.md)
-**Closest precedent:** [`docs/plans/plate-solver.md`](plate-solver.md) (eight-phase, design-first plan)
+**Parent design doc:** [`docs/services/rp.md`](../../services/rp.md)
+**Closest precedent:** [`docs/plans/plate-solver.md`](../plate-solver.md) (eight-phase, design-first plan)
+
+## Outcomes (2026-05-09)
+
+- **Phase 1** (design doc updates): done. `rp.md` §"Planning and
+  Ephemeris" + updated §"Dynamic Planner" + `site` block in
+  Configuration + `SiteLatitude`/`SiteLongitude` paragraph in
+  Equipment Integration; `workspace.md` Shared Crates updated.
+- **Phase 2** (`rp-ephemeris` crate): done. `Ephemeris` trait +
+  `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings,
+  derived twilight / rise-set / transit / meridian-flip via
+  root-finders, `Site` with `tzf-rs` IANA derivation, Astropy
+  reference-value tests committed under `refvals/`.
+- **Phase 3** (`rp-catalog` crate): done. Embedded Messier + NGC + IC
+  CSVs from openNGC (CC-BY-SA-4.0), case- and whitespace-insensitive
+  resolution with alias support, importer script under `scripts/`.
+- **Phase 4** (site config + mount validation): done. `SiteConfig`
+  in `services/rp/src/config/site.rs`, `SiteLatitude`/`SiteLongitude`
+  read on telescope connect with 0.01° hard-error mismatch and
+  graceful skip on `NOT_IMPLEMENTED`.
+- **Phase 5** (`resolve_target` MCP): done. `services/rp/src/planner/catalog.rs`
+  + `target_catalog.feature`.
+- **Phase 6** (primitive ephemeris MCP tools): done. All 10 primitives
+  in `services/rp/src/planner/primitives.rs` + `ephemeris_primitives.feature`.
+- **Phase 7** (convenience tools): done. `get_target_status`,
+  `get_next_target`, `get_meridian_status` in
+  `services/rp/src/planner/{convenience,decision}.rs` + `planner.feature`.
+  v1 limitations on the `get_next_target` decision logic (set-time
+  elimination, least-progress tiebreaker, explicit meridian-flip
+  avoidance, reachable `EndOfSession`) are documented in `rp.md`
+  §"Dynamic Planner" and tracked as follow-ups outside this plan.
+
+Follow-up housekeeping landed on `worktree-planning-tools` after the
+PR #139 merge: Phase 1 plan-file checkboxes flipped to `[x]`, and a
+one-line cross-reference from `rp.md` §Configuration to the site
+validation rule.
 
 ## Background
 
@@ -367,7 +406,7 @@ contract Phase 2 implements verbatim.
 
 ### Phase 2 — `rp-ephemeris` crate (trait + impl + reference-value tests)
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] New workspace member `crates/rp-ephemeris` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
@@ -454,7 +493,7 @@ Status: **not started.**
 
 ### Phase 3 — `rp-catalog` crate (embedded Messier + NGC + IC)
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] License pick: confirm openNGC CC-BY-SA-4.0 is acceptable for
       embedded data in this workspace (project license is dual
@@ -487,7 +526,7 @@ green. README documents the data source and license.
 
 ### Phase 4 — Site config + mount-side validation in rp
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] `services/rp/src/config.rs` — `SiteConfig {
       latitude_degrees: f64, longitude_degrees: f64 }` with serde
@@ -538,7 +577,7 @@ timezone on success.
 
 ### Phase 5 — `resolve_target` MCP tool
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] `services/rp/src/planner/catalog.rs` — MCP wrapper around
       `rp_catalog::Catalog::resolve`. Returns
@@ -568,7 +607,7 @@ without `@wip`. `cargo rail run --profile commit -q` clean.
 
 ### Phase 6 — Primitive ephemeris MCP tools
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] `services/rp/src/planner/primitives.rs` — MCP wrappers for the
       10 primitive operations from the Decisions Resolved table.
@@ -594,7 +633,7 @@ green without `@wip`. `cargo rail run --profile commit -q` clean.
 
 ### Phase 7 — High-level convenience tools (`get_target_status`, `get_next_target`)
 
-Status: **not started.**
+Status: **complete.**
 
 - [ ] `services/rp/src/planner/decision.rs` — implement the
       decision-logic bullets from `rp.md` §"Dynamic Planner" as a
@@ -680,22 +719,22 @@ Within that fixed scope, dependencies are mostly linear:
   in-process, behind the `Ephemeris` trait. `tzf-rs` remains the
   right tz-from-coords pick. No ADR — captured in this plan's
   Decisions Resolved.
-- [`docs/services/rp.md`](../services/rp.md) §"Dynamic Planner",
+- [`docs/services/rp.md`](../../services/rp.md) §"Dynamic Planner",
   §"Configuration", §"Equipment Integration"
-- [`docs/skills/development-workflow.md`](../skills/development-workflow.md)
+- [`docs/skills/development-workflow.md`](../../skills/development-workflow.md)
   — design-first, test-first phasing
-- [`docs/skills/testing.md`](../skills/testing.md) — BDD and unit
+- [`docs/skills/testing.md`](../../skills/testing.md) — BDD and unit
   test conventions; `@wip` filter (§2.7)
-- [`docs/plans/plate-solver.md`](plate-solver.md) — closest
+- [`docs/plans/plate-solver.md`](../plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
-- [`docs/plans/image-evaluation-tools.md`](image-evaluation-tools.md)
+- [`docs/plans/image-evaluation-tools.md`](../image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
 - ASCOM Telescope `SiteLatitude` / `SiteLongitude` properties —
   ASCOM has no `CanGetSiteLatitude` / `CanGetSiteLongitude` capability
   bit; the read attempt itself is the capability probe (a mount that
   doesn't expose the property returns `NOT_IMPLEMENTED`). The
-  in-repo reference [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md)
+  in-repo reference [`docs/references/ascom-alpaca.md`](../../references/ascom-alpaca.md)
   Telescope section documents this. Upstream Alpaca device spec is at
   [ascom-standards.org/api](https://ascom-standards.org/api/)
   (Telescope endpoints `/sitelatitude`, `/sitelongitude`).
