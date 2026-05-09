@@ -2704,6 +2704,10 @@ is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
 when the config sets a non-zero default).
 
+The `site` block is required and is validated against the ASCOM mount
+on connect — see
+[Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
+
 ```json
 {
   "session": {

@@ -333,28 +333,28 @@ implementation (per `docs/skills/development-workflow.md`
 
 ### Phase 1 — Design doc updates
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `docs/services/rp.md`: insert new section **"Planning and
+- [x] `docs/services/rp.md`: insert new section **"Planning and
       Ephemeris"** before §"Dynamic Planner" covering: site config,
       mount-side validation rule, IANA timezone derivation, the
       `Ephemeris` trait shape, the primitive vs. convenience MCP tool
       split (table per Decisions Resolved), the catalog source and
       license posture.
-- [ ] `docs/services/rp.md` §"Dynamic Planner": update so the existing
+- [x] `docs/services/rp.md` §"Dynamic Planner": update so the existing
       decision-logic bullets reference the primitive tools by name
       (e.g., "altitude check" → "compute_alt_az + min_altitude_degrees
       from config"), instead of leaving the "who computes this" gap.
-- [ ] `docs/services/rp.md` §"Configuration": add a `site` block to the
+- [x] `docs/services/rp.md` §"Configuration": add a `site` block to the
       example JSON; reference the validation rule. Add the new MCP
       tools to the tool catalog example.
-- [ ] `docs/services/rp.md` §"Equipment Integration": one paragraph
+- [x] `docs/services/rp.md` §"Equipment Integration": one paragraph
       under "ASCOM Alpaca Devices" naming `SiteLatitude` /
       `SiteLongitude` as read-on-connect properties and pointing at
       the validation rule in the Planning section.
-- [ ] `docs/workspace.md`: add `rp-ephemeris` and `rp-catalog` to the
+- [x] `docs/workspace.md`: add `rp-ephemeris` and `rp-catalog` to the
       Shared Crates table.
-- [ ] No new ADR. The `erfars` and `tzf-rs` choices are tactical
+- [x] No new ADR. The `erfars` and `tzf-rs` choices are tactical
       dep picks (similar to rmcp / fitsrs) — captured in this plan's
       Decisions Resolved section, no ADR file needed unless a future
       swap warrants one. The "in-process, not a managed service"
