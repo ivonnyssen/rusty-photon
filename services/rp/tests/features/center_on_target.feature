@@ -48,12 +48,18 @@ Feature: Center on target compound tool
     And the center_on_target result should contain "final_dec"
     And the center_on_target result should contain "final_error_arcsec"
 
+  # Canned WCS values are kept within ~2 arcmin of the input target
+  # so the iter-1 sync teleports the mount only a tiny distance and
+  # the subsequent slew completes well within do_slew_blocking's
+  # 300 s deadline (and rmcp's 300 s keep-alive). Earlier values
+  # ~9° off target reliably hung windows / bdd / rp under CI load
+  # — see issue tracker for the OmniSim slew-time investigation.
   Scenario: Multi-iteration happy path converges on iteration 2
     Given a running Alpaca simulator
     And a stub plate solver returning these per-call WCS responses:
       | ra_center | dec_center |
-      | 9.9000    | 41.0000    |
-      | 10.6850   | 41.2690    |
+      | 10.7095   | 41.289     |
+      | 10.6845   | 41.269     |
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
@@ -71,8 +77,13 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls "sync_mount" with ra "20.0000" dec "-30.0000"
-    And the MCP client calls center_on_target with camera "main-cam" ra 20.0000 dec -30.0000 duration "100ms" tolerance_arcsec 1 max_attempts 2
+    # Default canned WCS is (10.6848°, 41.269°). Target is ~3.6"
+    # off in dec — bigger than the 1" tolerance, so iter 1 + iter 2
+    # both miss → tolerance_not_reached. Slew distance per iter is
+    # ~3.6" (tiny) so this can't hang under any plausible OmniSim
+    # timing.
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.270"
+    And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.270 duration "100ms" tolerance_arcsec 1 max_attempts 2
     Then the tool call should return an error
     And the error message should contain "tolerance_not_reached"
 
@@ -87,38 +98,54 @@ Feature: Center on target compound tool
     Then the tool call should return an error
     And the error message should contain "solve_failed"
 
-  Scenario: Mid-loop slew failure (tracking off) aborts and propagates
+  Scenario: Mid-loop equipment failure (tracking off) aborts and propagates
     Given a running Alpaca simulator
     And a stub plate solver returning a canned WCS
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to false
     And an MCP client connected to rp
-    When the MCP client calls center_on_target with camera "main-cam" ra 20.0000 dec -30.0000 duration "100ms" tolerance_arcsec 1 max_attempts 5
+    # Tracking is off → the iter-1 sync_mount fails per ASCOM
+    # CheckTracking(true), aborting the loop before any slew. We
+    # use a target close to the canned WCS so even if the impl
+    # ever stopped requiring tracking for sync, the subsequent
+    # slew would still be tiny.
+    When the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.270 duration "100ms" tolerance_arcsec 1 max_attempts 5
     Then the tool call should return an error
 
-  Scenario: sync-on-iter-1-only invariant — final mount position reflects last slew, not last solve
+  Scenario: Three-iteration multi-iter run records sync, slew, then converged
     Given a running Alpaca simulator
     And a stub plate solver returning these per-call WCS responses:
       | ra_center | dec_center |
-      | 9.9000    | 41.0000    |
-      | 10.0000   | 41.1000    |
-      | 10.6850   | 41.2690    |
+      | 10.7095   | 41.289     |
+      | 10.7095   | 41.289     |
+      | 10.6845   | 41.269     |
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
+    # Sync-on-iter-1-only invariant: iter 1 records "sync" (sync +
+    # slew), iter 2 records "slew" (no sync), iter 3 records
+    # "converged". The strong invariant — that sync_to is invoked
+    # exactly once across the whole loop — is verified by the
+    # synthetic-mount unit test in `imaging::tools::center_on_target`
+    # which counts adapter calls directly. This BDD scenario
+    # validates the user-visible action sequence and exercises the
+    # live OmniSim mount through a multi-iter sync/slew/converged
+    # cycle.
     When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
     And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
-    And the MCP client calls "get_mount_position"
     Then the tool call should succeed
-    And the mount position should be approximately ra 0.7123 dec 41.269
+    And the center_on_target result should report attempts 3
+    And the center_on_target iterations[0] action should be "sync"
+    And the center_on_target iterations[1] action should be "slew"
+    And the center_on_target iterations[2] action should be "converged"
 
   Scenario: Per-iteration wcs sections persist on every captured document
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
     And a stub plate solver returning these per-call WCS responses:
       | ra_center | dec_center |
-      | 9.9000    | 41.0000    |
-      | 10.6850   | 41.2690    |
+      | 10.7095   | 41.289     |
+      | 10.6845   | 41.269     |
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
