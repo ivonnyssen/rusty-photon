@@ -39,13 +39,12 @@ pub enum StarAdvError {
 impl StarAdvError {
     /// Map a driver error to the closest ASCOM error code.
     pub fn to_ascom_error(self) -> ASCOMError {
+        let msg = self.to_string();
         match self {
-            Self::NotConnected => ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, self.to_string()),
-            Self::InvalidValue(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, self.to_string())
-            }
-            Self::Parked => ASCOMError::new(ASCOMErrorCode::INVALID_WHILE_PARKED, self.to_string()),
-            _ => ASCOMError::invalid_operation(self.to_string()),
+            Self::NotConnected => ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, msg),
+            Self::InvalidValue(_) => ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, msg),
+            Self::Parked => ASCOMError::new(ASCOMErrorCode::INVALID_WHILE_PARKED, msg),
+            _ => ASCOMError::invalid_operation(msg),
         }
     }
 }

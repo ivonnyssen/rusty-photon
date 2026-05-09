@@ -33,8 +33,10 @@ rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
 
-[package.metadata.conformu]
-command = "cargo test -p star-adventurer-gti --features conformu --test conformu_integration -- --ignored --nocapture"
+# [package.metadata.conformu] — re-add in Phase 3 when
+# `tests/conformu_integration.rs` lands. The nightly conformu workflow
+# discovers services via this metadata; opting in without the test file
+# would fail the scheduled run on main.
 
 [dev-dependencies]
 bdd-infra = { workspace = true }
