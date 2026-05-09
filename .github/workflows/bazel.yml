@@ -67,13 +67,19 @@ jobs:
       - name: Diagnostic — Cargo file fingerprints
         shell: bash
         run: |
-          set -eu
+          # `shasum -a 256` is portable: built into macOS, perl-shipped on
+          # GitHub Linux runners, included in Git Bash on Windows. `sha256sum`
+          # alone is not reliable on macOS. `set -o pipefail` makes the
+          # script fail loudly if any tool in a pipeline is missing
+          # (otherwise an empty hash would be reported and the diagnostic
+          # would silently lie).
+          set -euo pipefail
           echo "::group::Cargo.{toml,lock} fingerprints"
           for f in Cargo.toml Cargo.lock; do
             [ -f "$f" ] || { echo "$f missing"; continue; }
             bytes=$(wc -c < "$f")
             lines=$(wc -l < "$f")
-            hash=$(sha256sum "$f" | awk '{print $1}')
+            hash=$(shasum -a 256 "$f" | awk '{print $1}')
             crlf=$(grep -c $'\r' "$f" || true)
             printf '%-10s sha256=%s bytes=%s lines=%s lines-with-CR=%s\n' \
               "$f" "$hash" "$bytes" "$lines" "$crlf"
@@ -85,7 +91,7 @@ jobs:
           # lockfile also records) to confirm the pattern is consistent.
           for f in crates/rp-auth/Cargo.toml services/rp/Cargo.toml; do
             [ -f "$f" ] || continue
-            hash=$(sha256sum "$f" | awk '{print $1}')
+            hash=$(shasum -a 256 "$f" | awk '{print $1}')
             crlf=$(grep -c $'\r' "$f" || true)
             printf '%-30s sha256=%s lines-with-CR=%s\n' "$f" "$hash" "$crlf"
           done
