@@ -24,7 +24,7 @@
 //! The flat re-exports below preserve the previous `crate::imaging::*`
 //! call-site shape so MCP wiring doesn't have to know which submodule
 //! a symbol lives in. See `docs/services/rp.md` (Module Structure) and
-//! `docs/plans/image-evaluation-tools.md` for the rationale.
+//! `docs/plans/archive/image-evaluation-tools.md` for the rationale.
 
 pub mod analysis;
 pub mod tools;

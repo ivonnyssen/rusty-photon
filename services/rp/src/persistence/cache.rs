@@ -29,7 +29,7 @@ use super::document::ExposureDocument;
 /// reports the same `MaxADU`, so the variant is effectively per-camera. The
 /// current implementation fetches `max_adu` per-frame in
 /// `mcp.rs:capture` — see the "Phase 3 follow-up: stash `max_adu` on
-/// `CameraEntry`" section in `docs/plans/image-evaluation-tools.md`.
+/// `CameraEntry`" section in `docs/plans/archive/image-evaluation-tools.md`.
 pub enum CachedPixels {
     U16(Array2<u16>),
     I32(Array2<i32>),

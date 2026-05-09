@@ -209,11 +209,15 @@ operator-declared static optical train and the camera's reported
 sensor geometry at capture time. This is sufficient for `plate_solve`
 hint sourcing and for consumers like annotation and mosaic planning.
 
-When the Phase 6c-2 `plate_solve` built-in tool lands (see
-`docs/plans/image-evaluation-tools.md`), its `document_id` mode uses
-`optics.fov_height_deg` as the default `fov_hint_deg` — `fov_height_deg`
-matches ASTAP's `-fov` semantics ("image height in degrees"). Callers
-keep the option to override with an explicit `fov_hint_deg` parameter.
+The `plate_solve` built-in tool (Phase 6c-2 in
+`docs/plans/archive/image-evaluation-tools.md`) accepts an explicit
+`fov_hint_deg` parameter that callers can populate from
+`optics.fov_height_deg` on the document — `fov_height_deg` matches
+ASTAP's `-fov` semantics ("image height in degrees"). v1 does **not**
+auto-default `fov_hint_deg` from the optics block when the parameter
+is omitted; that auto-default is tracked by
+[issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153)
+and lands when the first workflow is blocked without it.
 
 ### Plugin Sections (contributed via API)
 
@@ -721,7 +725,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
-| `center_on_target` | ra, dec, tolerance_arcsec | final_error_arcsec, attempts | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until tolerance reached. *Planned.* |
+| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -2154,6 +2158,170 @@ tool-provider plugin advertising the same `plate_solve` name; the
 plugin wins per Config-Time Validation, with the shadow logged at
 startup.
 
+#### `center_on_target` Contract
+
+A built-in compound tool that drives an iterative
+capture → plate_solve → sync_mount → slew loop until the solved
+field-center sits within `tolerance_arcsec` of the requested
+`(ra, dec)`. The orchestrator calls one tool with the target
+coordinates and gets back the converged pointing without having to
+implement its own centering loop.
+
+**Input**:
+- `camera_id` — required. Camera that captures each iteration's
+  frame.
+- `ra` — required, decimal hours `∈ [0, 24)`. Target right
+  ascension. Same unit as `slew` and `sync_mount` (Alpaca's
+  `RightAscension`).
+- `dec` — required, decimal degrees `∈ [-90, 90]`. Target
+  declination.
+- `duration` — required, humantime string (e.g. `"5s"`,
+  `"500ms"`). Per-iteration exposure. No default: the right value
+  depends on focal ratio, sky brightness, and target field, none
+  of which `center_on_target` can infer. v1 uses the same
+  `duration` for every iteration; if low star count blocks a
+  solve, the caller re-runs with a longer duration.
+- `tolerance_arcsec` — required, positive `f64`. Convergence
+  threshold on the great-circle residual between the solved center
+  and `(ra, dec)`. No default: the right value depends on rig
+  pixel scale (a 1-arcsec/pixel rig wants tighter tolerance than a
+  4-arcsec/pixel one) and downstream framing constraints.
+- `max_attempts` — required, positive `usize`. Hard cap on the
+  number of iterations. No default: the right value depends on
+  mount tracking quality and how aggressive the caller wants the
+  loop to be (typical 3–5 attempts; tight tolerances or wobbly
+  mounts may want 10+). Capped at `MAX_ATTEMPTS = 50` — exceeding
+  the cap is a parameter error before any motion. The cap is a
+  guardrail against operator misconfiguration that would otherwise
+  tie up the rig for an indefinite period; any plausible run fits
+  well inside it.
+
+The mount is resolved via the singular `mount` config field — no
+`mount_id` or `telescope_id` parameter, since `rp` deployments run
+exactly one mount.
+
+**Output**:
+- `final_error_arcsec` (f64) — great-circle residual at the
+  iteration where convergence fired (i.e. the iteration whose
+  `action` is `"converged"`).
+- `attempts` (usize) — number of iterations executed. `≥ 1` and
+  `≤ max_attempts` on success.
+- `final_ra` (f64) — solved RA at the converged iteration, in
+  decimal degrees (matches `plate_solve`'s output unit, **not**
+  the input's hours).
+- `final_dec` (f64) — solved Dec at the converged iteration, in
+  decimal degrees.
+- `iterations` — array of
+  `{document_id: string, residual_arcsec: f64, solved_ra: f64,
+  solved_dec: f64, action: "sync" | "slew" | "converged"}`,
+  one entry per iteration in execution order. Each
+  `document_id` carries the per-iteration capture's `wcs` section
+  (written by the embedded `plate_solve`); the
+  [`/api/documents/{id}`](#document-resolution) endpoint gives
+  callers per-step provenance. `action` is the *terminal* action
+  for that iteration: `"sync"` only ever appears on iter 1 (and
+  only if iter 1 also slewed — i.e. `iterations[0].action ==
+  "sync"` means iter 1 fired sync followed by slew); `"converged"`
+  appears at most once and is always the last entry; every other
+  entry is `"slew"`. The iter-1-converged-after-sync case
+  collapses to `action: "converged"` on the single record (sync
+  fired, residual was already inside tolerance, no slew issued).
+
+**Algorithm**:
+1. Resolve `camera_id` and the singular mount. Emit
+   `centering_started` carrying `{camera_id, ra, dec,
+   tolerance_arcsec, max_attempts}`.
+2. For `iter = 0..max_attempts`:
+   1. `capture(camera_id, duration)` → `document_id`. Cache
+      populated as a side effect.
+   2. `plate_solve(document_id)` with `use_mount_hints: true` so
+      the wrapper gets the mount's currently-reported pointing as
+      an `ra_hint`/`dec_hint` pair (hours→degrees conversion lives
+      in the `plate_solve` handler — see
+      [`plate_solve` Contract](#plate_solve-contract)). Yields
+      `(solved_ra_deg, solved_dec_deg)` and writes a `wcs` section
+      to the document as a side effect.
+   3. If `iter == 0`: `sync_mount(solved_ra_deg, solved_dec_deg)`.
+      The first solve is the absolute pointing reference;
+      subsequent iterations rely on the mount honouring relative
+      slews instead of re-syncing on every pass. Repeated syncs
+      interact badly with model-building drivers (each sync gets
+      treated as a new pointing-model entry, polluting the model)
+      and are unnecessary once the absolute position is
+      established. Sync fires *unconditionally* on iter 1, even if
+      the residual is already inside tolerance — the mount's
+      pointing model is calibrated for any caller that follows
+      centering with further targeted slews.
+   4. Compute `residual_arcsec = haversine(solved_ra_deg,
+      solved_dec_deg, ra·15.0, dec)` (the input `ra` is hours; the
+      solved values are degrees, so convert the input to degrees
+      once for the comparison).
+   5. If `residual_arcsec ≤ tolerance_arcsec`: record an
+      `iterations[iter]` entry with `action = "converged"`, emit
+      `centering_iteration` followed by `centering_complete`, and
+      return.
+   6. Otherwise: `slew(ra, dec)` honouring the mount's
+      `settle_after_slew` config; record an `iterations[iter]`
+      entry with `action = "slew"` (or `action = "sync"` on
+      iter 1 if the slew was preceded by a sync — see Output's
+      collapse rule); emit `centering_iteration` and continue.
+3. If the loop exits without firing `"converged"`, return a
+   `tolerance_not_reached` error carrying the last residual and
+   `max_attempts`. The mount is left at its last commanded
+   position; `center_on_target` does not auto-recover.
+
+**Error cases**:
+- `camera_id` missing or names a camera that doesn't exist /
+  isn't connected → MCP error naming the field/condition (parameter
+  validation runs in input order, same convention as
+  `auto_focus` / `measure_basic`).
+- `ra`, `dec`, `duration`, `tolerance_arcsec`, `max_attempts`
+  missing → MCP error naming the missing parameter.
+- `ra` outside `[0, 24)` or `dec` outside `[-90, 90]` → MCP error
+  naming the bad parameter.
+- `tolerance_arcsec ≤ 0` or `max_attempts == 0` → MCP error
+  naming the bad parameter.
+- `max_attempts > MAX_ATTEMPTS` (50) → MCP error before any
+  motion or exposure.
+- No mount configured / mount not connected → MCP error.
+- Mid-loop `capture`, `plate_solve`, `sync_mount`, or `slew`
+  failure → propagates the underlying error and aborts the loop.
+  The mount is left where the failed step left it; partial
+  `iterations[]` entries are not returned (the failure surfaces as
+  an MCP error, not a partial success).
+- Loop exits without convergence → `tolerance_not_reached` error
+  citing the last residual and `max_attempts`.
+
+**Persistence**: `center_on_target` does **not** write a section
+on any single exposure document. Each per-iteration capture gets
+its own `wcs` section written by the embedded `plate_solve` call
+exactly as if `plate_solve` had been called directly. The compound
+result is returned in the MCP response and emitted as
+`centering_complete`. Each entry in `iterations` carries the
+per-step `document_id`, so callers that need per-step provenance
+can fetch the individual exposure documents and read their `wcs`
+sections.
+
+**Caveats**:
+- OmniSim does not model pointing — it returns canned exposures
+  unaffected by mount position. Convergence over real pixels is
+  asserted via the stub plate solver in BDD; the live OmniSim
+  camera and mount still exercise the capture / sync / slew
+  surface.
+- v1 has no `min_improvement_arcsec` early exit. A run that stops
+  improving but keeps barely missing tolerance will burn through
+  `max_attempts` before erroring. Add the parameter when the first
+  workflow needs it.
+- v1 has no per-iteration exposure scaling. If the first solve
+  fails for star-count reasons, the caller re-runs with a longer
+  `duration` rather than letting the tool widen automatically.
+- `center_on_target` is a built-in compound tool and may be
+  **shadowed** by a tool-provider plugin advertising the same
+  `center_on_target` name; the plugin wins per
+  [Config-Time Validation](#config-time-validation), with the
+  shadow logged at startup. Two plugins both claiming
+  `center_on_target` remains a config-time error.
+
 #### Example: `auto_focus` (V-curve)
 
 See [`auto_focus` Contract](#auto_focus-contract) for the full parameter
@@ -2182,15 +2350,37 @@ Orchestrator: tools/call auto_focus {
 
 #### Example: `center_on_target`
 
+See [`center_on_target` Contract](#center_on_target-contract) for the
+full parameter set, error policy, and persistence rules. The
+pseudo-code below illustrates the loop shape only.
+
 ```
-Orchestrator: tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance_arcsec: 5}
+Orchestrator: tools/call center_on_target {
+    camera_id: "main-cam",  ra: 10.6847,           dec: 41.2689,
+    duration: "5s",         tolerance_arcsec: 5,   max_attempts: 5
+}
   rp's center_on_target implementation:
-    capture(camera_id="main-cam", duration_ms=5000)  → {document_id: "doc-c01"}
-    plate_solve(document_id="doc-c01")               → {ra: 10.6820, dec: 41.2650, error_arcsec: 45}
-    sync_mount(ra=10.6820, dec=41.2650)
-    slew(ra=10.6847, dec=41.2689)
-    ... repeat until error < tolerance ...
-  ← {final_error_arcsec: 2.1, attempts: 3}
+    iter 0:
+      capture(camera_id="main-cam", duration="5s")   → {document_id: "doc-c01"}
+      plate_solve(document_id="doc-c01", use_mount_hints: true)
+                                                     → {ra_center: 160.230°, dec_center: 41.265°}
+      sync_mount(ra=10.6820, dec=41.265)            # 160.230° / 15
+      residual_arcsec = haversine(...)               → 45.0    (> tolerance)
+      slew(ra=10.6847, dec=41.2689)                  # iter-1 action: "sync"
+    iter 1:
+      capture → {document_id: "doc-c02"}
+      plate_solve(document_id="doc-c02", use_mount_hints: true)
+                                                     → {ra_center: 160.270°, dec_center: 41.2685°}
+      residual_arcsec                                → 2.1     (≤ tolerance)
+                                                     # action: "converged"
+  ← {final_error_arcsec: 2.1, attempts: 2,
+     final_ra: 160.270, final_dec: 41.2685,
+     iterations: [
+       {document_id: "doc-c01", residual_arcsec: 45.0, solved_ra: 160.230,
+        solved_dec: 41.265,  action: "sync"},
+       {document_id: "doc-c02", residual_arcsec: 2.1,  solved_ra: 160.270,
+        solved_dec: 41.2685, action: "converged"},
+     ]}
 ```
 
 #### Third-party alternatives

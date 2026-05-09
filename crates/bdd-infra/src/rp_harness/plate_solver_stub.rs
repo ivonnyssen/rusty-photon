@@ -23,17 +23,31 @@ use axum::{Json, Router};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+/// One canned 200 success body. Used as the payload for both the
+/// single-shot `CannedWcs` variant (where every solve call returns
+/// the same body) and the `Sequence` variant (where successive
+/// solve calls walk the queue).
+#[derive(Debug, Clone)]
+pub struct CannedWcs {
+    pub ra_center: f64,
+    pub dec_center: f64,
+    pub pixel_scale_arcsec: f64,
+    pub rotation_deg: f64,
+    pub solver: String,
+}
+
 /// Canned response variants the stub can return for `POST /api/v1/solve`.
 #[derive(Debug, Clone)]
 pub enum StubBehavior {
-    /// Return a fixed 200 success body.
-    CannedWcs {
-        ra_center: f64,
-        dec_center: f64,
-        pixel_scale_arcsec: f64,
-        rotation_deg: f64,
-        solver: String,
-    },
+    /// Return a fixed 200 success body for every call.
+    Canned(CannedWcs),
+    /// Walk a queue of WCS responses, one per call. After the last
+    /// queued entry is consumed, subsequent calls keep returning the
+    /// final entry — this lets `center_on_target` tests express
+    /// "first iter outside tolerance, then converged" without having
+    /// to count the exact number of solves the loop will make.
+    /// `responses` must be non-empty.
+    Sequence(Vec<CannedWcs>),
     /// Return a structured error envelope. `code` matches the
     /// wrapper's `ErrorCode` (`invalid_request`, `fits_not_found`,
     /// `solve_failed`, `solve_timeout`, `internal`); the appropriate
@@ -45,13 +59,13 @@ impl StubBehavior {
     /// Default canned WCS used by happy-path scenarios: RA 10.6848°
     /// (≈ M31), Dec 41.269°, 1.05"/px scale, 12.3° rotation.
     pub fn default_canned_wcs() -> Self {
-        Self::CannedWcs {
+        Self::Canned(CannedWcs {
             ra_center: 10.6848,
             dec_center: 41.269,
             pixel_scale_arcsec: 1.05,
             rotation_deg: 12.3,
             solver: "stub-astap-1.0".to_string(),
-        }
+        })
     }
 }
 
@@ -69,16 +83,28 @@ pub struct PlateSolverStub {
 struct StubState {
     behavior: StubBehavior,
     requests: Arc<RwLock<Vec<Value>>>,
+    /// Cursor into `Sequence` behavior's response queue — incremented
+    /// per call, clamped to the last entry once exhausted. Unused for
+    /// the other variants. `Arc<...>` so cloning the State (axum does
+    /// it once per request) shares the cursor across handlers.
+    sequence_cursor: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PlateSolverStub {
     /// Spawn an axum router on `127.0.0.1:0` returning the configured
     /// canned response for every `POST /api/v1/solve`.
     pub async fn start(behavior: StubBehavior) -> Self {
+        if let StubBehavior::Sequence(responses) = &behavior {
+            assert!(
+                !responses.is_empty(),
+                "PlateSolverStub::start: Sequence must have at least one response"
+            );
+        }
         let requests: Arc<RwLock<Vec<Value>>> = Arc::new(RwLock::new(Vec::new()));
         let state = StubState {
             behavior,
             requests: requests.clone(),
+            sequence_cursor: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
         let app = Router::new()
@@ -136,20 +162,15 @@ async fn solve_handler(
     state.requests.write().await.push(body);
 
     match state.behavior {
-        StubBehavior::CannedWcs {
-            ra_center,
-            dec_center,
-            pixel_scale_arcsec,
-            rotation_deg,
-            ref solver,
-        } => Json(serde_json::json!({
-            "ra_center": ra_center,
-            "dec_center": dec_center,
-            "pixel_scale_arcsec": pixel_scale_arcsec,
-            "rotation_deg": rotation_deg,
-            "solver": solver,
-        }))
-        .into_response(),
+        StubBehavior::Canned(ref wcs) => canned_response(wcs),
+        StubBehavior::Sequence(ref responses) => {
+            // Walk the queue, clamping at the final entry.
+            let idx = state
+                .sequence_cursor
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .min(responses.len() - 1);
+            canned_response(&responses[idx])
+        }
         StubBehavior::Error {
             ref code,
             ref message,
@@ -169,4 +190,15 @@ async fn solve_handler(
             (status, body).into_response()
         }
     }
+}
+
+fn canned_response(wcs: &CannedWcs) -> axum::response::Response {
+    Json(serde_json::json!({
+        "ra_center": wcs.ra_center,
+        "dec_center": wcs.dec_center,
+        "pixel_scale_arcsec": wcs.pixel_scale_arcsec,
+        "rotation_deg": wcs.rotation_deg,
+        "solver": wcs.solver,
+    }))
+    .into_response()
 }

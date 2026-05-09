@@ -83,11 +83,7 @@ pub trait FocuserOps {
     async fn move_to(&self, position: i32) -> Result<i32, String>;
 }
 
-#[async_trait]
-pub trait CaptureOps {
-    /// Capture an exposure of `duration` and return its `document_id`.
-    async fn capture(&self, duration: Duration) -> Result<String, String>;
-}
+pub use super::ops::CaptureOps;
 
 #[async_trait]
 pub trait MeasureOps {

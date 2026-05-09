@@ -13,7 +13,7 @@ pub struct SessionConfig {
     /// `{target}` / `{filter}` / etc.); until that lands `capture` ignores
     /// the value and writes `<doc_uuid_8>.fits` regardless. See
     /// `docs/services/rp.md` (Persistence) and Phase 7 of
-    /// `docs/plans/image-evaluation-tools.md`.
+    /// `docs/plans/archive/image-evaluation-tools.md`.
     #[serde(default)]
     pub file_naming_pattern: Option<String>,
 }

@@ -738,7 +738,7 @@ Within that fixed scope, dependencies are mostly linear:
   test conventions; `@wip` filter (§2.7)
 - [`docs/plans/plate-solver.md`](../plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
-- [`docs/plans/image-evaluation-tools.md`](../image-evaluation-tools.md)
+- [`docs/plans/archive/image-evaluation-tools.md`](image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
 - ASCOM Telescope `SiteLatitude` / `SiteLongitude` properties —

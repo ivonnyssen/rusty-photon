@@ -3,7 +3,7 @@
 **Date:** 2026-05-02
 **Branch:** `worktree-astap`
 **ADR:** [005-plate-solver](../decisions/005-plate-solver.md)
-**Parent plan:** [image-evaluation-tools.md Phase 6c-1](image-evaluation-tools.md#phase-6c-1--plate-solver-rp-managed-service)
+**Parent plan:** [archive/image-evaluation-tools.md Phase 6c-1](archive/image-evaluation-tools.md#phase-6c-1--plate-solver-rp-managed-service)
 
 ## Background
 
@@ -853,7 +853,7 @@ What this phase did **not** do (acknowledged forward work):
 - `rp`'s `plate_solve` MCP tool implementation that performs the
   hours→degrees conversion and sources `search_radius_deg` from rp
   config — that's Phase 6c-2 in the parent plan
-  (`docs/plans/image-evaluation-tools.md`). 6c-prep (telescope
+  (`docs/plans/archive/image-evaluation-tools.md`). 6c-prep (telescope
   primitives — `Arc<dyn Telescope>` in `equipment.rs`, `slew` /
   `sync_mount` MCP tools) has now landed on main, so 6c-2 has its
   prerequisite.
@@ -930,7 +930,7 @@ dependency structures:
 ## References
 
 - ADR-005 — `docs/decisions/005-plate-solver.md`
-- Image-evaluation-tools plan, Phase 6c-1 — `docs/plans/image-evaluation-tools.md`
+- Image-evaluation-tools plan, Phase 6c-1 — `docs/plans/archive/image-evaluation-tools.md`
 - rp design doc, §"Component Categories" / §"Plate Solver" /
   §"Sentinel Watchdog Integration" — `docs/services/rp.md`
 - ADR-004 — `docs/decisions/004-testing-strategy-for-http-client-error-paths.md`

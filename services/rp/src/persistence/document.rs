@@ -10,7 +10,7 @@
 //! (`<image>.json`). Writes are atomic: data is staged into a `.tmp` file and
 //! `rename`d into place, so a crash mid-write cannot leave a torn document.
 //!
-//! As of Phase 7 (`docs/plans/image-evaluation-tools.md`), the document lives
+//! As of Phase 7 (`docs/plans/archive/image-evaluation-tools.md`), the document lives
 //! inline on each `imaging::CachedImage` cache entry. Lookups go through
 //! `ImageCache::get_document` and section updates through
 //! `ImageCache::put_section`; the sidecar JSON pair on disk plus the disk-
@@ -52,7 +52,7 @@ pub struct ExposureDocument {
     /// forward so a disk-fallback rehydration of the image cache can
     /// pick the correct `CachedPixels` variant without needing the
     /// originating camera to still be connected — see Phase 7
-    /// (`docs/plans/image-evaluation-tools.md`) and the Image and
+    /// (`docs/plans/archive/image-evaluation-tools.md`) and the Image and
     /// Document Cache section of `docs/services/rp.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_adu: Option<u32>,

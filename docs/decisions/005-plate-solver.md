@@ -7,7 +7,7 @@ Proposed (2026-05-01).
 This ADR is the prerequisite called out in `docs/services/rp.md`
 §"Plate Solver" ("The choice of plate solving engine requires further
 research […] This decision will be captured in a separate ADR") and in
-`docs/plans/image-evaluation-tools.md` Phase 6c (`center_on_target` is
+`docs/plans/archive/image-evaluation-tools.md` Phase 6c (`center_on_target` is
 blocked on it). Once accepted, Phase 6c is unblocked and a separate
 plan will sequence the `plate-solver` rp-managed-service
 implementation.
@@ -684,7 +684,7 @@ shape are all consistent with this analysis. ADR-005 OQ #5 is
 - `docs/services/rp.md` §"Image Analysis Strategy / Design Rationale"
   — the SEP / `sep-sys` rejection memo whose "LGPL + FFI burden"
   wording is reread in this ADR.
-- `docs/plans/image-evaluation-tools.md` Phase 6c — the blocked work
+- `docs/plans/archive/image-evaluation-tools.md` Phase 6c — the blocked work
   item this ADR unblocks.
 - `docs/decisions/001-fits-file-support.md` — prior decision on
   cross-platform native libraries; informed the cross-platform bar.
