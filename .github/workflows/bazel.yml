@@ -67,19 +67,32 @@ jobs:
       - name: Diagnostic — Cargo file fingerprints
         shell: bash
         run: |
-          # `shasum -a 256` is portable: built into macOS, perl-shipped on
-          # GitHub Linux runners, included in Git Bash on Windows. `sha256sum`
-          # alone is not reliable on macOS. `set -o pipefail` makes the
-          # script fail loudly if any tool in a pipeline is missing
-          # (otherwise an empty hash would be reported and the diagnostic
-          # would silently lie).
+          # No single SHA-256 CLI is on every GitHub-hosted runner:
+          #   sha256sum: GNU coreutils — Linux yes, Windows Git Bash yes,
+          #              macOS no (shasum is the BSD equivalent).
+          #   shasum:    perl-based — macOS yes, Linux yes, Windows Git
+          #              Bash NO (no perl in the runner image's PATH).
+          # Python is available on all three. Try the C-coded tools
+          # first for speed; fall back to Python if neither is on PATH.
+          # `set -o pipefail` makes the script fail loudly if any tool
+          # in a pipeline is missing (otherwise an empty hash would be
+          # reported and the diagnostic would silently lie).
           set -euo pipefail
+          sha256() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1" | awk '{print $1}'
+            else
+              python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+            fi
+          }
           echo "::group::Cargo.{toml,lock} fingerprints"
           for f in Cargo.toml Cargo.lock; do
             [ -f "$f" ] || { echo "$f missing"; continue; }
             bytes=$(wc -c < "$f")
             lines=$(wc -l < "$f")
-            hash=$(shasum -a 256 "$f" | awk '{print $1}')
+            hash=$(sha256 "$f")
             crlf=$(grep -c $'\r' "$f" || true)
             printf '%-10s sha256=%s bytes=%s lines=%s lines-with-CR=%s\n' \
               "$f" "$hash" "$bytes" "$lines" "$crlf"
@@ -91,7 +104,7 @@ jobs:
           # lockfile also records) to confirm the pattern is consistent.
           for f in crates/rp-auth/Cargo.toml services/rp/Cargo.toml; do
             [ -f "$f" ] || continue
-            hash=$(shasum -a 256 "$f" | awk '{print $1}')
+            hash=$(sha256 "$f")
             crlf=$(grep -c $'\r' "$f" || true)
             printf '%-30s sha256=%s lines-with-CR=%s\n' "$f" "$hash" "$crlf"
           done
