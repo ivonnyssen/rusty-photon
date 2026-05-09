@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::super::handler::McpHandler;
+use super::super::internals::DoPlateSolveInput;
 use super::super::{resolve_device, tool_error, tool_success};
 use crate::imaging;
 
@@ -190,92 +191,29 @@ impl imaging::tools::center_on_target::PlateSolveOps for CenterOnTargetAdapter<'
         &self,
         document_id: &str,
     ) -> std::result::Result<imaging::tools::center_on_target::SolveOutcome, String> {
-        // Inline call into the in-process `plate_solve` path. Going
-        // through the MCP transport would re-encode the JSON params
-        // and pay an extra HTTP round-trip — not what compound tools
-        // want (mirrors `auto_focus`'s direct `measure_via_document`
-        // call, where the auto-focus loop similarly skips the MCP
-        // transport for its inner `measure_basic` calls).
-        let client = self
-            .handler
-            .plate_solver
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "plate_solve: plate solver not configured".to_string())?;
-
-        let doc = self
-            .handler
-            .image_cache
-            .resolve_document(document_id)
-            .await
-            .ok_or_else(|| format!("plate_solve: document not found: {}", document_id))?;
-
-        // Source the pointing hint from the mount, paralleling
-        // plate_solve's `use_mount_hints: true` path. We propagate
-        // the read failure verbatim — center_on_target's Contract
-        // says it reuses that hint plumbing, and the standalone tool
-        // errors loud rather than silently dropping to a blind solve.
-        // Mid-loop transient failures (driver hiccup, etc.) abort
-        // the iteration via the existing fail-fast policy. The
-        // `plate_solve: use_mount_hints requested but ...` shape
-        // matches what the standalone tool returns, then the loop
-        // wraps it as `equipment error during centering: ...`.
-        let (ra_hint, dec_hint) = match self.handler.read_mount_hints_for_plate_solve().await {
-            Ok((ra, dec)) => (Some(ra), Some(dec)),
-            Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {}", e)),
-        };
-
-        let request = rp_plate_solver::SolveRequest {
-            fits_path: doc.file_path.clone(),
-            ra_hint,
-            dec_hint,
+        // Same in-process body the standalone `plate_solve` MCP
+        // tool uses (configured-check, document resolution, hint
+        // sourcing, request build, error mapping, `wcs`
+        // persistence) — both go through `do_plate_solve` so
+        // future changes to defaults / validation / persistence
+        // land in one place. center_on_target hardcodes
+        // `pointing_hint: None, use_mount_hints: true` so the
+        // hours→degrees conversion stays in `do_plate_solve`'s
+        // single mount-read path, matching the `plate_solve`
+        // Contract verbatim.
+        let input = DoPlateSolveInput {
+            document_id: Some(document_id),
+            image_path: None,
+            pointing_hint: None,
+            use_mount_hints: true,
             fov_hint_deg: None,
-            search_radius_deg: self.handler.plate_solver_default_search_radius_deg,
+            search_radius_deg: None,
             timeout: None,
         };
-
-        let outcome = client.solve(request).await.map_err(|e| match e {
-            rp_plate_solver::SolveError::ServiceUnreachable(reason) => {
-                format!("plate_solve: service unreachable: {}", reason)
-            }
-            rp_plate_solver::SolveError::Wrapper {
-                code,
-                message,
-                details,
-            } => {
-                if details.is_null() {
-                    format!("plate_solve: {}: {}", code, message)
-                } else {
-                    format!("plate_solve: {}: {} (details: {})", code, message, details)
-                }
-            }
-            rp_plate_solver::SolveError::Internal(reason) => {
-                format!("plate_solve: internal: {}", reason)
-            }
-        })?;
-
-        // Persist the per-iteration `wcs` section to the captured
-        // document — same side-effect the standalone `plate_solve`
-        // tool would write. Failure is logged and ignored.
-        let payload = serde_json::json!({
-            "ra_center": outcome.ra_center,
-            "dec_center": outcome.dec_center,
-            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
-            "rotation_deg": outcome.rotation_deg,
-            "solver": outcome.solver,
-        });
-        if let Err(e) = self
-            .handler
-            .image_cache
-            .put_section(document_id, "wcs", payload)
-            .await
-        {
-            tracing::debug!(error = %e, document_id, "failed to persist wcs section");
-        }
-
+        let out = self.handler.do_plate_solve(input).await?;
         Ok(imaging::tools::center_on_target::SolveOutcome {
-            ra_center_deg: outcome.ra_center,
-            dec_center_deg: outcome.dec_center,
+            ra_center_deg: out.ra_center,
+            dec_center_deg: out.dec_center,
         })
     }
 }

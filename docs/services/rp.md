@@ -210,11 +210,14 @@ sensor geometry at capture time. This is sufficient for `plate_solve`
 hint sourcing and for consumers like annotation and mosaic planning.
 
 The `plate_solve` built-in tool (Phase 6c-2 in
-`docs/plans/archive/image-evaluation-tools.md`) uses
-`optics.fov_height_deg` as the default `fov_hint_deg` in its
-`document_id` mode — `fov_height_deg` matches ASTAP's `-fov` semantics
-("image height in degrees"). Callers keep the option to override with
-an explicit `fov_hint_deg` parameter.
+`docs/plans/archive/image-evaluation-tools.md`) accepts an explicit
+`fov_hint_deg` parameter that callers can populate from
+`optics.fov_height_deg` on the document — `fov_height_deg` matches
+ASTAP's `-fov` semantics ("image height in degrees"). v1 does **not**
+auto-default `fov_hint_deg` from the optics block when the parameter
+is omitted; that auto-default is tracked by
+[issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153)
+and lands when the first workflow is blocked without it.
 
 ### Plugin Sections (contributed via API)
 

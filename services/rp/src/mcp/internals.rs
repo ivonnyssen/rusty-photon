@@ -841,6 +841,178 @@ impl McpHandler {
             .map_err(|e| format!("failed to read mount declination: {e}"))?;
         Ok((ra_hours * 15.0, dec_deg))
     }
+
+    /// Shared body of the standalone `plate_solve` MCP tool *and* the
+    /// `center_on_target` compound tool's per-iteration solve. Both
+    /// callers want the same configured-check, document resolution,
+    /// hint sourcing, request build, error mapping, and `wcs`
+    /// persistence — extracting them here keeps any future change to
+    /// defaults / validation / persistence in exactly one place.
+    ///
+    /// Caller responsibilities:
+    /// - Standalone `plate_solve` validates "neither `document_id`
+    ///   nor `image_path` supplied" itself (so the error message
+    ///   shape matches what its BDD pins).
+    /// - `center_on_target` always supplies `document_id` and
+    ///   hardcodes `pointing_hint: None, use_mount_hints: true`.
+    pub(crate) async fn do_plate_solve(
+        &self,
+        input: DoPlateSolveInput<'_>,
+    ) -> Result<DoPlateSolveOutput, String> {
+        // Hint validation: pointing_hint and use_mount_hints=true are
+        // mutually exclusive. center_on_target hardcodes
+        // pointing_hint=None so it never trips this; the standalone
+        // tool may.
+        if input.pointing_hint.is_some() && input.use_mount_hints {
+            return Err(
+                "plate_solve: provide explicit pointing_hint or use_mount_hints, not both"
+                    .to_string(),
+            );
+        }
+
+        let client = self
+            .plate_solver
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "plate_solve: plate solver not configured".to_string())?;
+
+        // Resolve fits_path: document_id wins when both supplied.
+        let (fits_path, target_doc_id) = match input.document_id {
+            Some(doc_id) => match self.image_cache.resolve_document(doc_id).await {
+                Some(doc) => (doc.file_path.clone(), Some(doc_id.to_string())),
+                None => return Err(format!("plate_solve: document not found: {}", doc_id)),
+            },
+            None => {
+                let path = input.image_path.ok_or_else(|| {
+                    "plate_solve: missing required argument: provide either document_id or image_path"
+                        .to_string()
+                })?;
+                (path.to_string(), None)
+            }
+        };
+
+        // Resolve hints. The wrapper takes flat ra_hint/dec_hint in
+        // decimal degrees; the mount-hint helper does the Alpaca-
+        // hours → degrees ×15 conversion.
+        let (ra_hint, dec_hint) = if let Some((ra_deg, dec_deg)) = input.pointing_hint {
+            (Some(ra_deg), Some(dec_deg))
+        } else if input.use_mount_hints {
+            match self.read_mount_hints_for_plate_solve().await {
+                Ok((ra_deg, dec_deg)) => (Some(ra_deg), Some(dec_deg)),
+                Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {}", e)),
+            }
+        } else {
+            (None, None)
+        };
+
+        // search_radius_deg: per-call value > config default > absent.
+        let search_radius_deg = input
+            .search_radius_deg
+            .or(self.plate_solver_default_search_radius_deg);
+
+        let request = rp_plate_solver::SolveRequest {
+            fits_path: fits_path.clone(),
+            ra_hint,
+            dec_hint,
+            fov_hint_deg: input.fov_hint_deg,
+            search_radius_deg,
+            timeout: input.timeout,
+        };
+
+        let outcome = match client.solve(request).await {
+            Ok(o) => o,
+            Err(rp_plate_solver::SolveError::ServiceUnreachable(reason)) => {
+                return Err(format!("plate_solve: service unreachable: {}", reason));
+            }
+            Err(rp_plate_solver::SolveError::Wrapper {
+                code,
+                message,
+                details,
+            }) => {
+                if details.is_null() {
+                    return Err(format!("plate_solve: {}: {}", code, message));
+                }
+                return Err(format!(
+                    "plate_solve: {}: {} (details: {})",
+                    code, message, details
+                ));
+            }
+            Err(rp_plate_solver::SolveError::Internal(reason)) => {
+                return Err(format!("plate_solve: internal: {}", reason));
+            }
+        };
+
+        // Persist `wcs` section. document_id mode targets the
+        // resolved document directly; image_path mode reads the
+        // sibling `<base>.json` sidecar via
+        // `ImageCache::resolve_document_by_path` so the late-solve
+        // workflow's call (path-only, no document_id known to the
+        // caller) still updates the matching sidecar.
+        let payload = serde_json::json!({
+            "ra_center": outcome.ra_center,
+            "dec_center": outcome.dec_center,
+            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
+            "rotation_deg": outcome.rotation_deg,
+            "solver": outcome.solver,
+        });
+        let persist_doc_id = match target_doc_id {
+            Some(id) => Some(id),
+            None => self
+                .image_cache
+                .resolve_document_by_path(&fits_path)
+                .await
+                .map(|d| d.id.clone()),
+        };
+        if let Some(doc_id) = persist_doc_id {
+            if let Err(e) = self
+                .image_cache
+                .put_section(&doc_id, "wcs", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
+            }
+        } else {
+            debug!(
+                fits_path = %fits_path,
+                "image_path did not resolve to a known document; skipping wcs persistence"
+            );
+        }
+
+        Ok(DoPlateSolveOutput {
+            ra_center: outcome.ra_center,
+            dec_center: outcome.dec_center,
+            pixel_scale_arcsec: outcome.pixel_scale_arcsec,
+            rotation_deg: outcome.rotation_deg,
+            solver: outcome.solver,
+        })
+    }
+}
+
+/// Input bundle for [`McpHandler::do_plate_solve`]. Borrows the two
+/// path-shaped inputs by `&str` (call sites already own the strings)
+/// and takes the rest by value (all small `Copy` / `Option` types).
+pub(crate) struct DoPlateSolveInput<'a> {
+    pub document_id: Option<&'a str>,
+    pub image_path: Option<&'a str>,
+    /// Decimal degrees `(ra, dec)`. Mutually exclusive with
+    /// `use_mount_hints == true`.
+    pub pointing_hint: Option<(f64, f64)>,
+    pub use_mount_hints: bool,
+    pub fov_hint_deg: Option<f64>,
+    pub search_radius_deg: Option<f64>,
+    pub timeout: Option<Duration>,
+}
+
+/// Output of [`McpHandler::do_plate_solve`]: the wrapper's success
+/// fields verbatim. Callers wrap this in a `tool_success!` payload
+/// or in a [`crate::imaging::tools::center_on_target::SolveOutcome`]
+/// as needed.
+pub(crate) struct DoPlateSolveOutput {
+    pub ra_center: f64,
+    pub dec_center: f64,
+    pub pixel_scale_arcsec: f64,
+    pub rotation_deg: f64,
+    pub solver: String,
 }
 
 // ---------------------------------------------------------------------------
