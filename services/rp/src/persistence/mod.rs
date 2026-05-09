@@ -1,7 +1,7 @@
 //! Persistence layer: FITS I/O, the unified image+document cache, and
 //! exposure-document storage.
 //!
-//! As of Phase 7 (`docs/plans/image-evaluation-tools.md`), the cache and
+//! As of Phase 7 (`docs/plans/archive/image-evaluation-tools.md`), the cache and
 //! the on-disk FITS+sidecar pair together form the document store: a
 //! document is addressable by id as long as its files sit in
 //! `<data_directory>`. The lazy filesystem fallback in

@@ -3,7 +3,7 @@
 **Date:** 2026-05-03
 **Branch:** `worktree-trail-mount`
 **Parent service:** [`docs/services/sky-survey-camera.md`](../services/sky-survey-camera.md) — retires the *Telescope-following mode* item under Future Work.
-**Consumer plan:** [`docs/plans/image-evaluation-tools.md` Phase 6c-3](image-evaluation-tools.md#phase-6c-3--center_on_target-design--bdd--impl) — `center_on_target` BDD currently has to fake convergence via a synthetic `PlateSolveOps` adapter ("OmniSim does not model pointing"). This plan removes that caveat for the end-to-end path.
+**Consumer plan:** [`docs/plans/archive/image-evaluation-tools.md` Phase 6c-3](archive/image-evaluation-tools.md#phase-6c-3--center_on_target-design--bdd--impl) — `center_on_target` BDD currently has to fake convergence via a synthetic `PlateSolveOps` adapter ("OmniSim does not model pointing"). This plan removes that caveat for the end-to-end path.
 
 ## Background
 

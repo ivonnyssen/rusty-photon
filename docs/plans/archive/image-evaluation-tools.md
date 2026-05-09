@@ -1,21 +1,51 @@
 # Plan: Image evaluation tools in rp
 
-**Date:** 2026-04-28
+**Status: COMPLETE (archived 2026-05-09).** All seven phases shipped;
+the only items not addressed are the explicitly-deferred entries
+under [Out of scope / deferred](#out-of-scope--deferred).
+
+**Date:** 2026-04-28 (plan opened)
+**Closed:** 2026-05-09
 **Branch:** `worktree-image-evaluation-tools`
+
+## Status snapshot
+
+| Phase | Subject | Status |
+|-------|---------|--------|
+| 1 | Design doc updates | complete |
+| 2 | BDD scenarios for `measure_basic` | complete |
+| 3 | `imaging/` module promotion + image cache | complete |
+| 4 | Implement `measure_basic` | complete |
+| 5 | Subsequent image-analysis tools (`estimate_background`, `detect_stars`, `measure_stars`, `compute_snr`) | complete |
+| 6 prep | Module reorg (imaging vs. persistence) | complete |
+| 6a | Focuser primitives | complete |
+| 6b | `auto_focus` design + BDD + impl | complete |
+| 6c-prep | Mount primitives | complete |
+| 6c-1 | `plate-solver` rp-managed service (separate plan: [`plate-solver.md`](plate-solver.md)) | complete |
+| 6c-2 | `plate_solve` built-in MCP tool | complete |
+| 6c-3 | `center_on_target` design + BDD + impl | complete |
+| 7 | Unified document/image cache + UUID-suffixed filenames | complete |
+
+The only deferred items remaining are documented under
+[Out of scope / deferred](#out-of-scope--deferred). The rest of the
+plan below is preserved for historical context — phase status banners
+inside each section reflect the as-of date the work landed.
 
 ## Background
 
-`rp` ships only `compute_image_stats` today. The MCP catalog already lists
-`measure_basic` (HFR, star count, background) but it is not implemented, and
-there is no path for the broader image-evaluation toolkit needed by focus,
-centering, and quality-screening workflows. This plan adds those tools as
-**built-in** capabilities of `rp` per the "batteries included" architecture
-clarified during design — see `docs/services/rp.md` (Component Categories
-and Image Analysis Strategy).
+When the plan opened (2026-04-28) `rp` shipped only `compute_image_stats`.
+The MCP catalog listed `measure_basic` (HFR, star count, background) but
+it was not implemented, and there was no path for the broader image-
+evaluation toolkit needed by focus, centering, and quality-screening
+workflows. This plan added those tools as **built-in** capabilities of
+`rp` per the "batteries included" architecture clarified during design
+— see `docs/services/rp.md` (Component Categories and Image Analysis
+Strategy).
 
-The rest of the toolkit (`detect_stars`, `measure_stars`, `estimate_background`,
-`compute_snr`, plus compound tools `auto_focus` and `center_on_target`) is
-defined in `rp.md` as planned. This plan sequences them.
+The full toolkit (`measure_basic`, `estimate_background`,
+`detect_stars`, `measure_stars`, `compute_snr`, `plate_solve`, plus
+compound tools `auto_focus` and `center_on_target`) was defined in
+`rp.md` as planned at that point. This plan sequenced and shipped them.
 
 ## Goals
 
@@ -342,9 +372,9 @@ new tools and the planned filename-template work clear homes:
   `Pixel`, take `ArrayView2`, no async, no I/O — unit-testable
   without a runtime.
 - `imaging/tools/` — compositional analyzers (`measure_basic`,
-  `measure_stars`; `auto_focus` and `center_on_target` will land
-  here in Phase 6b/6c). Each binds multiple kernels into one
-  MCP-tool-shaped result.
+  `measure_stars`; `auto_focus` landed here in Phase 6b,
+  `center_on_target` in Phase 6c-3). Each binds multiple kernels
+  into one MCP-tool-shaped result.
 - `persistence/` — the I/O / async / on-disk layer. `cache.rs`,
   `fits.rs`, and `document.rs` (moved from the crate root). Future
   filename-template / token-resolver work attaches here, not under
@@ -496,20 +526,22 @@ Status: **complete.**
 
 #### Phase 6c — `center_on_target`
 
-Status: **planned (2026-05-02).** ADR-005 (plate solver: ASTAP via
+Status: **complete (2026-05-09).** ADR-005 (plate solver: ASTAP via
 subprocess + verification spike) landed on main on 2026-05-02,
-retiring the prior blocker.
+retiring the prior blocker; the four sub-phases below shipped over
+the following week.
 
 `center_on_target` composes four primitive tools — `capture`,
-`plate_solve`, `sync_mount`, `slew` — of which only `capture` exists
-today. Phase 6c therefore decomposes into four sub-phases. The first
-two are prerequisites; the third wires the plate solver into rp's
-catalog; the fourth is the compound tool itself, mirroring Phase 6b's
-shape. Each sub-phase is its own PR.
+`plate_solve`, `sync_mount`, `slew` — of which only `capture` existed
+when this phase opened. Phase 6c therefore decomposed into four
+sub-phases: the first two were prerequisites (mount primitives, the
+plate-solver service); the third wired the plate solver into rp's
+catalog; the fourth was the compound tool itself, mirroring Phase
+6b's shape. Each sub-phase landed as its own PR.
 
 ##### Decisions resolved during Phase 6c planning
 
-These will be captured in `docs/services/rp.md` (Compound Tools →
+These were captured in `docs/services/rp.md` (Compound Tools →
 `center_on_target` Contract — added by Phase 6c-3) and should not be
 re-litigated:
 
@@ -560,7 +592,7 @@ primitives). Required because `center_on_target` needs `slew` and
 
 ###### Decisions resolved during planning
 
-These will be captured in `docs/services/rp.md` (Configuration,
+These were captured in `docs/services/rp.md` (Configuration,
 Built-in Tools — Hardware) and should not be re-litigated:
 
 - **Singular `mount: Option<MountConfig>`, not plural `Vec`.** `rp`
@@ -801,7 +833,7 @@ helper for the late-solve workflow's image_path persistence.
 
 ###### Decisions resolved during Phase 6c-2 planning
 
-These will be captured in `docs/services/rp.md` (Built-in Tools — Image
+These were captured in `docs/services/rp.md` (Built-in Tools — Image
 Analysis; Configuration; new `plate_solve` Contract subsection added by
 Step 1) and should not be re-litigated:
 
@@ -1135,7 +1167,7 @@ no implementation landed before BDD scenarios existed on disk.
 
 ###### Decisions resolved during Phase 6c-3 planning
 
-These will be captured in `docs/services/rp.md` (Compound Tools →
+These were captured in `docs/services/rp.md` (Compound Tools →
 new `center_on_target` Contract subsection added by Step 1) and should
 not be re-litigated. The first three were already pinned in the prior
 Phase 6c-3 stub and the parent decision block above
@@ -1482,10 +1514,11 @@ during this planning pass.
 
 ##### Phase 6c sequencing notes
 
-- 6c-prep, 6c-1, 6c-2, 6c-3 land as independent PRs in that order.
-- 6c-1 unblocks 6c-2's HTTP contract; 6c-2 unblocks 6c-3's
-  `PlateSolveOps` adapter. 6c-prep is independent of the plate-solver
-  chain and can land in parallel.
+- 6c-prep, 6c-1, 6c-2, 6c-3 landed as independent PRs in that
+  order between 2026-05-03 and 2026-05-09.
+- 6c-1 unblocked 6c-2's HTTP contract; 6c-2 unblocked 6c-3's
+  `PlateSolveOps` adapter. 6c-prep was independent of the plate-
+  solver chain and landed in parallel.
 - The catalog-merge / shadow-rule code change called out under
   Phase 6 ("Catalog-merge code change (small, deferred until first
   caller)") remains deferred; `center_on_target` is a built-in and
@@ -1631,13 +1664,19 @@ deps; no `bazel mod tidy` needed.
 - **Cache LRU forced-eviction BDD scenario.** A unit test on `cache.rs`
   is the right place for LRU correctness; the end-to-end fallback path
   is exercised implicitly by Phase 4's scenarios.
-- **Plate-solver rp-managed service.** A separate ADR is needed for
-  ASTAP vs. astrometry.net (rp.md notes this). `center_on_target` is
-  blocked on it.
+- **Catalog-merge / shadow-rule code change.** Documented in `rp.md`
+  but no caller yet (no plugin tool-provider integration exists).
+  Lands with the first plugin that shadows a built-in tool.
 - **SEP / sep-sys.** Considered and rejected during design (LGPL +
   C FFI burden) — see Image Analysis Strategy / Design Rationale.
 - **Multi-camera image cache** with per-camera quotas. Single global
   LRU is sufficient for now.
+
+(The **Plate-solver rp-managed service** entry that previously sat
+here has been removed: ADR-005 resolved the ASTAP-vs-astrometry.net
+question, the service shipped via [`plate-solver.md`](plate-solver.md),
+and `plate_solve` + `center_on_target` shipped on top of it in
+Phases 6c-2 / 6c-3.)
 
 ## Dependencies on other workstreams
 

@@ -427,7 +427,7 @@ impl McpHandler {
         let document_id = Uuid::new_v4().to_string();
         // The 8-char UUID suffix is the on-disk reverse-lookup key used by
         // the cache's disk-fallback resolution (see Phase 7 of
-        // `docs/plans/image-evaluation-tools.md` and `rp.md` Persistence).
+        // `docs/plans/archive/image-evaluation-tools.md` and `rp.md` Persistence).
         // Operator-controlled `file_naming_pattern` rendering is reserved
         // until a token resolver lands; for now capture writes
         // `<uuid8>.fits` regardless of any configured template.

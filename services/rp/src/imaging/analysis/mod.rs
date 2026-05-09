@@ -4,7 +4,7 @@
 //! async, and persistence concerns. Compositional analyzers live in
 //! [`crate::imaging::tools`]; cache and FITS I/O live in
 //! [`crate::persistence`]. See `docs/services/rp.md` (Module Structure)
-//! and `docs/plans/image-evaluation-tools.md` for the layout rationale.
+//! and `docs/plans/archive/image-evaluation-tools.md` for the layout rationale.
 
 pub mod background;
 pub mod fwhm;

@@ -210,7 +210,7 @@ sensor geometry at capture time. This is sufficient for `plate_solve`
 hint sourcing and for consumers like annotation and mosaic planning.
 
 When the Phase 6c-2 `plate_solve` built-in tool lands (see
-`docs/plans/image-evaluation-tools.md`), its `document_id` mode uses
+`docs/plans/archive/image-evaluation-tools.md`), its `document_id` mode uses
 `optics.fov_height_deg` as the default `fov_hint_deg` — `fov_height_deg`
 matches ASTAP's `-fov` semantics ("image height in degrees"). Callers
 keep the option to override with an explicit `fov_hint_deg` parameter.

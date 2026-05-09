@@ -661,7 +661,7 @@ Within that fixed scope, dependencies are mostly linear:
 
 **Cross-plan unblocking:**
 
-- `image-evaluation-tools.md` Phase 6c-prep (telescope primitives:
+- `archive/image-evaluation-tools.md` Phase 6c-prep (telescope primitives:
   `slew`, `sync_mount`, `get_telescope_position`) is a prerequisite
   for *exercising* the planner end-to-end ("slew to M41"), but is
   **not** a prerequisite for any phase here — the MCP tools land and
@@ -688,7 +688,7 @@ Within that fixed scope, dependencies are mostly linear:
   test conventions; `@wip` filter (§2.7)
 - [`docs/plans/plate-solver.md`](plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
-- [`docs/plans/image-evaluation-tools.md`](image-evaluation-tools.md)
+- [`docs/plans/archive/image-evaluation-tools.md`](archive/image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
 - ASCOM Telescope `SiteLatitude` / `SiteLongitude` properties —
