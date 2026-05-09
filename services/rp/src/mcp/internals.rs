@@ -104,8 +104,8 @@ impl McpHandler {
     ) -> crate::error::Result<imaging::ImageStats> {
         let path_owned = path.to_string();
         tokio::task::spawn_blocking(move || {
-            let (pixels, _w, _h) = persistence::read_fits_pixels(&path_owned)?;
-            imaging::compute_stats(&pixels)
+            let (mut pixels, _w, _h) = persistence::read_fits_pixels(&path_owned)?;
+            imaging::compute_stats(&mut pixels)
                 .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
         })
         .await
@@ -830,15 +830,16 @@ impl McpHandler {
 pub(crate) fn stats_outcome<T: imaging::Pixel>(
     view: ndarray::ArrayView2<T>,
 ) -> crate::error::Result<imaging::ImageStats> {
-    // `compute_stats` is currently typed on `&[i32]`. Materialize a flat
-    // i32 buffer here so the cached-pixel path stays inside the
-    // `dispatch_pixels!` macro and reuses the same computation as the
-    // FITS-on-disk path. Negative pixels are clamped to 0 inside
-    // `compute_stats`, so the `to_u32() as i32` round-trip is safe for
-    // the realistic camera ranges we care about (u16 cameras + i32
-    // scientific HDR ≤ i32::MAX).
-    let pixels: Vec<i32> = view.iter().map(|p| p.to_u32() as i32).collect();
-    imaging::compute_stats(&pixels)
+    // `compute_stats` is typed on `&mut [i32]` and uses
+    // `select_nth_unstable` in place. Materialize a flat i32 buffer
+    // once here and hand it to the kernel mutably so the cached-pixel
+    // path doesn't pay the second n × 4 bytes that an immutable slice
+    // signature would force (caller copy + kernel-internal clone).
+    // Negative pixels are clamped to 0 inside `compute_stats`, so the
+    // `to_u32() as i32` round-trip is safe for realistic camera
+    // ranges (u16 cameras + i32 scientific HDR ≤ i32::MAX).
+    let mut pixels: Vec<i32> = view.iter().map(|p| p.to_u32() as i32).collect();
+    imaging::compute_stats(&mut pixels)
         .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
 }
 
