@@ -211,16 +211,19 @@ impl imaging::tools::center_on_target::PlateSolveOps for CenterOnTargetAdapter<'
             .ok_or_else(|| format!("plate_solve: document not found: {}", document_id))?;
 
         // Source the pointing hint from the mount, paralleling
-        // plate_solve's `use_mount_hints: true` path. Failure modes
-        // surface verbatim (no mount configured / disconnected /
-        // Alpaca read error) — center_on_target needs a connected
-        // mount anyway, and we already validated that up front.
-        let (ra_hint, dec_hint) = self
-            .handler
-            .read_mount_hints_for_plate_solve()
-            .await
-            .map(|(ra, dec)| (Some(ra), Some(dec)))
-            .unwrap_or((None, None));
+        // plate_solve's `use_mount_hints: true` path. We propagate
+        // the read failure verbatim — center_on_target's Contract
+        // says it reuses that hint plumbing, and the standalone tool
+        // errors loud rather than silently dropping to a blind solve.
+        // Mid-loop transient failures (driver hiccup, etc.) abort
+        // the iteration via the existing fail-fast policy. The
+        // `plate_solve: use_mount_hints requested but ...` shape
+        // matches what the standalone tool returns, then the loop
+        // wraps it as `equipment error during centering: ...`.
+        let (ra_hint, dec_hint) = match self.handler.read_mount_hints_for_plate_solve().await {
+            Ok((ra, dec)) => (Some(ra), Some(dec)),
+            Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {}", e)),
+        };
 
         let request = rp_plate_solver::SolveRequest {
             fits_path: doc.file_path.clone(),

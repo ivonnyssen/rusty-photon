@@ -414,6 +414,29 @@ mod tests {
         );
     }
 
+    /// Pin the wrap-safe property of haversine across the 0°/360°
+    /// boundary. Future readers (and reviewers) should not have to
+    /// re-derive that the `sin²(Δλ/2)` kernel has period 360° in
+    /// `Δλ` and therefore needs no manual `Δλ ∈ [-180°, 180°]`
+    /// normalization. Same minimal angular separation (~72″ between
+    /// 359.99° and 0.01°) regardless of which side we put first.
+    #[test]
+    fn haversine_is_wrap_safe_across_360() {
+        let across_zero = haversine_arcsec(359.99, 0.0, 0.01, 0.0);
+        let no_wrap = haversine_arcsec(0.0, 0.0, 0.02, 0.0);
+        assert!(
+            (across_zero - no_wrap).abs() < 1e-6,
+            "wrap mismatch: across-zero {} vs no-wrap {}",
+            across_zero,
+            no_wrap
+        );
+        assert!(
+            (across_zero - 72.0).abs() < 0.05,
+            "expected ~72″ separation, got {}",
+            across_zero
+        );
+    }
+
     // ---- end-to-end run_center_on_target over synthetic adapters ----
 
     struct StubCapturer {
