@@ -77,7 +77,17 @@ pub fn resolve_locale() -> LanguageIdentifier {
 }
 
 fn parse_locale(s: &str) -> LanguageIdentifier {
-    let bare = s.split('.').next().unwrap_or("en").replace('_', "-");
+    // POSIX locales look like `de_DE.UTF-8@euro`; `LanguageIdentifier` accepts
+    // only the language-region core. Strip the `.encoding` suffix, the
+    // `@modifier` suffix, and any surrounding whitespace before normalising
+    // `_` to `-`.
+    let trimmed = s.trim();
+    let no_modifier = trimmed.split('@').next().unwrap_or("");
+    let no_encoding = no_modifier.split('.').next().unwrap_or("en");
+    let bare = no_encoding.replace('_', "-");
+    if bare.is_empty() {
+        return en();
+    }
     bare.parse().unwrap_or_else(|_| en())
 }
 
@@ -145,31 +155,48 @@ pub enum LoadError {
 }
 
 /// One-call setup: resolve the locale, load the matching assets, register
-/// the loader as the thread's [`active_loader`], and hand back an `Arc` for
-/// the caller to feed into [`LocalizedParser::parse_localized`].
+/// the loader as the thread's [`active_loader`], and hand back the `Arc`
+/// alongside a status telling the caller whether the requested locale
+/// actually loaded.
 ///
-/// `loader` is the value returned by [`fluent_language_loader!`], invoked
-/// at the consumer crate so the macro can read that crate's `i18n.toml`.
+/// `loader` is the value returned by [`fluent_language_loader!`], invoked at
+/// the consumer crate so the macro can read that crate's `i18n.toml`.
 ///
-/// A failure to load the requested locale is logged at `warn` and swallowed —
-/// the returned `Arc` is always usable, falling back through Fluent's
-/// `xx-YY → xx → en` chain. Calling `init` twice on the same thread logs a
-/// `warn` and keeps the first loader; the returned `Arc` is the one passed
-/// in, but the *active loader* (used by [`fl_active`]) remains the original.
-pub fn init<A: I18nAssets>(loader: FluentLanguageLoader, assets: &A) -> Arc<FluentLanguageLoader> {
+/// The returned `Arc` is always usable: Fluent's preloaded English fallback
+/// keeps `fl!()` calls resolving even when the status is `Err`. Callers
+/// should typically log the status **after** their tracing subscriber is
+/// initialised, since `init` itself runs before logging is set up:
+///
+/// ```ignore
+/// let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
+/// let args = Args::parse_localized(&loader);
+/// tracing_subscriber::fmt().with_max_level(args.log_level).init();
+/// if let Err(e) = i18n_status {
+///     tracing::warn!(?e, "i18n: locale negotiation degraded; running with English fallback");
+/// }
+/// ```
+///
+/// `Err(LoadError::AlreadyInitialized)` means a previous `init` call on this
+/// thread already won the [`active_loader`] race — the loader returned here
+/// is still freshly built, but `fl_active` will keep returning the original.
+pub fn init<A: I18nAssets>(
+    loader: FluentLanguageLoader,
+    assets: &A,
+) -> (Arc<FluentLanguageLoader>, Result<(), LoadError>) {
     let requested = resolve_locale();
-    let _ = select_best(&loader, assets, &requested);
+    let load_status = select_best(&loader, assets, &requested);
     let arc = Arc::new(loader);
-    ACTIVE_LOADER.with(|cell| {
+    let register_status = ACTIVE_LOADER.with(|cell| {
         if cell.set(arc.clone()).is_err() {
-            tracing::warn!(
-                "i18n: init() called more than once on this thread — \
-                 keeping the loader registered by the first call. \
-                 fl_active() will return the original locale, not this one."
-            );
+            Err(LoadError::AlreadyInitialized)
+        } else {
+            Ok(())
         }
     });
-    arc
+    // Surface the most informative error — a load miss matters more than a
+    // double-init, since the latter is usually a refactor / test artefact.
+    let status = load_status.and(register_status);
+    (arc, status)
 }
 
 /// The loader registered by the most recent [`init`] call on this thread,
@@ -208,6 +235,35 @@ mod tests {
     fn parse_locale_handles_bare_lang() {
         let id = parse_locale("fr");
         assert_eq!(id.language.as_str(), "fr");
+    }
+
+    #[test]
+    fn parse_locale_strips_modifier_suffix() {
+        // de_DE@euro: legacy POSIX modifier the LanguageIdentifier parser
+        // doesn't accept on its own.
+        let id = parse_locale("de_DE@euro");
+        assert_eq!(id.language.as_str(), "de");
+        // Region should still survive the strip.
+        assert_eq!(id.region.map(|r| r.as_str().to_string()), Some("DE".into()));
+    }
+
+    #[test]
+    fn parse_locale_strips_encoding_and_modifier_together() {
+        let id = parse_locale("sr_RS.UTF-8@latin");
+        assert_eq!(id.language.as_str(), "sr");
+        assert_eq!(id.region.map(|r| r.as_str().to_string()), Some("RS".into()));
+    }
+
+    #[test]
+    fn parse_locale_trims_whitespace() {
+        let id = parse_locale("   de_DE.UTF-8   ");
+        assert_eq!(id.language.as_str(), "de");
+    }
+
+    #[test]
+    fn parse_locale_empty_string_falls_back_to_en() {
+        let id = parse_locale("");
+        assert_eq!(id.language.as_str(), "en");
     }
 
     #[test]

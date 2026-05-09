@@ -68,13 +68,20 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let loader = rp_i18n::init(fluent_language_loader!(), &Localizations);
+    let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
 
     // Setup tracing
     tracing_subscriber::fmt()
         .with_max_level(args.log_level)
         .init();
+
+    if let Err(e) = i18n_status {
+        tracing::warn!(
+            ?e,
+            "i18n: locale negotiation degraded; running with English fallback"
+        );
+    }
 
     tracing::debug!(
         "Parsed command line arguments: config={:?}, port={:?}, server_port={:?}, log_level={:?}",

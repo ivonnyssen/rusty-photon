@@ -12,6 +12,13 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ppba-driver")
 }
 
+/// Spawn the binary with locale env vars stripped, optionally setting `LANG`.
+///
+/// Tests pass `LANG=C` rather than relying on no-env behaviour because the
+/// CI runner inherits its own `LANG` (commonly `en_US.UTF-8` or
+/// `C.UTF-8`) and we want a deterministic English baseline regardless. The
+/// test names encode this explicitly (`with_lang_c`) instead of implying a
+/// "default" that depends on the runner.
 fn run(env_locale: Option<&str>, args: &[&str]) -> (String, String, bool) {
     let mut cmd = Command::new(bin());
     cmd.env_remove("RP_LOCALE")
@@ -30,7 +37,7 @@ fn run(env_locale: Option<&str>, args: &[&str]) -> (String, String, bool) {
 }
 
 #[test]
-fn help_renders_english_by_default() {
+fn help_renders_english_with_lang_c() {
     let (stdout, _, ok) = run(Some("C"), &["--help"]);
     assert!(ok, "--help should exit 0");
     assert!(
@@ -66,7 +73,7 @@ fn help_renders_german_when_lang_is_de() {
 }
 
 #[test]
-fn invalid_log_level_error_renders_english_by_default() {
+fn invalid_log_level_error_renders_english_with_lang_c() {
     let (_, stderr, ok) = run(Some("C"), &["--log-level", "wat"]);
     assert!(!ok, "bad log level should exit non-zero");
     assert!(

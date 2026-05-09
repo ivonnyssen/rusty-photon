@@ -2,7 +2,8 @@
 //!
 //! Apply alongside `clap::Parser` and use `#[localized(about = "key")]` /
 //! `#[localized(help = "key")]` to map struct/field help to Fluent keys.
-//! See `crates/rp-i18n/README.md` for the user-facing flow.
+//! See the crate-level docs in `crates/rp-i18n/src/lib.rs` and the spike
+//! write-up at `docs/plans/i18n-cli-spike.md` §10 for the user-facing flow.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;

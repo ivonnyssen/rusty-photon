@@ -29,6 +29,11 @@ rust_binary(
     compile_data = _I18N_ASSETS,
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    # rules_rust defaults CARGO_PKG_NAME to the Bazel target name; i18n-embed's
+    # `fl!` macro reads it via i18n-config to derive the .ftl filename. Pin it
+    # to the Cargo package name so the lookup matches `i18n/{lang}/ppba-driver.ftl`
+    # under both Cargo and Bazel.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     visibility = ["//visibility:public"],
     deps = [":ppba-driver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -76,6 +81,10 @@ rust_binary(
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    # See note on the non-mock `ppba-driver` target above; the mock binary is
+    # the one that triggered the original i18n lookup mismatch in CI because
+    # rules_rust used `ppba-driver_mock` as CARGO_PKG_NAME.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     deps = [":ppba-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
