@@ -1,9 +1,59 @@
 # Plan: rp planning & ephemeris tools
 
+**Status: COMPLETE (archived 2026-05-09).** All seven phases shipped in
+PR #139 (commit `cc27c82`, "feat(rp): Phases 1–7 — planner & ephemeris
+tools"). See **Outcomes** below.
+
 **Date:** 2026-05-03
 **Branch:** `worktree-planning-tools`
-**Parent design doc:** [`docs/services/rp.md`](../services/rp.md)
-**Closest precedent:** [`docs/plans/plate-solver.md`](plate-solver.md) (eight-phase, design-first plan)
+**Parent design doc:** [`docs/services/rp.md`](../../services/rp.md)
+**Closest precedent:** [`docs/plans/plate-solver.md`](../plate-solver.md) (eight-phase, design-first plan)
+
+## Outcomes (2026-05-09)
+
+- **Phase 1** (design doc updates): done. `rp.md` §"Planning and
+  Ephemeris" + updated §"Dynamic Planner" + `site` block in
+  Configuration + `SiteLatitude`/`SiteLongitude` paragraph in
+  Equipment Integration; `workspace.md` Shared Crates updated.
+- **Phase 2** (`rp-ephemeris` crate): done. `Ephemeris` trait +
+  `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings,
+  derived twilight / rise-set / transit / meridian-flip via
+  root-finders, `Site` with `tzf-rs` IANA derivation. The Astropy
+  reference-value scaffold (`refvals/gen.py` + `refvals/README.md`)
+  is committed; the canonical JSON fixtures it generates are **not
+  yet checked in** — the in-source unit tests in `derived.rs` and
+  `erfars_impl.rs` carry the algorithmic checks for now, with the
+  cross-Astropy comparison still a follow-up outside this plan.
+- **Phase 3** (`rp-catalog` crate): done. Embedded Messier + NGC + IC
+  CSVs from openNGC (CC-BY-SA-4.0), case- and whitespace-insensitive
+  resolution with alias support, importer script under `scripts/`.
+- **Phase 4** (site config + mount validation): done. `SiteConfig`
+  in `services/rp/src/config/site.rs` (lives on the top-level
+  `Config` as `Option<SiteConfig>` — a config without `site` loads
+  cleanly; ephemeris/planner tools then return a structured
+  "site not configured" error when called).
+  `SiteLatitude`/`SiteLongitude` are read on telescope connect with
+  0.01° hard-error mismatch and graceful skip on `NOT_IMPLEMENTED`.
+- **Phase 5** (`resolve_target` MCP): done. `services/rp/src/planner/catalog.rs`
+  + `target_catalog.feature`.
+- **Phase 6** (primitive ephemeris MCP tools): done. All 9 ephemeris
+  primitives — helpers in `services/rp/src/planner/primitives.rs`,
+  MCP methods in `services/rp/src/mcp/built_in/planner.rs` —
+  joined by `resolve_target` from Phase 5 to make up the 10-tool
+  primitive surface listed in `rp.md`. Coverage by
+  `ephemeris_primitives.feature`.
+- **Phase 7** (convenience tools): done. `get_target_status`,
+  `get_next_target`, `get_meridian_status` in
+  `services/rp/src/planner/{convenience,decision}.rs` + `planner.feature`.
+  v1 limitations on the `get_next_target` decision logic (set-time
+  elimination, least-progress tiebreaker, explicit meridian-flip
+  avoidance, reachable `EndOfSession`) are documented in `rp.md`
+  §"Dynamic Planner" and tracked as follow-ups outside this plan.
+
+Follow-up housekeeping landed on `worktree-planning-tools` after the
+PR #139 merge: Phase 1 plan-file checkboxes flipped to `[x]`, and a
+one-line cross-reference from `rp.md` §Configuration to the site
+validation rule.
 
 ## Background
 
@@ -333,28 +383,28 @@ implementation (per `docs/skills/development-workflow.md`
 
 ### Phase 1 — Design doc updates
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `docs/services/rp.md`: insert new section **"Planning and
+- [x] `docs/services/rp.md`: insert new section **"Planning and
       Ephemeris"** before §"Dynamic Planner" covering: site config,
       mount-side validation rule, IANA timezone derivation, the
       `Ephemeris` trait shape, the primitive vs. convenience MCP tool
       split (table per Decisions Resolved), the catalog source and
       license posture.
-- [ ] `docs/services/rp.md` §"Dynamic Planner": update so the existing
+- [x] `docs/services/rp.md` §"Dynamic Planner": update so the existing
       decision-logic bullets reference the primitive tools by name
       (e.g., "altitude check" → "compute_alt_az + min_altitude_degrees
       from config"), instead of leaving the "who computes this" gap.
-- [ ] `docs/services/rp.md` §"Configuration": add a `site` block to the
+- [x] `docs/services/rp.md` §"Configuration": add a `site` block to the
       example JSON; reference the validation rule. Add the new MCP
       tools to the tool catalog example.
-- [ ] `docs/services/rp.md` §"Equipment Integration": one paragraph
+- [x] `docs/services/rp.md` §"Equipment Integration": one paragraph
       under "ASCOM Alpaca Devices" naming `SiteLatitude` /
       `SiteLongitude` as read-on-connect properties and pointing at
       the validation rule in the Planning section.
-- [ ] `docs/workspace.md`: add `rp-ephemeris` and `rp-catalog` to the
+- [x] `docs/workspace.md`: add `rp-ephemeris` and `rp-catalog` to the
       Shared Crates table.
-- [ ] No new ADR. The `erfars` and `tzf-rs` choices are tactical
+- [x] No new ADR. The `erfars` and `tzf-rs` choices are tactical
       dep picks (similar to rmcp / fitsrs) — captured in this plan's
       Decisions Resolved section, no ADR file needed unless a future
       swap warrants one. The "in-process, not a managed service"
@@ -367,14 +417,14 @@ contract Phase 2 implements verbatim.
 
 ### Phase 2 — `rp-ephemeris` crate (trait + impl + reference-value tests)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] New workspace member `crates/rp-ephemeris` registered in root
+- [x] New workspace member `crates/rp-ephemeris` registered in root
       `Cargo.toml`. Standard crate metadata (workspace inheritance for
       version, edition, rust-version, lints).
-- [ ] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
+- [x] `BUILD.bazel` for the new crate; `CARGO_BAZEL_REPIN=1 bazel mod
       tidy` after adding `erfars` and `tzf-rs` to workspace deps.
-- [ ] `src/lib.rs` — `Ephemeris` trait per the design doc. Methods are
+- [x] `src/lib.rs` — `Ephemeris` trait per the design doc. Methods are
       pure functions (`&self` only for any cached state inside an
       impl, no I/O). Surface:
       ```text
@@ -391,7 +441,7 @@ Status: **not started.**
       Inputs/outputs are concrete types in `rp_ephemeris::types`, not
       `erfars`-shaped. The trait surface contains zero `unsafe` and
       no `erfars` types — those stay inside `erfars_impl.rs`.
-- [ ] `src/erfars_impl.rs` — `ErfarsEphemeris` implementing the trait
+- [x] `src/erfars_impl.rs` — `ErfarsEphemeris` implementing the trait
       by calling `erfars` for the ERFA-native operations:
       - `sidereal_time` → ERFA `Gst06a` (apparent sidereal time) on
         a UT1 input, with a documented note that ΔUT1 is treated as
@@ -408,7 +458,7 @@ Status: **not started.**
         sufficient for "is the moon close to my target?" checks).
       Unit-conversion (degrees ↔ radians, JD double-precision split,
       time-scale handling) lives here, not in the trait surface.
-- [ ] `src/derived.rs` — Operations not in ERFA's surface, built as
+- [x] `src/derived.rs` — Operations not in ERFA's surface, built as
       small root-finders over ERFA-supplied positions:
       - `transit` → solve for the time where the target's hour angle
         is zero (closed form from LST and target RA).
@@ -422,11 +472,11 @@ Status: **not started.**
       mod tests` block against a couple of known cases (e.g.,
       Polaris never transits at the equator → returns `None`;
       M31 transit time at Greenwich on the 2026 spring equinox).
-- [ ] `src/site.rs` — `Site { latitude_degrees, longitude_degrees }`
+- [x] `src/site.rs` — `Site { latitude_degrees, longitude_degrees }`
       with `pub fn iana_timezone(&self) -> &'static str` derived once
       at construction via `tzf-rs`. `Display` impl logs lat/lon + tz
       so `info!("site: {site}")` is operator-friendly.
-- [ ] `tests/reference_values.rs` — golden-file tests. Pick ~10 named
+- [x] `tests/reference_values.rs` — golden-file tests. Pick ~10 named
       objects (Polaris, M31, M42, M81, Sirius, Vega, Antares, NGC
       891, IC 1396, the Sun, the Moon) at ~3 sites (a mid-northern, a
       mid-southern, an equatorial) at ~3 times (solstices and an
@@ -441,10 +491,10 @@ Status: **not started.**
       documented Astropy script committed under
       `crates/rp-ephemeris/refvals/gen.py` — not run in CI;
       provenance is the commit message.
-- [ ] No `mockall` here — the `Ephemeris` trait is consumed by rp's
+- [x] No `mockall` here — the `Ephemeris` trait is consumed by rp's
       planner module, which mocks it there if needed. The trait
       itself is tested via the real `ErfarsEphemeris` impl.
-- [ ] **No `unsafe` in `rp-ephemeris`'s own code.** `erfars` already
+- [x] **No `unsafe` in `rp-ephemeris`'s own code.** `erfars` already
       encapsulates the unsafe FFI; the wrapper exposes only safe
       Rust. Enforced via `#![deny(unsafe_code)]` at the crate root.
 
@@ -454,31 +504,31 @@ Status: **not started.**
 
 ### Phase 3 — `rp-catalog` crate (embedded Messier + NGC + IC)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] License pick: confirm openNGC CC-BY-SA-4.0 is acceptable for
+- [x] License pick: confirm openNGC CC-BY-SA-4.0 is acceptable for
       embedded data in this workspace (project license is dual
       MIT/Apache; CC-BY-SA-4.0 attribution requirements are
       compatible with bundling under those terms — verify before
       merge). If not, fall back to NASA NED or HEASARC public-domain
       sources. Outcome documented in
       `crates/rp-catalog/src/data/LICENSE-DATA`.
-- [ ] New workspace member `crates/rp-catalog` registered in root
+- [x] New workspace member `crates/rp-catalog` registered in root
       `Cargo.toml`.
-- [ ] `BUILD.bazel`; `bazel mod tidy` not required (no new
+- [x] `BUILD.bazel`; `bazel mod tidy` not required (no new
       crates.io deps — uses workspace `serde` / `csv` only).
-- [ ] `src/data/messier.csv`, `ngc.csv`, `ic.csv` — committed CSVs
+- [x] `src/data/messier.csv`, `ngc.csv`, `ic.csv` — committed CSVs
       with columns `name, type, ra_hours, dec_degrees, magnitude,
       size_arcmin`. Aliases (e.g., M42 ↔ NGC 1976) covered in a
       separate `aliases.csv`.
-- [ ] `src/lib.rs` — `Catalog::load_embedded() -> Catalog` parses
+- [x] `src/lib.rs` — `Catalog::load_embedded() -> Catalog` parses
       CSVs at startup via `include_str!` + `csv` crate; `pub fn
       resolve(&self, name: &str) -> Option<ResolvedTarget>` does
       case-insensitive lookup with whitespace-insensitive matching
       (`"m41"`, `"M 41"`, `"M41"`, `"Messier 41"` all resolve).
       Aliases handled in the lookup, not at parse time, so the data
       stays one-row-per-object.
-- [ ] `tests/resolution.rs` — exhaustive smoke for the well-known
+- [x] `tests/resolution.rs` — exhaustive smoke for the well-known
       Messier objects and a sampling of NGC / IC entries; alias
       lookup; case-insensitive lookup; missing-object → `None`.
 
@@ -487,14 +537,14 @@ green. README documents the data source and license.
 
 ### Phase 4 — Site config + mount-side validation in rp
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `services/rp/src/config.rs` — `SiteConfig {
+- [x] `services/rp/src/config.rs` — `SiteConfig {
       latitude_degrees: f64, longitude_degrees: f64 }` with serde
       validation (lat ∈ [−90, 90], lon ∈ [−180, 180]). Wired into
       the top-level `Config` struct under a new `site` field. Unit
       tests cover the range validation and a happy-path round-trip.
-- [ ] `services/rp/src/equipment.rs` — on telescope connect, read
+- [x] `services/rp/src/equipment.rs` — on telescope connect, read
       `SiteLatitude` / `SiteLongitude` via the existing
       `ascom-alpaca` telescope feature. If both reads succeed,
       compare to config; abs diff > 0.01° in either dimension →
@@ -502,7 +552,7 @@ Status: **not started.**
       If either read fails (typically `NOT_IMPLEMENTED` — ASCOM has
       no `CanGetSite*` capability bit; the read is the probe),
       `debug!()` log and proceed.
-- [ ] `services/rp/tests/features/site_validation.feature` —
+- [x] `services/rp/tests/features/site_validation.feature` —
       scenarios:
       1. Config + mount agree → connect succeeds, log line shows
          derived IANA timezone.
@@ -512,20 +562,20 @@ Status: **not started.**
          connect succeeds, debug log notes validation was skipped.
       4. Config lat out of range → config-load error, named field.
       Target ~5 scenarios.
-- [ ] All four feature scenarios tagged `@wip` initially; tag
+- [x] All four feature scenarios tagged `@wip` initially; tag
       removed in the same commit that lands the validation
       implementation.
-- [ ] `services/rp/tests/bdd/steps/site_steps.rs` — new step file.
+- [x] `services/rp/tests/bdd/steps/site_steps.rs` — new step file.
       Reuses the existing OmniSim Alpaca telescope plumbing; OmniSim
       already exposes configurable `SiteLatitude` / `SiteLongitude`
       so no test-double extension is needed.
-- [ ] `services/rp/src/equipment.rs` and any related modules updated
+- [x] `services/rp/src/equipment.rs` and any related modules updated
       so the `Ephemeris` trait + `Site` are available wherever the
       planner module needs them; no MCP exposure yet (Phases 5–7).
-- [ ] `docs/services/rp.md` Configuration example: ensure the `site`
+- [x] `docs/services/rp.md` Configuration example: ensure the `site`
       block lands now, not later (it's now load-bearing for
       `cargo run`).
-- [ ] `docs/references/ascom-alpaca.md` — extend with a Telescope
+- [x] `docs/references/ascom-alpaca.md` — extend with a Telescope
       section covering `SiteLatitude` and `SiteLongitude`, plus the
       "no `CanGetSite*` bit; the read is the probe" pattern, so
       future contributors don't have to chase the upstream spec for
@@ -538,16 +588,16 @@ timezone on success.
 
 ### Phase 5 — `resolve_target` MCP tool
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `services/rp/src/planner/catalog.rs` — MCP wrapper around
+- [x] `services/rp/src/planner/catalog.rs` — MCP wrapper around
       `rp_catalog::Catalog::resolve`. Returns
       `{ name, ra_hours, dec_degrees, object_type, magnitude,
       size_arcmin }` or a structured "not found" error with a
       suggestion list (top 3 fuzzy matches, computed by Levenshtein
       over canonical names).
-- [ ] `services/rp/src/mcp.rs` — register `resolve_target`.
-- [ ] `services/rp/tests/features/target_catalog.feature` —
+- [x] `services/rp/src/mcp.rs` — register `resolve_target`.
+- [x] `services/rp/tests/features/target_catalog.feature` —
       scenarios:
       1. `resolve_target {name: "M41"}` → returns M41 coords (assert
          exact RA/Dec from openNGC).
@@ -557,7 +607,7 @@ Status: **not started.**
          a suggestions list.
       4. Case- and whitespace-insensitive lookup for `"m 41"`.
       Target ~6 scenarios.
-- [ ] `target` definitions in config remain unchanged — they still
+- [x] `target` definitions in config remain unchanged — they still
       accept literal RA/Dec. Catalog lookup is a tool call, not a
       config-time resolution. (A future enhancement could let
       `targets[]` reference catalog names; explicitly out of v1
@@ -568,22 +618,22 @@ without `@wip`. `cargo rail run --profile commit -q` clean.
 
 ### Phase 6 — Primitive ephemeris MCP tools
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `services/rp/src/planner/primitives.rs` — MCP wrappers for the
+- [x] `services/rp/src/planner/primitives.rs` — MCP wrappers for the
       10 primitive operations from the Decisions Resolved table.
       Each wrapper is a thin `serde_json` ↔ `Ephemeris`-trait-call
       adapter; the math lives in `rp-ephemeris`.
-- [ ] `services/rp/src/mcp.rs` — register all 10 primitives.
-- [ ] `services/rp/tests/features/ephemeris_primitives.feature` —
+- [x] `services/rp/src/mcp.rs` — register all 10 primitives.
+- [x] `services/rp/tests/features/ephemeris_primitives.feature` —
       one scenario per primitive, with a known-answer check (the
       reference-value table from Phase 2 supplies the canonical
       values; the BDD scenario asserts the MCP response matches).
       Two scenarios per error case (out-of-range time, RA/Dec out of
       range, unknown twilight kind). Target ~15 scenarios.
-- [ ] All scenarios `@wip` until the implementation lands in the
+- [x] All scenarios `@wip` until the implementation lands in the
       same commit.
-- [ ] No new test-double crates needed — the `Ephemeris` trait is
+- [x] No new test-double crates needed — the `Ephemeris` trait is
       consumed via its real implementation. The reference-value
       tests in Phase 2 already validate the underlying math; these
       BDD scenarios validate the MCP wrapping (serde shapes,
@@ -594,9 +644,9 @@ green without `@wip`. `cargo rail run --profile commit -q` clean.
 
 ### Phase 7 — High-level convenience tools (`get_target_status`, `get_next_target`)
 
-Status: **not started.**
+Status: **complete.**
 
-- [ ] `services/rp/src/planner/decision.rs` — implement the
+- [x] `services/rp/src/planner/decision.rs` — implement the
       decision-logic bullets from `rp.md` §"Dynamic Planner" as a
       pure function over the planner's inputs (target list, current
       time, site, `Ephemeris` impl, per-target progress). Step 1
@@ -607,10 +657,10 @@ Status: **not started.**
       structured `reason` field (one of
       `BestTransitingCandidate`, `LeastProgress`, `WaitForTwilight`,
       `EndOfSession`, etc.).
-- [ ] `services/rp/src/planner/convenience.rs` — MCP wrappers for
+- [x] `services/rp/src/planner/convenience.rs` — MCP wrappers for
       `get_target_status`, `get_next_target`, `get_meridian_status`.
-- [ ] `services/rp/src/mcp.rs` — register the three.
-- [ ] `services/rp/tests/features/planner.feature` — scenarios:
+- [x] `services/rp/src/mcp.rs` — register the three.
+- [x] `services/rp/tests/features/planner.feature` — scenarios:
       - `get_target_status {target_name: "M41"}` mid-evening → returns
         positive altitude, transit time in the future, finite
         time-to-set.
@@ -627,9 +677,9 @@ Status: **not started.**
       - `get_meridian_status` 30 min before flip → returns
         `time_to_flip: 30m, side_of_pier: east`.
       Target ~8 scenarios.
-- [ ] All scenarios `@wip` until the implementation lands in the
+- [x] All scenarios `@wip` until the implementation lands in the
       same commit.
-- [ ] BDD World gains a `frozen_time: Option<DateTime<Utc>>` for
+- [x] BDD World gains a `frozen_time: Option<DateTime<Utc>>` for
       determinism — the decision logic accepts an `Ephemeris`
       handle plus an explicit `now: DateTime<Utc>` so tests don't
       race the wall clock. The MCP wrappers default `now` to
@@ -661,7 +711,7 @@ Within that fixed scope, dependencies are mostly linear:
 
 **Cross-plan unblocking:**
 
-- `archive/image-evaluation-tools.md` Phase 6c-prep (telescope primitives:
+- `image-evaluation-tools.md` Phase 6c-prep (telescope primitives:
   `slew`, `sync_mount`, `get_telescope_position`) is a prerequisite
   for *exercising* the planner end-to-end ("slew to M41"), but is
   **not** a prerequisite for any phase here — the MCP tools land and
@@ -680,22 +730,22 @@ Within that fixed scope, dependencies are mostly linear:
   in-process, behind the `Ephemeris` trait. `tzf-rs` remains the
   right tz-from-coords pick. No ADR — captured in this plan's
   Decisions Resolved.
-- [`docs/services/rp.md`](../services/rp.md) §"Dynamic Planner",
+- [`docs/services/rp.md`](../../services/rp.md) §"Dynamic Planner",
   §"Configuration", §"Equipment Integration"
-- [`docs/skills/development-workflow.md`](../skills/development-workflow.md)
+- [`docs/skills/development-workflow.md`](../../skills/development-workflow.md)
   — design-first, test-first phasing
-- [`docs/skills/testing.md`](../skills/testing.md) — BDD and unit
+- [`docs/skills/testing.md`](../../skills/testing.md) — BDD and unit
   test conventions; `@wip` filter (§2.7)
-- [`docs/plans/plate-solver.md`](plate-solver.md) — closest
+- [`docs/plans/plate-solver.md`](../plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
-- [`docs/plans/archive/image-evaluation-tools.md`](archive/image-evaluation-tools.md)
+- [`docs/plans/archive/image-evaluation-tools.md`](image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
   end-to-end exercise of the planner output
 - ASCOM Telescope `SiteLatitude` / `SiteLongitude` properties —
   ASCOM has no `CanGetSiteLatitude` / `CanGetSiteLongitude` capability
   bit; the read attempt itself is the capability probe (a mount that
   doesn't expose the property returns `NOT_IMPLEMENTED`). The
-  in-repo reference [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md)
+  in-repo reference [`docs/references/ascom-alpaca.md`](../../references/ascom-alpaca.md)
   Telescope section documents this. Upstream Alpaca device spec is at
   [ascom-standards.org/api](https://ascom-standards.org/api/)
   (Telescope endpoints `/sitelatitude`, `/sitelongitude`).

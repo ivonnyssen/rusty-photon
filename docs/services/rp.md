@@ -2406,7 +2406,7 @@ right now" from a name string, without the operator having to paste
 coordinates by hand or trust the mount's pointing model.
 
 The implementation plan that introduces both crates lives at
-[`docs/plans/rp-planning-tools.md`](../plans/rp-planning-tools.md).
+[`docs/plans/archive/rp-planning-tools.md`](../plans/archive/rp-planning-tools.md).
 This section describes the resulting design as it appears to MCP
 clients and to operators editing the config file.
 
@@ -2889,6 +2889,13 @@ trains; `mount` stays singular. Multi-mount support is in
 is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
 when the config sets a non-zero default).
+
+The `site` block is required for the ephemeris and planner tools
+(`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
+it is validated against the ASCOM mount on connect — see
+[Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
+A config without `site` loads cleanly and `rp` runs, but those tools
+return a structured "site not configured" error.
 
 ```json
 {
