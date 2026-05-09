@@ -23,8 +23,12 @@
 //!     config: Option<String>,
 //! }
 //!
-//! let loader = rp_i18n::init(fluent_language_loader!(), &Localizations);
+//! let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
 //! let args = Args::parse_localized(&loader);
+//! // After tracing is initialised, surface any locale-negotiation miss:
+//! if let Err(e) = i18n_status {
+//!     tracing::warn!(?e, "i18n: locale negotiation degraded; running with English fallback");
+//! }
 //! ```
 //!
 //! Doctest is `ignore`d because `fluent_language_loader!` reads the consumer

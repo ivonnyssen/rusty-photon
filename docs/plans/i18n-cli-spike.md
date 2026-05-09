@@ -266,8 +266,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    let loader = rp_i18n::init(fluent_language_loader!(), &Localizations);
+    let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
+    tracing_subscriber::fmt().with_max_level(args.log_level).init();
+    if let Err(e) = i18n_status {
+        tracing::warn!(?e, "i18n: locale negotiation degraded; running with English fallback");
+    }
     // ...
 }
 ```
@@ -279,8 +283,12 @@ default — so opting a single field out of translation costs nothing.
 `rp_i18n::init` is the one-call lifecycle: it resolves the locale via
 [`resolve_locale`], negotiates against the embedded `Localizations` via
 [`select_best`], populates the crate-internal `ACTIVE_LOADER` thread-local
-(used by `value_parser` callbacks via [`fl_active`]), and returns an `Arc`
-suitable for `parse_localized`.
+(used by `value_parser` callbacks via [`fl_active`]), and returns
+`(Arc<FluentLanguageLoader>, Result<(), LoadError>)`. The `Arc` is what
+`parse_localized` consumes; the `Result` reports whether the requested
+locale actually loaded — log it **after** `tracing_subscriber::fmt().init()`
+runs (since `init` itself executes pre-tracing, any internal warnings would
+otherwise be dropped).
 
 Net effect on the consumer: a single-page service like `ppba-driver` shrinks
 the i18n-related code in `main.rs` from ~30 lines (manual `mut_arg` chain +
