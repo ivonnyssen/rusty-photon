@@ -13,27 +13,48 @@ pub struct ImageStats {
     pub pixel_count: u64,
 }
 
-/// Compute pixel statistics from a slice of pixel values.
+/// Compute pixel statistics from a mutable slice of pixel values.
+///
+/// Takes `&mut [i32]` so the median's `select_nth_unstable` runs
+/// in-place rather than over an internal clone — for large images
+/// this avoids an extra `n × 4` bytes of peak allocation on top of
+/// the cached pixel buffer. The caller's buffer is left in a
+/// permuted (partially-ordered) state on return; min/max/mean are
+/// read before the first partition so they reflect the original
+/// pixel set regardless of ordering.
 ///
 /// Returns `None` if the pixel slice is empty.
-pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
+pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     if pixels.is_empty() {
         return None;
     }
 
     let pixel_count = pixels.len() as u64;
 
-    let min = *pixels.iter().min().expect("non-empty slice");
-    let max = *pixels.iter().max().expect("non-empty slice");
+    // Fold min/max/mean in a single pass before the partition mutates
+    // the buffer; the values are order-independent so reading them
+    // up front matches the previous (non-mutating) contract.
+    let mut min = i32::MAX;
+    let mut max = i32::MIN;
+    let mut sum = 0.0_f64;
+    for &p in pixels.iter() {
+        if p < min {
+            min = p;
+        }
+        if p > max {
+            max = p;
+        }
+        sum += p.max(0) as f64;
+    }
+    let mean_adu = sum / pixel_count as f64;
 
-    let mut buf = pixels.to_vec();
-    let mid = buf.len() / 2;
-    let median = if buf.len().is_multiple_of(2) {
-        let (_, &mut upper, _) = buf.select_nth_unstable(mid);
-        let (_, &mut lower, _) = buf[..mid].select_nth_unstable(mid - 1);
+    let mid = pixels.len() / 2;
+    let median = if pixels.len().is_multiple_of(2) {
+        let (_, &mut upper, _) = pixels.select_nth_unstable(mid);
+        let (_, &mut lower, _) = pixels[..mid].select_nth_unstable(mid - 1);
         ((lower as i64 + upper as i64) / 2) as i32
     } else {
-        let (_, &mut m, _) = buf.select_nth_unstable(mid);
+        let (_, &mut m, _) = pixels.select_nth_unstable(mid);
         m
     };
 
@@ -44,7 +65,6 @@ pub fn compute_stats(pixels: &[i32]) -> Option<ImageStats> {
     // when they do, callers see a uniform "negatives become zero" rather
     // than a min/max/median of 0 alongside a negative mean.
     let clamp = |v: i32| -> u32 { v.max(0) as u32 };
-    let mean_adu = pixels.iter().map(|&p| p.max(0) as f64).sum::<f64>() / pixel_count as f64;
 
     Some(ImageStats {
         median_adu: clamp(median),
@@ -62,8 +82,8 @@ mod tests {
 
     #[test]
     fn compute_stats_odd_count() {
-        let pixels = vec![10, 20, 30, 40, 50];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![10, 20, 30, 40, 50];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 30);
         assert_eq!(stats.min_adu, 10);
         assert_eq!(stats.max_adu, 50);
@@ -73,8 +93,8 @@ mod tests {
 
     #[test]
     fn compute_stats_even_count() {
-        let pixels = vec![10, 20, 30, 40];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![10, 20, 30, 40];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 25);
         assert_eq!(stats.min_adu, 10);
         assert_eq!(stats.max_adu, 40);
@@ -84,8 +104,8 @@ mod tests {
 
     #[test]
     fn compute_stats_single_pixel() {
-        let pixels = vec![42];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![42];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 42);
         assert_eq!(stats.min_adu, 42);
         assert_eq!(stats.max_adu, 42);
@@ -94,14 +114,14 @@ mod tests {
 
     #[test]
     fn compute_stats_empty() {
-        let pixels: Vec<i32> = vec![];
-        assert!(compute_stats(&pixels).is_none());
+        let mut pixels: Vec<i32> = vec![];
+        assert!(compute_stats(&mut pixels).is_none());
     }
 
     #[test]
     fn compute_stats_all_same() {
-        let pixels = vec![1000; 100];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![1000; 100];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 1000);
         assert_eq!(stats.min_adu, 1000);
         assert_eq!(stats.max_adu, 1000);
@@ -109,8 +129,8 @@ mod tests {
 
     #[test]
     fn compute_stats_unsorted_input() {
-        let pixels = vec![50, 10, 40, 20, 30];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![50, 10, 40, 20, 30];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 30);
         assert_eq!(stats.min_adu, 10);
         assert_eq!(stats.max_adu, 50);
@@ -118,8 +138,8 @@ mod tests {
 
     #[test]
     fn compute_stats_large_values() {
-        let pixels = vec![0, 32768, 65535];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![0, 32768, 65535];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.median_adu, 32768);
         assert_eq!(stats.min_adu, 0);
         assert_eq!(stats.max_adu, 65535);
@@ -131,8 +151,8 @@ mod tests {
         // pixels as zero. Without uniform clamping, mean_adu could be
         // negative while min_adu/max_adu/median_adu sit at 0 (their u32
         // floor), producing internally inconsistent stats.
-        let pixels = vec![-100i32, 0, 50];
-        let stats = compute_stats(&pixels).unwrap();
+        let mut pixels = vec![-100i32, 0, 50];
+        let stats = compute_stats(&mut pixels).unwrap();
         assert_eq!(stats.min_adu, 0);
         assert_eq!(stats.max_adu, 50);
         assert_eq!(stats.median_adu, 0);

@@ -1538,11 +1538,133 @@ async fn test_compute_image_stats_bad_fits() {
     });
     let result = handler
         .compute_image_stats(Parameters(ComputeImageStatsParams {
-            image_path: bad_file.to_string_lossy().to_string(),
+            image_path: Some(bad_file.to_string_lossy().to_string()),
             document_id: None,
         }))
         .await;
     assert_tool_error(result, "failed to compute stats");
+}
+
+#[tokio::test]
+async fn test_compute_image_stats_missing_arguments() {
+    // Pins the validation contract surfaced by `rp.md:702` ("document_id
+    // or image_path"): callers must supply at least one. Mirrors the
+    // missing-args branch tested for measure_basic / estimate_background.
+    let handler = test_handler(crate::equipment::EquipmentRegistry {
+        cameras: vec![],
+        filter_wheels: vec![],
+        cover_calibrators: vec![],
+        focusers: vec![],
+        mount: None,
+    });
+    let result = handler
+        .compute_image_stats(Parameters(ComputeImageStatsParams {
+            document_id: None,
+            image_path: None,
+        }))
+        .await;
+    assert_tool_error(result, "image_path");
+}
+
+#[tokio::test]
+async fn test_compute_image_stats_persists_section_via_document_id() {
+    // Pins the load-bearing piece of issue #175: when called with a
+    // `document_id` that resolves through the cache, the computed
+    // stats are written into the exposure document as an
+    // `image_stats` section. Mirrors the section-persistence test
+    // shape used by the other imaging tools (measure_basic ->
+    // image_analysis, estimate_background -> background, etc).
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::new(64, 4, temp.path().to_path_buf());
+
+    // Pixels chosen so the resulting stats are unambiguous: pixel_count = 4,
+    // min = 100, max = 400, median = (200 + 300) / 2 = 250, mean = 250.0.
+    let pixel_buf: Vec<u16> = vec![100, 200, 300, 400];
+    let cached_pixels = CachedPixels::from_u16_pixels(pixel_buf, (2, 2)).unwrap();
+
+    let document_id = "doc-image-stats-1".to_string();
+    let uuid8 = "doc-imgs"; // 8-char-stable suffix for the on-disk basename.
+    let file_path = temp
+        .path()
+        .join(format!("{}.fits", uuid8))
+        .to_string_lossy()
+        .into_owned();
+
+    let doc = ExposureDocument {
+        id: document_id.clone(),
+        captured_at: "2026-05-08T00:00:00Z".to_string(),
+        file_path: file_path.clone(),
+        width: 2,
+        height: 2,
+        camera_id: Some("cam".into()),
+        duration: Some(Duration::from_millis(100)),
+        max_adu: Some(65535),
+        optics: None,
+        sections: serde_json::Map::new(),
+    };
+
+    cache.insert(
+        document_id.clone(),
+        crate::persistence::CachedImage::new(
+            cached_pixels,
+            2,
+            2,
+            std::path::PathBuf::from(&file_path),
+            65535,
+            doc,
+        ),
+    );
+
+    let handler = McpHandler::new(
+        Arc::new(crate::equipment::EquipmentRegistry {
+            cameras: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            focusers: vec![],
+            mount: None,
+        }),
+        Arc::new(crate::events::EventBus::from_config(&[])),
+        SessionConfig {
+            data_directory: temp.path().to_string_lossy().to_string(),
+        },
+        cache.clone(),
+        None,
+    );
+
+    let call_result = handler
+        .compute_image_stats(Parameters(ComputeImageStatsParams {
+            document_id: Some(document_id.clone()),
+            image_path: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!call_result.is_error.unwrap_or(false));
+
+    let payload_text = call_result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.clone())
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&payload_text).unwrap();
+    assert_eq!(payload["pixel_count"], 4);
+    assert_eq!(payload["min_adu"], 100);
+    assert_eq!(payload["max_adu"], 400);
+    assert_eq!(payload["median_adu"], 250);
+    assert!((payload["mean_adu"].as_f64().unwrap() - 250.0).abs() < 1e-9);
+
+    let updated = cache
+        .resolve_document(&document_id)
+        .await
+        .expect("document should resolve from cache after compute_image_stats");
+    let section = updated
+        .sections
+        .get("image_stats")
+        .expect("image_stats section must be persisted when document_id is supplied");
+    assert_eq!(section["pixel_count"], 4);
+    assert_eq!(section["min_adu"], 100);
+    assert_eq!(section["max_adu"], 400);
+    assert_eq!(section["median_adu"], 250);
 }
 
 // -----------------------------------------------------------------------

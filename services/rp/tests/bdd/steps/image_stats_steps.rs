@@ -2,6 +2,11 @@
 //!
 //! The capture step is defined in tool_steps.rs (shared across features).
 //! It stores last_image_path and last_document_id on the world for chaining.
+//!
+//! Shared steps reused from measure_basic_steps.rs:
+//! (`I fetch the exposure document for the captured document_id`,
+//! `the exposure document should contain a section named ...`, and
+//! `the {string} section should contain {string}`).
 
 use cucumber::{then, when};
 
@@ -16,18 +21,32 @@ async fn mcp_call_compute_stats_with_last_path(world: &mut RpWorld) {
         .last_image_path
         .clone()
         .expect("no captured image path available");
-    let document_id = world.last_document_id.clone();
 
-    call_compute_image_stats(world, &image_path, document_id.as_deref()).await;
+    call_compute_image_stats(world, Some(&image_path), None).await;
+}
+
+#[when("the MCP client calls \"compute_image_stats\" with the captured document_id")]
+async fn mcp_call_compute_stats_with_last_document_id(world: &mut RpWorld) {
+    let document_id = world
+        .last_document_id
+        .clone()
+        .expect("no captured document_id available");
+
+    call_compute_image_stats(world, None, Some(&document_id)).await;
 }
 
 #[when(expr = "the MCP client calls \"compute_image_stats\" with image path {string}")]
 async fn mcp_call_compute_stats_with_path(world: &mut RpWorld, image_path: String) {
-    call_compute_image_stats(world, &image_path, None).await;
+    call_compute_image_stats(world, Some(&image_path), None).await;
 }
 
-#[when("the MCP client calls \"compute_image_stats\" with no image_path")]
-async fn mcp_call_compute_stats_no_path(world: &mut RpWorld) {
+#[when(expr = "the MCP client calls \"compute_image_stats\" with document_id {string}")]
+async fn mcp_call_compute_stats_with_document_id(world: &mut RpWorld, document_id: String) {
+    call_compute_image_stats(world, None, Some(&document_id)).await;
+}
+
+#[when("the MCP client calls \"compute_image_stats\" with no arguments")]
+async fn mcp_call_compute_stats_no_args(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
     let result = world
         .mcp()
@@ -125,11 +144,14 @@ fn stats_contains_field(world: &mut RpWorld, field: String) {
 
 async fn call_compute_image_stats(
     world: &mut RpWorld,
-    image_path: &str,
+    image_path: Option<&str>,
     document_id: Option<&str>,
 ) {
     ensure_mcp_client(world).await;
-    let mut args = serde_json::json!({"image_path": image_path});
+    let mut args = serde_json::json!({});
+    if let Some(path) = image_path {
+        args["image_path"] = serde_json::json!(path);
+    }
     if let Some(doc_id) = document_id {
         args["document_id"] = serde_json::json!(doc_id);
     }
