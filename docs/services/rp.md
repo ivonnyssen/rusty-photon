@@ -2704,9 +2704,12 @@ is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
 when the config sets a non-zero default).
 
-The `site` block is required and is validated against the ASCOM mount
-on connect — see
+The `site` block is required for the ephemeris and planner tools
+(`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
+it is validated against the ASCOM mount on connect — see
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
+A config without `site` loads cleanly and `rp` runs, but those tools
+return a structured "site not configured" error.
 
 ```json
 {
