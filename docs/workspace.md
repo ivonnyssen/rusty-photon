@@ -17,6 +17,7 @@ belong in any single service design doc.
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
+| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (design only — Phase 1) |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
@@ -31,6 +32,7 @@ belong in any single service design doc.
 | [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
+| [docs/references/skywatcher-motor-controller-command-set.md](references/skywatcher-motor-controller-command-set.md) | Sky-Watcher motor-controller wire protocol (USB + UDP/11880) — used by `star-adventurer-gti` |
 | **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
 | [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |

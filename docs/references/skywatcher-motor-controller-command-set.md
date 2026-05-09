@@ -1,0 +1,150 @@
+# Sky-Watcher Motor-Controller Command Set — Engineering Notes
+
+**Canonical specification:**
+[skywatcher_motor_controller_command_set.pdf](https://inter-static.skywatcher.com/downloads/skywatcher_motor_controller_command_set.pdf)
+(Sky-Watcher Application Notes, no version number on the file).
+
+This file is **not** a copy of the upstream specification. It contains
+the project's own engineering notes about how we use the protocol —
+compatibility, empirically-verified behaviour on our hardware, and the
+load-bearing implementation gotchas the codec needs to handle. For the
+authoritative command list, frame format, status-bit layout, motion-mode
+flags, and error codes, follow the link above.
+
+## What this protocol is
+
+The wire protocol the [Sky-Watcher motor-controller command set] PDF
+defines. Used by:
+
+- The [`star-adventurer-gti`](../services/star-adventurer-gti.md) ASCOM
+  Telescope driver (USB at 115200 baud, or UDP/11880 over WiFi).
+- The `skywatcher-motor-protocol` crate (codec; transport-agnostic).
+
+Per the upstream spec §6 (Wi-Fi Connection), the same protocol runs on
+both serial transports.
+
+## Mounts that speak this protocol
+
+Compiled from the [EQMOD project compatibility list][eqmod] and the
+[INDI `indi-eqmod` driver manifest][indi-eqmod-xml] — not from the
+Sky-Watcher PDF.
+
+**Sky-Watcher branded:** EQ4, EQ5, HEQ5, NEQ6, EQ6-R Pro, EQ8, EQ8-R,
+EQ8-Rh, EQM-35 Pro, AZ-EQ5GT, AZ-EQ6GT, AZ-GTi, Star Adventurer GTi,
+HDX110.
+
+**Orion branded (Synta OEM):** Sirius Pro AZ/EQ-G, Atlas Pro AZ/EQ-G.
+
+This is the same wire protocol on every mount in the list, but
+mount-side parameters (counts-per-revolution, timer-interrupt
+frequency, high-speed ratio, capability flags) vary, so the driver
+queries them at connect time rather than hard-coding.
+
+## Implementation gotchas
+
+These two are the most common source of codec bugs and are worth
+flagging at the top of the codec module.
+
+### 24-bit data is sent low byte first
+
+For a 24-bit value `0x123456`, the wire bytes are ASCII
+`"5" "6" "3" "4" "1" "2"` — low byte first, with each byte's nibbles in
+normal high-then-low order. Only the byte order is reversed; nibble
+order within each byte is normal.
+
+### Axis positions carry a `0x800000` bias
+
+Axis positions are conveyed with a fixed bias of `+0x800000` so that the
+unsigned hex on the wire can carry both signed-positive and
+signed-negative encoder counts. Subtract on decode, add on encode;
+service code should see signed encoder counts only.
+
+### UDP framing is strict
+
+Empirically verified on the Star Adventurer GTi (see `:e1` probe table
+below): the controller silently drops UDP packets that contain anything
+beyond a single well-formed `:cmd<axis><payload>\r` frame.
+
+| UDP payload | Result |
+|---|---|
+| `:e1\r` | reply received |
+| `:e1\r\n` | reply received (trailing `\n` tolerated) |
+| `:e1` (no `\r`) | silent — controller waits for terminator |
+| `:e1\r` + zero-padding | silent — extra bytes after `\r` reject the frame |
+| `\xff…:e1\r` (junk-prefixed) | silent — bytes before `:` reject the frame |
+
+The codec must enforce: exactly one well-formed frame per UDP packet,
+nothing trailing. (This is implied by the spec's framing rules but not
+called out directly.)
+
+### Resync on mid-frame `:`
+
+Per the spec, if the controller sees a second `:` before `\r`, it
+discards the partial frame and starts fresh. Useful for recovering from
+a corrupted half-sent command.
+
+## Empirically verified on the Star Adventurer GTi
+
+These are observations from our own probing on this physical mount, not
+content from the upstream PDF.
+
+### USB-CDC accepts 115200 baud
+
+The spec specifies **9600 8N1** for the UART. The Star Adventurer GTi's
+USB-C virtual COM port additionally accepts **115200 baud** (matches
+EQMOD documentation; faster). We use 115200 by default.
+
+### WiFi requires explicit local-IP source binding
+
+The mount's built-in WiFi answers UDP/11880 at `192.168.4.1` in AP mode.
+The host **must** bind the local socket to a `192.168.4.x` source
+address explicitly. Relying on the kernel's default-route source-IP
+selection picks the wrong address when a competing default route is
+present, and the mount silently drops packets it can't reply to.
+
+### Sample probe values on this mount
+
+A clean reply to each handshake command, useful as a smoke-test target
+for the mock transport:
+
+| Command | Wire reply | Decoded |
+|---|---|---|
+| `:e1\r` (motor-board version) | `=03300C\r` | mount-type byte `0x03`, fw `0x30`/`0x0C` |
+| `:a1\r` (CPR axis 1) | `=005F37\r` | `0x375F00` = 3,628,800 counts/revolution |
+| `:b1\r` (TMR_Freq) | `=0024F4\r` | `0xF42400` ≈ 16 MHz |
+| `:j1\r` (position axis 1) | `=000080\r` | `0x800000` (with bias) → 0 ticks (home) |
+| `:f1\r` (status axis 1) | `=100\r` | tracking-mode preset, motor stopped, not initialised |
+| `:F1\r` (initialize axis 1) | `=\r` | empty-payload ack |
+
+CPR is per-axis; the driver also queries `:a2` for the Dec axis. CPR
+varies between mount models, so do not bake `3,628,800` into anything
+beyond test fixtures.
+
+### Initialization sequence we use on connect
+
+After opening the transport, before the first motion command:
+
+1. `:F1`, `:F2` — initialize both axes
+2. `:a1`, `:a2` — record CPR per axis
+3. `:b1` — record TMR_Freq
+4. `:g1`, `:g2` — record high-speed ratio per axis
+5. `:e1` — log mount type / firmware version
+6. `:j1`, `:j2` — record initial encoder positions
+
+These values seed the in-memory parameter cache used by the coordinate
+module and the slew planner.
+
+## See also
+
+- [INDI `indi-eqmod` driver source][indi-eqmod] — the canonical
+  open-source reference implementation; we cross-check ambiguous bits of
+  the spec against this driver.
+- [EQMOD project][eqmod] — Windows-side reference driver and
+  protocol-decoding documentation.
+- [Sky-Watcher sample code archive (Google Code, archived)](https://code.google.com/archive/p/skywatcher/)
+- [Sky-Watcher application development page (canonical PDFs)](http://www.skywatcher.com/download/manual/application-development/)
+
+[Sky-Watcher motor-controller command set]: https://inter-static.skywatcher.com/downloads/skywatcher_motor_controller_command_set.pdf
+[indi-eqmod]: https://github.com/indilib/indi-3rdparty/tree/master/indi-eqmod
+[indi-eqmod-xml]: https://github.com/indilib/indi-3rdparty/blob/master/indi-eqmod/indi_eqmod.xml.cmake
+[eqmod]: https://eq-mod.sourceforge.net/
