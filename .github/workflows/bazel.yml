@@ -90,30 +90,37 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
-      # --execution_log_compact_file dumps every spawned action's full
-      # input set, env, command, and platform properties — i.e. exactly
-      # the fields Bazel hashes into the action key. The three logs
-      # below are uploaded as an artifact at the end of the job so
-      # Windows runs can be diffed against Linux/macOS (or Windows-PR
-      # vs Windows-push) to find what's still varying.
+      # Two diagnostic captures, both temporary, both attached to the
+      # same artifact at the end of the job:
       #
-      # Why all three steps and not just BDD: when this instrumentation
-      # was first added it was scoped to BDD because services/rp:bdd
-      # and services/sky-survey-camera:bdd were the known long pole on
-      # Windows (4/6 BDD targets cache-hit after PR #120). A subsequent
-      # cache-summary audit of `bazel build` / `bazel test (fast)` /
-      # `bazel test (BDD)` found the bigger Windows delta is actually in
-      # `bazel test (fast)`: on Windows that step reports zero
-      # local-action-cache hits where Linux/macOS each report ~75,
-      # blowing a 3 s step out to 90+ s. The build step also runs ~2×
-      # slower on Windows. Capturing all three lets us see whether the
-      # action keys really differ or whether the on-disk cache is being
-      # discarded between `Run` shell steps. Compact format is
-      # zstd-compressed protobuf — small enough to upload (~MB-scale).
+      # 1. --execution_log_compact_file: per-action log of inputs, env,
+      #    command, platform properties — the fields Bazel hashes into
+      #    the action key. Originally scoped to BDD because
+      #    services/rp:bdd and services/sky-survey-camera:bdd were the
+      #    known long pole on Windows (4/6 BDD targets cache-hit after
+      #    PR #120). A subsequent cache-summary audit of `bazel build`
+      #    / `bazel test (fast)` / `bazel test (BDD)` found the bigger
+      #    Windows delta is actually in `bazel test (fast)` — extended
+      #    to all three steps as a result. Compact format is
+      #    zstd-compressed protobuf, ~MB-scale per step.
       #
-      # Drop the three --execution_log_compact_file flags and the upload
-      # step at the bottom once the Windows action-key delta is
-      # identified and fixed.
+      # 2. --profile + --noslim_profile + --experimental_profile_*: a
+      #    Chrome-trace-format JSON profile of every Bazel sub-task
+      #    (Skyframe evaluations, filesystem stats, remote-cache RPCs,
+      #    package loading, action execution). Added to chase a
+      #    specific Windows mystery: on `bazel test (fast)`, Windows
+      #    spends 70+ seconds in the loading phase with two silent ~30 s
+      #    stalls (no progress lines emitted) where Linux finishes the
+      #    same loading in ~1 s. The exec-log only captures action
+      #    spawns, so it cannot see what Bazel is doing during loading.
+      #    The profile names every sub-task by duration, so the
+      #    silent-stall cause becomes nameable. View profiles in
+      #    Chrome's tracing UI (chrome://tracing) or Perfetto
+      #    (https://ui.perfetto.dev). Files are gzipped JSON, also
+      #    ~MB-scale per step.
+      #
+      # Drop both sets of flags and the upload step at the bottom once
+      # the Windows loading-phase mystery is identified and fixed.
       - name: bazel build
         run: |
           REMOTE_FLAGS=""
@@ -121,7 +128,12 @@ jobs:
             REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
           fi
           bazel build --config=ci $REMOTE_FLAGS \
-            --execution_log_compact_file="${RUNNER_TEMP}/build-exec.log.zst" //...
+            --execution_log_compact_file="${RUNNER_TEMP}/build-exec.log.zst" \
+            --profile="${RUNNER_TEMP}/build-profile.json.gz" \
+            --noslim_profile \
+            --experimental_profile_include_target_label \
+            --experimental_profile_include_primary_output \
+            //...
 
       - name: bazel test (fast)
         # .bazelrc filters -requires-cargo,-bdd by default; keep fast
@@ -133,7 +145,12 @@ jobs:
             REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
           fi
           bazel test --config=ci $REMOTE_FLAGS \
-            --execution_log_compact_file="${RUNNER_TEMP}/fast-test-exec.log.zst" //...
+            --execution_log_compact_file="${RUNNER_TEMP}/fast-test-exec.log.zst" \
+            --profile="${RUNNER_TEMP}/fast-test-profile.json.gz" \
+            --noslim_profile \
+            --experimental_profile_include_target_label \
+            --experimental_profile_include_primary_output \
+            //...
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
@@ -160,9 +177,14 @@ jobs:
             EXTRA_FLAGS="--spawn_strategy=local"
           fi
           bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=OMNISIM_PATH $EXTRA_FLAGS \
-            --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" //...
+            --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" \
+            --profile="${RUNNER_TEMP}/bdd-profile.json.gz" \
+            --noslim_profile \
+            --experimental_profile_include_target_label \
+            --experimental_profile_include_primary_output \
+            //...
 
-      - name: Upload Bazel execution logs
+      - name: Upload Bazel diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -171,5 +193,8 @@ jobs:
             ${{ runner.temp }}/build-exec.log.zst
             ${{ runner.temp }}/fast-test-exec.log.zst
             ${{ runner.temp }}/bdd-exec.log.zst
+            ${{ runner.temp }}/build-profile.json.gz
+            ${{ runner.temp }}/fast-test-profile.json.gz
+            ${{ runner.temp }}/bdd-profile.json.gz
           if-no-files-found: warn
           retention-days: 14
