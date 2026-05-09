@@ -90,13 +90,37 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # --execution_log_compact_file dumps every spawned action's full
+      # input set, env, command, and platform properties — i.e. exactly
+      # the fields Bazel hashes into the action key. The three logs
+      # below are uploaded as an artifact at the end of the job so
+      # Windows runs can be diffed against Linux/macOS (or Windows-PR
+      # vs Windows-push) to find what's still varying.
+      #
+      # Why all three steps and not just BDD: when this instrumentation
+      # was first added it was scoped to BDD because services/rp:bdd
+      # and services/sky-survey-camera:bdd were the known long pole on
+      # Windows (4/6 BDD targets cache-hit after PR #120). A subsequent
+      # cache-summary audit (PR #179) found the bigger Windows delta is
+      # actually in `bazel test (fast)`: on Windows that step reports
+      # zero local-action-cache hits where Linux/macOS each report ~75,
+      # blowing a 3 s step out to 90+ s. The build step also runs ~2×
+      # slower on Windows. Capturing all three lets us see whether the
+      # action keys really differ or whether the on-disk cache is being
+      # discarded between `Run` shell steps. Compact format is
+      # zstd-compressed protobuf — small enough to upload (~MB-scale).
+      #
+      # Drop the three --execution_log_compact_file flags and the upload
+      # step at the bottom once the Windows action-key delta is
+      # identified and fixed.
       - name: bazel build
         run: |
           REMOTE_FLAGS=""
           if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
             REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
           fi
-          bazel build --config=ci $REMOTE_FLAGS //...
+          bazel build --config=ci $REMOTE_FLAGS \
+            --execution_log_compact_file="${RUNNER_TEMP}/build-exec.log.zst" //...
 
       - name: bazel test (fast)
         # .bazelrc filters -requires-cargo,-bdd by default; keep fast
@@ -107,7 +131,8 @@ jobs:
           if [[ -n "$BUILDBUDDY_API_KEY" ]]; then
             REMOTE_FLAGS="--config=remote-cache --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY"
           fi
-          bazel test --config=ci $REMOTE_FLAGS //...
+          bazel test --config=ci $REMOTE_FLAGS \
+            --execution_log_compact_file="${RUNNER_TEMP}/fast-test-exec.log.zst" //...
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
@@ -133,25 +158,17 @@ jobs:
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             EXTRA_FLAGS="--spawn_strategy=local"
           fi
-          # --execution_log_compact_file dumps every spawned action's full
-          # input set, env, command, and platform properties — i.e. exactly
-          # the fields Bazel hashes into the action key. Uploaded as an
-          # artifact below so Windows-PR vs Windows-push runs can be diffed
-          # to find what's still varying for services/rp:bdd and
-          # services/sky-survey-camera:bdd (4/6 BDD targets cache-hit on
-          # Windows after PR #120; these 2 still miss). Compact format is
-          # zstd-compressed protobuf — small enough to upload (~MB-scale).
           bazel test --config=ci $REMOTE_FLAGS --test_tag_filters=bdd --test_env=OMNISIM_PATH $EXTRA_FLAGS \
             --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" //...
 
-      # Diagnostic artifact for the Windows BDD cache-miss investigation.
-      # Drop this step (and the --execution_log_compact_file flag above)
-      # once the action-key delta is identified and fixed.
-      - name: Upload BDD execution log
+      - name: Upload Bazel execution logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bdd-exec-log-${{ matrix.os }}-${{ github.event_name }}
-          path: ${{ runner.temp }}/bdd-exec.log.zst
+          name: bazel-exec-logs-${{ matrix.os }}-${{ github.event_name }}
+          path: |
+            ${{ runner.temp }}/build-exec.log.zst
+            ${{ runner.temp }}/fast-test-exec.log.zst
+            ${{ runner.temp }}/bdd-exec.log.zst
           if-no-files-found: warn
           retention-days: 14
