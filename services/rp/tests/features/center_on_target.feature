@@ -104,13 +104,19 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to false
     And an MCP client connected to rp
-    # Tracking is off → the iter-1 sync_mount fails per ASCOM
-    # CheckTracking(true), aborting the loop before any slew. We
-    # use a target close to the canned WCS so even if the impl
-    # ever stopped requiring tracking for sync, the subsequent
-    # slew would still be tiny.
+    # ASCOM requires Tracking == true before equatorial sync_mount
+    # and slew operations — the iter-1 sync_mount propagates the
+    # natural Alpaca error if tracking is off, aborting the loop.
+    # We assert the propagated error fragment from do_sync_mount
+    # ("failed to sync mount") so the scenario fails loud if the
+    # abort point ever moves to a different inner call (capture,
+    # plate_solve, slew). Target is kept close to the canned WCS
+    # for defense-in-depth — even if the impl ever stopped
+    # requiring tracking for sync, the subsequent slew would still
+    # be tiny.
     When the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.270 duration "100ms" tolerance_arcsec 1 max_attempts 5
     Then the tool call should return an error
+    And the error message should contain "failed to sync mount"
 
   Scenario: Three-iteration multi-iter run records sync, slew, then converged
     Given a running Alpaca simulator
