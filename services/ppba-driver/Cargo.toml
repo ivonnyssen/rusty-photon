@@ -38,6 +38,10 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
+rp-i18n = { workspace = true }
+i18n-embed = { workspace = true }
+i18n-embed-fl = { workspace = true }
+rust-embed = { workspace = true }
 axum = { workspace = true }
 
 [package.metadata.conformu]

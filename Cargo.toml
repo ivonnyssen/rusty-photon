@@ -5,6 +5,7 @@ members = [
   "crates/rp-catalog",
   "crates/rp-ephemeris",
   "crates/rp-fits",
+  "crates/rp-i18n",
   "crates/rp-plate-solver",
   "crates/rp-tls",
   "crates/skywatcher-motor-protocol",
@@ -89,6 +90,13 @@ cargo-husky = { version = "1", default-features = false, features = [
   "precommit-hook",
   "user-hooks",
 ] }
+rp-i18n = { path = "crates/rp-i18n" }
+i18n-embed = { version = "0.16", features = ["fluent-system"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
+fluent-langneg = "0.13"
+sys-locale = "0.3"
+unic-langid = "0.9"
 
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"

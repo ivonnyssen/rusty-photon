@@ -5,8 +5,11 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
+    "//crates/rp-i18n:rp-i18n",
     "//crates/rp-tls:rp-tls",
 ]
+
+_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + ["i18n.toml"]
 
 rust_library(
     name = "ppba-driver_lib",
@@ -23,6 +26,7 @@ rust_binary(
     name = "ppba-driver",
     srcs = ["src/main.rs"],
     aliases = aliases(),
+    compile_data = _I18N_ASSETS,
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
@@ -68,6 +72,7 @@ rust_binary(
     name = "ppba-driver_mock",
     srcs = ["src/main.rs"],
     aliases = aliases(),
+    compile_data = _I18N_ASSETS,
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),

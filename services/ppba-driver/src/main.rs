@@ -2,9 +2,14 @@
 //!
 //! Command-line interface for the Pegasus Astro Pocket Powerbox Advance Gen2 Switch driver.
 
+use std::cell::OnceCell;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
+use i18n_embed::fluent::FluentLanguageLoader;
+use rp_i18n::{fl, fluent_language_loader};
+use rust_embed::RustEmbed;
 use tracing::Level;
 
 #[cfg(feature = "mock")]
@@ -12,9 +17,16 @@ use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
 use ppba_driver::{load_config, Config, ServerBuilder};
 
+#[derive(RustEmbed)]
+#[folder = "i18n/"]
+struct Localizations;
+
+thread_local! {
+    static LOADER: OnceCell<Arc<FluentLanguageLoader>> = const { OnceCell::new() };
+}
+
 #[derive(Parser)]
 #[command(name = "ppba-driver")]
-#[command(about = "ASCOM Alpaca driver for Pegasus Astro PPBA Gen2")]
 #[command(version)]
 struct Args {
     /// Path to configuration file
@@ -44,16 +56,54 @@ struct Args {
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
-        format!(
-            "Invalid log level: {}. Use: trace, debug, info, warn, error",
-            s
-        )
+        LOADER.with(|cell| match cell.get() {
+            Some(loader) => fl!(loader, "error-invalid-log-level", value = s),
+            None => format!(
+                "Invalid log level: {}. Use: trace, debug, info, warn, error",
+                s
+            ),
+        })
     })
+}
+
+fn build_loader() -> Arc<FluentLanguageLoader> {
+    let loader = fluent_language_loader!();
+    let requested = rp_i18n::resolve_locale();
+    rp_i18n::select_best(&loader, &Localizations, &requested);
+    Arc::new(loader)
+}
+
+fn parse_args() -> Result<Args, clap::Error> {
+    let loader = build_loader();
+    LOADER.with(|cell| {
+        let _ = cell.set(loader.clone());
+    });
+
+    let cmd = Args::command()
+        .about(fl!(loader, "cli-about"))
+        .mut_arg("config", |a| a.help(fl!(loader, "cli-help-config")))
+        .mut_arg("port", |a| a.help(fl!(loader, "cli-help-port")))
+        .mut_arg("server_port", |a| {
+            a.help(fl!(loader, "cli-help-server-port"))
+        })
+        .mut_arg("enable_switch", |a| {
+            a.help(fl!(loader, "cli-help-enable-switch"))
+        })
+        .mut_arg("enable_observingconditions", |a| {
+            a.help(fl!(loader, "cli-help-enable-observingconditions"))
+        })
+        .mut_arg("log_level", |a| a.help(fl!(loader, "cli-help-log-level")));
+
+    let matches = cmd.get_matches();
+    Args::from_arg_matches(&matches)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => e.exit(),
+    };
 
     // Setup tracing
     tracing_subscriber::fmt()

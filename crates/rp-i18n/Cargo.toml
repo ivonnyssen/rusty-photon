@@ -1,0 +1,19 @@
+[package]
+name = "rp-i18n"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Workspace-shared Fluent i18n loader and locale resolver for Rusty Photon"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+i18n-embed = { workspace = true }
+i18n-embed-fl = { workspace = true }
+fluent-langneg = { workspace = true }
+sys-locale = { workspace = true }
+unic-langid = { workspace = true }
