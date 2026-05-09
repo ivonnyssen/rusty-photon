@@ -802,6 +802,26 @@ impl McpHandler {
         }
     }
 
+    /// Resolve the mount and issue a sync to the given equatorial
+    /// coordinates (RA hours, Dec degrees). No polling — `sync` is
+    /// immediate per ASCOM. Mirrors the shape of `do_slew_blocking`
+    /// minus the polling loop. Used by both the primitive
+    /// `sync_mount` MCP tool and the `center_on_target` compound
+    /// tool's per-iteration sync; one helper, one place to change
+    /// the error-mapping convention.
+    pub(crate) async fn do_sync_mount(
+        &self,
+        ra_hours: f64,
+        dec_deg: f64,
+    ) -> std::result::Result<(), String> {
+        let (_entry, mount) = self.resolve_mount()?;
+        debug!(ra = ra_hours, dec = dec_deg, "syncing mount");
+        mount
+            .sync_to_coordinates(ra_hours, dec_deg)
+            .await
+            .map_err(|e| format!("failed to sync mount: {}", e))
+    }
+
     /// Read the current mount pointing for `plate_solve`'s
     /// `use_mount_hints` convenience. Converts Alpaca's decimal
     /// hours `RightAscension` to the wrapper's degrees-on-the-wire

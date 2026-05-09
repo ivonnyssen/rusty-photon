@@ -1,4 +1,3 @@
-@wip
 @serial
 Feature: Center on target compound tool
   The center_on_target MCP tool drives an iterative
@@ -58,8 +57,8 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls "sync_mount" with ra "10.6848" dec "41.269"
-    And the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
+    And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should succeed
     And the center_on_target result should report attempts 2
     And the center_on_target iterations[0] action should be "sync"
@@ -83,8 +82,8 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls "sync_mount" with ra "10.6848" dec "41.269"
-    And the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
+    And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should return an error
     And the error message should contain "solve_failed"
 
@@ -107,11 +106,11 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls "sync_mount" with ra "10.6848" dec "41.269"
-    And the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
+    And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     And the MCP client calls "get_mount_position"
     Then the tool call should succeed
-    And the mount position should be approximately ra 10.6848 dec 41.269
+    And the mount position should be approximately ra 0.7123 dec 41.269
 
   Scenario: Per-iteration wcs sections persist on every captured document
     Given rp's data_directory is pinned to a fresh tempdir
@@ -123,8 +122,8 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls "sync_mount" with ra "10.6848" dec "41.269"
-    And the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
+    And the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then 2 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "wcs" section
 
@@ -134,7 +133,7 @@ Feature: Center on target compound tool
     And rp is running with a camera and a mount on the simulator
     And the mount tracking is set to true
     And an MCP client connected to rp
-    When the MCP client calls center_on_target with camera "nonexistent" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls center_on_target with camera "nonexistent" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should return an error
     And the error message should contain "camera not found"
 
@@ -143,7 +142,7 @@ Feature: Center on target compound tool
     And a stub plate solver returning a canned WCS
     And rp is running with an unreachable camera and a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should return an error
     And the error message should contain "camera not connected"
 
@@ -152,7 +151,7 @@ Feature: Center on target compound tool
     And a stub plate solver returning a canned WCS
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should return an error
     And the error message should contain "no mount configured"
 
@@ -161,7 +160,7 @@ Feature: Center on target compound tool
     And a stub plate solver returning a canned WCS
     And rp is running with a camera on the simulator and an unreachable mount
     And an MCP client connected to rp
-    When the MCP client calls center_on_target with camera "main-cam" ra 10.6848 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
+    When the MCP client calls center_on_target with camera "main-cam" ra 0.7123 dec 41.269 duration "100ms" tolerance_arcsec 60 max_attempts 5
     Then the tool call should return an error
     And the error message should contain "mount not connected"
 

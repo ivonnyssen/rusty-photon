@@ -1118,13 +1118,20 @@ Step 1) and should not be re-litigated:
 
 ##### Phase 6c-3 — `center_on_target` design + BDD + impl
 
-Status: **planned (2026-05-09).** Mirrors Phase 6b's shape (design
-contract → BDD → pure-Rust driver behind trait adapters → MCP wrapper)
-and Phase 6c-2's plan layout (decisions-resolved-first, then a
-work-breakdown ordered Step 1 design doc → Step 2 BDD with `@wip` →
-Step 3 implementation → Step 4 activation). Per the
+Status: **complete (2026-05-09).** All four steps landed; 261/261
+BDD scenarios green (was 238/238 pre-Phase-6c-3 + 14 new). The
+new `center_on_target` MCP tool composes capture / plate_solve /
+sync_mount / slew per its Contract in `docs/services/rp.md`; the
+pure driver in `services/rp/src/imaging/tools/center_on_target.rs`
+is unit-tested against synthetic adapters (sync-on-iter-1-only
+invariant verified by call-count on a `StubMounter`).
+Mirrors Phase 6b's shape (design contract → BDD → pure-Rust driver
+behind trait adapters → MCP wrapper) and Phase 6c-2's plan layout
+(decisions-resolved-first, then a work-breakdown ordered Step 1
+design doc → Step 2 BDD with `@wip` → Step 3 implementation →
+Step 4 activation). Per the
 [development-workflow](../skills/development-workflow.md) procedure,
-no implementation lands before BDD scenarios exist on disk.
+no implementation landed before BDD scenarios existed on disk.
 
 ###### Decisions resolved during Phase 6c-3 planning
 
@@ -1241,7 +1248,7 @@ during this planning pass.
 
 **Step 1 — Design doc updates (Phase 1 of dev workflow).**
 
-- [ ] `docs/services/rp.md` updates:
+- [x] `docs/services/rp.md` updates:
   - Built-in Tools — Compound table (line ~723): replace the existing
     `center_on_target` placeholder row with the final input/output
     shape from the decisions above (drop `tolerance_arcsec` placeholder
@@ -1263,7 +1270,7 @@ during this planning pass.
 **Step 2 — BDD feature + step defs (Phase 2 of dev workflow, with
 `@wip`).**
 
-- [ ] `services/rp/tests/features/center_on_target.feature`
+- [x] `services/rp/tests/features/center_on_target.feature`
   (~14 scenarios, `@wip` tag at top per
   [testing.md §2.7](../skills/testing.md#27-use-wip-tag-for-scenarios-without-implementation-yet)):
   1. Catalog includes `center_on_target` (1)
@@ -1303,7 +1310,7 @@ during this planning pass.
   iteration responses, not via a real solve cycle. The end-to-end
   pixel→solve→sync→slew loop still exercises the live OmniSim
   camera and mount; only the solver is stubbed.
-- [ ] `services/rp/tests/bdd/steps/center_on_target_steps.rs`
+- [x] `services/rp/tests/bdd/steps/center_on_target_steps.rs`
   reusing `tool_steps.rs` shared steps. New steps:
   - `Given(a stub plate solver returning per-iteration WCS responses)`
     — extends the existing `PlateSolverStub` from
@@ -1325,16 +1332,16 @@ during this planning pass.
     `Then(the centering result iterations[<i>].action should be
     "<action>")`, `Then(every iterations[i].document_id sidecar
     should contain a "wcs" section)`.
-- [ ] `RpWorld` additions: `last_center_on_target_result:
+- [x] `RpWorld` additions: `last_center_on_target_result:
   Option<Value>`. Reuse the existing `last_plate_solver_stub` from
   `plate_solve_steps.rs`.
-- [ ] No new `RpConfigBuilder` methods — `with_plate_solver` and
+- [x] No new `RpConfigBuilder` methods — `with_plate_solver` and
   `with_mount` already exist from Phases 6c-2 and 6c-prep.
-- [ ] Wire into `tests/bdd/steps/mod.rs`.
+- [x] Wire into `tests/bdd/steps/mod.rs`.
 
 **Step 3 — Implementation (Phase 3 of dev workflow).**
 
-- [ ] `services/rp/src/imaging/tools/center_on_target.rs`:
+- [x] `services/rp/src/imaging/tools/center_on_target.rs`:
   - `CenterOnTargetParams { ra, dec, duration, tolerance_arcsec,
     max_attempts }`. `CenterOnTargetResult { final_error_arcsec,
     attempts, final_ra, final_dec, iterations: Vec<IterationRecord> }`.
@@ -1386,19 +1393,19 @@ during this planning pass.
     `tolerance_not_reached` after `max_attempts`, sync-fires-once
     invariant, `validate_params` rejection arms, haversine sanity
     (known coordinates → known arcseconds).
-- [ ] `services/rp/src/imaging/tools/ops.rs` (new — see decision
+- [x] `services/rp/src/imaging/tools/ops.rs` (new — see decision
   above): hosts the shared `CaptureOps` trait. `auto_focus.rs`
   removes its local definition and re-imports.
-- [ ] `services/rp/src/imaging/tools/mod.rs`: `pub mod
+- [x] `services/rp/src/imaging/tools/mod.rs`: `pub mod
   center_on_target; pub mod ops;`.
-- [ ] `services/rp/src/mcp/internals.rs`:
+- [x] `services/rp/src/mcp/internals.rs`:
   - New `pub(crate) async fn do_sync_mount(&self, ra: f64, dec: f64)
     -> Result<(), String>` — resolve mount via `resolve_mount`,
     call `sync_to_coordinates`, map errors. Mirrors the
     `do_slew_blocking` shape minus the polling loop. Frees the
     primitive `sync_mount` MCP tool to call this helper too (small
     refactor inside `mount.rs:124-159`).
-- [ ] `services/rp/src/mcp/built_in/center_on_target.rs` (new):
+- [x] `services/rp/src/mcp/built_in/center_on_target.rs` (new):
   - `CenterOnTargetToolParams` (`#[serde(default)]` on every field
     so the body validator can produce input-order error messages).
   - `#[tool]` handler runs validation in order (camera_id → ra →
@@ -1422,23 +1429,23 @@ during this planning pass.
     haversine known-value (2), run_center_on_target end-to-end
     (5: iter-1 convergence, iter-3 convergence, capture error mid-
     loop, slew error mid-loop, `tolerance_not_reached`).
-- [ ] `services/rp/src/mcp/handler.rs`: append
+- [x] `services/rp/src/mcp/handler.rs`: append
   `+ Self::tool_router_center_on_target()` to the `tool_router`
   sum (line 79–87).
-- [ ] `services/rp/src/mcp/built_in/mod.rs`: declare the new module.
+- [x] `services/rp/src/mcp/built_in/mod.rs`: declare the new module.
 
 **Step 4 — Activate BDD + cleanup.**
 
-- [ ] Remove `@wip` tag from `center_on_target.feature` line 1.
-- [ ] Run full suite (`cargo rail run --profile commit -q` per
+- [x] Remove `@wip` tag from `center_on_target.feature` line 1.
+- [x] Run full suite (`cargo rail run --profile commit -q` per
   CLAUDE.md rule 4); confirm BDD count grows by ~14 scenarios on
   top of the current 235.
-- [ ] `cargo fmt`. `cargo build --all --all-targets --all-features
+- [x] `cargo fmt`. `cargo build --all --all-targets --all-features
   --locked` for linker-visible code per CLAUDE.md rule 4. No new
   workspace deps expected (haversine is closed-form arithmetic on
   `f64`); confirm before committing — if any landed, run
   `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
-- [ ] Plan-doc bookkeeping: flip Phase 6c-3 status to **complete**
+- [x] Plan-doc bookkeeping: flip Phase 6c-3 status to **complete**
   with the work-breakdown checkboxes ticked, exit-criteria block
   populated with concrete BDD/unit-test counts. Flip the
   `center_on_target` row in `rp.md` Built-in Tools — Compound table

@@ -146,15 +146,9 @@ impl McpHandler {
             ));
         }
 
-        let (_entry, mount) = match self.resolve_mount() {
-            Ok(p) => p,
-            Err(e) => return Ok(tool_error!("{}", e)),
-        };
-
-        debug!(ra, dec, "syncing mount");
-        match mount.sync_to_coordinates(ra, dec).await {
+        match self.do_sync_mount(ra, dec).await {
             Ok(()) => Ok(tool_success!({})),
-            Err(e) => Ok(tool_error!("failed to sync mount: {}", e)),
+            Err(e) => Ok(tool_error!("{}", e)),
         }
     }
 
