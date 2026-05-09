@@ -1,12 +1,13 @@
 //! UDP transport (mount in WiFi AP mode, port 11880).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::config::UdpConfig;
-use crate::error::Result;
-use crate::transport::Transport;
+use crate::config::{Config, TransportConfig, UdpConfig};
+use crate::error::{Result, StarAdvError};
+use crate::transport::{Transport, TransportFactory};
 
 /// Tokio `UdpSocket` bound to the configured local address.
 ///
@@ -34,5 +35,25 @@ impl Transport for UdpTransport {
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn close(&self) -> Result<()> {
         unimplemented!("Phase 3: drop socket")
+    }
+}
+
+/// [`TransportFactory`] that opens a [`UdpTransport`] from a [`Config`]
+/// whose transport block is `udp`.
+#[derive(Debug, Default)]
+pub struct UdpTransportFactory;
+
+#[async_trait]
+impl TransportFactory for UdpTransportFactory {
+    async fn open(&self, config: &Config) -> Result<Arc<dyn Transport>> {
+        match &config.transport {
+            TransportConfig::Udp(udp) => {
+                let t = UdpTransport::connect(udp.clone()).await?;
+                Ok(Arc::new(t))
+            }
+            TransportConfig::Usb(_) => Err(StarAdvError::Config(
+                "UdpTransportFactory requires transport.kind = \"udp\"".to_string(),
+            )),
+        }
     }
 }

@@ -68,12 +68,27 @@ pub fn decode_position(_bytes: &[u8; 6]) -> Result<i32> {
     unimplemented!("Phase 3: decode_u24-then-debias")
 }
 
-/// Verify that `frame` matches the strict UDP framing rules: starts with `:`,
-/// ends with a single `\r`, and contains no junk before/after.
+/// Verify that `frame` matches the strict outbound (command) UDP framing
+/// rules: starts with `:`, has a `<cmd><axis>` pair after it, optional
+/// hex payload, ends with a single `\r`, and contains no junk
+/// before/after.
 ///
-/// Used by the UDP transport on receive. Serial transports buffer up to the
-/// first `\r` and pass exactly the resulting slice in here.
+/// Used by send-side UDP code paths to sanity-check encoded frames before
+/// they go on the wire. Serial transports skip this — they stream
+/// continuously and re-sync on the next `:`.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn validate_frame(_frame: &[u8]) -> Result<()> {
-    unimplemented!("Phase 3: enforce one well-formed `:...\\r` frame, nothing trailing")
+pub fn validate_command_frame(_frame: &[u8]) -> Result<()> {
+    unimplemented!("Phase 3: enforce one well-formed `:cmd<axis><payload?>\\r` frame")
+}
+
+/// Verify that `frame` matches the strict inbound (response) UDP framing
+/// rules: starts with `=` (success) or `!` (error), optional hex payload
+/// (or two-hex-digit error byte for `!`), ends with a single `\r`, no
+/// junk before/after.
+///
+/// Used by the UDP transport on receive. Serial transports buffer up to
+/// the first `\r` and pass exactly the resulting slice in here.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn validate_response_frame(_frame: &[u8]) -> Result<()> {
+    unimplemented!("Phase 3: enforce one well-formed `=...\\r` or `!XX\\r` frame, nothing trailing")
 }

@@ -220,13 +220,13 @@ impl Telescope for MountDevice {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::transport::mock::MockTransport;
+    use crate::transport::mock::MockTransportFactory;
 
     fn device() -> MountDevice {
         let cfg = Config::default();
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
-            Arc::new(MockTransport::new()),
+            Arc::new(MockTransportFactory),
         ));
         MountDevice::new(cfg.mount, manager)
     }
@@ -295,7 +295,7 @@ mod tests {
         let cfg = Config::default();
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
-            Arc::new(MockTransport::new()),
+            Arc::new(MockTransportFactory),
         ));
         let mut mount_cfg = cfg.mount.clone();
         mount_cfg.site_latitude_deg = 47.6062;

@@ -13,11 +13,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportFactory};
 
 /// Snapshot of the values the mount reports during the init handshake. All
 /// 24-bit unsigned wire values; meaningful units are in the design doc.
@@ -47,9 +47,19 @@ pub struct MountSnapshot {
 }
 
 /// Shared, ref-counted transport handle.
+///
+/// Owns a [`TransportFactory`] (not a pre-built [`Transport`]) so the
+/// 0→1 connect transition can call `factory.open(&config)` and the 1→0
+/// disconnect transition can drop the resulting `Arc<dyn Transport>` to
+/// trigger its [`Transport::close`]. This is the qhy-focuser pattern,
+/// adapted for the Sky-Watcher protocol.
 pub struct TransportManager {
-    _config: Config,
-    transport: Arc<dyn Transport>,
+    config: Config,
+    factory: Arc<dyn TransportFactory>,
+    /// Active transport handle. `None` when no client is connected; set
+    /// to `Some` by the 0→1 connect transition and cleared by the 1→0
+    /// disconnect transition.
+    transport: Mutex<Option<Arc<dyn Transport>>>,
     /// Number of clients that currently believe themselves connected.
     /// Incremented on the way into [`connect`] and decremented on the way
     /// out of [`disconnect`]; the actual transport open/close is gated on
@@ -67,10 +77,11 @@ pub struct TransportManager {
 }
 
 impl TransportManager {
-    pub fn new(config: Config, transport: Arc<dyn Transport>) -> Self {
+    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Self {
         Self {
-            _config: config,
-            transport,
+            config,
+            factory,
+            transport: Mutex::new(None),
             connection_count: AtomicU32::new(0),
             available: AtomicBool::new(false),
             parameters: RwLock::new(None),
@@ -81,12 +92,21 @@ impl TransportManager {
     /// Reference-counted connect. Returns immediately on success; first
     /// caller pays the init-handshake latency. Sets [`is_available`] to
     /// true only after the handshake completes.
+    ///
+    /// On the 0→1 transition, calls `factory.open(&config)` to get a
+    /// fresh [`Transport`], then runs the init handshake. Phase 3 fills
+    /// the handshake body in.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn connect(&self) -> Result<()> {
-        let _ = self.connection_count.fetch_add(1, Ordering::SeqCst);
+        let prior = self.connection_count.fetch_add(1, Ordering::SeqCst);
+        if prior == 0 {
+            // 0→1: actually open the transport.
+            let transport = self.factory.open(&self.config).await?;
+            *self.transport.lock().await = Some(transport);
+        }
         unimplemented!(
-            "Phase 3: open transport once, run :F/:a/:b/:g/:e/:j handshake, then \
-             self.available.store(true, Ordering::SeqCst), spawn poll task"
+            "Phase 3: run :F/:a/:b/:g/:e/:j handshake against the open transport, \
+             then self.available.store(true, Ordering::SeqCst), spawn poll task"
         )
     }
 
@@ -97,7 +117,8 @@ impl TransportManager {
     pub async fn disconnect(&self) -> Result<()> {
         unimplemented!(
             "Phase 3: decrement count; on zero, self.available.store(false, ..), \
-             stop poll task, abort motion, close transport"
+             stop poll task, abort motion, *self.transport.lock().await = None \
+             (drops the Arc, triggering Transport::close)"
         )
     }
 
@@ -126,7 +147,6 @@ impl TransportManager {
         &self,
         _command: skywatcher_motor_protocol::Command,
     ) -> Result<skywatcher_motor_protocol::Response> {
-        let _ = &self.transport; // silence unused
         unimplemented!("Phase 3: encode -> transport.round_trip -> Response::decode")
     }
 }
@@ -135,10 +155,10 @@ impl TransportManager {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::transport::mock::MockTransport;
+    use crate::transport::mock::MockTransportFactory;
 
     fn manager() -> TransportManager {
-        TransportManager::new(Config::default(), Arc::new(MockTransport::new()))
+        TransportManager::new(Config::default(), Arc::new(MockTransportFactory))
     }
 
     #[test]

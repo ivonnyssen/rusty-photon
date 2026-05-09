@@ -18,8 +18,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use crate::config::Config;
 use crate::error::Result;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportFactory};
 
 /// Per-axis simulator state.
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +112,19 @@ impl Transport for MockTransport {
 
     async fn close(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// [`TransportFactory`] that emits a fresh [`MockTransport`] on every open.
+/// Phase 2's BDD harness, `tests/test_lib.rs`, and the `conformu`
+/// integration target all use this so they never touch real I/O.
+#[derive(Debug, Default)]
+pub struct MockTransportFactory;
+
+#[async_trait]
+impl TransportFactory for MockTransportFactory {
+    async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
+        Ok(Arc::new(MockTransport::new()))
     }
 }
 

@@ -7,8 +7,8 @@ use clap::Parser;
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
-use star_adventurer_gti::MockTransport;
-use star_adventurer_gti::{load_config, Config, ServerBuilder, Transport};
+use star_adventurer_gti::MockTransportFactory;
+use star_adventurer_gti::{load_config, Config, ServerBuilder, TransportFactory};
 
 #[derive(Parser)]
 #[command(name = "star-adventurer-gti")]
@@ -101,15 +101,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let builder = {
-        let transport: Arc<dyn Transport> = Arc::new(MockTransport::new());
-        builder.with_transport(transport)
+        let factory: Arc<dyn TransportFactory> = Arc::new(MockTransportFactory);
+        builder.with_transport_factory(factory)
     };
 
     #[cfg(not(feature = "mock"))]
     {
-        // Phase 3 wires real serial / UDP transports based on config.transport.
-        // Until then, silence unused-import warnings on the non-mock build.
-        let _: Option<Arc<dyn Transport>> = None;
+        // Production builds let `ServerBuilder::build()` pick the factory
+        // (Serial vs UDP) from `config.transport`. The factory's
+        // `connect()` body is filled in by Phase 3; until then ASCOM
+        // `Connected = true` returns NOT_IMPLEMENTED but the HTTP server
+        // still binds and serves metadata.
+        let _: Option<Arc<dyn TransportFactory>> = None;
     }
 
     let bound = builder.build().await?;

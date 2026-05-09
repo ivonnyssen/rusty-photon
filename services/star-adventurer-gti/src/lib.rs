@@ -17,11 +17,13 @@ pub use config::{
 };
 pub use error::{Result, StarAdvError};
 pub use mount_device::MountDevice;
-pub use transport::Transport;
+pub use transport::serial::SerialTransportFactory;
+pub use transport::udp::UdpTransportFactory;
+pub use transport::{Transport, TransportFactory};
 pub use transport_manager::TransportManager;
 
 #[cfg(feature = "mock")]
-pub use transport::mock::{MockMountState, MockTransport};
+pub use transport::mock::{MockMountState, MockTransport, MockTransportFactory};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,7 +42,7 @@ use tracing::{debug, info};
 #[derive(Default)]
 pub struct ServerBuilder {
     config: Config,
-    transport: Option<Arc<dyn Transport>>,
+    factory: Option<Arc<dyn TransportFactory>>,
 }
 
 impl ServerBuilder {
@@ -53,11 +55,11 @@ impl ServerBuilder {
         self
     }
 
-    /// Inject a [`Transport`] implementation. BDD tests pass
-    /// [`MockTransport`]; the production path leaves this `None` and lets
-    /// `build()` pick serial-or-UDP from `config.transport`.
-    pub fn with_transport(mut self, transport: Arc<dyn Transport>) -> Self {
-        self.transport = Some(transport);
+    /// Inject a [`TransportFactory`]. BDD tests pass
+    /// [`MockTransportFactory`](transport::mock::MockTransportFactory);
+    /// when omitted, [`build`] picks serial / UDP from `config.transport`.
+    pub fn with_transport_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
+        self.factory = Some(factory);
         self
     }
 
@@ -66,16 +68,20 @@ impl ServerBuilder {
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
         server.discovery_port = self.config.server.discovery_port;
 
-        // Phase 3 wires real transports here. Until then the only path
-        // that boots a server is one that injects a transport explicitly
-        // (see BDD tests).
-        let transport = self.transport.ok_or_else(|| {
-            Box::<dyn std::error::Error>::from(
-                "no transport injected — Phase 3 will pick serial/UDP from config.transport",
-            )
-        })?;
+        // Default to a config-driven factory if none was injected. Phase 3
+        // fills in the per-factory `connect()` bodies; until then the
+        // server still binds and serves metadata, but `Connected = true`
+        // returns NOT_IMPLEMENTED.
+        let factory = self
+            .factory
+            .unwrap_or_else(|| -> Arc<dyn TransportFactory> {
+                match self.config.transport {
+                    config::TransportConfig::Usb(_) => Arc::new(SerialTransportFactory),
+                    config::TransportConfig::Udp(_) => Arc::new(UdpTransportFactory),
+                }
+            });
 
-        let manager = Arc::new(TransportManager::new(self.config.clone(), transport));
+        let manager = Arc::new(TransportManager::new(self.config.clone(), factory));
 
         if self.config.mount.enabled {
             let device = MountDevice::new(self.config.mount.clone(), Arc::clone(&manager));
