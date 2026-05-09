@@ -3,11 +3,11 @@
 //! Simulates the motor controller as a small state machine: accepts
 //! `:cmd<axis><payload>\r` frames, maintains per-axis state (position,
 //! motion mode, running flag, initialised flag, tracking), and emits
-//! well-formed `=...\r` / `!XX\r` replies. Used by:
-//!
-//! * BDD tests (via [`crate::ServerBuilder::with_transport`])
-//! * `tests/test_lib.rs` server-startup tests
-//! * the `conformu` integration target
+//! well-formed `=...\r` / `!XX\r` replies. Phase 2 wires it through
+//! [`crate::ServerBuilder::with_transport`] for the BDD `tests/bdd.rs`
+//! harness. Phase 3 will additionally use it from a server-startup
+//! integration test (`tests/test_lib.rs`) and the ConformU integration
+//! target — neither file exists yet.
 //!
 //! The mock is deliberately not exposed unless the `mock` feature is on so a
 //! production build cannot accidentally pick it up.

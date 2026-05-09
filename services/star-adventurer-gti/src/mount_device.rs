@@ -214,3 +214,147 @@ impl Telescope for MountDevice {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "mock"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::transport::mock::MockTransport;
+
+    fn device() -> MountDevice {
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransport::new()),
+        ));
+        MountDevice::new(cfg.mount, manager)
+    }
+
+    #[tokio::test]
+    async fn fresh_device_reports_disconnected() {
+        // requested_connection defaults to false; transport has never been
+        // opened, so connected() must be false until set_connected lands.
+        let d = device();
+        assert!(!d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn capability_flags_match_the_design_doc() {
+        let d = device();
+        // Capability flags are constants; pin them so a future change to
+        // the design doc must update both this test and the capability
+        // table at services/star-adventurer-gti.md §"Capability flags".
+        assert_eq!(
+            d.alignment_mode().await.unwrap(),
+            AlignmentMode::GermanPolar
+        );
+        assert_eq!(
+            d.equatorial_system().await.unwrap(),
+            EquatorialCoordinateType::Topocentric
+        );
+        assert!(d.can_slew().await.unwrap());
+        assert!(d.can_slew_async().await.unwrap());
+        assert!(d.can_sync().await.unwrap());
+        assert!(d.can_set_tracking().await.unwrap());
+        assert!(d.can_park().await.unwrap());
+        assert!(d.can_unpark().await.unwrap());
+        assert!(!d.does_refraction().await.unwrap());
+        assert_eq!(d.tracking_rates().await.unwrap(), vec![DriveRate::Sidereal]);
+    }
+
+    #[tokio::test]
+    async fn defaulted_state_reads_match_initial_driver_state() {
+        let d = device();
+        assert!(!d.at_home().await.unwrap());
+        assert!(!d.at_park().await.unwrap());
+        assert!(!d.tracking().await.unwrap());
+        assert_eq!(d.tracking_rate().await.unwrap(), DriveRate::Sidereal);
+        // Ra/Dec rates are zeroed because custom-rate tracking is deferred
+        // from MVP.
+        assert_eq!(d.right_ascension_rate().await.unwrap(), 0.0);
+        assert_eq!(d.declination_rate().await.unwrap(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn axis_rates_is_empty_for_every_axis() {
+        // MoveAxis is deferred from MVP, so axis_rates returns an empty
+        // Vec for every axis — including TelescopeAxis::Primary.
+        let d = device();
+        for axis in [
+            TelescopeAxis::Primary,
+            TelescopeAxis::Secondary,
+            TelescopeAxis::Tertiary,
+        ] {
+            assert!(d.axis_rates(axis).await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn site_coordinates_pass_through_from_config() {
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransport::new()),
+        ));
+        let mut mount_cfg = cfg.mount.clone();
+        mount_cfg.site_latitude_deg = 47.6062;
+        mount_cfg.site_longitude_deg = -122.3321;
+        mount_cfg.site_elevation_m = 56.0;
+        let d = MountDevice::new(mount_cfg, manager);
+        assert_eq!(d.site_latitude().await.unwrap(), 47.6062);
+        assert_eq!(d.site_longitude().await.unwrap(), -122.3321);
+        assert_eq!(d.site_elevation().await.unwrap(), 56.0);
+    }
+
+    #[tokio::test]
+    async fn slew_settle_time_setter_overrides_config() {
+        let d = device();
+        // Config default is 2s.
+        assert_eq!(d.slew_settle_time().await.unwrap(), Duration::from_secs(2));
+        d.set_slew_settle_time(Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert_eq!(
+            d.slew_settle_time().await.unwrap(),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_connected_is_not_implemented_in_phase_2() {
+        let d = device();
+        let err = d.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_IMPLEMENTED.code);
+    }
+
+    #[tokio::test]
+    async fn right_ascension_and_sidereal_time_are_not_implemented_in_phase_2() {
+        let d = device();
+        assert_eq!(
+            d.right_ascension().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+        assert_eq!(
+            d.sidereal_time().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+        assert_eq!(
+            d.side_of_pier().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_info_and_version_are_populated() {
+        let d = device();
+        assert!(d.driver_info().await.unwrap().contains("Star Adventurer"));
+        assert!(!d.driver_version().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn description_passes_through_from_config() {
+        let d = device();
+        assert!(!d.description().await.unwrap().is_empty());
+    }
+}

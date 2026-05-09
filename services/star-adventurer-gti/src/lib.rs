@@ -1,7 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Star Adventurer GTi ASCOM Alpaca driver.
 //!
-//! See [`docs/services/star-adventurer-gti.md`](../../docs/services/star-adventurer-gti.md)
+//! See [`docs/services/star-adventurer-gti.md`](../../../docs/services/star-adventurer-gti.md)
 //! for the design contract this crate implements.
 
 pub mod config;
