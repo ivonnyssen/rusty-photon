@@ -760,33 +760,34 @@ any centering workflow's tolerance, well above OmniSim's drift.
 
 ##### Phase 6c-1 — `plate-solver` rp-managed service
 
-Status: **not started.** Sequenced separately from this plan because
-of its size (subprocess supervision, ASTAP CLI argument layout, `.wcs`
+Status: **complete.** Sequenced separately from this plan because of
+its size (subprocess supervision, ASTAP CLI argument layout, `.wcs`
 parsing, per-platform install verification) and because ADR-005
-already calls for "a separate plan to sequence the plate-solver
-rp-managed-service implementation."
+already called for "a separate plan to sequence the plate-solver
+rp-managed-service implementation." Tracked end-to-end in
+[`docs/plans/plate-solver.md`](plate-solver.md), where all eight
+phases (Phase 1 design doc through Phase 8 LGPL §4/§6 review) landed.
 
-- [ ] **`docs/plans/plate-solver.md` (new)** sequences the service
-      itself: workspace member skeleton, ASTAP subprocess wrapper,
-      HTTP API, BDD scenarios, supervision integration with sentinel,
-      and the per-platform end-to-end solve passes that retire ADR-005
-      Open Questions 1–6.
-- [ ] **HTTP contract (frozen here so 6c-2 can mock it):**
+- [x] **`docs/plans/plate-solver.md`** sequenced the service itself:
+      workspace member skeleton, ASTAP subprocess wrapper, HTTP API,
+      BDD scenarios, supervision integration with sentinel, and the
+      per-platform end-to-end solve passes that retired ADR-005 Open
+      Questions 1–6.
+- [x] **HTTP contract (frozen here so 6c-2 could mock it):**
       `POST /api/v1/solve` with body
       `{fits_path, ra_hint?, dec_hint?, fov_hint_deg?, search_radius_deg?, timeout?}`
       returns `{ra_center, dec_center, pixel_scale_arcsec, rotation_deg}`
       on success, structured error otherwise. Path-based input matches
       ADR-005's "rp and plate solver share a filesystem" contract — no
       pixel bytes over HTTP.
-- [ ] **Service supervision** via the existing rp-managed-service
-      pattern. The closest shape references in the workspace today are
-      `services/phd2-guider` and `services/sentinel`; `plate-solver`
-      mirrors their crate layout, lifecycle, and sentinel integration.
+- [x] **Service supervision** via the existing rp-managed-service
+      pattern, mirroring `services/phd2-guider` and `services/sentinel`
+      crate layout, lifecycle, and sentinel integration.
 
-This sub-phase is the largest in 6c by far. It is independent of
-6c-prep and 6c-3 once the HTTP contract above is fixed; a stub
-plate-solver process satisfies 6c-2's tests until the real service
-lands.
+This sub-phase was the largest in 6c by far. It was independent of
+6c-prep and 6c-3 once the HTTP contract above was fixed; the in-test
+stub plate-solver in 6c-2 satisfied that phase until the real service
+landed.
 
 ##### Phase 6c-2 — `plate_solve` built-in MCP tool
 
@@ -1117,63 +1118,360 @@ Step 1) and should not be re-litigated:
 
 ##### Phase 6c-3 — `center_on_target` design + BDD + impl
 
-Status: **not started.** Mirrors Phase 6b in shape (design contract →
-BDD → pure-Rust driver behind trait adapters → MCP wrapper).
+Status: **planned (2026-05-09).** Mirrors Phase 6b's shape (design
+contract → BDD → pure-Rust driver behind trait adapters → MCP wrapper)
+and Phase 6c-2's plan layout (decisions-resolved-first, then a
+work-breakdown ordered Step 1 design doc → Step 2 BDD with `@wip` →
+Step 3 implementation → Step 4 activation). Per the
+[development-workflow](../skills/development-workflow.md) procedure,
+no implementation lands before BDD scenarios exist on disk.
 
-- [ ] **Design.** `center_on_target` Contract added to `rp.md`
-      Compound Tools (parallel to `auto_focus` Contract) wiring up
-      the decisions above. Inputs:
-      `{camera_id, telescope_id, ra, dec, duration, tolerance_arcsec, max_attempts, min_area, max_area}`
-      plus optional `threshold_sigma`. Output:
-      `{final_error_arcsec, attempts, final_ra, final_dec}`.
-      Algorithm:
-      1. Resolve `camera_id` and `telescope_id`. Emit
-         `centering_started`.
-      2. Loop up to `max_attempts`:
-         - `capture(camera_id, duration)` → `document_id`.
-         - `plate_solve(document_id, hints)` → solved center.
-         - On the **first** iteration only:
-           `sync_mount(solved_ra, solved_dec)`.
-         - Compute residual error (great-circle separation in arcsec)
-           between solved center and requested `(ra, dec)`.
-         - If residual ≤ `tolerance_arcsec`, emit
-           `centering_complete` and return.
-         - Otherwise `slew(ra, dec)` and continue.
-      3. If the loop exits with residual still > tolerance, return a
-         `tolerance_not_reached` error carrying the last residual and
-         attempt count. The mount is left at its last commanded
-         position; `center_on_target` does not auto-recover.
-- [ ] `services/rp/src/imaging/tools/center_on_target.rs` — pure
-      driver over `CaptureOps` / `PlateSolveOps` / `MountOps` traits
-      so the loop is unit-testable without hardware. The MCP wrapper
-      in `mcp.rs` is the thin adapter shell, sharing capture and slew
-      semantics with the primitive tools via the existing
-      `do_capture` helper plus newly-extracted `do_slew_blocking` /
-      `do_sync_mount` helpers (parallel to Phase 6b's
-      `do_move_focuser_blocking`).
-- [ ] `services/rp/tests/features/center_on_target.feature` —
-      catalog; four device-resolution errors (nonexistent and
-      disconnected camera/telescope); missing-parameter outline;
-      numeric-range rejections (`tolerance_arcsec ≤ 0`,
-      `max_attempts ≤ 0`, `max_attempts` exceeds a safety cap —
-      mirroring `auto_focus`'s `MAX_GRID_POINTS` guardrail);
-      mid-loop `plate_solve` failure → abort; max_attempts exhausted
-      → `tolerance_not_reached`; single-iteration happy path
-      (residual already inside tolerance); multi-iteration happy
-      path with the sync-on-first-only invariant verified via the
-      stub plate solver's call log. Target ~12–15 scenarios. The
-      OmniSim caveat from Phase 6b applies — OmniSim does not model
-      pointing, so happy-path convergence is asserted via the
-      synthetic `PlateSolveOps` adapter rather than a real solve
-      cycle.
-- [ ] Unit tests on the run loop with synthetic adapters: known-
-      residual convergence on iteration 1, convergence on iteration
-      N, abort on mid-loop solve failure, `tolerance_not_reached`
-      after `max_attempts`, sync-on-first-only invariant.
+###### Decisions resolved during Phase 6c-3 planning
 
-**Exit criteria:** new BDD scenarios green, run-loop unit tests cover
-the success / abort / not-reached arms, `cargo rail run --profile
-commit -q` clean, `cargo fmt` clean.
+These will be captured in `docs/services/rp.md` (Compound Tools →
+new `center_on_target` Contract subsection added by Step 1) and should
+not be re-litigated. The first three were already pinned in the prior
+Phase 6c-3 stub and the parent decision block above
+(line 510 onward); the remainder resolve open questions surfaced
+during this planning pass.
+
+- **`tolerance_arcsec` and `max_attempts`: required parameters, no
+  defaults.** (Carried from prior planning.) Same rationale as
+  `measure_basic`'s `min_area`/`max_area`: the right values depend
+  on rig pixel scale, mount tracking quality, and target altitude.
+- **`sync_mount` only on the first iteration.** (Carried.) The first
+  `plate_solve` produces the absolute pointing reference; subsequent
+  iterations rely on the mount honouring relative `slew`s. Sync
+  *unconditionally* on iter 1 — even if the residual is already
+  inside tolerance — so the mount's pointing model is calibrated for
+  any caller that follows centering with further targeted slews.
+- **Fail fast on per-iteration failures.** (Carried.) A `capture`,
+  `plate_solve`, `sync_mount`, or `slew` error inside the loop aborts
+  with the underlying message; the mount is left where the failed
+  step left it. No retry-with-longer-exposure fallback in v1.
+- **No aggregate persistence section.** (Carried.) Each per-iteration
+  capture writes its own `wcs` section via the embedded
+  `plate_solve`. The compound result is returned in the MCP response
+  and emitted as `centering_complete`. A `centering_started` event
+  fires before the loop and a `centering_iteration` event fires
+  after each per-iteration solve so a live UI can stream the
+  residual without polling the document store.
+- **Module home:
+  `services/rp/src/imaging/tools/center_on_target.rs`.** (Carried.)
+  Symmetry with `auto_focus.rs`.
+- **No `telescope_id` parameter.** Mount is singular per Phase 6c-prep
+  (`mount: Option<MountConfig>`, no `id` field). The driver and the
+  MCP shape both resolve the mount via the singleton — a `mount_id`
+  parameter would be dead code. The original Phase 6c-3 stub's
+  `telescope_id` is stale from before 6c-prep and is dropped here.
+- **No `min_area`/`max_area`/`threshold_sigma` parameters.** The loop
+  composes `capture` + `plate_solve` + `sync_mount` + `slew`; none
+  takes star-detection thresholds (ASTAP owns its own internal
+  detection). The original stub's inclusion of these is stale from
+  the early draft when `measure_basic` was envisioned in the loop.
+  Dropped.
+- **Hint plumbing: `use_mount_hints: true` on every inner
+  `plate_solve` call.** (Already pinned in 6c-2 decision block
+  line 857.) The first iteration solves blind-but-with-mount-hints
+  (mount has just been commanded to `(ra, dec)` by the caller's
+  pre-flight slew, or — more often — left at its last position from
+  a prior workflow step). After the first sync, the mount's reported
+  position tracks reality, so the hint stays accurate across
+  iterations. Sourcing the hint *via* `plate_solve`'s existing
+  `use_mount_hints` flag rather than a Rust-side mount-read keeps
+  the hours→degrees conversion in exactly one place.
+- **Settle handling: per-iteration `slew` honours `mount.settle_after_slew`
+  config.** No per-call `settle_after` override in v1 — the rig's
+  configured settle is the right value across iterations, and an
+  override would only matter if we wanted iteration N+1's settle to
+  differ from N's, which there's no use case for. Pass-through to
+  `do_slew_blocking` with `settle_after = config_default`.
+- **Always-sync-on-iter-1 *then* check residual *then* slew if
+  outside tolerance.** Algorithm clarification on the "single-
+  iteration happy path" case from the prior stub: even when the open-
+  loop pointing was already accurate enough to land inside tolerance
+  on the first solve, we still issue `sync_mount` (per the bullet
+  above) — but we do **not** issue a `slew` if the residual is
+  already inside tolerance. The mount is at the right place; we just
+  taught it where it is. Skip the redundant slew.
+- **`max_attempts` safety cap: hardcoded `MAX_ATTEMPTS = 50`.**
+  Mirrors `auto_focus`'s `MAX_GRID_POINTS` guardrail. Plausible
+  centering runs converge in 2–4 iterations; 50 is generous enough
+  that no real workflow trips it, low enough that a misconfigured
+  loop can't tie up the rig for hours.
+- **Output shape:
+  `{final_error_arcsec, attempts, final_ra, final_dec, iterations}`.**
+  `iterations[i]` is `{document_id, residual_arcsec, solved_ra,
+  solved_dec, action}` where `action ∈ {"sync", "slew",
+  "converged"}` records what happened *after* the per-iteration
+  solve — `"sync"` on iter 1 followed by either `"slew"` or
+  `"converged"` depending on whether the residual was inside
+  tolerance, `"slew"` or `"converged"` on subsequent iterations.
+  Matches `auto_focus`'s per-step `curve_points` provenance shape
+  so callers can fetch the per-iteration documents (which carry the
+  `wcs` section written by the embedded `plate_solve`).
+- **Great-circle residual via the haversine formula.** Standard
+  closed-form equation; numerically stable for the small angles
+  centering deals with (typically arcseconds-to-arcminutes). No
+  external dep needed. Inputs from `plate_solve` are decimal degrees
+  for both RA and Dec; the formula returns arcseconds directly.
+- **`PlateSolveOps` and `MountOps` driver traits added in
+  `imaging/tools/center_on_target.rs`.** Mirror `auto_focus`'s
+  `FocuserOps`/`CaptureOps`/`MeasureOps` shape — async traits,
+  `String` errors, single-method per role. Reuse the existing
+  `CaptureOps` trait from `auto_focus.rs` rather than redefining
+  it (a `capture(duration) → document_id` operation is identical
+  in both compound tools); move the trait to a shared module
+  (`imaging/tools/mod.rs` re-export, or `imaging/tools/ops.rs`)
+  if and only if the second consumer arrives — it has, so the move
+  lands in this phase.
+- **MCP-side helpers reused, not re-extracted.** `do_capture`,
+  `do_slew_blocking`, and `read_mount_hints_for_plate_solve` already
+  exist (`services/rp/src/mcp/internals.rs:408,721,812`). The plan
+  stub's call for "newly-extracted `do_slew_blocking` / `do_sync_mount`
+  helpers" is partly stale — `do_slew_blocking` is already a helper.
+  This phase adds a `do_sync_mount(ra, dec)` helper for symmetry and
+  to give the adapter a single place to call for sync semantics.
+  Inner `plate_solve` calls go through the in-process
+  `McpHandler::plate_solve` rather than the HTTP MCP transport (no
+  re-encoding round-trip — same shape `auto_focus` uses for its
+  inner `measure_basic` calls via `measure_via_document`).
+
+###### Work breakdown (in order)
+
+**Step 1 — Design doc updates (Phase 1 of dev workflow).**
+
+- [ ] `docs/services/rp.md` updates:
+  - Built-in Tools — Compound table (line ~723): replace the existing
+    `center_on_target` placeholder row with the final input/output
+    shape from the decisions above (drop `tolerance_arcsec` placeholder
+    expansion to: `camera_id, ra, dec, duration, tolerance_arcsec,
+    max_attempts`; returns `final_error_arcsec, attempts, final_ra,
+    final_dec, iterations`). Flip the `*Planned.*` tag to
+    `Implemented.` only after Step 4 activation.
+  - New `center_on_target` Contract subsection (parallel shape to
+    `auto_focus` Contract at line ~1832 and `plate_solve` Contract at
+    line ~2026): Input, Output, Algorithm, Error cases, Persistence,
+    Caveats. Algorithm captures the sync-on-iter-1 invariant, the
+    residual-then-slew sequence, the haversine residual formula, and
+    the events emitted at each loop boundary.
+  - Update the existing `center_on_target` pseudo-code example (line
+    ~2183) to match the v1 input/output shape (drop the implicit
+    `min_area`/`max_area`, add `max_attempts`, surface the
+    per-iteration `iterations[]` provenance).
+
+**Step 2 — BDD feature + step defs (Phase 2 of dev workflow, with
+`@wip`).**
+
+- [ ] `services/rp/tests/features/center_on_target.feature`
+  (~14 scenarios, `@wip` tag at top per
+  [testing.md §2.7](../skills/testing.md#27-use-wip-tag-for-scenarios-without-implementation-yet)):
+  1. Catalog includes `center_on_target` (1)
+  2. Single-iteration happy path — first solve already inside
+     tolerance, sync fires, no slew, returns `attempts=1`,
+     `iterations[0].action="converged"` (1)
+  3. Multi-iteration happy path — residual outside tolerance on
+     iter 1 then inside on iter 2; sync-on-iter-1 verified via the
+     stub plate solver's call log + `iterations[]` shape (1)
+  4. `tolerance_not_reached` error after `max_attempts` exhausted —
+     stub returns the same large residual every iteration (1)
+  5. Mid-loop `plate_solve` failure aborts with the wrapper's error
+     code propagated; mount left at its last commanded position (1)
+  6. Mid-loop `slew` failure (e.g. tracking off after iter 1)
+     aborts with the underlying mount error (1)
+  7. Sync-on-first-only invariant: 3-iteration run logs exactly one
+     `sync_to_coordinates` call against the OmniSim mount (1)
+  8. Per-iteration `wcs` section persists on every captured
+     document — fetch each `iterations[i].document_id` and verify
+     the section is present (1)
+  9. Catalog row: nonexistent camera (1)
+  10. Catalog row: disconnected camera (1)
+  11. Catalog row: no mount configured (1)
+  12. Catalog row: mount not connected (1)
+  13. Scenario Outline: missing required parameters (`camera_id`,
+      `ra`, `dec`, `duration`, `tolerance_arcsec`, `max_attempts`)
+      — error message names the missing field, validated in input
+      order (1, six examples)
+  14. Scenario Outline: numeric-range rejections — `tolerance_arcsec
+      <= 0`, `max_attempts <= 0`, `max_attempts > MAX_ATTEMPTS`
+      (50), `ra` outside `[0, 24)`, `dec` outside `[-90, 90]`
+      (1, five examples)
+
+  OmniSim caveat from Phase 6b applies — OmniSim does not model
+  pointing, so happy-path *convergence* (residual decreasing across
+  iterations) is asserted via the stub plate solver's canned per-
+  iteration responses, not via a real solve cycle. The end-to-end
+  pixel→solve→sync→slew loop still exercises the live OmniSim
+  camera and mount; only the solver is stubbed.
+- [ ] `services/rp/tests/bdd/steps/center_on_target_steps.rs`
+  reusing `tool_steps.rs` shared steps. New steps:
+  - `Given(a stub plate solver returning per-iteration WCS responses)`
+    — extends the existing `PlateSolverStub` from
+    `plate_solve_steps.rs` with a queue of `SolveOutcome` values
+    consumed in order (one per `solve` call).
+  - `When(I call center_on_target with camera <camera> ra <ra>
+    dec <dec> duration <dur> tolerance_arcsec <tol> max_attempts <n>)`
+    — JSON-RPC call.
+  - `When(I call center_on_target omitting "<missing_param>")`
+    — Outline-driven missing-param probe; reuses the
+    `MISSING`-sentinel pattern from `mount_steps.rs`.
+  - `Then(the stub plate solver should have received <n> solve
+    calls)` — counts entries in the receiver-side request log.
+  - `Then(the OmniSim mount should have received exactly one sync
+    call)` — reads the OmniSim `telescope/{n}/synctocoordinates`
+    counter (matches the request-log shape Phase 6c-prep
+    introduced for the `sync_mount`-honoring scenario).
+  - `Then(the centering result should report attempts <n>)`,
+    `Then(the centering result iterations[<i>].action should be
+    "<action>")`, `Then(every iterations[i].document_id sidecar
+    should contain a "wcs" section)`.
+- [ ] `RpWorld` additions: `last_center_on_target_result:
+  Option<Value>`. Reuse the existing `last_plate_solver_stub` from
+  `plate_solve_steps.rs`.
+- [ ] No new `RpConfigBuilder` methods — `with_plate_solver` and
+  `with_mount` already exist from Phases 6c-2 and 6c-prep.
+- [ ] Wire into `tests/bdd/steps/mod.rs`.
+
+**Step 3 — Implementation (Phase 3 of dev workflow).**
+
+- [ ] `services/rp/src/imaging/tools/center_on_target.rs`:
+  - `CenterOnTargetParams { ra, dec, duration, tolerance_arcsec,
+    max_attempts }`. `CenterOnTargetResult { final_error_arcsec,
+    attempts, final_ra, final_dec, iterations: Vec<IterationRecord> }`.
+    `IterationRecord { document_id, residual_arcsec, solved_ra,
+    solved_dec, action: IterationAction }`. `IterationAction` is
+    a `Serialize` enum with three string variants `"sync"`, `"slew"`,
+    `"converged"` (NB: iter 1 records the `"sync"` action *before*
+    the residual check, then iter 1's converged-or-slew action is
+    recorded on the same `IterationRecord`; the JSON-shape pin
+    happens in Step 1's design doc).
+  - `CenterOnTargetError { InvalidTolerance(f64), InvalidMaxAttempts(usize),
+    MaxAttemptsExceedsCap { requested: usize, max: usize },
+    ToleranceNotReached { last_residual_arcsec: f64, attempts: usize },
+    Equipment(String) }`.
+  - `pub const MAX_ATTEMPTS: usize = 50;`
+  - `validate_params(&CenterOnTargetParams) -> Result<()>` —
+    `tolerance > 0`, `max_attempts > 0`, `max_attempts <= MAX_ATTEMPTS`.
+  - `pub fn haversine_arcsec(ra1_deg, dec1_deg, ra2_deg, dec2_deg) -> f64`
+    — standalone for unit testability.
+  - Driver traits: `PlateSolveOps`, `MountOps` (with `sync_to(ra,
+    dec)` and `slew_to(ra, dec)` async methods). `CaptureOps` is
+    pulled from `auto_focus.rs` — promote it to
+    `imaging/tools/ops.rs` (new file) and re-export from both
+    `auto_focus.rs` and `center_on_target.rs` to keep both call
+    sites' import paths short.
+  - `pub async fn run_center_on_target<C, P, M>(capturer, solver,
+    mounter, params, emit_iteration: impl Fn(&IterationRecord))
+    -> Result<CenterOnTargetResult, CenterOnTargetError>` — the
+    pure driver. Loop body:
+    1. `capture(duration)` → `document_id`.
+    2. `solver.solve(document_id)` → `(solved_ra, solved_dec)`.
+    3. If iteration index == 0: `mounter.sync_to(solved_ra,
+       solved_dec)` and record `action = Sync`.
+    4. Compute `residual_arcsec = haversine_arcsec(solved_ra,
+       solved_dec, params.ra, params.dec)`.
+    5. If `residual_arcsec <= params.tolerance_arcsec`: record
+       `action = Converged` (overwrites `Sync` on iter 1 only when
+       sync didn't happen, but per the previous bullet sync always
+       fires on iter 1 — so the iter 1 record ends with whichever
+       of `Sync→Converged` or `Sync→Slew` applies; the `action`
+       field stores the *terminal* action for that iter).
+    6. Else: `mounter.slew_to(params.ra, params.dec)`, record
+       `action = Slew`, continue to next iter.
+    7. Emit `centering_iteration` after each record via
+       `emit_iteration(&record)`.
+  - Synthetic-adapter unit tests: convergence on iter 1 (no slew),
+    convergence on iter 3 (residual decreases each iteration), abort
+    on mid-loop solve error, abort on mid-loop slew error,
+    `tolerance_not_reached` after `max_attempts`, sync-fires-once
+    invariant, `validate_params` rejection arms, haversine sanity
+    (known coordinates → known arcseconds).
+- [ ] `services/rp/src/imaging/tools/ops.rs` (new — see decision
+  above): hosts the shared `CaptureOps` trait. `auto_focus.rs`
+  removes its local definition and re-imports.
+- [ ] `services/rp/src/imaging/tools/mod.rs`: `pub mod
+  center_on_target; pub mod ops;`.
+- [ ] `services/rp/src/mcp/internals.rs`:
+  - New `pub(crate) async fn do_sync_mount(&self, ra: f64, dec: f64)
+    -> Result<(), String>` — resolve mount via `resolve_mount`,
+    call `sync_to_coordinates`, map errors. Mirrors the
+    `do_slew_blocking` shape minus the polling loop. Frees the
+    primitive `sync_mount` MCP tool to call this helper too (small
+    refactor inside `mount.rs:124-159`).
+- [ ] `services/rp/src/mcp/built_in/center_on_target.rs` (new):
+  - `CenterOnTargetToolParams` (`#[serde(default)]` on every field
+    so the body validator can produce input-order error messages).
+  - `#[tool]` handler runs validation in order (camera_id → ra →
+    dec → duration → tolerance_arcsec → max_attempts), resolves
+    the camera and mount, emits `centering_started` (carrying
+    `camera_id`, `ra`, `dec`, `tolerance_arcsec`, `max_attempts`),
+    constructs the `CenterOnTargetAdapter`, calls
+    `imaging::tools::center_on_target::run_center_on_target`,
+    emits `centering_complete` on success (carrying
+    `final_error_arcsec`, `attempts`, `final_ra`, `final_dec`),
+    returns the result.
+  - `CenterOnTargetAdapter<'a>` implementing `CaptureOps` (via
+    `do_capture`), `PlateSolveOps` (via in-process
+    `McpHandler::plate_solve` with `use_mount_hints: true`), and
+    `MountOps` (via `do_sync_mount` and `do_slew_blocking` with
+    `settle_after = mount.config.settle_after_slew.unwrap_or_default()`).
+    The `emit_iteration` closure passed into `run_center_on_target`
+    calls `event_bus.emit("centering_iteration", …)`.
+  - ~10 unit tests against synthetic adapters (paralleling
+    `auto_focus`'s unit-test layout): validate_params arms (3),
+    haversine known-value (2), run_center_on_target end-to-end
+    (5: iter-1 convergence, iter-3 convergence, capture error mid-
+    loop, slew error mid-loop, `tolerance_not_reached`).
+- [ ] `services/rp/src/mcp/handler.rs`: append
+  `+ Self::tool_router_center_on_target()` to the `tool_router`
+  sum (line 79–87).
+- [ ] `services/rp/src/mcp/built_in/mod.rs`: declare the new module.
+
+**Step 4 — Activate BDD + cleanup.**
+
+- [ ] Remove `@wip` tag from `center_on_target.feature` line 1.
+- [ ] Run full suite (`cargo rail run --profile commit -q` per
+  CLAUDE.md rule 4); confirm BDD count grows by ~14 scenarios on
+  top of the current 235.
+- [ ] `cargo fmt`. `cargo build --all --all-targets --all-features
+  --locked` for linker-visible code per CLAUDE.md rule 4. No new
+  workspace deps expected (haversine is closed-form arithmetic on
+  `f64`); confirm before committing — if any landed, run
+  `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
+- [ ] Plan-doc bookkeeping: flip Phase 6c-3 status to **complete**
+  with the work-breakdown checkboxes ticked, exit-criteria block
+  populated with concrete BDD/unit-test counts. Flip the
+  `center_on_target` row in `rp.md` Built-in Tools — Compound table
+  from `*Planned.*` to `Implemented.`.
+
+###### Out of scope / deferred
+
+- **`min_improvement_arcsec` early-exit.** Useful future addition
+  (early exit when an iteration stops improving the residual), but
+  not v1. Add as an optional parameter when the first concrete
+  need surfaces.
+- **Adaptive per-iteration exposure scaling.** v1 takes a single
+  `duration`; if low star count blocks a solve, the caller re-runs
+  with a longer duration.
+- **Auto-recovery on mid-loop failures.** Workflows that want
+  retry-with-longer-exposure or retry-with-relaxed-tolerance wrap
+  the call themselves.
+- **Dome / rotator coordination.** Out of scope for `rp`'s built-in
+  tooling per `rp.md` Future Considerations.
+
+###### Exit criteria
+
+- ~14 new BDD scenarios green (~249/249 total in rp's BDD suite,
+  was 235/235 post-Phase-6c-2).
+- ~13 new lib tests across `services/rp/src/imaging/tools/center_on_target`
+  (~10 unit tests for the pure driver) + ~3 unit tests in
+  `services/rp/src/mcp/built_in/center_on_target` for the MCP
+  validation arms.
+- `cargo rail run --profile commit -q` clean workspace-wide,
+  `cargo fmt` clean. No new crates.io deps expected.
+- `iterations[].document_id` round-trips through
+  `GET /api/documents/{id}` carrying a `wcs` section written by the
+  per-iteration `plate_solve`.
 
 ##### Phase 6c sequencing notes
 
