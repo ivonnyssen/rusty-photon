@@ -9,7 +9,7 @@ rust_library(
     aliases = aliases(),
     crate_name = "rp_i18n",
     edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
+    proc_macro_deps = ["//crates/rp-i18n-derive:rp-i18n-derive"] + all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
 )
@@ -22,7 +22,7 @@ rust_test(
     ),
     size = "small",
     crate = ":rp-i18n",
-    proc_macro_deps = all_crate_deps(
+    proc_macro_deps = ["//crates/rp-i18n-derive:rp-i18n-derive"] + all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),

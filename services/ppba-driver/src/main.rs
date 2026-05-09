@@ -2,13 +2,10 @@
 //!
 //! Command-line interface for the Pegasus Astro Pocket Powerbox Advance Gen2 Switch driver.
 
-use std::cell::OnceCell;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use clap::{CommandFactory, FromArgMatches, Parser};
-use i18n_embed::fluent::FluentLanguageLoader;
-use rp_i18n::{fl, fluent_language_loader};
+use clap::Parser;
+use rp_i18n::{fl, fluent_language_loader, LocalizedParser};
 use rust_embed::RustEmbed;
 use tracing::Level;
 
@@ -21,89 +18,58 @@ use ppba_driver::{load_config, Config, ServerBuilder};
 #[folder = "i18n/"]
 struct Localizations;
 
-thread_local! {
-    static LOADER: OnceCell<Arc<FluentLanguageLoader>> = const { OnceCell::new() };
-}
-
-#[derive(Parser)]
+#[derive(Parser, LocalizedParser)]
 #[command(name = "ppba-driver")]
 #[command(version)]
+#[localized(about = "cli-about")]
 struct Args {
     /// Path to configuration file
     #[arg(short, long)]
+    #[localized(help = "cli-help-config")]
     config: Option<PathBuf>,
 
     /// Serial port path (overrides config file)
     #[arg(long)]
+    #[localized(help = "cli-help-port")]
     port: Option<String>,
 
     /// Server port (overrides config file)
     #[arg(long)]
+    #[localized(help = "cli-help-server-port")]
     server_port: Option<u16>,
 
     /// Enable/disable Switch device
     #[arg(long)]
+    #[localized(help = "cli-help-enable-switch")]
     enable_switch: Option<bool>,
 
     /// Enable/disable ObservingConditions device
     #[arg(long)]
+    #[localized(help = "cli-help-enable-observingconditions")]
     enable_observingconditions: Option<bool>,
 
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
+    #[localized(help = "cli-help-log-level")]
     log_level: Level,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
-        LOADER.with(|cell| match cell.get() {
-            Some(loader) => fl!(loader, "error-invalid-log-level", value = s),
-            None => format!(
-                "Invalid log level: {}. Use: trace, debug, info, warn, error",
-                s
-            ),
-        })
+        rp_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
+            .unwrap_or_else(|| {
+                format!(
+                    "Invalid log level: {}. Use: trace, debug, info, warn, error",
+                    s
+                )
+            })
     })
-}
-
-fn build_loader() -> Arc<FluentLanguageLoader> {
-    let loader = fluent_language_loader!();
-    let requested = rp_i18n::resolve_locale();
-    rp_i18n::select_best(&loader, &Localizations, &requested);
-    Arc::new(loader)
-}
-
-fn parse_args() -> Result<Args, clap::Error> {
-    let loader = build_loader();
-    LOADER.with(|cell| {
-        let _ = cell.set(loader.clone());
-    });
-
-    let cmd = Args::command()
-        .about(fl!(loader, "cli-about"))
-        .mut_arg("config", |a| a.help(fl!(loader, "cli-help-config")))
-        .mut_arg("port", |a| a.help(fl!(loader, "cli-help-port")))
-        .mut_arg("server_port", |a| {
-            a.help(fl!(loader, "cli-help-server-port"))
-        })
-        .mut_arg("enable_switch", |a| {
-            a.help(fl!(loader, "cli-help-enable-switch"))
-        })
-        .mut_arg("enable_observingconditions", |a| {
-            a.help(fl!(loader, "cli-help-enable-observingconditions"))
-        })
-        .mut_arg("log_level", |a| a.help(fl!(loader, "cli-help-log-level")));
-
-    let matches = cmd.get_matches();
-    Args::from_arg_matches(&matches)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = match parse_args() {
-        Ok(a) => a,
-        Err(e) => e.exit(),
-    };
+    let loader = rp_i18n::init(fluent_language_loader!(), &Localizations);
+    let args = Args::parse_localized(&loader);
 
     // Setup tracing
     tracing_subscriber::fmt()

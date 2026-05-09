@@ -4020,11 +4020,22 @@ dependencies = [
 name = "rp-i18n"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "fluent-langneg",
  "i18n-embed",
  "i18n-embed-fl",
+ "rp-i18n-derive",
  "sys-locale",
  "unic-langid",
+]
+
+[[package]]
+name = "rp-i18n-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

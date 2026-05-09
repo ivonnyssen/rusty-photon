@@ -17,3 +17,5 @@ i18n-embed-fl = { workspace = true }
 fluent-langneg = { workspace = true }
 sys-locale = { workspace = true }
 unic-langid = { workspace = true }
+clap = { workspace = true }
+rp-i18n-derive = { workspace = true }

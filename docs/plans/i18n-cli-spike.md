@@ -234,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 8. Decision gates (answered by the spike, fed back into `i18n.md` §7 / §8)
 
-1. **Is `Command::mut_arg` ergonomic enough, or do we need to move to clap's builder API?** The spike resolves Open Question 7 from the plan operationally.
+1. **Is `Command::mut_arg` ergonomic enough, or do we need to move to clap's builder API?** *Answered: `mut_arg` works, and follow-up work in this branch added `crates/rp-i18n-derive` as a workspace proc macro that automates the `mut_arg` calls from `#[localized(help = "key")]` attributes — see §11. Final consumer call-sites are `Args::parse_localized(&loader)`, one line, with no manual `Command::mut_arg` plumbing visible. Resolves Open Question 7 from the parent plan.*
 2. **Does `cargo i18n verify` integrate cleanly with rail's `commit` profile, or do we need a separate rail surface?** Resolves part of Phase 1's CI plumbing.
 3. **`.ftl`-per-service vs `.ftl`-per-surface (cli.ftl, errors.ftl, dashboard.ftl)?** The spike ships with one file per service; if it feels cramped at ~10 strings, a Phase-2 split is cheap.
 4. **`RP_LOCALE` vs `RUSTY_PHOTON_LOCALE`?** Spike ships `RP_LOCALE` (shorter, matches the binary prefix). Resolves Open Question 1.
@@ -249,7 +249,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Hosting on Weblate. The spike's `de.ftl` is LLM-bootstrapped, committed in PR.
 - All other services. The spike validates the pattern in one place; other services are mechanical follow-ups.
 
-## 10. What this spike does NOT settle
+## 10. Workspace proc macro: `rp-i18n-derive`
+
+Added in a follow-up commit on the same branch after manual `Command::mut_arg`
+chains proved repetitive. Companion crate that pairs with `clap::Parser`:
+
+```rust
+#[derive(Parser, LocalizedParser)]
+#[localized(about = "cli-about")]
+struct Args {
+    #[arg(short, long)]
+    #[localized(help = "cli-help-config")]
+    config: Option<PathBuf>,
+    // ...
+}
+
+#[tokio::main]
+async fn main() {
+    let loader = rp_i18n::init(fluent_language_loader!(), &Localizations);
+    let args = Args::parse_localized(&loader);
+    // ...
+}
+```
+
+The `#[localized(help = "...")]` attribute is per-field; `#[localized(about = "...")]`
+is on the struct. Fields without `#[localized(...)]` keep clap's compile-time
+default — so opting a single field out of translation costs nothing.
+
+`rp_i18n::init` is the one-call lifecycle: it resolves the locale via
+[`resolve_locale`], negotiates against the embedded `Localizations` via
+[`select_best`], populates the crate-internal `ACTIVE_LOADER` thread-local
+(used by `value_parser` callbacks via [`fl_active`]), and returns an `Arc`
+suitable for `parse_localized`.
+
+Net effect on the consumer: a single-page service like `ppba-driver` shrinks
+the i18n-related code in `main.rs` from ~30 lines (manual `mut_arg` chain +
+local thread-local + macro plumbing) to 2 (`init` + `parse_localized`).
+
+The macro is **opt-in**: `clap::Parser` alone still works exactly as today.
+Services that don't want translation pay nothing.
+
+[`resolve_locale`]: ../../crates/rp-i18n/src/lib.rs
+[`select_best`]: ../../crates/rp-i18n/src/lib.rs
+[`fl_active`]: ../../crates/rp-i18n/src/lib.rs
+
+## 11. What this spike does NOT settle
 
 - The UX-stack choice (`i18n.md` §3): the CLI surface is identical regardless of which UI tech wins.
 - Sourcing graduation (`i18n.md` §4): one language pair (en/de) is too small to test the Weblate workflow.
