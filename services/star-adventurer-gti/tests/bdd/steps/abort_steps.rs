@@ -13,11 +13,8 @@ async fn abort_slew(world: &mut StarAdventurerWorld) {
 #[when("I try to abort the slew")]
 async fn try_abort_slew(world: &mut StarAdventurerWorld) {
     match world.mount().abort_slew().await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 

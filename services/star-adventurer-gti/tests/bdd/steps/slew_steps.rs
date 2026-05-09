@@ -23,11 +23,8 @@ async fn slew_async_to(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
 #[when(expr = "I try to slew asynchronously to RA {float} hours and Dec {float} degrees")]
 async fn try_slew_async_to(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
     match world.mount().slew_to_coordinates_async(ra, dec).await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
@@ -39,11 +36,8 @@ async fn slew_to_target(world: &mut StarAdventurerWorld) {
 #[when("I try to slew to the stored target")]
 async fn try_slew_to_target(world: &mut StarAdventurerWorld) {
     match world.mount().slew_to_target_async().await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 

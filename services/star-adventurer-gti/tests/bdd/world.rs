@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use ascom_alpaca::api::telescope::Telescope;
+use ascom_alpaca::ASCOMError;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use star_adventurer_gti::Config;
@@ -37,5 +38,21 @@ impl StarAdventurerWorld {
     /// the Alpaca client until the Telescope device is exposed.
     pub async fn start_service(&mut self) {
         todo!("Phase 3: spawn star-adventurer-gti binary against the mock transport")
+    }
+
+    /// Clear both `last_error` and `last_error_code` so a previous failure in
+    /// the same scenario can't leak into later assertions. Used by the
+    /// `try_*` step bodies on the success branch.
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+        self.last_error_code = None;
+    }
+
+    /// Capture an [`ASCOMError`] returned by a `try_*` step into the world
+    /// state for later assertions. Always records both code and message
+    /// together so they can't disagree.
+    pub fn record_error(&mut self, e: ASCOMError) {
+        self.last_error_code = Some(e.code.raw());
+        self.last_error = Some(e.message.to_string());
     }
 }

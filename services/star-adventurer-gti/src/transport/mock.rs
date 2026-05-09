@@ -50,19 +50,44 @@ impl Default for AxisSimState {
 }
 
 /// In-memory mock state machine.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MockMountState {
     pub ra: AxisSimState,
     pub dec: AxisSimState,
-    /// `0x375F00` (3,628,800) is the GTi default; tests can override.
+    /// Counts per revolution on the RA axis. Defaults to the GTi value
+    /// `0x375F00` (3,628,800); tests can override.
     pub cpr_ra: u32,
+    /// Counts per revolution on the Dec axis. Defaults to the GTi value
+    /// `0x375F00` (3,628,800); tests can override.
     pub cpr_dec: u32,
-    /// `0xF42400` (≈ 16 MHz) is the GTi default.
+    /// Timer-interrupt frequency. Defaults to the GTi value `0xF42400`
+    /// (≈ 16 MHz).
     pub tmr_freq: u32,
     pub high_speed_ratio_ra: u32,
     pub high_speed_ratio_dec: u32,
-    /// `0x03300C` matches the GTi probe table in the design doc.
+    /// Motor-board version. Defaults to `0x03300C` per the GTi probe table
+    /// in the design doc (mount-type byte `0x03`, fw `0x30`/`0x0C`).
     pub motor_board_version: u32,
+}
+
+impl Default for MockMountState {
+    fn default() -> Self {
+        // Matches the GTi probe table in
+        // `docs/references/skywatcher-motor-controller-command-set.md`.
+        Self {
+            ra: AxisSimState::default(),
+            dec: AxisSimState::default(),
+            cpr_ra: 0x0037_5F00,
+            cpr_dec: 0x0037_5F00,
+            tmr_freq: 0x00F4_2400,
+            // High-speed ratio is mount-specific and the design doc lists
+            // example values (16/32/64) without naming a default. Pick a
+            // common one; tests that care will override.
+            high_speed_ratio_ra: 32,
+            high_speed_ratio_dec: 32,
+            motor_board_version: 0x0003_300C,
+        }
+    }
 }
 
 /// Mock transport. Cheap to clone via the inner `Arc<Mutex<_>>`.

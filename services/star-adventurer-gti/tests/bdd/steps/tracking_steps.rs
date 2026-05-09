@@ -18,11 +18,8 @@ async fn disable_tracking(world: &mut StarAdventurerWorld) {
 #[when("I try to enable tracking")]
 async fn try_enable_tracking(world: &mut StarAdventurerWorld) {
     match world.mount().set_tracking(true).await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
@@ -30,11 +27,8 @@ async fn try_enable_tracking(world: &mut StarAdventurerWorld) {
 async fn try_set_tracking_rate_lunar(world: &mut StarAdventurerWorld) {
     use ascom_alpaca::api::telescope::DriveRate;
     match world.mount().set_tracking_rate(DriveRate::Lunar).await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 

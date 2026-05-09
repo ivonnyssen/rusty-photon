@@ -13,11 +13,8 @@ async fn sync_to(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
 #[when(expr = "I try to sync to RA {float} hours and Dec {float} degrees")]
 async fn try_sync_to(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
     match world.mount().sync_to_coordinates(ra, dec).await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
@@ -29,10 +26,7 @@ async fn sync_to_target(world: &mut StarAdventurerWorld) {
 #[when("I try to sync to the stored target")]
 async fn try_sync_to_target(world: &mut StarAdventurerWorld) {
     match world.mount().sync_to_target().await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }

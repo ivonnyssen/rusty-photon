@@ -13,11 +13,8 @@ async fn park_mount(world: &mut StarAdventurerWorld) {
 #[when("I try to park the mount")]
 async fn try_park_mount(world: &mut StarAdventurerWorld) {
     match world.mount().park().await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
@@ -29,11 +26,8 @@ async fn unpark_mount(world: &mut StarAdventurerWorld) {
 #[when("I try to set the park position")]
 async fn try_set_park_position(world: &mut StarAdventurerWorld) {
     match world.mount().set_park().await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 

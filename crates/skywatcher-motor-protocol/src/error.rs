@@ -20,9 +20,9 @@ pub enum ProtocolError {
     #[error("payload error: {0}")]
     PayloadError(String),
 
-    /// The controller replied with `!XX\r` where `XX` is a known mount-side
-    /// error code. Carries the raw nibble value so callers can map it to an
-    /// ASCOM error.
+    /// The controller replied with `!XX\r` where `XX` is the two-hex-digit
+    /// mount-side error byte. Carries the decoded [`MountErrorCode`] so
+    /// callers can map it to an ASCOM error.
     #[error("mount error: {0:?}")]
     MountError(MountErrorCode),
 }
@@ -49,17 +49,21 @@ pub enum MountErrorCode {
     PecTrainingRunning,
     /// `8` — PEC playback requested but no training data exists.
     NoValidPecData,
-    /// Any error byte the spec does not name. Carries the raw nibble.
+    /// Any error byte the spec does not name. Carries the raw byte value.
     Unknown(u8),
 }
 
 impl MountErrorCode {
-    /// Decode a single error nibble (`0`..=`F`) into a [`MountErrorCode`].
+    /// Decode a mount-side error byte (`0x00`..=`0xFF`) into a
+    /// [`MountErrorCode`].
     ///
-    /// `code` is the parsed numeric value of the error nibble, not the ASCII
-    /// byte; callers that have raw hex bytes should run them through
-    /// [`crate::codec::decode_u8`] first.
-    pub fn from_nibble(code: u8) -> Self {
+    /// `code` is the parsed numeric value of the two ASCII hex digits in the
+    /// `!XX\r` wire frame, not the ASCII bytes themselves; callers that have
+    /// raw hex bytes should run them through [`crate::codec::decode_u8`]
+    /// first. The named variants (`UnknownCommand`..=`NoValidPecData`)
+    /// correspond to the single-nibble codes the spec lists; everything else
+    /// maps to [`MountErrorCode::Unknown`].
+    pub fn from_byte(code: u8) -> Self {
         match code {
             0 => Self::UnknownCommand,
             1 => Self::CommandLengthError,

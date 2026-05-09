@@ -43,22 +43,16 @@ async fn ra_axis_running_goto(world: &mut StarAdventurerWorld) {
 #[when("I try to read RightAscension")]
 async fn try_read_ra(world: &mut StarAdventurerWorld) {
     match world.mount().right_ascension().await {
-        Ok(_) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(_) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
 #[when("I try to read Declination")]
 async fn try_read_dec(world: &mut StarAdventurerWorld) {
     match world.mount().declination().await {
-        Ok(_) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(_) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 

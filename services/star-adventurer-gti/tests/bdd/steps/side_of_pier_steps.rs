@@ -14,22 +14,16 @@ async fn ra_encoder_reports_ha(world: &mut StarAdventurerWorld, ha_hours: f64) {
 async fn try_set_side_of_pier_east(world: &mut StarAdventurerWorld) {
     use ascom_alpaca::api::telescope::PierSide;
     match world.mount().set_side_of_pier(PierSide::East).await {
-        Ok(()) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(()) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
 #[when(expr = "I try to read DestinationSideOfPier for RA {float} hours and Dec {float} degrees")]
 async fn try_read_destination_side(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
     match world.mount().destination_side_of_pier(ra, dec).await {
-        Ok(_) => world.last_error = None,
-        Err(e) => {
-            world.last_error_code = Some(e.code.raw());
-            world.last_error = Some(e.message.to_string());
-        }
+        Ok(_) => world.clear_error(),
+        Err(e) => world.record_error(e),
     }
 }
 
