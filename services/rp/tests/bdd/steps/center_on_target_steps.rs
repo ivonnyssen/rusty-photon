@@ -246,12 +246,14 @@ fn mount_position_approx(world: &mut RpWorld, expected_ra: f64, expected_dec: f6
         .get("dec")
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("expected 'dec' in mount position, got: {:?}", result));
-    // OmniSim's slew-echo drift is ~0.001 hours / ~0.001 degrees
-    // (~3.6 arcsec) — same root cause as mount.feature's slew
-    // tolerance. Use 0.01 here so the assertion stays robust against
-    // that drift while still distinguishing iter-1 sync-then-slew
-    // outcome (≈ input ra/dec) from the iter-N solved position
-    // (≈ tens of arcsec / hours away in our scenarios).
+    // OmniSim's slew-echo drift is ~0.001° on both axes (~3.6
+    // arcsec) — same root cause as mount.feature's slew tolerance.
+    // For the dec axis (degrees) the 0.01 cap here gives ~3× slack
+    // over the drift; for the ra axis (hours) 0.01h = 0.15° = ~540
+    // arcsec, far above the ~0.001° / ~0.000067h drift but still
+    // tight enough to distinguish the iter-1 sync-then-slew outcome
+    // (≈ input ra/dec) from an iter-N solved position that lands
+    // tens of arcsec — or hours, in our scenarios — away.
     assert!(
         (actual_ra - expected_ra).abs() < 0.01,
         "expected ra ≈ {}, got {}",
