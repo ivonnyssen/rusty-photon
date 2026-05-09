@@ -87,16 +87,29 @@ fn en() -> LanguageIdentifier {
 
 /// Negotiate which embedded locale(s) to load, falling back to `en`.
 ///
-/// Errors loading the chosen languages are swallowed: a missing key falls
-/// through Fluent's own fallback chain (`xx-YY → xx → en`) at render time, so
-/// this function only fails silently on unrecoverable I/O — and even then, the
-/// pre-loaded English bundle keeps the binary functional.
+/// Returns `Ok(())` when the requested locale (or its `xx → en` fallback) is
+/// successfully loaded into `loader`. Returns `Err(LoadError)` when asset
+/// enumeration or bundle loading fails — but the binary stays functional
+/// either way because [`fluent_language_loader!`] preloads the English
+/// fallback bundle at compile time, so `fl!()` calls still resolve.
+///
+/// Both error paths emit `tracing::warn!` so a misconfigured `i18n/` tree is
+/// visible in operator logs rather than silently degrading to English.
 pub fn select_best<A: I18nAssets>(
     loader: &FluentLanguageLoader,
     assets: &A,
     requested: &LanguageIdentifier,
-) {
-    let available = loader.available_languages(assets).unwrap_or_default();
+) -> Result<(), LoadError> {
+    let available = match loader.available_languages(assets) {
+        Ok(langs) => langs,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "i18n: failed to enumerate embedded locales — keeping English fallback only"
+            );
+            return Err(LoadError::Available);
+        }
+    };
     let en = en();
     let chosen: Vec<LanguageIdentifier> = negotiate_languages(
         std::slice::from_ref(requested),
@@ -107,7 +120,28 @@ pub fn select_best<A: I18nAssets>(
     .into_iter()
     .cloned()
     .collect();
-    let _ = loader.load_languages(assets, &chosen);
+    if let Err(e) = loader.load_languages(assets, &chosen) {
+        tracing::warn!(
+            error = %e,
+            requested = %requested,
+            "i18n: failed to load negotiated locale bundle — falling back to English"
+        );
+        return Err(LoadError::Load);
+    }
+    Ok(())
+}
+
+/// Why a [`select_best`] / [`init`] call did not load the requested locale.
+/// The binary continues to function via Fluent's English fallback either way;
+/// this is surfaced for callers that want to log or telemeter the miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadError {
+    /// `i18n_embed::I18nAssets::available_languages` failed.
+    Available,
+    /// `FluentLanguageLoader::load_languages` failed.
+    Load,
+    /// Another `init` call already populated the thread-local loader.
+    AlreadyInitialized,
 }
 
 /// One-call setup: resolve the locale, load the matching assets, register
@@ -116,12 +150,24 @@ pub fn select_best<A: I18nAssets>(
 ///
 /// `loader` is the value returned by [`fluent_language_loader!`], invoked
 /// at the consumer crate so the macro can read that crate's `i18n.toml`.
+///
+/// A failure to load the requested locale is logged at `warn` and swallowed —
+/// the returned `Arc` is always usable, falling back through Fluent's
+/// `xx-YY → xx → en` chain. Calling `init` twice on the same thread logs a
+/// `warn` and keeps the first loader; the returned `Arc` is the one passed
+/// in, but the *active loader* (used by [`fl_active`]) remains the original.
 pub fn init<A: I18nAssets>(loader: FluentLanguageLoader, assets: &A) -> Arc<FluentLanguageLoader> {
     let requested = resolve_locale();
-    select_best(&loader, assets, &requested);
+    let _ = select_best(&loader, assets, &requested);
     let arc = Arc::new(loader);
     ACTIVE_LOADER.with(|cell| {
-        let _ = cell.set(arc.clone());
+        if cell.set(arc.clone()).is_err() {
+            tracing::warn!(
+                "i18n: init() called more than once on this thread — \
+                 keeping the loader registered by the first call. \
+                 fl_active() will return the original locale, not this one."
+            );
+        }
     });
     arc
 }

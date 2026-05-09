@@ -185,7 +185,7 @@ use i18n_embed_fl::fl;
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "../i18n/"]
+#[folder = "i18n/"]   // relative to the consumer crate's Cargo.toml
 struct Localizations;
 
 #[derive(Parser)]

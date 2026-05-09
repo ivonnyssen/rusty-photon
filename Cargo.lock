@@ -4026,6 +4026,7 @@ dependencies = [
  "i18n-embed-fl",
  "rp-i18n-derive",
  "sys-locale",
+ "tracing",
  "unic-langid",
 ]
 
