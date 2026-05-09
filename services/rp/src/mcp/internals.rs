@@ -79,6 +79,39 @@ pub(crate) struct ResolvedMeasureStarsParams {
 // ---------------------------------------------------------------------------
 
 impl McpHandler {
+    pub(crate) async fn stats_via_document(
+        &self,
+        doc_id: &str,
+    ) -> crate::error::Result<imaging::ImageStats> {
+        if let Some(cached) = self.image_cache.resolve(doc_id).await {
+            return crate::dispatch_pixels!(&cached.pixels, |arr| stats_outcome(arr));
+        }
+
+        debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
+        let doc = self
+            .image_cache
+            .resolve_document(doc_id)
+            .await
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+            })?;
+        self.stats_via_path(&doc.file_path).await
+    }
+
+    pub(crate) async fn stats_via_path(
+        &self,
+        path: &str,
+    ) -> crate::error::Result<imaging::ImageStats> {
+        let path_owned = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let (pixels, _w, _h) = persistence::read_fits_pixels(&path_owned)?;
+            imaging::compute_stats(&pixels)
+                .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
+        })
+        .await
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+    }
+
     pub(crate) async fn measure_via_document(
         &self,
         doc_id: &str,
@@ -793,6 +826,21 @@ impl McpHandler {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+pub(crate) fn stats_outcome<T: imaging::Pixel>(
+    view: ndarray::ArrayView2<T>,
+) -> crate::error::Result<imaging::ImageStats> {
+    // `compute_stats` is currently typed on `&[i32]`. Materialize a flat
+    // i32 buffer here so the cached-pixel path stays inside the
+    // `dispatch_pixels!` macro and reuses the same computation as the
+    // FITS-on-disk path. Negative pixels are clamped to 0 inside
+    // `compute_stats`, so the `to_u32() as i32` round-trip is safe for
+    // the realistic camera ranges we care about (u16 cameras + i32
+    // scientific HDR ≤ i32::MAX).
+    let pixels: Vec<i32> = view.iter().map(|p| p.to_u32() as i32).collect();
+    imaging::compute_stats(&pixels)
+        .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
+}
 
 pub(crate) fn clip_outcome<T: imaging::Pixel>(
     view: ndarray::ArrayView2<T>,

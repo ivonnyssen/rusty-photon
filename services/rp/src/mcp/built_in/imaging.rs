@@ -12,15 +12,19 @@ use super::super::internals::{
 };
 use super::super::{tool_error, tool_success};
 use crate::imaging;
-use crate::persistence;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ComputeImageStatsParams {
-    pub image_path: String,
-    /// Document ID for persisting image stats as a section in the exposure document.
-    /// When omitted, stats are computed but not persisted.
+    /// Exposure-document id to resolve through the unified image+document
+    /// cache. Wins over `image_path` when both are supplied. When set,
+    /// the computed stats are written into the exposure document as an
+    /// `image_stats` section.
     #[serde(default)]
     pub document_id: Option<String>,
+    /// FITS file on disk (read via `rp-fits`). Used when `document_id`
+    /// is absent or doesn't resolve through the cache.
+    #[serde(default)]
+    pub image_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -162,35 +166,54 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeImageStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let image_path = params.image_path;
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
 
-        let path_clone = image_path.clone();
-        let stats = match tokio::task::spawn_blocking(move || {
-            let (pixels, _w, _h) = persistence::read_fits_pixels(&path_clone)?;
-            imaging::compute_stats(&pixels)
-                .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
-        })
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Ok(tool_error!("failed to compute stats: {}", e)),
-            Err(e) => return Ok(tool_error!("task error: {}", e)),
+        let stats = if let Some(doc_id) = params.document_id.as_deref() {
+            match self.stats_via_document(doc_id).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
+            }
+        } else {
+            let path = params.image_path.as_deref().expect("checked above");
+            match self.stats_via_path(path).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
+            }
         };
 
         debug!(
-            image_path = %image_path,
+            document_id = params.document_id.as_deref().unwrap_or(""),
+            image_path = params.image_path.as_deref().unwrap_or(""),
             median = stats.median_adu,
             mean = %stats.mean_adu,
             "computed image stats"
         );
 
-        Ok(tool_success!({
+        let payload = serde_json::json!({
             "median_adu": stats.median_adu,
             "mean_adu": stats.mean_adu,
             "min_adu": stats.min_adu,
             "max_adu": stats.max_adu,
             "pixel_count": stats.pixel_count,
-        }))
+        });
+
+        if let Some(doc_id) = params.document_id.as_deref() {
+            if let Err(e) = self
+                .image_cache
+                .put_section(doc_id, "image_stats", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist image_stats section");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
+        )]))
     }
 
     #[tool(

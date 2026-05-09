@@ -805,11 +805,14 @@ tools block until the operation completes by polling the device state
 
 #### Image Statistics Tool Details
 
-`compute_image_stats` reads a FITS file by path, flattens the pixel
-data, and computes median, mean, min, and max ADU values. If a
-`document_id` is provided, the stats are written into the exposure
-document as an `"image_stats"` section. This tool does not access the
-camera — it operates on saved image files.
+`compute_image_stats` computes median, mean, min, and max ADU values
+on the captured image. It accepts either a `document_id` (resolved
+through the unified image+document cache, falling back to disk scan
+on miss) or an `image_path` (read from disk via `rp-fits`); when both
+are supplied, `document_id` wins. When called with a `document_id`,
+the stats are written into the exposure document as an `image_stats`
+section. This tool does not access the camera — it operates on saved
+image files.
 
 ### Image Analysis Strategy
 
