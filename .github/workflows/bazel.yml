@@ -101,9 +101,10 @@ jobs:
       # was first added it was scoped to BDD because services/rp:bdd
       # and services/sky-survey-camera:bdd were the known long pole on
       # Windows (4/6 BDD targets cache-hit after PR #120). A subsequent
-      # cache-summary audit (PR #179) found the bigger Windows delta is
-      # actually in `bazel test (fast)`: on Windows that step reports
-      # zero local-action-cache hits where Linux/macOS each report ~75,
+      # cache-summary audit of `bazel build` / `bazel test (fast)` /
+      # `bazel test (BDD)` found the bigger Windows delta is actually in
+      # `bazel test (fast)`: on Windows that step reports zero
+      # local-action-cache hits where Linux/macOS each report ~75,
       # blowing a 3 s step out to 90+ s. The build step also runs ~2×
       # slower on Windows. Capturing all three lets us see whether the
       # action keys really differ or whether the on-disk cache is being
