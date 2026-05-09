@@ -641,11 +641,11 @@ as `qhy-focuser` and `ppba-driver`.)
 
 ### Authoritative
 
-- [Sky-Watcher motor controller command set] — the wire protocol
+- [Sky-Watcher motor-controller command set] — the wire protocol
   specification, including the §6 Wi-Fi note that the same protocol runs
-  on UDP/11880. An in-tree markdown rendering is at
-  [`docs/references/skywatcher-motor-controller-command-set.md`](../references/skywatcher-motor-controller-command-set.md)
-  for offline / version-pinned reference.
+  on UDP/11880. In-tree engineering notes (compatibility list, our
+  empirical findings, implementation gotchas) live alongside at
+  [`docs/references/skywatcher-motor-controller-command-set.md`](../references/skywatcher-motor-controller-command-set.md).
 - [INDI eqmod driver source](https://github.com/indilib/indi-3rdparty/tree/master/indi-eqmod)
   — the canonical open-source reference implementation; we cross-check
   ambiguous bits of the spec against this driver.
