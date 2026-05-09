@@ -177,3 +177,91 @@ pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::erro
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_match_the_design_doc() {
+        let cfg = Config::default();
+        assert_eq!(cfg.server.port, 11_117);
+        assert_eq!(cfg.mount.name, "Star Adventurer GTi");
+        assert_eq!(cfg.mount.unique_id, "skywatcher-sa-gti-001");
+        assert!(cfg.mount.enabled);
+        assert_eq!(cfg.mount.tracking_rate, TrackingRateName::Sidereal);
+        assert_eq!(cfg.mount.settle_after_slew, Duration::from_secs(2));
+        assert!(matches!(cfg.transport, TransportConfig::Usb(_)));
+    }
+
+    #[test]
+    fn usb_transport_default_uses_recommended_baud_rate() {
+        let usb = UsbConfig::default();
+        // Spec says 9600; in practice GTi USB also accepts 115200, which we
+        // recommend (matches EQMOD docs).
+        assert_eq!(usb.baud_rate, 115_200);
+        assert_eq!(usb.command_timeout, Duration::from_secs(2));
+        assert_eq!(usb.polling_interval, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn udp_transport_default_targets_the_ap_mode_address() {
+        let udp = UdpConfig::default();
+        assert_eq!(udp.address.to_string(), "192.168.4.1");
+        assert_eq!(udp.port, 11_880);
+        // bind_address is mandatory for UDP and must be on the 192.168.4.0/24
+        // subnet when the mount is in AP mode.
+        assert!(udp.bind_address.to_string().starts_with("192.168.4."));
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let cfg = Config::default();
+        let json = serde_json::to_string(&cfg).expect("serialise");
+        let back: Config = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.server.port, cfg.server.port);
+        assert_eq!(back.mount.name, cfg.mount.name);
+    }
+
+    #[test]
+    fn transport_config_deserialises_usb_variant() {
+        let json = r#"{
+            "kind": "usb",
+            "port": "/dev/ttyACM0",
+            "baud_rate": 9600,
+            "command_timeout": "1s",
+            "polling_interval": "100ms"
+        }"#;
+        let t: TransportConfig = serde_json::from_str(json).expect("usb variant");
+        match t {
+            TransportConfig::Usb(usb) => {
+                assert_eq!(usb.port, "/dev/ttyACM0");
+                assert_eq!(usb.baud_rate, 9600);
+                assert_eq!(usb.command_timeout, Duration::from_secs(1));
+                assert_eq!(usb.polling_interval, Duration::from_millis(100));
+            }
+            other => panic!("expected Usb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transport_config_deserialises_udp_variant_with_bind_address() {
+        let json = r#"{
+            "kind": "udp",
+            "address": "192.168.4.1",
+            "port": 11880,
+            "bind_address": "192.168.4.7",
+            "command_timeout": "2s",
+            "polling_interval": "200ms"
+        }"#;
+        let t: TransportConfig = serde_json::from_str(json).expect("udp variant");
+        match t {
+            TransportConfig::Udp(udp) => {
+                assert_eq!(udp.address.to_string(), "192.168.4.1");
+                assert_eq!(udp.bind_address.to_string(), "192.168.4.7");
+            }
+            other => panic!("expected Udp, got {other:?}"),
+        }
+    }
+}

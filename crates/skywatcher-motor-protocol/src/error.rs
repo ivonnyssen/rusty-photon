@@ -80,3 +80,68 @@ impl MountErrorCode {
 
 /// Result alias used throughout this crate.
 pub type Result<T> = std::result::Result<T, ProtocolError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_byte_maps_named_codes() {
+        assert_eq!(MountErrorCode::from_byte(0), MountErrorCode::UnknownCommand);
+        assert_eq!(
+            MountErrorCode::from_byte(1),
+            MountErrorCode::CommandLengthError
+        );
+        assert_eq!(
+            MountErrorCode::from_byte(2),
+            MountErrorCode::MotorNotStopped
+        );
+        assert_eq!(
+            MountErrorCode::from_byte(3),
+            MountErrorCode::InvalidCharacter
+        );
+        assert_eq!(MountErrorCode::from_byte(4), MountErrorCode::NotInitialized);
+        assert_eq!(MountErrorCode::from_byte(5), MountErrorCode::DriverSleeping);
+        assert_eq!(
+            MountErrorCode::from_byte(7),
+            MountErrorCode::PecTrainingRunning
+        );
+        assert_eq!(MountErrorCode::from_byte(8), MountErrorCode::NoValidPecData);
+    }
+
+    #[test]
+    fn from_byte_reserves_unknown_for_unspecified_values() {
+        // The spec leaves `6` undefined; the codec must surface it as Unknown
+        // rather than silently mapping to a named variant.
+        assert_eq!(MountErrorCode::from_byte(6), MountErrorCode::Unknown(6));
+    }
+
+    #[test]
+    fn from_byte_passes_high_bytes_through_unknown() {
+        // Wire form is `!XX\r` — full byte. Anything > 0x0F still round-trips
+        // cleanly into Unknown(byte).
+        assert_eq!(
+            MountErrorCode::from_byte(0x9A),
+            MountErrorCode::Unknown(0x9A)
+        );
+        assert_eq!(
+            MountErrorCode::from_byte(0xFF),
+            MountErrorCode::Unknown(0xFF)
+        );
+    }
+
+    #[test]
+    fn protocol_error_display_includes_payload() {
+        let err = ProtocolError::FrameError("missing CR".to_string());
+        assert_eq!(format!("{err}"), "frame error: missing CR");
+
+        let err = ProtocolError::HexError("bad nibble".to_string());
+        assert_eq!(format!("{err}"), "hex decode error: bad nibble");
+
+        let err = ProtocolError::PayloadError("short".to_string());
+        assert_eq!(format!("{err}"), "payload error: short");
+
+        let err = ProtocolError::MountError(MountErrorCode::NotInitialized);
+        assert_eq!(format!("{err}"), "mount error: NotInitialized");
+    }
+}

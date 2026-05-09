@@ -81,3 +81,89 @@ impl Response {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::MotionMode;
+
+    fn mode() -> MotionMode {
+        MotionMode {
+            goto: true,
+            fast: false,
+            forward: true,
+        }
+    }
+
+    #[test]
+    fn axis_of_returns_command_axis_for_axis_carrying_commands() {
+        assert_eq!(
+            Response::axis_of(&Command::Initialize(Axis::Ra)),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::Initialize(Axis::Dec)),
+            Some(Axis::Dec)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::InquireCpr(Axis::Dec)),
+            Some(Axis::Dec)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::InquirePosition(Axis::Ra)),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::InquireStatus(Axis::Both)),
+            Some(Axis::Both)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetMotionMode {
+                axis: Axis::Ra,
+                mode: mode()
+            }),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetGotoTarget {
+                axis: Axis::Dec,
+                ticks: 42
+            }),
+            Some(Axis::Dec)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetStepPeriod {
+                axis: Axis::Ra,
+                period: 1000
+            }),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetPosition {
+                axis: Axis::Dec,
+                ticks: -7
+            }),
+            Some(Axis::Dec)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::StartMotion(Axis::Ra)),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::StopMotion(Axis::Dec)),
+            Some(Axis::Dec)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::InstantStop(Axis::Ra)),
+            Some(Axis::Ra)
+        );
+    }
+
+    #[test]
+    fn axis_of_inquire_tmr_freq_is_always_ra() {
+        // `:b1` is the only axis-1-only inquiry; the codec must report Ra,
+        // not Both, so callers can route the reply through the same per-axis
+        // dispatch path as the rest.
+        assert_eq!(Response::axis_of(&Command::InquireTmrFreq), Some(Axis::Ra));
+    }
+}

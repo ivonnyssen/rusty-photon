@@ -112,3 +112,46 @@ impl Transport for MockTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_sim_state_default_is_at_home_uninitialised_and_stopped() {
+        let s = AxisSimState::default();
+        assert_eq!(s.position_ticks, 0);
+        assert!(!s.initialized);
+        assert!(!s.running);
+        assert!(!s.goto);
+        assert!(s.forward);
+        assert!(!s.fast);
+        assert_eq!(s.goto_target_ticks, 0);
+        assert_eq!(s.step_period, 0);
+    }
+
+    #[test]
+    fn mock_mount_state_default_seeds_documented_gti_values() {
+        // Anchored to the GTi probe table in
+        // docs/references/skywatcher-motor-controller-command-set.md.
+        // If the GTi firmware ever returns different values, the probe
+        // table — and these constants — are what gets updated.
+        let s = MockMountState::default();
+        assert_eq!(s.cpr_ra, 0x0037_5F00);
+        assert_eq!(s.cpr_dec, 0x0037_5F00);
+        assert_eq!(s.tmr_freq, 0x00F4_2400);
+        assert_eq!(s.motor_board_version, 0x0003_300C);
+        assert_eq!(s.high_speed_ratio_ra, 32);
+        assert_eq!(s.high_speed_ratio_dec, 32);
+    }
+
+    #[tokio::test]
+    async fn mock_transport_close_is_a_noop() {
+        // Idempotent close lets the ref-counted TransportManager call this
+        // freely on every disconnect path.
+        let t = MockTransport::new();
+        t.close().await.expect("first close");
+        t.close().await.expect("second close");
+    }
+}

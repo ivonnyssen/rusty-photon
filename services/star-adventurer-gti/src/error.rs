@@ -52,3 +52,55 @@ impl StarAdvError {
 
 /// Driver result alias.
 pub type Result<T> = std::result::Result<T, StarAdvError>;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_connected_maps_to_ascom_not_connected() {
+        let err = StarAdvError::NotConnected.to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[test]
+    fn invalid_value_maps_to_ascom_invalid_value() {
+        let err = StarAdvError::InvalidValue("ra out of range".to_string()).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn parked_maps_to_ascom_invalid_while_parked() {
+        let err = StarAdvError::Parked.to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[test]
+    fn other_variants_map_to_invalid_operation() {
+        for err in [
+            StarAdvError::ConnectionFailed("boom".into()),
+            StarAdvError::Transport("eof".into()),
+            StarAdvError::Timeout("read".into()),
+            StarAdvError::InvalidOperation("double connect".into()),
+            StarAdvError::Config("missing".into()),
+        ] {
+            let mapped = err.to_ascom_error();
+            assert_eq!(mapped.code, ASCOMErrorCode::INVALID_OPERATION);
+        }
+    }
+
+    #[test]
+    fn protocol_error_converts_through_from() {
+        let pe = skywatcher_motor_protocol::ProtocolError::FrameError("missing CR".to_string());
+        let driver: StarAdvError = pe.into();
+        assert!(matches!(driver, StarAdvError::Protocol(_)));
+    }
+
+    #[test]
+    fn io_error_converts_through_from() {
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "read timed out");
+        let driver: StarAdvError = io.into();
+        assert!(matches!(driver, StarAdvError::Io(_)));
+    }
+}
