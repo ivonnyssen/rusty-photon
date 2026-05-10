@@ -89,6 +89,15 @@ pub struct DeviceState {
     /// `POST` writes are visible immediately; in `Telescope` mode the
     /// exposure pipeline writes back after a successful mount read.
     pub last_snapshot: Arc<SharedPointing>,
+    /// Optional one-shot pointing override armed by
+    /// `POST /sky-survey/position` while in follow mode. The next
+    /// `StartExposure` (light) takes the value, uses it as the
+    /// snapshot, and clears the field. Subsequent exposures resume
+    /// follow-mode reads from the mount. Used by BDD scenarios to
+    /// inject "the camera saw something different from where the
+    /// mount thinks it is" on a single capture (F7); the standard
+    /// follow-mode read path is otherwise unchanged.
+    pub next_pointing_override: Mutex<Option<PointingState>>,
     pub bin_x: AtomicU8,
     pub bin_y: AtomicU8,
     pub num_x: AtomicU32,
@@ -163,6 +172,7 @@ impl SkySurveyCamera {
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
             survey_client,
+            next_pointing_override: Mutex::new(None),
         };
         Self {
             state: Arc::new(state),
@@ -249,11 +259,26 @@ async fn run_exposure_inner(
     // in static mode this is the cached `SharedPointing`. After a
     // successful follow-mode read, write back to `last_snapshot` so
     // `GET /sky-survey/position` reflects what the camera last saw.
-    let pointing = state
-        .pointing_source
-        .snapshot()
-        .await
-        .map_err(|e| format!("mount read failed: {e}"))?;
+    //
+    // F7: if a one-shot override was armed via `POST /sky-survey/position`
+    // while in follow mode, take it (consume + clear) and use it as
+    // the snapshot for THIS exposure only. The next exposure resumes
+    // a fresh mount read.
+    let override_used = {
+        let mut guard = state
+            .next_pointing_override
+            .lock()
+            .expect("next_pointing_override poisoned");
+        guard.take()
+    };
+    let pointing = match override_used {
+        Some(p) => p,
+        None => state
+            .pointing_source
+            .snapshot()
+            .await
+            .map_err(|e| format!("mount read failed: {e}"))?,
+    };
     if state.pointing_source.is_follow_mode() {
         state.last_snapshot.store(pointing).await;
     }

@@ -233,3 +233,77 @@ Feature: Center on target compound tool
       | max_attempts     | 51    |
       | ra               | 24    |
       | dec              | 91    |
+
+  # Closed-loop scenarios (Phase 4 of
+  # docs/plans/sky-survey-camera-mount-following.md): the camera is a
+  # real `sky-survey-camera` process following OmniSim's Telescope.
+  # Before invoking `center_on_target`, the scenario `POST`s to the
+  # camera's `/sky-survey/position` endpoint, which in follow mode
+  # arms a *one-shot* pointing override (F7) — the next light
+  # exposure renders at that overridden position; subsequent
+  # exposures resume reading the mount.
+  #
+  # That one-shot semantic is what makes the loop converge: iter 0
+  # sees the camera "off-target" (the overridden position), syncs
+  # the mount to the solved coordinates, slews back to the requested
+  # target, and discards the override. Iter 1 reads the mount fresh
+  # (now back at the target via the slew), plate-solves to that
+  # mount-reported position, and converges. A persistent camera-side
+  # offset (the `offset_*_arcsec` config fields) cannot be driven to
+  # zero by sync+slew — see the plan's "Note on the offset model" —
+  # which is why we use a one-shot override here instead.
+  #
+  # The plate-solver stub walks a Sequence: first call returns the
+  # "off-target" coordinates, second call returns the requested
+  # target. rp's persistence layer writes its own FITS from the
+  # camera's ImageArray and does not propagate the camera-side WCS,
+  # so the stub fakes the solve outcome (production rp ships
+  # pointing hints via the request body, not via FITS keywords).
+
+  @e2e-centering
+  Scenario: Closed-loop centering converges in 2 iterations after a one-shot off-target override
+    Given a running Alpaca simulator
+    And the SkyView stub is ready
+    And sky-survey-camera follows the simulated mount with offset_ra_arcsec 0.0 offset_dec_arcsec 0.0
+    And a stub plate solver returning these per-call WCS responses:
+      | ra_center | dec_center |
+      | 180.0167  | -30.0125   |
+      | 180.0000  | -30.0000   |
+    And rp is running with the sky-survey-camera and a mount on the simulator
+    And the mount tracking is set to true
+    And an MCP client connected to rp
+    When the MCP client calls "sync_mount" with ra "12.0000" dec "-30.0000"
+    And sky-survey-camera is told its next exposure is at ra_deg 180.0167 dec_deg -30.0125
+    And the MCP client calls center_on_target with camera "main-cam" ra 12.0000 dec -30.0000 duration "100ms" tolerance_arcsec 5 max_attempts 3
+    Then the tool call should succeed
+    And the center_on_target result should report attempts 2
+    And the center_on_target iterations[0] action should be "sync"
+    And the center_on_target iterations[1] action should be "converged"
+    And the stub plate solver should have received 2 solve calls
+
+  @e2e-centering
+  Scenario Outline: Closed-loop centering converges for varied one-shot off-target overrides
+    Given a running Alpaca simulator
+    And the SkyView stub is ready
+    And sky-survey-camera follows the simulated mount with offset_ra_arcsec 0.0 offset_dec_arcsec 0.0
+    And a stub plate solver returning these per-call WCS responses:
+      | ra_center             | dec_center             |
+      | <off_target_ra_deg>   | <off_target_dec_deg>   |
+      | 180.0000              | -30.0000               |
+    And rp is running with the sky-survey-camera and a mount on the simulator
+    And the mount tracking is set to true
+    And an MCP client connected to rp
+    When the MCP client calls "sync_mount" with ra "12.0000" dec "-30.0000"
+    And sky-survey-camera is told its next exposure is at ra_deg <off_target_ra_deg> dec_deg <off_target_dec_deg>
+    And the MCP client calls center_on_target with camera "main-cam" ra 12.0000 dec -30.0000 duration "100ms" tolerance_arcsec 5 max_attempts 3
+    Then the tool call should succeed
+    And the center_on_target result should report attempts 2
+    And the center_on_target iterations[0] action should be "sync"
+    And the center_on_target iterations[1] action should be "converged"
+
+    # Off-target ra/dec span ~30"–~60" miss across the table.
+    Examples:
+      | off_target_ra_deg | off_target_dec_deg |
+      | 180.00833         | -30.00556          |
+      | 180.01667         | -30.01250          |
+      | 179.99167         | -29.99444          |

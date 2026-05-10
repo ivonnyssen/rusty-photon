@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::camera::DeviceState;
-use crate::pointing::PointingSource;
+use crate::pointing::{PointingSource, PointingState};
 
 #[derive(Debug, Serialize)]
 struct PositionResponse {
@@ -75,27 +75,64 @@ async fn post_position(
             .into_response();
     }
 
-    // F6: 409 in follow mode — any value written here would be silently
-    // overwritten by the next mount read.
-    let static_pointing = match &state.pointing_source {
-        PointingSource::Static(p) => p,
-        PointingSource::Telescope(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ConflictBody {
-                    error: "follow_mode",
-                    reason: "pointing.telescope is configured; pointing is read from the mount",
-                }),
-            )
-                .into_response();
+    // F7: in follow mode, POST arms a one-shot override that the next
+    // light `StartExposure` consumes — letting test harnesses inject
+    // "the camera saw something different from where the mount thinks
+    // it is" without requiring the mount itself to lie about its
+    // position. The static-mode write path is unchanged.
+    match &state.pointing_source {
+        PointingSource::Static(p) => {
+            match p.update(req.ra_deg, req.dec_deg, req.rotation_deg).await {
+                Ok(_) => StatusCode::NO_CONTENT.into_response(),
+                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+            }
         }
-    };
-
-    match static_pointing
-        .update(req.ra_deg, req.dec_deg, req.rotation_deg)
-        .await
-    {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => StatusCode::BAD_REQUEST.into_response(),
+        PointingSource::Telescope(_) => {
+            // Validate ra/dec/rotation by routing through the
+            // SharedPointing validator. We don't actually mutate
+            // `last_snapshot` here — the next exposure will overwrite
+            // it from either the override or a fresh mount read — but
+            // we want identical 400-on-bad-input semantics with
+            // static mode (P4/P5).
+            let validated = match validate_position(
+                req.ra_deg,
+                req.dec_deg,
+                req.rotation_deg,
+                &state.last_snapshot.snapshot().await,
+            ) {
+                Ok(v) => v,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            let mut guard = state
+                .next_pointing_override
+                .lock()
+                .expect("next_pointing_override poisoned");
+            *guard = Some(validated);
+            StatusCode::NO_CONTENT.into_response()
+        }
     }
+}
+
+/// Apply the same input rules as [`SharedPointing::update`] without
+/// touching shared state — used by the follow-mode `POST` path that
+/// arms a one-shot override instead of mutating `last_snapshot`.
+fn validate_position(
+    ra_deg: f64,
+    dec_deg: f64,
+    rotation_deg: Option<f64>,
+    fallback_rotation: &PointingState,
+) -> Result<PointingState, ()> {
+    if !ra_deg.is_finite() || !(0.0..360.0).contains(&ra_deg) {
+        return Err(());
+    }
+    if !dec_deg.is_finite() || !(-90.0..=90.0).contains(&dec_deg) {
+        return Err(());
+    }
+    if let Some(r) = rotation_deg {
+        if !r.is_finite() {
+            return Err(());
+        }
+    }
+    let rot = rotation_deg.unwrap_or(fallback_rotation.rotation_deg);
+    Ok(PointingState::new(ra_deg, dec_deg, rot))
 }

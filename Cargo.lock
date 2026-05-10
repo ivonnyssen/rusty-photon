@@ -398,6 +398,7 @@ dependencies = [
  "libc",
  "reqwest 0.13.2",
  "rmcp",
+ "rp-fits",
  "serde_json",
  "tempfile",
  "tokio",

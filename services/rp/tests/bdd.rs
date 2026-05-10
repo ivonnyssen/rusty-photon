@@ -52,6 +52,13 @@ bdd_infra::bdd_main! {
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }
+                    // Stop the sky-survey-camera process, if any. Drop
+                    // would handle this lazily, but doing it here keeps
+                    // teardown deterministic for the @e2e-centering
+                    // scenarios.
+                    if let Some(cam) = world.sky_survey_camera.as_mut() {
+                        cam.stop().await;
+                    }
                 }
             })
         })

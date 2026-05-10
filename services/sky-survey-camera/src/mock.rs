@@ -38,7 +38,46 @@ impl SurveyClient for MockSurveyClient {
 /// Build a minimal, valid `BITPIX = 16` FITS payload of `width × height`
 /// pixels. The pixel data is a deterministic ramp that wraps at the
 /// 16-bit boundary so the output is reproducible across runs.
+///
+/// No WCS is written. Callers that need a `(CRVAL1, CRVAL2)`-bearing
+/// FITS — e.g. the BDD closed-loop centering scenario, where the
+/// plate-solver stub round-trips the cutout's pointing — should use
+/// [`synthetic_fits_with_wcs`] instead.
 pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
+    build_synthetic_fits(width, height, None)
+}
+
+/// Like [`synthetic_fits`] but writes a minimal `RA---TAN` / `DEC--TAN`
+/// WCS keyed on the supplied field center and pixel scale. The output
+/// is still a deterministic 16-bit ramp; only the header gains
+/// `CTYPE1/2`, `CRVAL1/2`, `CRPIX1/2`, `CDELT1/2`. Used by tests that
+/// need the FITS to advertise its own pointing so a downstream
+/// "plate-solver" can read it back via `CRVAL1/2`.
+pub fn synthetic_fits_with_wcs(
+    width: u32,
+    height: u32,
+    ra_center_deg: f64,
+    dec_center_deg: f64,
+    pixel_scale_arcsec: f64,
+) -> Vec<u8> {
+    build_synthetic_fits(
+        width,
+        height,
+        Some(WcsHeader {
+            ra_center_deg,
+            dec_center_deg,
+            pixel_scale_arcsec,
+        }),
+    )
+}
+
+struct WcsHeader {
+    ra_center_deg: f64,
+    dec_center_deg: f64,
+    pixel_scale_arcsec: f64,
+}
+
+fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<u8> {
     const BLOCK: usize = 2880;
     const RECORD: usize = 80;
 
@@ -48,12 +87,40 @@ pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
         padded
     }
 
+    fn float_record(key: &str, value: f64) -> String {
+        // FITS-style fixed-format float: 20-character right-justified.
+        let body = format!("{key:<8}= {value:>20.10E}");
+        pad_record(&body)
+    }
+
+    fn string_record(key: &str, value: &str) -> String {
+        // FITS string values are quoted and the open-quote sits at
+        // column 11 (per the standard's fixed-format rule).
+        let body = format!("{key:<8}= '{value:<8}'");
+        pad_record(&body)
+    }
+
     let mut header = String::new();
     header.push_str(&pad_record("SIMPLE  =                    T"));
     header.push_str(&pad_record("BITPIX  =                   16"));
     header.push_str(&pad_record("NAXIS   =                    2"));
     header.push_str(&pad_record(&format!("NAXIS1  = {width:>20}")));
     header.push_str(&pad_record(&format!("NAXIS2  = {height:>20}")));
+    if let Some(w) = &wcs {
+        let crpix1 = (width as f64) / 2.0 + 0.5;
+        let crpix2 = (height as f64) / 2.0 + 0.5;
+        let cdelt = w.pixel_scale_arcsec / 3600.0;
+        header.push_str(&string_record("CTYPE1", "RA---TAN"));
+        header.push_str(&string_record("CTYPE2", "DEC--TAN"));
+        header.push_str(&float_record("CRVAL1", w.ra_center_deg));
+        header.push_str(&float_record("CRVAL2", w.dec_center_deg));
+        header.push_str(&float_record("CRPIX1", crpix1));
+        header.push_str(&float_record("CRPIX2", crpix2));
+        // CDELT1 negative — east decreases with pixel x in the
+        // standard sky orientation. CDELT2 positive.
+        header.push_str(&float_record("CDELT1", -cdelt));
+        header.push_str(&float_record("CDELT2", cdelt));
+    }
     header.push_str(&pad_record("END"));
     while !header.len().is_multiple_of(BLOCK) {
         header.push(' ');
@@ -120,5 +187,30 @@ mod tests {
             client.fetch(&req).await.unwrap(),
             client.fetch(&req).await.unwrap()
         );
+    }
+
+    #[test]
+    fn synthetic_fits_with_wcs_round_trips_crval() {
+        use rp_fits::reader::read_primary_keyword;
+        use rp_fits::writer::KeywordValue;
+
+        let bytes = synthetic_fits_with_wcs(64, 48, 83.8221, -5.3911, 1.05);
+        let img = parse_primary_hdu(&bytes).unwrap();
+        assert_eq!(img.width, 64);
+        assert_eq!(img.height, 48);
+
+        let crval1 = read_primary_keyword(std::io::Cursor::new(&bytes), "CRVAL1")
+            .unwrap()
+            .expect("CRVAL1 must be present");
+        let crval2 = read_primary_keyword(std::io::Cursor::new(&bytes), "CRVAL2")
+            .unwrap()
+            .expect("CRVAL2 must be present");
+        match (crval1, crval2) {
+            (KeywordValue::Float(ra), KeywordValue::Float(dec)) => {
+                assert!((ra - 83.8221).abs() < 1e-6, "CRVAL1 = {ra}");
+                assert!((dec - -5.3911).abs() < 1e-6, "CRVAL2 = {dec}");
+            }
+            other => panic!("expected float CRVAL1/2, got {other:?}"),
+        }
     }
 }
