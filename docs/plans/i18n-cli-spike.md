@@ -303,8 +303,30 @@ Services that don't want translation pay nothing.
 [`select_best`]: ../../crates/rp-i18n/src/lib.rs
 [`fl_active`]: ../../crates/rp-i18n/src/lib.rs
 
-## 11. What this spike does NOT settle
+## 11. Known limitation: Bazel binary i18n is broken
+
+**Introduced by this spike, not pre-existing.** The cargo-built `ppba-driver` binary loads its embedded translations correctly: `LANG=de_DE.UTF-8 ppba-driver --help` renders German. The Bazel-built `ppba-driver_mock` binary does **not** — it prints `No localization for id: "cli-about"` because `RustEmbed`'s compile-time directory walk produces an empty bundle under Bazel even though the `.ftl` files are correctly placed in the sandbox via `compile_data`. The build succeeds (the `RustEmbed` `Path::exists()` check passes), but `walkdir` apparently yields zero files for the embedded asset list.
+
+What the spike *did* get working under Bazel:
+
+- `bazel test //services/ppba-driver:translations` — parses every locale, asserts key parity, asserts placeholder parity. Works because the verifier reads the filesystem at runtime via `verify_translations_in_dir` rather than relying on RustEmbed's compile-time embed.
+- `bazel build //services/ppba-driver:ppba-driver_mock` and the `bdd` target — they build successfully because `fl!()` (which validates the *fallback* bundle at compile time) finds the `.ftl` content under Bazel just fine. The bundle just doesn't make it into the *runtime* binary.
+
+What the spike did *not* get working under Bazel:
+
+- Loading the embedded `.ftl` content at *runtime* in the binary. Symptoms: every `fl!()` call returns the fallback "No localization for id: …" string. No actual translation reaches the user.
+
+The cargo path is unaffected — that's how PR #181 was tested end-to-end. Bazel is shadow-mode (per CLAUDE.md and `docs/plans/bazel-migration.md`), not a required pre-push gate, so the spike can land. But before Bazel becomes a required gate this needs a real fix.
+
+**Likely paths to a fix** (none implemented in this spike, all deferred):
+
+1. **`build.rs` that copies `.ftl` into `$OUT_DIR/i18n/`**, with `RustEmbed`'s `#[folder = "$OUT_DIR/i18n/"]` (using the `interpolate-folder-path` feature). `OUT_DIR` is consistent under both Cargo and Bazel build-script semantics.
+2. **Replace `RustEmbed` with hand-written `include_bytes!`** for each known `.ftl`, wrapped in a custom `I18nAssets` impl. Loses `RustEmbed`'s "drop a new file in `i18n/{locale}/` and it gets picked up" ergonomics, but is explicit.
+3. **Investigate why `walkdir` yields nothing under the Bazel proc-macro sandbox** despite `compile_data` putting files in place. The `i18n.toml` lookup that `fl!()` does works at the same path, so this is genuinely surprising — could be a directory-iteration vs file-read distinction in the sandbox layer.
+
+## 12. What this spike does NOT settle
 
 - The UX-stack choice (`i18n.md` §3): the CLI surface is identical regardless of which UI tech wins.
 - Sourcing graduation (`i18n.md` §4): one language pair (en/de) is too small to test the Weblate workflow.
 - Translator UX with `.ftl` (Phase 1's decision gate): this spike has only the maintainer editing the file. The dashboard spike is the better venue for that gate.
+- The Bazel runtime-i18n bug above. Documented, deferred to a follow-up.
