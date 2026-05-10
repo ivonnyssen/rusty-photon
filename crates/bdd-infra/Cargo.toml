@@ -20,7 +20,9 @@ rp-harness = [
     "dep:humantime",
     "dep:reqwest",
     "dep:rmcp",
+    "dep:rp-fits",
     "dep:serde_json",
+    "dep:tempfile",
 ]
 
 [dependencies]
@@ -36,7 +38,9 @@ rmcp = { workspace = true, optional = true, features = [
     "client",
     "transport-streamable-http-client-reqwest",
 ] }
+rp-fits = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

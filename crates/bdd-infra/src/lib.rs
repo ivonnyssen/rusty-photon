@@ -113,6 +113,9 @@ pub fn __bdd_bazel_chdir() {
 #[cfg(feature = "rp-harness")]
 pub mod rp_harness;
 
+#[cfg(feature = "rp-harness")]
+pub mod sky_survey_camera_harness;
+
 use std::process::Stdio;
 use std::time::Duration;
 

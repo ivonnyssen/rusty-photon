@@ -22,5 +22,6 @@ pub mod measure_stars_steps;
 pub mod mount_steps;
 pub mod plate_solve_steps;
 pub mod session_steps;
+pub mod sky_survey_camera_steps;
 pub mod tls_steps;
 pub mod tool_steps;
