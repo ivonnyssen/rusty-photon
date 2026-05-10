@@ -32,6 +32,8 @@ thiserror = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
+erfars = { workspace = true }
+chrono = { workspace = true }
 
 # [package.metadata.conformu] — re-add in Phase 3 when
 # `tests/conformu_integration.rs` lands. The nightly conformu workflow
