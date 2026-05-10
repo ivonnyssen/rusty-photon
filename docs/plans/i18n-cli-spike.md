@@ -303,30 +303,46 @@ Services that don't want translation pay nothing.
 [`select_best`]: ../../crates/rp-i18n/src/lib.rs
 [`fl_active`]: ../../crates/rp-i18n/src/lib.rs
 
-## 11. Known limitation: Bazel binary i18n is broken
+## 11. Bazel binary i18n: diagnosis and fix
 
-**Introduced by this spike, not pre-existing.** The cargo-built `ppba-driver` binary loads its embedded translations correctly: `LANG=de_DE.UTF-8 ppba-driver --help` renders German. The Bazel-built `ppba-driver_mock` binary does **not** — it prints `No localization for id: "cli-about"` because `RustEmbed`'s compile-time directory walk produces an empty bundle under Bazel even though the `.ftl` files are correctly placed in the sandbox via `compile_data`. The build succeeds (the `RustEmbed` `Path::exists()` check passes), but `walkdir` apparently yields zero files for the embedded asset list.
+The first cut of this spike shipped a Bazel-built `ppba-driver_mock` binary that printed `No localization for id: "cli-about"` for every key. The cargo path always worked. This section captures the root cause and the one-line fix that is now in place.
 
-What the spike *did* get working under Bazel:
+### Root cause
 
-- `bazel test //services/ppba-driver:translations` — parses every locale, asserts key parity, asserts placeholder parity. Works because the verifier reads the filesystem at runtime via `verify_translations_in_dir` rather than relying on RustEmbed's compile-time embed.
-- `bazel build //services/ppba-driver:ppba-driver_mock` and the `bdd` target — they build successfully because `fl!()` (which validates the *fallback* bundle at compile time) finds the `.ftl` content under Bazel just fine. The bundle just doesn't make it into the *runtime* binary.
+Not the proc-macro sandbox, not `compile_data`, not `walkdir`. The bug is `cfg(debug_assertions)`.
 
-What the spike did *not* get working under Bazel:
+`rust-embed` ships with two implementations behind the same derive:
 
-- Loading the embedded `.ftl` content at *runtime* in the binary. Symptoms: every `fl!()` call returns the fallback "No localization for id: …" string. No actual translation reaches the user.
+- **Embedded** (`#[cfg(not(debug_assertions))]`): bake the directory tree into the binary at compile time.
+- **Dynamic** (`#[cfg(debug_assertions)]`, default in dev builds): bake the *path* into the binary and read files from disk at *runtime*.
 
-The cargo path is unaffected — that's how PR #181 was tested end-to-end. Bazel is shadow-mode (per CLAUDE.md and `docs/plans/bazel-migration.md`), not a required pre-push gate, so the spike can land. But before Bazel becomes a required gate this needs a real fix.
+Under `cargo build` (debug, `debug_assertions=on`), the dynamic impl runs at runtime and reads `$CARGO_MANIFEST_DIR_AT_COMPILE_TIME/i18n/`. That path is the source tree, which is reachable when running from the cargo target dir, so it appears to work.
 
-**Likely paths to a fix** (none implemented in this spike, all deferred):
+Under `bazel build` (default `--compilation_mode=fastbuild`, also `debug_assertions=on` per `rules_rust`'s default toolchain), the dynamic impl runs at runtime and reads the value `rules_rust` set as `CARGO_MANIFEST_DIR` — a sandbox path of the form `${pwd}/services/ppba-driver` that existed during compilation but does not exist at runtime when the binary runs from `bazel-bin/...`. `walkdir` returns zero files, the embed is empty, every `fl!()` falls through to "No localization for id: …".
 
-1. **`build.rs` that copies `.ftl` into `$OUT_DIR/i18n/`**, with `RustEmbed`'s `#[folder = "$OUT_DIR/i18n/"]` (using the `interpolate-folder-path` feature). `OUT_DIR` is consistent under both Cargo and Bazel build-script semantics.
-2. **Replace `RustEmbed` with hand-written `include_bytes!`** for each known `.ftl`, wrapped in a custom `I18nAssets` impl. Loses `RustEmbed`'s "drop a new file in `i18n/{locale}/` and it gets picked up" ergonomics, but is explicit.
-3. **Investigate why `walkdir` yields nothing under the Bazel proc-macro sandbox** despite `compile_data` putting files in place. The `i18n.toml` lookup that `fl!()` does works at the same path, so this is genuinely surprising — could be a directory-iteration vs file-read distinction in the sandbox layer.
+`bazel build --compilation_mode=opt` masked the bug — `debug_assertions=off` flips to the embedded impl, which uses the same `walkdir` call but at *compile time*, where the sandbox path is valid and `compile_data` has the `.ftl` tree in place.
+
+### Fix
+
+Enable `rust-embed`'s `debug-embed` feature workspace-wide, which makes the compile-time embed unconditional regardless of `debug_assertions`:
+
+```toml
+# Cargo.toml [workspace.dependencies]
+rust-embed = { version = "8", features = ["debug-embed"] }
+```
+
+This is also the more correct semantic choice: a translatable CLI binary should ship with its translations, not lazy-load them from a path that may not exist at runtime. The previous behaviour where a moved cargo-built binary would silently lose its translations is fixed by the same flag.
+
+### Verified after the fix
+
+- `bazel build //services/ppba-driver:ppba-driver_mock` (default fastbuild) followed by `LANG=de_DE.UTF-8 ./bazel-bin/services/ppba-driver/ppba-driver_mock --help` renders German.
+- `LANG=C ./bazel-bin/services/ppba-driver/ppba-driver_mock --help` renders English.
+- `LANG=de_DE.UTF-8 ./bazel-bin/services/ppba-driver/ppba-driver_mock --log-level wat` renders the German `error-invalid-log-level` string.
+- `bazel test //services/ppba-driver:all` and `bazel test //services/ppba-driver:bdd` pass.
+- Cargo `cli_help` + `translations` integration tests pass; `cargo rail run --profile commit -q` is clean.
 
 ## 12. What this spike does NOT settle
 
 - The UX-stack choice (`i18n.md` §3): the CLI surface is identical regardless of which UI tech wins.
 - Sourcing graduation (`i18n.md` §4): one language pair (en/de) is too small to test the Weblate workflow.
 - Translator UX with `.ftl` (Phase 1's decision gate): this spike has only the maintainer editing the file. The dashboard spike is the better venue for that gate.
-- The Bazel runtime-i18n bug above. Documented, deferred to a follow-up.
