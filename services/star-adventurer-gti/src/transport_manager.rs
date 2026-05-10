@@ -12,11 +12,15 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::{Mutex, RwLock};
+use skywatcher_motor_protocol::{Axis, Command, Response};
+use tokio::sync::{watch, Mutex, RwLock};
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
-use crate::config::Config;
-use crate::error::Result;
+use crate::config::{Config, TransportConfig};
+use crate::error::{Result, StarAdvError};
 use crate::transport::{Transport, TransportFactory};
 
 /// Snapshot of the values the mount reports during the init handshake. All
@@ -60,10 +64,12 @@ pub struct TransportManager {
     /// to `Some` by the 0→1 connect transition and cleared by the 1→0
     /// disconnect transition.
     transport: Mutex<Option<Arc<dyn Transport>>>,
+    /// Serialises every round-trip — both ad-hoc `send()` calls from
+    /// `MountDevice` and the background polling task share the transport
+    /// and the protocol has no per-request ID, so concurrent issues would
+    /// race their replies.
+    command_lock: Arc<Mutex<()>>,
     /// Number of clients that currently believe themselves connected.
-    /// Incremented on the way into [`connect`] and decremented on the way
-    /// out of [`disconnect`]; the actual transport open/close is gated on
-    /// the count crossing 0.
     connection_count: AtomicU32,
     /// Set to `true` only after [`connect`] finishes the init handshake;
     /// cleared on [`disconnect`] before the transport is closed. Read by
@@ -73,53 +79,149 @@ pub struct TransportManager {
     /// `qhy-focuser::SerialManager::serial_available`.
     available: AtomicBool,
     parameters: RwLock<Option<MountParameters>>,
-    snapshot: RwLock<MountSnapshot>,
+    snapshot: Arc<RwLock<MountSnapshot>>,
+    /// Background polling task; populated on the 0→1 connect transition,
+    /// aborted on the 1→0 disconnect.
+    poll_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Shutdown channel for the polling task. The task watches the
+    /// receiver and exits when the value flips to `true`.
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl TransportManager {
     pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
             config,
             factory,
             transport: Mutex::new(None),
+            command_lock: Arc::new(Mutex::new(())),
             connection_count: AtomicU32::new(0),
             available: AtomicBool::new(false),
             parameters: RwLock::new(None),
-            snapshot: RwLock::new(MountSnapshot::default()),
+            snapshot: Arc::new(RwLock::new(MountSnapshot::default())),
+            poll_handle: Mutex::new(None),
+            shutdown_tx,
         }
     }
 
-    /// Reference-counted connect. Returns immediately on success; first
-    /// caller pays the init-handshake latency. Sets [`is_available`] to
-    /// true only after the handshake completes.
+    /// Reference-counted connect. First caller pays the init-handshake
+    /// latency. Sets [`is_available`] to true only after the handshake
+    /// completes.
     ///
-    /// On the 0→1 transition, calls `factory.open(&config)` to get a
-    /// fresh [`Transport`], then runs the init handshake. Phase 3 fills
-    /// the handshake body in.
-    #[cfg_attr(coverage_nightly, coverage(off))]
+    /// On the 0→1 transition: opens a transport via the factory, runs
+    /// `:F`/`:a`/`:b`/`:g`/`:e`/`:j` per the design doc's initialisation
+    /// sequence, populates the parameter cache, spawns the polling task.
     pub async fn connect(&self) -> Result<()> {
         let prior = self.connection_count.fetch_add(1, Ordering::SeqCst);
-        if prior == 0 {
-            // 0→1: actually open the transport.
-            let transport = self.factory.open(&self.config).await?;
-            *self.transport.lock().await = Some(transport);
+        if prior > 0 {
+            // Already connected — just bump the count.
+            return Ok(());
         }
-        unimplemented!(
-            "Phase 3: run :F/:a/:b/:g/:e/:j handshake against the open transport, \
-             then self.available.store(true, Ordering::SeqCst), spawn poll task"
-        )
+
+        // 0→1: actually open the transport. On any error, roll the count
+        // back so a later retry can still succeed.
+        let transport = match self.factory.open(&self.config).await {
+            Ok(t) => t,
+            Err(e) => {
+                self.connection_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
+        *self.transport.lock().await = Some(Arc::clone(&transport));
+
+        // Run the init handshake. If any step fails, roll back: drop the
+        // transport, decrement the count, surface the error.
+        if let Err(e) = self.run_handshake(&transport).await {
+            *self.transport.lock().await = None;
+            self.connection_count.fetch_sub(1, Ordering::SeqCst);
+            return Err(e);
+        }
+
+        // Spawn the polling task before flipping `available` so the first
+        // snapshot read after connect already has fresh data (or at least
+        // the handshake-time defaults).
+        let polling_interval = self.polling_interval();
+        let command_timeout = self.command_timeout();
+        let task = spawn_poll_task(
+            Arc::clone(&transport),
+            Arc::clone(&self.command_lock),
+            Arc::clone(&self.snapshot),
+            self.shutdown_tx.subscribe(),
+            polling_interval,
+            command_timeout,
+        );
+        *self.poll_handle.lock().await = Some(task);
+
+        self.available.store(true, Ordering::SeqCst);
+        debug!("transport manager connected and handshake complete");
+        Ok(())
     }
 
     /// Reference-counted disconnect. Last caller out triggers teardown:
-    /// clears [`is_available`] before stopping the poll task and closing
-    /// the transport.
-    #[cfg_attr(coverage_nightly, coverage(off))]
+    /// clears [`is_available`], stops the poll task, sends `:K1` to halt
+    /// tracking, drops the transport `Arc` (which calls
+    /// `Transport::close`), and clears the parameter cache.
     pub async fn disconnect(&self) -> Result<()> {
-        unimplemented!(
-            "Phase 3: decrement count; on zero, self.available.store(false, ..), \
-             stop poll task, abort motion, *self.transport.lock().await = None \
-             (drops the Arc, triggering Transport::close)"
-        )
+        let prior = self.connection_count.fetch_sub(1, Ordering::SeqCst);
+        if prior == 0 {
+            // Already at zero — nothing to do; restore the count to avoid
+            // wrap-around (shouldn't happen but defensive).
+            self.connection_count.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        if prior > 1 {
+            // Other clients still connected.
+            return Ok(());
+        }
+
+        // 1→0 transition.
+        self.available.store(false, Ordering::SeqCst);
+
+        // Signal the poll task to exit, then await it.
+        let _ = self.shutdown_tx.send(true);
+        if let Some(handle) = self.poll_handle.lock().await.take() {
+            // Best-effort: ignore JoinError (task already exited).
+            let _ = handle.await;
+        }
+
+        // Best-effort: halt any in-progress motion before closing.
+        // Clone the Arc out of the mutex first and drop the guard
+        // immediately — holding the async mutex guard across the
+        // `send_through` awaits would block any concurrent `send()`
+        // call from making progress (the protocol's per-frame lock
+        // would have nothing to do with it; this is the
+        // `Mutex<Option<...>>` slot itself).
+        let transport_for_halt = self.transport.lock().await.clone();
+        if let Some(t) = transport_for_halt {
+            // Issue :L on both axes (instant stop, aborts goto /
+            // tracking alike) plus :K1 to be safe. Order matters —
+            // :L is the hammer; :K is graceful.
+            let _ = self
+                .send_through(&t, Command::InstantStop(Axis::Ra))
+                .await
+                .inspect_err(|e| warn!("disconnect: :L1 failed: {e}"));
+            let _ = self
+                .send_through(&t, Command::InstantStop(Axis::Dec))
+                .await
+                .inspect_err(|e| warn!("disconnect: :L2 failed: {e}"));
+            let _ = self
+                .send_through(&t, Command::StopMotion(Axis::Ra))
+                .await
+                .inspect_err(|e| warn!("disconnect: :K1 failed: {e}"));
+        }
+
+        // Drop the transport Arc from the manager's slot — combined
+        // with the local `transport_for_halt` going out of scope this
+        // releases the last refs and triggers `Transport::close`.
+        *self.transport.lock().await = None;
+        *self.parameters.write().await = None;
+
+        // Reset the shutdown channel so a subsequent connect starts fresh.
+        let _ = self.shutdown_tx.send(false);
+
+        debug!("transport manager disconnected");
+        Ok(())
     }
 
     /// `true` only when the underlying transport is open AND the init
@@ -128,6 +230,13 @@ impl TransportManager {
     /// a handshake-failure rollback.
     pub fn is_available(&self) -> bool {
         self.available.load(Ordering::SeqCst)
+    }
+
+    /// Wire-protocol polling interval taken from the config block. Exposed
+    /// so [`crate::MountDevice`]'s slew-completion watcher can match the
+    /// background poller's cadence.
+    pub fn polling_interval_for_watcher(&self) -> Duration {
+        self.polling_interval()
     }
 
     /// Latest cached parameters. `None` until handshake completes.
@@ -142,13 +251,220 @@ impl TransportManager {
 
     /// Send one command, return one reply. Does *not* update the snapshot —
     /// the background poller owns that responsibility.
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    pub async fn send(
-        &self,
-        _command: skywatcher_motor_protocol::Command,
-    ) -> Result<skywatcher_motor_protocol::Response> {
-        unimplemented!("Phase 3: encode -> transport.round_trip -> Response::decode")
+    pub async fn send(&self, command: Command) -> Result<Response> {
+        let transport = self
+            .transport
+            .lock()
+            .await
+            .clone()
+            .ok_or(StarAdvError::NotConnected)?;
+        self.send_through(&transport, command).await
     }
+
+    fn polling_interval(&self) -> Duration {
+        match &self.config.transport {
+            TransportConfig::Usb(usb) => usb.polling_interval,
+            TransportConfig::Udp(udp) => udp.polling_interval,
+        }
+    }
+
+    fn command_timeout(&self) -> Duration {
+        match &self.config.transport {
+            TransportConfig::Usb(usb) => usb.command_timeout,
+            TransportConfig::Udp(udp) => udp.command_timeout,
+        }
+    }
+
+    /// Round-trip a command through `transport`, taking the command lock
+    /// first so concurrent send / poll calls serialise on the wire.
+    async fn send_through(
+        &self,
+        transport: &Arc<dyn Transport>,
+        command: Command,
+    ) -> Result<Response> {
+        let _guard = self.command_lock.lock().await;
+        round_trip_one(transport, &command, self.command_timeout()).await
+    }
+
+    /// Run the init handshake against an opened transport. Populates the
+    /// parameter cache and seeds the snapshot with the initial encoder
+    /// positions. Mirrors the design doc's "Initialisation sequence".
+    async fn run_handshake(&self, transport: &Arc<dyn Transport>) -> Result<()> {
+        let timeout = self.command_timeout();
+        let lock = self.command_lock.clone();
+        let _guard = lock.lock().await;
+
+        // Step 1–2: initialise both axes.
+        for axis in [Axis::Ra, Axis::Dec] {
+            expect_ack(round_trip_one(transport, &Command::Initialize(axis), timeout).await?)?;
+        }
+
+        // Step 3–4: per-axis CPR.
+        let cpr_ra =
+            expect_u24(round_trip_one(transport, &Command::InquireCpr(Axis::Ra), timeout).await?)?;
+        let cpr_dec =
+            expect_u24(round_trip_one(transport, &Command::InquireCpr(Axis::Dec), timeout).await?)?;
+        // Step 5: TMR_Freq.
+        let tmr_freq =
+            expect_u24(round_trip_one(transport, &Command::InquireTmrFreq, timeout).await?)?;
+        // Step 6–7: high-speed ratio per axis.
+        let hsr_ra = expect_u24(
+            round_trip_one(
+                transport,
+                &Command::InquireHighSpeedRatio(Axis::Ra),
+                timeout,
+            )
+            .await?,
+        )?;
+        let hsr_dec = expect_u24(
+            round_trip_one(
+                transport,
+                &Command::InquireHighSpeedRatio(Axis::Dec),
+                timeout,
+            )
+            .await?,
+        )?;
+        // Step 8: motor-board version (logged only).
+        let board = expect_u24(
+            round_trip_one(
+                transport,
+                &Command::InquireMotorBoardVersion(Axis::Ra),
+                timeout,
+            )
+            .await?,
+        )?;
+        debug!(motor_board = format!("{board:#08X}"), "motor-board version");
+
+        // Step 9–10: initial encoder positions seed the snapshot.
+        let pos_ra = expect_position(
+            round_trip_one(transport, &Command::InquirePosition(Axis::Ra), timeout).await?,
+        )?;
+        let pos_dec = expect_position(
+            round_trip_one(transport, &Command::InquirePosition(Axis::Dec), timeout).await?,
+        )?;
+
+        *self.parameters.write().await = Some(MountParameters {
+            cpr_ra,
+            cpr_dec,
+            tmr_freq,
+            high_speed_ratio_ra: hsr_ra,
+            high_speed_ratio_dec: hsr_dec,
+            motor_board_version: board,
+        });
+        let mut snap = self.snapshot.write().await;
+        snap.ra.position_ticks = pos_ra;
+        snap.dec.position_ticks = pos_dec;
+        Ok(())
+    }
+}
+
+/// Free-function send: encode → round_trip → decode. Used by both
+/// [`TransportManager::send`] and the polling task.
+async fn round_trip_one(
+    transport: &Arc<dyn Transport>,
+    command: &Command,
+    timeout: Duration,
+) -> Result<Response> {
+    let bytes = command.encode()?;
+    let reply = transport.round_trip(&bytes, timeout).await?;
+    let response = Response::decode(&reply, command)?;
+    Ok(response)
+}
+
+fn expect_ack(r: Response) -> Result<()> {
+    match r {
+        Response::Ack => Ok(()),
+        other => Err(StarAdvError::Transport(format!(
+            "expected Ack, got {other:?}"
+        ))),
+    }
+}
+
+fn expect_u24(r: Response) -> Result<u32> {
+    match r {
+        Response::U24(v) => Ok(v),
+        other => Err(StarAdvError::Transport(format!(
+            "expected U24, got {other:?}"
+        ))),
+    }
+}
+
+fn expect_position(r: Response) -> Result<i32> {
+    match r {
+        Response::Position(v) => Ok(v),
+        other => Err(StarAdvError::Transport(format!(
+            "expected Position, got {other:?}"
+        ))),
+    }
+}
+
+/// Spawn the polling task. Polls `:f<axis>` and `:j<axis>` for both axes
+/// at `interval`, updates the snapshot, exits when `shutdown` flips to
+/// `true`.
+fn spawn_poll_task(
+    transport: Arc<dyn Transport>,
+    command_lock: Arc<Mutex<()>>,
+    snapshot: Arc<RwLock<MountSnapshot>>,
+    mut shutdown: watch::Receiver<bool>,
+    interval: Duration,
+    command_timeout: Duration,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        debug!("polling task: shutdown signal received");
+                        return;
+                    }
+                }
+                _ = tick.tick() => {
+                    let _guard = command_lock.lock().await;
+                    let mut snap = MountSnapshot::default();
+                    if let Err(e) = poll_axis(&transport, Axis::Ra, &mut snap.ra, command_timeout).await {
+                        debug!("polling RA failed: {e}");
+                        continue;
+                    }
+                    if let Err(e) = poll_axis(&transport, Axis::Dec, &mut snap.dec, command_timeout).await {
+                        debug!("polling Dec failed: {e}");
+                        continue;
+                    }
+                    *snapshot.write().await = snap;
+                }
+            }
+        }
+    })
+}
+
+async fn poll_axis(
+    transport: &Arc<dyn Transport>,
+    axis: Axis,
+    out: &mut AxisSnapshot,
+    timeout: Duration,
+) -> Result<()> {
+    use skywatcher_motor_protocol::AxisStatus;
+    let pos = round_trip_one(transport, &Command::InquirePosition(axis), timeout).await?;
+    out.position_ticks = match pos {
+        Response::Position(p) => p,
+        other => {
+            return Err(StarAdvError::Transport(format!(
+                "expected Position, got {other:?}"
+            )))
+        }
+    };
+    let status = round_trip_one(transport, &Command::InquireStatus(axis), timeout).await?;
+    let s: AxisStatus = match status {
+        Response::Status(s) => s,
+        other => {
+            return Err(StarAdvError::Transport(format!(
+                "expected Status, got {other:?}"
+            )))
+        }
+    };
+    out.running = s.running;
+    out.goto = s.goto;
+    Ok(())
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -188,5 +504,51 @@ mod tests {
         assert_eq!(snap.dec.position_ticks, 0);
         assert!(!snap.ra.running);
         assert!(!snap.dec.running);
+    }
+
+    #[tokio::test]
+    async fn connect_runs_handshake_and_seeds_parameter_cache() {
+        let m = manager();
+        m.connect().await.unwrap();
+        assert!(m.is_available());
+        let params = m.parameters().await.expect("handshake populates cache");
+        assert_eq!(params.cpr_ra, 0x0037_5F00);
+        assert_eq!(params.cpr_dec, 0x0037_5F00);
+        assert_eq!(params.tmr_freq, 0x00F4_2400);
+        assert_eq!(params.motor_board_version, 0x0003_300C);
+    }
+
+    #[tokio::test]
+    async fn connect_is_reference_counted() {
+        let m = manager();
+        m.connect().await.unwrap();
+        m.connect().await.unwrap();
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 2);
+        assert!(m.is_available());
+        m.disconnect().await.unwrap();
+        // Still connected — one client remains.
+        assert!(m.is_available());
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 1);
+        m.disconnect().await.unwrap();
+        // Now teardown: no more clients.
+        assert!(!m.is_available());
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 0);
+        // Parameter cache cleared on full disconnect.
+        assert!(m.parameters().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_before_connect_returns_not_connected() {
+        let m = manager();
+        let r = m.send(Command::InquirePosition(Axis::Ra)).await;
+        assert!(matches!(r, Err(StarAdvError::NotConnected)));
+    }
+
+    #[tokio::test]
+    async fn send_after_connect_round_trips_through_mock() {
+        let m = manager();
+        m.connect().await.unwrap();
+        let r = m.send(Command::InquireCpr(Axis::Ra)).await.unwrap();
+        assert_eq!(r, Response::U24(0x0037_5F00));
     }
 }

@@ -43,6 +43,13 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Option<Arc<dyn TransportFactory>>,
+    /// Optional handle to a [`MockMountState`] that the build path mounts
+    /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
+    /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
+    /// process can read the wire-command log out of the running service.
+    /// Always `None` in production builds.
+    #[cfg(feature = "mock")]
+    debug_mock_state: Option<Arc<tokio::sync::Mutex<MockMountState>>>,
 }
 
 impl ServerBuilder {
@@ -60,6 +67,23 @@ impl ServerBuilder {
     /// when omitted, [`build`] picks serial / UDP from `config.transport`.
     pub fn with_transport_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    /// Mount the `/debug/v1/mock-commands` introspection endpoint backed
+    /// by the supplied [`MockMountState`]. Only available under
+    /// `feature = "mock"`; production builds cannot expose this even
+    /// accidentally.
+    ///
+    /// Used by:
+    /// * BDD tests that need to assert "the mount should have received
+    ///   command :K1" from outside the service process.
+    /// * `tests/test_lib.rs` for the same.
+    /// * `main.rs` when run with `--features mock` so a developer can
+    ///   curl the endpoint to inspect the running mock.
+    #[cfg(feature = "mock")]
+    pub fn with_debug_mock_state(mut self, state: Arc<tokio::sync::Mutex<MockMountState>>) -> Self {
+        self.debug_mock_state = Some(state);
         self
     }
 
@@ -90,7 +114,19 @@ impl ServerBuilder {
         }
 
         let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
+        // Mount the mock-introspection endpoint first so it takes
+        // priority over the Alpaca fallback service.
+        let router: axum::Router = {
+            let r = axum::Router::new();
+            #[cfg(feature = "mock")]
+            let r = if let Some(state) = self.debug_mock_state {
+                r.merge(debug_mock_router(state))
+            } else {
+                r
+            };
+            r
+        };
+        let router = router.fallback_service(server.into_service());
         let router = match &self.config.server.auth {
             Some(auth) => {
                 if self.config.server.tls.is_none() {
@@ -156,6 +192,155 @@ impl BoundServer {
         debug!("star-adventurer-gti shut down");
         Ok(())
     }
+}
+
+/// HTTP router for the mock-introspection / mock-seeding endpoints.
+///
+/// `GET /debug/v1/mock-commands` — returns `{"commands": ["...", ...]}`,
+/// one wire-frame string per element. Used by BDD step bodies that
+/// assert on which commands the driver issued without reaching into
+/// the mock state from outside the service process.
+///
+/// `POST /debug/v1/mock-state` — seeds the mock's per-axis state for
+/// scenarios that need a non-default encoder position or motion flag
+/// before the driver connects. Body is a JSON object whose keys match
+/// the ones the BDD steps care about (any subset is allowed):
+/// ```json
+/// { "ra_ticks": 100000, "dec_ticks": -50000,
+///   "ra_running": true, "ra_goto": true,
+///   "dec_running": false }
+/// ```
+/// Returns `{"ok": true}` on success. Only available under
+/// `feature = "mock"`.
+#[cfg(feature = "mock")]
+fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Router {
+    use axum::extract::State;
+    use axum::routing::{get, post};
+    use axum::Json;
+    use serde_json::json;
+
+    async fn commands_handler(
+        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
+    ) -> Json<serde_json::Value> {
+        let log = &state.lock().await.command_log;
+        let frames: Vec<String> = log
+            .iter()
+            .map(|frame| String::from_utf8_lossy(frame).into_owned())
+            .collect();
+        Json(json!({ "commands": frames }))
+    }
+
+    use axum::http::StatusCode;
+
+    /// Convert a JSON value into `i32`, range-checking against the
+    /// signed-24-bit encoder range the wire protocol can carry. Out-of-range
+    /// seeds would later panic the mock on `encode_position(..)` during
+    /// `:j` handling, so reject them here with a `400` instead. Returns
+    /// `None` for non-integer or out-of-range input.
+    fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
+        use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+        let n = v.as_i64()?;
+        if (POSITION_MIN as i64..=POSITION_MAX as i64).contains(&n) {
+            Some(n as i32)
+        } else {
+            None
+        }
+    }
+
+    async fn seed_handler(
+        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
+        Json(body): Json<serde_json::Value>,
+    ) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+        let obj = body.as_object().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "body must be a JSON object"})),
+            )
+        })?;
+        // Validate every present field before mutating any state so a
+        // bad seed is rejected atomically.
+        let mut ra_ticks: Option<i32> = None;
+        let mut dec_ticks: Option<i32> = None;
+        let mut ra_goto_target: Option<i32> = None;
+        let mut dec_goto_target: Option<i32> = None;
+        for (key, target) in [
+            ("ra_ticks", &mut ra_ticks),
+            ("dec_ticks", &mut dec_ticks),
+            ("ra_goto_target_ticks", &mut ra_goto_target),
+            ("dec_goto_target_ticks", &mut dec_goto_target),
+        ] {
+            if let Some(v) = obj.get(key) {
+                let parsed = parse_position_ticks(v).ok_or_else(|| {
+                    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!(
+                                "{key} must be an integer in [{POSITION_MIN}, {POSITION_MAX}] (signed 24-bit encoder range), got {v}"
+                            )
+                        })),
+                    )
+                })?;
+                *target = Some(parsed);
+            }
+        }
+        let bool_fields = [
+            "ra_running",
+            "ra_goto",
+            "ra_initialized",
+            "dec_running",
+            "dec_goto",
+            "dec_initialized",
+        ];
+        for key in bool_fields {
+            if let Some(v) = obj.get(key) {
+                if !v.is_boolean() {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!("{key} must be a boolean, got {v}")})),
+                    ));
+                }
+            }
+        }
+
+        let mut s = state.lock().await;
+        if let Some(v) = ra_ticks {
+            s.ra.position_ticks = v;
+        }
+        if let Some(v) = dec_ticks {
+            s.dec.position_ticks = v;
+        }
+        if let Some(v) = ra_goto_target {
+            s.ra.goto_target_ticks = v;
+        }
+        if let Some(v) = dec_goto_target {
+            s.dec.goto_target_ticks = v;
+        }
+        if let Some(v) = obj.get("ra_running").and_then(|v| v.as_bool()) {
+            s.ra.running = v;
+        }
+        if let Some(v) = obj.get("ra_goto").and_then(|v| v.as_bool()) {
+            s.ra.goto = v;
+        }
+        if let Some(v) = obj.get("ra_initialized").and_then(|v| v.as_bool()) {
+            s.ra.initialized = v;
+        }
+        if let Some(v) = obj.get("dec_running").and_then(|v| v.as_bool()) {
+            s.dec.running = v;
+        }
+        if let Some(v) = obj.get("dec_goto").and_then(|v| v.as_bool()) {
+            s.dec.goto = v;
+        }
+        if let Some(v) = obj.get("dec_initialized").and_then(|v| v.as_bool()) {
+            s.dec.initialized = v;
+        }
+        Ok(Json(json!({"ok": true})))
+    }
+
+    axum::Router::new()
+        .route("/debug/v1/mock-commands", get(commands_handler))
+        .route("/debug/v1/mock-state", post(seed_handler))
+        .with_state(state)
 }
 
 async fn shutdown_signal() {

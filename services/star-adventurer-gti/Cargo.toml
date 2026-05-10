@@ -32,11 +32,11 @@ thiserror = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
+erfars = { workspace = true }
+chrono = { workspace = true }
 
-# [package.metadata.conformu] — re-add in Phase 3 when
-# `tests/conformu_integration.rs` lands. The nightly conformu workflow
-# discovers services via this metadata; opting in without the test file
-# would fail the scheduled run on main.
+[package.metadata.conformu]
+command = "cargo test -p star-adventurer-gti --features conformu --test conformu_integration -- --ignored --nocapture"
 
 [dev-dependencies]
 bdd-infra = { workspace = true }
@@ -47,6 +47,7 @@ reqwest = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
+regex = { workspace = true }
 
 [[test]]
 name = "bdd"

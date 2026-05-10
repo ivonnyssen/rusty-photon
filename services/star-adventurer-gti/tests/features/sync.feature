@@ -1,4 +1,3 @@
-@wip
 Feature: Sync to coordinates
   SyncToCoordinates writes the supplied RA / Dec to the mount via :E on
   each axis (which sets the encoder position) and updates the in-memory

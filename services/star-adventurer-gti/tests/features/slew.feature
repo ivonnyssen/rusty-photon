@@ -1,4 +1,3 @@
-@wip
 Feature: Asynchronous slewing
   SlewToCoordinatesAsync validates the target, computes target encoder
   positions from RA/Dec + LST + sync offset + side-of-pier choice, then
