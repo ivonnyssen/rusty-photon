@@ -41,11 +41,29 @@ jobs:
           ALL_BDD=$(cargo metadata --format-version 1 --no-deps | \
             jq -c '[.packages[] | select(.targets[] | .kind[] == "test" and .name == "bdd") | .name]')
 
-          # If infra changed, test all BDD packages; otherwise intersect with affected
+          # If infra changed, test all BDD packages; otherwise intersect with
+          # affected. "Affected" combines two sources:
+          #   1. cargo-rail's `crates` output — tracks Rust source / Cargo.toml
+          #      changes per crate.
+          #   2. Feature-file changes under `services/<pkg>/tests/features/`
+          #      that rail doesn't see as crate-affecting (cargo metadata
+          #      doesn't index resource files). Without this augmentation a
+          #      BDD-only fix lands without any windows-bdd validation —
+          #      see the post-merge hang on PR #182 (PR #186 fix was first
+          #      pushed without exercising windows-bdd because of this gap).
           if [ "${{ steps.rail.outputs.infra }}" = "true" ]; then
             BDD_PACKAGES="$ALL_BDD"
           else
-            AFFECTED='${{ steps.rail.outputs.crates }}'
+            BASE='${{ github.event.pull_request.base.sha || github.event.before }}'
+            FEATURE_AFFECTED=""
+            if [ -n "$BASE" ]; then
+              FEATURE_AFFECTED=$(git diff --name-only "$BASE"...HEAD 2>/dev/null \
+                | grep -oE '^services/[^/]+/tests/features' \
+                | cut -d/ -f2 \
+                | sort -u \
+                | tr '\n' ' ')
+            fi
+            AFFECTED='${{ steps.rail.outputs.crates }}'" $FEATURE_AFFECTED"
             BDD_PACKAGES=$(echo "$ALL_BDD" | jq -c --arg affected "$AFFECTED" \
               '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
           fi
@@ -56,7 +74,7 @@ jobs:
           echo "BDD packages ($COUNT): $BDD_PACKAGES"
   required:
     needs: plan
-    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: ubuntu-latest
     name: ubuntu / stable
     steps:
@@ -108,7 +126,7 @@ jobs:
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
   macos:
     needs: plan
-    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: macos-latest
     name: macos-latest
     steps:
@@ -148,7 +166,7 @@ jobs:
     # BDD tests are split into per-service parallel jobs below to avoid
     # the ~10m sequential wall-clock from per-scenario process spawn overhead.
     needs: plan
-    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: windows-latest
     name: windows / nextest
     steps:
@@ -179,7 +197,12 @@ jobs:
     # ~5s/scenario. Running services in parallel cuts wall-clock from ~10m
     # to ~3m (limited by the largest service, ppba-driver).
     needs: plan
-    if: needs.plan.outputs.has-bdd == 'true' && (needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true')
+    # has-bdd reflects the union of cargo-rail's affected crates and
+    # tests/features changes (see plan job's "Discover BDD packages"
+    # step). It's a sufficient gate on its own — the prior
+    # `&& (test || infra)` clause was redundant and silently dropped
+    # BDD-only PRs (#186) from the windows-bdd matrix.
+    if: needs.plan.outputs.has-bdd == 'true'
     runs-on: windows-latest
     name: windows / bdd / ${{ matrix.package }}
     strategy:
@@ -224,7 +247,7 @@ jobs:
     # use llvm-cov to build and collect coverage and upload to codecov.io
     # with per-package flags for README badges.
     needs: plan
-    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true'
+    if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: ubuntu-latest
     name: coverage
     steps:
