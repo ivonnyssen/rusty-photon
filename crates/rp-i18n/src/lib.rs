@@ -190,27 +190,26 @@ pub fn init<A: I18nAssets>(
     loader: FluentLanguageLoader,
     assets: &A,
 ) -> (Arc<FluentLanguageLoader>, Result<(), LoadError>) {
+    // Short-circuit on AlreadyInitialized *before* touching the second
+    // call's assets. Otherwise a load miss on the discarded loader's
+    // assets would clobber the AlreadyInitialized signal in the returned
+    // Result, and the operator would see "running with English fallback"
+    // even though the active loader is whatever the first init set
+    // (which may have negotiated a non-English locale just fine).
+    if let Some(existing) = active_loader() {
+        return (existing, Err(LoadError::AlreadyInitialized));
+    }
+
     let requested = resolve_locale();
     let load_status = select_best(&loader, assets, &requested);
     let new_arc = Arc::new(loader);
-    let (active, register_status) = ACTIVE_LOADER.with(|cell| match cell.set(new_arc.clone()) {
-        Ok(()) => (new_arc, Ok(())),
-        Err(_) => {
-            // Cell was already populated. Discard the freshly-built loader
-            // and hand back the registered one so parse_localized (which
-            // uses the returned Arc) and fl_active (which reads ACTIVE_LOADER)
-            // never disagree on the active locale.
-            let existing = cell
-                .get()
-                .expect("set failed implies the cell is occupied")
-                .clone();
-            (existing, Err(LoadError::AlreadyInitialized))
-        }
+    // ACTIVE_LOADER is a thread_local!, so the early return above means the
+    // cell is guaranteed empty here under single-threaded use (the intended
+    // shape).
+    ACTIVE_LOADER.with(|cell| {
+        let _ = cell.set(new_arc.clone());
     });
-    // Surface the most informative error — a load miss matters more than a
-    // double-init, since the latter is usually a refactor / test artefact.
-    let status = load_status.and(register_status);
-    (active, status)
+    (new_arc, load_status)
 }
 
 /// The loader registered by the most recent [`init`] call on this thread,
@@ -320,19 +319,28 @@ mod tests {
             }
         }
 
-        // EmptyAssets has no .ftl files, so `select_best` returns
-        // Err(LoadError::Load) on every call. That's fine — the test isn't
-        // about load_status; it's about whether the second init's *returned*
-        // Arc points at the same loader as the first call's Arc and as
-        // ACTIVE_LOADER. The consistency property is what matters.
+        // EmptyAssets has no .ftl files, so the first init's select_best
+        // returns Err(LoadError::Load). The second init's short-circuit
+        // must overrule that, returning Err(AlreadyInitialized) without
+        // even touching the second loader's assets — otherwise an
+        // operator who logs the status would see a misleading
+        // "English fallback" message even though the active loader is
+        // whatever the first init established.
         let loader1 =
             i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
         let (arc1, _) = init(loader1, &EmptyAssets);
 
         let loader2 =
             i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
-        let (arc2, _) = init(loader2, &EmptyAssets);
+        let (arc2, status2) = init(loader2, &EmptyAssets);
 
+        // Status must report AlreadyInitialized, not whatever load_status
+        // the second loader would have produced.
+        assert_eq!(
+            status2,
+            Err(LoadError::AlreadyInitialized),
+            "second init must short-circuit on AlreadyInitialized so a load miss on the discarded loader can't drown out the signal"
+        );
         // Same allocation: both arcs point at the registered loader so
         // `parse_localized(&arc2)` and `fl_active()` (which reads
         // ACTIVE_LOADER) cannot disagree on the active locale.
