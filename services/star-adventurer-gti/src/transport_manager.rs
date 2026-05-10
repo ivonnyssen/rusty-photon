@@ -185,13 +185,24 @@ impl TransportManager {
             let _ = handle.await;
         }
 
-        // Best-effort tracking stop. The transport is about to close
-        // either way, so a failure here is informational.
+        // Best-effort: halt any in-progress motion before closing.
+        // Issue :L on both axes (instant stop, aborts goto / tracking
+        // alike) plus :K1 to be safe. Order matters — :L is the
+        // hammer; :K is graceful. The transport is about to close
+        // either way, so failures here are informational.
         if let Some(t) = self.transport.lock().await.as_ref() {
+            let _ = self
+                .send_through(t, Command::InstantStop(Axis::Ra))
+                .await
+                .inspect_err(|e| warn!("disconnect: :L1 failed: {e}"));
+            let _ = self
+                .send_through(t, Command::InstantStop(Axis::Dec))
+                .await
+                .inspect_err(|e| warn!("disconnect: :L2 failed: {e}"));
             let _ = self
                 .send_through(t, Command::StopMotion(Axis::Ra))
                 .await
-                .inspect_err(|e| warn!("disconnect: stop tracking failed: {e}"));
+                .inspect_err(|e| warn!("disconnect: :K1 failed: {e}"));
         }
 
         // Drop the transport Arc — its `Drop` should call `close` on the

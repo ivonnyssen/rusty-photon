@@ -77,6 +77,13 @@ impl StarAdventurerWorld {
 
     /// POST the queued state seed to `/debug/v1/mock-state`. No-op when
     /// no seed has been queued.
+    ///
+    /// Does NOT clear `pending_seed` — scenarios sometimes re-spawn the
+    /// binary (e.g. a `Given service configured with name X` followed
+    /// by another `Given a running service`) and the new binary needs
+    /// the same seed. Each `queue_seed` overwrites by key, so the map
+    /// always holds the latest desired state; re-applying is
+    /// idempotent.
     pub async fn apply_pending_seed(&mut self) {
         if self.pending_seed.is_empty() {
             return;
@@ -86,7 +93,7 @@ impl StarAdventurerWorld {
             .as_ref()
             .expect("service not started — cannot apply seed");
         let url = format!("http://127.0.0.1:{}/debug/v1/mock-state", handle.port);
-        let body = serde_json::Value::Object(std::mem::take(&mut self.pending_seed));
+        let body = serde_json::Value::Object(self.pending_seed.clone());
         let resp = reqwest::Client::new()
             .post(&url)
             .json(&body)
@@ -100,11 +107,18 @@ impl StarAdventurerWorld {
         );
     }
 
-    /// Queue a single seed value to be POSTed to `/debug/v1/mock-state`
-    /// the next time the service starts (or `apply_pending_seed` is
-    /// called explicitly).
-    pub fn queue_seed(&mut self, key: &str, value: serde_json::Value) {
+    /// Queue a single seed value to be POSTed to `/debug/v1/mock-state`.
+    ///
+    /// If the service is already running, the seed is applied
+    /// immediately — this lets `Given` steps that follow "a running
+    /// star-adventurer service" still pre-set mock state before the
+    /// next `When I connect` runs. Otherwise the seed accumulates and
+    /// gets flushed on the next `start_service`.
+    pub async fn queue_seed(&mut self, key: &str, value: serde_json::Value) {
         self.pending_seed.insert(key.to_string(), value);
+        if self.service_handle.is_some() {
+            self.apply_pending_seed().await;
+        }
     }
 
     /// Fetch the mock-mode wire-command log from the running service's

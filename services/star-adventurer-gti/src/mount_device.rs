@@ -502,11 +502,19 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
 
-        // Latch the target so SlewToTarget can re-issue the same slew.
+        // Latch the target + capture the tracking flag so the
+        // completion watcher knows whether to auto-restore. The slew
+        // itself stops sidereal tracking on the wire (issuing :K via
+        // the StopMotion below), so the in-memory `tracking_requested`
+        // flag is cleared too — `tracking()` reports the wire state,
+        // not the user's last request.
+        let tracking_was_on;
         {
             let mut s = self.state.write().await;
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
+            tracking_was_on = s.tracking_requested;
+            s.tracking_requested = false;
         }
 
         // Compute target encoder ticks.
@@ -543,8 +551,9 @@ impl Telescope for MountDevice {
 
         // Mark slew in progress and spawn the completion watcher. The
         // watcher polls until both axes report stopped, optionally
-        // re-issues sidereal tracking on RA, applies the settle delay,
-        // then clears `slew_in_progress`.
+        // re-issues sidereal tracking on RA (only if it was on before
+        // the slew), applies the settle delay, then clears
+        // `slew_in_progress`.
         let settle = {
             let mut s = self.state.write().await;
             s.slew_in_progress = true;
@@ -555,6 +564,7 @@ impl Telescope for MountDevice {
             Arc::clone(&self.transport),
             self.transport.polling_interval_for_watcher(),
             settle,
+            tracking_was_on,
         );
         Ok(())
     }
@@ -635,11 +645,27 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
-        self.state.write().await.slew_in_progress = false;
-        // Issue :L on both axes (instant stop). Per ASCOM, AbortSlew
-        // does not auto-restore tracking.
-        let _ = self.transport.send(Command::InstantStop(Axis::Ra)).await;
-        let _ = self.transport.send(Command::InstantStop(Axis::Dec)).await;
+        // Also clear tracking_requested — `:L` halts any motion the
+        // mount is doing including any sidereal tracking the watcher
+        // may have re-issued. After abort the user must explicitly
+        // re-enable tracking. Matches ASCOM's "AbortSlew does not
+        // auto-restore tracking" guarantee.
+        {
+            let mut s = self.state.write().await;
+            s.slew_in_progress = false;
+            s.tracking_requested = false;
+        }
+        // Issue :L on both axes (instant stop). Log the underlying
+        // transport error if either send fails — silent failure here
+        // hides bugs (a watcher race that leaves the manager with no
+        // open transport, for instance) until BDD assertions on the
+        // command log time out far downstream.
+        if let Err(e) = self.transport.send(Command::InstantStop(Axis::Ra)).await {
+            debug!("abort_slew :L1 send failed: {e}");
+        }
+        if let Err(e) = self.transport.send(Command::InstantStop(Axis::Dec)).await {
+            debug!("abort_slew :L2 send failed: {e}");
+        }
         Ok(())
     }
 
@@ -668,11 +694,17 @@ impl Telescope for MountDevice {
 /// immediately), optionally re-issues sidereal tracking on the RA axis
 /// (matching the design doc's "if Tracking was on" branch), waits
 /// `settle`, then clears `slew_in_progress`.
+///
+/// `tracking_was_on` is captured at slew-issue time — the live
+/// `tracking_requested` flag is cleared by `slew_to_coordinates_async`
+/// so `tracking()` reports the wire state during the slew, hence we
+/// can't read it from `state` here.
 fn spawn_slew_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     transport: Arc<TransportManager>,
     polling_interval: Duration,
     settle: Duration,
+    tracking_was_on: bool,
 ) {
     tokio::spawn(async move {
         loop {
@@ -703,7 +735,6 @@ fn spawn_slew_completion_watcher(
 
             // Slew completed cleanly. Re-enable tracking if the user had
             // it on before the slew, then apply the settle delay.
-            let tracking_was_on = state.read().await.tracking_requested;
             if tracking_was_on {
                 if let Some(params) = transport.parameters().await {
                     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
@@ -720,6 +751,7 @@ fn spawn_slew_completion_watcher(
                         })
                         .await;
                     let _ = transport.send(Command::StartMotion(Axis::Ra)).await;
+                    state.write().await.tracking_requested = true;
                 }
             }
             tokio::time::sleep(settle).await;

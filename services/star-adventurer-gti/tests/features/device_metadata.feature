@@ -1,4 +1,3 @@
-@wip
 Feature: Device metadata
   The mount device reports its identity, capability flags, and static
   properties via the ASCOM Alpaca HTTP API. Capability values reflect the

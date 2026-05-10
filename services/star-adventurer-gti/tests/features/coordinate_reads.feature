@@ -1,4 +1,3 @@
-@wip
 Feature: Coordinate reads
   RightAscension and Declination are derived from the polled axis encoder
   positions, the configured site longitude (for LST), and the cached

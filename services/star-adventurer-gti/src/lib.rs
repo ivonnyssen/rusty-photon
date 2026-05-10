@@ -259,6 +259,12 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
         if let Some(v) = body.get("dec_initialized").and_then(|v| v.as_bool()) {
             s.dec.initialized = v;
         }
+        if let Some(v) = body.get("ra_goto_target_ticks").and_then(|v| v.as_i64()) {
+            s.ra.goto_target_ticks = v as i32;
+        }
+        if let Some(v) = body.get("dec_goto_target_ticks").and_then(|v| v.as_i64()) {
+            s.dec.goto_target_ticks = v as i32;
+        }
         Json(json!({"ok": true}))
     }
 

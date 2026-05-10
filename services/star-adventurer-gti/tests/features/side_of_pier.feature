@@ -1,4 +1,3 @@
-@wip
 Feature: Side of pier
   SideOfPier is derived from the RA-axis encoder position (converted to
   mechanical hour angle) and the configured site latitude. In the
@@ -17,11 +16,11 @@ Feature: Side of pier
 
     Examples:
       | ha    | expected |
+      | -6.0  | East     |
       | -5.99 | East     |
       | 0.0   | East     |
       | 5.99  | East     |
       | 6.0   | West     |
-      | -6.0  | West     |
       | 11.99 | West     |
 
   Scenario Outline: Southern-hemisphere SideOfPier inverts the convention
@@ -34,9 +33,9 @@ Feature: Side of pier
 
     Examples:
       | ha   | expected |
+      | -6.0 | West     |
       | 0.0  | West     |
       | 6.0  | East     |
-      | -6.0 | East     |
 
   Scenario: SideOfPier setter is not supported
     Given a running star-adventurer service

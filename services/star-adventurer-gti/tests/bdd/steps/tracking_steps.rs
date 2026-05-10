@@ -51,5 +51,28 @@ async fn tracking_rate_should_be_sidereal(world: &mut StarAdventurerWorld) {
 
 #[then("the Dec axis should have received no commands")]
 async fn dec_axis_no_commands(world: &mut StarAdventurerWorld) {
-    todo!("Phase 3: assert mock command-history has no `:_2...` frames since the last reset")
+    // Filter the command log for `:G2`, `:S2`, `:I2`, `:E2`, `:J2`,
+    // `:K2`, `:L2` — Dec-axis setters / motion. The handshake itself
+    // issues `:F2`, `:a2`, `:g2`, `:j2` and the polling task fires
+    // `:f2` and `:j2`; those are inquiries and don't count.
+    let log = world.command_log().await;
+    let dec_setters: Vec<&String> = log
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.as_bytes(),
+                [
+                    b':',
+                    b'G' | b'S' | b'I' | b'E' | b'J' | b'K' | b'L',
+                    b'2',
+                    ..
+                ]
+            )
+        })
+        .collect();
+    assert!(
+        dec_setters.is_empty(),
+        "Dec axis received {} setter/motion frames: {dec_setters:?}",
+        dec_setters.len()
+    );
 }

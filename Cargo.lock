@@ -4689,6 +4689,7 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "proptest",
+ "regex",
  "reqwest 0.13.2",
  "rp-auth",
  "rp-tls",
