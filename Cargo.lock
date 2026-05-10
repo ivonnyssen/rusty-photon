@@ -4022,6 +4022,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fluent-langneg",
+ "fluent-syntax",
  "i18n-embed",
  "i18n-embed-fl",
  "rp-i18n-derive",

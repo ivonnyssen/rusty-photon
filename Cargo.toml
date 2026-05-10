@@ -95,6 +95,7 @@ rp-i18n = { path = "crates/rp-i18n" }
 rp-i18n-derive = { path = "crates/rp-i18n-derive" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
+fluent-syntax = "0.12"
 rust-embed = "8"
 fluent-langneg = "0.13"
 sys-locale = "0.3"

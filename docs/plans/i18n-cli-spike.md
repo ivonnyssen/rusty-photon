@@ -15,7 +15,7 @@ Prove the end-to-end ergonomics of putting Fluent + `i18n-embed` behind a `clap`
 2. `LANG=de_DE.UTF-8 ppba-driver --log-level wat` renders a German error string.
 3. `ppba-driver --help` (no env) renders English (matches today verbatim).
 4. The English `.ftl` for ppba-driver is the source of truth; the German `.ftl` is LLM-bootstrapped with a `# machine-translated, needs review` header.
-5. `cargo i18n verify` (or equivalent) is wired into `cargo rail run --profile commit` *or* an explicit follow-up issue is opened explaining what blocked it.
+5. Translation verification is wired into `cargo rail run --profile commit`. Done via `crates/rp-i18n`'s `verify_translations` / `verify_translations_in_dir` (Fluent syntax + key parity + `{ $var }` placeholder parity), exercised by `services/ppba-driver/tests/translations.rs` which runs under `cargo test`, `cargo nextest`, the rail commit profile, and `bazel test //services/ppba-driver:translations`. `cargo-i18n` itself was rejected because it's a gettext-oriented build tool, doesn't have a `verify` mode, and chokes on workspace-inheritance Cargo.toml entries (`version.workspace = true`).
 6. No behavioural change to anything beyond CLI help/errors — the bound port, log lines, ASCOM payloads, and `info!` startup messages stay byte-for-byte identical.
 
 ## 2. Why `ppba-driver`

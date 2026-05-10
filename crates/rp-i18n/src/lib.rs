@@ -47,6 +47,9 @@ pub use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 pub use i18n_embed_fl::fl;
 pub use rp_i18n_derive::LocalizedParser;
 
+mod verify;
+pub use verify::{verify_translations, verify_translations_in_dir, VerifyIssue, VerifyReport};
+
 /// Trait emitted by `#[derive(LocalizedParser)]`.
 ///
 /// `parse_localized` is the loud convenience that exits the process on parse

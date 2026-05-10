@@ -60,6 +60,39 @@ rust_test(
     ),
 )
 
+# Static verification of the i18n/ tree: parses every locale's .ftl, asserts
+# key parity vs `en`, asserts placeholder parity. Catches translator
+# mistakes (parse errors, dropped keys, renamed { $var } placeholders) at
+# test time instead of runtime. Same code path runs under Cargo via
+# `cargo test -p ppba-driver --test translations`.
+rust_test(
+    name = "translations",
+    srcs = ["tests/translations.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # `data` (not `compile_data`) because the test reads the i18n/ tree at
+    # runtime via std::fs (see verify_translations_in_dir). RustEmbed's
+    # compile-time directory walk doesn't see Bazel sandbox symlinks for
+    # proc-macro contexts, so the verifier intentionally avoids it.
+    data = glob(["i18n/**/*.ftl"]),
+    edition = "2021",
+    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
+    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
+    # which is fixed at compile time to the package source dir.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # conformu_integration: cfg(feature = "conformu"); deferred.
 
 # BDD cucumber tests require a mock-feature binary. rust_binary with
