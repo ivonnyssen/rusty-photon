@@ -43,6 +43,13 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Option<Arc<dyn TransportFactory>>,
+    /// Optional handle to a [`MockMountState`] that the build path mounts
+    /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
+    /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
+    /// process can read the wire-command log out of the running service.
+    /// Always `None` in production builds.
+    #[cfg(feature = "mock")]
+    debug_mock_state: Option<Arc<tokio::sync::Mutex<MockMountState>>>,
 }
 
 impl ServerBuilder {
@@ -60,6 +67,23 @@ impl ServerBuilder {
     /// when omitted, [`build`] picks serial / UDP from `config.transport`.
     pub fn with_transport_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    /// Mount the `/debug/v1/mock-commands` introspection endpoint backed
+    /// by the supplied [`MockMountState`]. Only available under
+    /// `feature = "mock"`; production builds cannot expose this even
+    /// accidentally.
+    ///
+    /// Used by:
+    /// * BDD tests that need to assert "the mount should have received
+    ///   command :K1" from outside the service process.
+    /// * `tests/test_lib.rs` for the same.
+    /// * `main.rs` when run with `--features mock` so a developer can
+    ///   curl the endpoint to inspect the running mock.
+    #[cfg(feature = "mock")]
+    pub fn with_debug_mock_state(mut self, state: Arc<tokio::sync::Mutex<MockMountState>>) -> Self {
+        self.debug_mock_state = Some(state);
         self
     }
 
@@ -90,7 +114,19 @@ impl ServerBuilder {
         }
 
         let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
+        // Mount the mock-introspection endpoint first so it takes
+        // priority over the Alpaca fallback service.
+        let router: axum::Router = {
+            let r = axum::Router::new();
+            #[cfg(feature = "mock")]
+            let r = if let Some(state) = self.debug_mock_state {
+                r.merge(debug_mock_router(state))
+            } else {
+                r
+            };
+            r
+        };
+        let router = router.fallback_service(server.into_service());
         let router = match &self.config.server.auth {
             Some(auth) => {
                 if self.config.server.tls.is_none() {
@@ -156,6 +192,36 @@ impl BoundServer {
         debug!("star-adventurer-gti shut down");
         Ok(())
     }
+}
+
+/// HTTP router for the `/debug/v1/mock-commands` introspection endpoint.
+///
+/// Returns a JSON object `{ "commands": ["...", "..."] }` where each
+/// element is the wire frame as a UTF-8-decoded string (the protocol
+/// uses ASCII so the conversion is lossless). Used by BDD tests that
+/// need to assert which commands the driver issued without reaching
+/// into the mock state from outside the service process.
+#[cfg(feature = "mock")]
+fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Router {
+    use axum::extract::State;
+    use axum::routing::get;
+    use axum::Json;
+    use serde_json::json;
+
+    async fn handler(
+        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
+    ) -> Json<serde_json::Value> {
+        let log = &state.lock().await.command_log;
+        let frames: Vec<String> = log
+            .iter()
+            .map(|frame| String::from_utf8_lossy(frame).into_owned())
+            .collect();
+        Json(json!({ "commands": frames }))
+    }
+
+    axum::Router::new()
+        .route("/debug/v1/mock-commands", get(handler))
+        .with_state(state)
 }
 
 async fn shutdown_signal() {
