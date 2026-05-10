@@ -76,11 +76,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.log_level)
         .init();
 
-    if let Err(e) = i18n_status {
-        tracing::warn!(
-            ?e,
-            "i18n: locale negotiation degraded; running with English fallback"
-        );
+    match i18n_status {
+        Ok(()) => {}
+        Err(rp_i18n::LoadError::Available) => {
+            tracing::warn!(
+                "i18n: failed to enumerate embedded locales; running with English fallback"
+            );
+        }
+        Err(rp_i18n::LoadError::Load) => {
+            tracing::warn!(
+                "i18n: failed to load negotiated locale bundle; running with English fallback"
+            );
+        }
+        Err(rp_i18n::LoadError::AlreadyInitialized) => {
+            // Distinct from the load-failure cases: the loader is *not*
+            // English-fallback-only, it's just whatever the first init
+            // populated. Surfaces the most likely cause (refactor or test
+            // artefact) so it's visible without misrepresenting the locale.
+            tracing::warn!(
+                "i18n: rp_i18n::init was called more than once on this thread; \
+                 second call's loader was discarded, active locale unchanged"
+            );
+        }
     }
 
     tracing::debug!(

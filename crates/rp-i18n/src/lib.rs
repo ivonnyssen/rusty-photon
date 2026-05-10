@@ -181,26 +181,36 @@ pub enum LoadError {
 /// ```
 ///
 /// `Err(LoadError::AlreadyInitialized)` means a previous `init` call on this
-/// thread already won the [`active_loader`] race — the loader returned here
-/// is still freshly built, but `fl_active` will keep returning the original.
+/// thread already won the [`active_loader`] race. The returned `Arc` in that
+/// case is the **already-registered** loader (not the freshly-built one from
+/// this call), so `parse_localized` and `fl_active` stay consistent — both
+/// see the same bundles. The loader argument and assets passed to the second
+/// call are dropped.
 pub fn init<A: I18nAssets>(
     loader: FluentLanguageLoader,
     assets: &A,
 ) -> (Arc<FluentLanguageLoader>, Result<(), LoadError>) {
     let requested = resolve_locale();
     let load_status = select_best(&loader, assets, &requested);
-    let arc = Arc::new(loader);
-    let register_status = ACTIVE_LOADER.with(|cell| {
-        if cell.set(arc.clone()).is_err() {
-            Err(LoadError::AlreadyInitialized)
-        } else {
-            Ok(())
+    let new_arc = Arc::new(loader);
+    let (active, register_status) = ACTIVE_LOADER.with(|cell| match cell.set(new_arc.clone()) {
+        Ok(()) => (new_arc, Ok(())),
+        Err(_) => {
+            // Cell was already populated. Discard the freshly-built loader
+            // and hand back the registered one so parse_localized (which
+            // uses the returned Arc) and fl_active (which reads ACTIVE_LOADER)
+            // never disagree on the active locale.
+            let existing = cell
+                .get()
+                .expect("set failed implies the cell is occupied")
+                .clone();
+            (existing, Err(LoadError::AlreadyInitialized))
         }
     });
     // Surface the most informative error — a load miss matters more than a
     // double-init, since the latter is usually a refactor / test artefact.
     let status = load_status.and(register_status);
-    (arc, status)
+    (active, status)
 }
 
 /// The loader registered by the most recent [`init`] call on this thread,
@@ -276,5 +286,61 @@ mod tests {
         // the cell is empty. fl_active must not panic on the empty case.
         let result = fl_active(|_| "unused".to_string());
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn double_init_returns_existing_arc_for_consistency() {
+        // Each test runs on its own thread, so ACTIVE_LOADER is empty here.
+        // We don't have real Fluent assets in this crate (they live in each
+        // consumer), so we exercise the registration path with empty assets:
+        // the loader stays empty, but `set` succeeds the first time and fails
+        // the second. The contract is that the *returned* Arc on the second
+        // call points at the same loader fl_active sees — not a fresh one.
+
+        struct EmptyAssets;
+        impl I18nAssets for EmptyAssets {
+            fn get_files(&self, _file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
+                Vec::new()
+            }
+
+            fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
+                Box::new(std::iter::empty())
+            }
+
+            fn subscribe_changed(
+                &self,
+                _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
+            ) -> Result<
+                Box<dyn i18n_embed::Watcher + Send + Sync + 'static>,
+                i18n_embed::I18nEmbedError,
+            > {
+                struct NoopWatcher;
+                impl i18n_embed::Watcher for NoopWatcher {}
+                Ok(Box::new(NoopWatcher))
+            }
+        }
+
+        // EmptyAssets has no .ftl files, so `select_best` returns
+        // Err(LoadError::Load) on every call. That's fine — the test isn't
+        // about load_status; it's about whether the second init's *returned*
+        // Arc points at the same loader as the first call's Arc and as
+        // ACTIVE_LOADER. The consistency property is what matters.
+        let loader1 =
+            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let (arc1, _) = init(loader1, &EmptyAssets);
+
+        let loader2 =
+            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let (arc2, _) = init(loader2, &EmptyAssets);
+
+        // Same allocation: both arcs point at the registered loader so
+        // `parse_localized(&arc2)` and `fl_active()` (which reads
+        // ACTIVE_LOADER) cannot disagree on the active locale.
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "second init must return the already-registered loader so parse_localized and fl_active stay consistent"
+        );
+        let active = active_loader().expect("init should have populated ACTIVE_LOADER");
+        assert!(Arc::ptr_eq(&arc1, &active));
     }
 }

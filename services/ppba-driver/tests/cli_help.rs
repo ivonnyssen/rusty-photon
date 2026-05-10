@@ -110,6 +110,15 @@ fn rp_locale_env_overrides_lang() {
         .arg("--help");
     let output = cmd.output().expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Belt-and-braces: assert exit success first so a future regression that
+    // makes --help non-zero (parse error, panic, etc.) can't masquerade as a
+    // pass just because the German substring shows up in some error path.
+    assert!(
+        output.status.success(),
+        "--help should exit 0; status={:?}, stderr:\n{stderr}",
+        output.status
+    );
     assert!(
         stdout.contains("Protokollstufe"),
         "RP_LOCALE should win over LANG:\n{stdout}"
