@@ -11,15 +11,25 @@ async fn running_service(world: &mut StarAdventurerWorld) {
 }
 
 #[given(expr = "a mount that reports CPR {int} on both axes")]
-async fn mount_reports_cpr(_world: &mut StarAdventurerWorld, _cpr: u32) {
-    // Mock seeds the GTi-default CPR (`0x375F00 = 3,628,800`) automatically;
-    // every feature scenario asserts on that default. Custom CPRs would
-    // need a `/debug/v1/mock-state` field — not currently needed.
+async fn mount_reports_cpr(_world: &mut StarAdventurerWorld, cpr: u32) {
+    // Assert the feature-file value matches the GTi-default the mock
+    // already seeds; a divergent CPR would need a `/debug/v1/mock-state`
+    // extension and the scenario should fail fast instead of silently
+    // passing.
+    const GTI_CPR: u32 = 0x0037_5F00;
+    assert_eq!(
+        cpr, GTI_CPR,
+        "mock only seeds CPR {GTI_CPR}; feature file asked for {cpr}"
+    );
 }
 
 #[given(expr = "a mount that reports timer frequency {int}")]
-async fn mount_reports_tmr_freq(_world: &mut StarAdventurerWorld, _hz: u32) {
-    // Same as above — mock default tmr_freq is `0xF42400 ≈ 16 MHz`.
+async fn mount_reports_tmr_freq(_world: &mut StarAdventurerWorld, hz: u32) {
+    const GTI_TMR_FREQ: u32 = 0x00F4_2400;
+    assert_eq!(
+        hz, GTI_TMR_FREQ,
+        "mock only seeds tmr_freq {GTI_TMR_FREQ}; feature file asked for {hz}"
+    );
 }
 
 // `the mount is slewing` is used both as a `Given` (preconditioning a

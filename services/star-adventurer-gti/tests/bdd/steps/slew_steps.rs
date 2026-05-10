@@ -76,18 +76,13 @@ async fn when_axes_stopped_in_goto(world: &mut StarAdventurerWorld) {
 
 async fn seed_axes_stopped_in_goto(world: &mut StarAdventurerWorld) {
     // Tightly-timed scenarios that need the slew to "have just
-    // finished" force the mock state directly via /debug/v1/mock-state.
-    let mut seed = serde_json::Map::new();
-    seed.insert("ra_running".into(), false.into());
-    seed.insert("dec_running".into(), false.into());
-    seed.insert("ra_goto".into(), true.into());
-    seed.insert("dec_goto".into(), true.into());
-    let body = serde_json::Value::Object(seed);
-    let url = format!(
-        "http://127.0.0.1:{}/debug/v1/mock-state",
-        world.service_handle.as_ref().expect("service started").port
-    );
-    let _ = reqwest::Client::new().post(&url).json(&body).send().await;
+    // finished" use the World's seed queue so failures surface as
+    // assertion errors rather than silently leaving the mount in the
+    // wrong state.
+    world.queue_seed("ra_running", false.into()).await;
+    world.queue_seed("dec_running", false.into()).await;
+    world.queue_seed("ra_goto", true.into()).await;
+    world.queue_seed("dec_goto", true.into()).await;
 }
 
 #[then("the mount should have received commands matching:")]
@@ -130,26 +125,40 @@ async fn target_dec_should_be(world: &mut StarAdventurerWorld, expected: f64, to
 #[then(
     expr = "the slew target on the wire should correspond to RA {float} hours and Dec {float} degrees"
 )]
-async fn wire_slew_target(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
-    // Loose check: the driver issues `:S1<bias-encoded-ticks>` and
-    // `:S2<bias-encoded-ticks>`. We assert that *some* :S1/:S2 frame
-    // is in the log; tightening the comparison to the exact ticks
-    // would re-derive the LST inside the test, which has the same
-    // clock-injection problem as the absolute-LST scenarios. The
-    // unit test
+async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
+    // Decode the Dec axis target — this comparison doesn't depend on
+    // LST so it's deterministic in BDD. The RA target involves
+    // `lst_at_slew_time` which we can't pin until Phase 4 wires
+    // clock injection (the unit test
     // `coordinates::tests::ra_ticks_round_trip_through_mechanical_ha`
-    // pins the ticks↔RA arithmetic.
-    let _ = (ra, dec);
+    // pins the ticks ↔ RA math regardless), so for RA we still only
+    // assert that *some* `:S1` frame appears.
+    use skywatcher_motor_protocol::codec::decode_position;
     let log = world.command_log().await;
+    let s1 = log
+        .iter()
+        .find(|c| c.starts_with(":S1") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :S1 in log {log:?}"));
+    let s2 = log
+        .iter()
+        .find(|c| c.starts_with(":S2") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :S2 in log {log:?}"));
+    // :S<axis><6 hex bytes>\r — 10 bytes total.
+    assert_eq!(s2.len(), 10, "malformed :S2 frame {s2:?}");
+    let payload: &[u8; 6] = (&s2.as_bytes()[3..9])
+        .try_into()
+        .expect("six payload bytes");
+    let dec_ticks = decode_position(payload).expect("valid :S2 payload");
+
+    // Convert wire ticks back to degrees and compare against the
+    // requested Dec.
+    const GTI_CPR: u32 = 0x0037_5F00;
+    let dec_actual = (dec_ticks as f64) * 360.0 / (GTI_CPR as f64);
+    let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
     assert!(
-        log.iter()
-            .any(|c| c.starts_with(":S1") && c.ends_with("\r")),
-        "no :S1 in log {log:?}"
-    );
-    assert!(
-        log.iter()
-            .any(|c| c.starts_with(":S2") && c.ends_with("\r")),
-        "no :S2 in log {log:?}"
+        (dec_actual - dec).abs() < tol,
+        "Dec target {dec_actual:.4}° differs from requested {dec:.4}° by > {tol}°; \
+         :S1={s1:?} :S2={s2:?}"
     );
 }
 

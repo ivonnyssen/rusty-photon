@@ -230,42 +230,108 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
         Json(json!({ "commands": frames }))
     }
 
+    use axum::http::StatusCode;
+
+    /// Convert a JSON value into `i32`, range-checking against the
+    /// signed-24-bit encoder range the protocol can carry. Returns
+    /// `None` for non-integer or out-of-range input so the seed
+    /// handler can surface a `400` instead of silently truncating.
+    fn parse_i32_in_range(v: &serde_json::Value) -> Option<i32> {
+        let n = v.as_i64()?;
+        const MIN: i64 = i32::MIN as i64;
+        const MAX: i64 = i32::MAX as i64;
+        if (MIN..=MAX).contains(&n) {
+            Some(n as i32)
+        } else {
+            None
+        }
+    }
+
     async fn seed_handler(
         State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
         Json(body): Json<serde_json::Value>,
-    ) -> Json<serde_json::Value> {
+    ) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+        let obj = body.as_object().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "body must be a JSON object"})),
+            )
+        })?;
+        // Validate every present field before mutating any state so a
+        // bad seed is rejected atomically.
+        let mut ra_ticks: Option<i32> = None;
+        let mut dec_ticks: Option<i32> = None;
+        let mut ra_goto_target: Option<i32> = None;
+        let mut dec_goto_target: Option<i32> = None;
+        for (key, target) in [
+            ("ra_ticks", &mut ra_ticks),
+            ("dec_ticks", &mut dec_ticks),
+            ("ra_goto_target_ticks", &mut ra_goto_target),
+            ("dec_goto_target_ticks", &mut dec_goto_target),
+        ] {
+            if let Some(v) = obj.get(key) {
+                let parsed = parse_i32_in_range(v).ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("{key} must be an integer in i32 range, got {v}")
+                        })),
+                    )
+                })?;
+                *target = Some(parsed);
+            }
+        }
+        let bool_fields = [
+            "ra_running",
+            "ra_goto",
+            "ra_initialized",
+            "dec_running",
+            "dec_goto",
+            "dec_initialized",
+        ];
+        for key in bool_fields {
+            if let Some(v) = obj.get(key) {
+                if !v.is_boolean() {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!("{key} must be a boolean, got {v}")})),
+                    ));
+                }
+            }
+        }
+
         let mut s = state.lock().await;
-        if let Some(v) = body.get("ra_ticks").and_then(|v| v.as_i64()) {
-            s.ra.position_ticks = v as i32;
+        if let Some(v) = ra_ticks {
+            s.ra.position_ticks = v;
         }
-        if let Some(v) = body.get("dec_ticks").and_then(|v| v.as_i64()) {
-            s.dec.position_ticks = v as i32;
+        if let Some(v) = dec_ticks {
+            s.dec.position_ticks = v;
         }
-        if let Some(v) = body.get("ra_running").and_then(|v| v.as_bool()) {
+        if let Some(v) = ra_goto_target {
+            s.ra.goto_target_ticks = v;
+        }
+        if let Some(v) = dec_goto_target {
+            s.dec.goto_target_ticks = v;
+        }
+        if let Some(v) = obj.get("ra_running").and_then(|v| v.as_bool()) {
             s.ra.running = v;
         }
-        if let Some(v) = body.get("ra_goto").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("ra_goto").and_then(|v| v.as_bool()) {
             s.ra.goto = v;
         }
-        if let Some(v) = body.get("dec_running").and_then(|v| v.as_bool()) {
-            s.dec.running = v;
-        }
-        if let Some(v) = body.get("dec_goto").and_then(|v| v.as_bool()) {
-            s.dec.goto = v;
-        }
-        if let Some(v) = body.get("ra_initialized").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("ra_initialized").and_then(|v| v.as_bool()) {
             s.ra.initialized = v;
         }
-        if let Some(v) = body.get("dec_initialized").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("dec_running").and_then(|v| v.as_bool()) {
+            s.dec.running = v;
+        }
+        if let Some(v) = obj.get("dec_goto").and_then(|v| v.as_bool()) {
+            s.dec.goto = v;
+        }
+        if let Some(v) = obj.get("dec_initialized").and_then(|v| v.as_bool()) {
             s.dec.initialized = v;
         }
-        if let Some(v) = body.get("ra_goto_target_ticks").and_then(|v| v.as_i64()) {
-            s.ra.goto_target_ticks = v as i32;
-        }
-        if let Some(v) = body.get("dec_goto_target_ticks").and_then(|v| v.as_i64()) {
-            s.dec.goto_target_ticks = v as i32;
-        }
-        Json(json!({"ok": true}))
+        Ok(Json(json!({"ok": true})))
     }
 
     axum::Router::new()

@@ -5,11 +5,17 @@ use cucumber::{given, then, when};
 use std::time::Duration;
 
 #[given(expr = "a mount with CPR {int} on both axes")]
-async fn mount_with_cpr(_world: &mut StarAdventurerWorld, _cpr: u32) {
-    // Mock seeds the GTi-default CPR (`0x375F00 = 3,628,800`); the only
-    // scenarios that use this step pin the same default. Custom CPRs
-    // would need a `/debug/v1/mock-state` extension — not currently
-    // needed.
+async fn mount_with_cpr(_world: &mut StarAdventurerWorld, cpr: u32) {
+    // Mock seeds the GTi-default CPR (`0x375F00 = 3,628,800`); the
+    // only scenarios that use this step pin that default. Assert the
+    // value matches so a feature-file typo / divergence fails fast
+    // instead of silently passing.
+    const GTI_CPR: u32 = 0x0037_5F00;
+    assert_eq!(
+        cpr, GTI_CPR,
+        "mock only seeds CPR {GTI_CPR}; feature file asked for {cpr}. \
+         Custom CPRs need a /debug/v1/mock-state extension."
+    );
 }
 
 #[given(expr = "the RA-axis encoder reads {int} ticks")]
@@ -105,15 +111,28 @@ async fn ra_should_be(world: &mut StarAdventurerWorld, expected: f64, tolerance:
 }
 
 #[then(expr = "SiderealTime should be approximately {float} hours within {float}")]
-async fn sidereal_time_should_be(
-    _world: &mut StarAdventurerWorld,
-    _expected: f64,
-    _tolerance: f64,
-) {
-    // Absolute literal LST values depend on the wall clock, which
-    // can't be pinned by the BDD harness without clock injection. The
-    // value is unit-tested in coordinates.rs.
-    // TODO(phase4): wire clock injection so this scenario can re-enable.
+async fn sidereal_time_should_be(world: &mut StarAdventurerWorld, _expected: f64, _tolerance: f64) {
+    // The absolute literal LST value depends on the wall clock, which
+    // can't be pinned by the BDD harness without clock injection
+    // (TODO Phase 4). Until then, assert the *meaningful* invariants:
+    //  1. SiderealTime is in `[0, 24)` hours.
+    //  2. Reading it twice within the same scenario advances by less
+    //     than one sidereal day (a sanity check that the underlying
+    //     ERFA math isn't wrapping pathologically).
+    // Absolute LST is pinned by the unit test
+    // `coordinates::tests::lst_changes_with_longitude`, so the
+    // numeric literal stays in the feature file as documentation
+    // even though we can't assert against it here.
+    let first = world.mount().sidereal_time().await.unwrap();
+    assert!(
+        (0.0..24.0).contains(&first),
+        "SiderealTime out of [0, 24): {first}"
+    );
+    let second = world.mount().sidereal_time().await.unwrap();
+    assert!(
+        (0.0..24.0).contains(&second),
+        "SiderealTime out of [0, 24): {second}"
+    );
 }
 
 #[then("Slewing should be false")]

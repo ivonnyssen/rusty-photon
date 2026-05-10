@@ -32,22 +32,15 @@ async fn try_set_park_position(world: &mut StarAdventurerWorld) {
 
 #[when("the mount reports both axes stopped at encoder 0")]
 async fn mount_reports_axes_stopped_at_zero(world: &mut StarAdventurerWorld) {
-    // Push a one-shot seed via the debug endpoint — the mock simulator
-    // already advances to encoder 0 once park's :S1<0>/:S2<0> arrive,
-    // but tightly-timed scenarios may race the watcher's first poll.
-    // Force the state to the post-slew shape so the assertion is
-    // deterministic.
-    let mut seed = serde_json::Map::new();
-    seed.insert("ra_ticks".into(), 0.into());
-    seed.insert("dec_ticks".into(), 0.into());
-    seed.insert("ra_running".into(), false.into());
-    seed.insert("dec_running".into(), false.into());
-    let body = serde_json::Value::Object(seed);
-    let url = format!(
-        "http://127.0.0.1:{}/debug/v1/mock-state",
-        world.service_handle.as_ref().expect("service started").port
-    );
-    let _ = reqwest::Client::new().post(&url).json(&body).send().await;
+    // Force the post-slew shape via the World's seed queue. The mock
+    // simulator already advances to encoder 0 once park's :S1<0> /
+    // :S2<0> arrive, but tightly-timed scenarios may race the
+    // watcher's first poll; the explicit seed is a deterministic
+    // override.
+    world.queue_seed("ra_ticks", 0.into()).await;
+    world.queue_seed("dec_ticks", 0.into()).await;
+    world.queue_seed("ra_running", false.into()).await;
+    world.queue_seed("dec_running", false.into()).await;
 }
 
 #[then("AtPark should be false")]

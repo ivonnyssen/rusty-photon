@@ -31,11 +31,17 @@ pub struct StarAdventurerWorld {
     pub temp_dir: Option<TempDir>,
     pub last_error: Option<String>,
     pub last_error_code: Option<u16>,
-    /// Pending state-seed body that BDD `Given` steps build up before the
-    /// service is started. After `start_service` spawns the binary,
-    /// `apply_pending_seed()` POSTs this to `/debug/v1/mock-state` so the
-    /// mount has the desired state before the first `When I connect`
-    /// step. Cleared after each apply.
+    /// Pending state-seed body that BDD `Given` steps build up before
+    /// the service is started. After `start_service` spawns the binary,
+    /// `apply_pending_seed()` POSTs this to `/debug/v1/mock-state` so
+    /// the mount has the desired state before the first `When I
+    /// connect` step.
+    ///
+    /// Persists across applies so a scenario that re-spawns the
+    /// binary (e.g. a `Given service configured with X` followed by
+    /// a `Given a running service`) keeps the seeds for the second
+    /// spawn. Each `queue_seed` call overwrites by key, so the map
+    /// always carries the latest desired state.
     pub pending_seed: serde_json::Map<String, serde_json::Value>,
 }
 
