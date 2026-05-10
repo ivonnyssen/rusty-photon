@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `--help` renders Fluent strings, not literal Rust | Test in `services/ppba-driver/tests/cli_help.rs`: spawn `ppba-driver --help` with `LANG=C` and `LANG=de_DE.UTF-8`; assert key German phrases appear |
 | `--log-level wat` renders the localised error | Same harness, capture stderr |
-| Missing-key fallback: delete a key from `de.ftl`, rebuild | Manual; doc the fallback behaviour ("`xx → en`") in `crates/rusty-photon-i18n/README.md` |
+| Missing-key fallback: delete a key from `de.ftl`, rebuild | Manual; the `xx → en` fallback chain is documented on `select_best` in `crates/rusty-photon-i18n/src/lib.rs` (canonical crate docs — there's no README, per §4) |
 | BDD harness still parses the `Bound ppba-driver server bound_addr=…` startup line | Existing `cargo nextest run -p ppba-driver --features mock` passes with no changes |
 | `cargo rail run --profile commit -q` clean | Standard pre-push gate |
 
