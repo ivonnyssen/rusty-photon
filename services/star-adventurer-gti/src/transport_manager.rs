@@ -592,18 +592,41 @@ mod tests {
         }
     }
 
-    struct BadReplyFactory;
+    /// Factory whose `open()` initially hands back the bad-reply
+    /// transport (so the handshake fails) and, after `set_healthy(true)`,
+    /// hands back the real mock instead. Used to verify that the *same*
+    /// `TransportManager` instance is re-connectable after a handshake
+    /// rollback — not just that a brand-new manager would work.
+    struct ToggleFactory {
+        healthy: std::sync::atomic::AtomicBool,
+    }
+
+    impl ToggleFactory {
+        fn new() -> Self {
+            Self {
+                healthy: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+        fn set_healthy(&self, on: bool) {
+            self.healthy.store(on, Ordering::SeqCst);
+        }
+    }
 
     #[async_trait::async_trait]
-    impl TransportFactory for BadReplyFactory {
-        async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
-            Ok(Arc::new(BadReplyTransport))
+    impl TransportFactory for ToggleFactory {
+        async fn open(&self, config: &Config) -> Result<Arc<dyn Transport>> {
+            if self.healthy.load(Ordering::SeqCst) {
+                MockTransportFactory.open(config).await
+            } else {
+                Ok(Arc::new(BadReplyTransport))
+            }
         }
     }
 
     #[tokio::test]
-    async fn connect_rolls_back_when_handshake_fails() {
-        let m = TransportManager::new(Config::default(), Arc::new(BadReplyFactory));
+    async fn connect_rolls_back_when_handshake_fails_and_is_retryable() {
+        let factory = Arc::new(ToggleFactory::new());
+        let m = TransportManager::new(Config::default(), Arc::clone(&factory) as _);
         let err = m.connect().await.unwrap_err();
         // Some kind of protocol/transport error — the exact variant is
         // not the test's concern, just that connect surfaces the failure
@@ -613,10 +636,13 @@ mod tests {
         assert!(!m.is_available());
         // No transport stuck in the slot.
         assert!(m.transport.lock().await.is_none());
-        // Subsequent connect with a working factory must still work.
-        let m2 = TransportManager::new(Config::default(), Arc::new(MockTransportFactory));
-        m2.connect().await.unwrap();
-        assert!(m2.is_available());
+        // Now flip the SAME factory to healthy and retry on the SAME
+        // manager — proves the rollback left m re-connectable.
+        factory.set_healthy(true);
+        m.connect().await.unwrap();
+        assert!(m.is_available());
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 1);
+        assert!(m.parameters().await.is_some());
     }
 
     #[tokio::test]
