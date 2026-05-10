@@ -2,11 +2,12 @@
 #
 # Without this, GitHub-hosted Windows runners' Git installations default to
 # `core.autocrlf=true`, which converts checked-out files to CRLF. The
-# `crate_universe` Bazel module extension records SHA-256 hashes of
-# `Cargo.toml`, `Cargo.lock`, and 17 per-crate `Cargo.toml` files in
+# `crate_universe` Bazel module extension records SHA-256 hashes of the
+# workspace and per-crate `Cargo.toml` files (plus `Cargo.lock`) in
 # `MODULE.bazel.lock`'s `recordedFileInputs`. CRLF bytes change the SHA, the
 # lockfile check fails, and Bazel re-runs `cargo-bazel.exe splice` (~50 s) on
-# every Windows test invocation — see the diagnostic data captured in PR #185.
+# every Windows test invocation. `git blame` on this file points at the
+# investigation that confirmed the cause.
 * text=auto eol=lf
 
 # OpenNGC catalog data is imported verbatim from the upstream openNGC source
