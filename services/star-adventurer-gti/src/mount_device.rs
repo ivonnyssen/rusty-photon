@@ -1122,11 +1122,19 @@ mod tests {
         d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
         // slew_in_progress is set immediately on return.
         assert!(d.slewing().await.unwrap());
-        // Wait long enough for the polling task to refresh snapshot AND
-        // the watcher to run (mock completes a slew in one poll, settle
-        // is 0, polling interval is 20ms).
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!d.slewing().await.unwrap());
+        // Poll for completion: the slew distance is LST-dependent so
+        // the number of mock polls to reach the target varies with the
+        // wall clock. Bound the wait at 5s — vastly more than the
+        // ~100ms a 100_000-tick-per-step mock needs to walk a typical
+        // ±6h HA, but loose enough that a slow CI runner can't flake.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !d.slewing().await.unwrap() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("slewing did not become false within 5s");
     }
 
     #[tokio::test]
