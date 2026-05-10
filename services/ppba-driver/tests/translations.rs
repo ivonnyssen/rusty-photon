@@ -21,8 +21,11 @@
 //! - **Bazel:** `rules_rust` sets `CARGO_MANIFEST_DIR` to a compile-time
 //!   sandbox path that no longer exists when the test runs from the runfiles
 //!   tree. Instead, the `data = glob(["i18n/**/*.ftl"])` on the `:translations`
-//!   target stages the same files under `$TEST_SRCDIR/_main/services/ppba-driver/i18n/`,
-//!   which `locate_i18n_dir` finds via `TEST_SRCDIR`.
+//!   target stages the same files under
+//!   `$TEST_SRCDIR/$TEST_WORKSPACE/services/ppba-driver/i18n/`, which
+//!   `locate_i18n_dir` finds by composing the two env vars. `_main` is the
+//!   default bzlmod workspace name but can be configured per project, so we
+//!   read `TEST_WORKSPACE` rather than hard-coding it.
 
 use std::path::{Path, PathBuf};
 
@@ -40,8 +43,14 @@ fn locate_i18n_dir() -> PathBuf {
     tried.push(manifest);
 
     if let Ok(srcdir) = std::env::var("TEST_SRCDIR") {
-        // Bazel's standard runfiles layout for an external repo with name "_main"
-        let bazel = Path::new(&srcdir).join("_main/services/ppba-driver/i18n");
+        // `TEST_WORKSPACE` is the canonical name of the repo's main module
+        // inside the runfiles tree (set by Bazel's test runner). `_main` is
+        // the bzlmod default but projects can rename it, so prefer the env
+        // var and only fall back to the default when it's absent.
+        let workspace = std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into());
+        let bazel = Path::new(&srcdir)
+            .join(&workspace)
+            .join("services/ppba-driver/i18n");
         if bazel.is_dir() {
             return bazel;
         }

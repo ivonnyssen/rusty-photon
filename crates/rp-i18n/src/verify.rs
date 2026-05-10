@@ -77,9 +77,13 @@ pub enum VerifyIssue {
 /// Verify every locale in `assets` against `fallback`.
 ///
 /// `fallback` is the language id of the canonical source-of-truth locale —
-/// usually `"en"`. The function does *not* fail if `fallback` itself is
-/// missing (that's a configuration error the build will catch), it just
-/// returns an empty report.
+/// usually `"en"`. The function does *not* panic if `fallback` itself is
+/// missing or fails to parse (that's a configuration error the build will
+/// catch); instead it returns immediately with whatever it has collected:
+/// the enumerated `locales` plus any `EmptyLocale` / `ParseError` issues
+/// raised against the fallback itself. No `MissingKey` / `ExtraKey` /
+/// `PlaceholderMismatch` issues are emitted in that path, since they would
+/// only be noise without a baseline.
 pub fn verify_translations<A: I18nAssets>(assets: &A, fallback: &str) -> VerifyReport {
     let locales = enumerate_locales(assets);
     let mut issues = Vec::new();
@@ -307,7 +311,13 @@ fn collect_keys<A: I18nAssets>(
         }
     }
 
-    if any_parse_error && keys.is_empty() {
+    // A partial parse can still yield some `Message` entries — but treating
+    // those as authoritative would cascade into spurious `MissingKey` /
+    // `ExtraKey` reports against every other locale (or, when the broken
+    // file is the fallback, against this one). The `ParseError` is already
+    // pushed; returning `None` keeps the caller from doing comparison work
+    // on top of a known-broken bundle.
+    if any_parse_error {
         return None;
     }
     Some(keys)
@@ -477,6 +487,45 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, VerifyIssue::ParseError { locale, .. } if locale == "de")),
             "expected ParseError for de, got {:#?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn partial_parse_error_in_fallback_does_not_cascade_into_drift() {
+        // A partial Fluent parse leaves *some* entries usable in
+        // `parser::parse`'s returned resource. Treating those as the
+        // baseline would emit `MissingKey` reports against every other
+        // locale for the entries that didn't parse — drowning the real
+        // signal (the `ParseError`) in noise. With the fallback broken,
+        // the verifier should report the `ParseError` and skip drift
+        // comparison entirely.
+        let report = verify_translations(
+            &assets(&[
+                (
+                    "en/app.ftl",
+                    "greet = Hello\nthis line is invalid {{\nbye = Bye\n",
+                ),
+                ("de/app.ftl", "greet = Hallo\nbye = Tschüss\n"),
+            ]),
+            "en",
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| matches!(i, VerifyIssue::ParseError { locale, .. } if locale == "en")),
+            "expected ParseError for the partial en parse; got {:#?}",
+            report.issues
+        );
+        assert!(
+            !report.issues.iter().any(|i| matches!(
+                i,
+                VerifyIssue::MissingKey { .. }
+                    | VerifyIssue::ExtraKey { .. }
+                    | VerifyIssue::PlaceholderMismatch { .. }
+            )),
+            "no drift issues should be emitted when the fallback parsed only partially; got {:#?}",
             report.issues
         );
     }
