@@ -233,14 +233,14 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
     use axum::http::StatusCode;
 
     /// Convert a JSON value into `i32`, range-checking against the
-    /// signed-24-bit encoder range the protocol can carry. Returns
-    /// `None` for non-integer or out-of-range input so the seed
-    /// handler can surface a `400` instead of silently truncating.
-    fn parse_i32_in_range(v: &serde_json::Value) -> Option<i32> {
+    /// signed-24-bit encoder range the wire protocol can carry. Out-of-range
+    /// seeds would later panic the mock on `encode_position(..)` during
+    /// `:j` handling, so reject them here with a `400` instead. Returns
+    /// `None` for non-integer or out-of-range input.
+    fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
+        use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
         let n = v.as_i64()?;
-        const MIN: i64 = i32::MIN as i64;
-        const MAX: i64 = i32::MAX as i64;
-        if (MIN..=MAX).contains(&n) {
+        if (POSITION_MIN as i64..=POSITION_MAX as i64).contains(&n) {
             Some(n as i32)
         } else {
             None
@@ -270,11 +270,14 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
             ("dec_goto_target_ticks", &mut dec_goto_target),
         ] {
             if let Some(v) = obj.get(key) {
-                let parsed = parse_i32_in_range(v).ok_or_else(|| {
+                let parsed = parse_position_ticks(v).ok_or_else(|| {
+                    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
                     (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
-                            "error": format!("{key} must be an integer in i32 range, got {v}")
+                            "error": format!(
+                                "{key} must be an integer in [{POSITION_MIN}, {POSITION_MAX}] (signed 24-bit encoder range), got {v}"
+                            )
                         })),
                     )
                 })?;

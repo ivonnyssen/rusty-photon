@@ -41,14 +41,21 @@ async fn mount_reports_tmr_freq(_world: &mut StarAdventurerWorld, hz: u32) {
 async fn mount_is_slewing(world: &mut StarAdventurerWorld) {
     // Seed running=true on both axes plus a far goto target so the
     // mock's polling-driven `advance_one_step` does not immediately
-    // clear the running flag (delta would be zero otherwise).
-    let far = i32::MAX / 4;
+    // clear the running flag (delta would be zero otherwise). Use the
+    // protocol's signed-24-bit max so the seed stays inside the wire
+    // representable range and survives `/debug/v1/mock-state`'s
+    // tick-range validator.
+    use skywatcher_motor_protocol::codec::POSITION_MAX;
     world.queue_seed("ra_running", true.into()).await;
     world.queue_seed("ra_goto", true.into()).await;
-    world.queue_seed("ra_goto_target_ticks", far.into()).await;
+    world
+        .queue_seed("ra_goto_target_ticks", POSITION_MAX.into())
+        .await;
     world.queue_seed("dec_running", true.into()).await;
     world.queue_seed("dec_goto", true.into()).await;
-    world.queue_seed("dec_goto_target_ticks", far.into()).await;
+    world
+        .queue_seed("dec_goto_target_ticks", POSITION_MAX.into())
+        .await;
     world.queue_seed("ra_initialized", true.into()).await;
     world.queue_seed("dec_initialized", true.into()).await;
 }
@@ -72,7 +79,11 @@ async fn two_clients_connect(world: &mut StarAdventurerWorld) {
     // connect_is_reference_counted`. Treat this scenario as a smoke
     // check that double-connect does not break.
     world.mount().set_connected(true).await.unwrap();
-    let _ = world.mount().set_connected(true).await;
+    // Idempotent: the second connect must also succeed (the device
+    // guard treats it as a no-op). Asserting catches a regression
+    // where double-connect would start returning an error and the
+    // smoke check silently degrades into nothing.
+    world.mount().set_connected(true).await.unwrap();
 }
 
 #[when("one client disconnects the device")]

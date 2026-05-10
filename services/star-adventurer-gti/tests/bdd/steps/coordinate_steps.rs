@@ -52,11 +52,16 @@ async fn mount_axes_stopped(world: &mut StarAdventurerWorld) {
 #[given("the mount reports the RA axis running in goto mode")]
 async fn ra_axis_running_goto(world: &mut StarAdventurerWorld) {
     // A far goto target keeps the mock's `advance_one_step` from
-    // immediately tripping `running` to false on `delta == 0`.
-    let far = i32::MAX / 4;
+    // immediately tripping `running` to false on `delta == 0`. Use the
+    // protocol's signed-24-bit max so the seed stays representable on
+    // the wire and survives the tick-range validator on
+    // `/debug/v1/mock-state`.
+    use skywatcher_motor_protocol::codec::POSITION_MAX;
     world.queue_seed("ra_running", true.into()).await;
     world.queue_seed("ra_goto", true.into()).await;
-    world.queue_seed("ra_goto_target_ticks", far.into()).await;
+    world
+        .queue_seed("ra_goto_target_ticks", POSITION_MAX.into())
+        .await;
     world.queue_seed("ra_initialized", true.into()).await;
     world.queue_seed("dec_initialized", true.into()).await;
 }

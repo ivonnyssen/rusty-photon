@@ -503,18 +503,18 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
 
         // Latch the target + capture the tracking flag so the
-        // completion watcher knows whether to auto-restore. The slew
-        // itself stops sidereal tracking on the wire (issuing :K via
-        // the StopMotion below), so the in-memory `tracking_requested`
-        // flag is cleared too — `tracking()` reports the wire state,
-        // not the user's last request.
+        // completion watcher knows whether to auto-restore. We do NOT
+        // clear `tracking_requested` here: if any of the StopMotion /
+        // SetMotionMode / ... sends below fail, the in-memory state
+        // would falsely report tracking-off while the wire is still
+        // tracking. The flag is cleared only after the RA :K actually
+        // hits the wire (see the inline write below).
         let tracking_was_on;
         {
             let mut s = self.state.write().await;
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
             tracking_was_on = s.tracking_requested;
-            s.tracking_requested = false;
         }
 
         // Compute target encoder ticks.
@@ -532,6 +532,13 @@ impl Telescope for MountDevice {
                 .send(Command::StopMotion(axis))
                 .await
                 .map_err(Self::ascom)?;
+            if axis == Axis::Ra {
+                // RA :K is the wire event that halts sidereal tracking;
+                // mirror it in `tracking_requested` only after the send
+                // has actually succeeded so the in-memory state never
+                // gets ahead of the wire on transport failures.
+                self.state.write().await.tracking_requested = false;
+            }
             self.transport
                 .send(Command::SetMotionMode {
                     axis,
@@ -734,24 +741,42 @@ fn spawn_slew_completion_watcher(
             }
 
             // Slew completed cleanly. Re-enable tracking if the user had
-            // it on before the slew, then apply the settle delay.
+            // it on before the slew, then apply the settle delay. Only
+            // mark tracking_requested=true if the StartMotion actually
+            // succeeds — otherwise Tracking() would lie about the wire
+            // state. The earlier mode/period sends are best-effort but
+            // failures are logged for diagnosis.
             if tracking_was_on {
                 if let Some(params) = transport.parameters().await {
                     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-                    let _ = transport
+                    if let Err(e) = transport
                         .send(Command::SetMotionMode {
                             axis: Axis::Ra,
                             mode: MotionMode::TRACKING,
                         })
-                        .await;
-                    let _ = transport
+                        .await
+                    {
+                        tracing::warn!("post-slew SetMotionMode TRACKING failed: {e}");
+                    }
+                    if let Err(e) = transport
                         .send(Command::SetStepPeriod {
                             axis: Axis::Ra,
                             period,
                         })
-                        .await;
-                    let _ = transport.send(Command::StartMotion(Axis::Ra)).await;
-                    state.write().await.tracking_requested = true;
+                        .await
+                    {
+                        tracing::warn!("post-slew SetStepPeriod failed: {e}");
+                    }
+                    match transport.send(Command::StartMotion(Axis::Ra)).await {
+                        Ok(_) => {
+                            state.write().await.tracking_requested = true;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "post-slew StartMotion failed; tracking not re-enabled: {e}"
+                            );
+                        }
+                    }
                 }
             }
             tokio::time::sleep(settle).await;

@@ -137,9 +137,20 @@ impl StarAdventurerWorld {
             .as_ref()
             .expect("service not started — call start_service first");
         let url = format!("http://127.0.0.1:{}/debug/v1/mock-commands", handle.port);
-        let body: Value = reqwest::get(&url)
+        // Short timeout + explicit status check so a hung or 5xx
+        // service surfaces as a test failure here rather than as a
+        // confusing assertion failure further down the scenario.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("reqwest client builds");
+        let body: Value = client
+            .get(&url)
+            .send()
             .await
             .expect("debug endpoint reachable")
+            .error_for_status()
+            .expect("debug endpoint returns 2xx")
             .json()
             .await
             .expect("debug endpoint returns JSON");
