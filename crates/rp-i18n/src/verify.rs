@@ -429,8 +429,44 @@ fn walk_expression<S: AsRef<str>>(expr: &ast::Expression<S>, out: &mut BTreeSet<
 }
 
 fn walk_inline<S: AsRef<str>>(inline: &ast::InlineExpression<S>, out: &mut BTreeSet<String>) {
-    if let ast::InlineExpression::VariableReference { id } = inline {
-        out.insert(id.name.as_ref().to_string());
+    match inline {
+        ast::InlineExpression::VariableReference { id } => {
+            out.insert(id.name.as_ref().to_string());
+        }
+        ast::InlineExpression::FunctionReference { arguments, .. } => {
+            walk_call_arguments(arguments, out);
+        }
+        ast::InlineExpression::TermReference {
+            arguments: Some(arguments),
+            ..
+        } => {
+            walk_call_arguments(arguments, out);
+        }
+        ast::InlineExpression::Placeable { expression } => {
+            // Nested placeable, e.g. `{ { $count } }` — recurse into the
+            // inner expression so its variables count too.
+            walk_expression(expression, out);
+        }
+        // Literals, term references without arguments, and message
+        // references can't carry variable bindings — nothing to gather.
+        ast::InlineExpression::StringLiteral { .. }
+        | ast::InlineExpression::NumberLiteral { .. }
+        | ast::InlineExpression::MessageReference { .. }
+        | ast::InlineExpression::TermReference {
+            arguments: None, ..
+        } => {}
+    }
+}
+
+fn walk_call_arguments<S: AsRef<str>>(
+    arguments: &ast::CallArguments<S>,
+    out: &mut BTreeSet<String>,
+) {
+    for positional in &arguments.positional {
+        walk_inline(positional, out);
+    }
+    for named in &arguments.named {
+        walk_inline(&named.value, out);
     }
 }
 
@@ -657,6 +693,49 @@ mod tests {
                 assert_eq!(locale, "en");
                 assert_eq!(file, "en/app.ftl");
                 assert_eq!(message, "non-UTF-8 content");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn placeholder_mismatch_inside_function_arguments_is_reported() {
+        // Fluent function calls like `{ NUMBER($count) }` and term calls
+        // like `{ -brand($variant) }` carry variables inside their argument
+        // lists. If `walk_inline` ever stopped descending into function /
+        // term arguments, a placeholder rename inside one would slip past
+        // the verifier — exactly the failure mode this test guards.
+        let report = verify_translations(
+            &assets(&[
+                (
+                    "en/app.ftl",
+                    "msg = items: { NUMBER($count, minimumFractionDigits: 2) }\n",
+                ),
+                (
+                    "de/app.ftl",
+                    "msg = Anzahl: { NUMBER($cnt, minimumFractionDigits: 2) }\n",
+                ),
+            ]),
+            "en",
+        );
+        let mismatch = report
+            .issues
+            .iter()
+            .find(|i| matches!(i, VerifyIssue::PlaceholderMismatch { .. }))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a PlaceholderMismatch for the renamed function-arg var; got {:#?}",
+                    report.issues
+                )
+            });
+        match mismatch {
+            VerifyIssue::PlaceholderMismatch {
+                fallback_vars,
+                locale_vars,
+                ..
+            } => {
+                assert_eq!(fallback_vars, &vec!["count".to_string()]);
+                assert_eq!(locale_vars, &vec!["cnt".to_string()]);
             }
             _ => unreachable!(),
         }

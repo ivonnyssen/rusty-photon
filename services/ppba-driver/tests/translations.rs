@@ -65,13 +65,18 @@ fn locate_i18n_dir() -> PathBuf {
         tried.push(bazel);
     }
 
-    // Last resort: the test's CWD often is the package dir under cargo nextest
+    // Last resort: try both common CWD shapes — the package dir (cargo
+    // nextest's default) and the workspace root (`cargo test` invoked
+    // from there). Either is plausible if `CARGO_MANIFEST_DIR` is somehow
+    // unset and we're not under a Bazel runner. Above branches cover the
+    // common cases; this is pure defence-in-depth.
     if let Ok(cwd) = std::env::current_dir() {
-        let cwd_path = cwd.join("services/ppba-driver/i18n");
-        if cwd_path.is_dir() {
-            return cwd_path;
+        for candidate in [cwd.join("i18n"), cwd.join("services/ppba-driver/i18n")] {
+            if candidate.is_dir() {
+                return candidate;
+            }
+            tried.push(candidate);
         }
-        tried.push(cwd_path);
     }
 
     panic!(
