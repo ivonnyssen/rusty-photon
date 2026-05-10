@@ -254,7 +254,8 @@ mod tests {
 
     /// `I18nAssets` fixture that reports zero files. Used to drive
     /// `select_best` / `init` along the "no bundles to load" path without
-    /// constructing real Fluent resources.
+    /// constructing real Fluent resources. `subscribe_changed` is left to
+    /// the trait's no-op default — we don't exercise live-reload here.
     struct EmptyAssets;
     impl I18nAssets for EmptyAssets {
         fn get_files(&self, _file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
@@ -263,16 +264,6 @@ mod tests {
 
         fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
             Box::new(std::iter::empty())
-        }
-
-        fn subscribe_changed(
-            &self,
-            _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
-        ) -> Result<Box<dyn i18n_embed::Watcher + Send + Sync + 'static>, i18n_embed::I18nEmbedError>
-        {
-            struct NoopWatcher;
-            impl i18n_embed::Watcher for NoopWatcher {}
-            Ok(Box::new(NoopWatcher))
         }
     }
 

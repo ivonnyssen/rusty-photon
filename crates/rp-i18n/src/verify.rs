@@ -255,6 +255,8 @@ impl FsAssets {
     }
 }
 
+// `subscribe_changed` (the live-reload hook) is left to the trait's no-op
+// default — the verifier is a one-shot CI check, not a watcher.
 impl I18nAssets for FsAssets {
     fn get_files(&self, file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
         match self.files.get(file_path) {
@@ -266,16 +268,6 @@ impl I18nAssets for FsAssets {
     fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
         let names: Vec<String> = self.files.keys().cloned().collect();
         Box::new(names.into_iter())
-    }
-
-    fn subscribe_changed(
-        &self,
-        _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
-    ) -> Result<Box<dyn i18n_embed::Watcher + Send + Sync + 'static>, i18n_embed::I18nEmbedError>
-    {
-        struct NoopWatcher;
-        impl i18n_embed::Watcher for NoopWatcher {}
-        Ok(Box::new(NoopWatcher))
     }
 }
 
@@ -425,16 +417,6 @@ mod tests {
         fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
             let names: Vec<String> = self.0.keys().cloned().collect();
             Box::new(names.into_iter())
-        }
-
-        fn subscribe_changed(
-            &self,
-            _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
-        ) -> Result<Box<dyn i18n_embed::Watcher + Send + Sync + 'static>, i18n_embed::I18nEmbedError>
-        {
-            struct NoopWatcher;
-            impl i18n_embed::Watcher for NoopWatcher {}
-            Ok(Box::new(NoopWatcher))
         }
     }
 
@@ -620,18 +602,6 @@ mod tests {
 
             fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
                 Box::new(std::iter::once("en/app.ftl".to_string()))
-            }
-
-            fn subscribe_changed(
-                &self,
-                _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
-            ) -> Result<
-                Box<dyn i18n_embed::Watcher + Send + Sync + 'static>,
-                i18n_embed::I18nEmbedError,
-            > {
-                struct NoopWatcher;
-                impl i18n_embed::Watcher for NoopWatcher {}
-                Ok(Box::new(NoopWatcher))
             }
         }
 
