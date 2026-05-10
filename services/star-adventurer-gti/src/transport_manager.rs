@@ -212,6 +212,13 @@ impl TransportManager {
         self.available.load(Ordering::SeqCst)
     }
 
+    /// Wire-protocol polling interval taken from the config block. Exposed
+    /// so [`crate::MountDevice`]'s slew-completion watcher can match the
+    /// background poller's cadence.
+    pub fn polling_interval_for_watcher(&self) -> Duration {
+        self.polling_interval()
+    }
+
     /// Latest cached parameters. `None` until handshake completes.
     pub async fn parameters(&self) -> Option<MountParameters> {
         *self.parameters.read().await

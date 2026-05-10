@@ -41,6 +41,12 @@ struct DriverState {
     target_ra_hours: Option<f64>,
     target_dec_degrees: Option<f64>,
     slew_settle_time: Option<Duration>,
+    /// `true` between the moment a slew is issued and the moment the
+    /// completion watcher has finished re-enabling tracking + the
+    /// settle delay. `slewing()` ORs this with the snapshot's running
+    /// flags so callers see "still slewing" until the watcher signals
+    /// otherwise.
+    slew_in_progress: bool,
 }
 
 pub struct MountDevice {
@@ -277,9 +283,14 @@ impl Telescope for MountDevice {
         if !self.connected().await? {
             return Ok(false);
         }
+        // `slew_in_progress` is true between issuing :J and the watcher
+        // task signalling completion (after settle + tracking re-issue),
+        // so the flag covers both the active-motion period and the
+        // post-motion settle window.
+        if self.state.read().await.slew_in_progress {
+            return Ok(true);
+        }
         let snap = self.transport.snapshot().await;
-        // Slewing is "either axis is producing step pulses while in goto
-        // mode" — a tracking-only motion does not count.
         let ra_slewing = snap.ra.running && snap.ra.goto;
         let dec_slewing = snap.dec.running && snap.dec.goto;
         Ok(ra_slewing || dec_slewing)
@@ -462,6 +473,86 @@ impl Telescope for MountDevice {
         self.sync_to_coordinates(ra, dec).await
     }
 
+    // ---- Slew (async, target-based, with completion watcher) ----
+
+    async fn slew_to_coordinates_async(&self, ra: f64, dec: f64) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        Self::validate_coordinates(ra, dec)?;
+        self.ensure_unparked().await?;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+
+        // Latch the target so SlewToTarget can re-issue the same slew.
+        {
+            let mut s = self.state.write().await;
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+        }
+
+        // Compute target encoder ticks.
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let mech_ha = ra_to_mechanical_ha(ra, lst);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+
+        // Per axis: stop any prior motion, set goto-fast mode, set
+        // target, start motion. The mock processes :K instantaneously
+        // so we skip the design-doc's "poll :f until Running=0" step
+        // until Phase 4 measures real-hardware response time.
+        for (axis, ticks) in [(Axis::Ra, ra_ticks), (Axis::Dec, dec_ticks)] {
+            self.transport
+                .send(Command::StopMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetMotionMode {
+                    axis,
+                    mode: MotionMode::GOTO_FAST_FORWARD,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetGotoTarget { axis, ticks })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::StartMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+        }
+
+        // Mark slew in progress and spawn the completion watcher. The
+        // watcher polls until both axes report stopped, optionally
+        // re-issues sidereal tracking on RA, applies the settle delay,
+        // then clears `slew_in_progress`.
+        let settle = {
+            let mut s = self.state.write().await;
+            s.slew_in_progress = true;
+            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
+        };
+        spawn_slew_completion_watcher(
+            Arc::clone(&self.state),
+            Arc::clone(&self.transport),
+            self.transport.polling_interval_for_watcher(),
+            settle,
+        );
+        Ok(())
+    }
+
+    async fn slew_to_target_async(&self) -> ASCOMResult<()> {
+        let (ra, dec) = {
+            let s = self.state.read().await;
+            (
+                s.target_ra_hours.ok_or(ASCOMError::INVALID_OPERATION)?,
+                s.target_dec_degrees.ok_or(ASCOMError::INVALID_OPERATION)?,
+            )
+        };
+        self.slew_to_coordinates_async(ra, dec).await
+    }
+
     // ---- Slew settle time (read/write, lives in the in-memory mirror) ----
 
     async fn slew_settle_time(&self) -> ASCOMResult<Duration> {
@@ -477,6 +568,65 @@ impl Telescope for MountDevice {
         self.state.write().await.slew_settle_time = Some(slew_settle_time);
         Ok(())
     }
+}
+
+/// Spawn the slew-completion watcher.
+///
+/// Polls the snapshot every `polling_interval`. When both axes report
+/// `running == false` (or the slew was aborted externally — in which
+/// case `slew_in_progress` is already cleared and the watcher exits
+/// immediately), optionally re-issues sidereal tracking on the RA axis
+/// (matching the design doc's "if Tracking was on" branch), waits
+/// `settle`, then clears `slew_in_progress`.
+fn spawn_slew_completion_watcher(
+    state: Arc<RwLock<DriverState>>,
+    transport: Arc<TransportManager>,
+    polling_interval: Duration,
+    settle: Duration,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(polling_interval).await;
+
+            // External abort path: AbortSlew clears `slew_in_progress`
+            // before issuing :L. Bail out so we don't overwrite the
+            // user-visible Slewing flag with a re-enable-and-settle.
+            if !state.read().await.slew_in_progress {
+                return;
+            }
+
+            let snap = transport.snapshot().await;
+            let still_moving = snap.ra.running || snap.dec.running;
+            if still_moving {
+                continue;
+            }
+
+            // Slew completed cleanly. Re-enable tracking if the user had
+            // it on before the slew, then apply the settle delay.
+            let tracking_was_on = state.read().await.tracking_requested;
+            if tracking_was_on {
+                if let Some(params) = transport.parameters().await {
+                    let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+                    let _ = transport
+                        .send(Command::SetMotionMode {
+                            axis: Axis::Ra,
+                            mode: MotionMode::TRACKING,
+                        })
+                        .await;
+                    let _ = transport
+                        .send(Command::SetStepPeriod {
+                            axis: Axis::Ra,
+                            period,
+                        })
+                        .await;
+                    let _ = transport.send(Command::StartMotion(Axis::Ra)).await;
+                }
+            }
+            tokio::time::sleep(settle).await;
+            state.write().await.slew_in_progress = false;
+            return;
+        }
+    });
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -684,6 +834,90 @@ mod tests {
             d.sync_to_coordinates(0.0, 91.0).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
         );
+    }
+
+    fn fast_settle_device() -> MountDevice {
+        let mut cfg = Config::default();
+        // Tight polling + zero settle so the watcher is fast in tests.
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        MountDevice::new(cfg.mount, manager)
+    }
+
+    async fn fast_settle_connected() -> MountDevice {
+        let d = fast_settle_device();
+        d.set_connected(true).await.unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn slew_async_validates_inputs() {
+        let d = fast_settle_connected().await;
+        assert_eq!(
+            d.slew_to_coordinates_async(24.0, 0.0)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        assert_eq!(
+            d.slew_to_coordinates_async(0.0, 91.0)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn slew_async_refuses_while_disconnected() {
+        let d = fast_settle_device();
+        let err = d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn slew_async_latches_target() {
+        let d = fast_settle_connected().await;
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        assert_eq!(d.target_right_ascension().await.unwrap(), 6.0);
+        assert_eq!(d.target_declination().await.unwrap(), 30.0);
+    }
+
+    #[tokio::test]
+    async fn slew_async_marks_slewing_until_watcher_clears_it() {
+        let d = fast_settle_connected().await;
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        // slew_in_progress is set immediately on return.
+        assert!(d.slewing().await.unwrap());
+        // Wait long enough for the polling task to refresh snapshot AND
+        // the watcher to run (mock completes a slew in one poll, settle
+        // is 0, polling interval is 20ms).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!d.slewing().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn slew_to_target_without_set_returns_invalid_operation() {
+        let d = fast_settle_connected().await;
+        let err = d.slew_to_target_async().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn slew_to_target_uses_last_set_target() {
+        let d = fast_settle_connected().await;
+        d.set_target_right_ascension(12.0).await.unwrap();
+        d.set_target_declination(45.0).await.unwrap();
+        d.slew_to_target_async().await.unwrap();
+        assert_eq!(d.target_right_ascension().await.unwrap(), 12.0);
+        assert_eq!(d.target_declination().await.unwrap(), 45.0);
     }
 
     #[tokio::test]
