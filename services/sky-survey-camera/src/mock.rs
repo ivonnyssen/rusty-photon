@@ -77,7 +77,24 @@ struct WcsHeader {
     pixel_scale_arcsec: f64,
 }
 
+/// Hard cap on the synthetic FITS dimensions. Production cameras top
+/// out around 60 megapixels (Fujifilm GFX); 8192 × 8192 ≈ 67
+/// megapixel is a comfortable upper bound that fits in ~128 MB at
+/// 16-bit + WCS overhead. The cap exists because `synthetic_fits[_with_wcs]`
+/// is reached not only by in-crate tests (which always pass small
+/// dimensions) but also by ConformU's in-process SkyView stub in
+/// `tests/conformu_integration.rs`, which forwards query-derived
+/// `Pixels=` values; a malformed request would otherwise drive a
+/// `vec![0u16; w*h]`-equivalent allocation that can OOM the test
+/// runner.
+pub(crate) const MAX_PIXELS_PER_AXIS: u32 = 8192;
+
 fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<u8> {
+    assert!(
+        width <= MAX_PIXELS_PER_AXIS && height <= MAX_PIXELS_PER_AXIS,
+        "synthetic_fits dimensions {width}x{height} exceed cap {MAX_PIXELS_PER_AXIS} per axis; \
+         callers that take untrusted input must validate first"
+    );
     const BLOCK: usize = 2880;
     const RECORD: usize = 80;
 
@@ -126,7 +143,13 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
         header.push(' ');
     }
 
-    let pixels = (width as usize) * (height as usize);
+    // The assert at function entry caps each axis at 8192, so the
+    // multiplication and the `* 2` for u16 byte sizing both stay
+    // comfortably under `usize::MAX`. `checked_mul` is
+    // belt-and-suspenders in case the constant ever grows.
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .expect("width * height overflows usize");
     let mut bytes = header.into_bytes();
     bytes.reserve(pixels * 2);
     for i in 0..pixels {
