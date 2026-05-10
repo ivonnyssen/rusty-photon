@@ -31,6 +31,12 @@ pub struct StarAdventurerWorld {
     pub temp_dir: Option<TempDir>,
     pub last_error: Option<String>,
     pub last_error_code: Option<u16>,
+    /// Pending state-seed body that BDD `Given` steps build up before the
+    /// service is started. After `start_service` spawns the binary,
+    /// `apply_pending_seed()` POSTs this to `/debug/v1/mock-state` so the
+    /// mount has the desired state before the first `When I connect`
+    /// step. Cleared after each apply.
+    pub pending_seed: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StarAdventurerWorld {
@@ -48,8 +54,9 @@ impl StarAdventurerWorld {
     }
 
     /// Build a JSON config from current world state, write it to a temp
-    /// file, spawn the service binary via [`ServiceHandle`], and poll
-    /// the Alpaca client until the Telescope device is exposed.
+    /// file, spawn the service binary via [`ServiceHandle`], poll the
+    /// Alpaca client until the Telescope device is exposed, and apply
+    /// any deferred state seeds that earlier `Given` steps queued up.
     pub async fn start_service(&mut self) {
         let cfg = self.config.clone().unwrap_or_else(default_test_config);
         let dir = self
@@ -65,6 +72,39 @@ impl StarAdventurerWorld {
         self.config = Some(cfg);
         self.mount = Some(mount);
         self.service_handle = Some(handle);
+        self.apply_pending_seed().await;
+    }
+
+    /// POST the queued state seed to `/debug/v1/mock-state`. No-op when
+    /// no seed has been queued.
+    pub async fn apply_pending_seed(&mut self) {
+        if self.pending_seed.is_empty() {
+            return;
+        }
+        let handle = self
+            .service_handle
+            .as_ref()
+            .expect("service not started — cannot apply seed");
+        let url = format!("http://127.0.0.1:{}/debug/v1/mock-state", handle.port);
+        let body = serde_json::Value::Object(std::mem::take(&mut self.pending_seed));
+        let resp = reqwest::Client::new()
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .expect("seed endpoint reachable");
+        assert!(
+            resp.status().is_success(),
+            "seed POST failed: {}",
+            resp.status()
+        );
+    }
+
+    /// Queue a single seed value to be POSTed to `/debug/v1/mock-state`
+    /// the next time the service starts (or `apply_pending_seed` is
+    /// called explicitly).
+    pub fn queue_seed(&mut self, key: &str, value: serde_json::Value) {
+        self.pending_seed.insert(key.to_string(), value);
     }
 
     /// Fetch the mock-mode wire-command log from the running service's

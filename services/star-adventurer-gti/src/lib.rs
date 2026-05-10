@@ -194,21 +194,32 @@ impl BoundServer {
     }
 }
 
-/// HTTP router for the `/debug/v1/mock-commands` introspection endpoint.
+/// HTTP router for the mock-introspection / mock-seeding endpoints.
 ///
-/// Returns a JSON object `{ "commands": ["...", "..."] }` where each
-/// element is the wire frame as a UTF-8-decoded string (the protocol
-/// uses ASCII so the conversion is lossless). Used by BDD tests that
-/// need to assert which commands the driver issued without reaching
-/// into the mock state from outside the service process.
+/// `GET /debug/v1/mock-commands` — returns `{"commands": ["...", ...]}`,
+/// one wire-frame string per element. Used by BDD step bodies that
+/// assert on which commands the driver issued without reaching into
+/// the mock state from outside the service process.
+///
+/// `POST /debug/v1/mock-state` — seeds the mock's per-axis state for
+/// scenarios that need a non-default encoder position or motion flag
+/// before the driver connects. Body is a JSON object whose keys match
+/// the ones the BDD steps care about (any subset is allowed):
+/// ```json
+/// { "ra_ticks": 100000, "dec_ticks": -50000,
+///   "ra_running": true, "ra_goto": true,
+///   "dec_running": false }
+/// ```
+/// Returns `{"ok": true}` on success. Only available under
+/// `feature = "mock"`.
 #[cfg(feature = "mock")]
 fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Router {
     use axum::extract::State;
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use axum::Json;
     use serde_json::json;
 
-    async fn handler(
+    async fn commands_handler(
         State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
     ) -> Json<serde_json::Value> {
         let log = &state.lock().await.command_log;
@@ -219,8 +230,41 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
         Json(json!({ "commands": frames }))
     }
 
+    async fn seed_handler(
+        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
+        Json(body): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let mut s = state.lock().await;
+        if let Some(v) = body.get("ra_ticks").and_then(|v| v.as_i64()) {
+            s.ra.position_ticks = v as i32;
+        }
+        if let Some(v) = body.get("dec_ticks").and_then(|v| v.as_i64()) {
+            s.dec.position_ticks = v as i32;
+        }
+        if let Some(v) = body.get("ra_running").and_then(|v| v.as_bool()) {
+            s.ra.running = v;
+        }
+        if let Some(v) = body.get("ra_goto").and_then(|v| v.as_bool()) {
+            s.ra.goto = v;
+        }
+        if let Some(v) = body.get("dec_running").and_then(|v| v.as_bool()) {
+            s.dec.running = v;
+        }
+        if let Some(v) = body.get("dec_goto").and_then(|v| v.as_bool()) {
+            s.dec.goto = v;
+        }
+        if let Some(v) = body.get("ra_initialized").and_then(|v| v.as_bool()) {
+            s.ra.initialized = v;
+        }
+        if let Some(v) = body.get("dec_initialized").and_then(|v| v.as_bool()) {
+            s.dec.initialized = v;
+        }
+        Json(json!({"ok": true}))
+    }
+
     axum::Router::new()
-        .route("/debug/v1/mock-commands", get(handler))
+        .route("/debug/v1/mock-commands", get(commands_handler))
+        .route("/debug/v1/mock-state", post(seed_handler))
         .with_state(state)
 }
 
