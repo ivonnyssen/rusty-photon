@@ -38,6 +38,13 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
+rp-i18n = { workspace = true }
+# Required as direct deps because `fluent_language_loader!` and `fl!` check
+# the consumer crate's manifest at expand time and panic if the names are
+# absent — even though we use them only via rp-i18n's re-exports.
+i18n-embed = { workspace = true }
+i18n-embed-fl = { workspace = true }
+rust-embed = { workspace = true }
 axum = { workspace = true }
 
 [package.metadata.conformu]

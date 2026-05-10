@@ -5,8 +5,15 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
+    "//crates/rp-i18n:rp-i18n",
     "//crates/rp-tls:rp-tls",
 ]
+
+# i18n-config (used by i18n-embed-fl's fl!() and fluent_language_loader!()) reads
+# Cargo.toml at proc-macro expand time to locate the consumer crate's package
+# name and i18n.toml. Bazel sandboxes everything not listed here, so all three
+# files have to be in compile_data for the macros to see them.
+_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + ["i18n.toml", "Cargo.toml"]
 
 rust_library(
     name = "ppba-driver_lib",
@@ -23,8 +30,14 @@ rust_binary(
     name = "ppba-driver",
     srcs = ["src/main.rs"],
     aliases = aliases(),
+    compile_data = _I18N_ASSETS,
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    # rules_rust defaults CARGO_PKG_NAME to the Bazel target name; i18n-embed's
+    # `fl!` macro reads it via i18n-config to derive the .ftl filename. Pin it
+    # to the Cargo package name so the lookup matches `i18n/{lang}/ppba-driver.ftl`
+    # under both Cargo and Bazel.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     visibility = ["//visibility:public"],
     deps = [":ppba-driver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -37,6 +50,39 @@ rust_test(
     ),
     size = "small",
     crate = ":ppba-driver_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Static verification of the i18n/ tree: parses every locale's .ftl, asserts
+# key parity vs `en`, asserts placeholder parity. Catches translator
+# mistakes (parse errors, dropped keys, renamed { $var } placeholders) at
+# test time instead of runtime. Same code path runs under Cargo via
+# `cargo test -p ppba-driver --test translations`.
+rust_test(
+    name = "translations",
+    srcs = ["tests/translations.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # `data` (not `compile_data`) because the test reads the i18n/ tree at
+    # runtime via std::fs (see verify_translations_in_dir). RustEmbed's
+    # compile-time directory walk doesn't see Bazel sandbox symlinks for
+    # proc-macro contexts, so the verifier intentionally avoids it.
+    data = glob(["i18n/**/*.ftl"]),
+    edition = "2021",
+    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
+    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
+    # which is fixed at compile time to the package source dir.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -68,9 +114,14 @@ rust_binary(
     name = "ppba-driver_mock",
     srcs = ["src/main.rs"],
     aliases = aliases(),
+    compile_data = _I18N_ASSETS,
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    # See note on the non-mock `ppba-driver` target above; the mock binary is
+    # the one that triggered the original i18n lookup mismatch in CI because
+    # rules_rust used `ppba-driver_mock` as CARGO_PKG_NAME.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     deps = [":ppba-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 

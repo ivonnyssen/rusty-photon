@@ -142,6 +142,27 @@ cargo run -p ppba-switch -- -c config.json -l debug
 | `--server-port <PORT>` | Server port (overrides config) |
 | `-l, --log-level <LEVEL>` | Log level (trace, debug, info, warn, error) |
 
+### Localised CLI help
+
+`ppba-driver`'s `--help` output and the `--log-level` validation error are
+translated via Fluent (`crates/rp-i18n` + `i18n-embed`) — see
+[`docs/plans/i18n-cli-spike.md`](../plans/i18n-cli-spike.md). Locale is
+resolved at startup, before clap parses arguments. Precedence:
+
+1. `RP_LOCALE`
+2. `LC_ALL`, `LC_MESSAGES`, `LANG`
+3. OS-reported locale
+4. `en` (fallback)
+
+Translation files live under `services/ppba-driver/i18n/{locale}/ppba-driver.ftl`
+and are embedded into the binary at compile time. Currently shipped:
+`en` (source) and `de` (LLM-bootstrapped, marked `# machine-translated, needs review`).
+Unsupported locales fall back to `en`.
+
+Clap's own built-in messages ("Usage:", "Options:", "error: …") remain English
+in this spike — translating them is a separate decision tracked in
+[`docs/plans/i18n.md`](../plans/i18n.md).
+
 ## ASCOM Alpaca API
 
 ### Endpoints
