@@ -282,9 +282,36 @@ Removes:
 
 ## Order of execution
 
-`3a → 3b → 3c → 3d → 3e → 3f → 3g → 3h`. Each sub-phase ends in a
-green `cargo rail run --profile commit` and a single commit. PR is
-merged after 3h.
+`3a → 3b → 3c → 3d → 3e → 3f → 3g → 3h → 3i`. Each sub-phase ends in
+a single commit. PRs split as follows:
+
+* **PR (Phase 3a–3h)**: everything except BDD wiring. The driver is
+  fully functional through the ASCOM API; unit + integration coverage
+  reaches 90 tests across `lib`, `test_lib`, and `tests/property_tests.rs`.
+* **PR (Phase 3i)**: BDD step bodies + `@wip` removal. Adds a
+  feature-gated `/debug/v1/mock-commands` endpoint so scenarios that
+  assert on wire-protocol frames (e.g. `Then the mount should have
+  received command :K1`) can read the mock's `command_log` from the
+  test process. Roughly half of the 54 scenarios are API-only and can
+  remove `@wip` immediately; the other half land alongside the debug
+  endpoint.
+
+### 3i — BDD step bodies + remove all @wip tags
+
+Implementation:
+* `World::start_service`: spawn the service binary via
+  `bdd_infra::ServiceHandle`, build `Arc<dyn Telescope>` from the
+  AlpacaClient, store both on the World.
+* Mock-mode debug endpoint: under `feature = "mock"`, mount an axum
+  `/debug/v1/mock-commands` handler on the same router that returns
+  the mock's `command_log` as JSON. Gated tightly so production
+  builds never expose it.
+* Per-feature-file step bodies: replace each `todo!()` with the real
+  driver call (`mount.set_connected(true)`, `mount.slew_to_*`, ...).
+* Remove `@wip` from each feature file as its step bodies go green.
+
+Removes:
+* Every remaining `@wip` tag.
 
 ## References
 
