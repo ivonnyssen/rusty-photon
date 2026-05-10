@@ -4,7 +4,7 @@
 //! `:cmd<axis><payload>\r` frames, maintains per-axis state (position,
 //! motion mode, running flag, initialised flag, tracking), and emits
 //! well-formed `=...\r` / `!XX\r` replies. Phase 2 wires it through
-//! [`crate::ServerBuilder::with_transport`] for the BDD `tests/bdd.rs`
+//! [`crate::ServerBuilder::with_transport_factory`] for the BDD `tests/bdd.rs`
 //! harness. Phase 3 will additionally use it from a server-startup
 //! integration test (`tests/test_lib.rs`) and the ConformU integration
 //! target — neither file exists yet.
