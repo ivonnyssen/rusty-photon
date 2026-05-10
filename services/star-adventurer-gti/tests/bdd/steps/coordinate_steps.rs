@@ -142,18 +142,19 @@ async fn slewing_should_be_false(world: &mut StarAdventurerWorld) {
 
 #[then("Slewing should be true")]
 async fn slewing_should_be_true(world: &mut StarAdventurerWorld) {
-    // Brief poll: if Slewing depends on the polling task picking up
-    // the seeded `running=true` (e.g. the "RA axis running in goto
-    // mode" Given step), there's up to one polling-interval of
-    // latency. Retry for ~300ms before failing.
-    let deadline = std::time::Instant::now() + Duration::from_millis(300);
+    // Slewing depends on the polling task picking up the seeded
+    // `running=true` from the mock (e.g. the "RA axis running in
+    // goto mode" Given step). On slow CI runners that's ~hundreds
+    // of ms. 2s matches the budget the other "Slewing should
+    // eventually be ..." steps already use.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if world.mount().slewing().await.unwrap() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("Slewing did not become true within 300ms");
+    panic!("Slewing did not become true within 2s");
 }
 
 #[then(expr = "Slewing should eventually be false within {int} seconds")]
