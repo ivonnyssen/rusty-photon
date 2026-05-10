@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Star Adventurer GTi driver CLI.
 
 use std::path::PathBuf;
@@ -171,4 +172,156 @@ fn apply_cli_overrides(config: &mut Config, args: &Args) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use star_adventurer_gti::TransportConfig;
+
+    fn args() -> Args {
+        Args {
+            config: None,
+            transport: None,
+            port: None,
+            baud: None,
+            server_port: None,
+            log_level: Level::INFO,
+        }
+    }
+
+    #[test]
+    fn parse_log_level_accepts_canonical_levels() {
+        // The clap value-parser only forwards canonical strings.
+        // Non-strings reach via tests below.
+        assert_eq!(parse_log_level("trace").unwrap(), Level::TRACE);
+        assert_eq!(parse_log_level("debug").unwrap(), Level::DEBUG);
+        assert_eq!(parse_log_level("info").unwrap(), Level::INFO);
+        assert_eq!(parse_log_level("warn").unwrap(), Level::WARN);
+        assert_eq!(parse_log_level("error").unwrap(), Level::ERROR);
+    }
+
+    #[test]
+    fn parse_log_level_rejects_invalid() {
+        let err = parse_log_level("not-a-level").unwrap_err();
+        assert!(err.contains("not-a-level"));
+        assert!(err.contains("trace, debug, info, warn, error"));
+    }
+
+    #[test]
+    fn apply_cli_overrides_no_args_leaves_config_untouched() {
+        let mut cfg = Config::default();
+        let baseline_port = cfg.server.port;
+        apply_cli_overrides(&mut cfg, &args()).unwrap();
+        assert_eq!(cfg.server.port, baseline_port);
+    }
+
+    #[test]
+    fn apply_cli_overrides_switches_transport_kind_usb_to_udp() {
+        let mut cfg = Config::default();
+        // Default is USB; switch to UDP.
+        let mut a = args();
+        a.transport = Some("udp".into());
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        assert!(matches!(cfg.transport, TransportConfig::Udp(_)));
+    }
+
+    #[test]
+    fn apply_cli_overrides_keeps_existing_usb_block_when_transport_is_usb() {
+        // If the config already has a USB block, --transport=usb must
+        // not stomp on its tweaked fields.
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.port = "/dev/ttyUSB-tweaked".into();
+        }
+        let mut a = args();
+        a.transport = Some("usb".into());
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        if let TransportConfig::Usb(usb) = &cfg.transport {
+            assert_eq!(usb.port, "/dev/ttyUSB-tweaked");
+        } else {
+            panic!("transport must remain Usb");
+        }
+    }
+
+    #[test]
+    fn apply_cli_overrides_rejects_unknown_transport_kind() {
+        let mut cfg = Config::default();
+        let mut a = args();
+        a.transport = Some("bluetooth".into());
+        let err = apply_cli_overrides(&mut cfg, &a).unwrap_err();
+        assert!(err.to_string().contains("bluetooth"));
+    }
+
+    #[test]
+    fn apply_cli_overrides_port_sets_usb_port_path() {
+        let mut cfg = Config::default();
+        let mut a = args();
+        a.port = Some("/dev/ttyACM7".into());
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        if let TransportConfig::Usb(usb) = &cfg.transport {
+            assert_eq!(usb.port, "/dev/ttyACM7");
+        } else {
+            panic!("transport must remain Usb");
+        }
+    }
+
+    #[test]
+    fn apply_cli_overrides_port_sets_udp_address_when_udp_transport() {
+        let mut cfg = Config {
+            transport: TransportConfig::Udp(Default::default()),
+            ..Config::default()
+        };
+        let mut a = args();
+        // UdpConfig.address is an IpAddr -- bare IP, no port suffix.
+        a.port = Some("10.0.0.1".into());
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        if let TransportConfig::Udp(udp) = &cfg.transport {
+            assert_eq!(udp.address.to_string(), "10.0.0.1");
+        } else {
+            panic!("transport must remain Udp");
+        }
+    }
+
+    #[test]
+    fn apply_cli_overrides_port_with_invalid_udp_address_returns_err() {
+        let mut cfg = Config {
+            transport: TransportConfig::Udp(Default::default()),
+            ..Config::default()
+        };
+        let mut a = args();
+        a.port = Some("not-an-address".into());
+        assert!(apply_cli_overrides(&mut cfg, &a).is_err());
+    }
+
+    #[test]
+    fn apply_cli_overrides_baud_only_applies_to_usb() {
+        let mut cfg = Config::default();
+        let mut a = args();
+        a.baud = Some(57600);
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        if let TransportConfig::Usb(usb) = &cfg.transport {
+            assert_eq!(usb.baud_rate, 57600);
+        } else {
+            panic!("transport must remain Usb");
+        }
+
+        // Same flag against a UDP transport must be a no-op (not an error).
+        let mut udp_cfg = Config {
+            transport: TransportConfig::Udp(Default::default()),
+            ..Config::default()
+        };
+        apply_cli_overrides(&mut udp_cfg, &a).unwrap();
+        assert!(matches!(udp_cfg.transport, TransportConfig::Udp(_)));
+    }
+
+    #[test]
+    fn apply_cli_overrides_server_port_sets_server_port() {
+        let mut cfg = Config::default();
+        let mut a = args();
+        a.server_port = Some(54321);
+        apply_cli_overrides(&mut cfg, &a).unwrap();
+        assert_eq!(cfg.server.port, 54321);
+    }
 }
