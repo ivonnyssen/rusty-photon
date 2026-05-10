@@ -149,17 +149,18 @@ async fn slewing_should_be_false(world: &mut StarAdventurerWorld) {
 async fn slewing_should_be_true(world: &mut StarAdventurerWorld) {
     // Slewing depends on the polling task picking up the seeded
     // `running=true` from the mock (e.g. the "RA axis running in
-    // goto mode" Given step). On slow CI runners that's ~hundreds
-    // of ms. 2s matches the budget the other "Slewing should
-    // eventually be ..." steps already use.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    // goto mode" Given step). On a contended CI runner (e.g. a
+    // parallel coverage job competing for cores) that's still well
+    // under a second, but 2s has flaked. 5s matches the budget the
+    // other "Slewing should eventually be ..." steps already use.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if world.mount().slewing().await.unwrap() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("Slewing did not become true within 2s");
+    panic!("Slewing did not become true within 5s");
 }
 
 #[then(expr = "Slewing should eventually be false within {int} seconds")]
