@@ -16,7 +16,11 @@ rust_library(
 
 # Variant with rp-harness feature enabled. rp's BDD tests use the
 # rp_harness module (OmniSim, rp config builder, webhook receiver,
-# test orchestrator, MCP client).
+# test orchestrator, MCP client) and the sky_survey_camera_harness
+# module (SkyView stub, sky-survey-camera config builder, process
+# spawner). The rp-harness feature gates the dep on rp-fits, which
+# is used by both the plate-solver stub's CRVAL round-trip and the
+# SkyView stub's WCS-bearing FITS minting.
 rust_library(
     name = "bdd-infra_rp_harness",
     srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
@@ -26,7 +30,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = ["//crates/rp-fits:rp-fits"] + all_crate_deps(normal = True),
 )
 
 # Helper binary used by bdd-infra's own integration tests. Referenced via the

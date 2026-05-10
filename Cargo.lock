@@ -126,7 +126,7 @@ dependencies = [
 [[package]]
 name = "ascom-alpaca"
 version = "1.0.0-beta.10"
-source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=integration#63f93efbac18386890f48b7b09d6731e8aa4c548"
+source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=integration#e0431c1f48360d3a3fa217a69c941ec80d93827c"
 dependencies = [
  "async-fn-stream",
  "async-trait",
@@ -398,6 +398,7 @@ dependencies = [
  "libc",
  "reqwest 0.13.2",
  "rmcp",
+ "rp-fits",
  "serde_json",
  "tempfile",
  "tokio",

@@ -48,6 +48,29 @@ pub enum StubBehavior {
     /// to count the exact number of solves the loop will make.
     /// `responses` must be non-empty.
     Sequence(Vec<CannedWcs>),
+    /// Read the request's `fits_path`, parse `CRVAL1` / `CRVAL2` from
+    /// the FITS primary header, and return them as the solved
+    /// `ra_center` / `dec_center`. The CRVAL round-trip models what
+    /// an honest plate solver on a WCS-bearing cutout would do.
+    /// Other fields (`pixel_scale_arcsec`, `rotation_deg`, `solver`)
+    /// come from the embedded `template`. If CRVAL1/2 are missing
+    /// the handler returns a `solve_failed` error envelope so the
+    /// test fails loudly rather than silently degrading to a fixed
+    /// answer.
+    ///
+    /// **Note on the rp closed-loop centering BDD.** That scenario
+    /// does *not* use this variant: rp's persistence layer writes
+    /// its own FITS from the camera's `ImageArray` and strips any
+    /// camera-side WCS, so the `fits_path` rp hands to the stub has
+    /// no `CRVAL1/2` to echo. The closed-loop scenarios use
+    /// [`Sequence`] instead, feeding pre-computed solve outcomes
+    /// in the order the loop will request them. This variant
+    /// remains useful for unit tests / future flows that hand the
+    /// stub a WCS-bearing FITS directly (e.g. paired with
+    /// [`crate::sky_survey_camera_harness::SkyViewStub`]).
+    ///
+    /// [`Sequence`]: StubBehavior::Sequence
+    EchoFitsCenter { template: CannedWcs },
     /// Return a structured error envelope. `code` matches the
     /// wrapper's `ErrorCode` (`invalid_request`, `fits_not_found`,
     /// `solve_failed`, `solve_timeout`, `internal`); the appropriate
@@ -159,6 +182,13 @@ async fn solve_handler(
     State(state): State<StubState>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
+    // Extract `fits_path` *before* moving `body` into the request log
+    // — only the `EchoFitsCenter` branch needs it, but borrowing
+    // here avoids cloning the whole `Value` for every request shape.
+    let fits_path_owned = body
+        .get("fits_path")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     state.requests.write().await.push(body);
 
     match state.behavior {
@@ -170,6 +200,28 @@ async fn solve_handler(
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 .min(responses.len() - 1);
             canned_response(&responses[idx])
+        }
+        StubBehavior::EchoFitsCenter { ref template } => {
+            let fits_path = fits_path_owned.as_deref().unwrap_or("");
+            match read_crval_from_fits(fits_path) {
+                Ok((ra, dec)) => canned_response(&CannedWcs {
+                    ra_center: ra,
+                    dec_center: dec,
+                    pixel_scale_arcsec: template.pixel_scale_arcsec,
+                    rotation_deg: template.rotation_deg,
+                    solver: template.solver.clone(),
+                }),
+                Err(reason) => {
+                    let body = Json(serde_json::json!({
+                        "error": "solve_failed",
+                        "message": format!(
+                            "EchoFitsCenter could not read CRVAL1/CRVAL2 from {}: {}",
+                            fits_path, reason
+                        ),
+                    }));
+                    (StatusCode::UNPROCESSABLE_ENTITY, body).into_response()
+                }
+            }
         }
         StubBehavior::Error {
             ref code,
@@ -201,4 +253,137 @@ fn canned_response(wcs: &CannedWcs) -> axum::response::Response {
         "solver": wcs.solver,
     }))
     .into_response()
+}
+
+fn read_crval_from_fits(path: &str) -> Result<(f64, f64), String> {
+    use rp_fits::reader::read_primary_keyword;
+    use rp_fits::writer::KeywordValue;
+    if path.is_empty() {
+        return Err("missing fits_path in request body".to_string());
+    }
+    // Read the file once into memory; the keyword reader consumes its
+    // input stream, so two separate Cursor reads over the same buffer
+    // is the cleanest way to fetch both CRVAL1 and CRVAL2.
+    let bytes = std::fs::read(path).map_err(|e| format!("open: {e}"))?;
+    let ra = read_primary_keyword(std::io::Cursor::new(&bytes), "CRVAL1")
+        .map_err(|e| format!("read CRVAL1: {e}"))?
+        .ok_or_else(|| "CRVAL1 absent".to_string())?;
+    let dec = read_primary_keyword(std::io::Cursor::new(&bytes), "CRVAL2")
+        .map_err(|e| format!("read CRVAL2: {e}"))?
+        .ok_or_else(|| "CRVAL2 absent".to_string())?;
+    let ra_deg = match ra {
+        KeywordValue::Float(v) => v,
+        KeywordValue::Int(v) => v as f64,
+        other => return Err(format!("CRVAL1 not numeric: {other:?}")),
+    };
+    let dec_deg = match dec {
+        KeywordValue::Float(v) => v,
+        KeywordValue::Int(v) => v as f64,
+        other => return Err(format!("CRVAL2 not numeric: {other:?}")),
+    };
+    Ok((ra_deg, dec_deg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn template() -> CannedWcs {
+        CannedWcs {
+            ra_center: 0.0,
+            dec_center: 0.0,
+            pixel_scale_arcsec: 1.05,
+            rotation_deg: 0.0,
+            solver: "stub".to_string(),
+        }
+    }
+
+    /// Build a 1×1 BITPIX=16 FITS with the requested CRVAL header
+    /// records. `with_crval = false` produces a header that's missing
+    /// CRVAL1/CRVAL2, used to drive the absent-keyword error path.
+    /// Local to the test module so the stub's no-production-crate-dep
+    /// invariant stays intact.
+    fn minimal_fits(with_crval: Option<(f64, f64)>) -> Vec<u8> {
+        const BLOCK: usize = 2880;
+        fn pad(s: &str) -> String {
+            let mut p = format!("{s:<80}");
+            p.truncate(80);
+            p
+        }
+        let mut header = String::new();
+        header.push_str(&pad("SIMPLE  =                    T"));
+        header.push_str(&pad("BITPIX  =                   16"));
+        header.push_str(&pad("NAXIS   =                    2"));
+        header.push_str(&pad("NAXIS1  =                    1"));
+        header.push_str(&pad("NAXIS2  =                    1"));
+        if let Some((ra, dec)) = with_crval {
+            header.push_str(&pad(&format!("CRVAL1  = {ra:>20.10E}")));
+            header.push_str(&pad(&format!("CRVAL2  = {dec:>20.10E}")));
+        }
+        header.push_str(&pad("END"));
+        while !header.len().is_multiple_of(BLOCK) {
+            header.push(' ');
+        }
+        let mut bytes = header.into_bytes();
+        bytes.extend_from_slice(&0i16.to_be_bytes());
+        while !bytes.len().is_multiple_of(BLOCK) {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[tokio::test]
+    async fn echo_fits_center_returns_crval_from_request_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("img.fits");
+        std::fs::write(&fits_path, minimal_fits(Some((12.5, -34.5)))).unwrap();
+
+        let stub = PlateSolverStub::start(StubBehavior::EchoFitsCenter {
+            template: template(),
+        })
+        .await;
+
+        let resp: Value = reqwest::Client::new()
+            .post(format!("{}/api/v1/solve", stub.url))
+            .json(&serde_json::json!({ "fits_path": fits_path.to_string_lossy() }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert!(
+            (resp["ra_center"].as_f64().unwrap_or(f64::NAN) - 12.5).abs() < 1e-6,
+            "response = {resp}"
+        );
+        assert!(
+            (resp["dec_center"].as_f64().unwrap_or(f64::NAN) - -34.5).abs() < 1e-6,
+            "response = {resp}"
+        );
+        assert_eq!(resp["pixel_scale_arcsec"], 1.05);
+    }
+
+    #[tokio::test]
+    async fn echo_fits_center_returns_solve_failed_when_crval_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("img.fits");
+        std::fs::write(&fits_path, minimal_fits(None)).unwrap();
+
+        let stub = PlateSolverStub::start(StubBehavior::EchoFitsCenter {
+            template: template(),
+        })
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{}/api/v1/solve", stub.url))
+            .json(&serde_json::json!({ "fits_path": fits_path.to_string_lossy() }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 422);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "solve_failed");
+        assert!(body["message"].as_str().unwrap().contains("CRVAL"));
+    }
 }

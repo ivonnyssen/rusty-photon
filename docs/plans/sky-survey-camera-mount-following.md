@@ -210,42 +210,49 @@ second crate eventually needs one, the `MountStubBehavior` /
 
 ### Phase 4 — Closed-loop centering BDD
 
-Status: **parked, blocked on Phases 6c-2 and 6c-3.** As of
-2026-05-03, code-side audit confirms neither has landed:
+Status: **ready to start.** Both consumer-side phases have landed on
+`main`:
 
-- **6c-2** (`plate_solve` MCP tool in `rp`) — `services/rp/src/plate_solver.rs`
-  doesn't exist; `services/rp/Cargo.toml` does not depend on the
-  `plate-solver` crate; no `plate_solve` tool registered in
-  `services/rp/src/mcp.rs`; no `plate_solve.feature` in
-  `services/rp/tests/features/`.
-- **6c-3** (`center_on_target` compound tool) —
-  `services/rp/src/imaging/tools/center_on_target.rs` doesn't exist;
-  the only references in `services/rp/src/` are two doc-comments
-  describing it as *planned* (`imaging/mod.rs:9`,
-  `imaging/tools/mod.rs:9`).
+- **6c-2** (`plate_solve` MCP tool in `rp`) — shipped in #156
+  (`415c934`). `services/rp/src/mcp/built_in/plate_solve.rs` and
+  `services/rp/tests/features/plate_solve.feature` are in place.
+- **6c-3** (`center_on_target` compound tool) — shipped in #182
+  (`9ba717c`). `services/rp/src/imaging/tools/center_on_target.rs`,
+  `services/rp/src/mcp/built_in/center_on_target.rs`, and
+  `services/rp/tests/features/center_on_target.feature` (with
+  `services/rp/tests/bdd/steps/center_on_target_steps.rs`) are in
+  place. The 6c-3 BDD currently fakes plate-solve convergence via a
+  synthetic adapter (`crates/bdd-infra/src/rp_harness/plate_solver_stub.rs`);
+  this phase replaces that for the closed-loop variant.
 
-Phase 4 needs both: 6c-2 because the centering scenario calls
-`rp.plate_solve` to wrap the plate-solver service's HTTP API, and
-6c-3 because the scenario asserts convergence through
-`rp.center_on_target`. Phases 1–3 deliver the simulator side
-(camera-follows-mount + injected offset); Phase 4 unblocks once
-both consumer-side phases land. No code in this phase yet.
+Phases 1–3 delivered the simulator side; this phase wires the full
+chain — OmniSim Telescope + `sky-survey-camera` (follow mode +
+injected offset) + plate-solver (cutout-WCS round-trip) +
+`rp.center_on_target` — and asserts the loop converges.
 
-**Cheaper alternative if the orchestrator side is delayed
-indefinitely.** A "Phase 4-lite" BDD could drive the centering loop
-manually from test steps — `rp.slew` → camera expose → direct HTTP
-call to `plate-solver` → `rp.sync_mount` → repeat — exercising the
-camera-follows-mount integration without touching `rp.center_on_target`
-or `rp.plate_solve`. Worth considering only if 6c-2/6c-3 stall;
-otherwise the production-shaped variant is preferred.
-
-- [ ] New feature file `services/rp/tests/features/center_on_target_e2e.feature` (or appended to `center_on_target.feature` if 6c-3 already created it). One scenario:
+- [x] New scenarios appended to `services/rp/tests/features/center_on_target.feature` (which 6c-3 created). One explicit scenario + one Scenario Outline (3 rows), all tagged `@e2e-centering`:
   - **Given** OmniSim is running and exposes a Telescope at index 0
-  - **And** `sky-survey-camera` is configured to follow that Telescope with `offset_ra_arcsec = 60` and `offset_dec_arcsec = -45`
-  - **And** `plate-solver` is running with `mock_astap` returning a deterministic synthetic `.wcs` for the requested cutout (the mock needs to be told the cutout center; do this by parsing the `fits_path` argv and reading the FITS header SkyView wrote, *or* by extending `mock_astap` with a `MOCK_ASTAP_RESPONSE_FROM_FITS=true` mode that echoes the input frame's CRVAL1/CRVAL2)
-  - **And** `rp` is configured with that mount, that camera, and that plate solver
-  - **When** the BDD calls `center_on_target { ra: 83.8221, dec: -5.3911, tolerance_arcsec: 5, max_attempts: 3 }`
-  - **Then** the loop converges in ≤ 2 iterations (sync corrects the offset on iteration 1; iteration 2 confirms residual within tolerance), `final_error_arcsec` ≤ 5, and the mount's reported RA/Dec is within tolerance of the target.
+  - **And** the SkyView stub is up
+  - **And** `sky-survey-camera` is configured to follow that Telescope with `offset_ra_arcsec = 0` and `offset_dec_arcsec = 0` (the persistent offset is unused by these scenarios — see "Why a one-shot override" below)
+  - **And** the plate-solver stub returns a `Sequence` of WCS responses: first call = the off-target coordinates; second call = the requested target
+  - **And** `rp` is configured with that mount, that camera, and that plate-solver stub
+  - **When** the test pre-syncs the mount to the requested target
+  - **And** the test `POST`s to `sky-survey-camera`'s `/sky-survey/position` to arm a one-shot override at the off-target coordinates (F7)
+  - **And** the test calls `center_on_target` with a small `tolerance_arcsec` (5)
+  - **Then** the loop converges in 2 iterations: iter 0 captures with the override, plate-solves to the off-target coords, syncs the mount, slews back to the requested target (action = `sync`); iter 1 captures fresh (override consumed, mount-read returns the target after the slew), plate-solves to the target, residual ≈ 0 (action = `converged`).
+
+  **Why a one-shot override instead of the persistent
+  `offset_*_arcsec`.** The persistent offset (F5) is added on every
+  mount-read, so after `sync_mount` + `slew_to(target)` the camera
+  re-reads the mount, applies the same persistent offset, and the
+  residual stays at `|offset|` indefinitely — the loop never
+  converges to zero. The one-shot override (F7) decouples
+  "first-iteration miss" from "subsequent-iteration ground truth":
+  iter 0 sees the override, iter 1 onwards sees the mount.
+  That's the convergence pattern the centering loop is designed
+  for — analogous to first-iteration cone-error correction in real
+  rigs, where the post-sync slew puts the camera optical axis on
+  target.
 - [ ] Decide on `mock_astap` extension vs. a dedicated `center_on_target` plate-solver mock. The cheapest path is to teach `mock_astap` to read the `fits_path` argument and echo the FITS's `CRVAL1`/`CRVAL2` into the `.wcs` it writes — that way the mock "solves" whatever pointing the camera served, which is exactly what an honest plate solver would do for a SkyView cutout. Document the new mode in the plate-solver plan / service doc as a follow-up.
 - [ ] Confirm the OmniSim Telescope responds to `slew_to_coordinates_async` and reflects the new RA/Dec via `right_ascension` / `declination` in the way `do_slew_blocking` expects. The `mount.feature` scenarios already exercise this, so it should hold.
 - [ ] Tag the scenario `@e2e-centering` so it can be skipped when run-time is constrained, mirroring `@requires-astap`'s opt-in posture. The PR-required `cargo nextest` can include or exclude based on cost, decided when the scenario's wall-clock cost is measured.

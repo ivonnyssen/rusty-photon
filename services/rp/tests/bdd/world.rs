@@ -17,6 +17,7 @@ use bdd_infra::rp_harness::{
     MountConfig, OmniSimHandle, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub,
     ReceivedEvent, RpConfigBuilder, TestOrchestrator, WebhookReceiver,
 };
+use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -173,6 +174,24 @@ pub struct RpWorld {
     /// the eviction and cross-restart scenarios that need to reference
     /// a doc captured several steps ago.
     pub remembered_document_ids: std::collections::HashMap<String, String>,
+
+    // --- Phase 4 closed-loop centering: sky-survey-camera follow mode ---
+    /// Running `sky-survey-camera` process when the centering scenario
+    /// uses it as `main-cam`. Held on the world so its child stays
+    /// alive for the scenario duration; dropped (which sends SIGTERM
+    /// in `ServiceHandle::drop`) at scenario teardown. **Must be
+    /// declared above `sky_survey_camera_cache`** — Rust drops struct
+    /// fields top-down, so the camera process must die *before* its
+    /// cache directory is removed (otherwise an in-flight write would
+    /// race the directory removal).
+    pub sky_survey_camera: Option<ServiceHandle>,
+    /// `TempDir` guard for sky-survey-camera's cache. Removes the
+    /// directory tree on drop, preventing accumulation of stale
+    /// cache artefacts across scenarios / CI runs.
+    pub sky_survey_camera_cache: Option<tempfile::TempDir>,
+    /// In-process SkyView stub serving cutouts to `sky-survey-camera`.
+    /// Held on the world so the axum task isn't cancelled mid-scenario.
+    pub sky_view_stub: Option<SkyViewStub>,
 }
 
 impl RpWorld {

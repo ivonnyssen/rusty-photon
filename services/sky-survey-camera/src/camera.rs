@@ -89,6 +89,15 @@ pub struct DeviceState {
     /// `POST` writes are visible immediately; in `Telescope` mode the
     /// exposure pipeline writes back after a successful mount read.
     pub last_snapshot: Arc<SharedPointing>,
+    /// Optional one-shot pointing override armed by
+    /// `POST /sky-survey/position` while in follow mode. The next
+    /// `StartExposure` (light) takes the value, uses it as the
+    /// snapshot, and clears the field. Subsequent exposures resume
+    /// follow-mode reads from the mount. Used by BDD scenarios to
+    /// inject "the camera saw something different from where the
+    /// mount thinks it is" on a single capture (F7); the standard
+    /// follow-mode read path is otherwise unchanged.
+    pub next_pointing_override: Mutex<Option<PointingState>>,
     pub bin_x: AtomicU8,
     pub bin_y: AtomicU8,
     pub num_x: AtomicU32,
@@ -163,6 +172,7 @@ impl SkySurveyCamera {
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
             survey_client,
+            next_pointing_override: Mutex::new(None),
         };
         Self {
             state: Arc::new(state),
@@ -188,8 +198,13 @@ impl SkySurveyCamera {
 /// bump that counter, so a late-completing task whose generation
 /// no longer matches must NOT publish its outcome — that would
 /// resurrect a cancelled exposure.
-async fn run_exposure(state: Arc<DeviceState>, light: bool, gen: u64) {
-    let result = run_exposure_inner(&state, light).await;
+async fn run_exposure(
+    state: Arc<DeviceState>,
+    light: bool,
+    gen: u64,
+    pointing_override: Option<PointingState>,
+) {
+    let result = run_exposure_inner(&state, light, pointing_override).await;
     if state.exposure_generation.load(Ordering::Acquire) != gen {
         debug!(
             ?gen,
@@ -215,6 +230,7 @@ async fn run_exposure(state: Arc<DeviceState>, light: bool, gen: u64) {
 async fn run_exposure_inner(
     state: &Arc<DeviceState>,
     light: bool,
+    pointing_override: Option<PointingState>,
 ) -> Result<ExposureOutcome, String> {
     let bx = state.bin_x.load(Ordering::Acquire);
     let by = state.bin_y.load(Ordering::Acquire);
@@ -249,11 +265,21 @@ async fn run_exposure_inner(
     // in static mode this is the cached `SharedPointing`. After a
     // successful follow-mode read, write back to `last_snapshot` so
     // `GET /sky-survey/position` reflects what the camera last saw.
-    let pointing = state
-        .pointing_source
-        .snapshot()
-        .await
-        .map_err(|e| format!("mount read failed: {e}"))?;
+    //
+    // F7: when a one-shot override was armed by `POST
+    // /sky-survey/position` in follow mode, `start_exposure` already
+    // consumed it (before spawning this task — see comment there);
+    // the captured value is passed in via `pointing_override` so a
+    // POST that arrives while THIS exposure is still simulating its
+    // duration only affects the *next* exposure (P7).
+    let pointing = match pointing_override {
+        Some(p) => p,
+        None => state
+            .pointing_source
+            .snapshot()
+            .await
+            .map_err(|e| format!("mount read failed: {e}"))?,
+    };
     if state.pointing_source.is_follow_mode() {
         state.last_snapshot.store(pointing).await;
     }
@@ -596,9 +622,25 @@ impl Camera for SkySurveyCamera {
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel)
             + 1;
+        // Consume the F7 one-shot pointing override here, *before*
+        // spawning the exposure task — not inside the task — so that
+        // a `POST /sky-survey/position` issued while this exposure is
+        // mid-flight (i.e. during the simulated exposure sleep) only
+        // affects the *next* `StartExposure`, matching P7. The
+        // captured value is threaded into the spawned task as an
+        // explicit parameter.
+        let override_for_exposure = if light {
+            self.state
+                .next_pointing_override
+                .lock()
+                .expect("next_pointing_override poisoned")
+                .take()
+        } else {
+            None
+        };
         debug!(?duration, light, gen, "exposure started");
         let state = Arc::clone(&self.state);
-        tokio::spawn(run_exposure(state, light, gen));
+        tokio::spawn(run_exposure(state, light, gen, override_for_exposure));
         Ok(())
     }
 
@@ -1016,7 +1058,7 @@ mod tests {
         cam.state.exposure_generation.fetch_add(1, Ordering::AcqRel);
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         // Light=false synthesises a zero frame without network I/O.
-        run_exposure(Arc::clone(&cam.state), false, 0).await;
+        run_exposure(Arc::clone(&cam.state), false, 0, None).await;
         // image_ready stays false because the generation check
         // triggered an early return.
         assert!(!cam.state.image_ready.load(Ordering::Acquire));
@@ -1124,7 +1166,7 @@ mod tests {
         let cam = fake_camera();
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         let gen = cam.state.exposure_generation.load(Ordering::Acquire);
-        run_exposure(Arc::clone(&cam.state), false, gen).await;
+        run_exposure(Arc::clone(&cam.state), false, gen, None).await;
         assert!(cam.state.image_ready.load(Ordering::Acquire));
         let img = cam.state.last_image.lock().unwrap();
         let outcome = img.as_ref().unwrap();

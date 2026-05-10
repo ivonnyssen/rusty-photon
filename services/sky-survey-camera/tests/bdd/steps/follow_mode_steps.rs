@@ -99,21 +99,3 @@ async fn drive_exposure_then_check_position(world: &mut SkySurveyCameraWorld, ra
         "expected Dec ≈ {dec}, got {actual_dec}"
     );
 }
-
-#[then(expr = "the response body identifies follow mode")]
-fn response_body_identifies_follow_mode(world: &mut SkySurveyCameraWorld) {
-    let body_text = world
-        .last_http_body
-        .as_deref()
-        .expect("no HTTP body captured");
-    let parsed: Value = serde_json::from_str(body_text).unwrap_or_else(|e| {
-        panic!("response body is not JSON: {e} (body: {body_text})");
-    });
-    let error = parsed["error"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing 'error' field in body: {body_text}"));
-    assert_eq!(
-        error, "follow_mode",
-        "expected error=follow_mode, got error={error} (body: {body_text})"
-    );
-}

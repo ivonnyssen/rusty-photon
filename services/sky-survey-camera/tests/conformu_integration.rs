@@ -152,9 +152,19 @@ async fn spawn_stub_skyview() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn parse_pixels(s: Option<&str>) -> Option<(u32, u32)> {
+    // Cap at the same upper bound `synthetic_fits` enforces
+    // internally. ConformU's auto-generated test sweeps are bounded
+    // (largest call is ~1024×1024), so this cap doesn't change
+    // behaviour — it just turns a malformed `Pixels=99999999,…`
+    // query into a fallback to defaults rather than a stub-task
+    // OOM via `synthetic_fits`'s assert.
+    const MAX_PIXELS_PER_AXIS: u32 = 8192;
     let raw = s?;
     let mut parts = raw.split(',');
     let w = parts.next()?.trim().parse::<u32>().ok()?;
     let h = parts.next()?.trim().parse::<u32>().ok()?;
+    if w == 0 || h == 0 || w > MAX_PIXELS_PER_AXIS || h > MAX_PIXELS_PER_AXIS {
+        return None;
+    }
     Some((w, h))
 }
