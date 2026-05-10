@@ -333,7 +333,14 @@ impl SkySurveyCameraConfig {
 /// [`crate::rp_harness::RpConfigBuilder`].
 pub async fn start_sky_survey_camera(config: &SkySurveyCameraConfig) -> ServiceHandle {
     // Cache directory must exist before the camera tries to connect.
-    let _ = std::fs::create_dir_all(&config.cache_dir);
+    // Fail loudly here rather than letting the camera surface a less
+    // actionable connect-time error.
+    std::fs::create_dir_all(&config.cache_dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to create sky-survey-camera cache_dir {}: {e}",
+            config.cache_dir.display()
+        )
+    });
     let path = write_temp_config_file("sky-survey-camera-bdd-config", &config.to_json()).await;
     ServiceHandle::start("sky-survey-camera", &path).await
 }

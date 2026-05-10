@@ -481,18 +481,20 @@ do not apply in static mode.
   returns the most recently snapshotted pointing (mount-reported +
   offset, or the override if it was just consumed).
 - **F7.** A one-shot pointing override armed by `POST
-  /sky-survey/position` in follow mode is consumed by the next
-  light `StartExposure` (`Light = true`): the exposure pipeline
-  takes the override, uses it as that exposure's `PointingState`
-  (rotation falls back to `pointing.initial_rotation_deg` when not
-  supplied), writes it to `last_snapshot` so `GET` reflects it, and
-  clears the override. Subsequent exposures resume reading the
-  mount per F1. Dark exposures (`Light = false`) do NOT consume the
-  override (per F1, dark frames skip the snapshot/mount-read path
-  entirely). The override is intended as a test affordance for
-  injecting "the camera saw something different from where the
-  mount thinks it is" on a single capture; production deployments
-  rarely use it.
+  /sky-survey/position` in follow mode is consumed at the next
+  `StartExposure` call (`Light = true`) — captured *before* the
+  spawned exposure task runs, so a POST issued while an exposure is
+  mid-flight only takes effect on the *following* exposure (P7).
+  The exposure pipeline uses the override as that exposure's
+  `PointingState` (missing `rotation_deg` keeps the most-recently-
+  snapshotted rotation, matching P3), writes it to `last_snapshot`
+  so `GET` reflects it, and clears the override. Subsequent
+  exposures resume reading the mount per F1. Dark exposures (`Light
+  = false`) do NOT consume the override (per F1, dark frames skip
+  the snapshot/mount-read path entirely). The override is intended
+  as a test affordance for injecting "the camera saw something
+  different from where the mount thinks it is" on a single capture;
+  production deployments rarely use it.
 
 ## Architecture
 
