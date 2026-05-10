@@ -100,12 +100,14 @@ rust_test(
         ":rp",
         "Cargo.toml",
         "//services/calibrator-flats:calibrator-flats",
+        "//services/sky-survey-camera:sky-survey-camera",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/rp",
         "CALIBRATOR_FLATS_BINARY": "$(rootpath //services/calibrator-flats:calibrator-flats)",
         "RP_BINARY": "$(rootpath :rp)",
+        "SKY_SURVEY_CAMERA_BINARY": "$(rootpath //services/sky-survey-camera:sky-survey-camera)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
