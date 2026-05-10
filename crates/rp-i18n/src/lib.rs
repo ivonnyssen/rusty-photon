@@ -252,6 +252,30 @@ where
 mod tests {
     use super::*;
 
+    /// `I18nAssets` fixture that reports zero files. Used to drive
+    /// `select_best` / `init` along the "no bundles to load" path without
+    /// constructing real Fluent resources.
+    struct EmptyAssets;
+    impl I18nAssets for EmptyAssets {
+        fn get_files(&self, _file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
+            Vec::new()
+        }
+
+        fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
+            Box::new(std::iter::empty())
+        }
+
+        fn subscribe_changed(
+            &self,
+            _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
+        ) -> Result<Box<dyn i18n_embed::Watcher + Send + Sync + 'static>, i18n_embed::I18nEmbedError>
+        {
+            struct NoopWatcher;
+            impl i18n_embed::Watcher for NoopWatcher {}
+            Ok(Box::new(NoopWatcher))
+        }
+    }
+
     #[test]
     fn parse_locale_strips_encoding_and_normalises_separator() {
         let id = parse_locale("de_DE.UTF-8");
@@ -308,6 +332,28 @@ mod tests {
     }
 
     #[test]
+    fn select_best_against_empty_assets_returns_load_error() {
+        // Pins the variant select_best emits when the negotiated bundle has
+        // nothing to load. The double-init test below relies on this returning
+        // *some* error, but doesn't assert which one — so a refactor that
+        // swapped Load ↔ Available would slip through the suite. This guards
+        // the contract direct callers (consumer `main()` log arms) depend on.
+        let loader =
+            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let requested: LanguageIdentifier = "de".parse().unwrap();
+        let result = select_best(&loader, &EmptyAssets, &requested);
+        match result {
+            Err(LoadError::Load { reason }) => {
+                assert!(
+                    !reason.is_empty(),
+                    "LoadError::Load must carry the underlying i18n_embed reason"
+                );
+            }
+            other => panic!("expected Err(LoadError::Load{{..}}), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn double_init_returns_existing_arc_for_consistency() {
         // Each test runs on its own thread, so ACTIVE_LOADER is empty here.
         // We don't have real Fluent assets in this crate (they live in each
@@ -315,29 +361,6 @@ mod tests {
         // the loader stays empty, but `set` succeeds the first time and fails
         // the second. The contract is that the *returned* Arc on the second
         // call points at the same loader fl_active sees — not a fresh one.
-
-        struct EmptyAssets;
-        impl I18nAssets for EmptyAssets {
-            fn get_files(&self, _file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
-                Vec::new()
-            }
-
-            fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
-                Box::new(std::iter::empty())
-            }
-
-            fn subscribe_changed(
-                &self,
-                _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
-            ) -> Result<
-                Box<dyn i18n_embed::Watcher + Send + Sync + 'static>,
-                i18n_embed::I18nEmbedError,
-            > {
-                struct NoopWatcher;
-                impl i18n_embed::Watcher for NoopWatcher {}
-                Ok(Box::new(NoopWatcher))
-            }
-        }
 
         // EmptyAssets has no .ftl files, so the first init's select_best
         // returns Err(LoadError::Load). The second init's short-circuit

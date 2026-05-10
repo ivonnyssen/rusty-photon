@@ -480,4 +480,163 @@ mod tests {
             report.issues
         );
     }
+
+    #[test]
+    fn missing_fallback_locale_reports_empty_locale_and_skips_comparisons() {
+        // Caller typos the fallback name ("en-US" instead of "en") or simply
+        // forgets to ship it: every other locale's comparison would be noise,
+        // so the verifier must short-circuit with EmptyLocale and no
+        // MissingKey/ExtraKey churn against a phantom baseline.
+        let report = verify_translations(&assets(&[("de/app.ftl", "greet = Hallo\n")]), "en");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| matches!(i, VerifyIssue::EmptyLocale { locale } if locale == "en")),
+            "expected EmptyLocale for en, got {:#?}",
+            report.issues
+        );
+        assert!(
+            !report.issues.iter().any(|i| matches!(
+                i,
+                VerifyIssue::MissingKey { .. } | VerifyIssue::ExtraKey { .. }
+            )),
+            "no key-drift issues should be emitted when fallback is absent; got {:#?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn non_utf8_file_content_reports_parse_error() {
+        // A translator drag-and-drops a binary file or saves with a wrong
+        // encoding. `collect_keys` must surface this as a ParseError with the
+        // dedicated "non-UTF-8 content" message rather than panicking inside
+        // `str::from_utf8`.
+        struct BinaryAssets;
+        impl I18nAssets for BinaryAssets {
+            fn get_files(&self, file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
+                match file_path {
+                    "en/app.ftl" => vec![std::borrow::Cow::Borrowed(&[0xFF, 0xFE, 0x00, 0x41])],
+                    _ => Vec::new(),
+                }
+            }
+
+            fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
+                Box::new(std::iter::once("en/app.ftl".to_string()))
+            }
+
+            fn subscribe_changed(
+                &self,
+                _changed: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
+            ) -> Result<
+                Box<dyn i18n_embed::Watcher + Send + Sync + 'static>,
+                i18n_embed::I18nEmbedError,
+            > {
+                struct NoopWatcher;
+                impl i18n_embed::Watcher for NoopWatcher {}
+                Ok(Box::new(NoopWatcher))
+            }
+        }
+
+        let report = verify_translations(&BinaryAssets, "en");
+        let parse_err = report
+            .issues
+            .iter()
+            .find(|i| matches!(i, VerifyIssue::ParseError { .. }))
+            .expect("expected a ParseError for the non-UTF-8 fallback bundle");
+        match parse_err {
+            VerifyIssue::ParseError {
+                locale,
+                file,
+                message,
+            } => {
+                assert_eq!(locale, "en");
+                assert_eq!(file, "en/app.ftl");
+                assert_eq!(message, "non-UTF-8 content");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn placeholder_mismatch_inside_selector_arm_is_reported() {
+        // Fluent's plural / variant selectors are the main reason we picked it
+        // over JSON-flavoured i18n (`i18n.md` §2). If `walk_expression` ever
+        // stopped recursing into selector variants, a placeholder rename
+        // *inside* a `{ $count -> ... }` arm would slip through unnoticed.
+        // This guards that traversal.
+        let report = verify_translations(
+            &assets(&[
+                (
+                    "en/app.ftl",
+                    "msg = { $count ->\n    [one] one item, key { $value }\n   *[other] { $count } items, key { $value }\n}\n",
+                ),
+                (
+                    "de/app.ftl",
+                    "msg = { $count ->\n    [one] ein Element, Schlüssel { $val }\n   *[other] { $count } Elemente, Schlüssel { $val }\n}\n",
+                ),
+            ]),
+            "en",
+        );
+        let mismatch = report
+            .issues
+            .iter()
+            .find(|i| matches!(i, VerifyIssue::PlaceholderMismatch { .. }))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a PlaceholderMismatch for the renamed selector-arm var; got {:#?}",
+                    report.issues
+                )
+            });
+        match mismatch {
+            VerifyIssue::PlaceholderMismatch {
+                locale,
+                key,
+                fallback_vars,
+                locale_vars,
+            } => {
+                assert_eq!(locale, "de");
+                assert_eq!(key, "msg");
+                assert!(
+                    fallback_vars.contains(&"value".to_string()) && fallback_vars.contains(&"count".to_string()),
+                    "fallback should see both count and value inside the selector; got {fallback_vars:?}"
+                );
+                assert!(
+                    locale_vars.contains(&"val".to_string())
+                        && locale_vars.contains(&"count".to_string()),
+                    "locale should see the renamed val (not value) plus count; got {locale_vars:?}"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn verify_translations_in_dir_walks_real_filesystem() {
+        // Belt-and-braces guard on FsAssets: materialise a small i18n tree on
+        // disk, mix in junk files that the walker should ignore (a stray
+        // top-level file, a non-.ftl inside a locale dir), and assert the
+        // verifier still produces a clean report. Catches regressions in the
+        // directory walk that the in-memory InlineAssets cases can't see.
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let root = dir.path();
+
+        std::fs::create_dir(root.join("en")).unwrap();
+        std::fs::create_dir(root.join("de")).unwrap();
+        std::fs::write(root.join("en/app.ftl"), "greet = Hello\n").unwrap();
+        std::fs::write(root.join("de/app.ftl"), "greet = Hallo\n").unwrap();
+
+        // Junk the walker must ignore: a top-level non-dir, and a non-.ftl
+        // file inside a locale dir.
+        std::fs::write(root.join("README.md"), "ignore me\n").unwrap();
+        std::fs::write(root.join("en/notes.txt"), "not fluent\n").unwrap();
+
+        let report = verify_translations_in_dir(root, "en");
+        assert!(
+            report.is_clean(),
+            "junk files should not produce issues; got {:#?}",
+            report.issues
+        );
+        assert_eq!(report.locales, vec!["de", "en"]);
+    }
 }
