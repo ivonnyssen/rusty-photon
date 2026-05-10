@@ -1,17 +1,24 @@
 //! Harness for spawning `sky-survey-camera` from BDD scenarios.
 //!
-//! The closed-loop centering scenario in `services/rp/tests/features/`
-//! needs a camera that follows the OmniSim Telescope (so a `slew` on
-//! the mount changes what the camera renders) and that injects a
-//! known angular offset into the cutout (so the centering loop has
-//! something non-trivial to converge to). This module provides:
+//! The closed-loop centering scenarios in
+//! `services/rp/tests/features/` need a camera that follows the
+//! OmniSim Telescope (so a `slew` on the mount changes what the
+//! camera renders). This module provides:
 //!
 //! - [`SkyViewStub`] — an in-process axum server that emulates NASA
 //!   SkyView. It parses `Position` / `Pixels` / `Size` query params
 //!   from the camera's request and returns a minimal FITS that
-//!   advertises matching `CRVAL1` / `CRVAL2` so a downstream
-//!   plate-solver stub can round-trip the pointing
-//!   ([`crate::rp_harness::StubBehavior::EchoFitsCenter`]).
+//!   advertises matching `CRVAL1` / `CRVAL2`. The rp closed-loop
+//!   centering scenarios don't actually consume those CRVAL records
+//!   — `rp`'s persistence layer writes its own FITS from the
+//!   camera's `ImageArray` and strips the camera-side WCS, so the
+//!   scenarios fake solve outcomes via
+//!   [`crate::rp_harness::StubBehavior::Sequence`] instead. The
+//!   CRVAL-bearing FITS the stub mints is still useful as a
+//!   general-purpose primitive for tests that hand a synthetic
+//!   `imagebytes` payload directly to a downstream consumer that
+//!   *does* honour camera-side WCS (e.g. unit tests that pair the
+//!   stub with [`crate::rp_harness::StubBehavior::EchoFitsCenter`]).
 //! - [`SkySurveyCameraConfig`] / [`SkySurveyCameraConfigBuilder`] —
 //!   builds the JSON config the production binary expects.
 //! - [`start_sky_survey_camera`] — spawns the binary via

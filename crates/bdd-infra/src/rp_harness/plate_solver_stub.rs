@@ -50,14 +50,26 @@ pub enum StubBehavior {
     Sequence(Vec<CannedWcs>),
     /// Read the request's `fits_path`, parse `CRVAL1` / `CRVAL2` from
     /// the FITS primary header, and return them as the solved
-    /// `ra_center` / `dec_center`. Used by the closed-loop centering
-    /// BDD: `sky-survey-camera`'s synthetic cutouts carry their own
-    /// pointing in CRVAL, and an honest plate solver on a SkyView
-    /// cutout would echo that pointing back. Other fields
-    /// (`pixel_scale_arcsec`, `rotation_deg`, `solver`) come from the
-    /// embedded `template`. If CRVAL1/2 are missing the handler
-    /// returns a `solve_failed` error envelope so the test fails
-    /// loudly rather than silently degrading to a fixed answer.
+    /// `ra_center` / `dec_center`. The CRVAL round-trip models what
+    /// an honest plate solver on a WCS-bearing cutout would do.
+    /// Other fields (`pixel_scale_arcsec`, `rotation_deg`, `solver`)
+    /// come from the embedded `template`. If CRVAL1/2 are missing
+    /// the handler returns a `solve_failed` error envelope so the
+    /// test fails loudly rather than silently degrading to a fixed
+    /// answer.
+    ///
+    /// **Note on the rp closed-loop centering BDD.** That scenario
+    /// does *not* use this variant: rp's persistence layer writes
+    /// its own FITS from the camera's `ImageArray` and strips any
+    /// camera-side WCS, so the `fits_path` rp hands to the stub has
+    /// no `CRVAL1/2` to echo. The closed-loop scenarios use
+    /// [`Sequence`] instead, feeding pre-computed solve outcomes
+    /// in the order the loop will request them. This variant
+    /// remains useful for unit tests / future flows that hand the
+    /// stub a WCS-bearing FITS directly (e.g. paired with
+    /// [`crate::sky_survey_camera_harness::SkyViewStub`]).
+    ///
+    /// [`Sequence`]: StubBehavior::Sequence
     EchoFitsCenter { template: CannedWcs },
     /// Return a structured error envelope. `code` matches the
     /// wrapper's `ErrorCode` (`invalid_request`, `fits_not_found`,

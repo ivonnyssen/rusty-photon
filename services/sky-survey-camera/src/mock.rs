@@ -40,8 +40,8 @@ impl SurveyClient for MockSurveyClient {
 /// 16-bit boundary so the output is reproducible across runs.
 ///
 /// No WCS is written. Callers that need a `(CRVAL1, CRVAL2)`-bearing
-/// FITS — e.g. the BDD closed-loop centering scenario, where the
-/// plate-solver stub round-trips the cutout's pointing — should use
+/// FITS — e.g. tests that pair the cutout with a plate-solver mock
+/// configured to round-trip the embedded CRVAL — should use
 /// [`synthetic_fits_with_wcs`] instead.
 pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
     build_synthetic_fits(width, height, None)
