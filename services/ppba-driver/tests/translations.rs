@@ -7,27 +7,29 @@
 //! translator's PR introduces a parse error, drops a key, adds an unknown
 //! key, or renames a `{ $var }` placeholder.
 //!
-//! Reads the `i18n/` tree at runtime via [`i18n_embed::FileSystemAssets`]
-//! rather than `RustEmbed` because RustEmbed's compile-time directory walk
-//! doesn't pick up Bazel `compile_data` symlinks for proc-macro contexts.
-//! Filesystem read keys off `CARGO_MANIFEST_DIR`, which both Cargo and
-//! `rules_rust` populate consistently, and the `i18n/` directory is shipped
-//! to the test action via Bazel's `data` attribute.
+//! Reads the `i18n/` tree at runtime via [`rp_i18n::verify_translations_in_dir`],
+//! which walks a directory through its own `FsAssets` impl, rather than going
+//! through `RustEmbed` (whose compile-time directory walk would bake in a
+//! sandbox path that won't exist when the test action runs).
+//!
+//! Resolving the runtime path differs by build system, so [`locate_i18n_dir`]
+//! falls back through several candidates instead of trusting a single source:
+//!
+//! - **Cargo:** `env!("CARGO_MANIFEST_DIR")` expands to the package source
+//!   directory at compile time and stays valid at test runtime — the tree
+//!   committed at `services/ppba-driver/i18n/` is right there.
+//! - **Bazel:** `rules_rust` sets `CARGO_MANIFEST_DIR` to a compile-time
+//!   sandbox path that no longer exists when the test runs from the runfiles
+//!   tree. Instead, the `data = glob(["i18n/**/*.ftl"])` on the `:translations`
+//!   target stages the same files under `$TEST_SRCDIR/_main/services/ppba-driver/i18n/`,
+//!   which `locate_i18n_dir` finds via `TEST_SRCDIR`.
 
 use std::path::{Path, PathBuf};
 
-/// Find the `i18n/` directory at runtime.
-///
-/// Cargo: `env!("CARGO_MANIFEST_DIR")` is the package source dir, and the
-/// tree is committed there directly.
-///
-/// Bazel: `rust_test` runs out of the runfiles tree. Its `data` attribute
-/// places listed files at workspace-relative paths (e.g.
-/// `services/ppba-driver/i18n/en/ppba-driver.ftl` ends up there too), and
-/// `TEST_SRCDIR` points at the workspace root inside the runfiles tree.
-/// `env!("CARGO_MANIFEST_DIR")` under Bazel is set to a fixed compile-time
-/// sandbox path that does *not* exist at test execution time, so we fall
-/// back through several candidates rather than asserting on the first.
+/// Find the `i18n/` directory at runtime by trying, in order:
+/// `CARGO_MANIFEST_DIR/i18n` (Cargo), `$TEST_SRCDIR/_main/services/ppba-driver/i18n`
+/// (Bazel runfiles), and finally `<cwd>/services/ppba-driver/i18n`. See the
+/// module docs for why each path is or isn't reliable per build system.
 fn locate_i18n_dir() -> PathBuf {
     let mut tried = Vec::new();
 
