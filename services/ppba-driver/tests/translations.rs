@@ -37,9 +37,10 @@
 use std::path::{Path, PathBuf};
 
 /// Find the `i18n/` directory at runtime by trying, in order:
-/// `CARGO_MANIFEST_DIR/i18n` (Cargo), `$TEST_SRCDIR/_main/services/ppba-driver/i18n`
-/// (Bazel runfiles), and finally `<cwd>/services/ppba-driver/i18n`. See the
-/// module docs for why each path is or isn't reliable per build system.
+/// `CARGO_MANIFEST_DIR/i18n` (Cargo), `$TEST_SRCDIR/$TEST_WORKSPACE/services/ppba-driver/i18n`
+/// (Bazel runfiles — falling back to `_main` if `TEST_WORKSPACE` is unset),
+/// and finally `<cwd>/services/ppba-driver/i18n`. See the module docs for
+/// why each path is or isn't reliable per build system.
 fn locate_i18n_dir() -> PathBuf {
     let mut tried = Vec::new();
 

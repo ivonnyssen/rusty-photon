@@ -209,13 +209,36 @@ impl FsAssets {
                 return (Self { files }, issues);
             }
         };
-        for locale_entry in locale_dirs.flatten() {
-            let Ok(file_type) = locale_entry.file_type() else {
-                continue;
+        for locale_entry in locale_dirs {
+            let locale_entry = match locale_entry {
+                Ok(e) => e,
+                Err(e) => {
+                    // Per-entry `ReadDir` failure (e.g. a child whose
+                    // metadata can't be read). The errored entry has no
+                    // path we can recover, so attribute against `base`.
+                    issues.push(VerifyIssue::IoError {
+                        path: base.display().to_string(),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let file_type = match locale_entry.file_type() {
+                Ok(ft) => ft,
+                Err(e) => {
+                    issues.push(VerifyIssue::IoError {
+                        path: locale_entry.path().display().to_string(),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
             };
             if !file_type.is_dir() {
                 continue;
             }
+            // Non-UTF-8 locale directory names can't be matched against a
+            // BCP-47 language id anyway. Skip silently rather than emit a
+            // misleading `IoError` — this isn't an I/O failure.
             let Some(locale) = locale_entry.file_name().to_str().map(|s| s.to_string()) else {
                 continue;
             };
@@ -230,11 +253,25 @@ impl FsAssets {
                     continue;
                 }
             };
-            for ftl_entry in ftls.flatten() {
+            for ftl_entry in ftls {
+                let ftl_entry = match ftl_entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        // Same shape as the outer per-entry failure: no
+                        // recoverable path, attribute against the locale dir.
+                        issues.push(VerifyIssue::IoError {
+                            path: locale_path.display().to_string(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
                 let path = ftl_entry.path();
                 if path.extension().and_then(|s| s.to_str()) != Some("ftl") {
                     continue;
                 }
+                // Same posture as the locale-name branch above: a non-UTF-8
+                // filename can't key into our `{locale}/{filename}` map.
                 let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
                     continue;
                 };
