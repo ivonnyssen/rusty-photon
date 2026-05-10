@@ -596,6 +596,14 @@ as `qhy-focuser` and `ppba-driver`.)
 
 ## MVP Scope
 
+### Phase status
+
+| Phase | Status |
+|---|---|
+| **Phase 1 — Design doc** | ✓ landed (this document, PR #178) |
+| **Phase 2 — BDD scaffold** | ✓ landed: codec crate skeleton, service skeleton, all feature files (`@wip`), step stubs |
+| **Phase 3 — Implementation** | not started — turns the `@wip` scenarios green and removes the tags |
+
 ### In-scope (Phase 3 will turn these green)
 
 - USB transport at 115200 baud (`/dev/serial/by-id/...` path in config)

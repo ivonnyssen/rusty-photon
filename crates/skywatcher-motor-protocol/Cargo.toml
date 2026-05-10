@@ -1,0 +1,18 @@
+[package]
+name = "skywatcher-motor-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Codec for the Sky-Watcher motor-controller wire protocol (USB + UDP/11880)"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

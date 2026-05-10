@@ -4599,6 +4599,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skywatcher-motor-protocol"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4664,6 +4672,35 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "star-adventurer-gti"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "cargo-husky",
+ "clap",
+ "cucumber",
+ "humantime-serde",
+ "mockall",
+ "proptest",
+ "reqwest 0.13.2",
+ "rp-auth",
+ "rp-tls",
+ "serde",
+ "serde_json",
+ "skywatcher-motor-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-serial",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "strsim"

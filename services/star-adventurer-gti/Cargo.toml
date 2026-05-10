@@ -1,0 +1,53 @@
+[package]
+name = "star-adventurer-gti"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca driver for Sky-Watcher Star Adventurer GTi GEM"
+
+[features]
+default = []
+mock = []
+conformu = ["mock", "ascom-alpaca/test"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "telescope", "client"] }
+skywatcher-motor-protocol = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+humantime-serde = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+rp-tls = { workspace = true }
+rp-auth = { workspace = true }
+axum = { workspace = true }
+
+# [package.metadata.conformu] — re-add in Phase 3 when
+# `tests/conformu_integration.rs` lands. The nightly conformu workflow
+# discovers services via this metadata; opting in without the test file
+# would fail the scheduled run on main.
+
+[dev-dependencies]
+bdd-infra = { workspace = true }
+tokio-test = { workspace = true }
+mockall = { workspace = true }
+proptest = { workspace = true }
+reqwest = { workspace = true }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

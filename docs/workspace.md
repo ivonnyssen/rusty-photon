@@ -17,7 +17,7 @@ belong in any single service design doc.
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
-| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (design only — Phase 1) |
+| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
@@ -54,6 +54,7 @@ belong in any single service design doc.
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
 | [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md). |
 | [rp-catalog](../crates/rp-catalog/) | `crates/rp-catalog` | Embedded Messier + NGC + IC catalog (~13k objects, openNGC source, CC-BY-SA-4.0 attribution). `Catalog::resolve(name)` does case- and whitespace-insensitive lookup with alias support. See [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md). |
+| [skywatcher-motor-protocol](../crates/skywatcher-motor-protocol/) | `crates/skywatcher-motor-protocol` | Pure codec for the Sky-Watcher motor-controller wire protocol (USB + UDP/11880). Transport-agnostic; isolates the 24-bit low-byte-first hex encoding and the `+0x800000` position bias. Used by `star-adventurer-gti`. See [`docs/references/skywatcher-motor-controller-command-set.md`](references/skywatcher-motor-controller-command-set.md). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 
