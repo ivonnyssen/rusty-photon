@@ -101,7 +101,8 @@ impl AxisSimState {
 }
 
 fn nibble_to_hex(n: u8) -> u8 {
-    match n & 0x0F {
+    let n = n & 0x0F;
+    match n {
         0..=9 => b'0' + n,
         10..=15 => b'A' + (n - 10),
         _ => unreachable!(),
@@ -400,6 +401,44 @@ pub struct MockTransportFactory;
 impl TransportFactory for MockTransportFactory {
     async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
         Ok(Arc::new(MockTransport::new()))
+    }
+}
+
+/// [`TransportFactory`] that returns a clone of a pre-built
+/// [`MockTransport`] on every `open` call. The clones share the same
+/// `Arc<Mutex<MockMountState>>`, so a test holding the original handle
+/// can introspect the live `command_log` after the manager has issued
+/// commands through its own clone.
+///
+/// Used by the unit tests that need to assert on the exact wire frames
+/// the driver emitted (e.g. "tracking issues `:G1` then `:I1` then
+/// `:J1` in that order").
+#[derive(Debug, Clone)]
+pub struct CapturingMockFactory {
+    pub mock: MockTransport,
+}
+
+impl CapturingMockFactory {
+    pub fn new() -> Self {
+        Self {
+            mock: MockTransport::new(),
+        }
+    }
+}
+
+impl Default for CapturingMockFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl TransportFactory for CapturingMockFactory {
+    async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
+        // Clone shares the inner Arc<Mutex<MockMountState>>, so the
+        // outer handle held by the test sees every mutation the
+        // manager makes through this returned Arc.
+        Ok(Arc::new(self.mock.clone()))
     }
 }
 

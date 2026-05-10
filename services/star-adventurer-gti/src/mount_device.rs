@@ -154,11 +154,28 @@ impl Device for MountDevice {
         } else {
             self.transport.disconnect().await.map_err(Self::ascom)?;
             *req = false;
-            // Clear any latched target / parked state on full disconnect.
+            // Disconnect resets the per-session client state but leaves
+            // mechanical state (`at_park`) intact — the mount's encoder
+            // doesn't move just because we closed the socket.
+            //
+            // Clear:
+            //   - `target_ra_hours` / `target_dec_degrees` — latched
+            //     from a SetTargetRA / SetTargetDec call; not durable.
+            //   - `tracking_requested` — disconnect halted tracking on
+            //     the wire (`:K1`); the in-memory flag must follow.
+            //   - `slew_in_progress` — the polling task is gone, the
+            //     watcher has nothing left to observe; clearing the
+            //     flag also tells any in-flight watcher iteration to
+            //     bail out (see watcher loops below).
+            //
+            // Keep `at_park` — Phase 4 may persist it across sessions
+            // by reading the encoder; for now leaving it as-is matches
+            // ASCOM's "AtPark reflects mechanical state" intent.
             let mut s = self.state.write().await;
             s.target_ra_hours = None;
             s.target_dec_degrees = None;
             s.tracking_requested = false;
+            s.slew_in_progress = false;
         }
         debug!(connected, "set_connected");
         Ok(())
@@ -661,10 +678,20 @@ fn spawn_slew_completion_watcher(
         loop {
             tokio::time::sleep(polling_interval).await;
 
-            // External abort path: AbortSlew clears `slew_in_progress`
-            // before issuing :L. Bail out so we don't overwrite the
-            // user-visible Slewing flag with a re-enable-and-settle.
+            // External abort / disconnect path: AbortSlew clears
+            // `slew_in_progress` before issuing :L; set_connected(false)
+            // also clears it. Either way, bail before overwriting
+            // user-visible state.
             if !state.read().await.slew_in_progress {
+                return;
+            }
+            // Belt-and-braces: if the transport became unavailable
+            // (mid-disconnect, handshake-failure rollback, ...), exit
+            // even if the flag-clear hasn't happened yet. This stops
+            // the watcher holding `Arc<TransportManager>` alive past
+            // its useful life.
+            if !transport.is_available() {
+                state.write().await.slew_in_progress = false;
                 return;
             }
 
@@ -716,8 +743,13 @@ fn spawn_park_completion_watcher(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(polling_interval).await;
-            // External abort path: AbortSlew clears slew_in_progress.
+            // External abort / disconnect path: clears slew_in_progress.
             if !state.read().await.slew_in_progress {
+                return;
+            }
+            // Bail if the transport became unavailable (disconnect race).
+            if !transport.is_available() {
+                state.write().await.slew_in_progress = false;
                 return;
             }
             let snap = transport.snapshot().await;
@@ -881,12 +913,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
+    async fn set_tracking_true_latches_flag() {
         let d = connected_device().await;
         d.set_tracking(true).await.unwrap();
         assert!(d.tracking().await.unwrap());
-        // Inspect the mock command log: the last three RA-axis frames
-        // should be :G1<mode>, :I1<period>, :J1.
+    }
+
+    #[tokio::test]
+    async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
+        // Build a device backed by a CapturingMockFactory so we can
+        // inspect the exact wire frames the driver emitted.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        // Find the index of the LAST :G1 frame the driver issued during
+        // the connect handshake (which doesn't issue :G), then drive
+        // SetTracking(true) and assert the next three RA-axis frames are
+        // :G1 / :I1 / :J1 in order.
+        let baseline_len = mock.state.lock().await.command_log.len();
+        d.set_tracking(true).await.unwrap();
+
+        let log = mock.state.lock().await.command_log.clone();
+        assert!(
+            log.len() >= baseline_len + 3,
+            "expected at least 3 new wire frames, got {}",
+            log.len() - baseline_len
+        );
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+        // First new frame: :G1<mode>\r — tracking-mode preset = 0x00 = "00"
+        assert_eq!(&new_frames[0][..3], b":G1", "1st frame should be :G1");
+        assert_eq!(new_frames[0][new_frames[0].len() - 1], b'\r');
+        // Second: :I1<period>\r
+        assert_eq!(&new_frames[1][..3], b":I1", "2nd frame should be :I1");
+        // Third: :J1\r
+        assert_eq!(new_frames[2], b":J1\r");
     }
 
     #[tokio::test]

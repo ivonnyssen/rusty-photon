@@ -50,19 +50,31 @@ async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
     (port, handle)
 }
 
-async fn get_status(port: u16, path: &str) -> u16 {
+/// Poll the endpoint until it responds (status code returned, regardless
+/// of value) or the deadline elapses. Replaces a fixed `sleep(50ms)` so
+/// the tests are robust to slow CI runners.
+async fn poll_status(port: u16, path: &str, deadline: Duration) -> u16 {
     let url = format!("http://127.0.0.1:{port}{path}");
-    reqwest::get(&url).await.unwrap().status().as_u16()
+    let start = std::time::Instant::now();
+    loop {
+        match reqwest::get(&url).await {
+            Ok(resp) => return resp.status().as_u16(),
+            Err(_) if start.elapsed() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("server did not respond on {url} within {deadline:?}: {e}"),
+        }
+    }
 }
+
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_mount_enabled() {
     let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true)).await;
-    // Give the server a moment to be ready to accept HTTP.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let status = get_status(port, "/api/v1/telescope/0/name").await;
+    let status = poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
     assert_eq!(status, 200, "Telescope name endpoint should respond");
     handle.abort();
     let _ = handle.await;
@@ -73,8 +85,7 @@ async fn test_server_starts_with_mount_enabled() {
 async fn test_server_starts_with_mount_disabled() {
     let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(false)).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let status = get_status(port, "/api/v1/telescope/0/name").await;
+    let status = poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
     assert_ne!(status, 200, "Telescope should not be registered");
     handle.abort();
     let _ = handle.await;

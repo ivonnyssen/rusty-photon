@@ -142,12 +142,14 @@ impl TransportManager {
         // snapshot read after connect already has fresh data (or at least
         // the handshake-time defaults).
         let polling_interval = self.polling_interval();
+        let command_timeout = self.command_timeout();
         let task = spawn_poll_task(
             Arc::clone(&transport),
             Arc::clone(&self.command_lock),
             Arc::clone(&self.snapshot),
             self.shutdown_tx.subscribe(),
             polling_interval,
+            command_timeout,
         );
         *self.poll_handle.lock().await = Some(task);
 
@@ -387,6 +389,7 @@ fn spawn_poll_task(
     snapshot: Arc<RwLock<MountSnapshot>>,
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
+    command_timeout: Duration,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
@@ -401,11 +404,11 @@ fn spawn_poll_task(
                 _ = tick.tick() => {
                     let _guard = command_lock.lock().await;
                     let mut snap = MountSnapshot::default();
-                    if let Err(e) = poll_axis(&transport, Axis::Ra, &mut snap.ra).await {
+                    if let Err(e) = poll_axis(&transport, Axis::Ra, &mut snap.ra, command_timeout).await {
                         debug!("polling RA failed: {e}");
                         continue;
                     }
-                    if let Err(e) = poll_axis(&transport, Axis::Dec, &mut snap.dec).await {
+                    if let Err(e) = poll_axis(&transport, Axis::Dec, &mut snap.dec, command_timeout).await {
                         debug!("polling Dec failed: {e}");
                         continue;
                     }
@@ -420,13 +423,9 @@ async fn poll_axis(
     transport: &Arc<dyn Transport>,
     axis: Axis,
     out: &mut AxisSnapshot,
+    timeout: Duration,
 ) -> Result<()> {
     use skywatcher_motor_protocol::AxisStatus;
-    // Use the manager's command timeout as a reasonable poll deadline. The
-    // poll task does not have direct access to the manager's config, so
-    // hard-code 1 s here — long enough for any single round-trip on either
-    // transport, short enough that one stuck poll does not stall the loop.
-    let timeout = Duration::from_secs(1);
     let pos = round_trip_one(transport, &Command::InquirePosition(axis), timeout).await?;
     out.position_ticks = match pos {
         Response::Position(p) => p,
