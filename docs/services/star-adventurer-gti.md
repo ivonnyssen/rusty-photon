@@ -601,10 +601,11 @@ as `qhy-focuser` and `ppba-driver`.)
 | Phase | Status |
 |---|---|
 | **Phase 1 — Design doc** | ✓ landed (this document, PR #178) |
-| **Phase 2 — BDD scaffold** | ✓ landed: codec crate skeleton, service skeleton, all feature files (`@wip`), step stubs |
-| **Phase 3 — Implementation** | not started — turns the `@wip` scenarios green and removes the tags |
+| **Phase 2 — BDD scaffold** | ✓ landed: codec crate skeleton, service skeleton, all feature files (`@wip`), step stubs (PR #180) |
+| **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
+| **Phase 4 — Real-hardware bringup** | not started — first connect to a physical GTi, validate protocol assumptions, optionally add clock injection so BDD can pin LST literals |
 
-### In-scope (Phase 3 will turn these green)
+### In-scope (Phases 1–3, all landed)
 
 - USB transport at 115200 baud (`/dev/serial/by-id/...` path in config)
 - UDP transport at 192.168.4.1:11880 (bind to local 192.168.4.x)
