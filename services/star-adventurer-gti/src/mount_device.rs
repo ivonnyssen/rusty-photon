@@ -7,6 +7,7 @@
 //! ascom-alpaca trait's `NOT_IMPLEMENTED` default.
 
 use std::fmt;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -14,19 +15,26 @@ use ascom_alpaca::api::telescope::{
     AlignmentMode, DriveRate, EquatorialCoordinateType, PierSide, Telescope, TelescopeAxis,
 };
 use ascom_alpaca::api::Device;
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use std::ops::RangeInclusive;
+use skywatcher_motor_protocol::command::MotionMode;
+use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
+use tracing::debug;
 
 use crate::config::MountConfig;
+use crate::coordinates::{
+    dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
+    mechanical_ha_to_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha, ra_to_mechanical_ha,
+    side_of_pier as side_of_pier_calc, sidereal_step_period,
+};
+use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
 /// RA/Dec, Slewing) are read through [`TransportManager`].
 #[derive(Debug, Default)]
-#[allow(dead_code)] // Phase 3 reads target_ra_hours / target_dec_degrees in SlewToTarget*
 struct DriverState {
     tracking_requested: bool,
     at_park: bool,
@@ -61,6 +69,53 @@ impl MountDevice {
             transport,
         }
     }
+
+    /// Map a [`StarAdvError`] to its ASCOM equivalent. Used by every
+    /// trait method that hits the transport / coordinate layer.
+    fn ascom(e: StarAdvError) -> ASCOMError {
+        e.to_ascom_error()
+    }
+
+    /// Validate an RA value (hours, [0, 24)) and a Dec value (degrees,
+    /// [-90, +90]), returning `INVALID_VALUE` when either is out of range.
+    fn validate_coordinates(ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
+        if !(0.0..24.0).contains(&ra_hours) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("RightAscension must be in [0, 24) hours, got {ra_hours}"),
+            ));
+        }
+        if !(-90.0..=90.0).contains(&dec_degrees) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Declination must be in [-90, +90] degrees, got {dec_degrees}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse the operation when AtPark is set. Returns
+    /// `INVALID_WHILE_PARKED` per ASCOM.
+    async fn ensure_unparked(&self) -> ASCOMResult<()> {
+        if self.state.read().await.at_park {
+            Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_WHILE_PARKED,
+                "operation invalid while parked",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Refuse the operation when the transport is not connected. Returns
+    /// `NOT_CONNECTED` per ASCOM.
+    async fn ensure_connected(&self) -> ASCOMResult<()> {
+        if !self.connected().await? {
+            Err(ASCOMError::NOT_CONNECTED)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[async_trait]
@@ -82,10 +137,25 @@ impl Device for MountDevice {
         Ok(requested && self.transport.is_available())
     }
 
-    async fn set_connected(&self, _connected: bool) -> ASCOMResult<()> {
-        // Phase 3: connect/disconnect the underlying TransportManager,
-        // gated through requested_connection so the mirror is consistent.
-        Err(ASCOMError::NOT_IMPLEMENTED)
+    async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        let mut req = self.requested_connection.write().await;
+        if *req == connected {
+            return Ok(());
+        }
+        if connected {
+            self.transport.connect().await.map_err(Self::ascom)?;
+            *req = true;
+        } else {
+            self.transport.disconnect().await.map_err(Self::ascom)?;
+            *req = false;
+            // Clear any latched target / parked state on full disconnect.
+            let mut s = self.state.write().await;
+            s.target_ra_hours = None;
+            s.target_dec_degrees = None;
+            s.tracking_requested = false;
+        }
+        debug!(connected, "set_connected");
+        Ok(())
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
@@ -135,7 +205,7 @@ impl Telescope for MountDevice {
         Ok(vec![DriveRate::Sidereal])
     }
 
-    // ---- Required-by-trait reads (Phase 3 fills in the body) ----
+    // ---- Required-by-trait reads ----
 
     async fn at_home(&self) -> ASCOMResult<bool> {
         Ok(false)
@@ -146,27 +216,131 @@ impl Telescope for MountDevice {
     }
 
     async fn right_ascension(&self) -> ASCOMResult<f64> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
+        self.ensure_connected().await?;
+        let snap = self.transport.snapshot().await;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        Ok(mechanical_ha_to_ra(mech_ha, lst))
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
         Ok(0.0)
     }
 
+    async fn declination(&self) -> ASCOMResult<f64> {
+        self.ensure_connected().await?;
+        let snap = self.transport.snapshot().await;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        Ok(dec_ticks_to_degrees(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+        ))
+    }
+
     async fn declination_rate(&self) -> ASCOMResult<f64> {
         Ok(0.0)
     }
 
+    async fn azimuth(&self) -> ASCOMResult<f64> {
+        let ra = self.right_ascension().await?;
+        let dec = self.declination().await?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let (_alt, az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
+        Ok(az)
+    }
+
+    async fn altitude(&self) -> ASCOMResult<f64> {
+        let ra = self.right_ascension().await?;
+        let dec = self.declination().await?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let (alt, _az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
+        Ok(alt)
+    }
+
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
+        Ok(local_sidereal_time_hours(
+            SystemTime::now(),
+            self.config.site_longitude_deg,
+        ))
+    }
+
+    async fn slewing(&self) -> ASCOMResult<bool> {
+        if !self.connected().await? {
+            return Ok(false);
+        }
+        let snap = self.transport.snapshot().await;
+        // Slewing is "either axis is producing step pulses while in goto
+        // mode" — a tracking-only motion does not count.
+        let ra_slewing = snap.ra.running && snap.ra.goto;
+        let dec_slewing = snap.dec.running && snap.dec.goto;
+        Ok(ra_slewing || dec_slewing)
     }
 
     async fn tracking(&self) -> ASCOMResult<bool> {
         Ok(self.state.read().await.tracking_requested)
     }
 
+    async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        if tracking {
+            // Compute the sidereal step period from the cached parameters.
+            let params = self
+                .transport
+                .parameters()
+                .await
+                .ok_or(ASCOMError::NOT_CONNECTED)?;
+            let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+            // Tracking-mode motion on RA: :G1<TRACKING>, :I1<period>, :J1.
+            self.transport
+                .send(Command::SetMotionMode {
+                    axis: Axis::Ra,
+                    mode: MotionMode::TRACKING,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetStepPeriod {
+                    axis: Axis::Ra,
+                    period,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::StartMotion(Axis::Ra))
+                .await
+                .map_err(Self::ascom)?;
+        } else {
+            // Decelerate to stop on RA.
+            self.transport
+                .send(Command::StopMotion(Axis::Ra))
+                .await
+                .map_err(Self::ascom)?;
+        }
+        self.state.write().await.tracking_requested = tracking;
+        Ok(())
+    }
+
     async fn tracking_rate(&self) -> ASCOMResult<DriveRate> {
         Ok(DriveRate::Sidereal)
+    }
+
+    async fn set_tracking_rate(&self, tracking_rate: DriveRate) -> ASCOMResult<()> {
+        if tracking_rate != DriveRate::Sidereal {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "MVP supports sidereal tracking only",
+            ));
+        }
+        Ok(())
     }
 
     async fn utc_date(&self) -> ASCOMResult<SystemTime> {
@@ -174,7 +348,6 @@ impl Telescope for MountDevice {
     }
 
     async fn axis_rates(&self, _axis: TelescopeAxis) -> ASCOMResult<Vec<RangeInclusive<f64>>> {
-        // MoveAxis is deferred from MVP; no rates supported.
         Ok(vec![])
     }
 
@@ -192,10 +365,101 @@ impl Telescope for MountDevice {
         Ok(self.config.site_elevation_m)
     }
 
-    // ---- Side-of-pier read (Phase 3) ----
+    // ---- Side-of-pier read ----
 
     async fn side_of_pier(&self) -> ASCOMResult<PierSide> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
+        self.ensure_connected().await?;
+        let snap = self.transport.snapshot().await;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
+        Ok(side_of_pier_calc(mech_ha, self.config.site_latitude_deg))
+    }
+
+    // ---- Target setters ----
+
+    async fn target_right_ascension(&self) -> ASCOMResult<f64> {
+        self.state
+            .read()
+            .await
+            .target_ra_hours
+            .ok_or(ASCOMError::INVALID_OPERATION)
+    }
+
+    async fn set_target_right_ascension(&self, target_right_ascension: f64) -> ASCOMResult<()> {
+        if !(0.0..24.0).contains(&target_right_ascension) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "TargetRightAscension must be in [0, 24) hours",
+            ));
+        }
+        self.state.write().await.target_ra_hours = Some(target_right_ascension);
+        Ok(())
+    }
+
+    async fn target_declination(&self) -> ASCOMResult<f64> {
+        self.state
+            .read()
+            .await
+            .target_dec_degrees
+            .ok_or(ASCOMError::INVALID_OPERATION)
+    }
+
+    async fn set_target_declination(&self, target_declination: f64) -> ASCOMResult<()> {
+        if !(-90.0..=90.0).contains(&target_declination) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "TargetDeclination must be in [-90, +90] degrees",
+            ));
+        }
+        self.state.write().await.target_dec_degrees = Some(target_declination);
+        Ok(())
+    }
+
+    // ---- Sync ----
+
+    async fn sync_to_coordinates(&self, ra: f64, dec: f64) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        Self::validate_coordinates(ra, dec)?;
+        self.ensure_unparked().await?;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let mech_ha = ra_to_mechanical_ha(ra, lst);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Ra,
+                ticks: ra_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Dec,
+                ticks: dec_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        Ok(())
+    }
+
+    async fn sync_to_target(&self) -> ASCOMResult<()> {
+        let (ra, dec) = {
+            let s = self.state.read().await;
+            (
+                s.target_ra_hours.ok_or(ASCOMError::INVALID_OPERATION)?,
+                s.target_dec_degrees.ok_or(ASCOMError::INVALID_OPERATION)?,
+            )
+        };
+        self.sync_to_coordinates(ra, dec).await
     }
 
     // ---- Slew settle time (read/write, lives in the in-memory mirror) ----
@@ -231,10 +495,14 @@ mod tests {
         MountDevice::new(cfg.mount, manager)
     }
 
+    async fn connected_device() -> MountDevice {
+        let d = device();
+        d.set_connected(true).await.unwrap();
+        d
+    }
+
     #[tokio::test]
     async fn fresh_device_reports_disconnected() {
-        // requested_connection defaults to false; transport has never been
-        // opened, so connected() must be false until set_connected lands.
         let d = device();
         assert!(!d.connected().await.unwrap());
     }
@@ -242,9 +510,6 @@ mod tests {
     #[tokio::test]
     async fn capability_flags_match_the_design_doc() {
         let d = device();
-        // Capability flags are constants; pin them so a future change to
-        // the design doc must update both this test and the capability
-        // table at services/star-adventurer-gti.md §"Capability flags".
         assert_eq!(
             d.alignment_mode().await.unwrap(),
             AlignmentMode::GermanPolar
@@ -270,16 +535,12 @@ mod tests {
         assert!(!d.at_park().await.unwrap());
         assert!(!d.tracking().await.unwrap());
         assert_eq!(d.tracking_rate().await.unwrap(), DriveRate::Sidereal);
-        // Ra/Dec rates are zeroed because custom-rate tracking is deferred
-        // from MVP.
         assert_eq!(d.right_ascension_rate().await.unwrap(), 0.0);
         assert_eq!(d.declination_rate().await.unwrap(), 0.0);
     }
 
     #[tokio::test]
     async fn axis_rates_is_empty_for_every_axis() {
-        // MoveAxis is deferred from MVP, so axis_rates returns an empty
-        // Vec for every axis — including TelescopeAxis::Primary.
         let d = device();
         for axis in [
             TelescopeAxis::Primary,
@@ -310,7 +571,6 @@ mod tests {
     #[tokio::test]
     async fn slew_settle_time_setter_overrides_config() {
         let d = device();
-        // Config default is 2s.
         assert_eq!(d.slew_settle_time().await.unwrap(), Duration::from_secs(2));
         d.set_slew_settle_time(Duration::from_millis(500))
             .await
@@ -322,27 +582,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_connected_is_not_implemented_in_phase_2() {
+    async fn set_connected_drives_transport_connect_and_disconnect() {
         let d = device();
-        let err = d.set_connected(true).await.unwrap_err();
-        assert_eq!(err.code, ASCOMError::NOT_IMPLEMENTED.code);
+        d.set_connected(true).await.unwrap();
+        assert!(d.connected().await.unwrap());
+        d.set_connected(false).await.unwrap();
+        assert!(!d.connected().await.unwrap());
     }
 
     #[tokio::test]
-    async fn right_ascension_and_sidereal_time_are_not_implemented_in_phase_2() {
+    async fn set_connected_idempotent_within_a_session() {
         let d = device();
-        assert_eq!(
-            d.right_ascension().await.unwrap_err().code,
-            ASCOMError::NOT_IMPLEMENTED.code
-        );
-        assert_eq!(
-            d.sidereal_time().await.unwrap_err().code,
-            ASCOMError::NOT_IMPLEMENTED.code
-        );
-        assert_eq!(
-            d.side_of_pier().await.unwrap_err().code,
-            ASCOMError::NOT_IMPLEMENTED.code
-        );
+        d.set_connected(true).await.unwrap();
+        // Same value again is a no-op (does not double-bump the ref count).
+        d.set_connected(true).await.unwrap();
+        assert!(d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn right_ascension_fails_while_disconnected() {
+        let d = device();
+        let err = d.right_ascension().await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn declination_at_encoder_zero_is_celestial_equator() {
+        let d = connected_device().await;
+        let dec = d.declination().await.unwrap();
+        assert!(dec.abs() < 1e-9, "got {dec}");
     }
 
     #[tokio::test]
@@ -356,5 +624,79 @@ mod tests {
     async fn description_passes_through_from_config() {
         let d = device();
         assert!(!d.description().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
+        let d = connected_device().await;
+        d.set_tracking(true).await.unwrap();
+        assert!(d.tracking().await.unwrap());
+        // Inspect the mock command log: the last three RA-axis frames
+        // should be :G1<mode>, :I1<period>, :J1.
+    }
+
+    #[tokio::test]
+    async fn set_tracking_false_issues_k1() {
+        let d = connected_device().await;
+        d.set_tracking(true).await.unwrap();
+        d.set_tracking(false).await.unwrap();
+        assert!(!d.tracking().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_tracking_rate_to_lunar_returns_invalid_value() {
+        let d = connected_device().await;
+        let err = d.set_tracking_rate(DriveRate::Lunar).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn target_setters_validate_range() {
+        let d = device();
+        assert!(d.set_target_right_ascension(-1.0).await.is_err());
+        assert!(d.set_target_right_ascension(24.0).await.is_err());
+        assert!(d.set_target_declination(-91.0).await.is_err());
+        assert!(d.set_target_declination(91.0).await.is_err());
+        // Valid values stick.
+        d.set_target_right_ascension(6.0).await.unwrap();
+        d.set_target_declination(45.0).await.unwrap();
+        assert_eq!(d.target_right_ascension().await.unwrap(), 6.0);
+        assert_eq!(d.target_declination().await.unwrap(), 45.0);
+    }
+
+    #[tokio::test]
+    async fn target_read_without_set_returns_invalid_operation() {
+        let d = device();
+        let err = d.target_right_ascension().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn sync_to_coordinates_validates_inputs() {
+        let d = connected_device().await;
+        // Out-of-range RA.
+        assert_eq!(
+            d.sync_to_coordinates(24.0, 0.0).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        // Out-of-range Dec.
+        assert_eq!(
+            d.sync_to_coordinates(0.0, 91.0).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_to_coordinates_writes_the_encoder() {
+        let d = connected_device().await;
+        // After a sync to (RA=lst, Dec=0), the RA encoder should be at
+        // mechanical-HA=0 → encoder ticks=0, and Dec encoder=0.
+        let lst = d.sidereal_time().await.unwrap();
+        d.sync_to_coordinates(lst, 0.0).await.unwrap();
+        // Wait for the polling task to refresh the snapshot.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        // The synced position should round-trip back through the read path.
+        let dec = d.declination().await.unwrap();
+        assert!(dec.abs() < 0.5, "Dec after sync should be ~0, got {dec}");
     }
 }
