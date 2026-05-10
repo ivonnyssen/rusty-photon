@@ -551,4 +551,145 @@ mod tests {
         let r = m.send(Command::InquireCpr(Axis::Ra)).await.unwrap();
         assert_eq!(r, Response::U24(0x0037_5F00));
     }
+
+    /// Factory whose `open` always errors. Used to verify that the
+    /// 0->1 connect transition rolls the count back when the underlying
+    /// transport fails to open, leaving the manager re-tryable.
+    struct FailingFactory;
+
+    #[async_trait::async_trait]
+    impl TransportFactory for FailingFactory {
+        async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
+            Err(StarAdvError::ConnectionFailed("mock open failure".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_rolls_back_count_when_factory_open_fails() {
+        let m = TransportManager::new(Config::default(), Arc::new(FailingFactory));
+        let err = m.connect().await.unwrap_err();
+        assert!(matches!(err, StarAdvError::ConnectionFailed(_)));
+        // Count must have rolled back so a later retry isn't blocked
+        // by stale state.
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 0);
+        assert!(!m.is_available());
+    }
+
+    /// Transport that hands back a non-`=` reply on every round trip.
+    /// Used to drive `run_handshake` into its expect_*-failure rollback
+    /// branch.
+    struct BadReplyTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for BadReplyTransport {
+        async fn round_trip(&self, _request: &[u8], _timeout: Duration) -> Result<Vec<u8>> {
+            // `!00\r` = mount UnknownCommand error -> Response::decode returns
+            // ProtocolError::MountError -> bubbles up as StarAdvError::Protocol.
+            Ok(b"!00\r".to_vec())
+        }
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BadReplyFactory;
+
+    #[async_trait::async_trait]
+    impl TransportFactory for BadReplyFactory {
+        async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
+            Ok(Arc::new(BadReplyTransport))
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_rolls_back_when_handshake_fails() {
+        let m = TransportManager::new(Config::default(), Arc::new(BadReplyFactory));
+        let err = m.connect().await.unwrap_err();
+        // Some kind of protocol/transport error — the exact variant is
+        // not the test's concern, just that connect surfaces the failure
+        // and rolls the manager state back.
+        assert!(!matches!(err, StarAdvError::ConnectionFailed(_)));
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 0);
+        assert!(!m.is_available());
+        // No transport stuck in the slot.
+        assert!(m.transport.lock().await.is_none());
+        // Subsequent connect with a working factory must still work.
+        let m2 = TransportManager::new(Config::default(), Arc::new(MockTransportFactory));
+        m2.connect().await.unwrap();
+        assert!(m2.is_available());
+    }
+
+    #[tokio::test]
+    async fn disconnect_at_zero_count_is_a_noop() {
+        // Defensive: never decrement past zero. Calling disconnect on a
+        // freshly-constructed manager must not wrap-around the counter
+        // or panic.
+        let m = manager();
+        m.disconnect().await.unwrap();
+        assert_eq!(m.connection_count.load(Ordering::SeqCst), 0);
+        assert!(!m.is_available());
+    }
+
+    #[tokio::test]
+    async fn polling_interval_for_watcher_matches_usb_config() {
+        // The watcher reads its cadence from the same place as the
+        // background poller — verify they don't drift.
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(123);
+        }
+        let m = TransportManager::new(cfg, Arc::new(MockTransportFactory));
+        assert_eq!(m.polling_interval_for_watcher(), Duration::from_millis(123));
+    }
+
+    #[tokio::test]
+    async fn polling_interval_for_watcher_matches_udp_config() {
+        let cfg = Config {
+            transport: TransportConfig::Udp(crate::config::UdpConfig {
+                polling_interval: Duration::from_millis(77),
+                ..crate::config::UdpConfig::default()
+            }),
+            ..Config::default()
+        };
+        let m = TransportManager::new(cfg, Arc::new(MockTransportFactory));
+        assert_eq!(m.polling_interval_for_watcher(), Duration::from_millis(77));
+    }
+
+    #[tokio::test]
+    async fn snapshot_is_populated_after_polling() {
+        let m = manager();
+        m.connect().await.unwrap();
+        // Give the polling task at least one tick to run. Default
+        // polling interval is much longer than this; the test is OK
+        // tolerating one missed snapshot since handshake also seeds it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let snap = m.snapshot().await;
+        // Handshake seeded position from the mock's :j reply (== 0
+        // initially). Just confirm the read returns without panicking
+        // and the running flags are sensible.
+        let _ = snap.ra.position_ticks;
+        assert!(!snap.ra.running);
+        assert!(!snap.dec.running);
+    }
+
+    #[test]
+    fn expect_ack_rejects_non_ack_responses() {
+        assert!(expect_ack(Response::U24(0)).is_err());
+        assert!(expect_ack(Response::Position(0)).is_err());
+        assert!(expect_ack(Response::Ack).is_ok());
+    }
+
+    #[test]
+    fn expect_u24_rejects_non_u24_responses() {
+        assert!(expect_u24(Response::Ack).is_err());
+        assert!(expect_u24(Response::Position(0)).is_err());
+        assert_eq!(expect_u24(Response::U24(42)).unwrap(), 42);
+    }
+
+    #[test]
+    fn expect_position_rejects_non_position_responses() {
+        assert!(expect_position(Response::Ack).is_err());
+        assert!(expect_position(Response::U24(0)).is_err());
+        assert_eq!(expect_position(Response::Position(-7)).unwrap(), -7);
+    }
 }

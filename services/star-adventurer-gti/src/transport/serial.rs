@@ -114,3 +114,68 @@ impl TransportFactory for SerialTransportFactory {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::config::{TransportConfig, UdpConfig, UsbConfig};
+
+    #[tokio::test]
+    async fn factory_open_with_udp_transport_returns_config_error() {
+        // SerialTransportFactory only handles USB; passing it a UDP
+        // config must produce a Config error explaining the mismatch.
+        let cfg = Config {
+            transport: TransportConfig::Udp(UdpConfig::default()),
+            ..Config::default()
+        };
+        let err = match SerialTransportFactory.open(&cfg).await {
+            Ok(_) => panic!("expected open() to fail"),
+            Err(e) => e,
+        };
+        match err {
+            StarAdvError::Config(msg) => {
+                assert!(msg.contains("usb"), "message should mention usb: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_with_nonexistent_port_returns_connection_failed() {
+        // Opening a path that obviously cannot exist must fail with
+        // ConnectionFailed and a message naming the port — same path
+        // the factory drives in production.
+        let usb = UsbConfig {
+            port: "/dev/this-port-does-not-exist-xyzzy".into(),
+            ..UsbConfig::default()
+        };
+        let err = match SerialTransport::connect(usb).await {
+            Ok(_) => panic!("expected connect() to fail"),
+            Err(e) => e,
+        };
+        match err {
+            StarAdvError::ConnectionFailed(msg) => {
+                assert!(msg.contains("xyzzy"), "message should name the port: {msg}");
+            }
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn factory_propagates_connect_failure_for_bad_usb_port() {
+        let usb = UsbConfig {
+            port: "/dev/this-port-does-not-exist-xyzzy".into(),
+            ..UsbConfig::default()
+        };
+        let cfg = Config {
+            transport: TransportConfig::Usb(usb),
+            ..Config::default()
+        };
+        let err = match SerialTransportFactory.open(&cfg).await {
+            Ok(_) => panic!("expected open() to fail"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, StarAdvError::ConnectionFailed(_)));
+    }
+}
