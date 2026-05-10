@@ -85,6 +85,15 @@ impl Drop for SkyViewStub {
     }
 }
 
+/// Hard cap on the rendered cutout. Production cameras top out at
+/// roughly 60 megapixels (Fujifilm GFX series, etc.); 8192 × 8192 ≈
+/// 67 megapixels is a comfortable upper bound that still fits in
+/// ~128 MB at u16 + a few hundred MB at i32 — enough headroom for
+/// any plausible test scenario without letting a malformed
+/// `Pixels=` query allocate a runaway buffer that OOMs the test
+/// process.
+const MAX_PIXELS_PER_AXIS: u32 = 8192;
+
 async fn handle_skyview(method: Method, RawQuery(query): RawQuery) -> axum::response::Response {
     if method == Method::HEAD {
         return (StatusCode::OK, Vec::<u8>::new()).into_response();
@@ -95,7 +104,30 @@ async fn handle_skyview(method: Method, RawQuery(query): RawQuery) -> axum::resp
     let (w, h) = parse_pixels(params.get("Pixels").map(String::as_str)).unwrap_or((64, 48));
     let (size_x_deg, _size_y_deg) =
         parse_pair(params.get("Size").map(String::as_str)).unwrap_or((0.1, 0.1));
-    let pixel_scale_arcsec = (size_x_deg * 3600.0) / (w as f64).max(1.0);
+    // Defensive bound on pixel dimensions: a malformed `Pixels=`
+    // query (or one with values larger than any real camera would
+    // request) would otherwise drive a `vec![0u16; w*h]` allocation
+    // that can overflow `usize::checked_mul` or OOM the test runner.
+    if w == 0 || h == 0 || w > MAX_PIXELS_PER_AXIS || h > MAX_PIXELS_PER_AXIS {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Pixels out of range: requested {w}x{h}, cap {MAX_PIXELS_PER_AXIS} per axis"),
+        )
+            .into_response();
+    }
+    let pixel_scale_arcsec = (size_x_deg * 3600.0) / f64::from(w).max(1.0);
+    // Reject non-finite scale (e.g. caller passed a finite but huge
+    // `Size=` that overflows the multiply). Otherwise the `Float`
+    // keyword construction in `synth_fits_with_wcs` would panic via
+    // `rp_fits::writer::Keyword::new`, which rejects non-finite
+    // values.
+    if !pixel_scale_arcsec.is_finite() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("derived pixel_scale_arcsec is not finite: size_x_deg={size_x_deg}"),
+        )
+            .into_response();
+    }
     let bytes = synth_fits_with_wcs(w, h, ra_deg, dec_deg, pixel_scale_arcsec);
     (StatusCode::OK, bytes).into_response()
 }
@@ -170,6 +202,13 @@ fn parse_pixels(s: Option<&str>) -> Option<(u32, u32)> {
 /// `(ra_center_deg, dec_center_deg)` with the given plate scale.
 /// Pixel data is zero-filled — the centering loop's plate-solver stub
 /// reads only header records.
+///
+/// `width` and `height` must satisfy
+/// `width * height <= isize::MAX as usize` (Rust's `Vec` ceiling);
+/// callers are expected to apply [`MAX_PIXELS_PER_AXIS`] (the value
+/// `handle_skyview` enforces) so the multiplication can't overflow.
+/// The internal `checked_mul` is belt-and-suspenders for direct
+/// callers (unit tests / future helpers) that bypass `handle_skyview`.
 fn synth_fits_with_wcs(
     width: u32,
     height: u32,
@@ -179,8 +218,8 @@ fn synth_fits_with_wcs(
 ) -> Vec<u8> {
     use rp_fits::writer::{write_u16_image, Keyword, KeywordValue};
 
-    let crpix1 = (width as f64) / 2.0 + 0.5;
-    let crpix2 = (height as f64) / 2.0 + 0.5;
+    let crpix1 = f64::from(width) / 2.0 + 0.5;
+    let crpix2 = f64::from(height) / 2.0 + 0.5;
     let cdelt = pixel_scale_arcsec / 3600.0;
 
     let extras = vec![
@@ -194,7 +233,10 @@ fn synth_fits_with_wcs(
         Keyword::new("CDELT2", KeywordValue::Float(cdelt)).unwrap(),
     ];
 
-    let pixels = vec![0u16; (width as usize) * (height as usize)];
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .expect("width * height overflows usize (callers must cap dimensions)");
+    let pixels = vec![0u16; pixel_count];
     let mut out = Vec::new();
     write_u16_image(&mut out, &pixels, width, height, &extras).expect("write_u16_image");
     out

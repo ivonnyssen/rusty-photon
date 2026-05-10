@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::camera::DeviceState;
-use crate::pointing::{PointingSource, PointingState};
+use crate::pointing::{validate_pointing, PointingSource};
 
 #[derive(Debug, Serialize)]
 struct PositionResponse {
@@ -88,17 +88,19 @@ async fn post_position(
             }
         }
         PointingSource::Telescope(_) => {
-            // Validate ra/dec/rotation by routing through the
-            // SharedPointing validator. We don't actually mutate
-            // `last_snapshot` here — the next exposure will overwrite
-            // it from either the override or a fresh mount read — but
-            // we want identical 400-on-bad-input semantics with
-            // static mode (P4/P5).
-            let validated = match validate_position(
+            // Reuse the shared validator so the static-mode write
+            // path and the follow-mode one-shot override path stay
+            // in lockstep on input validation. We don't actually
+            // mutate `last_snapshot` here — the next exposure will
+            // overwrite it from either the override or a fresh mount
+            // read — but identical 400-on-bad-input semantics with
+            // static mode (P4/P5) matters for clients.
+            let current_rotation = state.last_snapshot.snapshot().await.rotation_deg;
+            let validated = match validate_pointing(
                 req.ra_deg,
                 req.dec_deg,
                 req.rotation_deg,
-                &state.last_snapshot.snapshot().await,
+                current_rotation,
             ) {
                 Ok(v) => v,
                 Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -111,29 +113,4 @@ async fn post_position(
             StatusCode::NO_CONTENT.into_response()
         }
     }
-}
-
-/// Apply the same input rules as [`crate::pointing::SharedPointing::update`]
-/// without touching shared state — used by the follow-mode `POST`
-/// path that arms a one-shot override instead of mutating
-/// `last_snapshot`.
-fn validate_position(
-    ra_deg: f64,
-    dec_deg: f64,
-    rotation_deg: Option<f64>,
-    fallback_rotation: &PointingState,
-) -> Result<PointingState, ()> {
-    if !ra_deg.is_finite() || !(0.0..360.0).contains(&ra_deg) {
-        return Err(());
-    }
-    if !dec_deg.is_finite() || !(-90.0..=90.0).contains(&dec_deg) {
-        return Err(());
-    }
-    if let Some(r) = rotation_deg {
-        if !r.is_finite() {
-            return Err(());
-        }
-    }
-    let rot = rotation_deg.unwrap_or(fallback_rotation.rotation_deg);
-    Ok(PointingState::new(ra_deg, dec_deg, rot))
 }
