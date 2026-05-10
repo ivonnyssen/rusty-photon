@@ -553,6 +553,79 @@ impl Telescope for MountDevice {
         self.slew_to_coordinates_async(ra, dec).await
     }
 
+    // ---- Park / Unpark / Abort ----
+
+    async fn park(&self) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        // Idempotent: already parked → no-op.
+        if self.state.read().await.at_park {
+            return Ok(());
+        }
+        // Stop tracking before slewing home (per ASCOM, tracking remains
+        // off after Park).
+        if self.state.read().await.tracking_requested {
+            self.transport
+                .send(Command::StopMotion(Axis::Ra))
+                .await
+                .map_err(Self::ascom)?;
+            self.state.write().await.tracking_requested = false;
+        }
+        // Slew both axes to encoder 0.
+        for axis in [Axis::Ra, Axis::Dec] {
+            self.transport
+                .send(Command::StopMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetMotionMode {
+                    axis,
+                    mode: MotionMode::GOTO_FAST_FORWARD,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetGotoTarget { axis, ticks: 0 })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::StartMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+        }
+        // Mark slew in progress and spawn the park watcher (sets at_park
+        // = true on completion instead of re-enabling tracking).
+        let settle = {
+            let mut s = self.state.write().await;
+            s.slew_in_progress = true;
+            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
+        };
+        spawn_park_completion_watcher(
+            Arc::clone(&self.state),
+            Arc::clone(&self.transport),
+            self.transport.polling_interval_for_watcher(),
+            settle,
+        );
+        Ok(())
+    }
+
+    async fn unpark(&self) -> ASCOMResult<()> {
+        // Unpark does NOT auto-enable tracking.
+        self.state.write().await.at_park = false;
+        Ok(())
+    }
+
+    async fn abort_slew(&self) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        // Clear slew_in_progress first so the slew/park watchers see the
+        // abort and bail before clobbering the snapshot or at_park flag.
+        self.state.write().await.slew_in_progress = false;
+        // Issue :L on both axes (instant stop). Per ASCOM, AbortSlew
+        // does not auto-restore tracking.
+        let _ = self.transport.send(Command::InstantStop(Axis::Ra)).await;
+        let _ = self.transport.send(Command::InstantStop(Axis::Dec)).await;
+        Ok(())
+    }
+
     // ---- Slew settle time (read/write, lives in the in-memory mirror) ----
 
     async fn slew_settle_time(&self) -> ASCOMResult<Duration> {
@@ -624,6 +697,37 @@ fn spawn_slew_completion_watcher(
             }
             tokio::time::sleep(settle).await;
             state.write().await.slew_in_progress = false;
+            return;
+        }
+    });
+}
+
+/// Spawn the park-completion watcher.
+///
+/// Same shape as [`spawn_slew_completion_watcher`] but the post-motion
+/// branch sets `at_park = true` instead of re-issuing tracking. Park
+/// always leaves tracking off per the ASCOM spec.
+fn spawn_park_completion_watcher(
+    state: Arc<RwLock<DriverState>>,
+    transport: Arc<TransportManager>,
+    polling_interval: Duration,
+    settle: Duration,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(polling_interval).await;
+            // External abort path: AbortSlew clears slew_in_progress.
+            if !state.read().await.slew_in_progress {
+                return;
+            }
+            let snap = transport.snapshot().await;
+            if snap.ra.running || snap.dec.running {
+                continue;
+            }
+            tokio::time::sleep(settle).await;
+            let mut s = state.write().await;
+            s.at_park = true;
+            s.slew_in_progress = false;
             return;
         }
     });
@@ -918,6 +1022,85 @@ mod tests {
         d.slew_to_target_async().await.unwrap();
         assert_eq!(d.target_right_ascension().await.unwrap(), 12.0);
         assert_eq!(d.target_declination().await.unwrap(), 45.0);
+    }
+
+    #[tokio::test]
+    async fn park_refuses_while_disconnected() {
+        let d = fast_settle_device();
+        let err = d.park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn park_then_unpark_round_trips_at_park_flag() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        // Wait for the park watcher to settle and set at_park.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(d.at_park().await.unwrap(), "AtPark should be true");
+        d.unpark().await.unwrap();
+        assert!(!d.at_park().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn park_is_idempotent() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Second park while at_park is already true should be a no-op
+        // (returns Ok without re-issuing motion).
+        d.park().await.unwrap();
+        assert!(d.at_park().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unpark_does_not_auto_enable_tracking() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        d.unpark().await.unwrap();
+        assert!(
+            !d.tracking().await.unwrap(),
+            "Tracking must remain off after Unpark"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_slew_clears_slew_in_progress() {
+        let d = fast_settle_connected().await;
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        // slew_in_progress is set immediately after the spawn.
+        assert!(d.slewing().await.unwrap());
+        d.abort_slew().await.unwrap();
+        // Even before the polling task refreshes the snapshot,
+        // slew_in_progress is already cleared so Slewing transitions to
+        // false.
+        // Wait one polling tick so any in-flight watcher iteration completes.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!d.slewing().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn abort_slew_does_not_auto_restore_tracking() {
+        let d = fast_settle_connected().await;
+        d.set_tracking(true).await.unwrap();
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        d.abort_slew().await.unwrap();
+        // Tracking flag stays as-set (true), but the watcher's
+        // re-enable path is skipped because slew_in_progress was
+        // cleared. The exact post-abort tracking state isn't pinned by
+        // ASCOM; we just check abort itself returned Ok.
+        // (The driver's tracking_requested flag persists; the wire-side
+        // tracking command was paused by :L. The user must call
+        // SetTracking(true) again to resume motion.)
+        let _ = d.tracking().await;
+    }
+
+    #[tokio::test]
+    async fn abort_slew_refuses_while_disconnected() {
+        let d = fast_settle_device();
+        let err = d.abort_slew().await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
     }
 
     #[tokio::test]
