@@ -170,7 +170,13 @@ async fn solve_handler(
     State(state): State<StubState>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let body_for_handler = body.clone();
+    // Extract `fits_path` *before* moving `body` into the request log
+    // — only the `EchoFitsCenter` branch needs it, but borrowing
+    // here avoids cloning the whole `Value` for every request shape.
+    let fits_path_owned = body
+        .get("fits_path")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     state.requests.write().await.push(body);
 
     match state.behavior {
@@ -184,10 +190,7 @@ async fn solve_handler(
             canned_response(&responses[idx])
         }
         StubBehavior::EchoFitsCenter { ref template } => {
-            let fits_path = body_for_handler
-                .get("fits_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let fits_path = fits_path_owned.as_deref().unwrap_or("");
             match read_crval_from_fits(fits_path) {
                 Ok((ra, dec)) => canned_response(&CannedWcs {
                     ra_center: ra,

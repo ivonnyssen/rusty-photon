@@ -113,9 +113,10 @@ async fn post_position(
     }
 }
 
-/// Apply the same input rules as [`SharedPointing::update`] without
-/// touching shared state — used by the follow-mode `POST` path that
-/// arms a one-shot override instead of mutating `last_snapshot`.
+/// Apply the same input rules as [`crate::pointing::SharedPointing::update`]
+/// without touching shared state — used by the follow-mode `POST`
+/// path that arms a one-shot override instead of mutating
+/// `last_snapshot`.
 fn validate_position(
     ra_deg: f64,
     dec_deg: f64,
