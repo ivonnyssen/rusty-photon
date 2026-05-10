@@ -7,7 +7,7 @@ use clap::Parser;
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
-use star_adventurer_gti::MockTransportFactory;
+use star_adventurer_gti::transport::mock::CapturingMockFactory;
 use star_adventurer_gti::{load_config, Config, ServerBuilder, TransportFactory};
 
 #[derive(Parser)]
@@ -101,8 +101,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let builder = {
-        let factory: Arc<dyn TransportFactory> = Arc::new(MockTransportFactory);
-        builder.with_transport_factory(factory)
+        // CapturingMockFactory holds a pre-built MockTransport whose
+        // state Arc is shared with every clone the factory hands out.
+        // Reuse that same state for the /debug/v1/mock-commands
+        // endpoint so tools like BDD harnesses can inspect the wire
+        // command log over HTTP.
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.mock.state);
+        let factory: Arc<dyn TransportFactory> = Arc::new(factory);
+        builder
+            .with_transport_factory(factory)
+            .with_debug_mock_state(state)
     };
 
     #[cfg(not(feature = "mock"))]

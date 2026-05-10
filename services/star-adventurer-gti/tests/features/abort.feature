@@ -1,4 +1,3 @@
-@wip
 Feature: Abort slew
   AbortSlew issues :L (instant stop) on both axes, clears the Slewing
   flag, and does NOT auto-restore tracking. AbortSlew while not slewing

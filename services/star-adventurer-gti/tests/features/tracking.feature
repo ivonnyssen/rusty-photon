@@ -1,4 +1,3 @@
-@wip
 Feature: Sidereal tracking
   Setting Tracking = true issues :G (tracking mode) + :I (sidereal step
   period) + :J on the RA axis. Setting Tracking = false issues :K on the

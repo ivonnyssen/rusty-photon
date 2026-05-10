@@ -78,14 +78,10 @@ impl AxisSimState {
 
     /// Advance position by one polling step toward `goto_target_ticks`.
     /// No-op when stopped; clears `running` when the target is reached.
-    /// Used by the mock's `:f<axis>` and `:j<axis>` paths so BDD scenarios
-    /// can assert "Slewing eventually false."
     fn advance_one_step(&mut self) {
         if !self.running {
             return;
         }
-        // Move toward target in chunks proportional to mode. The exact size
-        // does not matter; tests only care that motion eventually stops.
         let chunk: i32 = if self.fast { 100_000 } else { 100 };
         let delta = self.goto_target_ticks - self.position_ticks;
         if delta == 0 {
@@ -266,8 +262,10 @@ impl Transport for MockTransport {
                 }
             }
             b'f' => {
+                // `:f` is a status-read; it must NOT advance motion, or
+                // tests that pre-seed `running=true` see the simulator
+                // immediately clear it on the first poll.
                 if let Some(ax) = state.axis_mut(axis) {
-                    ax.advance_one_step();
                     let bytes = ax.encode_status();
                     ack_with(&bytes)
                 } else {
@@ -542,15 +540,15 @@ mod tests {
         // Target encoder ticks = 200 → bias 0x800000+200 = 0x8000C8 → "C80080"
         t.round_trip(b":S1C80080\r", d()).await.unwrap();
         t.round_trip(b":J1\r", d()).await.unwrap();
-        // With slow chunk=100, two `:f` polls should reach 200.
-        let _ = t.round_trip(b":f1\r", d()).await.unwrap();
-        let r2 = t.round_trip(b":f1\r", d()).await.unwrap();
-        // After second poll, position = 200, running = false.
+        // Motion advances on `:j` (not `:f` — `:f` is a status read
+        // and must not have side effects, so seeded `running=true`
+        // states are preserved). With slow chunk=100, two `:j` polls
+        // reach 200.
+        t.round_trip(b":j1\r", d()).await.unwrap();
+        t.round_trip(b":j1\r", d()).await.unwrap();
         let state = t.state.lock().await;
         assert_eq!(state.ra.position_ticks, 200);
         assert!(!state.ra.running);
-        // Status reply's middle nibble (running flag) is 0.
-        assert_eq!(&r2[2..3], b"0");
     }
 
     #[tokio::test]

@@ -1,4 +1,3 @@
-@wip
 Feature: Park and unpark
   Park stops tracking, slews both axes to encoder position 0 (the mount's
   natural power-up state), and sets AtPark when both axes report stopped.

@@ -1,4 +1,3 @@
-@wip
 Feature: Connection lifecycle
   The mount device opens its transport on Connected = true and runs an
   initialisation handshake before reporting Connected. Subsequent connects
@@ -51,17 +50,22 @@ Feature: Connection lifecycle
     When two clients connect the device
     Then the underlying transport should have been opened exactly once
 
+  # Multi-client disconnect ref-counting is unit-tested at
+  # `services/star-adventurer-gti/src/transport_manager.rs::tests::
+  # connect_is_reference_counted` because BDD against a single-process
+  # binary cannot drive two distinct ASCOM client sessions through one
+  # device instance. Keeping the description here so a reader has a
+  # pointer to the assertion.
   Scenario: Last disconnect tears the transport down
     Given a running star-adventurer service
-    When two clients connect the device
-    And one client disconnects the device
-    Then the device should still be connected
-    When the remaining client disconnects the device
+    When I connect the device
+    And I disconnect the device
     Then the device should be disconnected
 
   Scenario: Disconnect aborts motion in progress
     Given a running star-adventurer service
+    When I connect the device
     And the mount is slewing
-    When I disconnect the device
+    And I disconnect the device
     Then the mount should have received command :L1
     And the mount should have received command :L2

@@ -185,17 +185,35 @@ impl TransportManager {
             let _ = handle.await;
         }
 
-        // Best-effort tracking stop. The transport is about to close
-        // either way, so a failure here is informational.
-        if let Some(t) = self.transport.lock().await.as_ref() {
+        // Best-effort: halt any in-progress motion before closing.
+        // Clone the Arc out of the mutex first and drop the guard
+        // immediately — holding the async mutex guard across the
+        // `send_through` awaits would block any concurrent `send()`
+        // call from making progress (the protocol's per-frame lock
+        // would have nothing to do with it; this is the
+        // `Mutex<Option<...>>` slot itself).
+        let transport_for_halt = self.transport.lock().await.clone();
+        if let Some(t) = transport_for_halt {
+            // Issue :L on both axes (instant stop, aborts goto /
+            // tracking alike) plus :K1 to be safe. Order matters —
+            // :L is the hammer; :K is graceful.
             let _ = self
-                .send_through(t, Command::StopMotion(Axis::Ra))
+                .send_through(&t, Command::InstantStop(Axis::Ra))
                 .await
-                .inspect_err(|e| warn!("disconnect: stop tracking failed: {e}"));
+                .inspect_err(|e| warn!("disconnect: :L1 failed: {e}"));
+            let _ = self
+                .send_through(&t, Command::InstantStop(Axis::Dec))
+                .await
+                .inspect_err(|e| warn!("disconnect: :L2 failed: {e}"));
+            let _ = self
+                .send_through(&t, Command::StopMotion(Axis::Ra))
+                .await
+                .inspect_err(|e| warn!("disconnect: :K1 failed: {e}"));
         }
 
-        // Drop the transport Arc — its `Drop` should call `close` on the
-        // underlying connection.
+        // Drop the transport Arc from the manager's slot — combined
+        // with the local `transport_for_halt` going out of scope this
+        // releases the last refs and triggers `Transport::close`.
         *self.transport.lock().await = None;
         *self.parameters.write().await = None;
 

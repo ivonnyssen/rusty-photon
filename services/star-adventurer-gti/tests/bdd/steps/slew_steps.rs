@@ -1,14 +1,23 @@
 //! Steps for slew.feature.
 
-#![allow(unused_variables)]
-
 use crate::world::StarAdventurerWorld;
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
+use std::time::Duration;
 
 #[given("the device is parked")]
 async fn device_is_parked(world: &mut StarAdventurerWorld) {
-    todo!("Phase 3: connect, then call park() and wait for AtPark = true")
+    // Connect, park, wait for the watcher to set AtPark = true.
+    world.mount().set_connected(true).await.unwrap();
+    world.mount().park().await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if world.mount().at_park().await.unwrap() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("park watcher did not set AtPark within 5s");
 }
 
 #[when(expr = "I slew asynchronously to RA {float} hours and Dec {float} degrees")]
@@ -57,18 +66,48 @@ async fn set_target_dec(world: &mut StarAdventurerWorld, deg: f64) {
 
 #[given("the mount reports both axes stopped in goto mode")]
 async fn axes_stopped_in_goto(world: &mut StarAdventurerWorld) {
-    todo!("Phase 3: mock state.ra.running = false, goto = true; same for dec")
+    seed_axes_stopped_in_goto(world).await;
 }
 
 #[when("the mount reports both axes stopped in goto mode")]
 async fn when_axes_stopped_in_goto(world: &mut StarAdventurerWorld) {
-    todo!("Phase 3: mock state.ra.running = false, goto = true; same for dec")
+    seed_axes_stopped_in_goto(world).await;
+}
+
+async fn seed_axes_stopped_in_goto(world: &mut StarAdventurerWorld) {
+    // Tightly-timed scenarios that need the slew to "have just
+    // finished" use the World's seed queue so failures surface as
+    // assertion errors rather than silently leaving the mount in the
+    // wrong state.
+    world.queue_seed("ra_running", false.into()).await;
+    world.queue_seed("dec_running", false.into()).await;
+    world.queue_seed("ra_goto", true.into()).await;
+    world.queue_seed("dec_goto", true.into()).await;
 }
 
 #[then("the mount should have received commands matching:")]
 async fn commands_matching(world: &mut StarAdventurerWorld, step: &Step) {
-    let _rows = step.table.as_ref().expect("expected a data table");
-    todo!("Phase 3: read mock command-history, regex-match each row's pattern in order")
+    use regex::Regex;
+    let table = step.table.as_ref().expect("expected a data table");
+    let log = world.command_log().await;
+    let mut log_idx = 0usize;
+    for row in table.rows.iter().skip(1) {
+        let pattern = format!("^{}\r?$", row[0].trim());
+        let re = Regex::new(&pattern).expect("invalid regex in feature file");
+        let mut found = false;
+        while log_idx < log.len() {
+            if re.is_match(&log[log_idx]) {
+                found = true;
+                log_idx += 1;
+                break;
+            }
+            log_idx += 1;
+        }
+        assert!(
+            found,
+            "expected log entry matching {pattern:?}; saw {log:?}"
+        );
+    }
 }
 
 #[then(expr = "TargetRightAscension should be {float} hours within {float}")]
@@ -86,16 +125,94 @@ async fn target_dec_should_be(world: &mut StarAdventurerWorld, expected: f64, to
 #[then(
     expr = "the slew target on the wire should correspond to RA {float} hours and Dec {float} degrees"
 )]
-async fn wire_slew_target(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
-    todo!("Phase 3: read mock command-history for last :S1/:S2, decode the bias-encoded ticks, convert back to RA/Dec, assert within tolerance")
+async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
+    // Decode the Dec axis target — this comparison doesn't depend on
+    // LST so it's deterministic in BDD. The RA target involves
+    // `lst_at_slew_time` which we can't pin until Phase 4 wires
+    // clock injection (the unit test
+    // `coordinates::tests::ra_ticks_round_trip_through_mechanical_ha`
+    // pins the ticks ↔ RA math regardless), so for RA we still only
+    // assert that *some* `:S1` frame appears.
+    use skywatcher_motor_protocol::codec::decode_position;
+    let log = world.command_log().await;
+    let s1 = log
+        .iter()
+        .find(|c| c.starts_with(":S1") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :S1 in log {log:?}"));
+    let s2 = log
+        .iter()
+        .find(|c| c.starts_with(":S2") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :S2 in log {log:?}"));
+    // :S<axis><6 hex bytes>\r — 10 bytes total.
+    assert_eq!(s2.len(), 10, "malformed :S2 frame {s2:?}");
+    let payload: &[u8; 6] = (&s2.as_bytes()[3..9])
+        .try_into()
+        .expect("six payload bytes");
+    let dec_ticks = decode_position(payload).expect("valid :S2 payload");
+
+    // Convert wire ticks back to degrees and compare against the
+    // requested Dec.
+    const GTI_CPR: u32 = 0x0037_5F00;
+    let dec_actual = (dec_ticks as f64) * 360.0 / (GTI_CPR as f64);
+    let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
+    assert!(
+        (dec_actual - dec).abs() < tol,
+        "Dec target {dec_actual:.4}° differs from requested {dec:.4}° by > {tol}°; \
+         :S1={s1:?} :S2={s2:?}"
+    );
 }
 
 #[then(expr = "the mount should eventually receive a tracking-mode :G1 within {int} seconds")]
 async fn mount_eventually_tracking_g1(world: &mut StarAdventurerWorld, secs: u64) {
-    todo!("Phase 3: poll mock command-history; tracking-mode :G1 has goto bit clear")
+    // Tracking-mode :G1 has the high nibble's bit 0x10 clear (per
+    // `MotionMode::TRACKING.to_byte() == 0x00`). The wire form is
+    // `:G1<HH>\r` where HH is two hex digits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        let log = world.command_log().await;
+        if log.iter().any(|c| is_tracking_g1(c)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let log = world.command_log().await;
+    panic!("no tracking-mode :G1 within {secs}s; log {log:?}");
 }
 
 #[then("the mount should not receive a tracking-mode :G1")]
 async fn mount_should_not_tracking_g1(world: &mut StarAdventurerWorld) {
-    todo!("Phase 3: assert no tracking-mode :G1 ever appeared")
+    // Wait briefly to let any pending watcher iteration fire, then
+    // assert no tracking-mode :G1 appeared.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log = world.command_log().await;
+    assert!(
+        !log.iter().any(|c| is_tracking_g1(c)),
+        "found tracking-mode :G1; log {log:?}"
+    );
+}
+
+/// Returns `true` if `frame` is a `:G1<HH>\r` command whose mode byte
+/// has the goto bit (`0x10`) cleared — i.e., a tracking-mode mode
+/// switch on the RA axis.
+fn is_tracking_g1(frame: &str) -> bool {
+    let bytes = frame.as_bytes();
+    if bytes.len() < 6 || &bytes[..3] != b":G1" {
+        return false;
+    }
+    let hi = bytes[3];
+    let lo = bytes[4];
+    let parsed = match (hex_digit(hi), hex_digit(lo)) {
+        (Some(h), Some(l)) => (h << 4) | l,
+        _ => return false,
+    };
+    parsed & 0x10 == 0
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
