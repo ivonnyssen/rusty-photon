@@ -59,6 +59,14 @@ pub enum VerifyIssue {
         file: String,
         message: String,
     },
+    /// Reading a path on disk failed while walking the `i18n/` tree
+    /// (only ever emitted by [`verify_translations_in_dir`], not by the
+    /// generic in-memory path). `path` is the directory or file that
+    /// couldn't be read; `message` is the OS error stringified.
+    /// Silently skipping these would hide real staging/permission
+    /// problems (especially under Bazel runfiles) and surface them as
+    /// confusing `MissingKey` / `EmptyLocale` cascades.
+    IoError { path: String, message: String },
     /// `assets.get_files(...)` returned an empty result for an enumerated locale.
     EmptyLocale { locale: String },
     /// A key exists in `fallback` but is missing in `locale`.
@@ -156,10 +164,22 @@ pub fn verify_translations<A: I18nAssets>(assets: &A, fallback: &str) -> VerifyR
 /// see the `.ftl` tree at compile time.
 ///
 /// `dir` is expected to contain one subdirectory per locale, each with one
-/// or more `*.ftl` files (the standard `i18n-embed` layout).
+/// or more `*.ftl` files (the standard `i18n-embed` layout). Any
+/// filesystem failure while walking that tree — a missing `dir`, an
+/// unreadable locale directory, a file that can't be opened — surfaces as
+/// a [`VerifyIssue::IoError`] alongside the normal verification issues so
+/// the root cause is actionable rather than buried under cascading
+/// `MissingKey` / `EmptyLocale` noise.
 pub fn verify_translations_in_dir(dir: &Path, fallback: &str) -> VerifyReport {
-    let assets = FsAssets::new(dir);
-    verify_translations(&assets, fallback)
+    let (assets, io_issues) = FsAssets::new(dir);
+    let mut report = verify_translations(&assets, fallback);
+    // Prepend so the IoError surfaces before any EmptyLocale/MissingKey
+    // cascades it caused; operators reading the list top-down see the
+    // root cause first.
+    let downstream = std::mem::take(&mut report.issues);
+    report.issues = io_issues;
+    report.issues.extend(downstream);
+    report
 }
 
 /// Lightweight `I18nAssets` impl that walks a directory at runtime and
@@ -171,10 +191,23 @@ struct FsAssets {
 }
 
 impl FsAssets {
-    fn new(base: &Path) -> Self {
+    /// Walk `base` and collect every `{locale}/{file}.ftl` it contains.
+    /// Real I/O failures (missing base dir, unreadable subdir, file-open
+    /// failure) are returned as `IoError` issues alongside the asset
+    /// bundle, so the caller can surface them in the final report rather
+    /// than letting them manifest as cascading drift errors.
+    fn new(base: &Path) -> (Self, Vec<VerifyIssue>) {
         let mut files = std::collections::BTreeMap::new();
-        let Ok(locale_dirs) = std::fs::read_dir(base) else {
-            return Self { files };
+        let mut issues = Vec::new();
+        let locale_dirs = match std::fs::read_dir(base) {
+            Ok(rd) => rd,
+            Err(e) => {
+                issues.push(VerifyIssue::IoError {
+                    path: base.display().to_string(),
+                    message: e.to_string(),
+                });
+                return (Self { files }, issues);
+            }
         };
         for locale_entry in locale_dirs.flatten() {
             let Ok(file_type) = locale_entry.file_type() else {
@@ -186,8 +219,16 @@ impl FsAssets {
             let Some(locale) = locale_entry.file_name().to_str().map(|s| s.to_string()) else {
                 continue;
             };
-            let Ok(ftls) = std::fs::read_dir(locale_entry.path()) else {
-                continue;
+            let locale_path = locale_entry.path();
+            let ftls = match std::fs::read_dir(&locale_path) {
+                Ok(rd) => rd,
+                Err(e) => {
+                    issues.push(VerifyIssue::IoError {
+                        path: locale_path.display().to_string(),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
             };
             for ftl_entry in ftls.flatten() {
                 let path = ftl_entry.path();
@@ -197,13 +238,20 @@ impl FsAssets {
                 let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                let Ok(content) = std::fs::read(&path) else {
-                    continue;
+                let content = match std::fs::read(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        issues.push(VerifyIssue::IoError {
+                            path: path.display().to_string(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
                 };
                 files.insert(format!("{locale}/{filename}"), content);
             }
         }
-        Self { files }
+        (Self { files }, issues)
     }
 }
 
@@ -657,6 +705,59 @@ mod tests {
                 );
             }
             _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn verify_translations_in_dir_reports_io_error_for_missing_base() {
+        // Operator hands the verifier a path that doesn't exist (typo, the
+        // i18n/ tree never got staged into runfiles, permissions issue).
+        // Surface the OS error as an IoError so the operator sees the
+        // root cause rather than just an EmptyLocale that looks like a
+        // missing fallback translation.
+        let report = verify_translations_in_dir(
+            std::path::Path::new("/this/path/does/not/exist/rp-i18n-test"),
+            "en",
+        );
+        let io_err = report
+            .issues
+            .iter()
+            .find(|i| matches!(i, VerifyIssue::IoError { .. }))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected IoError for missing base dir; got {:#?}",
+                    report.issues
+                )
+            });
+        match io_err {
+            VerifyIssue::IoError { path, message } => {
+                assert!(
+                    path.contains("/this/path/does/not/exist/rp-i18n-test"),
+                    "IoError should name the path it tried to read; got {path:?}"
+                );
+                assert!(
+                    !message.is_empty(),
+                    "IoError should carry the underlying OS error message"
+                );
+            }
+            _ => unreachable!(),
+        }
+        // Sanity: IoError precedes any downstream cascade so an operator
+        // reading top-down sees the root cause first.
+        let io_idx = report
+            .issues
+            .iter()
+            .position(|i| matches!(i, VerifyIssue::IoError { .. }))
+            .unwrap();
+        let empty_idx = report
+            .issues
+            .iter()
+            .position(|i| matches!(i, VerifyIssue::EmptyLocale { .. }));
+        if let Some(idx) = empty_idx {
+            assert!(
+                io_idx < idx,
+                "IoError must appear before EmptyLocale so the root cause is read first"
+            );
         }
     }
 

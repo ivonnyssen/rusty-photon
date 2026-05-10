@@ -8,9 +8,16 @@
 //! key, or renames a `{ $var }` placeholder.
 //!
 //! Reads the `i18n/` tree at runtime via [`rp_i18n::verify_translations_in_dir`],
-//! which walks a directory through its own `FsAssets` impl, rather than going
-//! through `RustEmbed` (whose compile-time directory walk would bake in a
-//! sandbox path that won't exist when the test action runs).
+//! which walks a directory through its own `FsAssets` impl. We deliberately
+//! avoid `RustEmbed` here: the verifier's job is to catch translator-side
+//! mistakes (parse errors, dropped keys, renamed placeholders) in the
+//! source tree *before* anything embeds them, so reading the actual files
+//! on disk is the point — not an inconvenience to work around. Going
+//! through the filesystem also sidesteps the spike's `debug-embed` trap
+//! from the binary side: in dev / fastbuild builds `RustEmbed` defers to
+//! a *runtime* walker rooted at the `CARGO_MANIFEST_DIR` value baked in
+//! at compile time, and under `rules_rust` that path is a sandbox that
+//! no longer exists when the test action runs.
 //!
 //! Resolving the runtime path differs by build system, so [`locate_i18n_dir`]
 //! falls back through several candidates instead of trusting a single source:
