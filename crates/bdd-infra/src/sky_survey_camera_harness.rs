@@ -147,6 +147,14 @@ fn parse_pair(s: Option<&str>) -> Option<(f64, f64)> {
     let mut parts = s.split(',');
     let a: f64 = parts.next()?.trim().parse().ok()?;
     let b: f64 = parts.next()?.trim().parse().ok()?;
+    // Reject NaN/Inf — they flow into `synth_fits_with_wcs`, which
+    // routes them into `rp_fits::writer::Keyword::new` for `CRVAL*` /
+    // `CDELT*` records, and that rejects non-finite floats. Returning
+    // `None` here lets the caller fall back to its default values
+    // instead of crashing the stub server on a malformed query.
+    if !a.is_finite() || !b.is_finite() {
+        return None;
+    }
     Some((a, b))
 }
 
@@ -247,14 +255,12 @@ impl SkySurveyCameraConfigBuilder {
                 follow: None,
                 survey_endpoint: survey_endpoint.into(),
                 survey_name: "DSS2 Red".into(),
-                cache_dir: std::env::temp_dir().join(format!(
-                    "sky-survey-cache-{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                )),
+                // Populated by `start_sky_survey_camera` from a
+                // freshly-created `TempDir` so the cache directory is
+                // RAII-cleaned at scenario teardown — see the function
+                // doc for why this lives at the launcher rather than
+                // the builder.
+                cache_dir: PathBuf::new(),
                 port: 0,
             },
         }
@@ -328,21 +334,36 @@ impl SkySurveyCameraConfig {
 }
 
 /// Spawn `sky-survey-camera` with the given config and wait for it to
-/// announce its bound port. Returns a [`ServiceHandle`] whose
+/// announce its bound port.
+///
+/// Returns a `(ServiceHandle, TempDir)` pair. The `ServiceHandle`'s
 /// `base_url` is suitable for an `add_camera` entry in
-/// [`crate::rp_harness::RpConfigBuilder`].
-pub async fn start_sky_survey_camera(config: &SkySurveyCameraConfig) -> ServiceHandle {
-    // Cache directory must exist before the camera tries to connect.
-    // Fail loudly here rather than letting the camera surface a less
-    // actionable connect-time error.
-    std::fs::create_dir_all(&config.cache_dir).unwrap_or_else(|e| {
-        panic!(
-            "failed to create sky-survey-camera cache_dir {}: {e}",
-            config.cache_dir.display()
-        )
-    });
+/// [`crate::rp_harness::RpConfigBuilder`]; the `TempDir` is the
+/// camera's cache directory and **must be kept alive for the
+/// camera's lifetime** — its `Drop` impl removes the directory, so
+/// dropping it before stopping the camera would yank the cache out
+/// from under an in-flight exposure. Callers that store both on a
+/// scenario-scoped world struct should declare the `ServiceHandle`
+/// field *before* the `TempDir` field so Rust's struct-drop order
+/// (top-down) tears down the camera process first, then removes the
+/// cache directory.
+///
+/// The launcher owns cache-directory creation rather than the
+/// builder so the cleanup `TempDir` guard can be returned alongside
+/// the spawned process — there's no clean way to thread that out of
+/// a chained builder API.
+pub async fn start_sky_survey_camera(
+    config: &SkySurveyCameraConfig,
+) -> (ServiceHandle, tempfile::TempDir) {
+    let cache = tempfile::Builder::new()
+        .prefix("sky-survey-cache-")
+        .tempdir()
+        .expect("failed to create sky-survey-camera cache TempDir");
+    let mut config = config.clone();
+    config.cache_dir = cache.path().to_path_buf();
     let path = write_temp_config_file("sky-survey-camera-bdd-config", &config.to_json()).await;
-    ServiceHandle::start("sky-survey-camera", &path).await
+    let handle = ServiceHandle::start("sky-survey-camera", &path).await;
+    (handle, cache)
 }
 
 #[cfg(test)]

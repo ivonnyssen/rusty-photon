@@ -51,10 +51,11 @@ async fn sky_survey_camera_follows(world: &mut RpWorld, offset_ra: f64, offset_d
         })
         .build();
 
-    let handle = start_sky_survey_camera(&cfg).await;
+    let (handle, cache) = start_sky_survey_camera(&cfg).await;
     let cam_url = handle.base_url.clone();
 
     world.sky_survey_camera = Some(handle);
+    world.sky_survey_camera_cache = Some(cache);
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: cam_url,
