@@ -33,18 +33,18 @@ Prove the end-to-end ergonomics of putting Fluent + `i18n-embed` behind a `clap`
 
 ## 3. Surfaces translated in the spike
 
-Exact `.ftl` keys, mapped to the strings in `services/ppba-driver/src/main.rs`:
+Exact `.ftl` keys, mapped to the attributes in `services/ppba-driver/src/main.rs`. Each row points at the `#[localized(...)]` attribute that wires the Fluent key onto the corresponding clap struct/field; the doc-comment immediately above each field is the English source-of-truth that survives in source for grep-ability and as a defensible fallback when the loader fails.
 
 | Key | English source | Source location |
 |---|---|---|
-| `cli-about` | "ASCOM Alpaca driver for Pegasus Astro PPBA Gen2" | `#[command(about = ...)]` line 17 |
-| `cli-help-config` | "Path to configuration file" | doc-comment line 20 |
-| `cli-help-port` | "Serial port path (overrides config file)" | line 24 |
-| `cli-help-server-port` | "Server port (overrides config file)" | line 28 |
-| `cli-help-enable-switch` | "Enable/disable Switch device" | line 32 |
-| `cli-help-enable-observingconditions` | "Enable/disable ObservingConditions device" | line 36 |
-| `cli-help-log-level` | "Log level" | line 40 |
-| `error-invalid-log-level` | `Invalid log level: { $value }. Use: trace, debug, info, warn, error` | `parse_log_level` line 47 |
+| `cli-about` | "ASCOM Alpaca driver for Pegasus Astro PPBA Gen2" | `#[localized(about = "cli-about")]` (struct, line 24) |
+| `cli-help-config` | "Path to configuration file" | `#[localized(help = "cli-help-config")]` line 28 |
+| `cli-help-port` | "Serial port path (overrides config file)" | `#[localized(help = "cli-help-port")]` line 33 |
+| `cli-help-server-port` | "Server port (overrides config file)" | `#[localized(help = "cli-help-server-port")]` line 38 |
+| `cli-help-enable-switch` | "Enable/disable Switch device" | `#[localized(help = "cli-help-enable-switch")]` line 43 |
+| `cli-help-enable-observingconditions` | "Enable/disable ObservingConditions device" | `#[localized(help = "cli-help-enable-observingconditions")]` line 48 |
+| `cli-help-log-level` | "Log level" | `#[localized(help = "cli-help-log-level")]` line 53 |
+| `error-invalid-log-level` | `Invalid log level: { $value }. Use: trace, debug, info, warn, error` | `parse_log_level` body (line 57) via `rp_i18n::fl_active` |
 
 **Explicitly NOT translated in the spike:**
 
@@ -61,10 +61,12 @@ Workspace member that owns the loader, the locale-negotiation logic, and the mac
 
 ```
 crates/rp-i18n/
-├── Cargo.toml                       # i18n-embed, fluent-langneg, sys-locale, unic-langid
+├── Cargo.toml                       # i18n-embed, fluent-langneg, sys-locale, unic-langid, clap
 ├── src/
-│   └── lib.rs                       # resolve_locale, select_best, fl re-export
-└── README.md
+│   └── lib.rs                       # resolve_locale, select_best, init,
+│                                    # LoadError, fl_active, LocalizedParser trait,
+│                                    # fl + fluent_language_loader re-exports
+└── (no README — canonical docs live in src/lib.rs)
 ```
 
 The crate is **deliberately thin**: it owns the loader factory and the locale-resolution function. The `.ftl` files for each service live in `services/<svc>/i18n/{locale}/`, embedded via `i18n-embed`'s `RustEmbed` derive at the consumer site. This matches §6 of the plan ("`i18n/{locale}/{module}.ftl` tree per service").

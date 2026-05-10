@@ -108,7 +108,11 @@ fn en() -> LanguageIdentifier {
 /// fallback bundle at compile time, so `fl!()` calls still resolve.
 ///
 /// Both error paths emit `tracing::warn!` so a misconfigured `i18n/` tree is
-/// visible in operator logs rather than silently degrading to English.
+/// visible in operator logs when tracing is already up. The same details are
+/// also captured in the returned [`LoadError`] payload so callers that run
+/// `select_best` (typically via [`init`]) **before** their tracing
+/// subscriber is installed can re-emit the diagnostic post-init without
+/// losing the underlying `i18n_embed` error message.
 pub fn select_best<A: I18nAssets>(
     loader: &FluentLanguageLoader,
     assets: &A,
@@ -117,11 +121,12 @@ pub fn select_best<A: I18nAssets>(
     let available = match loader.available_languages(assets) {
         Ok(langs) => langs,
         Err(e) => {
+            let reason = e.to_string();
             tracing::warn!(
-                error = %e,
+                error = %reason,
                 "i18n: failed to enumerate embedded locales — keeping English fallback only"
             );
-            return Err(LoadError::Available);
+            return Err(LoadError::Available { reason });
         }
     };
     let en = en();
@@ -135,12 +140,13 @@ pub fn select_best<A: I18nAssets>(
     .cloned()
     .collect();
     if let Err(e) = loader.load_languages(assets, &chosen) {
+        let reason = e.to_string();
         tracing::warn!(
-            error = %e,
+            error = %reason,
             requested = %requested,
             "i18n: failed to load negotiated locale bundle — falling back to English"
         );
-        return Err(LoadError::Load);
+        return Err(LoadError::Load { reason });
     }
     Ok(())
 }
@@ -148,12 +154,23 @@ pub fn select_best<A: I18nAssets>(
 /// Why a [`select_best`] / [`init`] call did not load the requested locale.
 /// The binary continues to function via Fluent's English fallback either way;
 /// this is surfaced for callers that want to log or telemeter the miss.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Available` and `Load` carry the underlying `i18n_embed` error formatted
+/// as a string. The payload preserves the root cause for callers that log
+/// `i18n_status` post-tracing — without it, the warning would be reduced to
+/// a bare variant name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
     /// `i18n_embed::I18nAssets::available_languages` failed.
-    Available,
+    Available {
+        /// Stringified `i18n_embed` error.
+        reason: String,
+    },
     /// `FluentLanguageLoader::load_languages` failed.
-    Load,
+    Load {
+        /// Stringified `i18n_embed` error.
+        reason: String,
+    },
     /// Another `init` call already populated the thread-local loader.
     AlreadyInitialized,
 }

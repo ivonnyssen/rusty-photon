@@ -78,13 +78,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match i18n_status {
         Ok(()) => {}
-        Err(rp_i18n::LoadError::Available) => {
+        Err(rp_i18n::LoadError::Available { reason }) => {
             tracing::warn!(
+                %reason,
                 "i18n: failed to enumerate embedded locales; running with English fallback"
             );
         }
-        Err(rp_i18n::LoadError::Load) => {
+        Err(rp_i18n::LoadError::Load { reason }) => {
             tracing::warn!(
+                %reason,
                 "i18n: failed to load negotiated locale bundle; running with English fallback"
             );
         }
