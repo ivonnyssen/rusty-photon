@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rp_i18n::{fl, fluent_language_loader, LocalizedParser};
 use rust_embed::RustEmbed;
+use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
 use tracing::Level;
 
 #[cfg(feature = "mock")]
@@ -56,7 +56,7 @@ struct Args {
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
-        rp_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
+        rusty_photon_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
             .unwrap_or_else(|| {
                 format!(
                     "Invalid log level: {}. Use: trace, debug, info, warn, error",
@@ -68,7 +68,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
+    let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
 
     // Setup tracing
@@ -78,25 +78,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match i18n_status {
         Ok(()) => {}
-        Err(rp_i18n::LoadError::Available { reason }) => {
+        Err(rusty_photon_i18n::LoadError::Available { reason }) => {
             tracing::warn!(
                 %reason,
                 "i18n: failed to enumerate embedded locales; running with English fallback"
             );
         }
-        Err(rp_i18n::LoadError::Load { reason }) => {
+        Err(rusty_photon_i18n::LoadError::Load { reason }) => {
             tracing::warn!(
                 %reason,
                 "i18n: failed to load negotiated locale bundle; running with English fallback"
             );
         }
-        Err(rp_i18n::LoadError::AlreadyInitialized) => {
+        Err(rusty_photon_i18n::LoadError::AlreadyInitialized) => {
             // Distinct from the load-failure cases: the loader is *not*
             // English-fallback-only, it's just whatever the first init
             // populated. Surfaces the most likely cause (refactor or test
             // artefact) so it's visible without misrepresenting the locale.
             tracing::warn!(
-                "i18n: rp_i18n::init was called more than once on this thread; \
+                "i18n: rusty_photon_i18n::init was called more than once on this thread; \
                  second call's loader was discarded, active locale unchanged"
             );
         }

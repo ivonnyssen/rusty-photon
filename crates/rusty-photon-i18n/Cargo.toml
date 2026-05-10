@@ -1,5 +1,5 @@
 [package]
-name = "rp-i18n"
+name = "rusty-photon-i18n"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -19,7 +19,7 @@ fluent-langneg = { workspace = true }
 sys-locale = { workspace = true }
 unic-langid = { workspace = true }
 clap = { workspace = true }
-rp-i18n-derive = { workspace = true }
+rusty-photon-i18n-derive = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

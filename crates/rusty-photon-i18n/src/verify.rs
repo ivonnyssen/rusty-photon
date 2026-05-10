@@ -20,7 +20,7 @@
 //! ```ignore
 //! #[test]
 //! fn translations_are_consistent() {
-//!     let report = rp_i18n::verify_translations(&Localizations, "en");
+//!     let report = rusty_photon_i18n::verify_translations(&Localizations, "en");
 //!     assert!(report.is_clean(), "translation issues:\n{:#?}", report.issues);
 //! }
 //! ```
@@ -802,7 +802,7 @@ mod tests {
         // root cause rather than just an EmptyLocale that looks like a
         // missing fallback translation.
         let report = verify_translations_in_dir(
-            std::path::Path::new("/this/path/does/not/exist/rp-i18n-test"),
+            std::path::Path::new("/this/path/does/not/exist/rusty-photon-i18n-test"),
             "en",
         );
         let io_err = report
@@ -818,7 +818,7 @@ mod tests {
         match io_err {
             VerifyIssue::IoError { path, message } => {
                 assert!(
-                    path.contains("/this/path/does/not/exist/rp-i18n-test"),
+                    path.contains("/this/path/does/not/exist/rusty-photon-i18n-test"),
                     "IoError should name the path it tried to read; got {path:?}"
                 );
                 assert!(
