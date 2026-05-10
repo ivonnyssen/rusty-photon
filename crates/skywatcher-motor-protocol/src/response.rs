@@ -7,8 +7,9 @@
 //! * `!<XX>\r` — error. `XX` is one ASCII hex byte (the mount-side error
 //!   code); decoded into [`crate::error::MountErrorCode`].
 
+use crate::codec::{decode_position, decode_u24, decode_u8, validate_response_frame};
 use crate::command::{Axis, Command};
-use crate::error::Result;
+use crate::error::{MountErrorCode, ProtocolError, Result};
 
 /// Decoded status bits returned by the `:f<axis>` inquiry.
 ///
@@ -28,6 +29,52 @@ pub struct AxisStatus {
     pub fast: bool,
     /// `:F<axis>` has been issued at least once since power-on.
     pub initialized: bool,
+}
+
+impl AxisStatus {
+    /// Decode the three-nibble `:f<axis>` payload.
+    ///
+    /// Wire form is three ASCII hex digits. The digits encode:
+    ///
+    /// | Digit | Bit | Meaning |
+    /// |-------|-----|---------|
+    /// | 1st   | 0x1 | Tracking-mode update (1) vs Goto-mode update (0) |
+    /// | 1st   | 0x2 | Forward (1) vs Reverse (0) |
+    /// | 1st   | 0x4 | Fast (1) vs Slow (0) |
+    /// | 2nd   | 0x1 | Running (1) vs Stopped (0) |
+    /// | 3rd   | 0x1 | Initialised (1) vs Not-initialised (0) |
+    ///
+    /// Layout matches EQMOD's `STATUS_DECODE` and the `indi-eqmod`
+    /// reference; consult those when validating against real hardware.
+    pub fn decode(payload: &[u8]) -> Result<Self> {
+        if payload.len() != 3 {
+            return Err(ProtocolError::PayloadError(format!(
+                "axis status payload must be 3 hex digits, got {}",
+                payload.len()
+            )));
+        }
+        let n0 = decode_nibble(payload[0])?;
+        let n1 = decode_nibble(payload[1])?;
+        let n2 = decode_nibble(payload[2])?;
+        Ok(Self {
+            goto: (n0 & 0x1) == 0,
+            forward: (n0 & 0x2) != 0,
+            fast: (n0 & 0x4) != 0,
+            running: (n1 & 0x1) != 0,
+            initialized: (n2 & 0x1) != 0,
+        })
+    }
+}
+
+fn decode_nibble(b: u8) -> Result<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        other => Err(ProtocolError::PayloadError(format!(
+            "expected ASCII hex digit, got {other:#04x}"
+        ))),
+    }
 }
 
 /// Every response shape the driver consumes.
@@ -54,11 +101,48 @@ impl Response {
     /// `=` reply) decodes differently depending on what was asked for —
     /// `:j1` returns a [`Response::Position`] (signed, debiased) whereas
     /// `:a1` returns a [`Response::U24`] (unsigned).
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    pub fn decode(_frame: &[u8], _in_reply_to: &Command) -> Result<Self> {
-        unimplemented!(
-            "Phase 3: validate framing, branch on '=' vs '!', dispatch on the original Command"
-        )
+    pub fn decode(frame: &[u8], in_reply_to: &Command) -> Result<Self> {
+        validate_response_frame(frame)?;
+        // Strip the leading prefix and the trailing `\r`.
+        let prefix = frame[0];
+        let payload = &frame[1..frame.len() - 1];
+
+        if prefix == b'!' {
+            // Error reply: payload is exactly two hex digits forming a byte.
+            let bytes = [payload[0], payload[1]];
+            let code = decode_u8(bytes)?;
+            return Err(ProtocolError::MountError(MountErrorCode::from_byte(code)));
+        }
+
+        // Success reply.
+        match in_reply_to {
+            Command::Initialize(_)
+            | Command::SetMotionMode { .. }
+            | Command::SetGotoTarget { .. }
+            | Command::SetStepPeriod { .. }
+            | Command::SetPosition { .. }
+            | Command::StartMotion(_)
+            | Command::StopMotion(_)
+            | Command::InstantStop(_) => {
+                if !payload.is_empty() {
+                    return Err(ProtocolError::PayloadError(format!(
+                        "expected empty `=\\r` ack, got {} payload bytes",
+                        payload.len()
+                    )));
+                }
+                Ok(Self::Ack)
+            }
+            Command::InquirePosition(_) => Ok(Self::Position(decode_position(
+                expect_u24_payload(payload)?,
+            )?)),
+            Command::InquireCpr(_)
+            | Command::InquireTmrFreq
+            | Command::InquireHighSpeedRatio(_)
+            | Command::InquireMotorBoardVersion(_) => {
+                Ok(Self::U24(decode_u24(expect_u24_payload(payload)?)?))
+            }
+            Command::InquireStatus(_) => Ok(Self::Status(AxisStatus::decode(payload)?)),
+        }
     }
 
     /// Helper: return the [`Axis`] the reply pertains to. Always derived from
@@ -81,6 +165,15 @@ impl Response {
             Command::InquireTmrFreq => Some(Axis::Ra),
         }
     }
+}
+
+fn expect_u24_payload(payload: &[u8]) -> Result<&[u8; 6]> {
+    payload.try_into().map_err(|_| {
+        ProtocolError::PayloadError(format!(
+            "expected 6-hex-byte u24 payload, got {} bytes",
+            payload.len()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -166,5 +259,122 @@ mod tests {
         // not Both, so callers can route the reply through the same per-axis
         // dispatch path as the rest.
         assert_eq!(Response::axis_of(&Command::InquireTmrFreq), Some(Axis::Ra));
+    }
+
+    #[test]
+    fn decode_ack_for_setter_commands() {
+        let r = Response::decode(b"=\r", &Command::Initialize(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::Ack);
+        let r = Response::decode(b"=\r", &Command::StartMotion(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::Ack);
+    }
+
+    #[test]
+    fn decode_position_inquiry_returns_signed_ticks() {
+        // 0x800000 bias → encoder count 0
+        let r = Response::decode(b"=000080\r", &Command::InquirePosition(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::Position(0));
+
+        // 0x7FFFFF (FFFF7F low-byte first) → encoder count -1
+        let r = Response::decode(b"=FFFF7F\r", &Command::InquirePosition(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::Position(-1));
+    }
+
+    #[test]
+    fn decode_cpr_inquiry_returns_unsigned_u24() {
+        // From the GTi probe table: =005F37\r → 0x375F00 = 3,628,800
+        let r = Response::decode(b"=005F37\r", &Command::InquireCpr(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::U24(0x37_5F00));
+    }
+
+    #[test]
+    fn decode_status_inquiry_returns_axis_status() {
+        // From the GTi probe table: =100\r → tracking-mode preset, motor
+        // stopped, not initialised. Per AxisStatus::decode bit layout:
+        // first nibble 1 → goto=false (tracking), forward=false, fast=false
+        // second nibble 0 → running=false
+        // third nibble 0 → initialized=false
+        let r = Response::decode(b"=100\r", &Command::InquireStatus(Axis::Ra)).unwrap();
+        let status = match r {
+            Response::Status(s) => s,
+            other => panic!("expected Status, got {other:?}"),
+        };
+        assert!(!status.goto);
+        assert!(!status.forward);
+        assert!(!status.fast);
+        assert!(!status.running);
+        assert!(!status.initialized);
+    }
+
+    #[test]
+    fn decode_error_reply_yields_mount_error() {
+        // !04 is "NotInitialized".
+        let err = Response::decode(b"!04\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        assert_eq!(
+            err,
+            ProtocolError::MountError(MountErrorCode::NotInitialized)
+        );
+
+        // !02 is "MotorNotStopped".
+        let err = Response::decode(
+            b"!02\r",
+            &Command::SetGotoTarget {
+                axis: Axis::Ra,
+                ticks: 0,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ProtocolError::MountError(MountErrorCode::MotorNotStopped)
+        );
+    }
+
+    #[test]
+    fn decode_rejects_malformed_frames() {
+        // Setter command but reply has an unexpected payload.
+        let r = Response::decode(b"=ABC\r", &Command::Initialize(Axis::Ra));
+        assert!(matches!(r, Err(ProtocolError::PayloadError(_))));
+
+        // Inquiry that needs 6 hex bytes but reply has 3.
+        let r = Response::decode(b"=123\r", &Command::InquireCpr(Axis::Ra));
+        assert!(matches!(r, Err(ProtocolError::PayloadError(_))));
+
+        // No leading prefix.
+        let r = Response::decode(b"000080\r", &Command::InquirePosition(Axis::Ra));
+        assert!(matches!(r, Err(ProtocolError::FrameError(_))));
+
+        // No trailing `\r`.
+        let r = Response::decode(b"=000080", &Command::InquirePosition(Axis::Ra));
+        assert!(matches!(r, Err(ProtocolError::FrameError(_))));
+    }
+
+    #[test]
+    fn axis_status_decode_recovers_goto_running_flags() {
+        // First nibble bits: 0x1=tracking-flag (set→tracking, clear→goto),
+        // 0x2=forward, 0x4=fast.
+        // Second nibble: 0x1=running.
+        // Third nibble: 0x1=initialised.
+        // 612 → 6=fast+forward+goto, 1=running, 2=??? — third nibble
+        // 2 has bit 0x1 clear so initialised=false. (Real mounts report
+        // 1 here once initialised; the value 2 is hypothetical.)
+        // Use a more realistic payload instead:
+        // 631: 6=fast+forward+goto, 3=running+(unused), 1=initialised.
+        let s = AxisStatus::decode(b"631").unwrap();
+        assert!(s.goto, "goto flag");
+        assert!(s.forward, "forward flag");
+        assert!(s.fast, "fast flag");
+        assert!(s.running, "running flag");
+        assert!(s.initialized, "initialized flag");
+
+        // 111: first nibble bit 0x1 set → tracking, second nibble 1 →
+        // running, third nibble 1 → initialised. (Tracking sidereal in
+        // progress, the steady-state for sidereal observation.)
+        let s = AxisStatus::decode(b"111").unwrap();
+        assert!(!s.goto, "tracking, not goto");
+        assert!(!s.forward, "no forward bit set in 1");
+        assert!(!s.fast, "no fast bit set in 1");
+        assert!(s.running);
+        assert!(s.initialized);
     }
 }
