@@ -49,3 +49,18 @@ Feature: Sidereal tracking
     Given a running star-adventurer service
     When I try to enable tracking
     Then the operation should fail with not-connected
+
+  Scenario: Enabling tracking fails while parked
+    Given a running star-adventurer service
+    And the device is parked
+    When I try to enable tracking
+    Then the operation should fail with invalid-while-parked
+
+  Scenario: Disabling tracking succeeds while parked
+    # Park leaves Tracking off; a caller re-asserting that on a parked
+    # mount must not error — special-casing the parked state for an
+    # already-off operation is needless friction for clients.
+    Given a running star-adventurer service
+    And the device is parked
+    When I disable tracking
+    Then Tracking should be false

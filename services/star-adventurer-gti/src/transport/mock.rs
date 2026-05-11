@@ -26,72 +26,84 @@ use crate::error::{Result, StarAdvError};
 use crate::transport::{Transport, TransportFactory};
 
 /// Per-axis simulator state.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AxisSimState {
     pub position_ticks: i32,
     pub initialized: bool,
     pub running: bool,
     pub goto: bool,
-    pub forward: bool,
+    /// Counter-clockwise direction flag. Matches the `:G` DB2 bit-0
+    /// and the `:f` nibble-0 bit-1 in the Sky-Watcher spec. The
+    /// driver translates `sign(target - current)` into a CCW flag at
+    /// slew-issue time; the mock advances the encoder accordingly.
+    pub ccw: bool,
     pub fast: bool,
     pub goto_target_ticks: i32,
     pub step_period: u32,
 }
 
-impl Default for AxisSimState {
-    fn default() -> Self {
-        Self {
-            position_ticks: 0,
-            initialized: false,
-            running: false,
-            goto: false,
-            forward: true,
-            fast: false,
-            goto_target_ticks: 0,
-            step_period: 0,
-        }
-    }
-}
-
 impl AxisSimState {
     /// Pack the running / mode / direction / init flags into the three
-    /// hex-digit payload that `:f<axis>` returns.
-    ///
-    /// Bit layout matches [`skywatcher_motor_protocol::AxisStatus::decode`]:
-    /// first nibble carries goto / forward / fast, second carries running,
-    /// third carries initialised.
+    /// hex-digit payload that `:f<axis>` returns. Bit layout matches
+    /// the Sky-Watcher spec §5 (Response E) — see
+    /// [`skywatcher_motor_protocol::AxisStatus`].
     fn encode_status(self) -> [u8; 3] {
         let mut n0 = 0u8;
         if !self.goto {
-            n0 |= 0x1; // tracking-mode flag (clear bit ⇒ goto)
+            n0 |= 0x1; // bit 0: 1 = Tracking, 0 = Goto
         }
-        if self.forward {
-            n0 |= 0x2;
+        if self.ccw {
+            n0 |= 0x2; // bit 1: 1 = CCW, 0 = CW
         }
         if self.fast {
-            n0 |= 0x4;
+            n0 |= 0x4; // bit 2: 1 = Fast, 0 = Slow
         }
         let n1 = if self.running { 0x1 } else { 0 };
         let n2 = if self.initialized { 0x1 } else { 0 };
         [nibble_to_hex(n0), nibble_to_hex(n1), nibble_to_hex(n2)]
     }
 
-    /// Advance position by one polling step toward `goto_target_ticks`.
-    /// No-op when stopped; clears `running` when the target is reached.
+    /// Advance position by one polling step.
+    ///
+    /// In **goto mode** (`goto == true`) the axis walks toward
+    /// `goto_target_ticks` at a high-speed chunk and stops `running`
+    /// once it arrives. In **tracking mode** (`goto == false`) the axis
+    /// steps forever in the configured direction at a small per-poll
+    /// chunk — this is the sidereal-tracking analogue: on real
+    /// hardware the encoder advances continuously while tracking, so
+    /// the resulting `RightAscension` reading stays constant after a
+    /// slew completes. Without this, post-slew `RA` reads drift at
+    /// sidereal rate (one of the issues ConformU's slew tests flag).
+    ///
+    /// The tracking-mode chunk is chosen to approximate one sidereal
+    /// "step" per `:j` poll given the default polling cadence
+    /// (200 ms) and CPR (3.6 M): sidereal rate ≈ 42 ticks/s, so
+    /// ~8 ticks per 200 ms poll. Picking 8 directly keeps things
+    /// simple and predictable across tests that override the polling
+    /// interval.
     fn advance_one_step(&mut self) {
         if !self.running {
             return;
         }
-        let chunk: i32 = if self.fast { 100_000 } else { 100 };
-        let delta = self.goto_target_ticks - self.position_ticks;
-        if delta == 0 {
-            self.running = false;
-            return;
-        }
-        let step = chunk.min(delta.abs()) * delta.signum();
-        self.position_ticks += step;
-        if self.position_ticks == self.goto_target_ticks {
-            self.running = false;
+        if self.goto {
+            let chunk: i32 = if self.fast { 100_000 } else { 100 };
+            let delta = self.goto_target_ticks - self.position_ticks;
+            if delta == 0 {
+                self.running = false;
+                return;
+            }
+            let step = chunk.min(delta.abs()) * delta.signum();
+            self.position_ticks += step;
+            if self.position_ticks == self.goto_target_ticks {
+                self.running = false;
+            }
+        } else {
+            // Tracking mode: free-run in the configured direction at
+            // a sidereal-ish chunk per poll. Never auto-stop — only
+            // `:K` / `:L` should clear `running`.
+            const SIDEREAL_CHUNK_PER_POLL: i32 = 8;
+            let dir = if self.ccw { -1 } else { 1 };
+            self.position_ticks += SIDEREAL_CHUNK_PER_POLL * dir;
         }
     }
 }
@@ -282,19 +294,36 @@ impl Transport for MockTransport {
                 }
             }
             b'G' => {
-                // Set motion mode: payload is one byte (two hex digits).
+                // Set motion mode: payload is two hex digits. Per the
+                // Sky-Watcher spec §5 each digit is an independent
+                // nibble — DB1 (high nibble of the byte, mode info)
+                // and DB2 (low nibble, direction / variant). See
+                // `skywatcher_motor_protocol::MotionMode`.
                 let bytes: [u8; 2] = match payload.try_into() {
                     Ok(b) => b,
                     Err(_) => return Ok(err_reply(1)), // CommandLengthError
                 };
-                let mode = match decode_u8(bytes) {
-                    Ok(m) => m,
+                let mode_byte = match decode_u8(bytes) {
+                    Ok(b) => b,
                     Err(_) => return Ok(err_reply(3)), // InvalidCharacter
                 };
+                let db1 = (mode_byte >> 4) & 0x0F;
+                let db2 = mode_byte & 0x0F;
                 if let Some(ax) = state.axis_mut(axis) {
-                    ax.goto = (mode & 0x10) != 0;
-                    ax.fast = (mode & 0x20) != 0;
-                    ax.forward = (mode & 0x01) == 0;
+                    // DB1 bit 0: 1=Tracking, 0=Goto.
+                    ax.goto = (db1 & 0x1) == 0;
+                    // DB1 bit 1: speed selector — meaning inverts
+                    // between Goto and Tracking modes per spec.
+                    let bit1 = (db1 & 0x2) != 0;
+                    ax.fast = if ax.goto {
+                        // Goto: 0 = Fast, 1 = Slow
+                        !bit1
+                    } else {
+                        // Tracking: 0 = Slow, 1 = Fast
+                        bit1
+                    };
+                    // DB2 bit 0: 0 = CW, 1 = CCW.
+                    ax.ccw = (db2 & 0x1) != 0;
                     ack_with(&[])
                 } else {
                     err_reply(0)
@@ -456,7 +485,7 @@ mod tests {
         assert!(!s.initialized);
         assert!(!s.running);
         assert!(!s.goto);
-        assert!(s.forward);
+        assert!(!s.ccw);
         assert!(!s.fast);
         assert_eq!(s.goto_target_ticks, 0);
         assert_eq!(s.step_period, 0);
@@ -514,13 +543,17 @@ mod tests {
     async fn round_trip_set_motion_mode_then_status_reflects_it() {
         let t = MockTransport::new();
         t.round_trip(b":F1\r", d()).await.unwrap();
-        // Goto + fast + forward = 0x30 = "30"
-        let reply = t.round_trip(b":G130\r", d()).await.unwrap();
+        // Goto-Fast-CW per Sky-Watcher spec §5: DB1=0 (Goto + Fast),
+        // DB2=0 (CW) → wire "00". The old codec sent "30" thinking
+        // that was Goto-Fast-Forward; per the spec "30" is actually
+        // Tracking-Fast-CW which silently runs the mount past the
+        // `:S` target.
+        let reply = t.round_trip(b":G100\r", d()).await.unwrap();
         assert_eq!(reply, b"=\r");
         let state = t.state.lock().await;
         assert!(state.ra.goto);
         assert!(state.ra.fast);
-        assert!(state.ra.forward);
+        assert!(!state.ra.ccw);
         assert!(state.ra.initialized);
     }
 
@@ -535,8 +568,10 @@ mod tests {
     async fn slew_lifecycle_advances_position_to_target_then_stops() {
         let t = MockTransport::new();
         t.round_trip(b":F1\r", d()).await.unwrap();
-        // Goto + slow + forward = 0x10 = "10"
-        t.round_trip(b":G110\r", d()).await.unwrap();
+        // Goto-Slow-CW per Sky-Watcher spec §5: DB1 bit-1 set (Slow
+        // in Goto), bit-0 clear (Goto) → DB1 = 2. DB2 = 0 (CW). Wire
+        // "20".
+        t.round_trip(b":G120\r", d()).await.unwrap();
         // Target encoder ticks = 200 → bias 0x800000+200 = 0x8000C8 → "C80080"
         t.round_trip(b":S1C80080\r", d()).await.unwrap();
         t.round_trip(b":J1\r", d()).await.unwrap();

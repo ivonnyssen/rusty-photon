@@ -37,3 +37,9 @@ Feature: Abort slew
     Given a running star-adventurer service
     When I try to abort the slew
     Then the operation should fail with not-connected
+
+  Scenario: AbortSlew fails while parked
+    Given a running star-adventurer service
+    And the device is parked
+    When I try to abort the slew
+    Then the operation should fail with invalid-while-parked

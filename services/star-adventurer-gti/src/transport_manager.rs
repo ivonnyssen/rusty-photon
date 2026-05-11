@@ -42,6 +42,12 @@ pub struct AxisSnapshot {
     pub position_ticks: i32,
     pub running: bool,
     pub goto: bool,
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
+    /// reports `Blocked` when the motor is stepping but the encoder
+    /// isn't advancing — typically because the axis is against a
+    /// mechanical stop or stalled. The slew watcher uses this to
+    /// abort a runaway goto before the gearbox is damaged.
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -249,6 +255,28 @@ impl TransportManager {
         *self.snapshot.read().await
     }
 
+    /// Update the cached snapshot's position for one axis.
+    ///
+    /// Used by `SyncToCoordinates` to publish the just-written encoder
+    /// position immediately rather than waiting up to
+    /// `polling_interval` for the background task to refresh. Without
+    /// this, callers that read `RightAscension` / `Declination` within
+    /// one poll interval of `Sync` see the pre-sync position — ConformU
+    /// reads ~2 ms after the sync call returns and flags the stale
+    /// value as a 3675-arc-second sync error.
+    pub async fn seed_position(&self, axis: Axis, ticks: i32) {
+        let mut snap = self.snapshot.write().await;
+        match axis {
+            Axis::Ra => snap.ra.position_ticks = ticks,
+            Axis::Dec => snap.dec.position_ticks = ticks,
+            // `:E3` (Both) isn't part of the MVP wire surface — sync
+            // writes per-axis values that can differ — and would have
+            // no sensible single-tick interpretation here. Reject so a
+            // future caller doesn't silently corrupt one axis.
+            Axis::Both => debug_assert!(false, "seed_position not valid for Axis::Both"),
+        }
+    }
+
     /// Send one command, return one reply. Does *not* update the snapshot —
     /// the background poller owns that responsibility.
     pub async fn send(&self, command: Command) -> Result<Response> {
@@ -366,7 +394,9 @@ async fn round_trip_one(
     timeout: Duration,
 ) -> Result<Response> {
     let bytes = command.encode()?;
+    debug!(tx = ?String::from_utf8_lossy(&bytes), "wire TX");
     let reply = transport.round_trip(&bytes, timeout).await?;
+    debug!(rx = ?String::from_utf8_lossy(&reply), "wire RX");
     let response = Response::decode(&reply, command)?;
     Ok(response)
 }
@@ -464,6 +494,7 @@ async fn poll_axis(
     };
     out.running = s.running;
     out.goto = s.goto;
+    out.blocked = s.blocked;
     Ok(())
 }
 

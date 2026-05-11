@@ -101,14 +101,24 @@ pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
 /// Side-of-pier classification derived from the RA-axis mechanical hour
 /// angle and site latitude.
 ///
-/// In the northern hemisphere, mechanical HA in `[-6, +6)` is the East
-/// side (`PierSide::East`); the rest is West. Southern hemisphere
-/// inverts (per the Sky-Watcher hand-control spec §"Get Mount Pointing
-/// State").
+/// ASCOM `PierSide::West` is the "normal" pointing state of a GEM
+/// (counterweight east, OTA on the west side of the pier); `PierSide::East`
+/// is the "beyond-the-pole" / post-meridian-flip state. For a Northern
+/// Hemisphere observer, an object east of the local meridian (HA negative)
+/// is reached without a flip → `PierSide::West`; once the mount continues
+/// past the meridian (HA positive) the encoder convention is that the OTA
+/// has flipped → `PierSide::East`. Boundary at `HA = 0` (the meridian),
+/// not at `HA = ±6`. Southern hemisphere inverts.
+///
+/// ConformU's `SideofPier` test catches the prior `[-6, +6)` boundary as
+/// "pierEast is returned when the mount is observing at an hour angle
+/// between -6.0 and 0.0", which matches the standard GEM convention used
+/// by EQMOD and other Sky-Watcher driver references.
 pub fn side_of_pier(mech_ha: f64, site_latitude_deg: f64) -> PierSide {
     let ha = fold_to_signed(mech_ha, 24.0);
     let northern = site_latitude_deg >= 0.0;
-    let east_in_north = (-6.0..6.0).contains(&ha);
+    // In N hemisphere: HA >= 0 (object past meridian) → pierEast.
+    let east_in_north = ha >= 0.0;
     let east = if northern {
         east_in_north
     } else {
@@ -285,42 +295,38 @@ mod tests {
 
     #[test]
     fn side_of_pier_north_meridian_is_east() {
-        // Mechanical HA = 0 (object at meridian) on a northern site →
-        // East side. Same convention as the design doc.
+        // Mechanical HA = 0 (object exactly at meridian) on a northern
+        // site → pierEast (boundary is half-open at 0, treated as the
+        // start of the post-meridian arc).
         assert_eq!(side_of_pier(0.0, 47.6), PierSide::East);
     }
 
     #[test]
-    fn side_of_pier_north_boundary_is_half_open() {
-        // Per the design doc: north [-6, +6) → East. -6 is included
-        // (East); +6 is excluded (West, the start of the other half).
-        assert_eq!(side_of_pier(-6.0, 47.6), PierSide::East);
-        assert_eq!(side_of_pier(6.0, 47.6), PierSide::West);
-        // Just inside / just outside the +6 boundary.
-        assert_eq!(side_of_pier(5.999, 47.6), PierSide::East);
-        assert_eq!(side_of_pier(6.001, 47.6), PierSide::West);
+    fn side_of_pier_north_pre_meridian_is_west() {
+        // Object east of meridian (HA negative) → mount is in the
+        // "normal" pointing state → pierWest. This is the case
+        // ConformU flagged when the boundary was wrongly set at ±6.
+        assert_eq!(side_of_pier(-3.0, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(-6.0, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(-0.001, 47.6), PierSide::West);
     }
 
     #[test]
-    fn side_of_pier_north_three_hours_east_is_east() {
-        assert_eq!(side_of_pier(-3.0, 47.6), PierSide::East);
+    fn side_of_pier_north_post_meridian_is_east() {
+        // Object west of meridian (HA positive) → mount has passed the
+        // meridian → pierEast.
         assert_eq!(side_of_pier(3.0, 47.6), PierSide::East);
-    }
-
-    #[test]
-    fn side_of_pier_north_west_arc_is_west() {
-        // HA in [+6, +12) maps to the West side.
-        assert_eq!(side_of_pier(7.0, 47.6), PierSide::West);
-        assert_eq!(side_of_pier(11.999, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(6.0, 47.6), PierSide::East);
+        assert_eq!(side_of_pier(11.999, 47.6), PierSide::East);
     }
 
     #[test]
     fn side_of_pier_southern_hemisphere_inverts() {
-        // Mirror of the northern half-open boundary.
+        // Mirror of the northern split at HA = 0.
         assert_eq!(side_of_pier(0.0, -33.9), PierSide::West);
-        assert_eq!(side_of_pier(-6.0, -33.9), PierSide::West);
-        assert_eq!(side_of_pier(6.0, -33.9), PierSide::East);
-        assert_eq!(side_of_pier(-3.0, -33.9), PierSide::West);
+        assert_eq!(side_of_pier(-3.0, -33.9), PierSide::East);
+        assert_eq!(side_of_pier(3.0, -33.9), PierSide::West);
+        assert_eq!(side_of_pier(-6.0, -33.9), PierSide::East);
     }
 
     /// Tiny `f64` helper so the half-revolution fold test can be stated

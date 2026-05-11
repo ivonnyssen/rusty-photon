@@ -90,6 +90,33 @@ pub struct MountConfig {
     /// Reserved for future expansion. Sidereal only in MVP.
     #[serde(default)]
     pub tracking_rate: TrackingRateName,
+
+    /// Safe RA mechanical-hour-angle envelope. Slews / syncs whose
+    /// target falls outside `[ra_min_hours, ra_max_hours]` are
+    /// rejected with `INVALID_VALUE` and never reach the wire.
+    ///
+    /// `mech_HA = 0` is "OTA on the meridian, counterweight down" on
+    /// a polar-aligned Northern-Hemisphere setup. `±6 h` corresponds
+    /// to the counterweight horizontal east / west; the mount's
+    /// physical stops live shortly past that (cable wrap + the
+    /// counterweight shaft contacting the pier). Defaults are
+    /// `[-6.0, +6.0]` — the empirically-safe envelope on a Star
+    /// Adventurer GTi. Tune narrower if your specific setup
+    /// (mount-head-extension, OTA length, cable routing) clears
+    /// less.
+    #[serde(default = "default_ra_min_hours")]
+    pub ra_min_hours: f64,
+    #[serde(default = "default_ra_max_hours")]
+    pub ra_max_hours: f64,
+
+    /// Safe Dec mechanical-degree envelope. Same enforcement and
+    /// rationale as the RA limits. Defaults `[-90.0, +90.0]` — the
+    /// observable hemisphere, plus the convention that
+    /// "encoder = 0" is OTA on the meridian.
+    #[serde(default = "default_dec_min_degrees")]
+    pub dec_min_degrees: f64,
+    #[serde(default = "default_dec_max_degrees")]
+    pub dec_max_degrees: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -116,6 +143,18 @@ fn default_discovery_port() -> Option<u16> {
 }
 fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
+}
+fn default_ra_min_hours() -> f64 {
+    -6.0
+}
+fn default_ra_max_hours() -> f64 {
+    6.0
+}
+fn default_dec_min_degrees() -> f64 {
+    -90.0
+}
+fn default_dec_max_degrees() -> f64 {
+    90.0
 }
 fn default_true() -> bool {
     true
@@ -167,6 +206,10 @@ impl Default for MountConfig {
             site_elevation_m: 0.0,
             settle_after_slew: default_settle_after_slew(),
             tracking_rate: TrackingRateName::Sidereal,
+            ra_min_hours: default_ra_min_hours(),
+            ra_max_hours: default_ra_max_hours(),
+            dec_min_degrees: default_dec_min_degrees(),
+            dec_max_degrees: default_dec_max_degrees(),
         }
     }
 }

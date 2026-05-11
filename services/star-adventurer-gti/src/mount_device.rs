@@ -100,6 +100,58 @@ impl MountDevice {
         Ok(())
     }
 
+    /// Reject a slew / sync whose target encoder ticks would fall
+    /// outside the configured mechanical envelope.
+    ///
+    /// **Why:** the Star Adventurer GTi (like every GEM) has
+    /// mechanical limits — slewing past them with cable wraps or the
+    /// counterweight shaft against the pier stalls the motor against
+    /// a hard stop while the encoder counter continues to advance.
+    /// On a real-hardware ConformU run that drove the mount into the
+    /// counterweight-up region we heard the motor whine and saw the
+    /// axis stop physically for several seconds at a time. The
+    /// configured `ra_min_hours` / `ra_max_hours` / `dec_min_degrees` /
+    /// `dec_max_degrees` express the safe envelope; any target
+    /// outside it is rejected with `INVALID_VALUE` and never reaches
+    /// the wire.
+    ///
+    /// Both axes are validated together so a partial-failure slew
+    /// can't issue motion on RA before discovering Dec is out of
+    /// range.
+    fn check_within_safe_envelope(
+        &self,
+        ra_ticks: i32,
+        dec_ticks: i32,
+        cpr_ra: u32,
+        cpr_dec: u32,
+    ) -> ASCOMResult<()> {
+        let ra_min_ticks = mechanical_ha_to_ra_ticks(self.config.ra_min_hours, cpr_ra);
+        let ra_max_ticks = mechanical_ha_to_ra_ticks(self.config.ra_max_hours, cpr_ra);
+        if ra_ticks < ra_min_ticks || ra_ticks > ra_max_ticks {
+            let mech_ha = ra_ticks_to_mechanical_ha(ra_ticks, cpr_ra);
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "RA target mech-HA {mech_ha:.3} h outside safe envelope [{}, {}] h",
+                    self.config.ra_min_hours, self.config.ra_max_hours
+                ),
+            ));
+        }
+        let dec_min_ticks = dec_degrees_to_ticks(self.config.dec_min_degrees, cpr_dec);
+        let dec_max_ticks = dec_degrees_to_ticks(self.config.dec_max_degrees, cpr_dec);
+        if dec_ticks < dec_min_ticks || dec_ticks > dec_max_ticks {
+            let dec_deg = dec_ticks_to_degrees(dec_ticks, cpr_dec);
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "Dec target {dec_deg:.3}° outside safe envelope [{}, {}]°",
+                    self.config.dec_min_degrees, self.config.dec_max_degrees
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Refuse the operation when AtPark is set. Returns
     /// `INVALID_WHILE_PARKED` per ASCOM.
     async fn ensure_unparked(&self) -> ASCOMResult<()> {
@@ -122,7 +174,104 @@ impl MountDevice {
             Ok(())
         }
     }
+
+    /// Issue `:L<axis>` (instant stop) and then poll `:f<axis>` until
+    /// `running == false` or [`AXIS_STOP_TIMEOUT`] elapses.
+    ///
+    /// Sky-Watcher spec §2: "Motor must be at full stop status before
+    /// setting the motion mode." `:K` (decelerate) takes non-trivial
+    /// wall-clock time on real hardware; ConformU's back-to-back
+    /// "set mode + slew" flow then trips `!2\r` (`MotorNotStopped`)
+    /// from the firmware. `:L` is the spec's "instant stop" — used
+    /// here for the goto-prep stop because we are about to switch
+    /// mode anyway, and the goto-style slew always starts from
+    /// stationary. A second `:f<axis>` poll covers the edge case
+    /// where the controller hasn't yet flushed the running flag.
+    /// The mock processes `:L` instantaneously, which hid this from
+    /// BDD coverage; Phase 4 hardware bring-up confirmed it.
+    async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
+        self.transport
+            .send(Command::InstantStop(axis))
+            .await
+            .map_err(Self::ascom)?;
+        let deadline = std::time::Instant::now() + AXIS_STOP_TIMEOUT;
+        // Give the firmware a moment to flush the running flag before
+        // the first poll — some Sky-Watcher firmwares report stale
+        // status if `:f` is sent in the same millisecond as `:L`.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        loop {
+            let resp = self
+                .transport
+                .send(Command::InquireStatus(axis))
+                .await
+                .map_err(Self::ascom)?;
+            if let skywatcher_motor_protocol::Response::Status(s) = resp {
+                if !s.running {
+                    return Ok(());
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(ASCOMError::invalid_operation(format!(
+                    "axis {axis:?} did not stop within {AXIS_STOP_TIMEOUT:?}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Block until the slew-completion watcher clears `slew_in_progress`,
+    /// or until [`SYNC_SLEW_TIMEOUT`] elapses. Used by the synchronous
+    /// `SlewToCoordinates` / `SlewToTarget` variants — those wrap their
+    /// `_async` siblings, but ASCOM requires the synchronous methods
+    /// not return until the slew is finished.
+    ///
+    /// Polls at the transport's `polling_interval` (same cadence the
+    /// background snapshot poller uses, so `slewing()` can transition
+    /// within one tick of the watcher's clear). The upper bound is
+    /// well above any realistic real-mount slew but finite — a stuck
+    /// watcher must not block an Alpaca request forever.
+    async fn await_slew_complete(&self) -> ASCOMResult<()> {
+        let poll = self.transport.polling_interval_for_watcher();
+        let deadline = std::time::Instant::now() + SYNC_SLEW_TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            if !self.slewing().await? {
+                return Ok(());
+            }
+            tokio::time::sleep(poll).await;
+        }
+        Err(ASCOMError::invalid_operation(
+            "synchronous slew timed out waiting for completion",
+        ))
+    }
 }
+
+/// Upper bound on how long the synchronous `SlewToCoordinates` /
+/// `SlewToTarget` will wait for the watcher to clear `slew_in_progress`.
+/// 5 minutes — far longer than any realistic slew (a worst-case full
+/// half-revolution at high-speed slew rate is well under a minute on
+/// the GTi) but finite enough that a stuck driver cannot wedge an
+/// Alpaca request indefinitely.
+const SYNC_SLEW_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Minimum wallclock duration the slew watcher will keep
+/// `slew_in_progress` set, regardless of how fast the mount reports
+/// the goto complete. See the rationale in
+/// [`spawn_slew_completion_watcher`]: it guarantees that an Alpaca
+/// client polling `Slewing` shortly after issuing a slew will catch
+/// the `true` value at least once. Empirically ConformU's
+/// AbortSlew-test wait between starting the slew and reading
+/// `Slewing` runs in the 1.0–1.5 s range, so the floor needs to be
+/// noticeably above that — 2 s is comfortable. A real GTi slew of
+/// any meaningful distance takes well over 2 s, so this floor is
+/// invisible on hardware.
+const MIN_SLEW_DWELL: Duration = Duration::from_secs(2);
+
+/// Upper bound on how long `stop_and_wait` will poll `:f<axis>`
+/// after a `:K` before giving up. The GTi decelerates from a
+/// high-speed slew in well under a second; 2 s is a comfortable
+/// margin, and bounding the wait prevents a stuck axis from
+/// wedging a slew indefinitely.
+const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[async_trait]
 impl Device for MountDevice {
@@ -320,6 +469,11 @@ impl Telescope for MountDevice {
     async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
         self.ensure_connected().await?;
         if tracking {
+            // Enabling tracking while parked is invalid per ASCOM
+            // ITelescopeV3. Disabling tracking while parked stays
+            // allowed — Park itself leaves tracking off, but a caller
+            // re-asserting that should not error.
+            self.ensure_unparked().await?;
             // Compute the sidereal step period from the cached parameters.
             let params = self
                 .transport
@@ -327,7 +481,14 @@ impl Telescope for MountDevice {
                 .await
                 .ok_or(ASCOMError::NOT_CONNECTED)?;
             let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-            // Tracking-mode motion on RA: :G1<TRACKING>, :I1<period>, :J1.
+            // Per Sky-Watcher spec §2: "Motor must be at full stop
+            // status before setting the motion mode." The RA axis
+            // may already be running — from a prior tracking enable,
+            // or because the firmware auto-engages Speed (Tracking)
+            // Mode after every goto completes. Force a stop and wait
+            // for the running flag to clear before re-issuing the
+            // tracking-mode `:G`/`:I`/`:J` sequence.
+            self.stop_and_wait(Axis::Ra).await?;
             self.transport
                 .send(Command::SetMotionMode {
                     axis: Axis::Ra,
@@ -462,6 +623,10 @@ impl Telescope for MountDevice {
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+        // Reject syncs that would set the encoder outside the
+        // mount's safe mechanical envelope — a bad sync would let
+        // the *next* tracking step push the OTA into a hard stop.
+        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
         self.transport
             .send(Command::SetPosition {
                 axis: Axis::Ra,
@@ -469,6 +634,11 @@ impl Telescope for MountDevice {
             })
             .await
             .map_err(Self::ascom)?;
+        // Publish the just-written RA position to the cached snapshot
+        // so an immediate `RightAscension` read reflects the sync
+        // without having to wait for the next background poll. Done
+        // only after the wire `:E` succeeds.
+        self.transport.seed_position(Axis::Ra, ra_ticks).await;
         self.transport
             .send(Command::SetPosition {
                 axis: Axis::Dec,
@@ -476,6 +646,18 @@ impl Telescope for MountDevice {
             })
             .await
             .map_err(Self::ascom)?;
+        self.transport.seed_position(Axis::Dec, dec_ticks).await;
+        // Per ASCOM ITelescopeV3, a successful Sync sets
+        // TargetRightAscension / TargetDeclination to the synced
+        // coordinates. ConformU asserts this. Only write the in-memory
+        // target after both `:E` sends succeed so a partial-failure
+        // sync doesn't leave Target reflecting a position the mount
+        // never actually accepted.
+        {
+            let mut s = self.state.write().await;
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+        }
         Ok(())
     }
 
@@ -517,21 +699,71 @@ impl Telescope for MountDevice {
             tracking_was_on = s.tracking_requested;
         }
 
-        // Compute target encoder ticks.
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        // Compute target encoder ticks for the *expected* slew-
+        // completion time, not for `now`. RA = LST - mech_HA; while
+        // the mount is gotoing it isn't tracking, so the encoder
+        // doesn't advance during the slew. If we picked the
+        // encoder for `LST(now)`, by the time the goto finishes
+        // (`now + slew_duration`) the encoder lands at a `mech_HA`
+        // that — combined with the now-advanced `LST` — reads back
+        // as `target_RA + slew_duration * sidereal_rate`. ConformU's
+        // ±10 arc-second tolerance is exceeded even for 2-second
+        // slews. Targeting `LST(now + MIN_SLEW_DWELL)` collapses
+        // that drift on the mock (slew duration always ≥
+        // [`MIN_SLEW_DWELL`]) and bounds it for very short real-
+        // mount slews. Long real-mount slews would still need a
+        // post-slew pickup pass — out of scope for the MVP.
+        let lst = local_sidereal_time_hours(
+            SystemTime::now() + MIN_SLEW_DWELL,
+            self.config.site_longitude_deg,
+        );
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
 
-        // Per axis: stop any prior motion, set goto-fast mode, set
-        // target, start motion. The mock processes :K instantaneously
-        // so we skip the design-doc's "poll :f until Running=0" step
-        // until Phase 4 measures real-hardware response time.
-        for (axis, ticks) in [(Axis::Ra, ra_ticks), (Axis::Dec, dec_ticks)] {
-            self.transport
-                .send(Command::StopMotion(axis))
-                .await
-                .map_err(Self::ascom)?;
+        // Refuse before any wire motion if the slew target falls
+        // outside the configured mechanical envelope. ConformU's
+        // pier-flip tests deliberately command across-the-meridian
+        // slews that on a GEM-without-flip translate to encoders
+        // past the counterweight-horizontal boundary; the safety
+        // gate sends those back as `INVALID_VALUE` instead of
+        // stalling the motor against a hard stop.
+        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
+
+        // Per axis: stop any prior motion, set goto-fast mode in the
+        // correct direction, set the step period, set the target,
+        // start motion. Two pieces of empirical-hardware feedback
+        // that the original implementation missed:
+        //
+        //   * **`:I` is mandatory before `:J` for slews.** On a real
+        //     GTi, omitting `:I` makes `:J` silently no-op (the
+        //     mount ACKs every setter with `=\r` but never starts
+        //     stepping). The mock did not enforce this, hence the
+        //     gap. The design doc's command table already noted
+        //     `:I` as "tracking rate, slew rate"; we just weren't
+        //     issuing it on the slew path.
+        //   * **Direction-bit must match `sign(target - current)`.**
+        //     Hard-coding `GOTO_FAST_FORWARD` means a slew whose
+        //     target is *behind* the current encoder also silently
+        //     no-ops on real hardware. The design doc explicitly
+        //     calls out "direction by sign of delta".
+        //
+        // The mock used to process `:K` instantaneously, so the
+        // design-doc's "poll `:f` until Running=0" step is still
+        // skipped here pending a Phase 4 measurement of real-mount
+        // `:K` response time.
+        let snap = self.transport.snapshot().await;
+        let ra_delta = ra_ticks - snap.ra.position_ticks;
+        let dec_delta = dec_ticks - snap.dec.position_ticks;
+        for (axis, ticks, delta) in [
+            (Axis::Ra, ra_ticks, ra_delta),
+            (Axis::Dec, dec_ticks, dec_delta),
+        ] {
+            // Stop the axis *and wait until it actually reports
+            // not-running*. Required on real hardware: `:G` returns
+            // `!2 MotorNotStopped` if issued against a still-
+            // decelerating axis.
+            self.stop_and_wait(axis).await?;
             if axis == Axis::Ra {
                 // RA :K is the wire event that halts sidereal tracking;
                 // mirror it in `tracking_requested` only after the send
@@ -539,13 +771,24 @@ impl Telescope for MountDevice {
                 // gets ahead of the wire on transport failures.
                 self.state.write().await.tracking_requested = false;
             }
+            let mode = MotionMode {
+                kind: skywatcher_motor_protocol::command::ModeKind::Goto,
+                speed: skywatcher_motor_protocol::command::Speed::Fast,
+                ccw: delta < 0,
+            };
             self.transport
-                .send(Command::SetMotionMode {
-                    axis,
-                    mode: MotionMode::GOTO_FAST_FORWARD,
-                })
+                .send(Command::SetMotionMode { axis, mode })
                 .await
                 .map_err(Self::ascom)?;
+            // Per Sky-Watcher spec §3 / §5: in Goto mode the motor
+            // controller computes the slew speed internally — there is
+            // no `:I` to issue before `:J`. (`:I` is only meaningful
+            // in Tracking mode, where the master device sets the
+            // T1 preset directly.) The earlier implementation issued
+            // `:I` here because it had the mode byte wrong and was
+            // actually putting the mount into Tracking-Fast, where
+            // the period IS load-bearing — which is also why the
+            // mount slewed indefinitely past the target.
             self.transport
                 .send(Command::SetGotoTarget { axis, ticks })
                 .await
@@ -587,6 +830,20 @@ impl Telescope for MountDevice {
         self.slew_to_coordinates_async(ra, dec).await
     }
 
+    async fn slew_to_coordinates(&self, ra: f64, dec: f64) -> ASCOMResult<()> {
+        // ASCOM requires this synchronous variant when CanSlew = true.
+        // ConformU flags the trait-default NotImplemented as a spec
+        // violation. Implement as: start the async slew, then await the
+        // completion watcher by polling `Slewing` until it clears.
+        self.slew_to_coordinates_async(ra, dec).await?;
+        self.await_slew_complete().await
+    }
+
+    async fn slew_to_target(&self) -> ASCOMResult<()> {
+        self.slew_to_target_async().await?;
+        self.await_slew_complete().await
+    }
+
     // ---- Park / Unpark / Abort ----
 
     async fn park(&self) -> ASCOMResult<()> {
@@ -604,19 +861,27 @@ impl Telescope for MountDevice {
                 .map_err(Self::ascom)?;
             self.state.write().await.tracking_requested = false;
         }
-        // Slew both axes to encoder 0.
-        for axis in [Axis::Ra, Axis::Dec] {
+        // Slew both axes to encoder 0. Same wire sequence as
+        // `slew_to_coordinates_async`: `:K`-and-wait, `:G` with
+        // direction chosen from `sign(0 - current)`, `:S 0`, `:J`.
+        let snap = self.transport.snapshot().await;
+        for (axis, current_ticks) in [
+            (Axis::Ra, snap.ra.position_ticks),
+            (Axis::Dec, snap.dec.position_ticks),
+        ] {
+            self.stop_and_wait(axis).await?;
+            let mode = MotionMode {
+                kind: skywatcher_motor_protocol::command::ModeKind::Goto,
+                speed: skywatcher_motor_protocol::command::Speed::Fast,
+                ccw: current_ticks > 0,
+            };
             self.transport
-                .send(Command::StopMotion(axis))
+                .send(Command::SetMotionMode { axis, mode })
                 .await
                 .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::SetMotionMode {
-                    axis,
-                    mode: MotionMode::GOTO_FAST_FORWARD,
-                })
-                .await
-                .map_err(Self::ascom)?;
+            // No `:I` in Goto mode — the firmware computes slew speed
+            // internally. See the matching note in
+            // `slew_to_coordinates_async`.
             self.transport
                 .send(Command::SetGotoTarget { axis, ticks: 0 })
                 .await
@@ -650,6 +915,11 @@ impl Telescope for MountDevice {
 
     async fn abort_slew(&self) -> ASCOMResult<()> {
         self.ensure_connected().await?;
+        // Aborting while parked is invalid per ASCOM ITelescopeV3.
+        // Refuse before mutating any state so a caller that mistakenly
+        // calls AbortSlew on a parked mount gets a clean error without
+        // side-effects on tracking_requested or slew_in_progress.
+        self.ensure_unparked().await?;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
         // Also clear tracking_requested — `:L` halts any motion the
@@ -713,6 +983,7 @@ fn spawn_slew_completion_watcher(
     settle: Duration,
     tracking_was_on: bool,
 ) {
+    let started = std::time::Instant::now();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(polling_interval).await;
@@ -734,7 +1005,39 @@ fn spawn_slew_completion_watcher(
                 return;
             }
 
+            // Enforce a minimum slew dwell so external observers reliably
+            // catch `Slewing == true`. ConformU starts a slew via HTTP,
+            // then reads `Slewing` over a second HTTP call; the round-
+            // trip latency can be larger than the mock's full slew
+            // duration on a fast machine (the mock advances 100K
+            // ticks/poll, so a small slew completes in 1-2 polls). The
+            // de-facto Alpaca client poll cadence is on the order of
+            // 100 ms; one full second of guaranteed dwell is a safe
+            // floor for any reasonable client without meaningfully
+            // slowing real-mount operation (real slews take seconds).
+            if started.elapsed() < MIN_SLEW_DWELL {
+                continue;
+            }
+
             let snap = transport.snapshot().await;
+            // Sky-Watcher spec §5 reports `Blocked` in the `:f`
+            // status when the motor is stepping but the encoder
+            // isn't advancing — typically the axis is against a
+            // hard stop. Issue `:L` on both axes to halt the
+            // runaway and bail out of the slew rather than letting
+            // the watcher poll-loop continue while the gearbox
+            // strains.
+            if snap.ra.blocked || snap.dec.blocked {
+                tracing::warn!(
+                    ra_blocked = snap.ra.blocked,
+                    dec_blocked = snap.dec.blocked,
+                    "axis reports Blocked — aborting slew via :L"
+                );
+                let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
+                let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+                state.write().await.slew_in_progress = false;
+                return;
+            }
             let still_moving = snap.ra.running || snap.dec.running;
             if still_moving {
                 continue;
@@ -810,6 +1113,22 @@ fn spawn_park_completion_watcher(
                 return;
             }
             let snap = transport.snapshot().await;
+            // Park can also hit a mechanical stop — same `:L` + bail
+            // treatment as in the slew watcher. Do *not* set
+            // `at_park = true` on a blocked stop: the OTA isn't at
+            // the encoder-0 home pose, so the next `Unpark + slew`
+            // would compute a wrong delta.
+            if snap.ra.blocked || snap.dec.blocked {
+                tracing::warn!(
+                    ra_blocked = snap.ra.blocked,
+                    dec_blocked = snap.dec.blocked,
+                    "axis reports Blocked during park — aborting via :L"
+                );
+                let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
+                let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+                state.write().await.slew_in_progress = false;
+                return;
+            }
             if snap.ra.running || snap.dec.running {
                 continue;
             }
@@ -830,7 +1149,11 @@ mod tests {
     use crate::transport::mock::MockTransportFactory;
 
     fn device() -> MountDevice {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        // Same rationale as `fast_settle_device`: open the
+        // mechanical-envelope check for tests that don't exercise it.
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -988,33 +1311,87 @@ mod tests {
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
 
-        // Find the index of the LAST :G1 frame the driver issued during
-        // the connect handshake (which doesn't issue :G), then drive
-        // SetTracking(true) and assert the next three RA-axis frames are
-        // :G1 / :I1 / :J1 in order.
+        // Drive SetTracking(true) and assert that the driver issues
+        // the wire sequence the design doc + spec require:
+        //   1. `:L1`  (instant-stop the RA axis — needed because the
+        //              spec disallows changing motion mode while the
+        //              motor is running, and the axis may be in
+        //              Speed Mode either because we just enabled
+        //              tracking on it before or because the firmware
+        //              auto-engages Speed Mode after a goto.)
+        //   2. `:f1`  (one or more polls — `stop_and_wait` polls
+        //              until the running flag clears.)
+        //   3. `:G1<mode>` (tracking-slow-CW)
+        //   4. `:I1<period>` (sidereal step period)
+        //   5. `:J1` (start motion)
         let baseline_len = mock.state.lock().await.command_log.len();
         d.set_tracking(true).await.unwrap();
 
         let log = mock.state.lock().await.command_log.clone();
-        assert!(
-            log.len() >= baseline_len + 3,
-            "expected at least 3 new wire frames, got {}",
-            log.len() - baseline_len
-        );
         let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
-        // First new frame: :G1<mode>\r — tracking-mode preset = 0x00 = "00"
-        assert_eq!(&new_frames[0][..3], b":G1", "1st frame should be :G1");
-        assert_eq!(new_frames[0][new_frames[0].len() - 1], b'\r');
-        // Second: :I1<period>\r
-        assert_eq!(&new_frames[1][..3], b":I1", "2nd frame should be :I1");
-        // Third: :J1\r
-        assert_eq!(new_frames[2], b":J1\r");
+        // Look only at setter / motion-start frames on the RA axis:
+        // `:G1`, `:I1`, `:J1`, `:L1` (in order of appearance). The
+        // polling task's `:f1` / `:j1` / `:f2` / `:j2` inquiries are
+        // noise here.
+        let interesting: Vec<&&[u8]> = new_frames
+            .iter()
+            .filter(|f| {
+                f.len() >= 3
+                    && f[0] == b':'
+                    && f[2] == b'1'
+                    && matches!(f[1], b'G' | b'I' | b'J' | b'L' | b'K')
+            })
+            .collect();
+        assert_eq!(
+            interesting.len(),
+            4,
+            "expected exactly 4 RA setter frames (:L1 :G1 :I1 :J1), got {interesting:?}"
+        );
+        assert_eq!(*interesting[0], b":L1\r", "1st RA setter should be :L1");
+        assert_eq!(&interesting[1][..3], b":G1", "2nd RA setter should be :G1");
+        assert_eq!(&interesting[2][..3], b":I1", "3rd RA setter should be :I1");
+        assert_eq!(*interesting[3], b":J1\r", "4th RA setter should be :J1");
     }
 
     #[tokio::test]
     async fn set_tracking_false_issues_k1() {
         let d = connected_device().await;
         d.set_tracking(true).await.unwrap();
+        d.set_tracking(false).await.unwrap();
+        assert!(!d.tracking().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_tracking_true_refuses_while_parked() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        // Wait for the park watcher to set at_park.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if d.at_park().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(d.at_park().await.unwrap());
+        let err = d.set_tracking(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
+    async fn set_tracking_false_succeeds_while_parked() {
+        // Disabling tracking on a parked mount is a no-op affirmation;
+        // refusing it would force callers to special-case the parked
+        // state when they just want to assert "tracking should be off".
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if d.at_park().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         d.set_tracking(false).await.unwrap();
         assert!(!d.tracking().await.unwrap());
     }
@@ -1069,6 +1446,15 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
+        // The slew-lifecycle tests pass hardcoded RA/Dec targets
+        // (typically `(6.0 h, 30°)`) whose mech-HA depends on the
+        // wallclock LST and would intermittently fall outside the
+        // production default envelope of `±6 h / ±90°`. Open the
+        // envelope all the way for these tests; the safety-gate
+        // behaviour is covered separately by
+        // [`fast_settle_connected_narrow_envelope`].
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -1080,6 +1466,71 @@ mod tests {
         let d = fast_settle_device();
         d.set_connected(true).await.unwrap();
         d
+    }
+
+    /// Like `fast_settle_connected`, but with a narrow mechanical
+    /// envelope so the safety-gate tests can land target coords
+    /// that are clearly outside the envelope without first needing
+    /// to push past the GTi default `±6h` / `±90°`.
+    async fn fast_settle_connected_narrow_envelope() -> MountDevice {
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        // Allow exactly the meridian band ±1 h of HA / ±5° of Dec.
+        cfg.mount.ra_min_hours = -1.0;
+        cfg.mount.ra_max_hours = 1.0;
+        cfg.mount.dec_min_degrees = -5.0;
+        cfg.mount.dec_max_degrees = 5.0;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn slew_async_refuses_dec_outside_safe_envelope() {
+        // Envelope: Dec in [-5°, +5°]. Slew to Dec = +30° is far
+        // outside and must be rejected before any wire motion.
+        let d = fast_settle_connected_narrow_envelope().await;
+        let err = d
+            .slew_to_coordinates_async(d.sidereal_time().await.unwrap(), 30.0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(
+            err.message.contains("outside safe envelope"),
+            "error message must call out the envelope: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn slew_async_refuses_ra_outside_safe_envelope() {
+        // Envelope: HA in [-1 h, +1 h]. Target RA = LST + 3 h puts
+        // mech-HA at -3 h — well outside.
+        let d = fast_settle_connected_narrow_envelope().await;
+        let lst = d.sidereal_time().await.unwrap();
+        let target = (lst + 3.0).rem_euclid(24.0);
+        let err = d.slew_to_coordinates_async(target, 0.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn sync_refuses_target_outside_safe_envelope() {
+        // Same envelope. Sync would seed the encoder for a position
+        // outside the safe zone — tracking from there walks into a
+        // mechanical stop.
+        let d = fast_settle_connected_narrow_envelope().await;
+        let err = d
+            .sync_to_coordinates(d.sidereal_time().await.unwrap(), 30.0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
     #[tokio::test]
@@ -1106,6 +1557,62 @@ mod tests {
         let d = fast_settle_device();
         let err = d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn sync_slew_returns_only_after_watcher_clears_slew_in_progress() {
+        // CanSlew = true, so the synchronous variant must implement
+        // (per ASCOM ITelescopeV3) and only return after the slew has
+        // completed.
+        let d = fast_settle_connected().await;
+        d.slew_to_coordinates(6.0, 30.0).await.unwrap();
+        assert!(
+            !d.slewing().await.unwrap(),
+            "Slewing must be false after slew_to_coordinates returns"
+        );
+        // Target latched same as the async variant.
+        assert_eq!(d.target_right_ascension().await.unwrap(), 6.0);
+        assert_eq!(d.target_declination().await.unwrap(), 30.0);
+    }
+
+    #[tokio::test]
+    async fn sync_slew_to_target_uses_last_set_target() {
+        let d = fast_settle_connected().await;
+        d.set_target_right_ascension(4.0).await.unwrap();
+        d.set_target_declination(15.0).await.unwrap();
+        d.slew_to_target().await.unwrap();
+        assert!(!d.slewing().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sync_slew_validates_inputs() {
+        let d = fast_settle_connected().await;
+        assert_eq!(
+            d.slew_to_coordinates(24.0, 0.0).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_slew_refuses_while_parked() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if d.at_park().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let err = d.slew_to_coordinates(6.0, 30.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
+    async fn sync_slew_to_target_without_set_returns_invalid_operation() {
+        let d = fast_settle_connected().await;
+        let err = d.slew_to_target().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 
     #[tokio::test]
@@ -1234,6 +1741,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abort_slew_refuses_while_parked() {
+        let d = fast_settle_connected().await;
+        d.park().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if d.at_park().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let err = d.abort_slew().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
     async fn sync_to_coordinates_writes_the_encoder() {
         let d = connected_device().await;
         // After a sync to (RA=lst, Dec=0), the RA encoder should be at
@@ -1245,5 +1767,59 @@ mod tests {
         // The synced position should round-trip back through the read path.
         let dec = d.declination().await.unwrap();
         assert!(dec.abs() < 0.5, "Dec after sync should be ~0, got {dec}");
+    }
+
+    #[tokio::test]
+    async fn sync_publishes_position_without_waiting_for_poll() {
+        // ConformU reads `RightAscension` ~2 ms after `SyncToCoordinates`
+        // returns. The cached snapshot must reflect the synced position
+        // immediately rather than holding the prior poll value.
+        let d = fast_settle_connected().await;
+        let lst = d.sidereal_time().await.unwrap();
+        d.sync_to_coordinates(lst, 0.0).await.unwrap();
+        // No sleep: read straight after sync.
+        let dec = d.declination().await.unwrap();
+        assert!(
+            dec.abs() < 0.5,
+            "Dec must reflect the sync immediately, got {dec}"
+        );
+        let ra = d.right_ascension().await.unwrap();
+        // The synced RA equals the LST snapshot used by sync to compute
+        // mech_HA=0; tiny LST drift between the sync and the read can
+        // push this by up to a few arcseconds, well under 1 arc-minute.
+        let ra_drift_arcsec =
+            (ra - lst).rem_euclid(24.0).min((lst - ra).rem_euclid(24.0)) * 3600.0 * 15.0;
+        assert!(
+            ra_drift_arcsec < 60.0,
+            "RA must reflect the sync immediately, got drift={ra_drift_arcsec}\" (ra={ra}, lst={lst})"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_to_coordinates_updates_target() {
+        // Per ASCOM ITelescopeV3, a successful Sync sets Target{RA,Dec}.
+        let d = fast_settle_connected().await;
+        // Pre-seed the target to a different value so the assertion is
+        // about Sync writing it, not about leaving an already-correct
+        // value alone.
+        d.set_target_right_ascension(10.0).await.unwrap();
+        d.set_target_declination(20.0).await.unwrap();
+        d.sync_to_coordinates(3.0, 45.0).await.unwrap();
+        assert_eq!(d.target_right_ascension().await.unwrap(), 3.0);
+        assert_eq!(d.target_declination().await.unwrap(), 45.0);
+    }
+
+    #[tokio::test]
+    async fn sync_failure_does_not_clobber_target() {
+        // A sync rejected by input validation must leave any previously
+        // set Target intact, so callers can rely on Target as the last
+        // *successful* slew-or-sync coordinate.
+        let d = fast_settle_connected().await;
+        d.set_target_right_ascension(10.0).await.unwrap();
+        d.set_target_declination(20.0).await.unwrap();
+        // RA out of range → INVALID_VALUE before any wire write.
+        assert!(d.sync_to_coordinates(25.0, 45.0).await.is_err());
+        assert_eq!(d.target_right_ascension().await.unwrap(), 10.0);
+        assert_eq!(d.target_declination().await.unwrap(), 20.0);
     }
 }

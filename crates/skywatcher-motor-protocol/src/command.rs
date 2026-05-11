@@ -4,7 +4,7 @@
 //! ASCII letter (uppercase = setter / motion; lowercase = inquiry), `<axis>`
 //! is `'1'`, `'2'`, or `'3'`, and `<payload>` is 0..=6 ASCII hex bytes.
 
-use crate::codec::{encode_position, encode_u24, encode_u8};
+use crate::codec::{encode_position, encode_u24};
 use crate::error::Result;
 
 /// Which physical axis a command targets.
@@ -32,58 +32,122 @@ impl Axis {
 
 /// Motion-mode flags for the `:G` command.
 ///
-/// The wire payload is one byte (two hex digits). The bit layout used here:
+/// Per the Sky-Watcher motor-controller spec §5, the `:G` payload is **two
+/// independent hex nibbles** (DB1 then DB2 on the wire — high nibble first
+/// when read as a single byte). Each nibble has its own bit definitions.
+/// This was the source of [the original codec's worst hardware bug][bug]:
+/// it treated the payload as a flat 8-bit bitfield with `goto = 0x10`,
+/// `fast = 0x20`, `reverse = 0x01`, which by coincidence produced wire
+/// bytes (`0x30` = "30") that the firmware decoded as
+/// **Tracking-Fast-CW** — i.e. continuous stepping with no auto-stop at
+/// the `:S` target.
 ///
-/// | Bit | Meaning |
-/// |-----|---------|
-/// | `0x10` | `goto` (1) vs tracking (0) |
-/// | `0x20` | `fast` (1) vs slow (0) |
-/// | `0x01` | `!forward` — reverse direction (1) vs forward (0) |
+/// [bug]: ../../docs/services/star-adventurer-gti.md "Star Adventurer GTi design doc"
 ///
-/// This matches the layout used by the EQMOD Windows driver and the INDI
-/// `indi-eqmod` driver source for the Sky-Watcher protocol family. Common
-/// values:
-/// * `0x00` — tracking, slow, forward (sidereal default)
-/// * `0x01` — tracking, slow, reverse
-/// * `0x10` — goto, slow, forward
-/// * `0x30` — goto, fast, forward (typical slew)
-/// * `0x31` — goto, fast, reverse
+/// **DB1** — high nibble (mode):
+///
+/// | Bit | Value | Meaning |
+/// |-----|-------|---------|
+/// | 0   | `0x1` | `0=Goto`, `1=Tracking` |
+/// | 1   | `0x2` | In Goto: `0=Fast`, `1=Slow`; in Tracking: `0=Slow`, `1=Fast` |
+/// | 2   | `0x4` | `0=S/F` (slow or fast), `1=Medium` |
+/// | 3   | `0x8` | `1x Slow Goto` |
+///
+/// **DB2** — low nibble (direction / variant):
+///
+/// | Bit | Value | Meaning |
+/// |-----|-------|---------|
+/// | 0   | `0x1` | `0=CW`, `1=CCW` |
+/// | 1   | `0x2` | `0=North`, `1=South` |
+/// | 2   | `0x4` | `0=Normal Goto`, `1=Coarse Goto` |
+///
+/// The MVP uses just three combinations:
+/// * Sidereal tracking → DB1=`0x1` (Tracking, Slow), DB2=`0x0` → wire `"10"`
+/// * Goto-Fast CW → DB1=`0x0` (Goto, Fast), DB2=`0x0` → wire `"00"`
+/// * Goto-Fast CCW → DB1=`0x0`, DB2=`0x1` → wire `"01"`
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MotionMode {
-    pub goto: bool,
-    pub fast: bool,
-    pub forward: bool,
+    pub kind: ModeKind,
+    pub speed: Speed,
+    /// `true` = CCW (counter-clockwise); `false` = CW. Encoder convention
+    /// is mount- and axis-specific — empirically on the Star Adventurer
+    /// GTi CW corresponds to increasing encoder counts on both axes.
+    pub ccw: bool,
+}
+
+/// `:G` DB1 bit 0 — Goto-vs-Tracking selector.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ModeKind {
+    /// Move to the target set by `:S` and then auto-stop. The firmware
+    /// handles slew speed internally; `:I` need not (and per the spec
+    /// must not) be issued before `:J` for high-speed goto.
+    Goto,
+    /// Step continuously at the rate determined by `:I`. The driver
+    /// must issue `:K`/`:L` to stop tracking when desired.
+    Tracking,
+}
+
+/// `:G` DB1 bit 1 — Slow-vs-Fast selector.
+///
+/// Note the spec's wording: in **Goto** mode the bit reads `0=Fast,
+/// 1=Slow`; in **Tracking** mode it reads `0=Slow, 1=Fast`. The
+/// encoder collapses this into the consumer-friendly two-variant
+/// enum and flips the bit per [`ModeKind`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Speed {
+    Slow,
+    Fast,
 }
 
 impl MotionMode {
-    /// Tracking (sidereal) preset: tracking, slow, forward.
+    /// Sidereal tracking preset: tracking, slow, CW (encoder-increasing).
     pub const TRACKING: Self = Self {
-        goto: false,
-        fast: false,
-        forward: true,
+        kind: ModeKind::Tracking,
+        speed: Speed::Slow,
+        ccw: false,
     };
-    /// Goto/slew preset: goto, fast, forward (caller flips `forward` from
-    /// the sign of the tick delta).
+    /// Standard goto preset: goto, fast, CW. The caller flips `ccw`
+    /// from the sign of the tick delta (target < current → `ccw=true`).
     pub const GOTO_FAST_FORWARD: Self = Self {
-        goto: true,
-        fast: true,
-        forward: true,
+        kind: ModeKind::Goto,
+        speed: Speed::Fast,
+        ccw: false,
     };
 
-    /// Pack this mode into the single byte the `:G` command expects on the
-    /// wire.
-    pub fn to_byte(self) -> u8 {
-        let mut byte = 0u8;
-        if self.goto {
-            byte |= 0x10;
+    /// Pack this mode into the two ASCII hex bytes the `:G` command
+    /// expects on the wire (DB1 first, then DB2).
+    pub fn to_wire_bytes(self) -> [u8; 2] {
+        // DB1 (high nibble): bit 0 = Tracking flag; bit 1 = Slow/Fast
+        // selector whose meaning inverts between Goto and Tracking.
+        let mut db1: u8 = 0;
+        if matches!(self.kind, ModeKind::Tracking) {
+            db1 |= 0x1;
         }
-        if self.fast {
-            byte |= 0x20;
+        let bit1_set = match (self.kind, self.speed) {
+            (ModeKind::Goto, Speed::Slow) => true,      // Goto: 1=Slow
+            (ModeKind::Goto, Speed::Fast) => false,     // Goto: 0=Fast
+            (ModeKind::Tracking, Speed::Fast) => true,  // Tracking: 1=Fast
+            (ModeKind::Tracking, Speed::Slow) => false, // Tracking: 0=Slow
+        };
+        if bit1_set {
+            db1 |= 0x2;
         }
-        if !self.forward {
-            byte |= 0x01;
+        // DB2 (low nibble): bit 0 = CCW. North/South and Coarse-Goto
+        // bits are left zero — neither is used in the MVP.
+        let mut db2: u8 = 0;
+        if self.ccw {
+            db2 |= 0x1;
         }
-        byte
+        [nibble_to_hex(db1), nibble_to_hex(db2)]
+    }
+}
+
+fn nibble_to_hex(n: u8) -> u8 {
+    debug_assert!(n < 16, "nibble must be 0..=15, got {n:#x}");
+    match n & 0x0F {
+        0..=9 => b'0' + n,
+        10..=15 => b'A' + (n - 10),
+        _ => unreachable!(),
     }
 }
 
@@ -160,7 +224,7 @@ impl Command {
             Self::SetMotionMode { axis, mode } => {
                 out.push(b'G');
                 out.push(axis.wire_byte());
-                out.extend_from_slice(&encode_u8(mode.to_byte()));
+                out.extend_from_slice(&mode.to_wire_bytes());
             }
             Self::SetGotoTarget { axis, ticks } => {
                 out.push(b'S');
@@ -207,38 +271,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn motion_mode_bit_layout() {
-        assert_eq!(MotionMode::TRACKING.to_byte(), 0x00);
-        assert_eq!(MotionMode::GOTO_FAST_FORWARD.to_byte(), 0x30);
-        // tracking + reverse
+    fn motion_mode_wire_bytes_match_skywatcher_spec() {
+        // Per Sky-Watcher motor-controller spec §5: DB1 / DB2 are
+        // two independent hex nibbles. The expected wire-byte pairs
+        // for the four MVP combinations:
+        //   * Tracking-Slow-CW  (sidereal)  → DB1=1, DB2=0 → "10"
+        //   * Tracking-Slow-CCW              → DB1=1, DB2=1 → "11"
+        //   * Goto-Fast-CW                   → DB1=0, DB2=0 → "00"
+        //   * Goto-Fast-CCW                  → DB1=0, DB2=1 → "01"
+        assert_eq!(MotionMode::TRACKING.to_wire_bytes(), *b"10");
         assert_eq!(
             MotionMode {
-                goto: false,
-                fast: false,
-                forward: false,
+                kind: ModeKind::Tracking,
+                speed: Speed::Slow,
+                ccw: true,
             }
-            .to_byte(),
-            0x01
+            .to_wire_bytes(),
+            *b"11"
         );
-        // goto + slow + reverse
+        assert_eq!(MotionMode::GOTO_FAST_FORWARD.to_wire_bytes(), *b"00");
         assert_eq!(
             MotionMode {
-                goto: true,
-                fast: false,
-                forward: false,
+                kind: ModeKind::Goto,
+                speed: Speed::Fast,
+                ccw: true,
             }
-            .to_byte(),
-            0x11
+            .to_wire_bytes(),
+            *b"01"
         );
-        // goto + fast + reverse
+        // Speed bit semantics flip between Goto and Tracking.
+        //   Goto-Slow-CW       → DB1 bit-1 set = "2"; DB2=0 → "20"
+        //   Tracking-Fast-CW   → DB1 bit-1 set = "3" (also bit-0) → "30"
+        // (so the prior codec's "30" was Tracking-Fast, not Goto-Fast —
+        // see the doc comment on MotionMode for why this matters.)
         assert_eq!(
             MotionMode {
-                goto: true,
-                fast: true,
-                forward: false,
+                kind: ModeKind::Goto,
+                speed: Speed::Slow,
+                ccw: false,
             }
-            .to_byte(),
-            0x31
+            .to_wire_bytes(),
+            *b"20"
+        );
+        assert_eq!(
+            MotionMode {
+                kind: ModeKind::Tracking,
+                speed: Speed::Fast,
+                ccw: false,
+            }
+            .to_wire_bytes(),
+            *b"30"
         );
     }
 
@@ -276,7 +358,8 @@ mod tests {
 
     #[test]
     fn motion_setters_encode_with_payloads() {
-        // :G1<mode> with the GOTO_FAST_FORWARD preset → 0x30 → "30"
+        // Per Sky-Watcher spec §5: `GOTO_FAST_FORWARD` is DB1=0
+        // (Goto+Fast) + DB2=0 (CW) → wire "00".
         assert_eq!(
             Command::SetMotionMode {
                 axis: Axis::Ra,
@@ -284,7 +367,7 @@ mod tests {
             }
             .encode()
             .unwrap(),
-            b":G130\r"
+            b":G100\r"
         );
         // :S1 with target encoder 0 → bias `0x800000` → "000080"
         assert_eq!(

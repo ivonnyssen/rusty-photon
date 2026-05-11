@@ -35,8 +35,18 @@ axum = { workspace = true }
 erfars = { workspace = true }
 chrono = { workspace = true }
 
-[package.metadata.conformu]
-command = "cargo test -p star-adventurer-gti --features conformu --test conformu_integration -- --ignored --nocapture"
+# Intentionally NOT opting in to the nightly ConformU workflow via
+# `[package.metadata.conformu]`: ConformU's `alpacaprotocol` phase
+# polls `IsPulseGuiding` while exercising `PulseGuide` PUT-parameter
+# tests *even when `CanPulseGuide=false`*, and treats the
+# spec-mandated `NotImplementedException` from `IsPulseGuiding` as a
+# fatal protocol-test failure. Working around it would require
+# either a driver-side spec deviation (returning `Ok(false)` from
+# `IsPulseGuiding`, which other services don't do) or a non-standard
+# custom test harness. Neither is wanted. Re-add the
+# `[package.metadata.conformu]` entry when PulseGuide is implemented
+# and `CanPulseGuide=true`. Until then, run ConformU manually — see
+# `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 
 [dev-dependencies]
 bdd-infra = { workspace = true }
