@@ -7,7 +7,7 @@
 //! translator's PR introduces a parse error, drops a key, adds an unknown
 //! key, or renames a `{ $var }` placeholder.
 //!
-//! Reads the `i18n/` tree at runtime via [`rp_i18n::verify_translations_in_dir`],
+//! Reads the `i18n/` tree at runtime via [`rusty_photon_i18n::verify_translations_in_dir`],
 //! which walks a directory through its own `FsAssets` impl. We deliberately
 //! avoid `RustEmbed` here: the verifier's job is to catch translator-side
 //! mistakes (parse errors, dropped keys, renamed placeholders) in the
@@ -92,7 +92,7 @@ fn locate_i18n_dir() -> PathBuf {
 #[test]
 fn all_locales_are_parseable_and_consistent_with_en() {
     let i18n_dir = locate_i18n_dir();
-    let report = rp_i18n::verify_translations_in_dir(&i18n_dir, "en");
+    let report = rusty_photon_i18n::verify_translations_in_dir(&i18n_dir, "en");
     assert!(
         report.is_clean(),
         "translation issues against fallback `{}` (locales: {:?}):\n{:#?}",

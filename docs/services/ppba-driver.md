@@ -145,7 +145,7 @@ cargo run -p ppba-switch -- -c config.json -l debug
 ### Localised CLI help
 
 `ppba-driver`'s `--help` output and the `--log-level` validation error are
-translated via Fluent (`crates/rp-i18n` + `i18n-embed`) — see
+translated via Fluent (`crates/rusty-photon-i18n` + `i18n-embed`) — see
 [`docs/plans/i18n-cli-spike.md`](../plans/i18n-cli-spike.md). Locale is
 resolved at startup, before clap parses arguments. Precedence:
 

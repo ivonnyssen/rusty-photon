@@ -3223,9 +3223,9 @@ dependencies = [
  "proptest",
  "reqwest 0.13.2",
  "rp-auth",
- "rp-i18n",
  "rp-tls",
  "rust-embed",
+ "rusty-photon-i18n",
  "serde",
  "serde_json",
  "tempfile",
@@ -4018,31 +4018,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rp-i18n"
-version = "0.1.0"
-dependencies = [
- "clap",
- "fluent-langneg",
- "fluent-syntax",
- "i18n-embed",
- "i18n-embed-fl",
- "rp-i18n-derive",
- "sys-locale",
- "tempfile",
- "tracing",
- "unic-langid",
-]
-
-[[package]]
-name = "rp-i18n-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "rp-plate-solver"
 version = "0.1.0"
 dependencies = [
@@ -4323,6 +4298,31 @@ dependencies = [
  "quick-error 1.2.3",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "rusty-photon-i18n"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fluent-langneg",
+ "fluent-syntax",
+ "i18n-embed",
+ "i18n-embed-fl",
+ "rusty-photon-i18n-derive",
+ "sys-locale",
+ "tempfile",
+ "tracing",
+ "unic-langid",
+]
+
+[[package]]
+name = "rusty-photon-i18n-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

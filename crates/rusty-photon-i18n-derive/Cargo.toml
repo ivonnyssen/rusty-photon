@@ -1,11 +1,11 @@
 [package]
-name = "rp-i18n-derive"
+name = "rusty-photon-i18n-derive"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Proc-macro deriving LocalizedParser for clap-derive structs (companion to rp-i18n)"
+description = "Proc-macro deriving LocalizedParser for clap-derive structs (companion to rusty-photon-i18n)"
 rust-version.workspace = true
 
 [lib]

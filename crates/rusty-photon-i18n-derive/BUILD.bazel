@@ -4,10 +4,10 @@ load("@rules_rust//rust:defs.bzl", "rust_proc_macro")
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 rust_proc_macro(
-    name = "rp-i18n-derive",
+    name = "rusty-photon-i18n-derive",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    crate_name = "rp_i18n_derive",
+    crate_name = "rusty_photon_i18n_derive",
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),

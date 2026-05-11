@@ -1,8 +1,8 @@
-//! Derive macro for [`rp_i18n::LocalizedParser`].
+//! Derive macro for [`rusty_photon_i18n::LocalizedParser`].
 //!
 //! Apply alongside `clap::Parser` and use `#[localized(about = "key")]` /
 //! `#[localized(help = "key")]` to map struct/field help to Fluent keys.
-//! See the crate-level docs in `crates/rp-i18n/src/lib.rs` and the spike
+//! See the crate-level docs in `crates/rusty-photon-i18n/src/lib.rs` and the spike
 //! write-up at `docs/plans/i18n-cli-spike.md` §10 for the user-facing flow.
 
 use proc_macro::TokenStream;
@@ -50,7 +50,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     if let Some(key) = about_key {
         mutations.push(quote! {
-            .about(::rp_i18n::fl!(loader, #key))
+            .about(::rusty_photon_i18n::fl!(loader, #key))
         });
     }
 
@@ -59,14 +59,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let ident_str = ident.to_string();
         if let Some(key) = find_localized_value(&field.attrs, "help")? {
             mutations.push(quote! {
-                .mut_arg(#ident_str, |a| a.help(::rp_i18n::fl!(loader, #key)))
+                .mut_arg(#ident_str, |a| a.help(::rusty_photon_i18n::fl!(loader, #key)))
             });
         }
     }
 
     Ok(quote! {
-        impl ::rp_i18n::LocalizedParser for #name {
-            fn parse_localized(loader: &::rp_i18n::FluentLanguageLoader) -> Self {
+        impl ::rusty_photon_i18n::LocalizedParser for #name {
+            fn parse_localized(loader: &::rusty_photon_i18n::FluentLanguageLoader) -> Self {
                 use ::clap::{CommandFactory, FromArgMatches};
                 let cmd = <Self as CommandFactory>::command()
                     #(#mutations)*;
@@ -78,7 +78,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             fn try_parse_localized(
-                loader: &::rp_i18n::FluentLanguageLoader,
+                loader: &::rusty_photon_i18n::FluentLanguageLoader,
             ) -> ::std::result::Result<Self, ::clap::Error> {
                 use ::clap::{CommandFactory, FromArgMatches};
                 let cmd = <Self as CommandFactory>::command()

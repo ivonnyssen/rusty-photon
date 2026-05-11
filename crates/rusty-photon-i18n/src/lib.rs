@@ -9,7 +9,7 @@
 //! ```ignore
 //! use clap::Parser;
 //! use rust_embed::RustEmbed;
-//! use rp_i18n::{fluent_language_loader, LocalizedParser};
+//! use rusty_photon_i18n::{fluent_language_loader, LocalizedParser};
 //!
 //! #[derive(RustEmbed)]
 //! #[folder = "i18n/"]
@@ -23,7 +23,7 @@
 //!     config: Option<String>,
 //! }
 //!
-//! let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
+//! let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
 //! let args = Args::parse_localized(&loader);
 //! // After tracing is initialised, surface any locale-negotiation miss:
 //! if let Err(e) = i18n_status {
@@ -45,7 +45,7 @@ use unic_langid::LanguageIdentifier;
 
 pub use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 pub use i18n_embed_fl::fl;
-pub use rp_i18n_derive::LocalizedParser;
+pub use rusty_photon_i18n_derive::LocalizedParser;
 
 mod verify;
 pub use verify::{verify_translations, verify_translations_in_dir, VerifyIssue, VerifyReport};
@@ -192,7 +192,7 @@ pub enum LoadError {
 /// initialised, since `init` itself runs before logging is set up:
 ///
 /// ```ignore
-/// let (loader, i18n_status) = rp_i18n::init(fluent_language_loader!(), &Localizations);
+/// let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
 /// let args = Args::parse_localized(&loader);
 /// tracing_subscriber::fmt().with_max_level(args.log_level).init();
 /// if let Err(e) = i18n_status {
@@ -329,8 +329,10 @@ mod tests {
         // *some* error, but doesn't assert which one — so a refactor that
         // swapped Load ↔ Available would slip through the suite. This guards
         // the contract direct callers (consumer `main()` log arms) depend on.
-        let loader =
-            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let loader = i18n_embed::fluent::FluentLanguageLoader::new(
+            "rusty-photon-i18n-test",
+            "en".parse().unwrap(),
+        );
         let requested: LanguageIdentifier = "de".parse().unwrap();
         let result = select_best(&loader, &EmptyAssets, &requested);
         match result {
@@ -360,12 +362,16 @@ mod tests {
         // operator who logs the status would see a misleading
         // "English fallback" message even though the active loader is
         // whatever the first init established.
-        let loader1 =
-            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let loader1 = i18n_embed::fluent::FluentLanguageLoader::new(
+            "rusty-photon-i18n-test",
+            "en".parse().unwrap(),
+        );
         let (arc1, _) = init(loader1, &EmptyAssets);
 
-        let loader2 =
-            i18n_embed::fluent::FluentLanguageLoader::new("rp-i18n-test", "en".parse().unwrap());
+        let loader2 = i18n_embed::fluent::FluentLanguageLoader::new(
+            "rusty-photon-i18n-test",
+            "en".parse().unwrap(),
+        );
         let (arc2, status2) = init(loader2, &EmptyAssets);
 
         // Status must report AlreadyInitialized, not whatever load_status
