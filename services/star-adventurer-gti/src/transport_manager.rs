@@ -255,26 +255,31 @@ impl TransportManager {
         *self.snapshot.read().await
     }
 
-    /// Update the cached snapshot's position for one axis.
+    /// Update the cached snapshot's RA position.
     ///
     /// Used by `SyncToCoordinates` to publish the just-written encoder
     /// position immediately rather than waiting up to
     /// `polling_interval` for the background task to refresh. Without
-    /// this, callers that read `RightAscension` / `Declination` within
-    /// one poll interval of `Sync` see the pre-sync position — ConformU
-    /// reads ~2 ms after the sync call returns and flags the stale
-    /// value as a 3675-arc-second sync error.
-    pub async fn seed_position(&self, axis: Axis, ticks: i32) {
-        let mut snap = self.snapshot.write().await;
-        match axis {
-            Axis::Ra => snap.ra.position_ticks = ticks,
-            Axis::Dec => snap.dec.position_ticks = ticks,
-            // `:E3` (Both) isn't part of the MVP wire surface — sync
-            // writes per-axis values that can differ — and would have
-            // no sensible single-tick interpretation here. Reject so a
-            // future caller doesn't silently corrupt one axis.
-            Axis::Both => debug_assert!(false, "seed_position not valid for Axis::Both"),
-        }
+    /// this, callers that read `RightAscension` within one poll
+    /// interval of `Sync` see the pre-sync position — ConformU reads
+    /// ~2 ms after the sync call returns and flags the stale value as
+    /// a 3675-arc-second sync error.
+    ///
+    /// Per-axis methods (instead of taking an `Axis`) eliminate the
+    /// `Axis::Both` case at the type level — `:E3` (both axes) isn't
+    /// part of the MVP wire surface, sync writes per-axis values that
+    /// can differ, and there's no sensible single-tick interpretation
+    /// of "seed both". Previously this lived in one method that
+    /// rejected `Axis::Both` via `debug_assert!`, which is a
+    /// production no-op silently leaving the cache stale.
+    pub async fn seed_ra_position(&self, ticks: i32) {
+        self.snapshot.write().await.ra.position_ticks = ticks;
+    }
+
+    /// Update the cached snapshot's Dec position. See
+    /// [`seed_ra_position`](Self::seed_ra_position) for rationale.
+    pub async fn seed_dec_position(&self, ticks: i32) {
+        self.snapshot.write().await.dec.position_ticks = ticks;
     }
 
     /// Send one command, return one reply. Does *not* update the snapshot —

@@ -38,6 +38,12 @@ pub struct AxisSimState {
     /// slew-issue time; the mock advances the encoder accordingly.
     pub ccw: bool,
     pub fast: bool,
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
+    /// reports `Blocked` when the motor is stepping but the encoder
+    /// isn't advancing. Tests seed this directly to exercise the
+    /// slew/park watchers' blocked-abort path; the mock does not
+    /// derive it from physical state.
+    pub blocked: bool,
     pub goto_target_ticks: i32,
     pub step_period: u32,
 }
@@ -58,7 +64,13 @@ impl AxisSimState {
         if self.fast {
             n0 |= 0x4; // bit 2: 1 = Fast, 0 = Slow
         }
-        let n1 = if self.running { 0x1 } else { 0 };
+        let mut n1 = 0u8;
+        if self.running {
+            n1 |= 0x1; // bit 0: 1 = Running
+        }
+        if self.blocked {
+            n1 |= 0x2; // bit 1: 1 = Blocked
+        }
         let n2 = if self.initialized { 0x1 } else { 0 };
         [nibble_to_hex(n0), nibble_to_hex(n1), nibble_to_hex(n2)]
     }
@@ -85,6 +97,18 @@ impl AxisSimState {
         if !self.running {
             return;
         }
+        // Direction comes from the wire-level `ccw` bit decoded out
+        // of the last `:G`, NOT from `sign(target - position)`.
+        // Real hardware steps in whatever direction the mode byte
+        // told it to, regardless of where the target sits relative
+        // to the current encoder — if the driver tells the motor
+        // to go CW while the target is CCW of the current
+        // position, the hardware happily steps CW (and either
+        // overshoots and never stops, or hits a mechanical limit).
+        // Faithful-mock matters here: if the driver issues a
+        // direction-vs-delta mismatch we want the BDD suite to
+        // catch it rather than silently auto-correct.
+        let dir: i32 = if self.ccw { -1 } else { 1 };
         if self.goto {
             let chunk: i32 = if self.fast { 100_000 } else { 100 };
             let delta = self.goto_target_ticks - self.position_ticks;
@@ -92,9 +116,17 @@ impl AxisSimState {
                 self.running = false;
                 return;
             }
-            let step = chunk.min(delta.abs()) * delta.signum();
+            // Step in the *commanded* direction, capped by the
+            // remaining distance only when the commanded direction
+            // moves us toward the target.
+            let toward_target = delta.signum() == dir;
+            let step = if toward_target {
+                chunk.min(delta.abs()) * dir
+            } else {
+                chunk * dir
+            };
             self.position_ticks += step;
-            if self.position_ticks == self.goto_target_ticks {
+            if toward_target && self.position_ticks == self.goto_target_ticks {
                 self.running = false;
             }
         } else {
@@ -102,7 +134,6 @@ impl AxisSimState {
             // a sidereal-ish chunk per poll. Never auto-stop — only
             // `:K` / `:L` should clear `running`.
             const SIDEREAL_CHUNK_PER_POLL: i32 = 8;
-            let dir = if self.ccw { -1 } else { 1 };
             self.position_ticks += SIDEREAL_CHUNK_PER_POLL * dir;
         }
     }

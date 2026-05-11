@@ -267,10 +267,10 @@ const SYNC_SLEW_TIMEOUT: Duration = Duration::from_secs(300);
 const MIN_SLEW_DWELL: Duration = Duration::from_secs(2);
 
 /// Upper bound on how long `stop_and_wait` will poll `:f<axis>`
-/// after a `:K` before giving up. The GTi decelerates from a
-/// high-speed slew in well under a second; 2 s is a comfortable
-/// margin, and bounding the wait prevents a stuck axis from
-/// wedging a slew indefinitely.
+/// after a `:L` (instant stop) before giving up. The firmware
+/// flushes the running flag within ~100 ms on the GTi after a
+/// `:L`; 2 s is a comfortable margin, and bounding the wait
+/// prevents a stuck axis from wedging a slew indefinitely.
 const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[async_trait]
@@ -638,7 +638,7 @@ impl Telescope for MountDevice {
         // so an immediate `RightAscension` read reflects the sync
         // without having to wait for the next background poll. Done
         // only after the wire `:E` succeeds.
-        self.transport.seed_position(Axis::Ra, ra_ticks).await;
+        self.transport.seed_ra_position(ra_ticks).await;
         self.transport
             .send(Command::SetPosition {
                 axis: Axis::Dec,
@@ -646,7 +646,7 @@ impl Telescope for MountDevice {
             })
             .await
             .map_err(Self::ascom)?;
-        self.transport.seed_position(Axis::Dec, dec_ticks).await;
+        self.transport.seed_dec_position(dec_ticks).await;
         // Per ASCOM ITelescopeV3, a successful Sync sets
         // TargetRightAscension / TargetDeclination to the synced
         // coordinates. ConformU asserts this. Only write the in-memory
@@ -730,28 +730,30 @@ impl Telescope for MountDevice {
         // stalling the motor against a hard stop.
         self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
 
-        // Per axis: stop any prior motion, set goto-fast mode in the
-        // correct direction, set the step period, set the target,
-        // start motion. Two pieces of empirical-hardware feedback
-        // that the original implementation missed:
+        // Per axis: stop any prior motion (`stop_and_wait` issues
+        // `:L` + polls `:f` until `running == false`), set goto-fast
+        // mode in the correct direction, set the target, start
+        // motion. No `:I` here — Sky-Watcher spec §3 says the
+        // firmware picks the goto step period internally in Goto
+        // mode; an early draft of this path mistakenly sent `:I`
+        // before `:J`, but that was a side-effect of the original
+        // codec sending `:G130` (which the spec decodes as
+        // Tracking-Fast, not Goto-Fast — see
+        // `crates/skywatcher-motor-protocol/src/command.rs` for
+        // the canonical mode-byte semantics). The two empirical-
+        // hardware findings that *do* apply to this path:
         //
-        //   * **`:I` is mandatory before `:J` for slews.** On a real
-        //     GTi, omitting `:I` makes `:J` silently no-op (the
-        //     mount ACKs every setter with `=\r` but never starts
-        //     stepping). The mock did not enforce this, hence the
-        //     gap. The design doc's command table already noted
-        //     `:I` as "tracking rate, slew rate"; we just weren't
-        //     issuing it on the slew path.
+        //   * **`:G` must run against a stopped axis.** Real GTi
+        //     returns `!2 MotorNotStopped` if `:G` arrives while
+        //     the motor is still decelerating from a previous
+        //     command. `stop_and_wait` enforces this. The mock
+        //     processed `:K` instantaneously and missed the race.
         //   * **Direction-bit must match `sign(target - current)`.**
-        //     Hard-coding `GOTO_FAST_FORWARD` means a slew whose
-        //     target is *behind* the current encoder also silently
-        //     no-ops on real hardware. The design doc explicitly
-        //     calls out "direction by sign of delta".
-        //
-        // The mock used to process `:K` instantaneously, so the
-        // design-doc's "poll `:f` until Running=0" step is still
-        // skipped here pending a Phase 4 measurement of real-mount
-        // `:K` response time.
+        //     The original fixed `GOTO_FAST_FORWARD` constant
+        //     meant a slew whose target is *behind* the current
+        //     encoder also silently no-ops on real hardware. The
+        //     design doc explicitly calls out "direction by sign
+        //     of delta".
         let snap = self.transport.snapshot().await;
         let ra_delta = ra_ticks - snap.ra.position_ticks;
         let dec_delta = dec_ticks - snap.dec.position_ticks;
@@ -1621,6 +1623,110 @@ mod tests {
         d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
         assert_eq!(d.target_right_ascension().await.unwrap(), 6.0);
         assert_eq!(d.target_declination().await.unwrap(), 30.0);
+    }
+
+    #[tokio::test]
+    async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
+        // Drive a slew, seed the mock to report `blocked = true` on
+        // either axis, and assert the watcher issues `:L1` + `:L2`
+        // and clears `slew_in_progress` instead of waiting for the
+        // running flag to drop. Mirrors the safety net we wired up
+        // after the hardware ConformU run where the motor stalled
+        // against a counterweight-up mechanical stop while the
+        // encoder counter kept advancing.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        // Mark RA blocked. The next poll picks this up, the watcher
+        // sees it, issues :L on both axes and exits early.
+        {
+            let mut s = mock.state.lock().await;
+            s.ra.blocked = true;
+        }
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+
+        // Wait for the watcher to observe the blocked state and
+        // clear `slew_in_progress`. With dwell=2 s the watcher
+        // won't act sooner; bound at 5 s.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !d.slewing().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !d.slewing().await.unwrap(),
+            "watcher must have cleared slew_in_progress after seeing blocked"
+        );
+
+        // Both axes must have seen a :L issued by the watcher's
+        // abort path. (The driver's slew-issue prefix uses :L too,
+        // so we count occurrences and assert >= 2 each.)
+        let log = mock.state.lock().await.command_log.clone();
+        let l1_count = log.iter().filter(|f| f.as_slice() == b":L1\r").count();
+        let l2_count = log.iter().filter(|f| f.as_slice() == b":L2\r").count();
+        assert!(
+            l1_count >= 2,
+            ":L1 should be issued by both slew-prep and watcher-abort; log={log:?}"
+        );
+        assert!(
+            l2_count >= 2,
+            ":L2 should be issued by both slew-prep and watcher-abort; log={log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn park_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
+        // Same shape as the slew-watcher blocked test, but for the
+        // park completion watcher. Critical: on a blocked abort the
+        // park watcher must NOT set `AtPark = true` — the OTA isn't
+        // at the encoder-0 home pose, so subsequent unpark+slew
+        // computations would have a wrong delta.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        {
+            let mut s = mock.state.lock().await;
+            s.dec.blocked = true;
+        }
+        d.park().await.unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !d.slewing().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !d.slewing().await.unwrap(),
+            "park watcher must clear slew_in_progress after blocked"
+        );
+        assert!(
+            !d.at_park().await.unwrap(),
+            "park watcher must NOT set AtPark when aborted via blocked"
+        );
     }
 
     #[tokio::test]

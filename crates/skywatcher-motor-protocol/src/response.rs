@@ -402,6 +402,53 @@ mod tests {
     }
 
     #[test]
+    fn decode_single_digit_error_reply_matches_gti_wire_format() {
+        // Empirically the Star Adventurer GTi sends `!X\r` (3 bytes,
+        // single hex digit) for single-digit error codes 0..8 —
+        // see the doc comment on `validate_response_frame`. Both
+        // widths must decode to the same `MountErrorCode`.
+        let short = Response::decode(b"!2\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        let wide = Response::decode(b"!02\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        assert_eq!(short, wide);
+        assert_eq!(
+            short,
+            ProtocolError::MountError(MountErrorCode::MotorNotStopped)
+        );
+
+        // `!4\r` was the empirical reply that surfaced this case
+        // in the first place (`NotInitialized` after a stale `:F`).
+        let err = Response::decode(b"!4\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        assert_eq!(
+            err,
+            ProtocolError::MountError(MountErrorCode::NotInitialized)
+        );
+    }
+
+    #[test]
+    fn axis_status_decode_recovers_blocked_and_level_switch_bits() {
+        // Spec §5 Response E:
+        //   nibble 1 bit 1 = Blocked
+        //   nibble 2 bit 1 = Level-switch on
+        //
+        // 121 → nibble 0=1 (tracking-slow-CW); nibble 1=2 (blocked,
+        // not running); nibble 2=1 (initialised).
+        let s = AxisStatus::decode(b"121").unwrap();
+        assert!(!s.running, "blocked alone shouldn't imply running");
+        assert!(s.blocked, "blocked bit must propagate");
+        assert!(s.initialized);
+        assert!(!s.level_switch_on);
+
+        // 133 → nibble 1=3 (running AND blocked — the realistic
+        // "motor stepping but encoder not advancing" case);
+        // nibble 2=3 (initialised + level-switch on).
+        let s = AxisStatus::decode(b"133").unwrap();
+        assert!(s.running);
+        assert!(s.blocked);
+        assert!(s.initialized);
+        assert!(s.level_switch_on);
+    }
+
+    #[test]
     fn decode_rejects_malformed_frames() {
         // Setter command but reply has an unexpected payload.
         let r = Response::decode(b"=ABC\r", &Command::Initialize(Axis::Ra));
