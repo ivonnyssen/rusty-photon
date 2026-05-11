@@ -730,9 +730,32 @@ In addition to the codec fixes:
   the motor takes meaningful wallclock time to actually halt.
   `:G` against a still-decelerating axis returns `!2\r`
   (`MotorNotStopped`). The slew, park, and `set_tracking(true)`
-  paths now issue `:L` (instant stop) and then poll `:f` until
-  `running == false`, before any subsequent `:G`/`:S`/`:J`. Mock
-  hid this because it processes `:K`/`:L` instantaneously.
+  paths issue `:K` (decelerate) and then poll `:f` until
+  `running == false`, before any subsequent `:G`/`:S`/`:J`. An
+  early version of this path used `:L` (instant stop) instead;
+  switched to `:K` in issue #207 to match the spec's recommended
+  stop semantics and INDI eqmod's `StopWaitMotor`
+  (`indi-eqmod/skywatcher.cpp:1741-1765`) — `:L` is harsher on
+  the gearbox and is reserved for genuine emergency stops
+  (`AbortSlew`, slew/park watcher abort on `blocked`).
+  Mock hid the wallclock issue originally because it processes
+  `:K`/`:L` instantaneously.
+- **Mode-cache short-circuit** — every `:G<axis><mode>` is
+  preceded by a `stop_and_wait` so the spec-required "motor at
+  full stop before mode change" holds. Most consecutive `:G`
+  issues request the *same* mode the firmware was last told to
+  use — back-to-back slews in one direction, a UI re-asserting
+  tracking, etc. The driver caches the last [`MotionMode`] each
+  axis acked (via [`TransportManager::record_motion_mode`]) and
+  short-circuits `stop_and_wait + :G` when the requested mode
+  equals the cache. Matches INDI eqmod's
+  `LastRunningStatus == NewStatus` check
+  (`indi-eqmod/skywatcher.cpp:1672-1678`). The cache is
+  per-axis, opaque to the firmware's post-goto auto-engage-
+  Tracking behaviour (same caveat INDI carries), and reset on
+  every connect / disconnect — a connect into a session must
+  not trust a `MotionMode` recorded against a possibly different
+  physical mount.
 - **No `:I` in Goto mode** — spec §3 says the firmware computes
   slew speed internally for Goto mode. We removed the `:I` send
   from the slew path; tracking still uses `:I` to set the

@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use skywatcher_motor_protocol::command::MotionMode;
 use skywatcher_motor_protocol::{Axis, Command, Response};
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -56,6 +57,23 @@ pub struct MountSnapshot {
     pub dec: AxisSnapshot,
 }
 
+/// Per-axis cache of the last [`MotionMode`] the driver successfully issued
+/// via `:G<axis><mode>`. `None` until the driver issues a `:G` on that axis,
+/// and reset to `None` on every connect / disconnect (the firmware is not
+/// guaranteed to retain mode state across a session boundary, and trusting
+/// stale-across-reconnect cache values would let the short-circuit skip a
+/// genuinely needed mode switch).
+///
+/// Used by [`crate::MountDevice`] to short-circuit `stop_and_wait + :G`
+/// when the requested mode equals the cached one. Mirrors INDI eqmod's
+/// `LastRunningStatus == NewStatus` optimisation
+/// (`indi-eqmod/skywatcher.cpp` `SetMotion`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MotionModeCache {
+    pub ra: Option<MotionMode>,
+    pub dec: Option<MotionMode>,
+}
+
 /// Shared, ref-counted transport handle.
 ///
 /// Owns a [`TransportFactory`] (not a pre-built [`Transport`]) so the
@@ -86,6 +104,8 @@ pub struct TransportManager {
     available: AtomicBool,
     parameters: RwLock<Option<MountParameters>>,
     snapshot: Arc<RwLock<MountSnapshot>>,
+    /// Per-axis last-issued motion-mode cache. See [`MotionModeCache`].
+    motion_mode_cache: RwLock<MotionModeCache>,
     /// Background polling task; populated on the 0→1 connect transition,
     /// aborted on the 1→0 disconnect.
     poll_handle: Mutex<Option<JoinHandle<()>>>,
@@ -106,6 +126,7 @@ impl TransportManager {
             available: AtomicBool::new(false),
             parameters: RwLock::new(None),
             snapshot: Arc::new(RwLock::new(MountSnapshot::default())),
+            motion_mode_cache: RwLock::new(MotionModeCache::default()),
             poll_handle: Mutex::new(None),
             shutdown_tx,
         }
@@ -143,6 +164,14 @@ impl TransportManager {
             self.connection_count.fetch_sub(1, Ordering::SeqCst);
             return Err(e);
         }
+
+        // Reset the motion-mode cache: nothing the driver issued in a
+        // previous session can be trusted across a connect, and the
+        // firmware's mode state at session start is not observable from
+        // `:f` (the mode bits there reflect the last `:G`-issued setting
+        // even after the motor has stopped, but they don't tell us
+        // whether the firmware auto-reset on power cycle / re-init).
+        *self.motion_mode_cache.write().await = MotionModeCache::default();
 
         // Spawn the polling task before flipping `available` so the first
         // snapshot read after connect already has fresh data (or at least
@@ -222,6 +251,10 @@ impl TransportManager {
         // releases the last refs and triggers `Transport::close`.
         *self.transport.lock().await = None;
         *self.parameters.write().await = None;
+        // Drop the motion-mode cache too: the next session's first `:G`
+        // must not short-circuit on a value we recorded against a
+        // possibly different physical mount.
+        *self.motion_mode_cache.write().await = MotionModeCache::default();
 
         // Reset the shutdown channel so a subsequent connect starts fresh.
         let _ = self.shutdown_tx.send(false);
@@ -280,6 +313,50 @@ impl TransportManager {
     /// [`seed_ra_position`](Self::seed_ra_position) for rationale.
     pub async fn seed_dec_position(&self, ticks: i32) {
         self.snapshot.write().await.dec.position_ticks = ticks;
+    }
+
+    /// Last [`MotionMode`] the driver successfully issued via `:G` on
+    /// `axis`. `None` until the first successful `:G` on that axis (or
+    /// after a connect / disconnect, which both reset the cache).
+    /// `Axis::Both` is not part of the MVP wire surface for `:G` — calls
+    /// with `Both` return `None` rather than collapsing two
+    /// independently-tracked axes into a single answer.
+    pub async fn last_motion_mode(&self, axis: Axis) -> Option<MotionMode> {
+        let cache = self.motion_mode_cache.read().await;
+        match axis {
+            Axis::Ra => cache.ra,
+            Axis::Dec => cache.dec,
+            Axis::Both => None,
+        }
+    }
+
+    /// Record that the driver just acked a `:G<axis><mode>` on the wire.
+    /// `Axis::Both` is a no-op for the same reason
+    /// [`last_motion_mode`](Self::last_motion_mode) returns `None` —
+    /// the MVP only issues per-axis `:G`.
+    pub async fn record_motion_mode(&self, axis: Axis, mode: MotionMode) {
+        let mut cache = self.motion_mode_cache.write().await;
+        match axis {
+            Axis::Ra => cache.ra = Some(mode),
+            Axis::Dec => cache.dec = Some(mode),
+            Axis::Both => {}
+        }
+    }
+
+    /// Drop the cached mode for `axis`. Used when the driver knows the
+    /// firmware-side mode has changed without an explicit `:G` from us —
+    /// e.g. the post-goto auto-engage-Tracking behaviour the firmware
+    /// applies after a slew completes.
+    pub async fn invalidate_motion_mode(&self, axis: Axis) {
+        let mut cache = self.motion_mode_cache.write().await;
+        match axis {
+            Axis::Ra => cache.ra = None,
+            Axis::Dec => cache.dec = None,
+            Axis::Both => {
+                cache.ra = None;
+                cache.dec = None;
+            }
+        }
     }
 
     /// Send one command, return one reply. Does *not* update the snapshot —
