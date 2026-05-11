@@ -44,6 +44,10 @@ impl Axis {
 ///
 /// [bug]: ../../docs/services/star-adventurer-gti.md "Star Adventurer GTi design doc"
 ///
+/// Prior art: INDI eqmod's `SetMotion` (`indi-eqmod/skywatcher.cpp:1643-1664`)
+/// emits the same byte pairs we do (`"10"`, `"30"`, `"20"`, `"00"` with
+/// direction in the low nibble).
+///
 /// **DB1** — high nibble (mode):
 ///
 /// | Bit | Value | Meaning |
