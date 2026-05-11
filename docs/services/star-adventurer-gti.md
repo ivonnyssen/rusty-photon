@@ -619,12 +619,20 @@ conformu conformance \
 Expect the conformance run to report:
 
 - **0 errors** — anything here is a real driver regression.
-- **7 issues**, all of which are deferred-by-design or
+- **9 issues**, all of which are deferred-by-design or
   upstream-framework problems:
   - `DestinationSideOfPier` ×1 and `SOPPierTest` ×4 — the MVP
     explicitly defers `DestinationSideOfPier` (see [§MVP Scope](#mvp-scope)).
     `SOPPierTest` depends on it and inherits the failure four
     times under different RA/Dec inputs.
+  - `SOPPierTest` ×2 — the safety envelope correctly rejects
+    cross-meridian slews that would land at `RA mech-HA = ±9h`
+    (well outside the default ±6h counterweight-horizontal
+    envelope). `SOPPierTest` exercises the pier-flip code paths
+    by commanding such slews; the driver returns
+    `InvalidValueException` from the safety gate before any
+    wire motion. This is the same envelope-rejection mechanism
+    Phase 4 added — see [§Phase 4 driver-logic changes].
   - `TrackingRate Write` ×2 — an upstream `ascom-alpaca-rs`
     bug: invalid Alpaca enum values are rejected with HTTP
     `400 BadRequest` (axum/serde rejection) before reaching
@@ -633,8 +641,10 @@ Expect the conformance run to report:
     as the Alpaca spec requires. ConformU sends `5` and `-1`
     and flags both.
 
-Any issue or error outside that list is a real regression — fix
-the driver, then refresh this section.
+Any issue or error outside that list — and in particular any
+`SlewTo*` / `SyncTo*` row reporting a tolerance exceedance
+("`Actual RA: ..., Target RA: ...`" with > 10″ delta) — is a
+real regression. Fix the driver, then refresh this section.
 
 > Note: `conformu alpacaprotocol …` against this service will
 > abort with a fatal `IsPulseGuiding` `NotImplementedException`
