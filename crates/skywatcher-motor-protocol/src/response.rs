@@ -159,16 +159,20 @@ impl Response {
                 Ok(Self::U24(decode_u24(expect_u24_payload(payload)?)?))
             }
             Command::InquireHighSpeedRatio(_) => {
-                // Empirical: the Star Adventurer GTi returns a 2-hex-byte
-                // u8 payload for `:g<axis>` (value `0x01` on both axes),
-                // not the 6-hex-byte u24 the original design doc
-                // assumed. The Sky-Watcher motor-controller spec is
-                // ambiguous on payload width for this command; widen to
-                // accept both. INDI eqmod (the canonical reference)
-                // also decodes `:g` as a small unsigned and stores it
-                // as a single-byte ratio. We promote whichever width
-                // we receive to a `u32` so the parameter cache stays
-                // uniform.
+                // Empirical: the Star Adventurer GTi returns a 2-hex-char
+                // u8 payload for `:g<axis>` (`=01\r` on both axes), not
+                // the 6-hex-char u24 the original design doc assumed.
+                // This matches INDI eqmod's universal handling: its
+                // `Highstr2long` (`indi-eqmod/skywatcher.cpp:1932-1939`)
+                // reads exactly the first two hex chars for `:g` on
+                // every supported mount — there is no INDI fallback to
+                // the 6-hex form. The Sky-Watcher motor-controller spec
+                // is ambiguous on payload width, so the 6-hex branch
+                // below is kept as a zero-cost safety net for
+                // hypothetical future firmware variants, not because
+                // any known controller emits it. We promote whichever
+                // width we receive to a `u32` so the parameter cache
+                // stays uniform.
                 Ok(Self::U24(match payload.len() {
                     2 => {
                         let bytes = [payload[0], payload[1]];
