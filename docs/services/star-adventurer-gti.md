@@ -315,16 +315,18 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 |---|---|
 | `Connected = true` | open transport, run init handshake, populate parameter cache, start polling |
 | `Connected = false` | stop polling, close transport, clear parameter cache |
-| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
+| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions for `LST(now + MIN_SLEW_DWELL)` so the post-slew RA reading lands on `target_RA` instead of drifting at sidereal rate during the slew, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
+| `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
-| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position) and update sync offset |
+| `SlewToTarget()` | synchronous variant of the above; same wait semantics as `SlewToCoordinates` |
+| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
-| `AbortSlew()` | issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
+| `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
 | `Park()` | stop tracking, slew both axes to encoder 0/0, when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
 | `SetPark()` | `NOT_IMPLEMENTED` in MVP |
-| `Tracking = true` | issue `:G<RA>` (Tracking + sidereal) + `:I<RA>` (sidereal step period) + `:J<RA>`. Dec axis untouched |
-| `Tracking = false` | issue `:K<RA>` (decelerate to stop) |
+| `Tracking = true` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:G<RA>` (Tracking + sidereal) + `:I<RA>` (sidereal step period) + `:J<RA>`. Dec axis untouched |
+| `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
 | `FindHome()` | `NOT_IMPLEMENTED` |
 | `MoveAxis(*)` | `NOT_IMPLEMENTED` |
 | `PulseGuide(*)` | `NOT_IMPLEMENTED` |
@@ -349,9 +351,13 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
-        └─ when both axes report Running=0 in Goto mode → Slewing = false
+        └─ wait at least MIN_SLEW_DWELL (2 s) of wallclock so any
+           Alpaca client polling Slewing within the typical
+           round-trip window catches `Slewing = true` at least once
+        └─ when both axes report Running=0 in Goto mode AND the dwell
+           has elapsed → proceed
         └─ if Tracking was on: re-issue tracking-mode :G + :I + :J on RA axis
-        └─ apply config.settle_after_slew before returning Slewing=false
+        └─ apply config.settle_after_slew before clearing Slewing = false
 ```
 
 ### Park lifecycle
@@ -377,15 +383,21 @@ Park()
 ### Side-of-pier
 
 `SideOfPier` is derived from the RA-axis encoder position and the site
-latitude:
+latitude, following the ASCOM / EQMOD convention:
 
 - Convert RA-axis encoder ticks → mechanical hour-angle (signed, range
   `[-12, +12)`).
 - In **northern hemisphere** (`SiteLatitude > 0`): mechanical HA in
-  `[-6, +6)` → OTA on the **east** side of the pier (`PierSide::East`);
-  `[+6, +18) ≡ [-12, -6) ∪ [+6, +12)` → **west** side.
-- In **southern hemisphere**: the convention inverts (per
-  Sky-Watcher's hand-control protocol §"Get Mount Pointing State").
+  `[-12, 0)` (object east of meridian, mount in the "normal" pointing
+  state with counterweight east and OTA west) → `PierSide::West`;
+  mechanical HA in `[0, +12)` (object past meridian, mount in the
+  post-meridian-flip / "through-the-pole" state) → `PierSide::East`.
+- In **southern hemisphere** (`SiteLatitude < 0`): the convention
+  inverts.
+
+The boundary at `HA = 0` (meridian) — not the earlier `HA = ±6` split —
+matches what ConformU and standard GEM drivers (EQMOD, INDI eqmod)
+expect.
 
 The MVP does **not** implement `DestinationSideOfPier` (slew-target
 prediction); reads always return one of `East` / `West` based on current
@@ -545,14 +557,76 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — same shape as `qhy-focuser`. Currently **not wired into the nightly `conformu` workflow** (no `[package.metadata.conformu]` opt-in); see [§"Running ConformU manually"](#running-conformu-manually) for why and how to drive it by hand until `PulseGuide` is implemented |
 
 The mock transport is a feature-gated in-memory state machine that
 simulates the motor controller — it accepts the same `:cmd<axis>...\r`
 frames and emits well-formed `=...\r` / `!XX\r` responses, with internal
-state for axis position, motion mode, running/stopped, and tracking. BDD
+state for axis position, motion mode, running/stopped, and tracking. In
+**tracking mode** the mock advances the axis encoder forward by a small
+sidereal-equivalent chunk per `:j` poll (ignoring `goto_target_ticks`),
+so post-slew `RA` reads stay constant — matching what real Sky-Watcher
+firmware does once tracking is re-enabled. In **goto mode** the mock
+walks toward `goto_target_ticks` and clears `running` on arrival. BDD
 tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.
+
+### Running ConformU manually
+
+This service is deliberately **not** in the nightly `conformu`
+workflow rotation. `ConformUTestBuilder::run()` (which the
+in-tree integration test uses, matching `qhy-focuser`) runs two
+phases in sequence: `alpacaprotocol` then `conformance`. The
+`alpacaprotocol` phase polls `IsPulseGuiding` while exercising
+`PulseGuide` PUT-parameter-order tests *even when
+`CanPulseGuide=false`*, and treats the spec-mandated
+`NotImplementedException` from `IsPulseGuiding` as a fatal
+protocol-test failure. The right structural fix is implementing
+`PulseGuide` so `CanPulseGuide` flips to `true` and the polling
+stops being a problem; until then the integration test cannot
+be wired in without either deviating the driver from the ASCOM
+spec or carrying a non-standard test harness that diverges from
+the other services. Neither is wanted. Re-add
+`[package.metadata.conformu]` in `services/star-adventurer-gti/Cargo.toml`
+once PulseGuide lands.
+
+In the meantime, run ConformU's `conformance` phase by hand:
+
+```bash
+# Terminal 1: start the service in mock mode on a fixed port.
+cargo run -p star-adventurer-gti --features mock -- \
+    --config services/star-adventurer-gti/conformu-test-config.json \
+    -l info
+
+# Terminal 2: drive ConformU against it.
+conformu conformance \
+    http://localhost:11117/api/v1/telescope/0
+```
+
+Expect the conformance run to report:
+
+- **0 errors** — anything here is a real driver regression.
+- **7 issues**, all of which are deferred-by-design or
+  upstream-framework problems:
+  - `DestinationSideOfPier` ×1 and `SOPPierTest` ×4 — the MVP
+    explicitly defers `DestinationSideOfPier` (see [§MVP Scope](#mvp-scope)).
+    `SOPPierTest` depends on it and inherits the failure four
+    times under different RA/Dec inputs.
+  - `TrackingRate Write` ×2 — an upstream `ascom-alpaca-rs`
+    bug: invalid Alpaca enum values are rejected with HTTP
+    `400 BadRequest` (axum/serde rejection) before reaching
+    the driver's `set_tracking_rate` handler, instead of
+    returning HTTP 200 with `ErrorNumber=0x401 (InvalidValue)`
+    as the Alpaca spec requires. ConformU sends `5` and `-1`
+    and flags both.
+
+Any issue or error outside that list is a real regression — fix
+the driver, then refresh this section.
+
+> Note: `conformu alpacaprotocol …` against this service will
+> abort with a fatal `IsPulseGuiding` `NotImplementedException`
+> until `PulseGuide` is implemented. That is the upstream
+> ConformU bug above and is expected.
 
 ## Connection Lifecycle
 
@@ -603,7 +677,96 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 1 — Design doc** | ✓ landed (this document, PR #178) |
 | **Phase 2 — BDD scaffold** | ✓ landed: codec crate skeleton, service skeleton, all feature files (`@wip`), step stubs (PR #180) |
 | **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
-| **Phase 4 — Real-hardware bringup** | not started — first connect to a physical GTi, validate protocol assumptions, optionally add clock injection so BDD can pin LST literals |
+| **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
+
+#### Phase 4 findings (hardware bringup)
+
+First connecting the driver to a physical Star Adventurer GTi
+revealed four wire-protocol issues the mock had not been
+exercising. All are now patched, with regression tests in the
+protocol crate and the BDD suite.
+
+1. **`:g<axis>` payload width.** The spec is ambiguous about
+   payload width for `Inquire High-Speed Ratio`. Real GTi returns
+   a **2-hex-byte** payload (`=01\r`) on both axes — not the
+   6-hex-byte u24 that the codec originally assumed. The codec
+   now accepts both widths; the value (`0x01`) is stored as a
+   plain `u32` in the parameter cache. Note that the documented
+   "16, 32, 64" expected high-speed-ratio values do **not** match
+   what this firmware returns. The driver no longer relies on
+   the high-speed-ratio for slew-rate computation — see point 3.
+
+2. **`!XX\r` error frame width.** Spec §4 documents a 2-hex-digit
+   error code; empirical GTi returns a **1-hex-digit** form
+   (`!4\r`) for the single-digit codes defined in §5. The codec
+   accepts both 3- and 4-byte error frames.
+
+3. **`:G` mode-byte semantics — most damaging bug.** The `:G`
+   payload is **two independent hex nibbles** (DB1 then DB2 per
+   spec §5), each with its own bit assignments. The original
+   codec treated the byte as a flat 8-bit bitfield with
+   `goto = 0x10, fast = 0x20, reverse = 0x01`. By coincidence the
+   wire bytes it produced for `GOTO_FAST_FORWARD` (`"30"`) decode
+   under the spec as **Tracking-Fast-CW**, which never auto-stops
+   at the `:S` target. Every slew the driver issued was
+   effectively a continuous-step command. The codec was rewritten
+   to encode each nibble correctly:
+   - `MotionMode::TRACKING` → wire `"10"` (DB1=1 Tracking, DB2=0 CW)
+   - `MotionMode::GOTO_FAST_FORWARD` → wire `"00"` (DB1=0 Goto+Fast, DB2=0 CW)
+   - Reverse direction flips DB2 bit 0 (e.g. `"01"` / `"11"`).
+
+4. **`:f` status nibble-0 bit-1** decoded as "Forward" in the
+   original codec. Per spec it is **CCW**. Renamed
+   `AxisStatus.forward` → `AxisStatus.ccw`; `AxisStatus.blocked`
+   and `AxisStatus.level_switch_on` (spec nibble-1 bit-1 and
+   nibble-2 bit-1, respectively) added at the same time. The
+   slew watcher now aborts on `blocked`.
+
+#### Phase 4 driver-logic changes that real hardware required
+
+In addition to the codec fixes:
+
+- **`stop_and_wait`** — `:K` (decelerate) only *requests* a stop;
+  the motor takes meaningful wallclock time to actually halt.
+  `:G` against a still-decelerating axis returns `!2\r`
+  (`MotorNotStopped`). The slew, park, and `set_tracking(true)`
+  paths now issue `:L` (instant stop) and then poll `:f` until
+  `running == false`, before any subsequent `:G`/`:S`/`:J`. Mock
+  hid this because it processes `:K`/`:L` instantaneously.
+- **No `:I` in Goto mode** — spec §3 says the firmware computes
+  slew speed internally for Goto mode. We removed the `:I` send
+  from the slew path; tracking still uses `:I` to set the
+  sidereal step period.
+- **Mechanical safety envelope** — driving the mount into the
+  counterweight-up region with ConformU's pier-flip tests stalled
+  the motor against a hard stop while the encoder counter kept
+  advancing (audible motor noise, OTA stationary). `MountConfig`
+  now carries `ra_min_hours` / `ra_max_hours` /
+  `dec_min_degrees` / `dec_max_degrees`. `SyncToCoordinates`,
+  `SlewToCoordinatesAsync`, and `Park` reject targets outside
+  the envelope with `INVALID_VALUE` before any wire motion.
+  Defaults: `±6 h` RA (counterweight-horizontal east/west on a
+  Northern-Hemisphere polar-aligned GTi), `±90°` Dec.
+- **Slew watcher abort on `:f` blocked** — both the slew and
+  park completion watchers issue `:L` on both axes and clear
+  `slew_in_progress` if either axis reports `blocked=true`.
+
+What's still outstanding from Phase 4:
+
+- **Post-slew tracking-pickup** — `MIN_SLEW_DWELL`-based LST
+  pre-compensation works for the mock (sub-second slews) but
+  undershoots real-hardware slew durations of 3-7 s, leaving a
+  residual RA-axis drift of 45-120 arc-seconds after each goto.
+  Closing the gap needs an EQMOD-style pickup loop (after goto
+  completes, read actual RA vs target, issue corrective small
+  goto if delta exceeds tolerance, iterate). Out of scope for
+  this Phase 4 round.
+- **Empirical slew rate vs `:g`** — the formal high-speed-ratio
+  formula in spec §3 gives `1` for `hsr = 1` (sidereal rate),
+  which is unusable. The firmware appears to pick its own
+  Goto-mode rate (~5°/s observed). Documented; revisit if a
+  tunable goto rate becomes a requirement.
+
 
 ### In-scope (Phases 1–3, all landed)
 

@@ -13,39 +13,45 @@ use crate::error::{MountErrorCode, ProtocolError, Result};
 
 /// Decoded status bits returned by the `:f<axis>` inquiry.
 ///
-/// The wire payload is three nibbles, each a bitfield. `Initialised` is the
-/// bit you most often want to check after a `:F` handshake; `Running` plus
-/// `Goto` together are how you tell a slew has finished (`Running == false`
-/// while still in `Goto` mode means the goto reached its target and stopped).
+/// The wire payload is **three independent nibbles** per Sky-Watcher
+/// motor-controller spec §5 (Response E):
+///
+/// | Nibble | Bit | Meaning |
+/// |--------|-----|---------|
+/// | 1st (mode)   | 0 (`0x1`) | `1=Tracking`, `0=Goto` |
+/// | 1st          | 1 (`0x2`) | `1=CCW`, `0=CW` |
+/// | 1st          | 2 (`0x4`) | `1=Fast`, `0=Slow` |
+/// | 2nd (motion) | 0 (`0x1`) | `1=Running`, `0=Stopped` |
+/// | 2nd          | 1 (`0x2`) | `1=Blocked`, `0=Normal` |
+/// | 3rd (init)   | 0 (`0x1`) | `1=Initialised`, `0=Not initialised` |
+/// | 3rd          | 1 (`0x2`) | `1=Level-switch on`, `0=off` |
+///
+/// Original codec had bit 1 of nibble 1 as "Forward" — that's
+/// inverted from the spec. The flag is `ccw` (counter-clockwise) and
+/// matches the same bit position used by `:G`'s DB2.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct AxisStatus {
     /// Motor is currently producing step pulses.
     pub running: bool,
     /// Currently in goto mode (vs tracking mode).
     pub goto: bool,
-    /// Currently moving in the "forward" direction.
-    pub forward: bool,
+    /// Currently stepping in the CCW direction (CW otherwise).
+    pub ccw: bool,
     /// Motor is in high-speed (goto/slew) regime.
     pub fast: bool,
+    /// Motor reports `Blocked` (e.g. hit an endstop or a clutch is
+    /// preventing it from following the commanded steps). Not used by
+    /// the MVP but reported by the spec.
+    pub blocked: bool,
     /// `:F<axis>` has been issued at least once since power-on.
     pub initialized: bool,
+    /// Mount-side level switch reports on. Not used by the MVP.
+    pub level_switch_on: bool,
 }
 
 impl AxisStatus {
-    /// Decode the three-nibble `:f<axis>` payload.
-    ///
-    /// Wire form is three ASCII hex digits. The digits encode:
-    ///
-    /// | Digit | Bit | Meaning |
-    /// |-------|-----|---------|
-    /// | 1st   | 0x1 | Tracking-mode update (1) vs Goto-mode update (0) |
-    /// | 1st   | 0x2 | Forward (1) vs Reverse (0) |
-    /// | 1st   | 0x4 | Fast (1) vs Slow (0) |
-    /// | 2nd   | 0x1 | Running (1) vs Stopped (0) |
-    /// | 3rd   | 0x1 | Initialised (1) vs Not-initialised (0) |
-    ///
-    /// Layout matches EQMOD's `STATUS_DECODE` and the `indi-eqmod`
-    /// reference; consult those when validating against real hardware.
+    /// Decode the three-nibble `:f<axis>` payload. See the table on
+    /// [`AxisStatus`] for the bit assignments.
     pub fn decode(payload: &[u8]) -> Result<Self> {
         if payload.len() != 3 {
             return Err(ProtocolError::PayloadError(format!(
@@ -58,10 +64,12 @@ impl AxisStatus {
         let n2 = decode_nibble(payload[2])?;
         Ok(Self {
             goto: (n0 & 0x1) == 0,
-            forward: (n0 & 0x2) != 0,
+            ccw: (n0 & 0x2) != 0,
             fast: (n0 & 0x4) != 0,
             running: (n1 & 0x1) != 0,
+            blocked: (n1 & 0x2) != 0,
             initialized: (n2 & 0x1) != 0,
+            level_switch_on: (n2 & 0x2) != 0,
         })
     }
 }
@@ -108,9 +116,19 @@ impl Response {
         let payload = &frame[1..frame.len() - 1];
 
         if prefix == b'!' {
-            // Error reply: payload is exactly two hex digits forming a byte.
-            let bytes = [payload[0], payload[1]];
-            let code = decode_u8(bytes)?;
+            // Error reply. Per spec §4: two hex digits → one byte
+            // error code. Empirical: the Star Adventurer GTi
+            // returns a single hex digit for single-digit codes
+            // (all the documented codes 0..8 fit). Accept either.
+            let code = match payload.len() {
+                1 => decode_nibble(payload[0])?,
+                2 => decode_u8([payload[0], payload[1]])?,
+                n => {
+                    return Err(ProtocolError::FrameError(format!(
+                        "error response payload must be 1 or 2 hex chars, got {n}"
+                    )))
+                }
+            };
             return Err(ProtocolError::MountError(MountErrorCode::from_byte(code)));
         }
 
@@ -137,9 +155,32 @@ impl Response {
             )?)),
             Command::InquireCpr(_)
             | Command::InquireTmrFreq
-            | Command::InquireHighSpeedRatio(_)
             | Command::InquireMotorBoardVersion(_) => {
                 Ok(Self::U24(decode_u24(expect_u24_payload(payload)?)?))
+            }
+            Command::InquireHighSpeedRatio(_) => {
+                // Empirical: the Star Adventurer GTi returns a 2-hex-byte
+                // u8 payload for `:g<axis>` (value `0x01` on both axes),
+                // not the 6-hex-byte u24 the original design doc
+                // assumed. The Sky-Watcher motor-controller spec is
+                // ambiguous on payload width for this command; widen to
+                // accept both. INDI eqmod (the canonical reference)
+                // also decodes `:g` as a small unsigned and stores it
+                // as a single-byte ratio. We promote whichever width
+                // we receive to a `u32` so the parameter cache stays
+                // uniform.
+                Ok(Self::U24(match payload.len() {
+                    2 => {
+                        let bytes = [payload[0], payload[1]];
+                        u32::from(decode_u8(bytes)?)
+                    }
+                    6 => decode_u24(expect_u24_payload(payload)?)?,
+                    n => {
+                        return Err(ProtocolError::PayloadError(format!(
+                            "expected 2- or 6-hex-byte payload for `:g`, got {n} bytes"
+                        )))
+                    }
+                }))
             }
             Command::InquireStatus(_) => Ok(Self::Status(AxisStatus::decode(payload)?)),
         }
@@ -183,9 +224,9 @@ mod tests {
 
     fn mode() -> MotionMode {
         MotionMode {
-            goto: true,
-            fast: false,
-            forward: true,
+            kind: crate::command::ModeKind::Goto,
+            speed: crate::command::Speed::Slow,
+            ccw: false,
         }
     }
 
@@ -288,19 +329,49 @@ mod tests {
     }
 
     #[test]
+    fn decode_high_speed_ratio_accepts_u8_payload() {
+        // Empirical wire trace on a real Star Adventurer GTi:
+        //   `:g1\r` → `=01\r` (and same on axis 2). The mount returns
+        // a 2-hex-byte u8, not the 6-hex-byte u24 originally assumed.
+        // Promoted to a `u32` so the parameter cache stays uniform.
+        let r = Response::decode(b"=01\r", &Command::InquireHighSpeedRatio(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::U24(0x01));
+        // Other byte values round-trip identically.
+        let r = Response::decode(b"=20\r", &Command::InquireHighSpeedRatio(Axis::Dec)).unwrap();
+        assert_eq!(r, Response::U24(0x20));
+    }
+
+    #[test]
+    fn decode_high_speed_ratio_accepts_u24_payload() {
+        // Some Sky-Watcher mounts (per the spec PDF) reply with the
+        // full 6-hex u24 form. Both shapes must round-trip identically.
+        let r = Response::decode(b"=200000\r", &Command::InquireHighSpeedRatio(Axis::Ra)).unwrap();
+        assert_eq!(r, Response::U24(0x20));
+    }
+
+    #[test]
+    fn decode_high_speed_ratio_rejects_other_widths() {
+        // 4-hex bytes is neither u8 nor u24 — reject so a corrupt
+        // reply doesn't silently succeed with a truncated value.
+        let r = Response::decode(b"=0123\r", &Command::InquireHighSpeedRatio(Axis::Ra));
+        assert!(matches!(r, Err(ProtocolError::PayloadError(_))));
+    }
+
+    #[test]
     fn decode_status_inquiry_returns_axis_status() {
         // From the GTi probe table: =100\r → tracking-mode preset, motor
         // stopped, not initialised. Per AxisStatus::decode bit layout:
-        // first nibble 1 → goto=false (tracking), forward=false, fast=false
-        // second nibble 0 → running=false
-        // third nibble 0 → initialized=false
+        //   nibble 0 = 1 → bit-0 set: tracking (goto=false); bit-1=0 CW
+        //              (ccw=false); bit-2=0 slow (fast=false)
+        //   nibble 1 = 0 → running=false, blocked=false
+        //   nibble 2 = 0 → initialized=false, level_switch_on=false
         let r = Response::decode(b"=100\r", &Command::InquireStatus(Axis::Ra)).unwrap();
         let status = match r {
             Response::Status(s) => s,
             other => panic!("expected Status, got {other:?}"),
         };
         assert!(!status.goto);
-        assert!(!status.forward);
+        assert!(!status.ccw);
         assert!(!status.fast);
         assert!(!status.running);
         assert!(!status.initialized);
@@ -331,6 +402,53 @@ mod tests {
     }
 
     #[test]
+    fn decode_single_digit_error_reply_matches_gti_wire_format() {
+        // Empirically the Star Adventurer GTi sends `!X\r` (3 bytes,
+        // single hex digit) for single-digit error codes 0..8 —
+        // see the doc comment on `validate_response_frame`. Both
+        // widths must decode to the same `MountErrorCode`.
+        let short = Response::decode(b"!2\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        let wide = Response::decode(b"!02\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        assert_eq!(short, wide);
+        assert_eq!(
+            short,
+            ProtocolError::MountError(MountErrorCode::MotorNotStopped)
+        );
+
+        // `!4\r` was the empirical reply that surfaced this case
+        // in the first place (`NotInitialized` after a stale `:F`).
+        let err = Response::decode(b"!4\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
+        assert_eq!(
+            err,
+            ProtocolError::MountError(MountErrorCode::NotInitialized)
+        );
+    }
+
+    #[test]
+    fn axis_status_decode_recovers_blocked_and_level_switch_bits() {
+        // Spec §5 Response E:
+        //   nibble 1 bit 1 = Blocked
+        //   nibble 2 bit 1 = Level-switch on
+        //
+        // 121 → nibble 0=1 (tracking-slow-CW); nibble 1=2 (blocked,
+        // not running); nibble 2=1 (initialised).
+        let s = AxisStatus::decode(b"121").unwrap();
+        assert!(!s.running, "blocked alone shouldn't imply running");
+        assert!(s.blocked, "blocked bit must propagate");
+        assert!(s.initialized);
+        assert!(!s.level_switch_on);
+
+        // 133 → nibble 1=3 (running AND blocked — the realistic
+        // "motor stepping but encoder not advancing" case);
+        // nibble 2=3 (initialised + level-switch on).
+        let s = AxisStatus::decode(b"133").unwrap();
+        assert!(s.running);
+        assert!(s.blocked);
+        assert!(s.initialized);
+        assert!(s.level_switch_on);
+    }
+
+    #[test]
     fn decode_rejects_malformed_frames() {
         // Setter command but reply has an unexpected payload.
         let r = Response::decode(b"=ABC\r", &Command::Initialize(Axis::Ra));
@@ -351,29 +469,38 @@ mod tests {
 
     #[test]
     fn axis_status_decode_recovers_goto_running_flags() {
-        // First nibble bits: 0x1=tracking-flag (set→tracking, clear→goto),
-        // 0x2=forward, 0x4=fast.
-        // Second nibble: 0x1=running.
-        // Third nibble: 0x1=initialised.
-        // 612 → 6=fast+forward+goto, 1=running, 2=??? — third nibble
-        // 2 has bit 0x1 clear so initialised=false. (Real mounts report
-        // 1 here once initialised; the value 2 is hypothetical.)
-        // Use a more realistic payload instead:
-        // 631: 6=fast+forward+goto, 3=running+(unused), 1=initialised.
-        let s = AxisStatus::decode(b"631").unwrap();
+        // Per Sky-Watcher spec §5 (Response E):
+        //   nibble 0 bit 0 = 1 → tracking; bit 1 = 1 → CCW; bit 2 = 1 → fast.
+        //   nibble 1 bit 0 = 1 → running; bit 1 = 1 → blocked.
+        //   nibble 2 bit 0 = 1 → initialised; bit 1 = 1 → level switch on.
+        //
+        // 411 → nibble 0 = 4 = 0b100 → bit-0 clear (goto), bit-1 clear (CW),
+        // bit-2 set (fast); nibble 1 = 1 → running; nibble 2 = 1 →
+        // initialised. This is the typical mid-goto, fast-CW state.
+        let s = AxisStatus::decode(b"411").unwrap();
         assert!(s.goto, "goto flag");
-        assert!(s.forward, "forward flag");
+        assert!(!s.ccw, "CW direction (ccw=false)");
         assert!(s.fast, "fast flag");
         assert!(s.running, "running flag");
+        assert!(!s.blocked, "not blocked");
         assert!(s.initialized, "initialized flag");
+        assert!(!s.level_switch_on, "level switch off");
 
-        // 111: first nibble bit 0x1 set → tracking, second nibble 1 →
-        // running, third nibble 1 → initialised. (Tracking sidereal in
-        // progress, the steady-state for sidereal observation.)
+        // 111 → nibble 0 = 1 → tracking-slow-CW; nibble 1 = 1 → running;
+        // nibble 2 = 1 → initialised. Steady-state sidereal tracking.
         let s = AxisStatus::decode(b"111").unwrap();
         assert!(!s.goto, "tracking, not goto");
-        assert!(!s.forward, "no forward bit set in 1");
-        assert!(!s.fast, "no fast bit set in 1");
+        assert!(!s.ccw, "CW direction");
+        assert!(!s.fast, "slow tracking");
+        assert!(s.running);
+        assert!(s.initialized);
+
+        // 711 → nibble 0 = 7 = 0b111: tracking + CCW + fast; nibble 1 / 2 =
+        // running + initialised. Exercises every bit on nibble 0.
+        let s = AxisStatus::decode(b"711").unwrap();
+        assert!(!s.goto);
+        assert!(s.ccw);
+        assert!(s.fast);
         assert!(s.running);
         assert!(s.initialized);
     }

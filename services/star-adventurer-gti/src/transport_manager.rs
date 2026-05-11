@@ -42,6 +42,12 @@ pub struct AxisSnapshot {
     pub position_ticks: i32,
     pub running: bool,
     pub goto: bool,
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
+    /// reports `Blocked` when the motor is stepping but the encoder
+    /// isn't advancing — typically because the axis is against a
+    /// mechanical stop or stalled. The slew watcher uses this to
+    /// abort a runaway goto before the gearbox is damaged.
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -249,6 +255,33 @@ impl TransportManager {
         *self.snapshot.read().await
     }
 
+    /// Update the cached snapshot's RA position.
+    ///
+    /// Used by `SyncToCoordinates` to publish the just-written encoder
+    /// position immediately rather than waiting up to
+    /// `polling_interval` for the background task to refresh. Without
+    /// this, callers that read `RightAscension` within one poll
+    /// interval of `Sync` see the pre-sync position — ConformU reads
+    /// ~2 ms after the sync call returns and flags the stale value as
+    /// a 3675-arc-second sync error.
+    ///
+    /// Per-axis methods (instead of taking an `Axis`) eliminate the
+    /// `Axis::Both` case at the type level — `:E3` (both axes) isn't
+    /// part of the MVP wire surface, sync writes per-axis values that
+    /// can differ, and there's no sensible single-tick interpretation
+    /// of "seed both". Previously this lived in one method that
+    /// rejected `Axis::Both` via `debug_assert!`, which is a
+    /// production no-op silently leaving the cache stale.
+    pub async fn seed_ra_position(&self, ticks: i32) {
+        self.snapshot.write().await.ra.position_ticks = ticks;
+    }
+
+    /// Update the cached snapshot's Dec position. See
+    /// [`seed_ra_position`](Self::seed_ra_position) for rationale.
+    pub async fn seed_dec_position(&self, ticks: i32) {
+        self.snapshot.write().await.dec.position_ticks = ticks;
+    }
+
     /// Send one command, return one reply. Does *not* update the snapshot —
     /// the background poller owns that responsibility.
     pub async fn send(&self, command: Command) -> Result<Response> {
@@ -366,7 +399,9 @@ async fn round_trip_one(
     timeout: Duration,
 ) -> Result<Response> {
     let bytes = command.encode()?;
+    debug!(tx = ?String::from_utf8_lossy(&bytes), "wire TX");
     let reply = transport.round_trip(&bytes, timeout).await?;
+    debug!(rx = ?String::from_utf8_lossy(&reply), "wire RX");
     let response = Response::decode(&reply, command)?;
     Ok(response)
 }
@@ -464,6 +499,7 @@ async fn poll_axis(
     };
     out.running = s.running;
     out.goto = s.goto;
+    out.blocked = s.blocked;
     Ok(())
 }
 

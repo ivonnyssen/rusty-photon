@@ -164,10 +164,13 @@ pub fn validate_response_frame(frame: &[u8]) -> Result<()> {
             "response frame contains embedded `\\r`".to_string(),
         ));
     }
-    // `!` reply is exactly `!XX\r` — two hex digits.
-    if frame[0] == b'!' && frame.len() != 4 {
+    // `!` reply: per Sky-Watcher spec §4 the payload is two hex
+    // digits (`!XX\r`, 4 bytes). Empirically the Star Adventurer GTi
+    // returns a single hex digit (`!X\r`, 3 bytes) for the
+    // single-digit error codes defined in §5 (0..8). Accept either.
+    if frame[0] == b'!' && frame.len() != 3 && frame.len() != 4 {
         return Err(ProtocolError::FrameError(format!(
-            "error response must be `!XX\\r` (4 bytes), got {} bytes",
+            "error response must be `!X\\r` (3 bytes) or `!XX\\r` (4 bytes), got {} bytes",
             frame.len()
         )));
     }
@@ -299,15 +302,19 @@ mod tests {
     fn validate_response_frame_accepts_success_and_error_replies() {
         assert!(validate_response_frame(b"=\r").is_ok());
         assert!(validate_response_frame(b"=000080\r").is_ok());
+        // Spec §4: two hex digits.
         assert!(validate_response_frame(b"!04\r").is_ok());
+        // Empirical Star Adventurer GTi: single hex digit for the
+        // single-digit error codes (0..8) defined in §5.
+        assert!(validate_response_frame(b"!4\r").is_ok());
     }
 
     #[test]
     fn validate_response_frame_rejects_malformed() {
         assert!(validate_response_frame(b":000080\r").is_err()); // command prefix
         assert!(validate_response_frame(b"=000080").is_err()); // no CR
-        assert!(validate_response_frame(b"!4\r").is_err()); // error must be 4 bytes
-        assert!(validate_response_frame(b"!0040\r").is_err()); // error too long
+        assert!(validate_response_frame(b"!\r").is_err()); // missing error code
+        assert!(validate_response_frame(b"!0040\r").is_err()); // error too long (>2 chars)
         assert!(validate_response_frame(b"=00\r80\r").is_err()); // embedded CR
     }
 }
