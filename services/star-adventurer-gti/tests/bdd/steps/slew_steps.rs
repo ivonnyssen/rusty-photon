@@ -164,9 +164,10 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
 
 #[then(expr = "the mount should eventually receive a tracking-mode :G1 within {int} seconds")]
 async fn mount_eventually_tracking_g1(world: &mut StarAdventurerWorld, secs: u64) {
-    // Tracking-mode :G1 has the high nibble's bit 0x10 clear (per
-    // `MotionMode::TRACKING.to_byte() == 0x00`). The wire form is
-    // `:G1<HH>\r` where HH is two hex digits.
+    // A tracking-mode `:G1` per the Sky-Watcher spec §5 has the
+    // **first** payload nibble (DB1) bit-0 set (`Tracking`, vs. Goto).
+    // The wire form is `:G1<DB1><DB2>\r` — see
+    // `skywatcher_motor_protocol::MotionMode` for the full encoding.
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     while std::time::Instant::now() < deadline {
         let log = world.command_log().await;
@@ -191,21 +192,19 @@ async fn mount_should_not_tracking_g1(world: &mut StarAdventurerWorld) {
     );
 }
 
-/// Returns `true` if `frame` is a `:G1<HH>\r` command whose mode byte
-/// has the goto bit (`0x10`) cleared — i.e., a tracking-mode mode
-/// switch on the RA axis.
+/// Returns `true` if `frame` is a `:G1<DB1><DB2>\r` command whose
+/// DB1 nibble has bit 0 set — i.e., a tracking-mode switch on the
+/// RA axis per the Sky-Watcher spec §5.
 fn is_tracking_g1(frame: &str) -> bool {
     let bytes = frame.as_bytes();
     if bytes.len() < 6 || &bytes[..3] != b":G1" {
         return false;
     }
-    let hi = bytes[3];
-    let lo = bytes[4];
-    let parsed = match (hex_digit(hi), hex_digit(lo)) {
-        (Some(h), Some(l)) => (h << 4) | l,
-        _ => return false,
+    let db1 = match hex_digit(bytes[3]) {
+        Some(n) => n,
+        None => return false,
     };
-    parsed & 0x10 == 0
+    db1 & 0x1 != 0
 }
 
 fn hex_digit(b: u8) -> Option<u8> {

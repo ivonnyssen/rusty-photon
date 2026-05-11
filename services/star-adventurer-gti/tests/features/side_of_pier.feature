@@ -1,10 +1,11 @@
 Feature: Side of pier
   SideOfPier is derived from the RA-axis encoder position (converted to
-  mechanical hour angle) and the configured site latitude. In the
-  northern hemisphere mechanical HA in [-6, +6) maps to East (OTA on the
-  east side of the pier); the rest is West. In the southern hemisphere
-  the convention inverts. DestinationSideOfPier is not implemented in
-  MVP.
+  mechanical hour angle) and the configured site latitude. Convention
+  follows ASCOM and EQMOD: in the northern hemisphere, mechanical HA
+  in [-12, 0) maps to pierWest (the "normal" pointing state, OTA on the
+  west side of the pier); mechanical HA in [0, +12) maps to pierEast
+  (the post-meridian-flip / "through-the-pole" state). Southern
+  hemisphere inverts. DestinationSideOfPier is not implemented in MVP.
 
   Scenario Outline: Northern-hemisphere SideOfPier per mechanical HA
     Given a star-adventurer service configured with site latitude 45.0 degrees
@@ -16,12 +17,13 @@ Feature: Side of pier
 
     Examples:
       | ha    | expected |
-      | -6.0  | East     |
-      | -5.99 | East     |
+      | -11.99| West     |
+      | -6.0  | West     |
+      | -0.01 | West     |
       | 0.0   | East     |
       | 5.99  | East     |
-      | 6.0   | West     |
-      | 11.99 | West     |
+      | 6.0   | East     |
+      | 11.99 | East     |
 
   Scenario Outline: Southern-hemisphere SideOfPier inverts the convention
     Given a star-adventurer service configured with site latitude -33.0 degrees
@@ -33,9 +35,9 @@ Feature: Side of pier
 
     Examples:
       | ha   | expected |
-      | -6.0 | West     |
+      | -6.0 | East     |
       | 0.0  | West     |
-      | 6.0  | East     |
+      | 6.0  | West     |
 
   Scenario: SideOfPier setter is not supported
     Given a running star-adventurer service

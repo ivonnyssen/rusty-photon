@@ -41,6 +41,25 @@ async fn mount_reports_axes_stopped_at_zero(world: &mut StarAdventurerWorld) {
     world.queue_seed("dec_ticks", 0.into()).await;
     world.queue_seed("ra_running", false.into()).await;
     world.queue_seed("dec_running", false.into()).await;
+    // After seeding the wire-side state, wait for the park watcher
+    // to observe it and flip `AtPark`. The step's name claims a
+    // *driver-visible* post-condition (the mount has been observed
+    // stopped at encoder 0), so the test reads more honestly when
+    // it actually waits for that to land. macOS in particular
+    // races the watcher behind the next step on tightly-paced
+    // scenarios like "Park is idempotent" (caught by PR #200 CI on
+    // macos-latest). Don't panic if the timeout expires — other
+    // scenarios assert the AtPark flip with their own explicit
+    // `Then AtPark should eventually be true within N seconds`,
+    // and we'd rather their scenario-specific message fire than
+    // this generic one.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if world.mount().at_park().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[then("AtPark should be false")]

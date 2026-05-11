@@ -1,0 +1,23 @@
+{
+  "transport": {
+    "kind": "usb",
+    "port": "/dev/mock",
+    "baud_rate": 115200,
+    "command_timeout": "2s",
+    "polling_interval": "200ms"
+  },
+  "server": {
+    "port": 11117
+  },
+  "mount": {
+    "name": "ConformU Test Star Adventurer GTi",
+    "unique_id": "conformu-star-adventurer-gti-001",
+    "description": "Test mount for ConformU compliance",
+    "enabled": true,
+    "site_latitude_deg": 47.6062,
+    "site_longitude_deg": -122.3321,
+    "site_elevation_m": 56.0,
+    "settle_after_slew": "200ms",
+    "tracking_rate": "sidereal"
+  }
+}

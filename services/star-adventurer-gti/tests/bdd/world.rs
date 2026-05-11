@@ -194,6 +194,15 @@ fn default_test_config() -> Config {
         },
         mount: MountConfig {
             settle_after_slew: Duration::from_millis(0),
+            // BDD scenarios pass hardcoded RA / Dec targets (the
+            // canonical example is `RA = 6.0 h, Dec = 30°`) whose
+            // computed mech-HA depends on wallclock LST. Open the
+            // safety envelope wide so those scenarios don't
+            // intermittently trip the `INVALID_VALUE` safety gate
+            // — the gate itself is exercised by the unit tests in
+            // `mount_device::tests::*_outside_safe_envelope`.
+            ra_min_hours: -12.0,
+            ra_max_hours: 12.0,
             ..MountConfig::default()
         },
     }
