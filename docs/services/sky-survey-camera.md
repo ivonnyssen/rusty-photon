@@ -307,9 +307,8 @@ Validation:
 - `rotation_deg` is wrapped into [0, 360) before storage.
 - `POST` while disconnected returns 409 (the device must be connected
   to accept new pointing, mirroring ASCOM's `NotConnected` semantics).
-- `POST` while in telescope-following mode returns 409 (the next
-  exposure will overwrite any value written here by re-reading the
-  mount; refusing the write is the honest answer — see F6). `GET`
+- `POST` while in telescope-following mode arms a one-shot
+  override (F6 + F7) consumed by the next light exposure. `GET`
   continues to work in both modes and returns the most recently
   snapshotted pointing.
 
@@ -476,11 +475,26 @@ do not apply in static mode.
   worth surfacing). Non-finite offsets are rejected at config load,
   not at snapshot time.
 - **F6.** `POST /sky-survey/position` while `pointing.telescope` is
-  set returns `409 Conflict` and the snapshot source is unchanged.
-  The body identifies the mode so clients can distinguish this from
-  the disconnected-409 of P6. `GET /sky-survey/position` continues
-  to work in follow mode and returns the most recently snapshotted
-  pointing (mount-reported + offset).
+  set arms a one-shot pointing override (see F7); the live snapshot
+  source (`PointingSource::Telescope`) is unchanged. `GET
+  /sky-survey/position` continues to work in follow mode and
+  returns the most recently snapshotted pointing (mount-reported +
+  offset, or the override if it was just consumed).
+- **F7.** A one-shot pointing override armed by `POST
+  /sky-survey/position` in follow mode is consumed at the next
+  `StartExposure` call (`Light = true`) — captured *before* the
+  spawned exposure task runs, so a POST issued while an exposure is
+  mid-flight only takes effect on the *following* exposure (P7).
+  The exposure pipeline uses the override as that exposure's
+  `PointingState` (missing `rotation_deg` keeps the most-recently-
+  snapshotted rotation, matching P3), writes it to `last_snapshot`
+  so `GET` reflects it, and clears the override. Subsequent
+  exposures resume reading the mount per F1. Dark exposures (`Light
+  = false`) do NOT consume the override (per F1, dark frames skip
+  the snapshot/mount-read path entirely). The override is intended
+  as a test affordance for injecting "the camera saw something
+  different from where the mount thinks it is" on a single capture;
+  production deployments rarely use it.
 
 ## Architecture
 

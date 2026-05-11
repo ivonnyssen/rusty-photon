@@ -7,6 +7,8 @@ members = [
   "crates/rp-fits",
   "crates/rp-plate-solver",
   "crates/rp-tls",
+  "crates/rusty-photon-i18n",
+  "crates/rusty-photon-i18n-derive",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
   "services/phd2-guider",
@@ -81,7 +83,7 @@ rustls = "0.23"
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
 socket2 = "0.6"
-cucumber = "0.22.1"
+cucumber = "0.23.0"
 tempfile = "3.27.0"
 rmcp = { version = "1.4", default-features = false }
 schemars = "1.0"
@@ -89,6 +91,24 @@ cargo-husky = { version = "1", default-features = false, features = [
   "precommit-hook",
   "user-hooks",
 ] }
+rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
+rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
+i18n-embed = { version = "0.16", features = ["fluent-system"] }
+i18n-embed-fl = "0.10"
+fluent-syntax = "0.12"
+# `debug-embed` makes RustEmbed always bake the asset tree into the binary,
+# even when `cfg(debug_assertions)` is on. Without it, dev/fastbuild builds
+# read the asset directory from disk at runtime — fine under Cargo (the path
+# stays the source tree) but broken under Bazel, whose CARGO_MANIFEST_DIR is
+# a sandbox path that does not exist at runtime. We always want translations
+# embedded, never lazy-loaded.
+rust-embed = { version = "8", features = ["debug-embed"] }
+fluent-langneg = "0.13"
+sys-locale = "0.3"
+unic-langid = "0.9"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 
 [[workspace.metadata.leptos]]
 name = "sentinel-dashboard"

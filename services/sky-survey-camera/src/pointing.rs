@@ -74,43 +74,62 @@ impl SharedPointing {
     /// Atomically update RA, Dec, and (optionally) rotation. If
     /// `rotation_deg` is `None`, the existing rotation is preserved.
     /// Returns `Err` with a list of validation messages on bad input.
+    /// Validation is delegated to [`validate_pointing`] so the
+    /// static-mode `POST` path and the follow-mode one-shot override
+    /// path stay in lockstep.
     pub async fn update(
         &self,
         ra_deg: f64,
         dec_deg: f64,
         rotation_deg: Option<f64>,
     ) -> Result<PointingState, Vec<&'static str>> {
-        let mut errors = Vec::new();
-        if !ra_deg.is_finite() || !(0.0..360.0).contains(&ra_deg) {
-            errors.push("ra_deg must be in [0, 360)");
-        }
-        if !dec_deg.is_finite() || !(-90.0..=90.0).contains(&dec_deg) {
-            errors.push("dec_deg must be in [-90, +90]");
-        }
-        if let Some(rot) = rotation_deg {
-            if !rot.is_finite() {
-                errors.push("rotation_deg must be finite");
-            }
-        }
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-
+        // Read the current rotation under the lock so the fallback
+        // value seen by `validate_pointing` matches what gets written.
         let mut guard = self.state.write().await;
-        let new_rotation = rotation_deg
-            .map(wrap_rotation)
-            .unwrap_or(guard.rotation_deg);
-        *guard = PointingState {
-            ra_deg,
-            dec_deg,
-            rotation_deg: new_rotation,
-        };
+        let new_state = validate_pointing(ra_deg, dec_deg, rotation_deg, guard.rotation_deg)?;
+        *guard = new_state;
         Ok(*guard)
     }
 
     pub async fn store(&self, value: PointingState) {
         *self.state.write().await = value;
     }
+}
+
+/// Validate a `POST /sky-survey/position` payload and build the
+/// resulting [`PointingState`].
+///
+/// `current_rotation_deg` is the fallback used when `rotation_deg`
+/// is `None` (P3 — "missing rotation keeps the current value"). The
+/// returned `PointingState` runs through [`PointingState::new`], so
+/// rotation is wrapped to `[0, 360)`.
+///
+/// Called by both [`SharedPointing::update`] (static-mode `POST`)
+/// and the follow-mode one-shot override path in `routes.rs`, so
+/// validation stays in lockstep across the two write paths.
+pub fn validate_pointing(
+    ra_deg: f64,
+    dec_deg: f64,
+    rotation_deg: Option<f64>,
+    current_rotation_deg: f64,
+) -> Result<PointingState, Vec<&'static str>> {
+    let mut errors = Vec::new();
+    if !ra_deg.is_finite() || !(0.0..360.0).contains(&ra_deg) {
+        errors.push("ra_deg must be in [0, 360)");
+    }
+    if !dec_deg.is_finite() || !(-90.0..=90.0).contains(&dec_deg) {
+        errors.push("dec_deg must be in [-90, +90]");
+    }
+    if let Some(rot) = rotation_deg {
+        if !rot.is_finite() {
+            errors.push("rotation_deg must be finite");
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let rot = rotation_deg.unwrap_or(current_rotation_deg);
+    Ok(PointingState::new(ra_deg, dec_deg, rot))
 }
 
 /// Telescope-following snapshot source. Holds the [`MountReader`] plus

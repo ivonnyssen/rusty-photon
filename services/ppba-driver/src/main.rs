@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use rust_embed::RustEmbed;
+use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
 use tracing::Level;
 
 #[cfg(feature = "mock")]
@@ -12,53 +14,93 @@ use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
 use ppba_driver::{load_config, Config, ServerBuilder};
 
-#[derive(Parser)]
+#[derive(RustEmbed)]
+#[folder = "i18n/"]
+struct Localizations;
+
+#[derive(Parser, LocalizedParser)]
 #[command(name = "ppba-driver")]
-#[command(about = "ASCOM Alpaca driver for Pegasus Astro PPBA Gen2")]
 #[command(version)]
+#[localized(about = "cli-about")]
 struct Args {
     /// Path to configuration file
     #[arg(short, long)]
+    #[localized(help = "cli-help-config")]
     config: Option<PathBuf>,
 
     /// Serial port path (overrides config file)
     #[arg(long)]
+    #[localized(help = "cli-help-port")]
     port: Option<String>,
 
     /// Server port (overrides config file)
     #[arg(long)]
+    #[localized(help = "cli-help-server-port")]
     server_port: Option<u16>,
 
     /// Enable/disable Switch device
     #[arg(long)]
+    #[localized(help = "cli-help-enable-switch")]
     enable_switch: Option<bool>,
 
     /// Enable/disable ObservingConditions device
     #[arg(long)]
+    #[localized(help = "cli-help-enable-observingconditions")]
     enable_observingconditions: Option<bool>,
 
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
+    #[localized(help = "cli-help-log-level")]
     log_level: Level,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
-        format!(
-            "Invalid log level: {}. Use: trace, debug, info, warn, error",
-            s
-        )
+        rusty_photon_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
+            .unwrap_or_else(|| {
+                format!(
+                    "Invalid log level: {}. Use: trace, debug, info, warn, error",
+                    s
+                )
+            })
     })
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
+    let args = Args::parse_localized(&loader);
 
     // Setup tracing
     tracing_subscriber::fmt()
         .with_max_level(args.log_level)
         .init();
+
+    match i18n_status {
+        Ok(()) => {}
+        Err(rusty_photon_i18n::LoadError::Available { reason }) => {
+            tracing::warn!(
+                %reason,
+                "i18n: failed to enumerate embedded locales; running with English fallback"
+            );
+        }
+        Err(rusty_photon_i18n::LoadError::Load { reason }) => {
+            tracing::warn!(
+                %reason,
+                "i18n: failed to load negotiated locale bundle; running with English fallback"
+            );
+        }
+        Err(rusty_photon_i18n::LoadError::AlreadyInitialized) => {
+            // Distinct from the load-failure cases: the loader is *not*
+            // English-fallback-only, it's just whatever the first init
+            // populated. Surfaces the most likely cause (refactor or test
+            // artefact) so it's visible without misrepresenting the locale.
+            tracing::warn!(
+                "i18n: rusty_photon_i18n::init was called more than once on this thread; \
+                 second call's loader was discarded, active locale unchanged"
+            );
+        }
+    }
 
     tracing::debug!(
         "Parsed command line arguments: config={:?}, port={:?}, server_port={:?}, log_level={:?}",
