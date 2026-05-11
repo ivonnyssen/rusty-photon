@@ -137,6 +137,8 @@ impl Response {
             Command::Initialize(_)
             | Command::SetMotionMode { .. }
             | Command::SetGotoTarget { .. }
+            | Command::SetGotoTargetIncrement { .. }
+            | Command::SetBreakPointIncrement { .. }
             | Command::SetStepPeriod { .. }
             | Command::SetPosition { .. }
             | Command::StartMotion(_)
@@ -198,6 +200,8 @@ impl Response {
             | Command::InquireStatus(a)
             | Command::SetMotionMode { axis: a, .. }
             | Command::SetGotoTarget { axis: a, .. }
+            | Command::SetGotoTargetIncrement { axis: a, .. }
+            | Command::SetBreakPointIncrement { axis: a, .. }
             | Command::SetStepPeriod { axis: a, .. }
             | Command::SetPosition { axis: a, .. }
             | Command::StartMotion(a)

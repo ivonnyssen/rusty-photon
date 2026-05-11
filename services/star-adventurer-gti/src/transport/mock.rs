@@ -377,6 +377,48 @@ impl Transport for MockTransport {
                     err_reply(0)
                 }
             }
+            b'H' => {
+                // Set goto target by *increment*: 6-byte u24 magnitude.
+                // Direction comes from the `ccw` flag the previous
+                // `:G` left on the axis. The mount computes the
+                // absolute target by adding the signed delta to the
+                // current encoder position.
+                let bytes: &[u8; 6] = match payload.try_into() {
+                    Ok(b) => b,
+                    Err(_) => return Ok(err_reply(1)),
+                };
+                let increment = match decode_u24(bytes) {
+                    Ok(t) => t,
+                    Err(_) => return Ok(err_reply(3)),
+                };
+                if let Some(ax) = state.axis_mut(axis) {
+                    let sign: i32 = if ax.ccw { -1 } else { 1 };
+                    ax.goto_target_ticks =
+                        ax.position_ticks + sign.saturating_mul(increment as i32);
+                    ack_with(&[])
+                } else {
+                    err_reply(0)
+                }
+            }
+            b'M' => {
+                // Set breakpoint increment: 6-byte u24 magnitude. The
+                // firmware uses it to schedule deceleration; the mock
+                // accepts and ignores the value — running through
+                // `:j` polling already lands on `goto_target_ticks`
+                // without overshoot.
+                let bytes: &[u8; 6] = match payload.try_into() {
+                    Ok(b) => b,
+                    Err(_) => return Ok(err_reply(1)),
+                };
+                if decode_u24(bytes).is_err() {
+                    return Ok(err_reply(3));
+                }
+                if axis == b'1' || axis == b'2' {
+                    ack_with(&[])
+                } else {
+                    err_reply(0)
+                }
+            }
             b'I' => {
                 // Set step period: 6-byte u24 payload.
                 let bytes: &[u8; 6] = match payload.try_into() {
