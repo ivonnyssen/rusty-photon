@@ -810,19 +810,18 @@ impl Telescope for MountDevice {
                 speed: skywatcher_motor_protocol::command::Speed::Fast,
                 ccw: delta < 0,
             };
-            // On the RA path, the `stop_and_wait` inside
-            // `ensure_motion_mode` is also the wire event that halts
-            // sidereal tracking. Mirror it in `tracking_requested`
-            // before the call so the in-memory state never claims
-            // tracking after we have committed to stopping the axis.
-            // (`ensure_motion_mode` may short-circuit when mode is
-            // unchanged, in which case the RA axis was already in
-            // goto-fast and tracking was already off — the write
-            // below is a no-op affirmation in that case.)
+            self.ensure_motion_mode(axis, mode).await?;
+            // On the RA path, `ensure_motion_mode`'s `stop_and_wait`
+            // branch is the wire event that halts sidereal tracking;
+            // the short-circuit branch also implies tracking-off
+            // because the cache only matches when we previously
+            // issued a Goto on this axis. Either way the wire has
+            // committed before we touch the in-memory flag, so a
+            // failed `ensure_motion_mode` cannot leave the driver
+            // claiming tracking-off while the mount is still tracking.
             if axis == Axis::Ra {
                 self.state.write().await.tracking_requested = false;
             }
-            self.ensure_motion_mode(axis, mode).await?;
             // Per Sky-Watcher spec §3 / §5: in Goto mode the motor
             // controller computes the slew speed internally — there is
             // no `:I` to issue before `:J`. (`:I` is only meaningful
@@ -900,11 +899,15 @@ impl Telescope for MountDevice {
         // direction chosen from `sign(0 - current)`, `:S 0`, `:J` — all
         // via `ensure_motion_mode` so a same-mode short-circuit is
         // possible. The earlier explicit `:K1` tracking-stop before
-        // this loop has been removed: `ensure_motion_mode(Ra, …)` (or
-        // its `stop_and_wait` branch) already halts the RA axis, and
-        // the in-memory `tracking_requested` flag is cleared below.
-        // Per ASCOM, tracking stays off after Park.
-        self.state.write().await.tracking_requested = false;
+        // this loop has been removed: `ensure_motion_mode(Ra, …)`'s
+        // `stop_and_wait` branch already halts the RA axis (and the
+        // short-circuit branch implies tracking-off — the cache only
+        // matches when we previously issued Goto on this axis).
+        // `tracking_requested` is cleared inside the loop, *after*
+        // the RA-axis wire op completes, so a failed
+        // `ensure_motion_mode` cannot leave the driver claiming
+        // tracking-off while the mount is still tracking. Per ASCOM,
+        // tracking stays off after Park.
         let snap = self.transport.snapshot().await;
         for (axis, current_ticks) in [
             (Axis::Ra, snap.ra.position_ticks),
@@ -916,6 +919,9 @@ impl Telescope for MountDevice {
                 ccw: current_ticks > 0,
             };
             self.ensure_motion_mode(axis, mode).await?;
+            if axis == Axis::Ra {
+                self.state.write().await.tracking_requested = false;
+            }
             // No `:I` in Goto mode — the firmware computes slew speed
             // internally. See the matching note in
             // `slew_to_coordinates_async`.
