@@ -319,6 +319,40 @@ async fn issue_slew_axis(
     Ok(())
 }
 
+/// Returns `true` when the slew-completion watcher must bail out of
+/// its current iteration: either `AbortSlew` cleared
+/// `slew_in_progress`, or `set_connected(false)` closed the transport.
+/// Both conditions can race in mid-iteration after the top-of-loop
+/// guard has already passed, so the watcher checks this helper a
+/// second time immediately before issuing any post-snapshot wire
+/// commands (the EQMOD pickup re-slew or the post-slew tracking
+/// restart).
+async fn watcher_should_abort(
+    state: &Arc<RwLock<DriverState>>,
+    transport: &TransportManager,
+) -> bool {
+    !state.read().await.slew_in_progress || !transport.is_available()
+}
+
+/// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
+/// Calls [`stop_axis_and_wait`] (drains any residual goto deceleration)
+/// then [`issue_slew_axis`] (re-runs the INDI wire sequence with the
+/// freshly-computed `delta`). Both calls are best-effort: a failure
+/// from either is logged at `warn` and swallowed because the watcher
+/// has nothing useful to do with the error other than retry on the
+/// next iteration. Wrapping the pair in this helper keeps the watcher
+/// body free of nested `if let Err` branches that codecov flags as
+/// uncovered for the rare-but-real failure paths.
+async fn pickup_reslew_axis(transport: &TransportManager, axis: Axis, delta: i32) {
+    if let Err(e) = stop_axis_and_wait(transport, axis, AXIS_STOP_TIMEOUT).await {
+        tracing::warn!("pickup stop {axis:?} failed: {e}");
+        return;
+    }
+    if let Err(e) = issue_slew_axis(transport, axis, delta).await {
+        tracing::warn!("pickup re-slew {axis:?} failed: {e}");
+    }
+}
+
 #[async_trait]
 impl Device for MountDevice {
     fn static_name(&self) -> &str {
@@ -1100,7 +1134,7 @@ fn spawn_slew_completion_watcher(
                         // transport) may have raced ahead. Without
                         // this second guard the pickup loop would
                         // restart motion after the user aborted.
-                        if !state.read().await.slew_in_progress || !transport.is_available() {
+                        if watcher_should_abort(&state, &transport).await {
                             state.write().await.slew_in_progress = false;
                             return;
                         }
@@ -1119,23 +1153,8 @@ fn spawn_slew_completion_watcher(
                         // poll keeps the motor-not-stopped contract
                         // intact even if a previous send failed
                         // mid-sequence.
-                        if let Err(e) =
-                            stop_axis_and_wait(&transport, Axis::Ra, AXIS_STOP_TIMEOUT).await
-                        {
-                            tracing::warn!("pickup stop RA failed: {e}");
-                        } else if let Err(e) = issue_slew_axis(&transport, Axis::Ra, ra_delta).await
-                        {
-                            tracing::warn!("pickup re-slew RA failed: {e}");
-                        }
-                        if let Err(e) =
-                            stop_axis_and_wait(&transport, Axis::Dec, AXIS_STOP_TIMEOUT).await
-                        {
-                            tracing::warn!("pickup stop Dec failed: {e}");
-                        } else if let Err(e) =
-                            issue_slew_axis(&transport, Axis::Dec, dec_delta).await
-                        {
-                            tracing::warn!("pickup re-slew Dec failed: {e}");
-                        }
+                        pickup_reslew_axis(&transport, Axis::Ra, ra_delta).await;
+                        pickup_reslew_axis(&transport, Axis::Dec, dec_delta).await;
                         continue;
                     }
                 }
@@ -1154,7 +1173,7 @@ fn spawn_slew_completion_watcher(
             // between the top-of-loop check and now must skip the
             // tracking restart, or the user-visible state would say
             // "aborted" while the wire is back to tracking.
-            if !state.read().await.slew_in_progress || !transport.is_available() {
+            if watcher_should_abort(&state, &transport).await {
                 state.write().await.slew_in_progress = false;
                 return;
             }
@@ -2295,6 +2314,64 @@ mod tests {
             matches!(err, StarAdvError::Transport(ref msg) if msg.contains("did not stop")),
             "expected Transport(\"... did not stop ...\") error, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
+        // Direct unit test for the helper that gates the watcher's
+        // post-snapshot wire sends. The watcher uses it twice — once
+        // before the pickup re-slew, once before the tracking
+        // re-enable — to close the race window between the top-of-
+        // loop guard and the actual wire commands.
+        let state = Arc::new(RwLock::new(DriverState::default()));
+        let manager = TransportManager::new(Config::default(), Arc::new(MockTransportFactory));
+        manager.connect().await.unwrap();
+
+        // Default state has slew_in_progress=false → abort=true.
+        assert!(
+            watcher_should_abort(&state, &manager).await,
+            "default DriverState has slew_in_progress=false → should abort"
+        );
+
+        // With slew_in_progress=true and transport available → no abort.
+        state.write().await.slew_in_progress = true;
+        assert!(
+            !watcher_should_abort(&state, &manager).await,
+            "in-progress slew with live transport → should continue"
+        );
+
+        // Disconnect the transport → abort=true even if slew flag is on.
+        manager.disconnect().await.unwrap();
+        assert!(
+            watcher_should_abort(&state, &manager).await,
+            "disconnect mid-slew → should abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn pickup_reslew_axis_swallows_transport_errors() {
+        // The watcher calls `pickup_reslew_axis` per axis from the
+        // pickup loop. Its failure-logging branches fire when the
+        // wrapped `stop_axis_and_wait` or `issue_slew_axis` returns
+        // an error — that happens when the transport is closed or
+        // the axis stays stuck. This test wires the `StuckAxisTransport`
+        // (always reports `running=true`) so the inner
+        // `stop_axis_and_wait` hits its timeout branch; the helper
+        // must log and return without panicking. A second invocation
+        // confirms the helper is idempotent on persistent failure.
+        let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
+        manager.connect().await.unwrap();
+        // Each call is best-effort and returns `()`. The internal
+        // timeout is `AXIS_STOP_TIMEOUT` (2 s) — overriding it would
+        // require threading a parameter through, which isn't worth
+        // it for a single test; this test runs in ~2 s, still well
+        // under the harness's default timeout.
+        pickup_reslew_axis(&manager, Axis::Ra, 1_000_000).await;
+        // A negative delta exercises the `ccw = true` branch in
+        // `issue_slew_axis`'s `MotionMode` construction — except
+        // here we never reach it because `stop_axis_and_wait` fails
+        // first. Still useful to verify no panic.
+        pickup_reslew_axis(&manager, Axis::Dec, -1_000_000).await;
     }
 
     #[tokio::test]
