@@ -179,6 +179,19 @@ pub enum Command {
     /// `:S<axis><pos>` — set absolute goto target (signed encoder ticks,
     /// bias-encoded by the codec).
     SetGotoTarget { axis: Axis, ticks: i32 },
+    /// `:H<axis><inc>` — set goto-target by **unsigned magnitude** of the
+    /// delta encoder ticks. The direction of motion is communicated
+    /// separately via the `:G` mode byte's CCW bit. INDI eqmod's
+    /// `SlewTo` uses `:H` rather than `:S` so the firmware can apply a
+    /// fixed deceleration ramp from the configured break point — see
+    /// the issue tracker #205 and the INDI source
+    /// (`indi-eqmod/skywatcher.cpp::SlewTo`).
+    SetGotoTargetIncrement { axis: Axis, increment: u32 },
+    /// `:M<axis><breaks>` — set the goto break-point increment. INDI
+    /// emits this on every slew with `breaks = min(|delta|/10, 3200)`;
+    /// the firmware uses it to start decelerating before the target so
+    /// the goto settles without overshoot.
+    SetBreakPointIncrement { axis: Axis, breaks: u32 },
     /// `:I<axis><period>` — set step period (T1 preset). 24-bit unsigned.
     SetStepPeriod { axis: Axis, period: u32 },
     /// `:E<axis><pos>` — set current axis position (sync). Signed encoder
@@ -234,6 +247,16 @@ impl Command {
                 out.push(b'S');
                 out.push(axis.wire_byte());
                 out.extend_from_slice(&encode_position(ticks)?);
+            }
+            Self::SetGotoTargetIncrement { axis, increment } => {
+                out.push(b'H');
+                out.push(axis.wire_byte());
+                out.extend_from_slice(&encode_u24(increment));
+            }
+            Self::SetBreakPointIncrement { axis, breaks } => {
+                out.push(b'M');
+                out.push(axis.wire_byte());
+                out.extend_from_slice(&encode_u24(breaks));
             }
             Self::SetStepPeriod { axis, period } => {
                 out.push(b'I');
@@ -402,6 +425,37 @@ mod tests {
             .encode()
             .unwrap(),
             b":E2FFFF7F\r"
+        );
+    }
+
+    #[test]
+    fn slew_increment_setters_encode_with_u24_payloads() {
+        // `:H` and `:M` payloads are plain 24-bit unsigned counts —
+        // direction comes from the preceding `:G` mode byte's CCW
+        // bit, not from the magnitude. INDI eqmod's `SlewTo` issues
+        // both with `breaks = min(|delta|/10, 3200)` and increment
+        // = `|delta|`, so the codec must accept any 24-bit value
+        // without applying the `0x800000` position bias used by
+        // `:S` and `:E`.
+        // increment 0x000123 → low-byte-first u24 → "230100"
+        assert_eq!(
+            Command::SetGotoTargetIncrement {
+                axis: Axis::Ra,
+                increment: 0x0000_0123,
+            }
+            .encode()
+            .unwrap(),
+            b":H1230100\r"
+        );
+        // breaks 3200 = 0x000C80 → "800C00"
+        assert_eq!(
+            Command::SetBreakPointIncrement {
+                axis: Axis::Dec,
+                breaks: 3200,
+            }
+            .encode()
+            .unwrap(),
+            b":M2800C00\r"
         );
     }
 

@@ -241,12 +241,13 @@ coordinate module and the slew planner.
 | `:E<axis><pos24>` | Set axis position (sync) | implements `SyncToCoordinatesAsync` |
 | `:F<axis>` | Initialize axis | connect handshake |
 | `:G<axis><mode2>` | Set motion mode (Goto/Tracking, fast/slow, dir, etc.) | every slew, every track-state change |
-| `:H<axis><inc24>` | Set goto-target by increment | not used (we use absolute target) |
-| `:S<axis><pos24>` | Set goto absolute target | every slew |
-| `:I<axis><period24>` | Set step period (T1 preset) | tracking rate, slew rate |
+| `:H<axis><inc24>` | Set goto-target by increment (magnitude; sign from `:G` CCW) | every slew (INDI-style sequence) |
+| `:M<axis><breaks24>` | Set goto break-point increment | every slew (INDI-style sequence) |
+| `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
+| `:I<axis><period24>` | Set step period (T1 preset) | tracking (computed sidereal period from CPR / TMR_Freq); slew (fixed period 6, INDI `minperiods` default) |
 | `:J<axis>` | Start motion | every slew, every track start |
-| `:K<axis>` | Stop motion (decelerate) | end of tracking, abort |
-| `:L<axis>` | Instant stop | `AbortSlew` |
+| `:K<axis>` | Stop motion (decelerate) | `Tracking = false` (sidereal RA tracking gracefully decelerates) |
+| `:L<axis>` | Instant stop | `AbortSlew`; preflight stop-and-wait before every `:G` (slew, park, `Tracking = true`); slew watcher's blocked-axis abort path |
 | `:a<axis>` | Inquire CPR | connect handshake |
 | `:b1` | Inquire TMR_Freq | connect handshake |
 | `:e<axis>` | Inquire motor-board version | connect handshake (logging only) |
@@ -340,22 +341,39 @@ SlewToCoordinatesAsync(ra, dec)
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
    ├─ remember: TargetRightAscension/Declination = (ra, dec)
    ├─ compute: (ra_target_ticks, dec_target_ticks) from
-   │           ra/dec + LST + sync offset + side-of-pier choice
+   │           ra/dec + LST(now) + sync offset + side-of-pier choice
+   │           (the post-stop pickup loop closes the residual that
+   │           arises from RA drifting at sidereal rate during the
+   │           goto, so the LST snapshot is taken at issue time)
    │
-   ├─ for each axis:
-   │     :K<axis>      stop motor (no-op if already stopped)
-   │     poll :f<axis> until Running=0 (max 1 s)
-   │     :G<axis><mode>  motion mode = Goto, direction by sign of delta
-   │     :S<axis><pos>   target = wire(target_ticks)  (with 0x800000 bias)
+   ├─ for each axis (INDI-style wire sequence — see
+   │   indi-eqmod/skywatcher.cpp::SlewTo):
+   │     :L<axis>      instant-stop motor
+   │     poll :f<axis> until Running=0 (max 2 s)
+   │     :G<axis><mode>  motion mode = Goto+Fast, CCW bit from sign of delta
+   │     :I<axis>6     step period (INDI minperiods default)
+   │     :H<axis><|delta|>  target by increment (magnitude only)
+   │     :M<axis><breaks>   break-point = min(|delta|/10, 3200)
    │     :J<axis>      start motion
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
+        └─ when both axes report Running=0 in Goto mode → wait dwell
         └─ wait at least MIN_SLEW_DWELL (2 s) of wallclock so any
            Alpaca client polling Slewing within the typical
-           round-trip window catches `Slewing = true` at least once
-        └─ when both axes report Running=0 in Goto mode AND the dwell
-           has elapsed → proceed
+           round-trip window catches `Slewing = true` at least once.
+           Tracking is off during this wait — the encoder is static
+           but the apparent RA drifts at sidereal rate as LST
+           advances. Dwell-before-pickup means the pickup loop sees
+           a single accumulated residual once, instead of burning
+           through PICKUP_MAX_ITERATIONS chasing dwell drift.
+        └─ EQMOD pickup loop (≤ 5 iterations, matches INDI's
+           GOTO_ITERATIVE_LIMIT):
+             read current RA/Dec from encoders + current LST,
+             if |target_RA - current_RA| > 5″ or |target_Dec - current_Dec| > 5″:
+               recompute delta against current encoder + current LST,
+               re-issue :L → :G → :I → :H → :M → :J for each axis,
+               iterate.
         └─ if Tracking was on: re-issue tracking-mode :G + :I + :J on RA axis
         └─ apply config.settle_after_slew before clearing Slewing = false
 ```
@@ -606,12 +624,20 @@ conformu conformance \
 Expect the conformance run to report:
 
 - **0 errors** — anything here is a real driver regression.
-- **7 issues**, all of which are deferred-by-design or
+- **9 issues**, all of which are deferred-by-design or
   upstream-framework problems:
   - `DestinationSideOfPier` ×1 and `SOPPierTest` ×4 — the MVP
     explicitly defers `DestinationSideOfPier` (see [§MVP Scope](#mvp-scope)).
     `SOPPierTest` depends on it and inherits the failure four
     times under different RA/Dec inputs.
+  - `SOPPierTest` ×2 — the safety envelope correctly rejects
+    cross-meridian slews that would land at `RA mech-HA = ±9h`
+    (well outside the default ±6h counterweight-horizontal
+    envelope). `SOPPierTest` exercises the pier-flip code paths
+    by commanding such slews; the driver returns
+    `InvalidValueException` from the safety gate before any
+    wire motion. This is the same envelope-rejection mechanism
+    Phase 4 added — see [§Phase 4 driver-logic changes].
   - `TrackingRate Write` ×2 — an upstream `ascom-alpaca-rs`
     bug: invalid Alpaca enum values are rejected with HTTP
     `400 BadRequest` (axum/serde rejection) before reaching
@@ -620,8 +646,10 @@ Expect the conformance run to report:
     as the Alpaca spec requires. ConformU sends `5` and `-1`
     and flags both.
 
-Any issue or error outside that list is a real regression — fix
-the driver, then refresh this section.
+Any issue or error outside that list — and in particular any
+`SlewTo*` / `SyncTo*` row reporting a tolerance exceedance
+("`Actual RA: ..., Target RA: ...`" with > 10″ delta) — is a
+real regression. Fix the driver, then refresh this section.
 
 > Note: `conformu alpacaprotocol …` against this service will
 > abort with a fatal `IsPulseGuiding` `NotImplementedException`
@@ -678,6 +706,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 2 — BDD scaffold** | ✓ landed: codec crate skeleton, service skeleton, all feature files (`@wip`), step stubs (PR #180) |
 | **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
 | **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
+| **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -733,10 +762,18 @@ In addition to the codec fixes:
   paths now issue `:L` (instant stop) and then poll `:f` until
   `running == false`, before any subsequent `:G`/`:S`/`:J`. Mock
   hid this because it processes `:K`/`:L` instantaneously.
-- **No `:I` in Goto mode** — spec §3 says the firmware computes
-  slew speed internally for Goto mode. We removed the `:I` send
-  from the slew path; tracking still uses `:I` to set the
-  sidereal step period.
+- **INDI-style slew sequence** — Phase A5 reinstated `:I` on the
+  slew path and switched the goto from `:S` (absolute target) to
+  `:H` (delta target) plus `:M` (break-point increment), matching
+  what `indi-eqmod`'s `SlewTo` emits. The spec §3 phrasing that
+  "the firmware picks goto speed internally" turned out to be
+  half the story: the firmware does, but only when `:I` has
+  primed `minperiods[axis]` (INDI defaults to `6`). Without it
+  the goto runs at a slower step period and the deceleration
+  ramp set by `:M breaks = min(|delta|/10, 3200)` is missing,
+  which is what produced the post-stop residual RA drift the
+  Phase 4 ConformU run flagged. Park still uses `:S` since its
+  target is encoder 0 and the absolute form is the simpler fit.
 - **Mechanical safety envelope** — driving the mount into the
   counterweight-up region with ConformU's pier-flip tests stalled
   the motor against a hard stop while the encoder counter kept
@@ -750,17 +787,19 @@ In addition to the codec fixes:
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
+- **EQMOD-style iterative pickup** — Phase A5 added a pickup
+  loop in the slew watcher: after both axes report stopped,
+  the watcher reads current RA/Dec, compares against the
+  latched target, and if either residual exceeds 5″ (matching
+  INDI's `RAGOTORESOLUTION`/`DEGOTORESOLUTION`) recomputes the
+  delta for the current LST and re-enters the wire sequence.
+  Capped at 5 iterations (`GOTO_ITERATIVE_LIMIT`). On the GTi
+  this converges in 1–2 iterations because the post-stop
+  residual is bounded by `slew_duration × sidereal_rate` and
+  the second pass starts from a near-zero delta.
 
 What's still outstanding from Phase 4:
 
-- **Post-slew tracking-pickup** — `MIN_SLEW_DWELL`-based LST
-  pre-compensation works for the mock (sub-second slews) but
-  undershoots real-hardware slew durations of 3-7 s, leaving a
-  residual RA-axis drift of 45-120 arc-seconds after each goto.
-  Closing the gap needs an EQMOD-style pickup loop (after goto
-  completes, read actual RA vs target, issue corrective small
-  goto if delta exceeds tolerance, iterate). Out of scope for
-  this Phase 4 round.
 - **Empirical slew rate vs `:g`** — the formal high-speed-ratio
   formula in spec §3 gives `1` for `hsr = 1` (sidereal rate),
   which is unusable. The firmware appears to pick its own
