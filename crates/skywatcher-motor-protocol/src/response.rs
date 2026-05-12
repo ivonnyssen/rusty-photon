@@ -137,6 +137,8 @@ impl Response {
             Command::Initialize(_)
             | Command::SetMotionMode { .. }
             | Command::SetGotoTarget { .. }
+            | Command::SetGotoTargetIncrement { .. }
+            | Command::SetBreakPointIncrement { .. }
             | Command::SetStepPeriod { .. }
             | Command::SetPosition { .. }
             | Command::StartMotion(_)
@@ -159,16 +161,20 @@ impl Response {
                 Ok(Self::U24(decode_u24(expect_u24_payload(payload)?)?))
             }
             Command::InquireHighSpeedRatio(_) => {
-                // Empirical: the Star Adventurer GTi returns a 2-hex-byte
-                // u8 payload for `:g<axis>` (value `0x01` on both axes),
-                // not the 6-hex-byte u24 the original design doc
-                // assumed. The Sky-Watcher motor-controller spec is
-                // ambiguous on payload width for this command; widen to
-                // accept both. INDI eqmod (the canonical reference)
-                // also decodes `:g` as a small unsigned and stores it
-                // as a single-byte ratio. We promote whichever width
-                // we receive to a `u32` so the parameter cache stays
-                // uniform.
+                // Empirical: the Star Adventurer GTi returns a 2-hex-char
+                // u8 payload for `:g<axis>` (`=01\r` on both axes), not
+                // the 6-hex-char u24 the original design doc assumed.
+                // This matches INDI eqmod's universal handling: its
+                // `Highstr2long` (`indi-eqmod/skywatcher.cpp:1932-1939`)
+                // reads exactly the first two hex chars for `:g` on
+                // every supported mount — there is no INDI fallback to
+                // the 6-hex form. The Sky-Watcher motor-controller spec
+                // is ambiguous on payload width, so the 6-hex branch
+                // below is kept as a zero-cost safety net for
+                // hypothetical future firmware variants, not because
+                // any known controller emits it. We promote whichever
+                // width we receive to a `u32` so the parameter cache
+                // stays uniform.
                 Ok(Self::U24(match payload.len() {
                     2 => {
                         let bytes = [payload[0], payload[1]];
@@ -198,6 +204,8 @@ impl Response {
             | Command::InquireStatus(a)
             | Command::SetMotionMode { axis: a, .. }
             | Command::SetGotoTarget { axis: a, .. }
+            | Command::SetGotoTargetIncrement { axis: a, .. }
+            | Command::SetBreakPointIncrement { axis: a, .. }
             | Command::SetStepPeriod { axis: a, .. }
             | Command::SetPosition { axis: a, .. }
             | Command::StartMotion(a)
@@ -308,6 +316,47 @@ mod tests {
         assert_eq!(r, Response::Ack);
         let r = Response::decode(b"=\r", &Command::StartMotion(Axis::Ra)).unwrap();
         assert_eq!(r, Response::Ack);
+        // `:H` (set goto-target increment) and `:M` (set break-point
+        // increment), added for the INDI-style slew sequence in
+        // issue #205, both expect a plain `=\r` ack.
+        let r = Response::decode(
+            b"=\r",
+            &Command::SetGotoTargetIncrement {
+                axis: Axis::Ra,
+                increment: 1234,
+            },
+        )
+        .unwrap();
+        assert_eq!(r, Response::Ack);
+        let r = Response::decode(
+            b"=\r",
+            &Command::SetBreakPointIncrement {
+                axis: Axis::Dec,
+                breaks: 100,
+            },
+        )
+        .unwrap();
+        assert_eq!(r, Response::Ack);
+    }
+
+    #[test]
+    fn axis_of_returns_command_axis_for_new_slew_increment_commands() {
+        // Issue #205 added :H and :M; their axis routing has to
+        // match the rest of the per-axis setters.
+        assert_eq!(
+            Response::axis_of(&Command::SetGotoTargetIncrement {
+                axis: Axis::Ra,
+                increment: 0,
+            }),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetBreakPointIncrement {
+                axis: Axis::Dec,
+                breaks: 0,
+            }),
+            Some(Axis::Dec)
+        );
     }
 
     #[test]

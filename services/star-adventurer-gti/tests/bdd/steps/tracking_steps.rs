@@ -51,10 +51,11 @@ async fn tracking_rate_should_be_sidereal(world: &mut StarAdventurerWorld) {
 
 #[then("the Dec axis should have received no commands")]
 async fn dec_axis_no_commands(world: &mut StarAdventurerWorld) {
-    // Filter the command log for `:G2`, `:S2`, `:I2`, `:E2`, `:J2`,
-    // `:K2`, `:L2` — Dec-axis setters / motion. The handshake itself
-    // issues `:F2`, `:a2`, `:g2`, `:j2` and the polling task fires
-    // `:f2` and `:j2`; those are inquiries and don't count.
+    // Filter the command log for Dec-axis setters / motion frames
+    // — `:G2`, `:S2`, `:H2`, `:M2`, `:I2`, `:E2`, `:J2`, `:K2`,
+    // `:L2`. The handshake itself issues `:F2`, `:a2`, `:g2`, `:j2`
+    // and the polling task fires `:f2` and `:j2`; those are
+    // inquiries and don't count.
     let log = world.command_log().await;
     let dec_setters: Vec<&String> = log
         .iter()
@@ -63,7 +64,7 @@ async fn dec_axis_no_commands(world: &mut StarAdventurerWorld) {
                 c.as_bytes(),
                 [
                     b':',
-                    b'G' | b'S' | b'I' | b'E' | b'J' | b'K' | b'L',
+                    b'G' | b'S' | b'H' | b'M' | b'I' | b'E' | b'J' | b'K' | b'L',
                     b'2',
                     ..
                 ]

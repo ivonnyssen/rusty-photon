@@ -1,9 +1,16 @@
 Feature: Asynchronous slewing
   SlewToCoordinatesAsync validates the target, computes target encoder
   positions from RA/Dec + LST + sync offset + side-of-pier choice, then
-  issues :G / :S / :J on each axis and returns immediately. Callers poll
-  Slewing to detect completion. SlewToTargetAsync uses the most-recent
-  TargetRightAscension / TargetDeclination set on the device.
+  issues the INDI eqmod-style sequence on each axis. Per axis the wire
+  sequence is :L instant-stop + poll :f until not running (the
+  Sky-Watcher firmware rejects :G against a still-decelerating motor
+  with !2 MotorNotStopped), then :G goto+fast → :I step-period →
+  :H delta-target → :M break-point → :J start. The call returns
+  immediately; callers poll Slewing to detect completion. After both
+  axes stop, the driver runs an EQMOD-style pickup loop (capped at
+  5 iterations) to push any RA/Dec residual under 5". SlewToTargetAsync
+  uses the most-recent TargetRightAscension / TargetDeclination set on
+  the device.
 
   Scenario: SlewToCoordinatesAsync rejects RA out of range
     Given a running star-adventurer service
@@ -35,17 +42,21 @@ Feature: Asynchronous slewing
     When I try to slew asynchronously to RA 6.0 hours and Dec 30.0 degrees
     Then the operation should fail with invalid-while-parked
 
-  Scenario: SlewToCoordinatesAsync issues :G :S :J on both axes
+  Scenario: SlewToCoordinatesAsync issues :G :I :H :M :J on both axes
     Given a running star-adventurer service
     When I connect the device
     And I slew asynchronously to RA 6.0 hours and Dec 30.0 degrees
     Then the mount should have received commands matching:
       | pattern  |
       | :G1.*    |
-      | :S1.*    |
+      | :I1.*    |
+      | :H1.*    |
+      | :M1.*    |
       | :J1      |
       | :G2.*    |
-      | :S2.*    |
+      | :I2.*    |
+      | :H2.*    |
+      | :M2.*    |
       | :J2      |
 
   Scenario: SlewToCoordinatesAsync remembers the target

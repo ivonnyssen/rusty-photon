@@ -127,38 +127,78 @@ async fn target_dec_should_be(world: &mut StarAdventurerWorld, expected: f64, to
 )]
 async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     // Decode the Dec axis target — this comparison doesn't depend on
-    // LST so it's deterministic in BDD. The RA target involves
-    // `lst_at_slew_time` which we can't pin until Phase 4 wires
-    // clock injection (the unit test
+    // LST so it's deterministic in BDD. The RA target involves the
+    // `lst_at_slew_time` which we can't pin until clock injection is
+    // wired in (the unit test
     // `coordinates::tests::ra_ticks_round_trip_through_mechanical_ha`
     // pins the ticks ↔ RA math regardless), so for RA we still only
-    // assert that *some* `:S1` frame appears.
-    use skywatcher_motor_protocol::codec::decode_position;
+    // assert that *some* `:H1` frame appears.
+    //
+    // INDI-style slews use `:H<axis><|delta|>` (unsigned magnitude) +
+    // a `:G<axis>` that carries the direction (CCW) bit. The mock
+    // starts each axis at encoder 0, so for Dec 45° the magnitude is
+    // exactly the encoder ticks for 45° and the direction is CW.
+    use skywatcher_motor_protocol::codec::decode_u24;
     let log = world.command_log().await;
-    let s1 = log
+    let h1 = log
         .iter()
-        .find(|c| c.starts_with(":S1") && c.ends_with("\r"))
-        .unwrap_or_else(|| panic!("no :S1 in log {log:?}"));
-    let s2 = log
+        .find(|c| c.starts_with(":H1") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :H1 in log {log:?}"));
+    // We assert against the *slew-issue* `:H2`, which is always the
+    // first `:H2` in the log: it carries the magnitude of the full
+    // slew delta (encoder ticks for 45° from the mock's encoder-0
+    // start). Pickup re-issues, if any, emit subsequent `:H2`
+    // frames carrying only the residual delta (sub-arcsecond on
+    // the mock); pairing against those would falsely report a
+    // near-zero Dec target.
+    let h2 = log
         .iter()
-        .find(|c| c.starts_with(":S2") && c.ends_with("\r"))
-        .unwrap_or_else(|| panic!("no :S2 in log {log:?}"));
-    // :S<axis><6 hex bytes>\r — 10 bytes total.
-    assert_eq!(s2.len(), 10, "malformed :S2 frame {s2:?}");
-    let payload: &[u8; 6] = (&s2.as_bytes()[3..9])
+        .find(|c| c.starts_with(":H2") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :H2 in log {log:?}"));
+    // :H<axis><6 hex bytes>\r — 10 bytes total.
+    assert_eq!(h2.len(), 10, "malformed :H2 frame {h2:?}");
+    let payload: &[u8; 6] = (&h2.as_bytes()[3..9])
         .try_into()
         .expect("six payload bytes");
-    let dec_ticks = decode_position(payload).expect("valid :S2 payload");
+    let dec_magnitude = decode_u24(payload).expect("valid :H2 payload");
+    // Recover the direction bit from the `:G2` that goes with the
+    // slew-issue `:H2`. The INDI sequence is
+    // `:L2 → :G2 → :I2 → :H2 → :M2 → :J2` per axis, so `:G2` is
+    // the third frame before `:H2`, not the immediately-preceding
+    // one (`:I2` sits between them). Use `rfind` over the prefix
+    // ending at `h2`'s index: that locates the closest preceding
+    // `:G2`, which is the `:G2` from the same slew-issue burst
+    // regardless of how many earlier slews or handshakes ran.
+    let h2_idx = log
+        .iter()
+        .position(|c| c == h2)
+        .expect(":H2 must be in the log we just found");
+    let g2 = log[..h2_idx]
+        .iter()
+        .rfind(|c| c.starts_with(":G2") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :G2 before the matched :H2 in log {log:?}"));
+    // :G<axis><DB1_nibble><DB2_nibble>\r — 6 bytes total. Per the
+    // Sky-Watcher motor-controller spec §5 each DB is one hex
+    // nibble (4 bits), not a full byte; see
+    // `skywatcher_motor_protocol::MotionMode::to_wire_bytes` for
+    // the canonical encoding. DB2 bit 0 = CCW.
+    assert_eq!(g2.len(), 6, "malformed :G2 frame {g2:?}");
+    let db2 = u8::from_str_radix(&g2[4..5], 16).expect("valid hex");
+    let signed_ticks: i64 = if db2 & 0x1 != 0 {
+        -(dec_magnitude as i64)
+    } else {
+        dec_magnitude as i64
+    };
 
     // Convert wire ticks back to degrees and compare against the
     // requested Dec.
     const GTI_CPR: u32 = 0x0037_5F00;
-    let dec_actual = (dec_ticks as f64) * 360.0 / (GTI_CPR as f64);
+    let dec_actual = (signed_ticks as f64) * 360.0 / (GTI_CPR as f64);
     let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
     assert!(
         (dec_actual - dec).abs() < tol,
         "Dec target {dec_actual:.4}° differs from requested {dec:.4}° by > {tol}°; \
-         :S1={s1:?} :S2={s2:?}"
+         :H1={h1:?} :H2={h2:?} :G2={g2:?}"
     );
 }
 

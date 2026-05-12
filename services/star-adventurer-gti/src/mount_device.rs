@@ -175,89 +175,16 @@ impl MountDevice {
         }
     }
 
-    /// Issue `:K<axis>` (decelerate stop) and then poll `:f<axis>` until
-    /// `running == false` or [`AXIS_STOP_TIMEOUT`] elapses.
-    ///
-    /// Sky-Watcher spec §2: "Motor must be at full stop status before
-    /// setting the motion mode." The earlier driver used `:L` (instant
-    /// stop) here because `:K` returns its ack while the motor is still
-    /// decelerating and a back-to-back `:G` against a moving axis trips
-    /// `!2\r` (`MotorNotStopped`) on real hardware. The poll-until-
-    /// `running == false` loop already handles that: deceleration
-    /// finishes within a few `:f` cycles and the next `:G` sees a
-    /// stopped axis. `:K` is the spec's recommended "stop" and is
-    /// gentler on the gearbox than `:L` — `:L` remains the right
-    /// choice only for emergency stops (`AbortSlew`, watcher-side
-    /// `blocked` aborts), where instant halt is the point. Matches
-    /// INDI eqmod's `StopWaitMotor`
-    /// (`indi-eqmod/skywatcher.cpp:1741-1765`).
-    ///
-    /// The mock processes `:K` instantaneously, which keeps the BDD
-    /// coverage green; the real-hardware deceleration is observed by
-    /// the `:f` poll loop.
-    async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
-        self.transport
-            .send(Command::StopMotion(axis))
-            .await
-            .map_err(Self::ascom)?;
-        let deadline = std::time::Instant::now() + AXIS_STOP_TIMEOUT;
-        // Give the firmware a moment to flush the running flag before
-        // the first poll — some Sky-Watcher firmwares report stale
-        // status if `:f` is sent in the same millisecond as `:L`.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        loop {
-            let resp = self
-                .transport
-                .send(Command::InquireStatus(axis))
-                .await
-                .map_err(Self::ascom)?;
-            if let skywatcher_motor_protocol::Response::Status(s) = resp {
-                if !s.running {
-                    return Ok(());
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(ASCOMError::invalid_operation(format!(
-                    "axis {axis:?} did not stop within {AXIS_STOP_TIMEOUT:?}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Short-circuit `stop_and_wait + :G` when the requested motion mode
-    /// equals the last one the driver successfully issued on `axis`.
-    ///
-    /// **Why:** every slew, park, and `set_tracking(true)` issues `:G`
-    /// against the prior motion state. Most of the time the requested
-    /// mode is identical to the one already in effect (back-to-back
-    /// goto-fast-CW slews, re-asserting tracking, etc.). INDI eqmod's
-    /// `SetMotion` short-circuits in exactly this case
-    /// (`indi-eqmod/skywatcher.cpp:1672-1678` —
-    /// `LastRunningStatus == NewStatus`), saving the deceleration
-    /// wait and a wire round-trip.
-    ///
-    /// When the cache differs (or is empty after connect):
-    /// `stop_and_wait` → `:G<axis><mode>` → cache update on `:G` ack.
-    /// The cache write happens only after the wire ack so a transport
-    /// failure mid-send doesn't leave the cache claiming a mode the
-    /// firmware never accepted.
+    /// Thin `ASCOMResult` wrapper over the free-function
+    /// [`set_motion_mode_with_cache`] — short-circuits
+    /// `stop_and_wait + :G` when the requested mode equals the cached
+    /// one. Used by `set_tracking(true)` and `park`, which need ASCOM
+    /// error mapping. The slew path goes through `issue_slew_axis`,
+    /// which calls the same helper internally.
     async fn ensure_motion_mode(&self, axis: Axis, mode: MotionMode) -> ASCOMResult<()> {
-        if self.transport.last_motion_mode(axis).await == Some(mode) {
-            debug!(
-                ?axis,
-                ?mode,
-                "motion mode unchanged, skipping stop_and_wait + :G"
-            );
-            return Ok(());
-        }
-        self.stop_and_wait(axis).await?;
-        self.transport
-            .send(Command::SetMotionMode { axis, mode })
+        set_motion_mode_with_cache(&self.transport, axis, mode)
             .await
-            .map_err(Self::ascom)?;
-        self.transport.record_motion_mode(axis, mode).await;
-        Ok(())
+            .map_err(Self::ascom)
     }
 
     /// Block until the slew-completion watcher clears `slew_in_progress`,
@@ -314,6 +241,146 @@ const MIN_SLEW_DWELL: Duration = Duration::from_secs(2);
 /// case, and bounding the wait prevents a stuck axis from wedging
 /// a slew indefinitely.
 const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// EQMOD `minperiods[axis]` default — see
+/// `indi-3rdparty/indi-eqmod/skywatcher.cpp:509-510`. INDI emits
+/// `:I<axis>6` on every slew; the firmware uses this step period
+/// to ramp the motor through the goto.
+const SLEW_STEP_PERIOD: u32 = 6;
+
+/// INDI `SetTargetBreaks` cap — see
+/// `indi-3rdparty/indi-eqmod/skywatcher.cpp::SlewTo`. The breakpoint
+/// increment is `min(|delta|/10, 3200)`; without the cap, very long
+/// slews exceed the firmware's break-point range.
+const SLEW_BREAK_POINT_DIVISOR: u32 = 10;
+const SLEW_BREAK_POINT_MAX: u32 = 3200;
+
+/// EQMOD `RAGOTORESOLUTION` / `DEGOTORESOLUTION` — see
+/// `indi-3rdparty/indi-eqmod/eqmodbase.cpp:64-66`. After the goto
+/// stops, the pickup loop computes the residual against the latched
+/// RA/Dec target and re-issues a corrective slew if either axis
+/// exceeds this threshold (5 arc-seconds).
+const PICKUP_TOLERANCE_ARCSEC: f64 = 5.0;
+
+/// EQMOD `GOTO_ITERATIVE_LIMIT` — see
+/// `indi-3rdparty/indi-eqmod/eqmodbase.cpp:64`. INDI caps the
+/// pickup loop at 5 iterations to keep a pathological case (motor
+/// stalled, encoder oscillating, …) from running forever.
+const PICKUP_MAX_ITERATIONS: u32 = 5;
+
+/// Ensure the firmware's `:G` mode on `axis` equals `mode`, doing
+/// `stop_axis_and_wait` + `:G` only when the cached last-issued mode
+/// differs from the request. Records the mode in the cache on a
+/// successful `:G` ack. Short-circuits with a debug log when the
+/// cache already matches — saves a deceleration wait and a `:G`
+/// round-trip on back-to-back same-mode operations.
+///
+/// Mirrors INDI eqmod's `SetMotion` short-circuit
+/// (`indi-eqmod/skywatcher.cpp:1672-1678`,
+/// `LastRunningStatus == NewStatus`). Callers that know the
+/// firmware state has drifted from the cache (e.g. the pickup loop
+/// after a goto, where the firmware auto-engages Tracking on RA)
+/// must call [`TransportManager::invalidate_motion_mode`] before
+/// invoking this helper.
+async fn set_motion_mode_with_cache(
+    transport: &TransportManager,
+    axis: Axis,
+    mode: MotionMode,
+) -> crate::error::Result<()> {
+    if transport.last_motion_mode(axis).await == Some(mode) {
+        debug!(
+            ?axis,
+            ?mode,
+            "motion mode unchanged, skipping stop_and_wait + :G"
+        );
+        return Ok(());
+    }
+    stop_axis_and_wait(transport, axis, AXIS_STOP_TIMEOUT).await?;
+    transport
+        .send(Command::SetMotionMode { axis, mode })
+        .await?;
+    transport.record_motion_mode(axis, mode).await;
+    Ok(())
+}
+
+/// Issue the per-axis INDI slew sequence:
+/// `:G<axis>` (goto + fast, direction by sign of `delta`) →
+/// `:I<axis>6` (step period) →
+/// `:H<axis><|delta|>` (target increment) →
+/// `:M<axis><breaks>` (break-point increment) →
+/// `:J<axis>` (start motion).
+///
+/// The `:G` step routes through [`set_motion_mode_with_cache`], so
+/// when the requested mode matches the cached one the function
+/// jumps straight to `:I`/`:H`/`:M`/`:J` and never touches `:K` or
+/// `:G`. Otherwise `stop_axis_and_wait` + `:G` runs first; `:G`
+/// returns `!2 MotorNotStopped` if it lands against a still-
+/// decelerating motor, and the poll-until-stopped loop avoids that.
+async fn issue_slew_axis(
+    transport: &TransportManager,
+    axis: Axis,
+    delta: i32,
+) -> crate::error::Result<()> {
+    let magnitude = delta.unsigned_abs();
+    let breaks = (magnitude / SLEW_BREAK_POINT_DIVISOR).min(SLEW_BREAK_POINT_MAX);
+    let mode = MotionMode {
+        kind: skywatcher_motor_protocol::command::ModeKind::Goto,
+        speed: skywatcher_motor_protocol::command::Speed::Fast,
+        ccw: delta < 0,
+    };
+    set_motion_mode_with_cache(transport, axis, mode).await?;
+    transport
+        .send(Command::SetStepPeriod {
+            axis,
+            period: SLEW_STEP_PERIOD,
+        })
+        .await?;
+    transport
+        .send(Command::SetGotoTargetIncrement {
+            axis,
+            increment: magnitude,
+        })
+        .await?;
+    transport
+        .send(Command::SetBreakPointIncrement { axis, breaks })
+        .await?;
+    transport.send(Command::StartMotion(axis)).await?;
+    Ok(())
+}
+
+/// Returns `true` when the slew-completion watcher must bail out of
+/// its current iteration: either `AbortSlew` cleared
+/// `slew_in_progress`, or `set_connected(false)` closed the transport.
+/// Both conditions can race in mid-iteration after the top-of-loop
+/// guard has already passed, so the watcher checks this helper a
+/// second time immediately before issuing any post-snapshot wire
+/// commands (the EQMOD pickup re-slew or the post-slew tracking
+/// restart).
+async fn watcher_should_abort(
+    state: &Arc<RwLock<DriverState>>,
+    transport: &TransportManager,
+) -> bool {
+    !state.read().await.slew_in_progress || !transport.is_available()
+}
+
+/// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
+/// Invalidates the motion-mode cache, then calls [`issue_slew_axis`]
+/// — which drains any residual goto deceleration via its internal
+/// `stop_axis_and_wait` and re-runs the INDI wire sequence with the
+/// freshly-computed `delta`. The cache invalidation is load-bearing:
+/// after a goto completes, the firmware auto-engages Speed (Tracking)
+/// Mode on RA even though the cache still reads Goto. Without the
+/// invalidate, `set_motion_mode_with_cache` would short-circuit on
+/// the same direction and the subsequent `:I`/`:H`/`:M`/`:J` would
+/// land while the firmware is in Tracking mode. Failures are
+/// best-effort: the watcher has nothing useful to do with the error
+/// other than retry on the next iteration.
+async fn pickup_reslew_axis(transport: &TransportManager, axis: Axis, delta: i32) {
+    transport.invalidate_motion_mode(axis).await;
+    if let Err(e) = issue_slew_axis(transport, axis, delta).await {
+        tracing::warn!("pickup re-slew {axis:?} failed: {e}");
+    }
+}
 
 #[async_trait]
 impl Device for MountDevice {
@@ -737,24 +804,18 @@ impl Telescope for MountDevice {
             tracking_was_on = s.tracking_requested;
         }
 
-        // Compute target encoder ticks for the *expected* slew-
-        // completion time, not for `now`. RA = LST - mech_HA; while
-        // the mount is gotoing it isn't tracking, so the encoder
-        // doesn't advance during the slew. If we picked the
-        // encoder for `LST(now)`, by the time the goto finishes
-        // (`now + slew_duration`) the encoder lands at a `mech_HA`
-        // that — combined with the now-advanced `LST` — reads back
-        // as `target_RA + slew_duration * sidereal_rate`. ConformU's
-        // ±10 arc-second tolerance is exceeded even for 2-second
-        // slews. Targeting `LST(now + MIN_SLEW_DWELL)` collapses
-        // that drift on the mock (slew duration always ≥
-        // [`MIN_SLEW_DWELL`]) and bounds it for very short real-
-        // mount slews. Long real-mount slews would still need a
-        // post-slew pickup pass — out of scope for the MVP.
-        let lst = local_sidereal_time_hours(
-            SystemTime::now() + MIN_SLEW_DWELL,
-            self.config.site_longitude_deg,
-        );
+        // Compute target encoder ticks for the *current* LST. INDI's
+        // EQMOD-style post-stop pickup loop (issue #205) handles the
+        // residual that arises because RA drifts during the goto: when
+        // the watcher detects both axes stopped, it reads the actual
+        // RA/Dec, computes the residual against the latched target,
+        // and re-issues a corrective goto if the residual exceeds the
+        // INDI tolerance (`RAGOTORESOLUTION = 5"`). Earlier revisions
+        // sidestepped this by pre-shifting LST by `MIN_SLEW_DWELL` —
+        // that bounded mock drift but undershot real-hardware slews
+        // of 3-7 s, leaving 45-120 arc-second RA residuals. The
+        // pickup loop closes the gap cleanly.
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
@@ -768,84 +829,40 @@ impl Telescope for MountDevice {
         // stalling the motor against a hard stop.
         self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
 
-        // Per axis: stop any prior motion (`stop_and_wait` issues
-        // `:L` + polls `:f` until `running == false`), set goto-fast
-        // mode in the correct direction, set the target, start
-        // motion. No `:I` here — Sky-Watcher spec §3 says the
-        // firmware picks the goto step period internally in Goto
-        // mode; an early draft of this path mistakenly sent `:I`
-        // before `:J`, but that was a side-effect of the original
-        // codec sending `:G130` (which the spec decodes as
-        // Tracking-Fast, not Goto-Fast — see
-        // `crates/skywatcher-motor-protocol/src/command.rs` for
-        // the canonical mode-byte semantics). The two empirical-
-        // hardware findings that *do* apply to this path:
-        //
-        //   * **`:G` must run against a stopped axis.** Real GTi
-        //     returns `!2 MotorNotStopped` if `:G` arrives while
-        //     the motor is still decelerating from a previous
-        //     command. `stop_and_wait` enforces this. The mock
-        //     processed `:K` instantaneously and missed the race.
-        //   * **Direction-bit must match `sign(target - current)`.**
-        //     The original fixed `GOTO_FAST_FORWARD` constant
-        //     meant a slew whose target is *behind* the current
-        //     encoder also silently no-ops on real hardware. The
-        //     design doc explicitly calls out "direction by sign
-        //     of delta".
         let snap = self.transport.snapshot().await;
         let ra_delta = ra_ticks - snap.ra.position_ticks;
         let dec_delta = dec_ticks - snap.dec.position_ticks;
-        for (axis, ticks, delta) in [
-            (Axis::Ra, ra_ticks, ra_delta),
-            (Axis::Dec, dec_ticks, dec_delta),
-        ] {
-            // `ensure_motion_mode` issues `stop_and_wait + :G` only when
-            // the requested goto-fast mode differs from the cached one.
-            // Required on real hardware: `:G` returns `!2 MotorNotStopped`
-            // if issued against a still-decelerating axis. Successive
-            // same-direction slews short-circuit to just the `:S` + `:J`
-            // re-issue.
-            let mode = MotionMode {
-                kind: skywatcher_motor_protocol::command::ModeKind::Goto,
-                speed: skywatcher_motor_protocol::command::Speed::Fast,
-                ccw: delta < 0,
-            };
-            self.ensure_motion_mode(axis, mode).await?;
-            // On the RA path, `ensure_motion_mode`'s `stop_and_wait`
-            // branch is the wire event that halts sidereal tracking;
-            // the short-circuit branch also implies tracking-off
-            // because the cache only matches when we previously
-            // issued a Goto on this axis. Either way the wire has
-            // committed before we touch the in-memory flag, so a
-            // failed `ensure_motion_mode` cannot leave the driver
-            // claiming tracking-off while the mount is still tracking.
+        // Both axes use the INDI wire sequence; `issue_slew_axis`
+        // encapsulates the per-axis `:K`-and-wait + `:G goto+fast` +
+        // `:I 6` + `:H |delta|` + `:M breaks` + `:J` sequence. The
+        // `:G` step inside `issue_slew_axis` is routed through
+        // `set_motion_mode_with_cache`, so when the requested
+        // goto-fast mode matches the cached last-issued mode on
+        // that axis the `:K`+`:G` round-trips short-circuit — only
+        // the per-slew `:I`/`:H`/`:M`/`:J` go to the wire.
+        //
+        // On the RA path, `issue_slew_axis`'s stop is also the wire
+        // event that halts sidereal tracking; the cache-short-circuit
+        // branch implies tracking-off because the cache only matches
+        // when we previously issued Goto on this axis. Clear the
+        // in-memory `tracking_requested` flag only after the call
+        // returns Ok so a transport failure cannot leave the driver
+        // claiming tracking-off while the mount is still tracking.
+        for (axis, delta) in [(Axis::Ra, ra_delta), (Axis::Dec, dec_delta)] {
+            issue_slew_axis(&self.transport, axis, delta)
+                .await
+                .map_err(Self::ascom)?;
             if axis == Axis::Ra {
                 self.state.write().await.tracking_requested = false;
             }
-            // Per Sky-Watcher spec §3 / §5: in Goto mode the motor
-            // controller computes the slew speed internally — there is
-            // no `:I` to issue before `:J`. (`:I` is only meaningful
-            // in Tracking mode, where the master device sets the
-            // T1 preset directly.) The earlier implementation issued
-            // `:I` here because it had the mode byte wrong and was
-            // actually putting the mount into Tracking-Fast, where
-            // the period IS load-bearing — which is also why the
-            // mount slewed indefinitely past the target.
-            self.transport
-                .send(Command::SetGotoTarget { axis, ticks })
-                .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::StartMotion(axis))
-                .await
-                .map_err(Self::ascom)?;
         }
 
         // Mark slew in progress and spawn the completion watcher. The
-        // watcher polls until both axes report stopped, optionally
-        // re-issues sidereal tracking on RA (only if it was on before
-        // the slew), applies the settle delay, then clears
-        // `slew_in_progress`.
+        // watcher polls until both axes report stopped, runs the
+        // EQMOD-style pickup loop (up to 5 iterations) to nudge any
+        // residual under 5", optionally re-issues sidereal tracking
+        // on RA (only if it was on before the slew), applies the
+        // settle delay, then clears `slew_in_progress`.
         let settle = {
             let mut s = self.state.write().await;
             s.slew_in_progress = true;
@@ -854,6 +871,7 @@ impl Telescope for MountDevice {
         spawn_slew_completion_watcher(
             Arc::clone(&self.state),
             Arc::clone(&self.transport),
+            self.config.clone(),
             self.transport.polling_interval_for_watcher(),
             settle,
             tracking_was_on,
@@ -1011,9 +1029,11 @@ impl Telescope for MountDevice {
 /// Polls the snapshot every `polling_interval`. When both axes report
 /// `running == false` (or the slew was aborted externally — in which
 /// case `slew_in_progress` is already cleared and the watcher exits
-/// immediately), optionally re-issues sidereal tracking on the RA axis
-/// (matching the design doc's "if Tracking was on" branch), waits
-/// `settle`, then clears `slew_in_progress`.
+/// immediately), runs the EQMOD-style iterative pickup loop to push
+/// any RA/Dec residual under [`PICKUP_TOLERANCE_ARCSEC`], optionally
+/// re-issues sidereal tracking on the RA axis (matching the design
+/// doc's "if Tracking was on" branch), waits `settle`, then clears
+/// `slew_in_progress`.
 ///
 /// `tracking_was_on` is captured at slew-issue time — the live
 /// `tracking_requested` flag is cleared by `slew_to_coordinates_async`
@@ -1022,12 +1042,14 @@ impl Telescope for MountDevice {
 fn spawn_slew_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     transport: Arc<TransportManager>,
+    config: MountConfig,
     polling_interval: Duration,
     settle: Duration,
     tracking_was_on: bool,
 ) {
     let started = std::time::Instant::now();
     tokio::spawn(async move {
+        let mut pickup_iterations: u32 = 0;
         loop {
             tokio::time::sleep(polling_interval).await;
 
@@ -1046,20 +1068,6 @@ fn spawn_slew_completion_watcher(
             if !transport.is_available() {
                 state.write().await.slew_in_progress = false;
                 return;
-            }
-
-            // Enforce a minimum slew dwell so external observers reliably
-            // catch `Slewing == true`. ConformU starts a slew via HTTP,
-            // then reads `Slewing` over a second HTTP call; the round-
-            // trip latency can be larger than the mock's full slew
-            // duration on a fast machine (the mock advances 100K
-            // ticks/poll, so a small slew completes in 1-2 polls). The
-            // de-facto Alpaca client poll cadence is on the order of
-            // 100 ms; one full second of guaranteed dwell is a safe
-            // floor for any reasonable client without meaningfully
-            // slowing real-mount operation (real slews take seconds).
-            if started.elapsed() < MIN_SLEW_DWELL {
-                continue;
             }
 
             let snap = transport.snapshot().await;
@@ -1086,12 +1094,118 @@ fn spawn_slew_completion_watcher(
                 continue;
             }
 
+            // Enforce a minimum slew dwell so external observers reliably
+            // catch `Slewing == true`. ConformU starts a slew via HTTP,
+            // then reads `Slewing` over a second HTTP call; the round-
+            // trip latency can be larger than the mock's full slew
+            // duration on a fast machine (the mock advances 100K
+            // ticks/poll, so a small slew completes in 1-2 polls). The
+            // de-facto Alpaca client poll cadence is on the order of
+            // 100 ms; two full seconds of guaranteed dwell is a safe
+            // floor for any reasonable client without meaningfully
+            // slowing real-mount operation (real slews take seconds).
+            //
+            // The dwell *must* gate the pickup loop, not run after it.
+            // The encoder is static while the watcher is observing
+            // (tracking is off until the post-slew re-enable below),
+            // so the apparent RA drifts at sidereal rate as LST
+            // advances. If the pickup loop ran during the dwell wait,
+            // it would re-detect that drift on every iteration and
+            // burn through `PICKUP_MAX_ITERATIONS` just waiting —
+            // potentially leaving a residual of one dwell-worth of
+            // sidereal drift (~30") at the moment tracking re-enables.
+            // Gating pickup behind the dwell means the loop sees a
+            // single accumulated residual once, corrects it, then
+            // hands off to tracking immediately.
+            if started.elapsed() < MIN_SLEW_DWELL {
+                continue;
+            }
+
+            // Both axes report stopped and the dwell has elapsed. Run
+            // the EQMOD pickup loop: if either residual exceeds 5",
+            // re-enter the goto sequence with a fresh delta computed
+            // for the current LST. Capped at `PICKUP_MAX_ITERATIONS`
+            // to match INDI's `GOTO_ITERATIVE_LIMIT`. On the GTi the
+            // loop converges in 1–2 iterations because the post-stop
+            // residual is bounded by the slew duration × sidereal
+            // rate (~15"/s of RA drift per second of slew).
+            if pickup_iterations < PICKUP_MAX_ITERATIONS {
+                let (target_ra, target_dec) = {
+                    let s = state.read().await;
+                    (s.target_ra_hours, s.target_dec_degrees)
+                };
+                if let (Some(target_ra), Some(target_dec), Some(params)) =
+                    (target_ra, target_dec, transport.parameters().await)
+                {
+                    let lst =
+                        local_sidereal_time_hours(SystemTime::now(), config.site_longitude_deg);
+                    let cur_mech_ha =
+                        ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
+                    let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
+                    let cur_dec = dec_ticks_to_degrees(snap.dec.position_ticks, params.cpr_dec);
+                    // RA residual is on a 24-hour circle; take the
+                    // shorter arc. Convert hours → arc-seconds
+                    // (15°/hour × 3600″/°).
+                    let ra_circ = ((target_ra - cur_ra).rem_euclid(24.0))
+                        .min((cur_ra - target_ra).rem_euclid(24.0));
+                    let ra_residual_arcsec = ra_circ * 15.0 * 3600.0;
+                    let dec_residual_arcsec = (target_dec - cur_dec).abs() * 3600.0;
+                    if ra_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
+                        || dec_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
+                    {
+                        // Re-check the abort / disconnect signals
+                        // immediately before issuing any wire
+                        // commands. The top-of-loop guard ran one
+                        // `:f` round-trip + a few coordinate ops
+                        // ago; in that window AbortSlew (which
+                        // clears `slew_in_progress` and issues :L)
+                        // or set_connected(false) (which closes the
+                        // transport) may have raced ahead. Without
+                        // this second guard the pickup loop would
+                        // restart motion after the user aborted.
+                        if watcher_should_abort(&state, &transport).await {
+                            state.write().await.slew_in_progress = false;
+                            return;
+                        }
+                        let new_mech_ha = ra_to_mechanical_ha(target_ra, lst);
+                        let new_ra_ticks = mechanical_ha_to_ra_ticks(new_mech_ha, params.cpr_ra);
+                        let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                        let ra_delta = new_ra_ticks - snap.ra.position_ticks;
+                        let dec_delta = new_dec_ticks - snap.dec.position_ticks;
+                        pickup_iterations += 1;
+                        debug!(
+                            iteration = pickup_iterations,
+                            ra_residual_arcsec, dec_residual_arcsec, "slew pickup iteration"
+                        );
+                        // The pickup re-slew goes through the same
+                        // wire sequence as the original goto. `:L` +
+                        // poll keeps the motor-not-stopped contract
+                        // intact even if a previous send failed
+                        // mid-sequence.
+                        pickup_reslew_axis(&transport, Axis::Ra, ra_delta).await;
+                        pickup_reslew_axis(&transport, Axis::Dec, dec_delta).await;
+                        continue;
+                    }
+                }
+            }
+
             // Slew completed cleanly. Re-enable tracking if the user had
             // it on before the slew, then apply the settle delay. Only
             // mark tracking_requested=true if the StartMotion actually
             // succeeds — otherwise Tracking() would lie about the wire
             // state. The earlier mode/period sends are best-effort but
             // failures are logged for diagnosis.
+            //
+            // Re-check abort / disconnect before issuing the tracking
+            // wire sequence — same race-window argument as the pickup
+            // loop's pre-wire guard. AbortSlew clearing `slew_in_progress`
+            // between the top-of-loop check and now must skip the
+            // tracking restart, or the user-visible state would say
+            // "aborted" while the wire is back to tracking.
+            if watcher_should_abort(&state, &transport).await {
+                state.write().await.slew_in_progress = false;
+                return;
+            }
             if tracking_was_on {
                 if let Some(params) = transport.parameters().await {
                     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
@@ -1129,12 +1243,54 @@ fn spawn_slew_completion_watcher(
                         }
                     }
                 }
+            } else {
+                // tracking_was_off branch: the goto completed and the
+                // firmware auto-engages Speed (Tracking) Mode on RA
+                // after every goto — even when we never asked for it.
+                // Our motion-mode cache was last set to Goto by
+                // `issue_slew_axis`, which now lies. Invalidate so the
+                // next `set_motion_mode_with_cache` on RA falls through
+                // the short-circuit and issues a full stop + `:G`.
+                transport.invalidate_motion_mode(Axis::Ra).await;
             }
             tokio::time::sleep(settle).await;
             state.write().await.slew_in_progress = false;
             return;
         }
     });
+}
+
+/// Free-function equivalent of [`MountDevice::stop_and_wait`] for
+/// callers (like the watcher's EQMOD pickup loop) that don't have a
+/// `&MountDevice`. Issues `:K<axis>` (decelerate) and polls
+/// `:f<axis>` until the running flag clears or `timeout` elapses.
+/// `:K` is the spec's recommended stop and is gentler on the
+/// gearbox than `:L`; `:L` remains the right choice only for
+/// genuine emergency stops (`AbortSlew`, slew/park watcher abort on
+/// `blocked`). Matches INDI eqmod's `StopWaitMotor`
+/// (`indi-eqmod/skywatcher.cpp:1741-1765`).
+async fn stop_axis_and_wait(
+    transport: &TransportManager,
+    axis: Axis,
+    timeout: Duration,
+) -> crate::error::Result<()> {
+    transport.send(Command::StopMotion(axis)).await?;
+    let deadline = std::time::Instant::now() + timeout;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    loop {
+        let resp = transport.send(Command::InquireStatus(axis)).await?;
+        if let skywatcher_motor_protocol::Response::Status(s) = resp {
+            if !s.running {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(StarAdvError::Transport(format!(
+                "axis {axis:?} did not stop within {timeout:?}"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Spawn the park-completion watcher.
@@ -1719,6 +1875,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slew_async_issues_indi_sequence_per_axis() {
+        // Phase A5 (issue #205) + issue #207: the slew path emits
+        // the INDI eqmod-style sequence — :K → poll :f → :G → :I →
+        // :H → :M → :J. (Issue #207 swapped :L for :K — :K is the
+        // spec's recommended stop, :L stays reserved for emergency
+        // aborts.) This test asserts the order of the setters and
+        // motion-start frames for each axis in the freshly-issued
+        // slew, before the watcher's pickup loop (if any) re-enters
+        // the sequence.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        // Capture the log baseline so the assertion ignores the
+        // handshake / pre-slew polling chatter.
+        let baseline_len = mock.state.lock().await.command_log.len();
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+
+        // Snapshot the log immediately — the watcher's pickup loop
+        // may re-enter the sequence and add more frames; we only
+        // care about the first-pass wire frames here.
+        let log = mock.state.lock().await.command_log.clone();
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+
+        // Helper: extract setter / motion-start frames for `axis_byte`.
+        let interesting = |axis_byte: u8| -> Vec<&[u8]> {
+            new_frames
+                .iter()
+                .copied()
+                .filter(|f| {
+                    f.len() >= 3
+                        && f[0] == b':'
+                        && f[2] == axis_byte
+                        && matches!(f[1], b'G' | b'I' | b'H' | b'M' | b'J' | b'K' | b'L')
+                })
+                .collect()
+        };
+
+        let ra = interesting(b'1');
+        // Expect :K1 :G1 :I1 :H1 :M1 :J1 in order. Slack on length
+        // because the watcher may add more before we sampled — but
+        // the first six setter frames for axis 1 are deterministic.
+        assert!(ra.len() >= 6, "expected ≥6 RA frames, got {ra:?}");
+        assert_eq!(*ra[0], *b":K1\r", "1st RA setter should be :K1");
+        assert_eq!(&ra[1][..3], b":G1", "2nd RA setter should be :G1");
+        assert_eq!(&ra[2][..3], b":I1", "3rd RA setter should be :I1");
+        assert_eq!(&ra[3][..3], b":H1", "4th RA setter should be :H1");
+        assert_eq!(&ra[4][..3], b":M1", "5th RA setter should be :M1");
+        assert_eq!(*ra[5], *b":J1\r", "6th RA setter should be :J1");
+
+        let dec = interesting(b'2');
+        assert!(dec.len() >= 6, "expected ≥6 Dec frames, got {dec:?}");
+        assert_eq!(*dec[0], *b":K2\r");
+        assert_eq!(&dec[1][..3], b":G2");
+        assert_eq!(&dec[2][..3], b":I2");
+        assert_eq!(&dec[3][..3], b":H2");
+        assert_eq!(&dec[4][..3], b":M2");
+        assert_eq!(*dec[5], *b":J2\r");
+    }
+
+    #[tokio::test]
+    async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
+        // Phase A5: after both axes stop, if the snapshot's encoder
+        // position translates to an RA/Dec that's more than 5"
+        // away from the latched target, the watcher must re-enter
+        // the slew sequence with a fresh delta.
+        //
+        // To exercise the pickup loop deterministically — independent
+        // of how fast the host walks the mock through the goto chunks
+        // — we spawn a side task that, shortly after the slew is
+        // issued, force-stops both axes in the mock state with the
+        // encoder position clearly off-target. The transport's
+        // background polling task picks the new state up; the watcher
+        // sees both axes stopped at a position that translates to an
+        // RA/Dec far from the latched target, and must re-issue the
+        // slew sequence (one fresh :L → :G → :I → :H → :M → :J per
+        // axis) at least once. We assert :H1 count >= 2 (one from the
+        // initial slew, one from the pickup re-issue) — strictly
+        // stronger than the > 0 check, which the initial slew alone
+        // would always satisfy.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        // Spawn the injection task BEFORE issuing the slew so it is
+        // already scheduled when the watcher starts polling. After a
+        // short delay (long enough for the initial :L → :J sequence
+        // to have hit the wire but well before MIN_SLEW_DWELL), force
+        // the mock to declare the goto done at a position clearly
+        // off-target. The watcher's next pickup check will see a
+        // multi-degree residual and re-issue the slew sequence.
+        let mock_clone = mock.clone();
+        let injection = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let mut s = mock_clone.state.lock().await;
+            s.ra.running = false;
+            s.dec.running = false;
+            // 1,000,000 ticks ≈ 99° on the GTi's default CPR
+            // (3,628,800 ticks/rev) — well above the 5" pickup
+            // tolerance regardless of LST drift.
+            s.ra.position_ticks = 1_000_000;
+            s.dec.position_ticks = 1_000_000;
+        });
+
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        injection.await.expect("injection task panicked");
+
+        // Wait for Slewing to clear (after the pickup loop converges
+        // or hits PICKUP_MAX_ITERATIONS + MIN_SLEW_DWELL).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if !d.slewing().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!d.slewing().await.unwrap(), "Slewing must clear in 10s");
+
+        // The initial slew always emits one :H1. A pickup iteration
+        // emits a second. ≥ 2 proves the pickup loop fired at least
+        // once in response to the forced residual.
+        let log = mock.state.lock().await.command_log.clone();
+        let h1_count = log.iter().filter(|f| f.starts_with(b":H1")).count();
+        assert!(
+            h1_count >= 2,
+            "expected ≥2 :H1 frames (initial slew + at least one pickup re-issue), \
+             got {h1_count}; log={log:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
         // Drive a slew, seed the mock to report `blocked = true` on
         // either axis, and assert the watcher issues `:L1` + `:L2`
@@ -2022,5 +2329,150 @@ mod tests {
         assert!(d.sync_to_coordinates(25.0, 45.0).await.is_err());
         assert_eq!(d.target_right_ascension().await.unwrap(), 10.0);
         assert_eq!(d.target_declination().await.unwrap(), 20.0);
+    }
+
+    /// Transport that always reports `running = true` on `:f<axis>`
+    /// and ignores `:K<axis>`. Other handshake commands get
+    /// plausibly-shaped replies (CPR, TMR_Freq, etc.) so the
+    /// manager can complete its connect() handshake. Used to drive
+    /// `stop_axis_and_wait` into its timeout branch — real hardware
+    /// never gets stuck like this, but the regular mock processes
+    /// `:K` instantaneously, so without a deliberately-broken
+    /// transport the timeout code path is unreachable from tests.
+    struct StuckAxisTransport;
+
+    #[async_trait]
+    impl crate::transport::Transport for StuckAxisTransport {
+        async fn round_trip(
+            &self,
+            request: &[u8],
+            _timeout: Duration,
+        ) -> crate::error::Result<Vec<u8>> {
+            if request.len() < 2 {
+                return Ok(b"=\r".to_vec());
+            }
+            match request[1] {
+                // `:f<axis>` reply with running=1: nibble-1 bit-0 set.
+                // Layout per spec §5: [mode_nibble | motion_nibble | init_nibble].
+                // Mode nibble = 0 (Goto, CW, Slow); motion nibble = 1
+                // (Running, not Blocked); init nibble = 1 (Initialized).
+                b'f' => Ok(b"=011\r".to_vec()),
+                // Handshake inquiries: return a 6-hex u24 payload so
+                // the response decoder is happy. Value doesn't matter
+                // for the timeout test.
+                b'a' | b'b' | b'e' => Ok(b"=000080\r".to_vec()),
+                // High-speed-ratio: 2-hex u8 payload per real GTi.
+                b'g' => Ok(b"=01\r".to_vec()),
+                // `:j<axis>` returns a 6-hex biased position
+                // (0x800000 → encoder 0).
+                b'j' => Ok(b"=000080\r".to_vec()),
+                // Everything else (including `:F` initialize,
+                // `:K` decelerate-stop, and `:L` instant-stop) acks
+                // without side effects.
+                _ => Ok(b"=\r".to_vec()),
+            }
+        }
+        async fn close(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct StuckAxisFactory;
+
+    #[async_trait]
+    impl crate::transport::TransportFactory for StuckAxisFactory {
+        async fn open(
+            &self,
+            _config: &Config,
+        ) -> crate::error::Result<Arc<dyn crate::transport::Transport>> {
+            Ok(Arc::new(StuckAxisTransport))
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
+        // The free-function helper is called from
+        // `set_motion_mode_with_cache` (which the slew/park happy
+        // paths reach via `issue_slew_axis` and
+        // `MountDevice::ensure_motion_mode`) and from the pickup
+        // loop (covered by
+        // `slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance`).
+        // Its *timeout* branch is unreachable from those paths
+        // because the mock always responds to `:K` instantly; this
+        // test wires a deliberately-broken transport that ignores
+        // `:K` and always reports running, then asserts the helper
+        // returns the timeout error after `AXIS_STOP_TIMEOUT`.
+        let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
+        // No connect() — `stop_axis_and_wait` only needs `send` to
+        // route through the manager's transport; the test bypasses
+        // the handshake-required state by going straight to a
+        // freshly-built manager that holds the broken transport.
+        manager.connect().await.unwrap();
+        // Use a short timeout so the test doesn't take 2 s.
+        let err = stop_axis_and_wait(&manager, Axis::Ra, Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, StarAdvError::Transport(ref msg) if msg.contains("did not stop")),
+            "expected Transport(\"... did not stop ...\") error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
+        // Direct unit test for the helper that gates the watcher's
+        // post-snapshot wire sends. The watcher uses it twice — once
+        // before the pickup re-slew, once before the tracking
+        // re-enable — to close the race window between the top-of-
+        // loop guard and the actual wire commands.
+        let state = Arc::new(RwLock::new(DriverState::default()));
+        let manager = TransportManager::new(Config::default(), Arc::new(MockTransportFactory));
+        manager.connect().await.unwrap();
+
+        // Default state has slew_in_progress=false → abort=true.
+        assert!(
+            watcher_should_abort(&state, &manager).await,
+            "default DriverState has slew_in_progress=false → should abort"
+        );
+
+        // With slew_in_progress=true and transport available → no abort.
+        state.write().await.slew_in_progress = true;
+        assert!(
+            !watcher_should_abort(&state, &manager).await,
+            "in-progress slew with live transport → should continue"
+        );
+
+        // Disconnect the transport → abort=true even if slew flag is on.
+        manager.disconnect().await.unwrap();
+        assert!(
+            watcher_should_abort(&state, &manager).await,
+            "disconnect mid-slew → should abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn pickup_reslew_axis_swallows_transport_errors() {
+        // The watcher calls `pickup_reslew_axis` per axis from the
+        // pickup loop. Its failure-logging branches fire when the
+        // wrapped `stop_axis_and_wait` or `issue_slew_axis` returns
+        // an error — that happens when the transport is closed or
+        // the axis stays stuck. This test wires the `StuckAxisTransport`
+        // (always reports `running=true`) so the inner
+        // `stop_axis_and_wait` hits its timeout branch; the helper
+        // must log and return without panicking. A second invocation
+        // confirms the helper is idempotent on persistent failure.
+        let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
+        manager.connect().await.unwrap();
+        // Each call is best-effort and returns `()`. The internal
+        // timeout is `AXIS_STOP_TIMEOUT` (2 s) — overriding it would
+        // require threading a parameter through, which isn't worth
+        // it for a single test; this test runs in ~2 s, still well
+        // under the harness's default timeout.
+        pickup_reslew_axis(&manager, Axis::Ra, 1_000_000).await;
+        // A negative delta exercises the `ccw = true` branch in
+        // `issue_slew_axis`'s `MotionMode` construction — except
+        // here we never reach it because `stop_axis_and_wait` fails
+        // first. Still useful to verify no panic.
+        pickup_reslew_axis(&manager, Axis::Dec, -1_000_000).await;
     }
 }
