@@ -1,0 +1,30 @@
+[package]
+name = "usb-cdc-hello"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Phase 0 spike: round-trip :e1 over USB-CDC host to a Star Adventurer GTi"
+
+[[bin]]
+name = "usb-cdc-hello"
+path = "src/main.rs"
+harness = false
+
+[dependencies]
+esp-idf-svc = { version = "0.51", features = ["std", "binstart"] }
+log = "0.4"
+anyhow = "1"
+
+[build-dependencies]
+embuild = "0.34"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.dev]
+opt-level = "z"
+debug = "line-tables-only"
