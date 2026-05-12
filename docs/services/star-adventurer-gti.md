@@ -358,7 +358,15 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
-        └─ when both axes report Running=0 in Goto mode → enter pickup loop
+        └─ when both axes report Running=0 in Goto mode → wait dwell
+        └─ wait at least MIN_SLEW_DWELL (2 s) of wallclock so any
+           Alpaca client polling Slewing within the typical
+           round-trip window catches `Slewing = true` at least once.
+           Tracking is off during this wait — the encoder is static
+           but the apparent RA drifts at sidereal rate as LST
+           advances. Dwell-before-pickup means the pickup loop sees
+           a single accumulated residual once, instead of burning
+           through PICKUP_MAX_ITERATIONS chasing dwell drift.
         └─ EQMOD pickup loop (≤ 5 iterations, matches INDI's
            GOTO_ITERATIVE_LIMIT):
              read current RA/Dec from encoders + current LST,
@@ -366,9 +374,6 @@ SlewToCoordinatesAsync(ra, dec)
                recompute delta against current encoder + current LST,
                re-issue :L → :G → :I → :H → :M → :J for each axis,
                iterate.
-        └─ wait at least MIN_SLEW_DWELL (2 s) of wallclock so any
-           Alpaca client polling Slewing within the typical
-           round-trip window catches `Slewing = true` at least once
         └─ if Tracking was on: re-issue tracking-mode :G + :I + :J on RA axis
         └─ apply config.settle_after_slew before clearing Slewing = false
 ```

@@ -773,10 +773,15 @@ impl Telescope for MountDevice {
         let snap = self.transport.snapshot().await;
         let ra_delta = ra_ticks - snap.ra.position_ticks;
         let dec_delta = dec_ticks - snap.dec.position_ticks;
-        // Both axes use the INDI wire sequence: `:K`-and-wait →
+        // Both axes use the INDI wire sequence: `:L` + poll `:f`
+        // (instant-stop, the spec's "Motor must be at full stop
+        // status before setting the motion mode" requirement) →
         // `:G goto+fast` → `:I 6` → `:H |delta|` → `:M breaks` →
-        // `:J`. The RA axis :K is also the wire event that halts
-        // any in-progress sidereal tracking; mirror that into the
+        // `:J`. The RA axis `:L` is also the wire event that
+        // halts any in-progress sidereal tracking (`:K` would
+        // decelerate, `:L` stops instantly — we use `:L` because
+        // we're about to switch motion mode anyway and goto
+        // starts from stationary); mirror that into the
         // in-memory `tracking_requested` flag once the send
         // succeeds so the state never gets ahead of the wire on
         // transport failures.
@@ -1026,12 +1031,39 @@ fn spawn_slew_completion_watcher(
                 continue;
             }
 
-            // Both axes report stopped. Run the EQMOD pickup loop:
-            // if either residual exceeds 5", re-enter the goto
-            // sequence with a fresh delta computed for the current
-            // LST. Capped at `PICKUP_MAX_ITERATIONS` to match
-            // INDI's `GOTO_ITERATIVE_LIMIT`. On the GTi the loop
-            // converges in 1–2 iterations because the post-stop
+            // Enforce a minimum slew dwell so external observers reliably
+            // catch `Slewing == true`. ConformU starts a slew via HTTP,
+            // then reads `Slewing` over a second HTTP call; the round-
+            // trip latency can be larger than the mock's full slew
+            // duration on a fast machine (the mock advances 100K
+            // ticks/poll, so a small slew completes in 1-2 polls). The
+            // de-facto Alpaca client poll cadence is on the order of
+            // 100 ms; two full seconds of guaranteed dwell is a safe
+            // floor for any reasonable client without meaningfully
+            // slowing real-mount operation (real slews take seconds).
+            //
+            // The dwell *must* gate the pickup loop, not run after it.
+            // The encoder is static while the watcher is observing
+            // (tracking is off until the post-slew re-enable below),
+            // so the apparent RA drifts at sidereal rate as LST
+            // advances. If the pickup loop ran during the dwell wait,
+            // it would re-detect that drift on every iteration and
+            // burn through `PICKUP_MAX_ITERATIONS` just waiting —
+            // potentially leaving a residual of one dwell-worth of
+            // sidereal drift (~30") at the moment tracking re-enables.
+            // Gating pickup behind the dwell means the loop sees a
+            // single accumulated residual once, corrects it, then
+            // hands off to tracking immediately.
+            if started.elapsed() < MIN_SLEW_DWELL {
+                continue;
+            }
+
+            // Both axes report stopped and the dwell has elapsed. Run
+            // the EQMOD pickup loop: if either residual exceeds 5",
+            // re-enter the goto sequence with a fresh delta computed
+            // for the current LST. Capped at `PICKUP_MAX_ITERATIONS`
+            // to match INDI's `GOTO_ITERATIVE_LIMIT`. On the GTi the
+            // loop converges in 1–2 iterations because the post-stop
             // residual is bounded by the slew duration × sidereal
             // rate (~15"/s of RA drift per second of slew).
             if pickup_iterations < PICKUP_MAX_ITERATIONS {
@@ -1093,20 +1125,6 @@ fn spawn_slew_completion_watcher(
                         continue;
                     }
                 }
-            }
-
-            // Enforce a minimum slew dwell so external observers reliably
-            // catch `Slewing == true`. ConformU starts a slew via HTTP,
-            // then reads `Slewing` over a second HTTP call; the round-
-            // trip latency can be larger than the mock's full slew
-            // duration on a fast machine (the mock advances 100K
-            // ticks/poll, so a small slew completes in 1-2 polls). The
-            // de-facto Alpaca client poll cadence is on the order of
-            // 100 ms; one full second of guaranteed dwell is a safe
-            // floor for any reasonable client without meaningfully
-            // slowing real-mount operation (real slews take seconds).
-            if started.elapsed() < MIN_SLEW_DWELL {
-                continue;
             }
 
             // Slew completed cleanly. Re-enable tracking if the user had
