@@ -149,6 +149,41 @@ pub fn dec_degrees_to_ticks(dec_degrees: f64, cpr: u32) -> i32 {
     (dec_degrees * (cpr as f64) / 360.0).round() as i32
 }
 
+/// Compute the RA-axis encoder target for a pickup-loop re-slew,
+/// pre-compensated for the LST drift expected to occur before the
+/// next residual check.
+///
+/// Without pre-compensation, each pickup iteration computes
+/// `mech_HA = LST(now) - target_RA` and aims the encoder there. But
+/// the slew takes ~one iteration to settle, by which time LST has
+/// advanced ~`projection × 15.04″/sec`. The next iteration sees the
+/// encoder is short of where it should be (because target_RA has the
+/// same value but mech_HA needed = LST_now+iter - target_RA is now
+/// larger). Pickup is locked into chasing a moving target and the
+/// residual floor matches the per-iteration LST drift.
+///
+/// Pre-compensation: aim where the encoder *will need to be* at the
+/// next check, i.e. compute `mech_HA = LST(now + projection) -
+/// target_RA`. By the time the slew settles and the next iteration
+/// re-checks, LST has advanced into the projection and the encoder
+/// is exactly on target.
+///
+/// `projection` is the watcher's expected per-iteration duration —
+/// see [`crate::mount_device::spawn_slew_completion_watcher`]. On a
+/// per-`polling_interval` cadence the empirical observation is
+/// ~`polling_interval × 2` (one watcher sleep + one slew-settle
+/// + wire round-trips).
+pub fn pickup_target_ra_ticks(
+    target_ra_hours: f64,
+    current_lst_hours: f64,
+    projection: std::time::Duration,
+    cpr_ra: u32,
+) -> i32 {
+    let lst_at_next_check = current_lst_hours + projection.as_secs_f64() / 3600.0;
+    let mech_ha = ra_to_mechanical_ha(target_ra_hours, lst_at_next_check);
+    mechanical_ha_to_ra_ticks(mech_ha, cpr_ra)
+}
+
 /// Convert RA / Dec → topocentric (altitude, azimuth) given the site
 /// latitude and the current LST.
 ///
@@ -385,5 +420,70 @@ mod tests {
         // tmr_freq = 16M, cpr = 3,628,800 → period ≈ 379,887.
         let p = sidereal_step_period(0x00F4_2400, GTI_CPR);
         assert!((379_000..=380_000).contains(&p), "expected ~380K, got {p}");
+    }
+
+    #[test]
+    fn pickup_target_zero_projection_matches_unprojected_math() {
+        // With zero projection, pickup target must equal the same
+        // mech_ha → ticks math the slew-issue path uses. This is the
+        // backwards-compat case: pre-compensation off ⇒ identical
+        // wire behaviour to before the change.
+        let target_ra = 6.0;
+        let lst = 12.0;
+        let mech_ha = ra_to_mechanical_ha(target_ra, lst);
+        let unprojected = mechanical_ha_to_ra_ticks(mech_ha, GTI_CPR);
+        let projected_zero =
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+        assert_eq!(projected_zero, unprojected);
+    }
+
+    #[test]
+    fn pickup_target_400ms_projection_advances_by_sidereal_drift() {
+        // 400 ms of LST drift at sidereal rate = 400 ms × 15.04″/s ≈ 6.016″.
+        // Converted to encoder ticks at GTi CPR: 6.016″ / 3600 = 0.001671°
+        // of RA = (0.001671° × 4 min/°) hours of mech_HA. At 15°/hour, 1
+        // sidereal second of mech_HA = (1/3600) hours, and 400 ms = 0.4
+        // sidereal seconds → 0.4/3600 hours of mech_HA.
+        // Ticks per hour of mech_HA = cpr/24 = 151,200. So 400 ms ≈
+        // 0.4/3600 × 151,200 ≈ 16.8 ticks.
+        let target_ra = 6.0;
+        let lst = 12.0;
+        let no_proj = pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+        let projected = pickup_target_ra_ticks(
+            target_ra,
+            lst,
+            std::time::Duration::from_millis(400),
+            GTI_CPR,
+        );
+        let delta = projected - no_proj;
+        // Expected: ~16-17 ticks. Tolerance +/-1 for round() boundary.
+        assert!(
+            (15..=18).contains(&delta),
+            "expected delta of ~16-17 ticks for 400ms LST projection, got {delta}"
+        );
+    }
+
+    #[test]
+    fn pickup_target_projection_scales_linearly_with_duration() {
+        // Doubling the projection should double the tick delta (within
+        // round-to-int noise).
+        let target_ra = 6.0;
+        let lst = 12.0;
+        let d1 = pickup_target_ra_ticks(
+            target_ra,
+            lst,
+            std::time::Duration::from_millis(200),
+            GTI_CPR,
+        ) - pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+        let d2 = pickup_target_ra_ticks(
+            target_ra,
+            lst,
+            std::time::Duration::from_millis(400),
+            GTI_CPR,
+        ) - pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+        assert!(
+            (d2 - 2 * d1).abs() <= 1,
+            "expected ~2× scaling: 200ms→{d1}, 400ms→{d2}"
+        );
     }
 }

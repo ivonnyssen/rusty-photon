@@ -823,6 +823,21 @@ In addition to the codec fixes:
   which is what produced the post-stop residual RA drift the
   Phase 4 ConformU run flagged. Park still uses `:S` since its
   target is encoder 0 and the absolute form is the simpler fit.
+- **Pickup-loop LST pre-compensation** — issue #207 follow-up.
+  Each pickup-loop iteration computes the corrective target's
+  encoder ticks for *the LST one iteration ahead* rather than
+  `LST(now)`. Without this, the slew lands at where the target
+  *was* and the next iteration's LST has already advanced
+  ~`polling_interval × 2 × 15.04″/sec`; pickup chases a moving
+  target and the residual floor is the per-iteration drift.
+  With pre-compensation, pickup converges in 1–2 iterations
+  to under 5″ instead of saturating at 5 iterations and ~6″.
+  The projection helper lives in [`coordinates::pickup_target_ra_ticks`];
+  the slew-issue path uses the existing `MIN_SLEW_DWELL` (2 s)
+  pre-compensation, and pickup uses `polling_interval × 2`
+  (~400 ms on USB). Real-hardware ConformU residuals dropped
+  from a mean of 8.4″ (max 11.0″, 2× 10″ tolerance crossings)
+  to mean 3.7″, max 6.6″, zero crossings.
 - **Mechanical safety envelope** — driving the mount into the
   counterweight-up region with ConformU's pier-flip tests stalled
   the motor against a hard stop while the encoder counter kept

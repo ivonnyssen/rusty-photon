@@ -25,8 +25,8 @@ use tracing::debug;
 use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
-    mechanical_ha_to_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha, ra_to_mechanical_ha,
-    side_of_pier as side_of_pier_calc, sidereal_step_period,
+    mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha,
+    ra_to_mechanical_ha, side_of_pier as side_of_pier_calc, sidereal_step_period,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
@@ -1128,15 +1128,32 @@ fn spawn_slew_completion_watcher(
                             state.write().await.slew_in_progress = false;
                             return;
                         }
-                        let new_mech_ha = ra_to_mechanical_ha(target_ra, lst);
-                        let new_ra_ticks = mechanical_ha_to_ra_ticks(new_mech_ha, params.cpr_ra);
+                        // Pre-compensate the RA target for the LST drift
+                        // that will accumulate before the next pickup
+                        // iteration re-checks the residual. Empirically
+                        // (D1 diagnostic, 2026-05-12 run) each iteration
+                        // takes ~`polling_interval × 2` wall-clock —
+                        // one watcher sleep + slew settle + ~5 wire
+                        // round-trips. Projecting the target by that
+                        // amount eliminates the "chasing a moving
+                        // target" floor that pegged pickup residuals to
+                        // ~6″ (the per-iteration sidereal drift). See
+                        // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
+                        // §"Experiment B".
+                        let projection = polling_interval * 2;
+                        let new_ra_ticks =
+                            pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
                         let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
                         let ra_delta = new_ra_ticks - snap.ra.position_ticks;
                         let dec_delta = new_dec_ticks - snap.dec.position_ticks;
                         pickup_iterations += 1;
                         debug!(
                             iteration = pickup_iterations,
-                            ra_residual_arcsec, dec_residual_arcsec, "slew pickup iteration"
+                            ra_residual_arcsec,
+                            dec_residual_arcsec,
+                            projection_ms = projection.as_millis() as u64,
+                            ra_delta_ticks = ra_delta,
+                            "slew pickup iteration"
                         );
                         // The pickup re-slew goes through the same
                         // wire sequence as the original goto. `:L` +
