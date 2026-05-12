@@ -190,33 +190,9 @@ impl MountDevice {
     /// The mock processes `:L` instantaneously, which hid this from
     /// BDD coverage; Phase 4 hardware bring-up confirmed it.
     async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
-        self.transport
-            .send(Command::InstantStop(axis))
+        stop_axis_and_wait(&self.transport, axis, AXIS_STOP_TIMEOUT)
             .await
-            .map_err(Self::ascom)?;
-        let deadline = std::time::Instant::now() + AXIS_STOP_TIMEOUT;
-        // Give the firmware a moment to flush the running flag before
-        // the first poll — some Sky-Watcher firmwares report stale
-        // status if `:f` is sent in the same millisecond as `:L`.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        loop {
-            let resp = self
-                .transport
-                .send(Command::InquireStatus(axis))
-                .await
-                .map_err(Self::ascom)?;
-            if let skywatcher_motor_protocol::Response::Status(s) = resp {
-                if !s.running {
-                    return Ok(());
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(ASCOMError::invalid_operation(format!(
-                    "axis {axis:?} did not stop within {AXIS_STOP_TIMEOUT:?}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+            .map_err(Self::ascom)
     }
 
     /// Block until the slew-completion watcher clears `slew_in_progress`,
@@ -1815,12 +1791,21 @@ mod tests {
         // Phase A5: after both axes stop, if the snapshot's encoder
         // position translates to an RA/Dec that's more than 5"
         // away from the latched target, the watcher must re-enter
-        // the slew sequence with a fresh delta. The mock advances
-        // 100K ticks per poll so a long slew clears the target
-        // within ~5 polls; we hand-seed the post-slew position to
-        // a value that differs from the requested Dec by ~2° (well
-        // above the 5" pickup threshold) so the watcher is forced
-        // through at least one pickup iteration before converging.
+        // the slew sequence with a fresh delta.
+        //
+        // To exercise the pickup loop deterministically — independent
+        // of how fast the host walks the mock through the goto chunks
+        // — we spawn a side task that, shortly after the slew is
+        // issued, force-stops both axes in the mock state with the
+        // encoder position clearly off-target. The transport's
+        // background polling task picks the new state up; the watcher
+        // sees both axes stopped at a position that translates to an
+        // RA/Dec far from the latched target, and must re-issue the
+        // slew sequence (one fresh :L → :G → :I → :H → :M → :J per
+        // axis) at least once. We assert :H1 count >= 2 (one from the
+        // initial slew, one from the pickup re-issue) — strictly
+        // stronger than the > 0 check, which the initial slew alone
+        // would always satisfy.
         use crate::transport::mock::CapturingMockFactory;
         let factory = CapturingMockFactory::new();
         let mock = factory.mock.clone();
@@ -1835,10 +1820,31 @@ mod tests {
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
 
-        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        // Spawn the injection task BEFORE issuing the slew so it is
+        // already scheduled when the watcher starts polling. After a
+        // short delay (long enough for the initial :L → :J sequence
+        // to have hit the wire but well before MIN_SLEW_DWELL), force
+        // the mock to declare the goto done at a position clearly
+        // off-target. The watcher's next pickup check will see a
+        // multi-degree residual and re-issue the slew sequence.
+        let mock_clone = mock.clone();
+        let injection = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let mut s = mock_clone.state.lock().await;
+            s.ra.running = false;
+            s.dec.running = false;
+            // 1,000,000 ticks ≈ 99° on the GTi's default CPR
+            // (3,628,800 ticks/rev) — well above the 5" pickup
+            // tolerance regardless of LST drift.
+            s.ra.position_ticks = 1_000_000;
+            s.dec.position_ticks = 1_000_000;
+        });
 
-        // Wait for Slewing to clear (which happens after the
-        // pickup loop converges or hits the iteration limit).
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        injection.await.expect("injection task panicked");
+
+        // Wait for Slewing to clear (after the pickup loop converges
+        // or hits PICKUP_MAX_ITERATIONS + MIN_SLEW_DWELL).
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if !d.slewing().await.unwrap() {
@@ -1848,15 +1854,16 @@ mod tests {
         }
         assert!(!d.slewing().await.unwrap(), "Slewing must clear in 10s");
 
-        // The wire log should show *at least* one `:H1` frame.
-        // Two or more is also acceptable — the mock's tracking-
-        // mode chunk pushes RA forward between the post-stop
-        // snapshot read and the pickup loop's read, which can
-        // legitimately trigger a pickup iteration even when the
-        // first goto hit the target exactly.
+        // The initial slew always emits one :H1. A pickup iteration
+        // emits a second. ≥ 2 proves the pickup loop fired at least
+        // once in response to the forced residual.
         let log = mock.state.lock().await.command_log.clone();
         let h1_count = log.iter().filter(|f| f.starts_with(b":H1")).count();
-        assert!(h1_count >= 1, ":H1 frame missing; log={log:?}");
+        assert!(
+            h1_count >= 2,
+            "expected ≥2 :H1 frames (initial slew + at least one pickup re-issue), \
+             got {h1_count}; log={log:?}"
+        );
     }
 
     #[tokio::test]

@@ -244,7 +244,7 @@ coordinate module and the slew planner.
 | `:H<axis><inc24>` | Set goto-target by increment (magnitude; sign from `:G` CCW) | every slew (INDI-style sequence) |
 | `:M<axis><breaks24>` | Set goto break-point increment | every slew (INDI-style sequence) |
 | `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
-| `:I<axis><period24>` | Set step period (T1 preset) | tracking rate, slew rate (period 6 per INDI default) |
+| `:I<axis><period24>` | Set step period (T1 preset) | tracking (computed sidereal period from CPR / TMR_Freq); slew (fixed period 6, INDI `minperiods` default) |
 | `:J<axis>` | Start motion | every slew, every track start |
 | `:K<axis>` | Stop motion (decelerate) | end of tracking, abort |
 | `:L<axis>` | Instant stop | `AbortSlew` |

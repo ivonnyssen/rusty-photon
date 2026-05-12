@@ -161,7 +161,12 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .iter()
         .find(|c| c.starts_with(":G2") && c.ends_with("\r"))
         .unwrap_or_else(|| panic!("no :G2 in log {log:?}"));
-    // :G<axis><DB1><DB2>\r — DB2 bit 0 = CCW.
+    // :G<axis><DB1_nibble><DB2_nibble>\r — 6 bytes total. Per the
+    // Sky-Watcher motor-controller spec §5 each DB is one hex
+    // nibble (4 bits), not a full byte; see
+    // `skywatcher_motor_protocol::MotionMode::to_wire_bytes` for
+    // the canonical encoding. DB2 bit 0 = CCW.
+    assert_eq!(g2.len(), 6, "malformed :G2 frame {g2:?}");
     let db2 = u8::from_str_radix(&g2[4..5], 16).expect("valid hex");
     let signed_ticks: i64 = if db2 & 0x1 != 0 {
         -(dec_magnitude as i64)

@@ -316,6 +316,47 @@ mod tests {
         assert_eq!(r, Response::Ack);
         let r = Response::decode(b"=\r", &Command::StartMotion(Axis::Ra)).unwrap();
         assert_eq!(r, Response::Ack);
+        // `:H` (set goto-target increment) and `:M` (set break-point
+        // increment), added for the INDI-style slew sequence in
+        // issue #205, both expect a plain `=\r` ack.
+        let r = Response::decode(
+            b"=\r",
+            &Command::SetGotoTargetIncrement {
+                axis: Axis::Ra,
+                increment: 1234,
+            },
+        )
+        .unwrap();
+        assert_eq!(r, Response::Ack);
+        let r = Response::decode(
+            b"=\r",
+            &Command::SetBreakPointIncrement {
+                axis: Axis::Dec,
+                breaks: 100,
+            },
+        )
+        .unwrap();
+        assert_eq!(r, Response::Ack);
+    }
+
+    #[test]
+    fn axis_of_returns_command_axis_for_new_slew_increment_commands() {
+        // Issue #205 added :H and :M; their axis routing has to
+        // match the rest of the per-axis setters.
+        assert_eq!(
+            Response::axis_of(&Command::SetGotoTargetIncrement {
+                axis: Axis::Ra,
+                increment: 0,
+            }),
+            Some(Axis::Ra)
+        );
+        assert_eq!(
+            Response::axis_of(&Command::SetBreakPointIncrement {
+                axis: Axis::Dec,
+                breaks: 0,
+            }),
+            Some(Axis::Dec)
+        );
     }
 
     #[test]
