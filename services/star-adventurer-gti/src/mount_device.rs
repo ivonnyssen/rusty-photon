@@ -1090,6 +1090,20 @@ fn spawn_slew_completion_watcher(
                     if ra_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
                         || dec_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
                     {
+                        // Re-check the abort / disconnect signals
+                        // immediately before issuing any wire
+                        // commands. The top-of-loop guard ran one
+                        // `:f` round-trip + a few coordinate ops
+                        // ago; in that window AbortSlew (which
+                        // clears `slew_in_progress` and issues :L)
+                        // or set_connected(false) (which closes the
+                        // transport) may have raced ahead. Without
+                        // this second guard the pickup loop would
+                        // restart motion after the user aborted.
+                        if !state.read().await.slew_in_progress || !transport.is_available() {
+                            state.write().await.slew_in_progress = false;
+                            return;
+                        }
                         let new_mech_ha = ra_to_mechanical_ha(target_ra, lst);
                         let new_ra_ticks = mechanical_ha_to_ra_ticks(new_mech_ha, params.cpr_ra);
                         let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
@@ -1133,6 +1147,17 @@ fn spawn_slew_completion_watcher(
             // succeeds — otherwise Tracking() would lie about the wire
             // state. The earlier mode/period sends are best-effort but
             // failures are logged for diagnosis.
+            //
+            // Re-check abort / disconnect before issuing the tracking
+            // wire sequence — same race-window argument as the pickup
+            // loop's pre-wire guard. AbortSlew clearing `slew_in_progress`
+            // between the top-of-loop check and now must skip the
+            // tracking restart, or the user-visible state would say
+            // "aborted" while the wire is back to tracking.
+            if !state.read().await.slew_in_progress || !transport.is_available() {
+                state.write().await.slew_in_progress = false;
+                return;
+            }
             if tracking_was_on {
                 if let Some(params) = transport.parameters().await {
                     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
