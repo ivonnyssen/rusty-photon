@@ -22,11 +22,6 @@ members = [
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
 ]
-# firmware/ is a nested workspace for MCU targets (xtensa, riscv32). It
-# uses a different rustc fork (esp-rs) and target triples, so it cannot
-# share the host workspace's build graph. See
-# docs/plans/star-adventurer-gti-embedded.md.
-exclude = ["firmware"]
 resolver = "2"
 
 [workspace.package]
