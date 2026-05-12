@@ -769,27 +769,48 @@ In addition to the codec fixes:
   (`AbortSlew`, slew/park watcher abort on `blocked`).
   Mock hid the wallclock issue originally because it processes
   `:K`/`:L` instantaneously.
-- **Mode-cache short-circuit** — every `:G<axis><mode>` is
-  preceded by a `stop_and_wait` so the spec-required "motor at
-  full stop before mode change" holds. Most consecutive `:G`
-  issues request the *same* mode the firmware was last told to
-  use — back-to-back slews in one direction, a UI re-asserting
-  tracking, etc. The driver caches the last [`MotionMode`] each
-  axis acked (via [`TransportManager::record_motion_mode`]) and
-  short-circuits `stop_and_wait + :G` when the requested mode
-  equals the cache. Matches INDI eqmod's
-  `LastRunningStatus == NewStatus` check
-  (`indi-eqmod/skywatcher.cpp:1672-1678`). The cache is
-  per-axis and reset on every connect / disconnect — a connect
-  into a session must not trust a `MotionMode` recorded against
-  a possibly different physical mount. The slew-completion
-  watcher explicitly invalidates the RA cache on the
-  `tracking_was_off` branch (the firmware auto-engages Speed
-  Mode after every goto completes on RA — without the
-  invalidation, a subsequent same-direction slew would short-
-  circuit on a stale cache against a firmware in Tracking
-  mode); the EQMOD pickup loop similarly invalidates per axis
-  before its corrective re-slew.
+- **No mode-cache short-circuit (attempted and reverted)** — issue
+  #207's initial plan included an INDI-style
+  `LastRunningStatus == NewStatus` cache to skip `stop_and_wait +
+  :G` when the requested mode matched the last one we acked. **The
+  implementation we tried did not work on real hardware.**
+  Mock-mode ConformU + the unit/BDD suites all passed cleanly, but
+  the first ConformU run against the physical GTi triggered an
+  unbounded Dec slew: the cache said `Goto-Fast-CCW` after a `:E`
+  (sync), but the firmware-side mode had drifted; the resulting
+  `:I/:H/:M/:J` started a slew that ran ~360° of unwanted Dec
+  motion before the pickup loop fired a ~269° corrective slew back.
+  See PR #210 for the wire trace. The cache was reverted to an
+  unconditional `stop_and_wait + :G` on every slew/park/tracking
+  prep — the spec-recommended sequence and what INDI's
+  `StopWaitMotor` does internally.
+
+  Two reasons not to retry naively if/when revisiting:
+
+  1. **`:E` (sync) is one observed mode-state desync, but not
+     necessarily the only one.** Tracking transitions, post-goto
+     auto-engage on RA, `:L` aborts, blocked-axis recovery, and any
+     other state-changing command can shift firmware-side mode
+     without an explicit `:G` from us. A cache that mirrors only
+     what we *issued* is structurally unsafe.
+  2. **UDP transport widens the failure mode.** The wire protocol
+     is identical on USB-CDC and UDP/11880, but UDP can drop,
+     reorder, or duplicate packets without us noticing; a cache
+     that records "we sent `:G CCW` and saw an ack" can lie even
+     more easily if a `:G` response was actually a stale duplicate
+     ack from a prior frame. Anything we cache about firmware state
+     must survive both half of the codec layer being lossy.
+
+  Any future cache implementation needs a **background validation
+  loop** that re-reads the actual `:f` mode bits (per spec §5, the
+  status nibble reports the live mode) often enough to catch
+  desyncs *before* the next `:G`-eliding op fires — polling cadence
+  needs to be comparable to or faster than the smallest slew a
+  caller could chain, and a desync detection must invalidate the
+  per-axis cache immediately and refuse short-circuits until the
+  next confirmed `:G` ack. Without that — or without a different
+  approach that doesn't depend on a snapshot of state we don't own —
+  the cache is structurally unsound.
 - **INDI-style slew sequence** — Phase A5 reinstated `:I` on the
   slew path and switched the goto from `:S` (absolute target) to
   `:H` (delta target) plus `:M` (break-point increment), matching

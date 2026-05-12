@@ -175,14 +175,13 @@ impl MountDevice {
         }
     }
 
-    /// Thin `ASCOMResult` wrapper over the free-function
-    /// [`set_motion_mode_with_cache`] — short-circuits
-    /// `stop_and_wait + :G` when the requested mode equals the cached
-    /// one. Used by `set_tracking(true)` and `park`, which need ASCOM
-    /// error mapping. The slew path goes through `issue_slew_axis`,
-    /// which calls the same helper internally.
-    async fn ensure_motion_mode(&self, axis: Axis, mode: MotionMode) -> ASCOMResult<()> {
-        set_motion_mode_with_cache(&self.transport, axis, mode)
+    /// `ASCOMResult` wrapper over the free-function
+    /// [`stop_axis_and_wait`] — issues `:K<axis>` and polls `:f<axis>`
+    /// until the running flag clears. Used by `set_tracking(true)` and
+    /// `park`, which need ASCOM error mapping. The slew path calls
+    /// `stop_axis_and_wait` directly through `issue_slew_axis`.
+    async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
+        stop_axis_and_wait(&self.transport, axis, AXIS_STOP_TIMEOUT)
             .await
             .map_err(Self::ascom)
     }
@@ -268,41 +267,6 @@ const PICKUP_TOLERANCE_ARCSEC: f64 = 5.0;
 /// stalled, encoder oscillating, …) from running forever.
 const PICKUP_MAX_ITERATIONS: u32 = 5;
 
-/// Ensure the firmware's `:G` mode on `axis` equals `mode`, doing
-/// `stop_axis_and_wait` + `:G` only when the cached last-issued mode
-/// differs from the request. Records the mode in the cache on a
-/// successful `:G` ack. Short-circuits with a debug log when the
-/// cache already matches — saves a deceleration wait and a `:G`
-/// round-trip on back-to-back same-mode operations.
-///
-/// Mirrors INDI eqmod's `SetMotion` short-circuit
-/// (`indi-eqmod/skywatcher.cpp:1672-1678`,
-/// `LastRunningStatus == NewStatus`). Callers that know the
-/// firmware state has drifted from the cache (e.g. the pickup loop
-/// after a goto, where the firmware auto-engages Tracking on RA)
-/// must call [`TransportManager::invalidate_motion_mode`] before
-/// invoking this helper.
-async fn set_motion_mode_with_cache(
-    transport: &TransportManager,
-    axis: Axis,
-    mode: MotionMode,
-) -> crate::error::Result<()> {
-    if transport.last_motion_mode(axis).await == Some(mode) {
-        debug!(
-            ?axis,
-            ?mode,
-            "motion mode unchanged, skipping stop_and_wait + :G"
-        );
-        return Ok(());
-    }
-    stop_axis_and_wait(transport, axis, AXIS_STOP_TIMEOUT).await?;
-    transport
-        .send(Command::SetMotionMode { axis, mode })
-        .await?;
-    transport.record_motion_mode(axis, mode).await;
-    Ok(())
-}
-
 /// Issue the per-axis INDI slew sequence:
 /// `:G<axis>` (goto + fast, direction by sign of `delta`) →
 /// `:I<axis>6` (step period) →
@@ -310,12 +274,9 @@ async fn set_motion_mode_with_cache(
 /// `:M<axis><breaks>` (break-point increment) →
 /// `:J<axis>` (start motion).
 ///
-/// The `:G` step routes through [`set_motion_mode_with_cache`], so
-/// when the requested mode matches the cached one the function
-/// jumps straight to `:I`/`:H`/`:M`/`:J` and never touches `:K` or
-/// `:G`. Otherwise `stop_axis_and_wait` + `:G` runs first; `:G`
-/// returns `!2 MotorNotStopped` if it lands against a still-
-/// decelerating motor, and the poll-until-stopped loop avoids that.
+/// The caller must have already issued `:K<axis>` and waited for the
+/// running flag to clear — `:G` returns `!2 MotorNotStopped` if the
+/// motor is still decelerating from a prior command.
 async fn issue_slew_axis(
     transport: &TransportManager,
     axis: Axis,
@@ -328,7 +289,9 @@ async fn issue_slew_axis(
         speed: skywatcher_motor_protocol::command::Speed::Fast,
         ccw: delta < 0,
     };
-    set_motion_mode_with_cache(transport, axis, mode).await?;
+    transport
+        .send(Command::SetMotionMode { axis, mode })
+        .await?;
     transport
         .send(Command::SetStepPeriod {
             axis,
@@ -364,19 +327,19 @@ async fn watcher_should_abort(
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
-/// Invalidates the motion-mode cache, then calls [`issue_slew_axis`]
-/// — which drains any residual goto deceleration via its internal
-/// `stop_axis_and_wait` and re-runs the INDI wire sequence with the
-/// freshly-computed `delta`. The cache invalidation is load-bearing:
-/// after a goto completes, the firmware auto-engages Speed (Tracking)
-/// Mode on RA even though the cache still reads Goto. Without the
-/// invalidate, `set_motion_mode_with_cache` would short-circuit on
-/// the same direction and the subsequent `:I`/`:H`/`:M`/`:J` would
-/// land while the firmware is in Tracking mode. Failures are
-/// best-effort: the watcher has nothing useful to do with the error
-/// other than retry on the next iteration.
+/// Calls [`stop_axis_and_wait`] (drains any residual goto deceleration)
+/// then [`issue_slew_axis`] (re-runs the INDI wire sequence with the
+/// freshly-computed `delta`). Both calls are best-effort: a failure
+/// from either is logged at `warn` and swallowed because the watcher
+/// has nothing useful to do with the error other than retry on the
+/// next iteration. Wrapping the pair in this helper keeps the watcher
+/// body free of nested `if let Err` branches that codecov flags as
+/// uncovered for the rare-but-real failure paths.
 async fn pickup_reslew_axis(transport: &TransportManager, axis: Axis, delta: i32) {
-    transport.invalidate_motion_mode(axis).await;
+    if let Err(e) = stop_axis_and_wait(transport, axis, AXIS_STOP_TIMEOUT).await {
+        tracing::warn!("pickup stop {axis:?} failed: {e}");
+        return;
+    }
     if let Err(e) = issue_slew_axis(transport, axis, delta).await {
         tracing::warn!("pickup re-slew {axis:?} failed: {e}");
     }
@@ -594,13 +557,17 @@ impl Telescope for MountDevice {
             // status before setting the motion mode." The RA axis
             // may already be running — from a prior tracking enable,
             // or because the firmware auto-engages Speed (Tracking)
-            // Mode after every goto completes. `ensure_motion_mode`
-            // does the stop + `:G` only when the mode actually
-            // changed; back-to-back `set_tracking(true)` calls (e.g.
-            // a UI button mash) short-circuit straight to the
-            // `:I` / `:J` re-issue.
-            self.ensure_motion_mode(Axis::Ra, MotionMode::TRACKING)
-                .await?;
+            // Mode after every goto completes. Force a stop and wait
+            // for the running flag to clear before re-issuing the
+            // tracking-mode `:G`/`:I`/`:J` sequence.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.transport
+                .send(Command::SetMotionMode {
+                    axis: Axis::Ra,
+                    mode: MotionMode::TRACKING,
+                })
+                .await
+                .map_err(Self::ascom)?;
             self.transport
                 .send(Command::SetStepPeriod {
                     axis: Axis::Ra,
@@ -832,30 +799,24 @@ impl Telescope for MountDevice {
         let snap = self.transport.snapshot().await;
         let ra_delta = ra_ticks - snap.ra.position_ticks;
         let dec_delta = dec_ticks - snap.dec.position_ticks;
-        // Both axes use the INDI wire sequence; `issue_slew_axis`
-        // encapsulates the per-axis `:K`-and-wait + `:G goto+fast` +
-        // `:I 6` + `:H |delta|` + `:M breaks` + `:J` sequence. The
-        // `:G` step inside `issue_slew_axis` is routed through
-        // `set_motion_mode_with_cache`, so when the requested
-        // goto-fast mode matches the cached last-issued mode on
-        // that axis the `:K`+`:G` round-trips short-circuit — only
-        // the per-slew `:I`/`:H`/`:M`/`:J` go to the wire.
-        //
-        // On the RA path, `issue_slew_axis`'s stop is also the wire
-        // event that halts sidereal tracking; the cache-short-circuit
-        // branch implies tracking-off because the cache only matches
-        // when we previously issued Goto on this axis. Clear the
-        // in-memory `tracking_requested` flag only after the call
-        // returns Ok so a transport failure cannot leave the driver
-        // claiming tracking-off while the mount is still tracking.
-        for (axis, delta) in [(Axis::Ra, ra_delta), (Axis::Dec, dec_delta)] {
-            issue_slew_axis(&self.transport, axis, delta)
-                .await
-                .map_err(Self::ascom)?;
-            if axis == Axis::Ra {
-                self.state.write().await.tracking_requested = false;
-            }
-        }
+        // Both axes use the INDI wire sequence: `:K` + poll `:f`
+        // (decelerate stop — the spec's "motor must be at full stop
+        // before setting the motion mode" requirement) → `:G goto+fast`
+        // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
+        // `:K` is also the wire event that halts any in-progress
+        // sidereal tracking; mirror that into the in-memory
+        // `tracking_requested` flag once the stop has actually
+        // succeeded so the state never gets ahead of the wire on
+        // transport failures.
+        self.stop_and_wait(Axis::Ra).await?;
+        self.state.write().await.tracking_requested = false;
+        issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+            .await
+            .map_err(Self::ascom)?;
+        self.stop_and_wait(Axis::Dec).await?;
+        issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+            .await
+            .map_err(Self::ascom)?;
 
         // Mark slew in progress and spawn the completion watcher. The
         // watcher polls until both axes report stopped, runs the
@@ -912,34 +873,34 @@ impl Telescope for MountDevice {
         if self.state.read().await.at_park {
             return Ok(());
         }
+        // Stop tracking before slewing home (per ASCOM, tracking remains
+        // off after Park). The wire `:K1` is issued first so the in-memory
+        // flag flip only follows a successful stop.
+        if self.state.read().await.tracking_requested {
+            self.transport
+                .send(Command::StopMotion(Axis::Ra))
+                .await
+                .map_err(Self::ascom)?;
+            self.state.write().await.tracking_requested = false;
+        }
         // Slew both axes to encoder 0. Same wire sequence as
-        // `slew_to_coordinates_async`: `stop_and_wait` (`:K`), `:G` with
-        // direction chosen from `sign(0 - current)`, `:S 0`, `:J` — all
-        // via `ensure_motion_mode` so a same-mode short-circuit is
-        // possible. The earlier explicit `:K1` tracking-stop before
-        // this loop has been removed: `ensure_motion_mode(Ra, …)`'s
-        // `stop_and_wait` branch already halts the RA axis (and the
-        // short-circuit branch implies tracking-off — the cache only
-        // matches when we previously issued Goto on this axis).
-        // `tracking_requested` is cleared inside the loop, *after*
-        // the RA-axis wire op completes, so a failed
-        // `ensure_motion_mode` cannot leave the driver claiming
-        // tracking-off while the mount is still tracking. Per ASCOM,
-        // tracking stays off after Park.
+        // `slew_to_coordinates_async`: `:K`-and-wait, `:G` with
+        // direction chosen from `sign(0 - current)`, `:S 0`, `:J`.
         let snap = self.transport.snapshot().await;
         for (axis, current_ticks) in [
             (Axis::Ra, snap.ra.position_ticks),
             (Axis::Dec, snap.dec.position_ticks),
         ] {
+            self.stop_and_wait(axis).await?;
             let mode = MotionMode {
                 kind: skywatcher_motor_protocol::command::ModeKind::Goto,
                 speed: skywatcher_motor_protocol::command::Speed::Fast,
                 ccw: current_ticks > 0,
             };
-            self.ensure_motion_mode(axis, mode).await?;
-            if axis == Axis::Ra {
-                self.state.write().await.tracking_requested = false;
-            }
+            self.transport
+                .send(Command::SetMotionMode { axis, mode })
+                .await
+                .map_err(Self::ascom)?;
             // No `:I` in Goto mode — the firmware computes slew speed
             // internally. See the matching note in
             // `slew_to_coordinates_async`.
@@ -1209,19 +1170,14 @@ fn spawn_slew_completion_watcher(
             if tracking_was_on {
                 if let Some(params) = transport.parameters().await {
                     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-                    match transport
+                    if let Err(e) = transport
                         .send(Command::SetMotionMode {
                             axis: Axis::Ra,
                             mode: MotionMode::TRACKING,
                         })
                         .await
                     {
-                        Ok(_) => {
-                            transport
-                                .record_motion_mode(Axis::Ra, MotionMode::TRACKING)
-                                .await
-                        }
-                        Err(e) => tracing::warn!("post-slew SetMotionMode TRACKING failed: {e}"),
+                        tracing::warn!("post-slew SetMotionMode TRACKING failed: {e}");
                     }
                     if let Err(e) = transport
                         .send(Command::SetStepPeriod {
@@ -1243,15 +1199,6 @@ fn spawn_slew_completion_watcher(
                         }
                     }
                 }
-            } else {
-                // tracking_was_off branch: the goto completed and the
-                // firmware auto-engages Speed (Tracking) Mode on RA
-                // after every goto — even when we never asked for it.
-                // Our motion-mode cache was last set to Goto by
-                // `issue_slew_axis`, which now lies. Invalidate so the
-                // next `set_motion_mode_with_cache` on RA falls through
-                // the short-circuit and issues a full stop + `:G`.
-                transport.invalidate_motion_mode(Axis::Ra).await;
             }
             tokio::time::sleep(settle).await;
             state.write().await.slew_in_progress = false;
@@ -1558,50 +1505,6 @@ mod tests {
         assert_eq!(&interesting[1][..3], b":G1", "2nd RA setter should be :G1");
         assert_eq!(&interesting[2][..3], b":I1", "3rd RA setter should be :I1");
         assert_eq!(*interesting[3], b":J1\r", "4th RA setter should be :J1");
-    }
-
-    #[tokio::test]
-    async fn set_tracking_true_twice_short_circuits_the_second_stop_and_g() {
-        // Per-issue #207 (matches INDI eqmod's `LastRunningStatus ==
-        // NewStatus` short-circuit): when the requested motion mode
-        // already equals the last one the driver issued on the axis,
-        // skip `stop_and_wait + :G` and go straight to `:I` + `:J`.
-        // Saves a deceleration wait plus two wire round-trips on the
-        // back-to-back same-mode case (e.g. a UI button mash, or a
-        // client re-asserting tracking after an idempotent action).
-        use crate::transport::mock::CapturingMockFactory;
-        let factory = CapturingMockFactory::new();
-        let mock = factory.mock.clone();
-        let cfg = Config::default();
-        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
-        let d = MountDevice::new(cfg.mount, manager);
-        d.set_connected(true).await.unwrap();
-
-        // First call: full sequence (`:K1` + `:G1` + `:I1` + `:J1`).
-        d.set_tracking(true).await.unwrap();
-        let baseline_len = mock.state.lock().await.command_log.len();
-
-        // Second call with the same requested state: cache hit must
-        // skip the stop and the :G entirely; only :I and :J remain.
-        d.set_tracking(true).await.unwrap();
-        let log = mock.state.lock().await.command_log.clone();
-        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
-        let interesting: Vec<&&[u8]> = new_frames
-            .iter()
-            .filter(|f| {
-                f.len() >= 3
-                    && f[0] == b':'
-                    && f[2] == b'1'
-                    && matches!(f[1], b'G' | b'I' | b'J' | b'L' | b'K')
-            })
-            .collect();
-        assert_eq!(
-            interesting.len(),
-            2,
-            "second set_tracking(true) should issue only :I1 + :J1, got {interesting:?}"
-        );
-        assert_eq!(&interesting[0][..3], b":I1", "1st RA setter should be :I1");
-        assert_eq!(*interesting[1], b":J1\r", "2nd RA setter should be :J1");
     }
 
     #[tokio::test]
@@ -2392,10 +2295,8 @@ mod tests {
     #[tokio::test]
     async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
         // The free-function helper is called from
-        // `set_motion_mode_with_cache` (which the slew/park happy
-        // paths reach via `issue_slew_axis` and
-        // `MountDevice::ensure_motion_mode`) and from the pickup
-        // loop (covered by
+        // `MountDevice::stop_and_wait` (covered by the slew/park
+        // happy paths) and the pickup loop (covered by
         // `slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance`).
         // Its *timeout* branch is unreachable from those paths
         // because the mock always responds to `:K` instantly; this
