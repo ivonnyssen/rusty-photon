@@ -144,6 +144,13 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .iter()
         .find(|c| c.starts_with(":H1") && c.ends_with("\r"))
         .unwrap_or_else(|| panic!("no :H1 in log {log:?}"));
+    // We assert against the *slew-issue* `:H2`, which is always the
+    // first `:H2` in the log: it carries the magnitude of the full
+    // slew delta (encoder ticks for 45° from the mock's encoder-0
+    // start). Pickup re-issues, if any, emit subsequent `:H2`
+    // frames carrying only the residual delta (sub-arcsecond on
+    // the mock); pairing against those would falsely report a
+    // near-zero Dec target.
     let h2 = log
         .iter()
         .find(|c| c.starts_with(":H2") && c.ends_with("\r"))
@@ -154,18 +161,14 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .try_into()
         .expect("six payload bytes");
     let dec_magnitude = decode_u24(payload).expect("valid :H2 payload");
-    // Recover the direction bit from the corresponding `:G2`. The
-    // INDI-style slew sequence is `:L2 → :G2 → :I2 → :H2 → :M2 → :J2`
-    // per axis, so `:G2` is the third frame before `:H2`, not the
-    // immediately-preceding one (`:I2` sits between them). We pair
-    // `:H2` and `:G2` by *log proximity* rather than by exact
-    // offset: take the latest `:G2` that appears before the `:H2`
-    // we picked above. This is robust to pickup-loop re-issues, in
-    // which case the watcher emits a fresh `:G2`/`:H2` pair and the
-    // pair we'd want is the latest one. Practically the BDD
-    // scenario doesn't trigger pickup (LST drift over a sub-second
-    // mock slew is well under the 5″ tolerance), so the latest
-    // `:G2` is the slew-issue one.
+    // Recover the direction bit from the `:G2` that goes with the
+    // slew-issue `:H2`. The INDI sequence is
+    // `:L2 → :G2 → :I2 → :H2 → :M2 → :J2` per axis, so `:G2` is
+    // the third frame before `:H2`, not the immediately-preceding
+    // one (`:I2` sits between them). Use `rfind` over the prefix
+    // ending at `h2`'s index: that locates the closest preceding
+    // `:G2`, which is the `:G2` from the same slew-issue burst
+    // regardless of how many earlier slews or handshakes ran.
     let h2_idx = log
         .iter()
         .position(|c| c == h2)
