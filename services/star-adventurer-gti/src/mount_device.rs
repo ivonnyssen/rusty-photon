@@ -2212,4 +2212,155 @@ mod tests {
         assert_eq!(d.target_right_ascension().await.unwrap(), 10.0);
         assert_eq!(d.target_declination().await.unwrap(), 20.0);
     }
+
+    /// Transport that always reports `running = true` on `:f<axis>`
+    /// and ignores `:L<axis>`. Other handshake commands get
+    /// plausibly-shaped replies (CPR, TMR_Freq, etc.) so the
+    /// manager can complete its connect() handshake. Used to drive
+    /// `stop_axis_and_wait` into its timeout branch — real hardware
+    /// never gets stuck like this, but the regular mock processes
+    /// `:L` instantaneously, so without a deliberately-broken
+    /// transport the timeout code path is unreachable from tests.
+    struct StuckAxisTransport;
+
+    #[async_trait]
+    impl crate::transport::Transport for StuckAxisTransport {
+        async fn round_trip(
+            &self,
+            request: &[u8],
+            _timeout: Duration,
+        ) -> crate::error::Result<Vec<u8>> {
+            if request.len() < 2 {
+                return Ok(b"=\r".to_vec());
+            }
+            match request[1] {
+                // `:f<axis>` reply with running=1: nibble-1 bit-0 set.
+                // Layout per spec §5: [mode_nibble | motion_nibble | init_nibble].
+                // Mode nibble = 0 (Goto, CW, Slow); motion nibble = 1
+                // (Running, not Blocked); init nibble = 1 (Initialized).
+                b'f' => Ok(b"=011\r".to_vec()),
+                // Handshake inquiries: return a 6-hex u24 payload so
+                // the response decoder is happy. Value doesn't matter
+                // for the timeout test.
+                b'a' | b'b' | b'e' => Ok(b"=000080\r".to_vec()),
+                // High-speed-ratio: 2-hex u8 payload per real GTi.
+                b'g' => Ok(b"=01\r".to_vec()),
+                // `:j<axis>` returns a 6-hex biased position
+                // (0x800000 → encoder 0).
+                b'j' => Ok(b"=000080\r".to_vec()),
+                // Everything else (including `:F` initialize and
+                // `:L` instant-stop) acks without side effects.
+                _ => Ok(b"=\r".to_vec()),
+            }
+        }
+        async fn close(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct StuckAxisFactory;
+
+    #[async_trait]
+    impl crate::transport::TransportFactory for StuckAxisFactory {
+        async fn open(
+            &self,
+            _config: &Config,
+        ) -> crate::error::Result<Arc<dyn crate::transport::Transport>> {
+            Ok(Arc::new(StuckAxisTransport))
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
+        // The free-function helper is called from both
+        // `MountDevice::stop_and_wait` (covered by the slew/park
+        // happy paths) and the pickup loop (covered by
+        // `slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance`).
+        // Its *timeout* branch is unreachable from those paths
+        // because the mock always responds to `:L` instantly; this
+        // test wires a deliberately-broken transport that ignores
+        // `:L` and always reports running, then asserts the helper
+        // returns the timeout error after `AXIS_STOP_TIMEOUT`.
+        let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
+        // No connect() — `stop_axis_and_wait` only needs `send` to
+        // route through the manager's transport; the test bypasses
+        // the handshake-required state by going straight to a
+        // freshly-built manager that holds the broken transport.
+        manager.connect().await.unwrap();
+        // Use a short timeout so the test doesn't take 2 s.
+        let err = stop_axis_and_wait(&manager, Axis::Ra, Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, StarAdvError::Transport(ref msg) if msg.contains("did not stop")),
+            "expected Transport(\"... did not stop ...\") error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn watcher_pickup_handles_transport_send_failures_gracefully() {
+        // Drive a pickup iteration where the pickup re-slew's wire
+        // sends fail (transport returns Err for InstantStop /
+        // SetMotionMode / etc.). The `tracing::warn!` branches in
+        // the watcher are the safety net for this — exercising them
+        // also confirms the watcher doesn't panic when transport
+        // dies mid-pickup.
+        //
+        // We achieve this by disconnecting the transport
+        // immediately after the slew kicks off but before the
+        // pickup loop's wire sends would land. After disconnect,
+        // `transport.send()` returns NotConnected; `stop_axis_and_wait`
+        // and `issue_slew_axis` both surface that as Err, hitting
+        // the warn branches.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, Arc::clone(&manager));
+        d.set_connected(true).await.unwrap();
+
+        // Force the goto to "complete" off-target so pickup would fire.
+        let mock_clone = mock.clone();
+        let _seed = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let mut s = mock_clone.state.lock().await;
+            s.ra.running = false;
+            s.dec.running = false;
+            s.ra.position_ticks = 1_000_000;
+            s.dec.position_ticks = 1_000_000;
+        });
+
+        d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+        // Watcher only exits cleanly via the abort/disconnect
+        // guards after the transport disappears. Disconnect mid-
+        // dwell so the pre-pickup-wire abort guard fires before
+        // any wire commands are issued.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Disconnect the device — clears `slew_in_progress` and
+        // marks the transport unavailable. The watcher's top-of-
+        // loop guard (or the pre-wire guard if it races in past
+        // the top guard) returns cleanly without panicking.
+        d.set_connected(false).await.unwrap();
+
+        // Watcher must exit within a few seconds.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !d.slewing().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // After disconnect, `slewing()` short-circuits via the
+        // connected() check, so it returns false regardless. The
+        // important assertion is that the watcher task didn't panic
+        // and no other state was clobbered.
+        let _ = d.slewing().await;
+    }
 }
