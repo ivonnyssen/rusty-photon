@@ -126,7 +126,7 @@ dependencies = [
 [[package]]
 name = "ascom-alpaca"
 version = "1.0.0-beta.10"
-source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=integration#e0431c1f48360d3a3fa217a69c941ec80d93827c"
+source = "git+https://github.com/ivonnyssen/ascom-alpaca-rs.git?branch=integration#638429b27757c17dc054603fb3ad4de9287c6983"
 dependencies = [
  "async-fn-stream",
  "async-trait",
