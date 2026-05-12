@@ -1,0 +1,16 @@
+# USB Host Library + CDC-ACM class driver.
+# These are the two ESP-IDF components the spike needs.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
+
+# Main task gets a generous stack — the USB host event loop sits on top
+# of FreeRTOS and the spike spawns blocking calls from main.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Default log level. Override per-module at runtime with EspLogger.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Match the project's target board (DevKitC-1 N16R8).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y

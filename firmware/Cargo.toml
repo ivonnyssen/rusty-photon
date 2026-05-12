@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "spikes/usb-cdc-hello",
+]
+# Future members (see ../docs/plans/star-adventurer-gti-embedded.md):
+#   alpaca-embedded
+#   rp-auth-embedded
+#   star-adventurer-gti-esp32s3
+#   star-adventurer-gti-rp2350
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
