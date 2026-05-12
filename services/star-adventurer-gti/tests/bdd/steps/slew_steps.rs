@@ -154,13 +154,26 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .try_into()
         .expect("six payload bytes");
     let dec_magnitude = decode_u24(payload).expect("valid :H2 payload");
-    // Recover the direction bit from the corresponding `:G2` to give
-    // dec_magnitude its sign. The driver issues `:G2` immediately
-    // before `:H2` on each axis.
-    let g2 = log
+    // Recover the direction bit from the corresponding `:G2`. The
+    // INDI-style slew sequence is `:L2 → :G2 → :I2 → :H2 → :M2 → :J2`
+    // per axis, so `:G2` is the third frame before `:H2`, not the
+    // immediately-preceding one (`:I2` sits between them). We pair
+    // `:H2` and `:G2` by *log proximity* rather than by exact
+    // offset: take the latest `:G2` that appears before the `:H2`
+    // we picked above. This is robust to pickup-loop re-issues, in
+    // which case the watcher emits a fresh `:G2`/`:H2` pair and the
+    // pair we'd want is the latest one. Practically the BDD
+    // scenario doesn't trigger pickup (LST drift over a sub-second
+    // mock slew is well under the 5″ tolerance), so the latest
+    // `:G2` is the slew-issue one.
+    let h2_idx = log
         .iter()
-        .find(|c| c.starts_with(":G2") && c.ends_with("\r"))
-        .unwrap_or_else(|| panic!("no :G2 in log {log:?}"));
+        .position(|c| c == h2)
+        .expect(":H2 must be in the log we just found");
+    let g2 = log[..h2_idx]
+        .iter()
+        .rfind(|c| c.starts_with(":G2") && c.ends_with("\r"))
+        .unwrap_or_else(|| panic!("no :G2 before the matched :H2 in log {log:?}"));
     // :G<axis><DB1_nibble><DB2_nibble>\r — 6 bytes total. Per the
     // Sky-Watcher motor-controller spec §5 each DB is one hex
     // nibble (4 bits), not a full byte; see

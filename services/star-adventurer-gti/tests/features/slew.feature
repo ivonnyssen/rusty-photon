@@ -1,11 +1,14 @@
 Feature: Asynchronous slewing
   SlewToCoordinatesAsync validates the target, computes target encoder
   positions from RA/Dec + LST + sync offset + side-of-pier choice, then
-  issues the INDI eqmod-style sequence on each axis (:G goto+fast →
-  :I step-period → :H delta-target → :M break-point → :J start) and
-  returns immediately. Callers poll Slewing to detect completion. After
-  both axes stop, the driver runs an EQMOD-style pickup loop (capped
-  at 5 iterations) to push any RA/Dec residual under 5". SlewToTargetAsync
+  issues the INDI eqmod-style sequence on each axis. Per axis the wire
+  sequence is :L instant-stop + poll :f until not running (the
+  Sky-Watcher firmware rejects :G against a still-decelerating motor
+  with !2 MotorNotStopped), then :G goto+fast → :I step-period →
+  :H delta-target → :M break-point → :J start. The call returns
+  immediately; callers poll Slewing to detect completion. After both
+  axes stop, the driver runs an EQMOD-style pickup loop (capped at
+  5 iterations) to push any RA/Dec residual under 5". SlewToTargetAsync
   uses the most-recent TargetRightAscension / TargetDeclination set on
   the device.
 

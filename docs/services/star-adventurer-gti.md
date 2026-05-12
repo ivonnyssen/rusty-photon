@@ -246,8 +246,8 @@ coordinate module and the slew planner.
 | `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
 | `:I<axis><period24>` | Set step period (T1 preset) | tracking (computed sidereal period from CPR / TMR_Freq); slew (fixed period 6, INDI `minperiods` default) |
 | `:J<axis>` | Start motion | every slew, every track start |
-| `:K<axis>` | Stop motion (decelerate) | end of tracking, abort |
-| `:L<axis>` | Instant stop | `AbortSlew` |
+| `:K<axis>` | Stop motion (decelerate) | `Tracking = false` (sidereal RA tracking gracefully decelerates) |
+| `:L<axis>` | Instant stop | `AbortSlew`; preflight stop-and-wait before every `:G` (slew, park, `Tracking = true`); slew watcher's blocked-axis abort path |
 | `:a<axis>` | Inquire CPR | connect handshake |
 | `:b1` | Inquire TMR_Freq | connect handshake |
 | `:e<axis>` | Inquire motor-board version | connect handshake (logging only) |
