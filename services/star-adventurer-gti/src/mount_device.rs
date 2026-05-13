@@ -1010,7 +1010,31 @@ fn spawn_slew_completion_watcher(
 ) {
     let started = std::time::Instant::now();
     tokio::spawn(async move {
+        // Pause the background polling task for the duration of the
+        // slew. With polling paused the watcher owns the wire: pickup
+        // commands fire without contending with `:j` / `:f` polls for
+        // `command_lock`, and the watcher's own `poll_axes_now` reads
+        // give us mount state within one wire round-trip of any
+        // change — vs up to `polling_interval` of snapshot staleness
+        // under the always-on polling model.
+        //
+        // `_poll_guard` is held by value so the polling task resumes
+        // automatically on every exit path (early-return for abort,
+        // disconnect, blocked-axis, panic, or normal completion).
+        let _poll_guard = transport.pause_background_polling();
         let mut pickup_iterations: u32 = 0;
+        // Adaptive pickup-target projection: track the instant of each
+        // prior pickup re-slew so the next iteration can project the
+        // residual target forward by *the actually-observed* iteration
+        // duration rather than a hardcoded `polling_interval × 2`
+        // multiplier. USB on the GTi sees ~400 ms per iteration; UDP
+        // sees ~950 ms because the per-round-trip latency adds up
+        // across the 5-frame re-slew sequence. The fixed multiplier
+        // worked on USB but under-compensated on UDP by ~550 ms (~8″
+        // of unaccounted LST drift per iteration). Measuring once a
+        // prior iteration is available makes the projection self-tune
+        // per transport.
+        let mut last_pickup_at: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(polling_interval).await;
 
@@ -1031,7 +1055,17 @@ fn spawn_slew_completion_watcher(
                 return;
             }
 
-            let snap = transport.snapshot().await;
+            // Direct poll instead of reading the (now-paused) background
+            // snapshot. On failure (transport closed mid-slew, command
+            // timeout, ...), treat as an abort to avoid spinning.
+            let snap = match transport.poll_axes_now().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("watcher poll_axes_now failed: {e}");
+                    state.write().await.slew_in_progress = false;
+                    return;
+                }
+            };
             // Sky-Watcher spec §5 reports `Blocked` in the `:f`
             // status when the motor is stepping but the encoder
             // isn't advancing — typically the axis is against a
@@ -1130,17 +1164,25 @@ fn spawn_slew_completion_watcher(
                         }
                         // Pre-compensate the RA target for the LST drift
                         // that will accumulate before the next pickup
-                        // iteration re-checks the residual. Empirically
-                        // (D1 diagnostic, 2026-05-12 run) each iteration
-                        // takes ~`polling_interval × 2` wall-clock —
-                        // one watcher sleep + slew settle + ~5 wire
-                        // round-trips. Projecting the target by that
-                        // amount eliminates the "chasing a moving
-                        // target" floor that pegged pickup residuals to
-                        // ~6″ (the per-iteration sidereal drift). See
+                        // iteration re-checks the residual. Without it
+                        // pickup chases a moving target and the residual
+                        // floor matches per-iteration sidereal drift
+                        // (~6″ on USB, ~14″ on UDP). See
                         // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
                         // §"Experiment B".
-                        let projection = polling_interval * 2;
+                        //
+                        // Adaptive: use the actually-observed time delta
+                        // between consecutive pickup decisions; this
+                        // self-tunes for the transport's wire latency
+                        // (USB ≈ 400 ms/iter, UDP ≈ 950 ms/iter).
+                        // First iteration has no prior data → fall back
+                        // to `polling_interval × 2` (the USB-tuned heuristic).
+                        let now = std::time::Instant::now();
+                        let projection = match last_pickup_at {
+                            Some(t) => now.duration_since(t),
+                            None => polling_interval * 2,
+                        };
+                        last_pickup_at = Some(now);
                         let new_ra_ticks =
                             pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
                         let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
@@ -1217,6 +1259,19 @@ fn spawn_slew_completion_watcher(
                     }
                 }
             }
+            // Resume background polling *now*, before the settle delay.
+            // The pickup loop is done; from here on the watcher is just
+            // waiting for the firmware tracking to engage (~160 ms) and
+            // applying the settle margin. While we wait, the background
+            // polling task should refresh the snapshot at its regular
+            // cadence so an Alpaca client reading `RightAscension` right
+            // after `Slewing` flips to `false` sees a snapshot that
+            // reflects the encoder at its now-actively-tracking
+            // position, not the watcher's last `poll_axes_now` from
+            // before tracking restart. Without this, the snap is stale
+            // by the duration `(tracking_engagement + settle)` and the
+            // reported RA lags by that × sidereal rate (~5-10″).
+            drop(_poll_guard);
             tokio::time::sleep(settle).await;
             state.write().await.slew_in_progress = false;
             return;
@@ -1269,6 +1324,14 @@ fn spawn_park_completion_watcher(
     settle: Duration,
 ) {
     tokio::spawn(async move {
+        // Same wire-ownership trick as the slew watcher: pause
+        // background polling and drive snapshot freshness from
+        // `poll_axes_now`. Park doesn't have a pickup loop so the
+        // win here is smaller, but the consistency is worth it
+        // and the background-polling pause also frees up the wire
+        // for the `:K` + `:L` abort sequence on a blocked-axis
+        // mechanical stop.
+        let _poll_guard = transport.pause_background_polling();
         loop {
             tokio::time::sleep(polling_interval).await;
             // External abort / disconnect path: clears slew_in_progress.
@@ -1280,7 +1343,14 @@ fn spawn_park_completion_watcher(
                 state.write().await.slew_in_progress = false;
                 return;
             }
-            let snap = transport.snapshot().await;
+            let snap = match transport.poll_axes_now().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("park watcher poll_axes_now failed: {e}");
+                    state.write().await.slew_in_progress = false;
+                    return;
+                }
+            };
             // Park can also hit a mechanical stop — same `:L` + bail
             // treatment as in the slew watcher. Do *not* set
             // `at_park = true` on a blocked stop: the OTA isn't at
@@ -1300,6 +1370,11 @@ fn spawn_park_completion_watcher(
             if snap.ra.running || snap.dec.running {
                 continue;
             }
+            // Resume background polling before the settle so an
+            // Alpaca client reading `AtPark`-related position data
+            // right after `Slewing` clears sees fresh snapshot data.
+            // See the matching note in `spawn_slew_completion_watcher`.
+            drop(_poll_guard);
             tokio::time::sleep(settle).await;
             let mut s = state.write().await;
             s.at_park = true;

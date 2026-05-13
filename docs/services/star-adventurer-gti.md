@@ -823,21 +823,47 @@ In addition to the codec fixes:
   which is what produced the post-stop residual RA drift the
   Phase 4 ConformU run flagged. Park still uses `:S` since its
   target is encoder 0 and the absolute form is the simpler fit.
-- **Pickup-loop LST pre-compensation** — issue #207 follow-up.
-  Each pickup-loop iteration computes the corrective target's
-  encoder ticks for *the LST one iteration ahead* rather than
-  `LST(now)`. Without this, the slew lands at where the target
-  *was* and the next iteration's LST has already advanced
-  ~`polling_interval × 2 × 15.04″/sec`; pickup chases a moving
-  target and the residual floor is the per-iteration drift.
-  With pre-compensation, pickup converges in 1–2 iterations
-  to under 5″ instead of saturating at 5 iterations and ~6″.
-  The projection helper lives in [`coordinates::pickup_target_ra_ticks`];
-  the slew-issue path uses the existing `MIN_SLEW_DWELL` (2 s)
-  pre-compensation, and pickup uses `polling_interval × 2`
-  (~400 ms on USB). Real-hardware ConformU residuals dropped
-  from a mean of 8.4″ (max 11.0″, 2× 10″ tolerance crossings)
-  to mean 3.7″, max 6.6″, zero crossings.
+- **Pickup-loop accuracy stack** — issue #207 follow-up; three
+  layered fixes that together brought real-hardware ConformU
+  residuals from mean 8.4″ / max 11.0″ (2 × 10″ tolerance
+  crossings) down to mean 2.4″ / max 6.6″ on USB and mean 5.0″ /
+  max 8.7″ on UDP, with **zero crossings on either transport**.
+
+  1. **LST pre-compensation** —
+     [`coordinates::pickup_target_ra_ticks`] computes each
+     iteration's corrective encoder target for `LST(now +
+     projection)` rather than `LST(now)`. Without it the slew
+     lands at where the target *was* one iteration ago, and the
+     residual floor matches the per-iteration LST drift (~6″ on
+     USB, ~14″ on UDP).
+
+  2. **Adaptive projection** — the watcher tracks the wall-clock
+     interval between consecutive pickup decisions and uses it as
+     the projection for the next iteration. Self-tunes per
+     transport without per-transport config: USB iterations
+     stabilise at ~400 ms, UDP at ~1100 ms. First iteration (no
+     prior data) falls back to `polling_interval × 2`.
+
+  3. **Pause background polling during the slew** — the watcher
+     acquires a [`TransportManager::pause_background_polling`]
+     RAII guard at the top of its spawn. While paused, the
+     watcher owns the wire: pickup wire commands (`:K :G :I :H
+     :M :J`) fire without contending with `:j` / `:f` polls for
+     the `command_lock`, and the watcher's
+     [`TransportManager::poll_axes_now`] drives the snapshot's
+     freshness with one wire round-trip per loop iteration. The
+     guard is dropped explicitly right after tracking restart,
+     before the settle delay — so background polling resumes
+     during settle and the snapshot reflects the actively-tracking
+     encoder position by the time an Alpaca client reads
+     `RightAscension` post-`Slewing`. Releasing the guard early
+     vs. on watcher exit makes a measurable difference (UDP mean
+     7.3″ → 5.0″ in the experiment runs). Park watcher follows
+     the same pattern.
+
+  See `docs/plans/star-adventurer-gti-pickup-accuracy.md` for the
+  experiment plan and the diagnostic data that drove these
+  choices.
 - **Mechanical safety envelope** — driving the mount into the
   counterweight-up region with ConformU's pier-flip tests stalled
   the motor against a hard stop while the encoder counter kept

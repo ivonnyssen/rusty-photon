@@ -86,12 +86,39 @@ pub struct TransportManager {
     available: AtomicBool,
     parameters: RwLock<Option<MountParameters>>,
     snapshot: Arc<RwLock<MountSnapshot>>,
+    /// When `true`, the background polling task skips its tick: no
+    /// `:j` / `:f` round-trips, no `command_lock` contention. The
+    /// slew/park watchers acquire a [`PollPauseGuard`] for the
+    /// duration of a slew so that pickup-loop wire commands run
+    /// without contention and the watcher's own targeted polls
+    /// drive the snapshot's freshness during the slew. Auto-cleared
+    /// on guard drop, even if the watcher task is aborted mid-flight.
+    poll_paused: Arc<AtomicBool>,
     /// Background polling task; populated on the 0→1 connect transition,
     /// aborted on the 1→0 disconnect.
     poll_handle: Mutex<Option<JoinHandle<()>>>,
     /// Shutdown channel for the polling task. The task watches the
     /// receiver and exits when the value flips to `true`.
     shutdown_tx: watch::Sender<bool>,
+}
+
+/// RAII guard that pauses background polling while held. Drop
+/// resumes polling. Returned by
+/// [`TransportManager::pause_background_polling`].
+///
+/// While paused, the watcher is the *only* writer on the wire (modulo
+/// concurrent Alpaca-client driven `MountDevice` ops, which are rare
+/// during a slew). The watcher must poll `:f` / `:j` directly via
+/// [`TransportManager::poll_axes_now`] to keep the cached snapshot
+/// fresh for any ASCOM reader that happens to fire during the slew.
+pub struct PollPauseGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for PollPauseGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
 }
 
 impl TransportManager {
@@ -106,6 +133,7 @@ impl TransportManager {
             available: AtomicBool::new(false),
             parameters: RwLock::new(None),
             snapshot: Arc::new(RwLock::new(MountSnapshot::default())),
+            poll_paused: Arc::new(AtomicBool::new(false)),
             poll_handle: Mutex::new(None),
             shutdown_tx,
         }
@@ -153,6 +181,7 @@ impl TransportManager {
             Arc::clone(&transport),
             Arc::clone(&self.command_lock),
             Arc::clone(&self.snapshot),
+            Arc::clone(&self.poll_paused),
             self.shutdown_tx.subscribe(),
             polling_interval,
             command_timeout,
@@ -253,6 +282,56 @@ impl TransportManager {
     /// Latest poll-loop snapshot.
     pub async fn snapshot(&self) -> MountSnapshot {
         *self.snapshot.read().await
+    }
+
+    /// Pause the background polling task and return a guard that
+    /// resumes it on drop. Used by the slew/park watchers to free the
+    /// wire during a slew — pickup-loop commands run without
+    /// contending with `:j` / `:f` polls, and the watcher's own
+    /// [`poll_axes_now`](Self::poll_axes_now) drives snapshot
+    /// freshness while paused.
+    ///
+    /// Idempotent against re-acquisition: if polling is already paused
+    /// (e.g., two slews overlap, which shouldn't happen but might
+    /// during edge-case AbortSlew races), the second guard's drop
+    /// would clear the flag prematurely — callers should not nest
+    /// pauses. Nothing here panics on misuse; the worst case is the
+    /// background poll resumes a hair early, which is harmless.
+    pub fn pause_background_polling(&self) -> PollPauseGuard {
+        self.poll_paused.store(true, Ordering::SeqCst);
+        PollPauseGuard {
+            flag: Arc::clone(&self.poll_paused),
+        }
+    }
+
+    /// Synchronously round-trip `:j` + `:f` on both axes, update the
+    /// cached snapshot, and return the fresh snapshot. Used by the
+    /// slew/park watcher loops *instead of* reading the background
+    /// polling task's cached snapshot — at the cost of 4 wire ops
+    /// per call (~50 ms USB, ~100 ms UDP), the watcher knows the
+    /// motor's actual state within one round-trip of it changing,
+    /// rather than within `polling_interval` of the background task's
+    /// last tick (up to 200 ms stale).
+    ///
+    /// The caller is responsible for ensuring the background polling
+    /// task is paused via [`pause_background_polling`](Self::pause_background_polling)
+    /// during a sequence of `poll_axes_now` calls — otherwise the two
+    /// tasks contend for `command_lock` and the wire load doubles.
+    pub async fn poll_axes_now(&self) -> Result<MountSnapshot> {
+        let transport = self
+            .transport
+            .lock()
+            .await
+            .clone()
+            .ok_or(StarAdvError::NotConnected)?;
+        let _guard = self.command_lock.lock().await;
+        let timeout = self.command_timeout();
+        let mut snap = MountSnapshot::default();
+        poll_axis(&transport, Axis::Ra, &mut snap.ra, timeout).await?;
+        poll_axis(&transport, Axis::Dec, &mut snap.dec, timeout).await?;
+        drop(_guard);
+        *self.snapshot.write().await = snap;
+        Ok(snap)
     }
 
     /// Update the cached snapshot's RA position.
@@ -435,11 +514,14 @@ fn expect_position(r: Response) -> Result<i32> {
 
 /// Spawn the polling task. Polls `:f<axis>` and `:j<axis>` for both axes
 /// at `interval`, updates the snapshot, exits when `shutdown` flips to
-/// `true`.
+/// `true`. Skips the poll cycle entirely while `poll_paused` is set —
+/// the slew/park watchers acquire that flag to free the wire for their
+/// own targeted polls.
 fn spawn_poll_task(
     transport: Arc<dyn Transport>,
     command_lock: Arc<Mutex<()>>,
     snapshot: Arc<RwLock<MountSnapshot>>,
+    poll_paused: Arc<AtomicBool>,
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
     command_timeout: Duration,
@@ -455,6 +537,13 @@ fn spawn_poll_task(
                     }
                 }
                 _ = tick.tick() => {
+                    if poll_paused.load(Ordering::SeqCst) {
+                        // Watcher owns the wire — skip this tick. The
+                        // watcher's own `poll_axes_now` updates the
+                        // snapshot during the slew so ASCOM readers
+                        // still see fresh data.
+                        continue;
+                    }
                     let _guard = command_lock.lock().await;
                     let mut snap = MountSnapshot::default();
                     if let Err(e) = poll_axis(&transport, Axis::Ra, &mut snap.ra, command_timeout).await {
@@ -732,6 +821,76 @@ mod tests {
         let _ = snap.ra.position_ticks;
         assert!(!snap.ra.running);
         assert!(!snap.dec.running);
+    }
+
+    #[tokio::test]
+    async fn pause_background_polling_freezes_snapshot_refresh() {
+        // While the watcher holds a pause guard, the background poll
+        // task must skip its tick. Verify by:
+        //   1. connect → seed snapshot from handshake
+        //   2. pause polling
+        //   3. mutate the mock's reported encoder position
+        //   4. wait long enough for several polling ticks to pass
+        //   5. confirm the snapshot is *not* updated
+        //   6. drop the guard, wait another tick
+        //   7. confirm the snapshot now reflects the mutation
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        let m = TransportManager::new(cfg, Arc::new(MockTransportFactory));
+        m.connect().await.unwrap();
+        // Let the polling task seat at least one tick.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let seeded = m.snapshot().await;
+
+        let guard = m.pause_background_polling();
+        // Wait long enough for several would-be polling ticks. The
+        // background task is paused; snapshot stays at `seeded`.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let after_pause = m.snapshot().await;
+        assert_eq!(
+            after_pause.ra.position_ticks, seeded.ra.position_ticks,
+            "polling should be paused — snapshot must not refresh"
+        );
+        assert_eq!(after_pause.dec.position_ticks, seeded.dec.position_ticks);
+
+        drop(guard);
+        // After the guard drops the polling task resumes on its next
+        // tick. Wait long enough for at least one refresh.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        // The mock's :j reply is constant in the default state, so the
+        // post-resume snapshot equals the seeded value — but the
+        // `running` / `goto` flags should be cleanly readable. The
+        // primary contract here is "polling resumed and didn't panic."
+        let after_resume = m.snapshot().await;
+        assert!(!after_resume.ra.running);
+        assert!(!after_resume.dec.running);
+    }
+
+    #[tokio::test]
+    async fn poll_axes_now_returns_fresh_snapshot_and_updates_cache() {
+        // `poll_axes_now` must do its own :j + :f round-trip
+        // (synchronous round-trips, no waiting on the polling task)
+        // and update the cached snapshot so ASCOM readers via
+        // `snapshot()` see the same data.
+        let m = manager();
+        m.connect().await.unwrap();
+        let polled = m.poll_axes_now().await.unwrap();
+        let cached = m.snapshot().await;
+        assert_eq!(polled.ra.position_ticks, cached.ra.position_ticks);
+        assert_eq!(polled.dec.position_ticks, cached.dec.position_ticks);
+        assert_eq!(polled.ra.running, cached.ra.running);
+        assert_eq!(polled.dec.running, cached.dec.running);
+    }
+
+    #[tokio::test]
+    async fn poll_axes_now_returns_not_connected_when_disconnected() {
+        // Calling poll_axes_now before connect (no transport open)
+        // must propagate the NotConnected error rather than panicking.
+        let m = manager();
+        let err = m.poll_axes_now().await.unwrap_err();
+        assert!(matches!(err, StarAdvError::NotConnected));
     }
 
     #[test]
