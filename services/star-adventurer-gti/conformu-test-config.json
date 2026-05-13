@@ -17,7 +17,7 @@
     "site_latitude_deg": 47.6062,
     "site_longitude_deg": -122.3321,
     "site_elevation_m": 56.0,
-    "settle_after_slew": "200ms",
+    "settle_after_slew": "100ms",
     "tracking_rate": "sidereal"
   }
 }

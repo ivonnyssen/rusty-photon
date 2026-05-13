@@ -759,9 +759,58 @@ In addition to the codec fixes:
   the motor takes meaningful wallclock time to actually halt.
   `:G` against a still-decelerating axis returns `!2\r`
   (`MotorNotStopped`). The slew, park, and `set_tracking(true)`
-  paths now issue `:L` (instant stop) and then poll `:f` until
-  `running == false`, before any subsequent `:G`/`:S`/`:J`. Mock
-  hid this because it processes `:K`/`:L` instantaneously.
+  paths issue `:K` (decelerate) and then poll `:f` until
+  `running == false`, before any subsequent `:G`/`:S`/`:J`. An
+  early version of this path used `:L` (instant stop) instead;
+  switched to `:K` in issue #207 to match the spec's recommended
+  stop semantics and INDI eqmod's `StopWaitMotor`
+  (`indi-eqmod/skywatcher.cpp:1741-1765`) — `:L` is harsher on
+  the gearbox and is reserved for genuine emergency stops
+  (`AbortSlew`, slew/park watcher abort on `blocked`).
+  Mock hid the wallclock issue originally because it processes
+  `:K`/`:L` instantaneously.
+- **No mode-cache short-circuit (attempted and reverted)** — issue
+  #207's initial plan included an INDI-style
+  `LastRunningStatus == NewStatus` cache to skip `stop_and_wait +
+  :G` when the requested mode matched the last one we acked. **The
+  implementation we tried did not work on real hardware.**
+  Mock-mode ConformU + the unit/BDD suites all passed cleanly, but
+  the first ConformU run against the physical GTi triggered an
+  unbounded Dec slew: the cache said `Goto-Fast-CCW` after a `:E`
+  (sync), but the firmware-side mode had drifted; the resulting
+  `:I/:H/:M/:J` started a slew that ran ~360° of unwanted Dec
+  motion before the pickup loop fired a ~269° corrective slew back.
+  See PR #210 for the wire trace. The cache was reverted to an
+  unconditional `stop_and_wait + :G` on every slew/park/tracking
+  prep — the spec-recommended sequence and what INDI's
+  `StopWaitMotor` does internally.
+
+  Two reasons not to retry naively if/when revisiting:
+
+  1. **`:E` (sync) is one observed mode-state desync, but not
+     necessarily the only one.** Tracking transitions, post-goto
+     auto-engage on RA, `:L` aborts, blocked-axis recovery, and any
+     other state-changing command can shift firmware-side mode
+     without an explicit `:G` from us. A cache that mirrors only
+     what we *issued* is structurally unsafe.
+  2. **UDP transport widens the failure mode.** The wire protocol
+     is identical on USB-CDC and UDP/11880, but UDP can drop,
+     reorder, or duplicate packets without us noticing; a cache
+     that records "we sent `:G CCW` and saw an ack" can lie even
+     more easily if a `:G` response was actually a stale duplicate
+     ack from a prior frame. Anything we cache about firmware state
+     must survive both half of the codec layer being lossy.
+
+  Any future cache implementation needs a **background validation
+  loop** that re-reads the actual `:f` mode bits (per spec §5, the
+  status nibble reports the live mode) often enough to catch
+  desyncs *before* the next `:G`-eliding op fires — polling cadence
+  needs to be comparable to or faster than the smallest slew a
+  caller could chain, and a desync detection must invalidate the
+  per-axis cache immediately and refuse short-circuits until the
+  next confirmed `:G` ack. Without that — or without a different
+  approach that doesn't depend on a snapshot of state we don't own —
+  the cache is structurally unsound.
 - **INDI-style slew sequence** — Phase A5 reinstated `:I` on the
   slew path and switched the goto from `:S` (absolute target) to
   `:H` (delta target) plus `:M` (break-point increment), matching
@@ -774,6 +823,47 @@ In addition to the codec fixes:
   which is what produced the post-stop residual RA drift the
   Phase 4 ConformU run flagged. Park still uses `:S` since its
   target is encoder 0 and the absolute form is the simpler fit.
+- **Pickup-loop accuracy stack** — issue #207 follow-up; three
+  layered fixes that together brought real-hardware ConformU
+  residuals from mean 8.4″ / max 11.0″ (2 × 10″ tolerance
+  crossings) down to mean 2.4″ / max 6.6″ on USB and mean 5.0″ /
+  max 8.7″ on UDP, with **zero crossings on either transport**.
+
+  1. **LST pre-compensation** —
+     [`coordinates::pickup_target_ra_ticks`] computes each
+     iteration's corrective encoder target for `LST(now +
+     projection)` rather than `LST(now)`. Without it the slew
+     lands at where the target *was* one iteration ago, and the
+     residual floor matches the per-iteration LST drift (~6″ on
+     USB, ~14″ on UDP).
+
+  2. **Adaptive projection** — the watcher tracks the wall-clock
+     interval between consecutive pickup decisions and uses it as
+     the projection for the next iteration. Self-tunes per
+     transport without per-transport config: USB iterations
+     stabilise at ~400 ms, UDP at ~1100 ms. First iteration (no
+     prior data) falls back to `polling_interval × 2`.
+
+  3. **Pause background polling during the slew** — the watcher
+     acquires a [`TransportManager::pause_background_polling`]
+     RAII guard at the top of its spawn. While paused, the
+     watcher owns the wire: pickup wire commands (`:K :G :I :H
+     :M :J`) fire without contending with `:j` / `:f` polls for
+     the `command_lock`, and the watcher's
+     [`TransportManager::poll_axes_now`] drives the snapshot's
+     freshness with one wire round-trip per loop iteration. The
+     guard is dropped explicitly right after tracking restart,
+     before the settle delay — so background polling resumes
+     during settle and the snapshot reflects the actively-tracking
+     encoder position by the time an Alpaca client reads
+     `RightAscension` post-`Slewing`. Releasing the guard early
+     vs. on watcher exit makes a measurable difference (UDP mean
+     7.3″ → 5.0″ in the experiment runs). Park watcher follows
+     the same pattern.
+
+  See `docs/plans/star-adventurer-gti-pickup-accuracy.md` for the
+  experiment plan and the diagnostic data that drove these
+  choices.
 - **Mechanical safety envelope** — driving the mount into the
   counterweight-up region with ConformU's pier-flip tests stalled
   the motor against a hard stop while the encoder counter kept

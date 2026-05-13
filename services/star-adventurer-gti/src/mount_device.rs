@@ -25,8 +25,8 @@ use tracing::debug;
 use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
-    mechanical_ha_to_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha, ra_to_mechanical_ha,
-    side_of_pier as side_of_pier_calc, sidereal_step_period,
+    mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha,
+    ra_to_mechanical_ha, side_of_pier as side_of_pier_calc, sidereal_step_period,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
@@ -175,20 +175,14 @@ impl MountDevice {
         }
     }
 
-    /// Issue `:L<axis>` (instant stop) and then poll `:f<axis>` until
-    /// `running == false` or [`AXIS_STOP_TIMEOUT`] elapses.
-    ///
-    /// Sky-Watcher spec §2: "Motor must be at full stop status before
-    /// setting the motion mode." `:K` (decelerate) takes non-trivial
-    /// wall-clock time on real hardware; ConformU's back-to-back
-    /// "set mode + slew" flow then trips `!2\r` (`MotorNotStopped`)
-    /// from the firmware. `:L` is the spec's "instant stop" — used
-    /// here for the goto-prep stop because we are about to switch
-    /// mode anyway, and the goto-style slew always starts from
-    /// stationary. A second `:f<axis>` poll covers the edge case
-    /// where the controller hasn't yet flushed the running flag.
-    /// The mock processes `:L` instantaneously, which hid this from
-    /// BDD coverage; Phase 4 hardware bring-up confirmed it.
+    /// `ASCOMResult` wrapper over the free-function
+    /// [`stop_axis_and_wait`] — issues `:K<axis>` and polls `:f<axis>`
+    /// until the running flag clears. Used by every `MountDevice`
+    /// caller that needs ASCOM error mapping: `set_tracking(true)`,
+    /// `park`, and the per-axis stop preceding each `issue_slew_axis`
+    /// in `slew_to_coordinates_async`. The slew-completion and park
+    /// watchers run inside spawned tasks and call `stop_axis_and_wait`
+    /// directly (no `MountDevice` to wrap the error).
     async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
         stop_axis_and_wait(&self.transport, axis, AXIS_STOP_TIMEOUT)
             .await
@@ -243,10 +237,11 @@ const SYNC_SLEW_TIMEOUT: Duration = Duration::from_secs(300);
 const MIN_SLEW_DWELL: Duration = Duration::from_secs(2);
 
 /// Upper bound on how long `stop_and_wait` will poll `:f<axis>`
-/// after a `:L` (instant stop) before giving up. The firmware
-/// flushes the running flag within ~100 ms on the GTi after a
-/// `:L`; 2 s is a comfortable margin, and bounding the wait
-/// prevents a stuck axis from wedging a slew indefinitely.
+/// after a `:K` (decelerate stop) before giving up. The firmware
+/// finishes deceleration within ~1 s for typical Goto-Fast slew
+/// rates on the GTi; 2 s is a comfortable margin for the slow
+/// case, and bounding the wait prevents a stuck axis from wedging
+/// a slew indefinitely.
 const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// EQMOD `minperiods[axis]` default — see
@@ -282,9 +277,9 @@ const PICKUP_MAX_ITERATIONS: u32 = 5;
 /// `:M<axis><breaks>` (break-point increment) →
 /// `:J<axis>` (start motion).
 ///
-/// The caller must have already issued `:L<axis>` and waited for
-/// the running flag to clear — `:G` returns `!2 MotorNotStopped`
-/// if the motor is still decelerating from a prior command.
+/// The caller must have already issued `:K<axis>` and waited for the
+/// running flag to clear — `:G` returns `!2 MotorNotStopped` if the
+/// motor is still decelerating from a prior command.
 async fn issue_slew_axis(
     transport: &TransportManager,
     axis: Axis,
@@ -807,17 +802,14 @@ impl Telescope for MountDevice {
         let snap = self.transport.snapshot().await;
         let ra_delta = ra_ticks - snap.ra.position_ticks;
         let dec_delta = dec_ticks - snap.dec.position_ticks;
-        // Both axes use the INDI wire sequence: `:L` + poll `:f`
-        // (instant-stop, the spec's "Motor must be at full stop
-        // status before setting the motion mode" requirement) →
-        // `:G goto+fast` → `:I 6` → `:H |delta|` → `:M breaks` →
-        // `:J`. The RA axis `:L` is also the wire event that
-        // halts any in-progress sidereal tracking (`:K` would
-        // decelerate, `:L` stops instantly — we use `:L` because
-        // we're about to switch motion mode anyway and goto
-        // starts from stationary); mirror that into the
-        // in-memory `tracking_requested` flag once the send
-        // succeeds so the state never gets ahead of the wire on
+        // Both axes use the INDI wire sequence: `:K` + poll `:f`
+        // (decelerate stop — the spec's "motor must be at full stop
+        // before setting the motion mode" requirement) → `:G goto+fast`
+        // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
+        // `:K` is also the wire event that halts any in-progress
+        // sidereal tracking; mirror that into the in-memory
+        // `tracking_requested` flag once the stop has actually
+        // succeeded so the state never gets ahead of the wire on
         // transport failures.
         self.stop_and_wait(Axis::Ra).await?;
         self.state.write().await.tracking_requested = false;
@@ -885,7 +877,8 @@ impl Telescope for MountDevice {
             return Ok(());
         }
         // Stop tracking before slewing home (per ASCOM, tracking remains
-        // off after Park).
+        // off after Park). The wire `:K1` is issued first so the in-memory
+        // flag flip only follows a successful stop.
         if self.state.read().await.tracking_requested {
             self.transport
                 .send(Command::StopMotion(Axis::Ra))
@@ -1020,7 +1013,31 @@ fn spawn_slew_completion_watcher(
 ) {
     let started = std::time::Instant::now();
     tokio::spawn(async move {
+        // Pause the background polling task for the duration of the
+        // slew. With polling paused the watcher owns the wire: pickup
+        // commands fire without contending with `:j` / `:f` polls for
+        // `command_lock`, and the watcher's own `poll_axes_now` reads
+        // give us mount state within one wire round-trip of any
+        // change — vs up to `polling_interval` of snapshot staleness
+        // under the always-on polling model.
+        //
+        // `_poll_guard` is held by value so the polling task resumes
+        // automatically on every exit path (early-return for abort,
+        // disconnect, blocked-axis, panic, or normal completion).
+        let _poll_guard = transport.pause_background_polling();
         let mut pickup_iterations: u32 = 0;
+        // Adaptive pickup-target projection: track the instant of each
+        // prior pickup re-slew so the next iteration can project the
+        // residual target forward by *the actually-observed* iteration
+        // duration rather than a hardcoded `polling_interval × 2`
+        // multiplier. USB on the GTi sees ~400 ms per iteration; UDP
+        // sees ~950 ms because the per-round-trip latency adds up
+        // across the 5-frame re-slew sequence. The fixed multiplier
+        // worked on USB but under-compensated on UDP by ~550 ms (~8″
+        // of unaccounted LST drift per iteration). Measuring once a
+        // prior iteration is available makes the projection self-tune
+        // per transport.
+        let mut last_pickup_at: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(polling_interval).await;
 
@@ -1041,7 +1058,17 @@ fn spawn_slew_completion_watcher(
                 return;
             }
 
-            let snap = transport.snapshot().await;
+            // Direct poll instead of reading the (now-paused) background
+            // snapshot. On failure (transport closed mid-slew, command
+            // timeout, ...), treat as an abort to avoid spinning.
+            let snap = match transport.poll_axes_now().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("watcher poll_axes_now failed: {e}");
+                    state.write().await.slew_in_progress = false;
+                    return;
+                }
+            };
             // Sky-Watcher spec §5 reports `Blocked` in the `:f`
             // status when the motor is stepping but the encoder
             // isn't advancing — typically the axis is against a
@@ -1138,15 +1165,40 @@ fn spawn_slew_completion_watcher(
                             state.write().await.slew_in_progress = false;
                             return;
                         }
-                        let new_mech_ha = ra_to_mechanical_ha(target_ra, lst);
-                        let new_ra_ticks = mechanical_ha_to_ra_ticks(new_mech_ha, params.cpr_ra);
+                        // Pre-compensate the RA target for the LST drift
+                        // that will accumulate before the next pickup
+                        // iteration re-checks the residual. Without it
+                        // pickup chases a moving target and the residual
+                        // floor matches per-iteration sidereal drift
+                        // (~6″ on USB, ~14″ on UDP). See
+                        // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
+                        // §"Experiment B".
+                        //
+                        // Adaptive: use the actually-observed time delta
+                        // between consecutive pickup decisions; this
+                        // self-tunes for the transport's wire latency
+                        // (USB ≈ 400 ms/iter, UDP ≈ 950 ms/iter).
+                        // First iteration has no prior data → fall back
+                        // to `polling_interval × 2` (the USB-tuned heuristic).
+                        let now = std::time::Instant::now();
+                        let projection = match last_pickup_at {
+                            Some(t) => now.duration_since(t),
+                            None => polling_interval * 2,
+                        };
+                        last_pickup_at = Some(now);
+                        let new_ra_ticks =
+                            pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
                         let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
                         let ra_delta = new_ra_ticks - snap.ra.position_ticks;
                         let dec_delta = new_dec_ticks - snap.dec.position_ticks;
                         pickup_iterations += 1;
                         debug!(
                             iteration = pickup_iterations,
-                            ra_residual_arcsec, dec_residual_arcsec, "slew pickup iteration"
+                            ra_residual_arcsec,
+                            dec_residual_arcsec,
+                            projection_ms = projection.as_millis() as u64,
+                            ra_delta_ticks = ra_delta,
+                            "slew pickup iteration"
                         );
                         // The pickup re-slew goes through the same
                         // wire sequence as the original goto. `:L` +
@@ -1210,6 +1262,19 @@ fn spawn_slew_completion_watcher(
                     }
                 }
             }
+            // Resume background polling *now*, before the settle delay.
+            // The pickup loop is done; from here on the watcher is just
+            // waiting for the firmware tracking to engage (~160 ms) and
+            // applying the settle margin. While we wait, the background
+            // polling task should refresh the snapshot at its regular
+            // cadence so an Alpaca client reading `RightAscension` right
+            // after `Slewing` flips to `false` sees a snapshot that
+            // reflects the encoder at its now-actively-tracking
+            // position, not the watcher's last `poll_axes_now` from
+            // before tracking restart. Without this, the snap is stale
+            // by the duration `(tracking_engagement + settle)` and the
+            // reported RA lags by that × sidereal rate (~5-10″).
+            drop(_poll_guard);
             tokio::time::sleep(settle).await;
             state.write().await.slew_in_progress = false;
             return;
@@ -1218,15 +1283,20 @@ fn spawn_slew_completion_watcher(
 }
 
 /// Free-function equivalent of [`MountDevice::stop_and_wait`] for
-/// callers (like the watcher) that don't have a `&MountDevice`.
-/// Issues `:L<axis>` and polls `:f<axis>` until the running flag
-/// clears or `timeout` elapses.
+/// callers (like the watcher's EQMOD pickup loop) that don't have a
+/// `&MountDevice`. Issues `:K<axis>` (decelerate) and polls
+/// `:f<axis>` until the running flag clears or `timeout` elapses.
+/// `:K` is the spec's recommended stop and is gentler on the
+/// gearbox than `:L`; `:L` remains the right choice only for
+/// genuine emergency stops (`AbortSlew`, slew/park watcher abort on
+/// `blocked`). Matches INDI eqmod's `StopWaitMotor`
+/// (`indi-eqmod/skywatcher.cpp:1741-1765`).
 async fn stop_axis_and_wait(
     transport: &TransportManager,
     axis: Axis,
     timeout: Duration,
 ) -> crate::error::Result<()> {
-    transport.send(Command::InstantStop(axis)).await?;
+    transport.send(Command::StopMotion(axis)).await?;
     let deadline = std::time::Instant::now() + timeout;
     tokio::time::sleep(Duration::from_millis(100)).await;
     loop {
@@ -1257,6 +1327,14 @@ fn spawn_park_completion_watcher(
     settle: Duration,
 ) {
     tokio::spawn(async move {
+        // Same wire-ownership trick as the slew watcher: pause
+        // background polling and drive snapshot freshness from
+        // `poll_axes_now`. Park doesn't have a pickup loop so the
+        // win here is smaller, but the consistency is worth it
+        // and the background-polling pause also frees up the wire
+        // for the `:K` + `:L` abort sequence on a blocked-axis
+        // mechanical stop.
+        let _poll_guard = transport.pause_background_polling();
         loop {
             tokio::time::sleep(polling_interval).await;
             // External abort / disconnect path: clears slew_in_progress.
@@ -1268,7 +1346,14 @@ fn spawn_park_completion_watcher(
                 state.write().await.slew_in_progress = false;
                 return;
             }
-            let snap = transport.snapshot().await;
+            let snap = match transport.poll_axes_now().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("park watcher poll_axes_now failed: {e}");
+                    state.write().await.slew_in_progress = false;
+                    return;
+                }
+            };
             // Park can also hit a mechanical stop — same `:L` + bail
             // treatment as in the slew watcher. Do *not* set
             // `at_park = true` on a blocked stop: the OTA isn't at
@@ -1288,6 +1373,11 @@ fn spawn_park_completion_watcher(
             if snap.ra.running || snap.dec.running {
                 continue;
             }
+            // Resume background polling before the settle so an
+            // Alpaca client reading `AtPark`-related position data
+            // right after `Slewing` clears sees fresh snapshot data.
+            // See the matching note in `spawn_slew_completion_watcher`.
+            drop(_poll_guard);
             tokio::time::sleep(settle).await;
             let mut s = state.write().await;
             s.at_park = true;
@@ -1469,12 +1559,15 @@ mod tests {
 
         // Drive SetTracking(true) and assert that the driver issues
         // the wire sequence the design doc + spec require:
-        //   1. `:L1`  (instant-stop the RA axis — needed because the
+        //   1. `:K1`  (decelerate the RA axis — needed because the
         //              spec disallows changing motion mode while the
         //              motor is running, and the axis may be in
         //              Speed Mode either because we just enabled
         //              tracking on it before or because the firmware
-        //              auto-engages Speed Mode after a goto.)
+        //              auto-engages Speed Mode after a goto. `:K`
+        //              is gentler on the gearbox than `:L`; the
+        //              `:f` poll loop below waits out the
+        //              deceleration.)
         //   2. `:f1`  (one or more polls — `stop_and_wait` polls
         //              until the running flag clears.)
         //   3. `:G1<mode>` (tracking-slow-CW)
@@ -1486,7 +1579,7 @@ mod tests {
         let log = mock.state.lock().await.command_log.clone();
         let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
         // Look only at setter / motion-start frames on the RA axis:
-        // `:G1`, `:I1`, `:J1`, `:L1` (in order of appearance). The
+        // `:G1`, `:I1`, `:J1`, `:K1` (in order of appearance). The
         // polling task's `:f1` / `:j1` / `:f2` / `:j2` inquiries are
         // noise here.
         let interesting: Vec<&&[u8]> = new_frames
@@ -1501,9 +1594,9 @@ mod tests {
         assert_eq!(
             interesting.len(),
             4,
-            "expected exactly 4 RA setter frames (:L1 :G1 :I1 :J1), got {interesting:?}"
+            "expected exactly 4 RA setter frames (:K1 :G1 :I1 :J1), got {interesting:?}"
         );
-        assert_eq!(*interesting[0], b":L1\r", "1st RA setter should be :L1");
+        assert_eq!(*interesting[0], b":K1\r", "1st RA setter should be :K1");
         assert_eq!(&interesting[1][..3], b":G1", "2nd RA setter should be :G1");
         assert_eq!(&interesting[2][..3], b":I1", "3rd RA setter should be :I1");
         assert_eq!(*interesting[3], b":J1\r", "4th RA setter should be :J1");
@@ -1781,9 +1874,11 @@ mod tests {
 
     #[tokio::test]
     async fn slew_async_issues_indi_sequence_per_axis() {
-        // Phase A5 (issue #205): the slew path now emits the
-        // INDI eqmod-style sequence — :L → poll :f → :G → :I → :H
-        // → :M → :J. This test asserts the order of the setters and
+        // Phase A5 (issue #205) + issue #207: the slew path emits
+        // the INDI eqmod-style sequence — :K → poll :f → :G → :I →
+        // :H → :M → :J. (Issue #207 swapped :L for :K — :K is the
+        // spec's recommended stop, :L stays reserved for emergency
+        // aborts.) This test asserts the order of the setters and
         // motion-start frames for each axis in the freshly-issued
         // slew, before the watcher's pickup loop (if any) re-enters
         // the sequence.
@@ -1821,17 +1916,17 @@ mod tests {
                     f.len() >= 3
                         && f[0] == b':'
                         && f[2] == axis_byte
-                        && matches!(f[1], b'G' | b'I' | b'H' | b'M' | b'J' | b'L')
+                        && matches!(f[1], b'G' | b'I' | b'H' | b'M' | b'J' | b'K' | b'L')
                 })
                 .collect()
         };
 
         let ra = interesting(b'1');
-        // Expect :L1 :G1 :I1 :H1 :M1 :J1 in order. Slack on length
+        // Expect :K1 :G1 :I1 :H1 :M1 :J1 in order. Slack on length
         // because the watcher may add more before we sampled — but
         // the first six setter frames for axis 1 are deterministic.
         assert!(ra.len() >= 6, "expected ≥6 RA frames, got {ra:?}");
-        assert_eq!(*ra[0], *b":L1\r", "1st RA setter should be :L1");
+        assert_eq!(*ra[0], *b":K1\r", "1st RA setter should be :K1");
         assert_eq!(&ra[1][..3], b":G1", "2nd RA setter should be :G1");
         assert_eq!(&ra[2][..3], b":I1", "3rd RA setter should be :I1");
         assert_eq!(&ra[3][..3], b":H1", "4th RA setter should be :H1");
@@ -1840,7 +1935,7 @@ mod tests {
 
         let dec = interesting(b'2');
         assert!(dec.len() >= 6, "expected ≥6 Dec frames, got {dec:?}");
-        assert_eq!(*dec[0], *b":L2\r");
+        assert_eq!(*dec[0], *b":K2\r");
         assert_eq!(&dec[1][..3], b":G2");
         assert_eq!(&dec[2][..3], b":I2");
         assert_eq!(&dec[3][..3], b":H2");
@@ -1974,19 +2069,21 @@ mod tests {
             "watcher must have cleared slew_in_progress after seeing blocked"
         );
 
-        // Both axes must have seen a :L issued by the watcher's
-        // abort path. (The driver's slew-issue prefix uses :L too,
-        // so we count occurrences and assert >= 2 each.)
+        // Both axes must have seen a `:L` issued by the watcher's
+        // abort path. (The driver's slew-prep stop uses the gentler
+        // `:K` since issue #207 — `:L` is reserved for genuine
+        // emergency stops like this blocked-axis abort and
+        // `AbortSlew`.)
         let log = mock.state.lock().await.command_log.clone();
         let l1_count = log.iter().filter(|f| f.as_slice() == b":L1\r").count();
         let l2_count = log.iter().filter(|f| f.as_slice() == b":L2\r").count();
         assert!(
-            l1_count >= 2,
-            ":L1 should be issued by both slew-prep and watcher-abort; log={log:?}"
+            l1_count >= 1,
+            ":L1 should be issued by the watcher abort path; log={log:?}"
         );
         assert!(
-            l2_count >= 2,
-            ":L2 should be issued by both slew-prep and watcher-abort; log={log:?}"
+            l2_count >= 1,
+            ":L2 should be issued by the watcher abort path; log={log:?}"
         );
     }
 
@@ -2233,12 +2330,12 @@ mod tests {
     }
 
     /// Transport that always reports `running = true` on `:f<axis>`
-    /// and ignores `:L<axis>`. Other handshake commands get
+    /// and ignores `:K<axis>`. Other handshake commands get
     /// plausibly-shaped replies (CPR, TMR_Freq, etc.) so the
     /// manager can complete its connect() handshake. Used to drive
     /// `stop_axis_and_wait` into its timeout branch — real hardware
     /// never gets stuck like this, but the regular mock processes
-    /// `:L` instantaneously, so without a deliberately-broken
+    /// `:K` instantaneously, so without a deliberately-broken
     /// transport the timeout code path is unreachable from tests.
     struct StuckAxisTransport;
 
@@ -2267,8 +2364,9 @@ mod tests {
                 // `:j<axis>` returns a 6-hex biased position
                 // (0x800000 → encoder 0).
                 b'j' => Ok(b"=000080\r".to_vec()),
-                // Everything else (including `:F` initialize and
-                // `:L` instant-stop) acks without side effects.
+                // Everything else (including `:F` initialize,
+                // `:K` decelerate-stop, and `:L` instant-stop) acks
+                // without side effects.
                 _ => Ok(b"=\r".to_vec()),
             }
         }
@@ -2291,14 +2389,14 @@ mod tests {
 
     #[tokio::test]
     async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
-        // The free-function helper is called from both
+        // The free-function helper is called from
         // `MountDevice::stop_and_wait` (covered by the slew/park
         // happy paths) and the pickup loop (covered by
         // `slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance`).
         // Its *timeout* branch is unreachable from those paths
-        // because the mock always responds to `:L` instantly; this
+        // because the mock always responds to `:K` instantly; this
         // test wires a deliberately-broken transport that ignores
-        // `:L` and always reports running, then asserts the helper
+        // `:K` and always reports running, then asserts the helper
         // returns the timeout error after `AXIS_STOP_TIMEOUT`.
         let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
         // No connect() — `stop_axis_and_wait` only needs `send` to
