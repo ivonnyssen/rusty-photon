@@ -112,12 +112,20 @@ Watcher's post-slew `:G110 :I108CC05 :J1` at 03:02:06.495 (UTC):
 | +760 ms | -453408 | +9 | 45/s (sidereal target: 42/s) |
 
 The firmware engages tracking within ~160 ms of `:J1` and reaches
-sidereal-rate motion by ~400 ms. The current `settle_after_slew =
-200 ms` is just barely enough; trimming to 100 ms would risk reading
+sidereal-rate motion by ~400 ms.
+
+**Initial reading (pre-Option-1):** `settle_after_slew = 200 ms`
+appeared just barely enough; trimming to 100 ms would risk reading
 RA mid-engagement (~1–2″ of drift), 0 ms would risk ~2.4″.
 
-This significantly narrows Experiment 2's value. Settle is roughly
-right-sized for this firmware.
+**Updated reading (after Option 1 with early pause-guard
+release):** the watcher releases the background-polling pause guard
+right after the tracking-restart `:J1` and *before* the settle
+delay. That lets the background polling task refresh the snapshot
+during settle with already-tracking encoder data, so settle is no
+longer load-bearing for snapshot freshness — it's just a
+mechanical-stability margin. Empirically, 100 ms now produces 0/10
+tolerance crossings on both USB (max 6.6″) and UDP (max 8.7″).
 
 ## Experiments (revised after diagnostics)
 

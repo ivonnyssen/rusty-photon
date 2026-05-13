@@ -177,9 +177,12 @@ impl MountDevice {
 
     /// `ASCOMResult` wrapper over the free-function
     /// [`stop_axis_and_wait`] — issues `:K<axis>` and polls `:f<axis>`
-    /// until the running flag clears. Used by `set_tracking(true)` and
-    /// `park`, which need ASCOM error mapping. The slew path calls
-    /// `stop_axis_and_wait` directly through `issue_slew_axis`.
+    /// until the running flag clears. Used by every `MountDevice`
+    /// caller that needs ASCOM error mapping: `set_tracking(true)`,
+    /// `park`, and the per-axis stop preceding each `issue_slew_axis`
+    /// in `slew_to_coordinates_async`. The slew-completion and park
+    /// watchers run inside spawned tasks and call `stop_axis_and_wait`
+    /// directly (no `MountDevice` to wrap the error).
     async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
         stop_axis_and_wait(&self.transport, axis, AXIS_STOP_TIMEOUT)
             .await
