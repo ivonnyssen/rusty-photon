@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ascom_alpaca::api::telescope::Telescope;
+use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::TypedDevice;
 use ascom_alpaca::ASCOMError;
 use ascom_alpaca::Client as AlpacaClient;
@@ -31,6 +31,11 @@ pub struct StarAdventurerWorld {
     pub temp_dir: Option<TempDir>,
     pub last_error: Option<String>,
     pub last_error_code: Option<u16>,
+    /// Last successful `DestinationSideOfPier` result. Set by the
+    /// "I read DestinationSideOfPier ..." step so the matching
+    /// `Then DestinationSideOfPier should be ...` step can assert on
+    /// it without re-issuing the wire call.
+    pub last_destination_pier_side: Option<PierSide>,
     /// Pending state-seed body that BDD `Given` steps build up before
     /// the service is started. After `start_service` spawns the binary,
     /// `apply_pending_seed()` POSTs this to `/debug/v1/mock-state` so
@@ -170,6 +175,11 @@ impl StarAdventurerWorld {
     pub fn record_error(&mut self, e: ASCOMError) {
         self.last_error_code = Some(e.code.raw());
         self.last_error = Some(e.message.to_string());
+    }
+
+    pub fn record_destination_pier_side(&mut self, side: PierSide) {
+        self.last_destination_pier_side = Some(side);
+        self.clear_error();
     }
 
     /// Re-read the config file the running service was started with and

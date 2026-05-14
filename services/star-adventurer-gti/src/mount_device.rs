@@ -710,8 +710,44 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
-        Ok(side_of_pier_calc(mech_ha, self.config.site_latitude_deg))
+        Ok(side_of_pier_calc(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        ))
+    }
+
+    async fn destination_side_of_pier(&self, ra: f64, dec: f64) -> ASCOMResult<PierSide> {
+        // Pure prediction — no wire traffic, no slew. Runs the same
+        // coordinate-math pipeline `slew_to_coordinates_async` uses to
+        // pick the target encoder pair, then applies the same Dec >
+        // 90° check `side_of_pier()` uses to classify the resulting
+        // pointing state. The driver never plans a meridian flip, so
+        // any target inside the safety envelope lands with the Dec
+        // encoder within ±90° and therefore predicts pierWest in the
+        // Northern Hemisphere (East in the Southern). Targets outside
+        // the envelope are rejected with `INVALID_VALUE` here for
+        // parity with `slew_to_coordinates_async` — ConformU's
+        // SOPPierTest commands such targets to exercise the
+        // pier-flip code paths, and rejecting them at the
+        // prediction step matches the rejection at the slew step.
+        self.ensure_connected().await?;
+        Self::validate_coordinates(ra, dec)?;
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let mech_ha = ra_to_mechanical_ha(ra, lst);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
+        Ok(side_of_pier_calc(
+            dec_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        ))
     }
 
     // ---- Target setters ----
