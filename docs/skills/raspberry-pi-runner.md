@@ -129,7 +129,7 @@ latest ARM64 Linux runner from
 sudo -u gh-runner bash -c '
   mkdir -p $HOME/actions-runner
   cd $HOME/actions-runner
-  RUNNER_VERSION=2.319.1   # check releases page for current
+  RUNNER_VERSION=2.334.0   # check releases page for current
   curl -fsSL -o actions-runner.tar.gz \
     https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz
   tar xzf actions-runner.tar.gz

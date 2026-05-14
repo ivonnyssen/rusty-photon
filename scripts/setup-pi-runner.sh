@@ -32,9 +32,11 @@ set -euo pipefail
 # === Defaults ===
 
 # Bump RUNNER_VERSION + refresh RUNNER_SHA256 in tandem when upgrading.
-# Find current releases at https://github.com/actions/runner/releases.
-RUNNER_VERSION="${RUNNER_VERSION:-2.319.1}"
-RUNNER_SHA256="${RUNNER_SHA256:-}"
+# Find current releases at https://github.com/actions/runner/releases — the
+# release body includes a per-arch SHA-256 table. The pinned values below
+# were captured on 2026-05-14 against the v2.334.0 release.
+RUNNER_VERSION="${RUNNER_VERSION:-2.334.0}"
+RUNNER_SHA256="${RUNNER_SHA256:-f44255bd3e80160eb25f71bc83d06ea025f6908748807a584687b3184759f7e4}"
 RUNNER_NAME="${RUNNER_NAME:-pi5-nightly}"
 RUNNER_LABEL="${RUNNER_LABEL:-raspberry-pi}"
 RUNNER_USER="${RUNNER_USER:-gh-runner}"
