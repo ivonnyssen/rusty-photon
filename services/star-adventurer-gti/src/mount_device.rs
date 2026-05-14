@@ -3114,6 +3114,29 @@ mod tests {
     }
 
     #[test]
+    fn read_park_from_config_treats_explicit_null_as_none_per_axis() {
+        // Pins the doc-comment guarantee: a `None` return value means
+        // the file did not set that key OR set it to `null`, and the
+        // two axes are returned independently. Here `park_ra_ticks`
+        // is set to a real value while `park_dec_ticks` is explicitly
+        // JSON `null`; the helper must return `(Some(1234), None)`,
+        // and the caller (`set_connected`) will then fall back to the
+        // handshake-captured value for the Dec axis only.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1234,
+                "park_dec_ticks": null,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, Some(1234));
+        assert_eq!(dec, None);
+    }
+
+    #[test]
     fn read_park_from_config_fails_when_mount_object_is_missing() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.json");
