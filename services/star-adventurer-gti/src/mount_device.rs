@@ -1703,12 +1703,16 @@ fn spawn_slew_completion_watcher(
                 if let (Some(target_ra), Some(target_dec), Some(params)) =
                     (target_ra, target_dec, transport.parameters().await)
                 {
-                    // ERFA can refuse the host UTC if the leap-second
-                    // table doesn't cover it (driver shipped today,
-                    // run far enough into the future). Match the
-                    // `poll_axes_now` failure pattern: log, clear
-                    // `slew_in_progress`, exit the watcher rather
-                    // than aborting the tokio task.
+                    // ERFA refuses the host UTC if `eraCal2jd`
+                    // rejects the year (below `IYMIN = -4799`). A
+                    // leap-second-table-out-of-range clock returns
+                    // `Ok` with a warning, not an error — see the
+                    // `StarAdvError::Timekeeping` rustdoc — so the
+                    // realistic failure here is an absurdly-far-
+                    // past clock, not a future-shifted one. Match
+                    // the `poll_axes_now` failure pattern: log,
+                    // clear `slew_in_progress`, exit the watcher
+                    // rather than aborting the tokio task.
                     let lst = match local_sidereal_time_hours(
                         SystemTime::now(),
                         config.site_longitude_deg,
@@ -2720,6 +2724,28 @@ mod tests {
         let d = fast_settle_device();
         let err = d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[test]
+    fn ascom_helper_maps_timekeeping_to_invalid_operation() {
+        // Every LST-using trait method propagates ERFA failures via
+        // `local_sidereal_time_hours(...).map_err(Self::ascom)?`. A
+        // mount-level trait test would need a clock-injection seam
+        // (host `SystemTime` can not even represent ERFA's
+        // `IYMIN = -4799` floor on Windows, where FILETIME starts in
+        // 1601). Instead, exercise the conversion the trait methods
+        // actually use — `Self::ascom(Timekeeping(_))` — so the
+        // propagation pattern has a runtime assertion in this file
+        // alongside the trait code.
+        let err = MountDevice::ascom(StarAdvError::Timekeeping(
+            "ERFA Dtf2d rejected UTC -5000-01-01 (code -1)".into(),
+        ));
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("timekeeping"),
+            "ASCOM message should retain the diagnostic, got {:?}",
+            err.message
+        );
     }
 
     #[tokio::test]
