@@ -1850,14 +1850,20 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 
 /// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
 /// config file. Each axis is returned independently — a `None` means
-/// the file did not set that key (or set it to `null`), and the caller
-/// will fall back to the handshake-captured value for that axis.
+/// the file did not set that key (or set it to JSON `null`), and the
+/// caller will fall back to the handshake-captured value for that axis.
 ///
-/// Failures (file missing, malformed JSON, `mount` key missing or not
-/// an object) are surfaced as `StarAdvError::Config`. Reading the file
-/// only at connect time means an operator can hand-edit the park keys
-/// between connects and have the change take effect on reconnect,
-/// without restarting the driver.
+/// A key that **is** present but holds something other than an integer
+/// inside `i32`'s range is surfaced as a `StarAdvError::Config` rather
+/// than silently treated as `None`. Operator typos (a string,
+/// an i64 too large to be encoder ticks, a float) should fail loudly so
+/// the misconfiguration is visible rather than masked by the handshake
+/// fallback. Other failures (file missing, malformed JSON, `mount` key
+/// missing or not an object) are also surfaced as `StarAdvError::Config`.
+///
+/// Reading the file only at connect time means an operator can
+/// hand-edit the park keys between connects and have the change take
+/// effect on reconnect, without restarting the driver.
 ///
 /// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
 fn read_park_from_config(config_path: &Path) -> crate::error::Result<(Option<i32>, Option<i32>)> {
@@ -1876,15 +1882,39 @@ fn read_park_from_config(config_path: &Path) -> crate::error::Result<(Option<i32
                 config_path.display()
             ))
         })?;
-    let ra = mount
-        .get("park_ra_ticks")
-        .and_then(|v| v.as_i64())
-        .and_then(|n| i32::try_from(n).ok());
-    let dec = mount
-        .get("park_dec_ticks")
-        .and_then(|v| v.as_i64())
-        .and_then(|n| i32::try_from(n).ok());
+    let ra = extract_park_tick(mount.get("park_ra_ticks"), "mount.park_ra_ticks")?;
+    let dec = extract_park_tick(mount.get("park_dec_ticks"), "mount.park_dec_ticks")?;
     Ok((ra, dec))
+}
+
+/// Decode an optional park-tick JSON value:
+///
+/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
+///   falls back to the handshake-captured value).
+/// - A JSON integer in the `i32` range → `Ok(Some(n))`.
+/// - Anything else (string, float, boolean, array/object, i64 outside
+///   `i32` range) → `Err(StarAdvError::Config)`. Loud failure on
+///   operator typo is the whole reason this helper exists — silently
+///   falling back to handshake would mask the misconfiguration.
+fn extract_park_tick(
+    value: Option<&serde_json::Value>,
+    key: &'static str,
+) -> crate::error::Result<Option<i32>> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let n = v.as_i64().ok_or_else(|| {
+                StarAdvError::Config(format!(
+                    "`{key}` must be an integer (encoder ticks), got {v}"
+                ))
+            })?;
+            i32::try_from(n).map(Some).map_err(|_| {
+                StarAdvError::Config(format!(
+                    "`{key}` value {n} is outside the i32 encoder-tick range"
+                ))
+            })
+        }
+    }
 }
 
 /// Patch the on-disk JSON config with the supplied park encoder pair.
@@ -3680,6 +3710,75 @@ mod tests {
         let (ra, dec) = read_park_from_config(&path).unwrap();
         assert_eq!(ra, Some(1234));
         assert_eq!(dec, None);
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_wrong_type() {
+        // Operator typo: park_ra_ticks declared as a string. Used to
+        // be silently treated as None (fell back to handshake);
+        // current contract is to surface the misconfiguration. Per
+        // Copilot review on PR #221 (comment 3238774050).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": "not-an-integer",
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => {
+                assert!(msg.contains("park_ra_ticks"), "{msg}");
+                assert!(msg.contains("integer"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_float_value() {
+        // serde_json::Value::Number for 1.5 isn't representable as
+        // i64; `as_i64()` returns None and we surface a Config error
+        // rather than silently dropping the value.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1.5,
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        assert!(matches!(err, StarAdvError::Config(_)));
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_out_of_i32_range() {
+        // A value that fits in i64 but not i32 — e.g. someone copied
+        // a large encoder count from a higher-resolution mount, or
+        // a typo added a digit. Either way we should fail loudly so
+        // the operator sees the bad value rather than silently
+        // falling back to handshake.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": i64::from(i32::MAX) + 1_i64,
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => {
+                assert!(msg.contains("park_ra_ticks"), "{msg}");
+                assert!(msg.contains("i32"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[test]
