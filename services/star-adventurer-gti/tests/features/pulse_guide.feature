@@ -191,13 +191,19 @@ Feature: PulseGuide as rate-shifted tracking
     And IsPulseGuiding should become false within 2000 ms
 
   Scenario: Perpendicular concurrent pulses (N on Dec, E on RA) both succeed
+    # Durations are deliberately long (2 seconds each) to survive
+    # slow-CI scheduling: the two `pulse_guide` calls plus the
+    # following `IsPulseGuiding` read each take an HTTP round-trip,
+    # so a short (<500ms) pulse can expire on a heavily-loaded
+    # runner before the assertion fires. The 4s polling deadline
+    # for completion gives both watchers room to wake.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide North for 300 ms
-    And I pulse guide East for 300 ms
+    And I pulse guide North for 2000 ms
+    And I pulse guide East for 2000 ms
     Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 4000 ms
 
   Scenario: set_tracking(false) during an RA pulse cancels the pulse restore
     # Cancellation rule: any axis-mutating call clears the pulse flag

@@ -1181,9 +1181,13 @@ impl Telescope for MountDevice {
         if duration.is_zero() {
             return Ok(());
         }
-        // Resolve direction → (axis, ccw, rate_factor) and capture the
-        // `tracking_was_on` snapshot under a single read lock. Same
-        // read also catches a same-axis pulse already in flight.
+        // Resolve direction → (axis, ccw, rate_factor) under a read
+        // lock. The in-flight check + flag-set happens later under a
+        // write lock so it's atomic against concurrent same-axis
+        // calls (the rate_factor / tracking_was_on snapshots taken
+        // here are stable: rates can be updated concurrently, but
+        // the worst case is a one-tick-late read which ASCOM
+        // tolerates).
         let (axis, ccw, rate_factor, tracking_was_on) = {
             let s = self.state.read().await;
             let (axis, ccw, rate_factor) = match direction {
@@ -1192,22 +1196,17 @@ impl Telescope for MountDevice {
                 GuideDirection::North => (Axis::Dec, false, s.guide_rate_dec_fraction),
                 GuideDirection::South => (Axis::Dec, true, s.guide_rate_dec_fraction),
             };
-            let in_flight = match axis {
-                Axis::Ra => s.pulse_guiding_ra,
-                Axis::Dec => s.pulse_guiding_dec,
-                Axis::Both => false,
-            };
-            if in_flight {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "PulseGuide refused while a same-axis pulse is in flight",
-                ));
-            }
             let tracking_was_on = axis == Axis::Ra && s.tracking_requested;
             (axis, ccw, rate_factor, tracking_was_on)
         };
         // Compute the shifted step period from the cached
-        // sidereal-period helper and the rate factor.
+        // sidereal-period helper and the rate factor. Validate against
+        // the protocol's 24-bit `:I` payload range before sending —
+        // `encode_u24` silently truncates above `0x00FF_FFFF`, so an
+        // un-validated period would wrap to an unintended speed.
+        // For sidereal_period ≈ 380K on the GTi, the floor is
+        // `rate_factor ≥ sidereal_period / 0xFFFFFF ≈ 0.023`. Tiny
+        // guide-rate fractions trip this; clients see `INVALID_VALUE`.
         let params = self
             .transport
             .parameters()
@@ -1215,40 +1214,79 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let sidereal_period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
         let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
-        // Wire path: `:K<axis>` (and wait for the running flag to clear
-        // so `:G` doesn't return `!2 MotorNotStopped`), `:G<axis>`
-        // (Tracking + ccw), `:I<axis>` (shifted period), `:J<axis>`.
-        self.stop_and_wait(axis).await?;
-        let mode = MotionMode {
-            kind: ModeKind::Tracking,
-            speed: Speed::Slow,
-            ccw,
-        };
-        self.transport
-            .send(Command::SetMotionMode { axis, mode })
-            .await
-            .map_err(Self::ascom)?;
-        self.transport
-            .send(Command::SetStepPeriod {
-                axis,
-                period: shifted_period,
-            })
-            .await
-            .map_err(Self::ascom)?;
-        self.transport
-            .send(Command::StartMotion(axis))
-            .await
-            .map_err(Self::ascom)?;
-        // Set the in-flight flag synchronously before spawning so a
-        // client that polls `IsPulseGuiding` immediately after
-        // `PulseGuide` returns sees `true` even for sub-poll durations.
+        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
+        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
+                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
+                     range; pick a guide rate closer to sidereal"
+                ),
+            ));
+        }
+        // Atomically check `pulse_guiding_<axis>` and set it to true
+        // under a single write lock. This closes the TOCTOU window: a
+        // concurrent same-axis `pulse_guide` either acquires the
+        // write lock first (and we see the flag set on the next read),
+        // or acquires it later (and sees our flag). Without the
+        // atomic set, the previous flow let a concurrent caller pass
+        // the in-flight check while we were still awaiting the
+        // `:K`/`:G`/`:I`/`:J` sends.
         {
             let mut s = self.state.write().await;
+            let already_in_flight = match axis {
+                Axis::Ra => s.pulse_guiding_ra,
+                Axis::Dec => s.pulse_guiding_dec,
+                Axis::Both => false,
+            };
+            if already_in_flight {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "PulseGuide refused while a same-axis pulse is in flight",
+                ));
+            }
             match axis {
                 Axis::Ra => s.pulse_guiding_ra = true,
                 Axis::Dec => s.pulse_guiding_dec = true,
                 Axis::Both => {}
             }
+        }
+        // Wire path: `:K<axis>` (decelerate and wait for the running
+        // flag to clear so `:G` doesn't return `!2 MotorNotStopped`),
+        // `:G<axis>` (Tracking + ccw), `:I<axis>` (shifted period),
+        // `:J<axis>`. Any failure on the wire rolls back the
+        // `pulse_guiding_<axis>` flag so the next caller isn't blocked
+        // by a half-applied pulse, and so `IsPulseGuiding` reports
+        // false consistent with the lack of actual motion.
+        let mode = MotionMode {
+            kind: ModeKind::Tracking,
+            speed: Speed::Slow,
+            ccw,
+        };
+        let wire_result: ASCOMResult<()> = async {
+            self.stop_and_wait(axis).await?;
+            self.transport
+                .send(Command::SetMotionMode { axis, mode })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetStepPeriod {
+                    axis,
+                    period: shifted_period,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::StartMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = wire_result {
+            clear_pulse_flag(&self.state, axis).await;
+            return Err(e);
         }
         spawn_pulse_guide_watcher(
             Arc::clone(&self.state),
@@ -3061,12 +3099,14 @@ mod tests {
 
     #[tokio::test]
     async fn pulse_guide_sets_is_pulse_guiding_synchronously() {
-        // The flag must be true before pulse_guide returns. Use a
-        // very short duration so the watcher could in principle clear
-        // the flag before our read — the synchronous-before-spawn
-        // ordering guarantees we still observe `true`.
+        // The flag must flip to true before `pulse_guide` returns —
+        // see the atomic check-and-set under the write lock in
+        // `MountDevice::pulse_guide`. The 30-second duration here is
+        // not a "short pulse" test; it just keeps the watcher's
+        // `tokio::time::sleep` from completing during the assertion
+        // read so the only way `is_pulse_guiding()` can be true is
+        // the synchronous flag-set.
         let d = connected_device().await;
-        // Long enough duration that the watcher is still asleep.
         d.pulse_guide(GuideDirection::North, Duration::from_secs(30))
             .await
             .unwrap();
@@ -3090,6 +3130,29 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("watcher did not clear is_pulse_guiding within 2s of a 100ms pulse");
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_rejects_step_period_overflow() {
+        // Tiny guide-rate fractions push the shifted step period
+        // above the protocol's 24-bit `:I` payload range. Without
+        // the check, `encode_u24` would silently truncate to a
+        // wrap-around value and run the mount at a wildly wrong
+        // speed. For the GTi mock's defaults (sidereal_period ≈
+        // 380K), the boundary is `rate_factor ≈ 0.023`; fraction
+        // 0.001 is well below.
+        let d = connected_device().await;
+        d.set_guide_rate_declination(SIDEREAL_DEG_PER_SEC * 0.001)
+            .await
+            .unwrap();
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        // The rollback must clear the flag the period validation
+        // would otherwise have set.
+        assert!(!d.is_pulse_guiding().await.unwrap());
     }
 
     #[tokio::test]
