@@ -9,7 +9,9 @@ use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
-use star_adventurer_gti::{load_config, Config, ServerBuilder, TransportFactory};
+use star_adventurer_gti::{
+    load_config, probe_park_file_writability, Config, ServerBuilder, TransportFactory,
+};
 
 #[derive(Parser)]
 #[command(name = "star-adventurer-gti")]
@@ -108,6 +110,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             p.clone()
         })
     });
+
+    // Early-warning probe: try staging a temp file in the same
+    // directory `SetPark` would write into. This catches the
+    // "operator pointed `--config` at a read-only location" case
+    // at boot rather than only on the first `SetPark` call. The
+    // probe failing does **not** flip `CanSetPark` to `false` — we
+    // still advertise the capability and let the real `SetPark`
+    // surface a specific error if it ever fires. See
+    // [`probe_park_file_writability`] for the rationale.
+    if let Some(path) = &config_file_path {
+        if let Err(e) = probe_park_file_writability(path) {
+            tracing::warn!(
+                "SetPark writes to {:?} will fail at runtime: {e}. \
+                 Check permissions on the containing directory if SetPark support is required.",
+                path
+            );
+        }
+    }
 
     info!("Starting Star Adventurer GTi driver");
     #[cfg(feature = "mock")]

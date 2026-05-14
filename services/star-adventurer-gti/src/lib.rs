@@ -16,7 +16,7 @@ pub use config::{
     UsbConfig,
 };
 pub use error::{Result, StarAdvError};
-pub use mount_device::MountDevice;
+pub use mount_device::{probe_park_file_writability, MountDevice};
 pub use transport::serial::SerialTransportFactory;
 pub use transport::udp::UdpTransportFactory;
 pub use transport::{Transport, TransportFactory};

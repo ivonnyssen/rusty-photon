@@ -1031,16 +1031,29 @@ impl Telescope for MountDevice {
             self.state.write().await.tracking_requested = false;
         }
         // Slew both axes to the loaded park target. `set_connected(true)`
-        // populated these from config / handshake; we assert their
-        // presence here because the only way they could be `None` after
-        // `ensure_connected()` returned Ok is a logic bug worth surfacing
-        // loudly.
+        // populated these from config / handshake; if either is `None`
+        // here it's an internal invariant violation (only path to reach
+        // this code requires `ensure_connected()` to have observed
+        // `requested_connection = true`, which is only set after
+        // `load_park_target_after_connect` populated both). Surface as
+        // a structured ASCOMError rather than a panic — panicking
+        // inside a tokio task aborts it and leaves the Alpaca client
+        // with a connection-reset rather than a recoverable error code.
         let (target_ra_ticks, target_dec_ticks) = {
             let s = self.state.read().await;
-            (
-                s.park_ra_ticks.expect("park_ra_ticks loaded on connect"),
-                s.park_dec_ticks.expect("park_dec_ticks loaded on connect"),
-            )
+            let ra = s.park_ra_ticks.ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "park_ra_ticks not loaded — internal invariant violation",
+                )
+            })?;
+            let dec = s.park_dec_ticks.ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "park_dec_ticks not loaded — internal invariant violation",
+                )
+            })?;
+            (ra, dec)
         };
         // Same wire sequence as `slew_to_coordinates_async`:
         // `:K`-and-wait, `:G` with direction chosen from
@@ -1524,6 +1537,34 @@ async fn stop_axis_and_wait(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Probe whether the parent directory of `config_path` can host the
+/// staging temp file that `SetPark`'s atomic-rename pattern requires.
+///
+/// Called once at startup from `main.rs` so the operator sees a `warn!`
+/// at boot if `SetPark` will fail at runtime due to filesystem
+/// permissions, rather than only discovering it on the first `SetPark`
+/// call. Does **not** change `CanSetPark` — the capability still
+/// advertises support; the probe is purely an early-warning signal.
+///
+/// The probe creates a `NamedTempFile` in the same directory the real
+/// staging file would live in (`config_path.parent()`) and immediately
+/// drops it. Writability of the **parent directory** is what matters
+/// for the atomic-rename pattern: even if the target config file is
+/// itself read-only, `rename(2)` only needs write access to the
+/// containing directory to swap in a new file. The probe therefore
+/// matches what `write_park_to_config` actually does — a false-positive
+/// would mean the probe passes but the real write fails (or vice
+/// versa), defeating the point.
+pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
+    let parent = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    // Drop closes and deletes the temp file; the probe leaves no trace.
+    let _tmp = tempfile::NamedTempFile::new_in(parent)?;
+    Ok(())
 }
 
 /// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
@@ -3187,6 +3228,41 @@ mod tests {
         let (ra, dec) = read_park_from_config(&path).unwrap();
         assert_eq!(ra, Some(1234));
         assert_eq!(dec, None);
+    }
+
+    #[test]
+    fn probe_park_file_writability_passes_on_a_writable_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        probe_park_file_writability(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_park_file_writability_fails_on_a_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Drop write permission on the parent directory so
+        // `NamedTempFile::new_in` cannot stage a sibling.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        // Probe should report the underlying I/O error.
+        let err = probe_park_file_writability(&path).unwrap_err();
+        // Restore write perms so TempDir's Drop can clean up.
+        let mut restored = std::fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), restored).unwrap();
+        // PermissionDenied is what Linux/macOS surface; either way
+        // it must be classified as a permission / access issue.
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
+            ),
+            "unexpected error kind: {err:?}"
+        );
     }
 
     #[test]
