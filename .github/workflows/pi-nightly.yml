@@ -1,0 +1,187 @@
+# Nightly verification on a Raspberry Pi 5 self-hosted runner (Linux/ARM64).
+#
+# Coverage rationale: the workflows in this directory all target x86_64
+# GitHub-hosted runners (ubuntu/macos/windows). The Pi 5 is ARM64, so this
+# nightly catches arch-specific regressions (atomics, alignment, vendored C
+# deps such as cfitsio) that scheduled.yml cannot. See
+# docs/skills/raspberry-pi-runner.md for runner setup and security posture.
+#
+# === Security model — DO NOT WEAKEN ===
+#
+# This is the only workflow that runs on a self-hosted runner, and the repo is
+# public. Self-hosted runners on public repos are dangerous specifically
+# because a malicious PR can edit the workflow YAML and run arbitrary code on
+# the runner during PR validation. The safety property here is that this
+# workflow has NO `pull_request` and NO `push` trigger. Scheduled runs always
+# execute the workflow file from the default branch (main), and only the
+# repo owner can write to main, so PRs literally cannot influence what
+# executes on the Pi.
+#
+# Belt-and-suspenders:
+#   * `if: github.ref == 'refs/heads/main'` on the build job
+#   * `ref: main` pinned on `actions/checkout`
+#   * Workflow-level `permissions: contents: read` (the issue-writer job
+#     elevates only what it needs, scoped to that job)
+#
+# If you ever feel tempted to add `pull_request:` to this file, do not — see
+# docs/skills/raspberry-pi-runner.md §"Why no pull_request trigger".
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Daily at 04:00 UTC. Slots between plate-solver-smoke (03:30 UTC) and
+    # install-astap (04:30 UTC) so a Pi observer of the Actions tab sees them
+    # in a clean sequence; neither of those workflows runs on this runner,
+    # so the only real coordination cost is human readability.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+# Don't cancel an in-flight nightly if a manual dispatch fires — losing a
+# scheduled run is worse than running two back-to-back.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+name: pi-nightly
+
+jobs:
+  arm64-stable:
+    # Hard gate against accidental non-main execution. `schedule` already
+    # implies main; this keeps that property explicit and survives any future
+    # trigger change.
+    if: github.ref == 'refs/heads/main'
+    name: raspberry-pi / linux / arm64 / stable
+    # `raspberry-pi` is the custom label applied during runner registration;
+    # the other three are standard self-hosted labels GitHub injects
+    # automatically. Match in the same shape used during `config.sh
+    # --labels raspberry-pi` — see docs/skills/raspberry-pi-runner.md.
+    runs-on: [self-hosted, Linux, ARM64, raspberry-pi]
+    # First run with a cold cache can build the full workspace from scratch on
+    # ARM, which is slow on a Pi 5. 6h is generous; warmed-cache runs should
+    # finish in ~60-90 min.
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache namespace from the existing linux-stable (x86)
+          # cache so the two architectures don't evict each other.
+          shared-key: linux-arm64-stable
+
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+
+      # Pre-build all targets so nextest and BDD tests find cached binaries
+      # without recompilation. Mirrors scheduled.yml's nightly job.
+      - name: cargo build --workspace
+        run: cargo build --locked --workspace --all-features --all-targets
+
+      - name: cargo nextest run
+        run: cargo nextest run --locked --all-features --all-targets
+
+      # BDD tests use a custom harness (bdd_main!) incompatible with nextest.
+      - name: cargo test --test bdd
+        run: cargo test --locked --all-features --test bdd
+
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc
+
+      # Preserve OmniSim logs on failure for off-runner analysis (matches the
+      # pattern in test.yml). Without this, the only copy lives inside the
+      # runner's _work directory and is overwritten next run.
+      - name: Upload OmniSim logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnisim-logs-pi-nightly
+          path: '**/bdd-infra-omnisim-logs/**'
+          if-no-files-found: ignore
+          retention-days: 14
+
+  notify-on-failure:
+    # Open or update a tracking issue when the scheduled nightly fails so a
+    # red ARM build does not sit unnoticed in the Actions tab. Skipped on
+    # workflow_dispatch so manual debugging runs do not churn the issue.
+    # Runs on a hosted runner — if the Pi runner itself is offline or broken,
+    # this still fires and reports.
+    needs: arm64-stable
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: pi-nightly ARM64 build failing`;
+            const body = [
+              `The nightly Raspberry Pi 5 ARM64 verification workflow failed.`,
+              ``,
+              `Likely causes: an arch-specific regression (atomics, alignment,`,
+              `endian, SIMD intrinsics, vendored C deps such as cfitsio), a`,
+              `change that breaks cross-arch feature unification, the Pi runner`,
+              `being offline or low on disk, or an OmniSim/BDD flake. See the`,
+              `failed job for the per-step log and the uploaded OmniSim logs`,
+              `artifact (if the failure was in cargo test --test bdd).`,
+              ``,
+              `Runner setup and decommissioning: docs/skills/raspberry-pi-runner.md`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on`,
+              `schedule. It will be updated (rather than re-opened) on subsequent`,
+              `failures so the notification cadence stays low. Close it once the`,
+              `underlying issue is resolved; the next failure will reopen.`,
+            ].join("\n");
+            // Search both open AND closed so the body's "the next failure
+            // will reopen" promise is honored. Mirrors the conformu.yml and
+            // install-astap.yml patterns.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              labels: "pi-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              if (match.state === "closed") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: "open",
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["pi-nightly", "ci-flake"],
+              });
+            }
