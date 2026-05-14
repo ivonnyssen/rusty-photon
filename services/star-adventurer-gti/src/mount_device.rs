@@ -239,6 +239,60 @@ impl MountDevice {
             "synchronous slew timed out waiting for completion",
         ))
     }
+
+    /// Post-connect park-target load. Source priority, per axis:
+    ///
+    /// 1. `mount.park_*_ticks` from the **on-disk** config file when one
+    ///    was supplied via `--config`. Reading fresh from disk on every
+    ///    connect means a successful `SetPark` followed by
+    ///    disconnect/reconnect picks up the new target, and an operator
+    ///    hand-edit between connects takes effect.
+    /// 2. `self.config.park_*_ticks` for `Config::default()` runs (no
+    ///    config file) — these never change in-process because
+    ///    `SetPark` is unreachable in that mode.
+    /// 3. The encoder positions captured during the init handshake
+    ///    (`:j1` / `:j2`) when neither of the above provided a value.
+    ///
+    /// Extracted from [`set_connected`] so a failure here (file missing,
+    /// malformed JSON, lost transport mid-load) can be rolled back by the
+    /// caller without leaking the connection ref-count. See the design
+    /// doc's §"Park lifecycle" for the resolution rules.
+    async fn load_park_target_after_connect(&self) -> ASCOMResult<()> {
+        let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
+            let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
+                .await
+                .map_err(|e| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        format!("park-config read task join error: {e}"),
+                    )
+                })?;
+            result.map_err(Self::ascom)?
+        } else {
+            (self.config.park_ra_ticks, self.config.park_dec_ticks)
+        };
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
+        let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
+        {
+            let mut s = self.state.write().await;
+            s.park_ra_ticks = Some(ra_target);
+            s.park_dec_ticks = Some(dec_target);
+        }
+        debug!(
+            ra_target,
+            dec_target,
+            from_config_ra = config_ra.is_some(),
+            from_config_dec = config_dec.is_some(),
+            from_file = self.config_file_path.is_some(),
+            "park target loaded"
+        );
+        Ok(())
+    }
 }
 
 /// Upper bound on how long the synchronous `SlewToCoordinates` /
@@ -400,55 +454,18 @@ impl Device for MountDevice {
         }
         if connected {
             self.transport.connect().await.map_err(Self::ascom)?;
-            // Load the park target now that the handshake has populated
-            // `MountParameters`. Source priority, per axis:
-            //   1. `mount.park_*_ticks` from the **on-disk** config file
-            //      when one was supplied via `--config`. Reading fresh
-            //      from disk every connect means a successful `SetPark`
-            //      followed by disconnect/reconnect picks up the new
-            //      target, and an operator hand-edit between connects
-            //      takes effect.
-            //   2. `self.config.park_*_ticks` for `Config::default()`
-            //      runs (no config file) — these never change in-process
-            //      because `SetPark` is unreachable in that mode.
-            //   3. The encoder positions captured during the init
-            //      handshake (`:j1` / `:j2`) when neither of the above
-            //      provided a value.
-            // See the design doc's §"Park lifecycle" for the resolution
-            // rules.
-            let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
-                let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
-                    .await
-                    .map_err(|e| {
-                        ASCOMError::new(
-                            ASCOMErrorCode::INVALID_OPERATION,
-                            format!("park-config read task join error: {e}"),
-                        )
-                    })?;
-                result.map_err(Self::ascom)?
-            } else {
-                (self.config.park_ra_ticks, self.config.park_dec_ticks)
-            };
-            let params = self
-                .transport
-                .parameters()
-                .await
-                .ok_or(ASCOMError::NOT_CONNECTED)?;
-            let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
-            let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
-            {
-                let mut s = self.state.write().await;
-                s.park_ra_ticks = Some(ra_target);
-                s.park_dec_ticks = Some(dec_target);
+            // Post-connect work that can fail (config-file read, parameter
+            // cache lookup) runs inside `load_park_target_after_connect`
+            // so we can roll the connect back on any error — otherwise the
+            // transport ref-count would stay incremented while `*req`
+            // remained false, leaking a connection. Per the Copilot review
+            // on PR #221 (comment 3238682044).
+            if let Err(e) = self.load_park_target_after_connect().await {
+                if let Err(disc_err) = self.transport.disconnect().await {
+                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+                }
+                return Err(e);
             }
-            debug!(
-                ra_target,
-                dec_target,
-                from_config_ra = config_ra.is_some(),
-                from_config_dec = config_dec.is_some(),
-                from_file = self.config_file_path.is_some(),
-                "park target loaded"
-            );
             *req = true;
         } else {
             self.transport.disconnect().await.map_err(Self::ascom)?;
@@ -2951,6 +2968,42 @@ mod tests {
         let d = device_with_path(path);
         let err = d.set_park().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn set_connected_rolls_back_transport_when_park_load_fails() {
+        // Regression test for the Copilot review on PR #221
+        // (comment 3238682044): if `transport.connect()` succeeds but
+        // the post-connect park-target load fails, the transport
+        // ref-count was being left incremented (the underlying
+        // transport open) while `requested_connection` stayed `false`
+        // — effectively leaking a connection. The fix runs the
+        // post-connect work through `load_park_target_after_connect`
+        // and calls `transport.disconnect()` on any failure before
+        // surfacing the error.
+        //
+        // We trigger the failure path by handing `MountDevice` a
+        // `config_file_path` that points to a non-existent file:
+        // the handshake will succeed (mock transport is happy), but
+        // `read_park_from_config` will fail with a missing-file error.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        let d = device_with_path(path);
+
+        let err = d.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+
+        // The transport must have been disconnected on rollback.
+        // `is_available()` is the underlying TransportManager flag,
+        // which would be `true` if connect succeeded and no rollback
+        // ran. Asserting it false here proves we balanced the
+        // connect ref-count.
+        assert!(
+            !d.transport.is_available(),
+            "transport should be torn down after rollback"
+        );
+        // And the user-visible `connected()` getter agrees.
+        assert!(!d.connected().await.unwrap());
     }
 
     #[tokio::test]

@@ -23,12 +23,18 @@ use crate::config::{Config, TransportConfig};
 use crate::error::{Result, StarAdvError};
 use crate::transport::{Transport, TransportFactory};
 
-/// Snapshot of the values the mount reports during the init handshake. All
-/// 24-bit unsigned wire values; meaningful units are in the design doc.
+/// Snapshot of the values the mount reports during the init handshake.
+/// Meaningful units are in the design doc.
 ///
-/// `ra_at_handshake_ticks` and `dec_at_handshake_ticks` are signed encoder
-/// positions latched at connect time. They serve as the fallback park
-/// target when the config file does not carry explicit `park_ra_ticks` /
+/// The first six fields (`cpr_*`, `tmr_freq`, `high_speed_ratio_*`,
+/// `motor_board_version`) are 24-bit unsigned values decoded straight
+/// from the wire and stored as `u32` for ergonomics.
+///
+/// `ra_at_handshake_ticks` and `dec_at_handshake_ticks` are signed
+/// encoder positions: the wire reports them as 24-bit unsigned with a
+/// `0x800000` bias, which the codec decodes into signed `i32` before
+/// they reach this struct. They serve as the fallback park target when
+/// the config file does not carry explicit `park_ra_ticks` /
 /// `park_dec_ticks` values — see the design doc's
 /// [§"Park lifecycle"](../../../docs/services/star-adventurer-gti.md#park-lifecycle).
 #[derive(Debug, Clone, Copy, Default)]
