@@ -23,6 +23,8 @@ use erfars::constants::ERFA_DPI;
 use erfars::rotationtime::Gst06a;
 use erfars::timescales::{Dtf2d, Taitt, Utctai};
 
+use crate::error::{Result, StarAdvError};
+
 /// Convert RA-axis encoder ticks to a mechanical hour-angle in the range
 /// `[-12, +12)` hours.
 pub fn ra_ticks_to_mechanical_ha(ticks: i32, cpr: u32) -> f64 {
@@ -56,13 +58,32 @@ pub fn dec_ticks_to_degrees(ticks: i32, cpr: u32) -> f64 {
 /// Uses ERFA's `Gst06a` for Greenwich apparent sidereal time, then adds
 /// the site longitude. Same approach as
 /// `crates/rp-ephemeris/src/erfars_impl.rs::lst_hours`.
-pub fn local_sidereal_time_hours(utc: SystemTime, site_longitude_deg: f64) -> f64 {
-    let gast_hours = greenwich_apparent_sidereal_hours(utc);
-    (gast_hours + site_longitude_deg / 15.0).rem_euclid(24.0)
+///
+/// Returns [`StarAdvError::Timekeeping`] when ERFA refuses the host
+/// UTC — in practice that means `eraCal2jd` (reached transitively
+/// through `Dtf2d`) returning `-1` for a year below its calendar
+/// floor (`IYMIN = -4799`), or above the analogous upper bound. The
+/// leap-second-table boundary (years before 1960 or beyond `IYV + 5`)
+/// returns an ERFA *warning* in `Utctai`, not an error, and is
+/// silently accepted here. The coordinate-read hot path maps any Err
+/// to an ASCOM error rather than letting the tokio task abort and
+/// the Alpaca client see a connection reset.
+pub fn local_sidereal_time_hours(utc: SystemTime, site_longitude_deg: f64) -> Result<f64> {
+    lst_for_datetime(utc.into(), site_longitude_deg)
 }
 
-fn greenwich_apparent_sidereal_hours(utc: SystemTime) -> f64 {
-    let dt: DateTime<Utc> = utc.into();
+/// `DateTime<Utc>`-typed seam underneath
+/// [`local_sidereal_time_hours`]. Kept `pub(crate)` so unit tests can
+/// drive ERFA-refusing dates directly without going through
+/// `SystemTime` (which on Windows is backed by FILETIME and cannot
+/// represent years below 1601, let alone below ERFA's `IYMIN = -4799`
+/// floor).
+pub(crate) fn lst_for_datetime(dt: DateTime<Utc>, site_longitude_deg: f64) -> Result<f64> {
+    let gast_hours = greenwich_apparent_sidereal_hours(dt)?;
+    Ok((gast_hours + site_longitude_deg / 15.0).rem_euclid(24.0))
+}
+
+fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
     let year = dt.year();
     let month = dt.month() as i32;
     let day = dt.day() as i32;
@@ -71,15 +92,25 @@ fn greenwich_apparent_sidereal_hours(utc: SystemTime) -> f64 {
     let seconds = dt.second() as f64 + (dt.nanosecond() as f64) * 1e-9;
 
     let (utc1, utc2) = Dtf2d(true, year, month, day, hh, mm, seconds)
-        .expect("chrono-validated DateTime<Utc> rejected by ERFA Dtf2d")
+        .map_err(|code| {
+            StarAdvError::Timekeeping(format!(
+                "ERFA Dtf2d rejected UTC {year:04}-{month:02}-{day:02} \
+                 {hh:02}:{mm:02}:{seconds:06.3} (code {code})"
+            ))
+        })?
         .0;
     let (tai1, tai2) = Utctai(utc1, utc2)
-        .expect("ERFA Utctai failed (leapsecond table out of range?)")
+        .map_err(|code| {
+            StarAdvError::Timekeeping(format!(
+                "ERFA Utctai failed for UTC {year:04}-{month:02}-{day:02} \
+                 (code {code})"
+            ))
+        })?
         .0;
     let (tt1, tt2) = Taitt(tai1, tai2);
     // ΔUT1 = 0; UT1 ≈ UTC for amateur tracking purposes.
     let gast_radians = Gst06a(utc1, utc2, tt1, tt2);
-    gast_radians * 12.0 / ERFA_DPI
+    Ok(gast_radians * 12.0 / ERFA_DPI)
 }
 
 /// Mechanical hour angle (signed hours) → ASCOM right ascension (hours
@@ -352,8 +383,8 @@ mod tests {
         // Two LSTs at the same UTC, 90° apart in longitude, must be 6
         // hours apart.
         let utc = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let lst_0 = local_sidereal_time_hours(utc, 0.0);
-        let lst_e = local_sidereal_time_hours(utc, 90.0);
+        let lst_0 = local_sidereal_time_hours(utc, 0.0).unwrap();
+        let lst_e = local_sidereal_time_hours(utc, 90.0).unwrap();
         let diff = (lst_e - lst_0).rem_euclid(24.0);
         assert!((diff - 6.0).abs() < 1e-6, "LST(90E) - LST(0) = {diff}h");
     }
@@ -363,8 +394,34 @@ mod tests {
         // Same input → same output.
         let utc = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         assert_eq!(
-            local_sidereal_time_hours(utc, -122.4),
-            local_sidereal_time_hours(utc, -122.4)
+            local_sidereal_time_hours(utc, -122.4).unwrap(),
+            local_sidereal_time_hours(utc, -122.4).unwrap()
+        );
+    }
+
+    #[test]
+    fn lst_returns_timekeeping_error_for_year_below_erfa_floor() {
+        // ERFA's `eraCal2jd` (reached transitively via `Dtf2d`)
+        // rejects years below `IYMIN = -4799` with status `-1`,
+        // which `Dtf2d` re-maps to its own `-1` ("bad year"). This
+        // is the recoverable error path that replaced the original
+        // panic.
+        //
+        // We drive the chrono-typed seam directly so the test is
+        // platform-portable — Windows `SystemTime` is backed by
+        // FILETIME and cannot represent years below 1601, but
+        // `chrono::NaiveDate` spans `-262_143` through `262_143`
+        // (well past ERFA's floor) on every platform.
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(-5000, 1, 1)
+            .expect("year -5000 inside chrono's NaiveDate range")
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is a valid time of day")
+            .and_utc();
+        let err = lst_for_datetime(dt, 0.0).unwrap_err();
+        assert!(
+            matches!(err, StarAdvError::Timekeeping(_)),
+            "expected Timekeeping error, got {err:?}"
         );
     }
 

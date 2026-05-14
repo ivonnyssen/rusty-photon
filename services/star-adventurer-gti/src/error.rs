@@ -34,6 +34,21 @@ pub enum StarAdvError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    /// ERFA-side time-conversion failure. In practice this is
+    /// `eraCal2jd` (reached transitively from `Dtf2d`) returning
+    /// `-1` for a year outside its calendar floor (`IYMIN = -4799`)
+    /// — a host clock set absurdly far in the past. ERFA's
+    /// leap-second-table boundary (years before 1960 or beyond
+    /// `IYV + 5`) is *not* this error; `Utctai` reports it as
+    /// status `1` ("dubious") which the erfars binding maps to
+    /// `Ok((value, 1))`, so the LST still computes normally for
+    /// any realistic future-shifted clock. The chrono-validated
+    /// `Dtf2d` calendar-component checks are unreachable in
+    /// practice but are folded into the same variant so the call
+    /// site stays a total function.
+    #[error("timekeeping error: {0}")]
+    Timekeeping(String),
 }
 
 impl StarAdvError {
@@ -83,6 +98,7 @@ mod tests {
             StarAdvError::Timeout("read".into()),
             StarAdvError::InvalidOperation("double connect".into()),
             StarAdvError::Config("missing".into()),
+            StarAdvError::Timekeeping("ERFA Utctai returned -1".into()),
         ] {
             let mapped = err.to_ascom_error();
             assert_eq!(mapped.code, ASCOMErrorCode::INVALID_OPERATION);
