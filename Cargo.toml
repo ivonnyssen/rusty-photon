@@ -103,6 +103,14 @@ fluent-syntax = "0.12"
 # a sandbox path that does not exist at runtime. We always want translations
 # embedded, never lazy-loaded.
 rust-embed = { version = "8", features = ["debug-embed"] }
+# Pinned to 0.13 until the rest of the Fluent stack moves off `unic-langid`.
+# 0.14.0 swapped `LanguageIdentifier` from `unic-langid` to `icu-locid`, but
+# `i18n-embed` 0.16, `i18n-embed-fl` 0.10, and `fluent-bundle` 0.16 still
+# require `fluent-langneg ^0.13` + `unic-langid ^0.9` on their public APIs.
+# Bumping here would either duplicate `fluent-langneg` in the graph or force
+# string-roundtrip conversions at every `negotiate_languages` call site.
+# Revisit when https://github.com/kellpossible/cargo-i18n ships a release
+# that requires `fluent-langneg ^0.14`.
 fluent-langneg = "0.13"
 sys-locale = "0.3"
 unic-langid = "0.9"
