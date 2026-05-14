@@ -820,9 +820,12 @@ A clean nightly ConformU run against this driver reports:
   non-flipping GEM:
   - `SOPPierTest` ×4 — the safety envelope correctly rejects
     cross-meridian slews that would land at `RA mech-HA = ±9h`
-    (well outside the default ±6h counterweight-horizontal
-    envelope). `SOPPierTest` exercises the pier-flip code paths
-    by commanding such slews. The driver returns
+    (well outside the default ±6.95h envelope, which sits
+    3 arcmin inside the GTi's mechanical limit of ±6.99h and
+    INDI eqmod's baked-in ±7h envelope, `zeroRAEncoder ±
+    (totalRAEncoder/4 + totalRAEncoder/24)`). `SOPPierTest`
+    exercises the pier-flip code paths by commanding such
+    slews. The driver returns
     `InvalidValueException` from both `SlewToCoordinatesAsync`
     and `DestinationSideOfPier` (the two go through the same
     `check_within_safe_envelope` gate) for each of the two
@@ -1095,8 +1098,19 @@ In addition to the codec fixes:
   `dec_min_degrees` / `dec_max_degrees`. `SyncToCoordinates`,
   `SlewToCoordinatesAsync`, and `Park` reject targets outside
   the envelope with `INVALID_VALUE` before any wire motion.
-  Defaults: `±6 h` RA (counterweight-horizontal east/west on a
-  Northern-Hemisphere polar-aligned GTi), `±90°` Dec.
+  Defaults: `±6.95 h` RA — `0.05 h` (`3 arcmin`) inside the
+  GTi's hardware-verified `±6.99 h` mechanical limit (per the
+  2026-05-13 hardware test) and INDI eqmod's baked-in `±7 h`
+  envelope for every Sky-Watcher mount (`zeroRAEncoder ±
+  (totalRAEncoder/4 + totalRAEncoder/24)` in
+  `eqmodbase.cpp::Goto`). The buffer is deliberate: the ASCOM
+  `SlewToCoordinates(ra, dec)` round-trip means the driver
+  re-reads LST a few tens of ms after the client computed the
+  target, so a target quantised exactly to the mechanical limit
+  would drift past it; and the deferred Phase 2 meridian-flip
+  planner will need headroom between the configured envelope
+  and the mechanical stops to plan multi-stage flip slews —
+  `±90°` Dec.
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
