@@ -1,8 +1,18 @@
 //! Steps for park.feature.
 
 use crate::world::StarAdventurerWorld;
-use cucumber::{then, when};
+use cucumber::{given, then, when};
+use skywatcher_motor_protocol::codec::encode_position;
 use std::time::Duration;
+
+#[given(
+    expr = "a star-adventurer service configured with park_ra_ticks {int} and park_dec_ticks {int}"
+)]
+async fn configured_with_park_ticks(world: &mut StarAdventurerWorld, park_ra: i32, park_dec: i32) {
+    world.config_mut().mount.park_ra_ticks = Some(park_ra);
+    world.config_mut().mount.park_dec_ticks = Some(park_dec);
+    world.start_service().await;
+}
 
 #[when("I park the mount")]
 async fn park_mount(world: &mut StarAdventurerWorld) {
@@ -20,6 +30,11 @@ async fn try_park_mount(world: &mut StarAdventurerWorld) {
 #[when("I unpark the mount")]
 async fn unpark_mount(world: &mut StarAdventurerWorld) {
     world.mount().unpark().await.unwrap();
+}
+
+#[when("I set the park position")]
+async fn set_park_position(world: &mut StarAdventurerWorld) {
+    world.mount().set_park().await.unwrap();
 }
 
 #[when("I try to set the park position")]
@@ -98,24 +113,24 @@ async fn k1_before_s1(world: &mut StarAdventurerWorld) {
     }
 }
 
-#[then("the mount should have received a :S1 command targeting encoder 0")]
-async fn s1_targeting_zero(world: &mut StarAdventurerWorld) {
-    // `:S1<6-byte-bias-encoded-i32>\r`. Encoder 0 = bias 0x800000 →
-    // low-byte-first hex "000080".
+#[then(expr = "the mount should have received a :S1 command targeting encoder {int}")]
+async fn s1_targeting_encoder(world: &mut StarAdventurerWorld, ticks: i32) {
     let log = world.command_log().await;
-    let want = ":S1000080\r";
+    let bytes = encode_position(ticks).expect("encode_position");
+    let want = format!(":S1{}\r", std::str::from_utf8(&bytes).unwrap());
     assert!(
-        log.iter().any(|c| c == want),
+        log.iter().any(|c| c == &want),
         "expected {want:?} in log {log:?}"
     );
 }
 
-#[then("the mount should have received a :S2 command targeting encoder 0")]
-async fn s2_targeting_zero(world: &mut StarAdventurerWorld) {
+#[then(expr = "the mount should have received a :S2 command targeting encoder {int}")]
+async fn s2_targeting_encoder(world: &mut StarAdventurerWorld, ticks: i32) {
     let log = world.command_log().await;
-    let want = ":S2000080\r";
+    let bytes = encode_position(ticks).expect("encode_position");
+    let want = format!(":S2{}\r", std::str::from_utf8(&bytes).unwrap());
     assert!(
-        log.iter().any(|c| c == want),
+        log.iter().any(|c| c == &want),
         "expected {want:?} in log {log:?}"
     );
 }
@@ -125,4 +140,23 @@ async fn no_second_s1(world: &mut StarAdventurerWorld) {
     let log = world.command_log().await;
     let s1_count = log.iter().filter(|c| c.starts_with(":S1")).count();
     assert!(s1_count <= 1, ":S1 issued {s1_count} times; log {log:?}");
+}
+
+#[then(expr = "the persisted config should have park_ra_ticks {int} and park_dec_ticks {int}")]
+async fn persisted_config_has_park_values(
+    world: &mut StarAdventurerWorld,
+    want_ra: i32,
+    want_dec: i32,
+) {
+    let cfg = world.read_persisted_config();
+    assert_eq!(
+        cfg.mount.park_ra_ticks,
+        Some(want_ra),
+        "park_ra_ticks mismatch"
+    );
+    assert_eq!(
+        cfg.mount.park_dec_ticks,
+        Some(want_dec),
+        "park_dec_ticks mismatch"
+    );
 }

@@ -16,7 +16,10 @@ pub use config::{
     UsbConfig,
 };
 pub use error::{Result, StarAdvError};
-pub use mount_device::MountDevice;
+pub use mount_device::{
+    canonicalise_config_path, probe_park_file_writability, warn_if_park_path_unwritable,
+    MountDevice,
+};
 pub use transport::serial::SerialTransportFactory;
 pub use transport::udp::UdpTransportFactory;
 pub use transport::{Transport, TransportFactory};
@@ -26,6 +29,7 @@ pub use transport_manager::TransportManager;
 pub use transport::mock::{MockMountState, MockTransport, MockTransportFactory};
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
@@ -43,6 +47,13 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Option<Arc<dyn TransportFactory>>,
+    /// Absolute path of the JSON config file the driver was started with,
+    /// if any. Passed to [`MountDevice`] so `SetPark` knows where to
+    /// persist the park position. `None` when the driver runs on
+    /// [`Config::default()`] — in which case `CanSetPark` returns `false`
+    /// and `SetPark` returns `NOT_IMPLEMENTED`. See the design doc's
+    /// [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence).
+    config_file_path: Option<PathBuf>,
     /// Optional handle to a [`MockMountState`] that the build path mounts
     /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
     /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
@@ -59,6 +70,17 @@ impl ServerBuilder {
 
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Set the path of the JSON config file the driver was started with.
+    ///
+    /// When provided, the driver advertises `CanSetPark = true` and
+    /// `SetPark` writes the captured encoder pair back into the file via
+    /// atomic rename. When omitted (e.g. `main.rs` ran without
+    /// `--config`), `CanSetPark` is `false`.
+    pub fn with_config_file_path(mut self, path: Option<PathBuf>) -> Self {
+        self.config_file_path = path;
         self
     }
 
@@ -108,7 +130,11 @@ impl ServerBuilder {
         let manager = Arc::new(TransportManager::new(self.config.clone(), factory));
 
         if self.config.mount.enabled {
-            let device = MountDevice::new(self.config.mount.clone(), Arc::clone(&manager));
+            let device = MountDevice::with_config_file_path(
+                self.config.mount.clone(),
+                Arc::clone(&manager),
+                self.config_file_path.clone(),
+            );
             server.devices.register(device);
             info!("Registered Telescope device: {}", self.config.mount.name);
         }

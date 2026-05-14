@@ -125,18 +125,31 @@ impl AxisSimState {
             } else {
                 chunk * dir
             };
-            self.position_ticks += step;
+            self.position_ticks = clamp_to_wire_range(self.position_ticks + step);
             if toward_target && self.position_ticks == self.goto_target_ticks {
                 self.running = false;
             }
         } else {
             // Tracking mode: free-run in the configured direction at
             // a sidereal-ish chunk per poll. Never auto-stop — only
-            // `:K` / `:L` should clear `running`.
+            // `:K` / `:L` should clear `running`. Real GTi firmware
+            // saturates at the 24-bit encoder limit too, so a
+            // long-running tracking mock matches hardware behaviour.
             const SIDEREAL_CHUNK_PER_POLL: i32 = 8;
-            self.position_ticks += SIDEREAL_CHUNK_PER_POLL * dir;
+            self.position_ticks =
+                clamp_to_wire_range(self.position_ticks + SIDEREAL_CHUNK_PER_POLL * dir);
         }
     }
+}
+
+/// Saturating-clamp an encoder-tick value to the wire-representable
+/// signed-24-bit range. Used by [`AxisSimState::advance_one_step`] so
+/// a long-running tracking mock can't drift past `POSITION_MAX` and
+/// panic the next `:j` handler when `encode_position` rejects the
+/// out-of-range value. Real GTi firmware saturates here too.
+fn clamp_to_wire_range(ticks: i32) -> i32 {
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+    ticks.clamp(POSITION_MIN, POSITION_MAX)
 }
 
 fn nibble_to_hex(n: u8) -> u8 {
@@ -549,6 +562,46 @@ mod tests {
 
     fn d() -> Duration {
         Duration::from_millis(100)
+    }
+
+    #[test]
+    fn advance_one_step_clamps_at_wire_range_in_tracking_mode() {
+        // Regression test: a long-running tracking mock used to panic
+        // on the next `:j` poll once `position_ticks` drifted past
+        // `POSITION_MAX`, because `encode_position` rejects
+        // out-of-range values. The fix saturates the position at the
+        // 24-bit signed encoder boundary inside `advance_one_step`
+        // itself, matching how real GTi firmware behaves.
+        use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+        let mut s = AxisSimState {
+            running: true,
+            goto: false, // tracking
+            ccw: false,
+            // Start one step shy of the upper boundary.
+            position_ticks: POSITION_MAX - 4,
+            ..Default::default()
+        };
+        // Tracking-mode chunk is +8 ticks per step; after one call
+        // we'd be at POSITION_MAX + 4 without clamping.
+        s.advance_one_step();
+        assert_eq!(s.position_ticks, POSITION_MAX);
+        // Further steps stay clamped.
+        s.advance_one_step();
+        s.advance_one_step();
+        assert_eq!(s.position_ticks, POSITION_MAX);
+
+        // Symmetric: CCW direction clamps at the lower boundary.
+        let mut s = AxisSimState {
+            running: true,
+            goto: false,
+            ccw: true,
+            position_ticks: POSITION_MIN + 4,
+            ..Default::default()
+        };
+        s.advance_one_step();
+        assert_eq!(s.position_ticks, POSITION_MIN);
+        s.advance_one_step();
+        assert_eq!(s.position_ticks, POSITION_MIN);
     }
 
     #[test]

@@ -9,7 +9,10 @@ use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
-use star_adventurer_gti::{load_config, Config, ServerBuilder, TransportFactory};
+use star_adventurer_gti::{
+    canonicalise_config_path, load_config, warn_if_park_path_unwritable, Config, ServerBuilder,
+    TransportFactory,
+};
 
 #[derive(Parser)]
 #[command(name = "star-adventurer-gti")]
@@ -93,12 +96,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     apply_cli_overrides(&mut config, &args)?;
 
+    // Canonicalise the operator-supplied config path so `SetPark` writes
+    // to a stable absolute location; also runs the early-warning
+    // writability probe so a bad path / permissions setup surfaces a
+    // `warn!` at boot instead of only on the first `SetPark` call. Both
+    // helpers live in the library crate so their warn-on-failure
+    // branches are unit-testable.
+    let config_file_path = canonicalise_config_path(args.config.as_ref());
+    if let Some(path) = &config_file_path {
+        warn_if_park_path_unwritable(path);
+    }
+
     info!("Starting Star Adventurer GTi driver");
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
     info!("Server port: {}", config.server.port);
 
-    let builder = ServerBuilder::new().with_config(config);
+    let builder = ServerBuilder::new()
+        .with_config(config)
+        .with_config_file_path(config_file_path);
 
     #[cfg(feature = "mock")]
     let builder = {

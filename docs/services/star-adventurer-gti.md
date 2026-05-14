@@ -128,8 +128,10 @@ CPR varies between the GTi's RA and Dec axes and between firmware
 revisions; the driver reads both rather than assuming.
 
 The protocol exposes **no native park position** and **no site lat/lon**.
-We implement software park (slew to encoder 0/0) and require site lat/lon
-in the config (see [§ASCOM Telescope Mapping](#ascom-telescope-mapping)).
+We implement software park (target encoder pair sourced from config or
+captured at handshake — see [§Park lifecycle](#park-lifecycle) and
+[§Park persistence](#park-persistence)) and require site lat/lon in the
+config (see [§ASCOM Telescope Mapping](#ascom-telescope-mapping)).
 
 ## Protocol Reference
 
@@ -281,7 +283,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanFindHome` | `false` | no hardware home position |
 | `CanPark` | `true` | implemented (software park) |
 | `CanUnpark` | `true` | implemented |
-| `CanSetPark` | `false` | park position fixed at encoder 0/0 in MVP |
+| `CanSetPark` | runtime-determined | `true` when the driver was started with `--config <path>` (the path it would write back to); `false` for `Config::default()` runs (smoke-tests, no-arg launches). See [§Park persistence](#park-persistence) |
 | `CanSetPierSide` | `false` | mount manages pier side via slew direction |
 | `CanSetSideOfPier` | `false` | same as above |
 | `DoesRefraction` | `false` | mount applies no refraction model; host (rp) provides refracted coords |
@@ -327,9 +329,9 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
 | `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
-| `Park()` | stop tracking, slew both axes to encoder 0/0, when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
+| `Park()` | stop tracking, slew both axes to the in-memory park-target encoder pair (loaded from config or captured at handshake — see [§Park lifecycle](#park-lifecycle)), when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
-| `SetPark()` | `NOT_IMPLEMENTED` in MVP |
+| `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if the driver was started without `--config`, if not connected, or while slewing |
 | `Tracking = true` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:G<RA>` (Tracking + sidereal) + `:I<RA>` (sidereal step period) + `:J<RA>`. Dec axis untouched |
 | `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
 | `FindHome()` | `NOT_IMPLEMENTED` |
@@ -393,8 +395,8 @@ Park()
    ├─ Tracking = false (issue :K on RA axis)
    │
    ├─ for each axis:
-   │     :G<axis><goto-mode>
-   │     :S<axis>800000     target = encoder 0
+   │     :G<axis><goto-mode>      ccw chosen from sign(target − current)
+   │     :S<axis><park_target>    target = in-memory park-target ticks
    │     :J<axis>
    │
    ├─ background poll :f1 / :f2 until both stopped
@@ -403,6 +405,91 @@ Park()
    ├─ AtPark = true
    └─ Tracking remains false
 ```
+
+The **park-target encoder pair** is loaded per axis on every connect,
+in this order of preference:
+
+1. **Config-file value** (per axis). When the driver was started with
+   `--config <path>`, the file is re-read on every connect and
+   `mount.park_ra_ticks` / `mount.park_dec_ticks` are used when
+   present. Per-axis: if only `park_ra_ticks` is set, RA comes from
+   the file and Dec falls through to step 3.
+2. **In-memory config value** (per axis). When no `--config` was
+   provided (`Config::default()` run), the `MountConfig` defaults are
+   used; in this mode `SetPark` is unreachable so these values do not
+   change in-process.
+3. **Handshake-captured fallback** (per axis). The encoder position
+   read during the init handshake's `:j1` / `:j2` step (see
+   [§"Initialisation sequence"](#initialisation-sequence)). On a
+   polar-aligned mount the user typically powered up near the
+   counterweight-down, OTA-on-meridian pose, so this is the closest
+   mechanically-safe "where I started" target available.
+4. **Last resort** — encoder `0`. Only reachable if the handshake
+   somehow produced no position read, which today is unreachable.
+
+Re-reading the config file on every connect means a successful
+`SetPark` (or a manual operator edit between connects) takes effect on
+the next reconnect without restarting the driver. After load the
+in-memory target is fixed for the session unless `SetPark` is called
+again (see [§Park persistence](#park-persistence)).
+
+### Park persistence
+
+`SetPark` writes the current encoder pair back into the **same JSON
+config file** the driver was started with (the `--config <path>`
+argument). No separate state file. Concretely:
+
+1. **Capability gate.** `CanSetPark` returns `true` only when the
+   driver was started with `--config <path>`. Running on
+   `Config::default()` (no `--config`) leaves `CanSetPark = false` and
+   `SetPark` returns `ASCOM_NOT_IMPLEMENTED`. The capability flag is
+   computed at startup; clients that cache it once per session see a
+   stable answer.
+2. **Refusal cases.** `SetPark` also refuses (`NOT_CONNECTED` /
+   `INVALID_OPERATION`) when the device is disconnected or while a
+   slew / park is in progress — the "current encoder pair" wouldn't be
+   stable otherwise.
+3. **Read-as-`Value`, write only park keys.** The driver reads the
+   on-disk JSON via `serde_json::Value`, mutates *only*
+   `mount.park_ra_ticks` and `mount.park_dec_ticks`, and serialises the
+   result pretty-printed. Any field the driver doesn't recognise
+   (future schema additions, operator-added comments-as-fields) is
+   preserved as a JSON value. Note: this is a JSON-value preservation,
+   not a byte-for-byte one — `serde_json::to_string_pretty` rewrites
+   whitespace, and `serde_json::Map` is alphabetical by default
+   (BTreeMap, without the `preserve_order` feature), so operator
+   formatting and key order do not survive. The *content* outside the
+   two park keys is unchanged. The driver **never re-serialises its
+   in-memory typed `Config`** to disk — that path would round-trip the
+   CLI overrides (`--port`, `--baud`, `--server-port`, `--transport`)
+   back into the file and is structurally avoided here.
+4. **Atomic rename via `tempfile::NamedTempFile`.** The temp file is
+   created in the **same directory** as the destination (required for
+   `persist` to use POSIX `rename` rather than copy-and-delete),
+   `sync_all`'d (fsync the file data) so a crash after rename can't
+   surface a renamed-but-zero-length file, `persist`'d on success,
+   then on unix the parent directory is fsync'd so the rename itself
+   is durable. Same pattern as
+   [`services/rp/src/persistence/document.rs::write_sidecar_sync`](../../services/rp/src/persistence/document.rs).
+   On any error path the temp file auto-deletes via `Drop`, so a
+   panic mid-write doesn't leave a `*.tmp` artifact behind.
+5. **Blocking I/O on the blocking pool.** The whole read+parse+stage+
+   fsync+rename sequence runs inside `tokio::task::spawn_blocking` so
+   the async runtime isn't held up. Same pattern as `write_sidecar`.
+6. **In-memory update follows disk.** The in-memory park target is
+   updated only after the file write succeeds. If the file write
+   fails, the in-memory park is unchanged and the caller sees an
+   ASCOM error — there is no "partial success" state.
+
+Blast-radius bound: even with a logic bug, the only keys the driver
+ever writes are `mount.park_ra_ticks` and `mount.park_dec_ticks`. A
+broken `SetPark` cannot corrupt `transport`, `server.auth`,
+`server.tls`, or any other operator-managed field.
+
+ASCOM has no notion of `SetPark` being non-durable, so `CanSetPark =
+false` is the right answer when the driver has nowhere to persist to —
+returning `true` and silently losing the park across restarts would
+violate the capability contract.
 
 ### PulseGuide lifecycle
 
@@ -557,7 +644,9 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
     "site_longitude_deg": -122.4194,
     "site_elevation_m": 0.0,
     "settle_after_slew": "2s",
-    "tracking_rate": "sidereal"
+    "tracking_rate": "sidereal",
+    "park_ra_ticks": null,
+    "park_dec_ticks": null
   }
 }
 ```
@@ -591,6 +680,13 @@ Notes:
   WGS84 degrees, `+E`. (ASCOM convention.)
 - `tracking_rate` accepts `"sidereal"` only in MVP. Field is reserved
   for future expansion.
+- `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
+  on every connect; absent (or `null`) at first run, populated once
+  `SetPark` is called. Operators may set them by hand to pin a known
+  mechanical pose. See [§Park persistence](#park-persistence) for the
+  rules around when the driver writes to this file. When absent, the
+  park target falls back to the encoder positions captured during the
+  init handshake.
 
 ### CLI arguments
 
@@ -814,6 +910,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
 | **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See [§Expected ConformU report](#expected-conformu-report). |
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`, and re-enables `[package.metadata.conformu]` so the full two-phase ConformU integration runs again. |
+| **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -1019,7 +1116,11 @@ What's still outstanding from Phase 4:
 - `SlewToCoordinatesAsync` / `SlewToTargetAsync`
 - `AbortSlew`
 - `Tracking` setter / getter (sidereal only)
-- `Park` / `Unpark` (software park to encoder 0/0)
+- `Park` / `Unpark` (software park; target encoder pair sourced from
+  config or captured at handshake — see [§Park lifecycle](#park-lifecycle))
+- `SetPark` (writes the current encoder pair back into the running
+  config file via atomic rename; `CanSetPark` reflects whether the
+  driver has a config path to write to — see [§Park persistence](#park-persistence))
 - `AtPark` / `AtHome` reads
 - `SideOfPier` read (Dec-encoder convention)
 - `DestinationSideOfPier(ra, dec)` prediction
@@ -1037,7 +1138,6 @@ What's still outstanding from Phase 4:
 | `SlewToAltAz*`, `SyncToAltAz`, `CanSlewAltAz*` | RA/Dec coverage is sufficient for `rp`'s tools; Alt/Az slew is a separate path through the coordinate module |
 | `RightAscensionRate`, `DeclinationRate` setters | custom-rate tracking; not needed for sidereal-only MVP |
 | `TrackingRate` setter (lunar / solar / king) | sidereal covers astrophotography; lunar/solar are uncommon and add a small mode-switch matrix |
-| `SetPark`, `CanSetPark` | park position is fixed at encoder 0/0 (the mount's natural power-up state); user-defined park positions are a follow-up |
 | `FindHome`, `CanFindHome` | no hardware home sensor on the GTi |
 | `Action` / custom commands | no driver-specific actions in MVP |
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |

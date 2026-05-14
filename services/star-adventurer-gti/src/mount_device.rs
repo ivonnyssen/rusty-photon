@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::ops::RangeInclusive;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -54,6 +55,14 @@ struct DriverState {
     /// flags so callers see "still slewing" until the watcher signals
     /// otherwise.
     slew_in_progress: bool,
+    /// In-memory park-target encoder pair. Populated on the 0→1 connect
+    /// transition from `MountConfig::park_*_ticks` if `Some`, otherwise
+    /// from the handshake-captured positions. `None` here means "not
+    /// loaded yet" — `Park` reads via `ok_or_else` after
+    /// `ensure_connected()` so an unset value surfaces as an
+    /// `ASCOMError(INVALID_OPERATION)` rather than a panic.
+    park_ra_ticks: Option<i32>,
+    park_dec_ticks: Option<i32>,
     /// PulseGuide rate on the RA axis as a fraction of sidereal in
     /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
@@ -78,6 +87,8 @@ impl Default for DriverState {
             target_dec_degrees: None,
             slew_settle_time: None,
             slew_in_progress: false,
+            park_ra_ticks: None,
+            park_dec_ticks: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             pulse_guiding_ra: false,
@@ -88,6 +99,10 @@ impl Default for DriverState {
 
 pub struct MountDevice {
     config: MountConfig,
+    /// Optional config-file path. `Some` when the driver was started
+    /// with `--config <path>`; `None` for `Config::default()` runs. Drives
+    /// `CanSetPark` and is the destination for `SetPark` writes.
+    config_file_path: Option<PathBuf>,
     requested_connection: Arc<RwLock<bool>>,
     state: Arc<RwLock<DriverState>>,
     transport: Arc<TransportManager>,
@@ -97,6 +112,7 @@ impl fmt::Debug for MountDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MountDevice")
             .field("config", &self.config)
+            .field("config_file_path", &self.config_file_path)
             .field("requested_connection", &self.requested_connection)
             .field("state", &self.state)
             .finish_non_exhaustive()
@@ -105,8 +121,20 @@ impl fmt::Debug for MountDevice {
 
 impl MountDevice {
     pub fn new(config: MountConfig, transport: Arc<TransportManager>) -> Self {
+        Self::with_config_file_path(config, transport, None)
+    }
+
+    /// Construct with an optional config-file path. `Some(path)` enables
+    /// `CanSetPark` / `SetPark` persistence; `None` leaves
+    /// `CanSetPark = false` and `SetPark = NOT_IMPLEMENTED`.
+    pub fn with_config_file_path(
+        config: MountConfig,
+        transport: Arc<TransportManager>,
+        config_file_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             config,
+            config_file_path,
             requested_connection: Arc::new(RwLock::new(false)),
             state: Arc::new(RwLock::new(DriverState::default())),
             transport,
@@ -249,6 +277,60 @@ impl MountDevice {
         Err(ASCOMError::invalid_operation(
             "synchronous slew timed out waiting for completion",
         ))
+    }
+
+    /// Post-connect park-target load. Source priority, per axis:
+    ///
+    /// 1. `mount.park_*_ticks` from the **on-disk** config file when one
+    ///    was supplied via `--config`. Reading fresh from disk on every
+    ///    connect means a successful `SetPark` followed by
+    ///    disconnect/reconnect picks up the new target, and an operator
+    ///    hand-edit between connects takes effect.
+    /// 2. `self.config.park_*_ticks` for `Config::default()` runs (no
+    ///    config file) — these never change in-process because
+    ///    `SetPark` is unreachable in that mode.
+    /// 3. The encoder positions captured during the init handshake
+    ///    (`:j1` / `:j2`) when neither of the above provided a value.
+    ///
+    /// Extracted from [`set_connected`] so a failure here (file missing,
+    /// malformed JSON, lost transport mid-load) can be rolled back by the
+    /// caller without leaking the connection ref-count. See the design
+    /// doc's §"Park lifecycle" for the resolution rules.
+    async fn load_park_target_after_connect(&self) -> ASCOMResult<()> {
+        let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
+            let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
+                .await
+                .map_err(|e| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        format!("park-config read task join error: {e}"),
+                    )
+                })?;
+            result.map_err(Self::ascom)?
+        } else {
+            (self.config.park_ra_ticks, self.config.park_dec_ticks)
+        };
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
+        let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
+        {
+            let mut s = self.state.write().await;
+            s.park_ra_ticks = Some(ra_target);
+            s.park_dec_ticks = Some(dec_target);
+        }
+        debug!(
+            ra_target,
+            dec_target,
+            from_config_ra = config_ra.is_some(),
+            from_config_dec = config_dec.is_some(),
+            from_file = self.config_file_path.is_some(),
+            "park target loaded"
+        );
+        Ok(())
     }
 }
 
@@ -435,6 +517,18 @@ impl Device for MountDevice {
         }
         if connected {
             self.transport.connect().await.map_err(Self::ascom)?;
+            // Post-connect work that can fail (config-file read, parameter
+            // cache lookup) runs inside `load_park_target_after_connect`
+            // so we can roll the connect back on any error — otherwise the
+            // transport ref-count would stay incremented while `*req`
+            // remained false, leaking a connection. Per the Copilot review
+            // on PR #221 (comment 3238682044).
+            if let Err(e) = self.load_park_target_after_connect().await {
+                if let Err(disc_err) = self.transport.disconnect().await {
+                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+                }
+                return Err(e);
+            }
             *req = true;
         } else {
             self.transport.disconnect().await.map_err(Self::ascom)?;
@@ -452,6 +546,11 @@ impl Device for MountDevice {
             //     watcher has nothing left to observe; clearing the
             //     flag also tells any in-flight watcher iteration to
             //     bail out (see watcher loops below).
+            //   - `park_ra_ticks` / `park_dec_ticks` — re-loaded on next
+            //     connect from config / handshake. Clearing here means a
+            //     mid-session edit to `MountConfig::park_*_ticks` (a
+            //     future hot-reload feature) would take effect on
+            //     reconnect.
             //
             // Keep `at_park` — Phase 4 may persist it across sessions
             // by reading the encoder; for now leaving it as-is matches
@@ -467,6 +566,8 @@ impl Device for MountDevice {
             s.target_dec_degrees = None;
             s.tracking_requested = false;
             s.slew_in_progress = false;
+            s.park_ra_ticks = None;
+            s.park_dec_ticks = None;
             s.pulse_guiding_ra = false;
             s.pulse_guiding_dec = false;
             s.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
@@ -514,6 +615,15 @@ impl Telescope for MountDevice {
     }
     async fn can_unpark(&self) -> ASCOMResult<bool> {
         Ok(true)
+    }
+    async fn can_set_park(&self) -> ASCOMResult<bool> {
+        // SetPark requires a config-file path to persist to. Without
+        // one (i.e. the driver was started on `Config::default()`),
+        // `SetPark` would have nowhere to write — see the design doc's
+        // §"Park persistence" for the rationale. ASCOM permits
+        // `CanSetPark` to vary with driver state, so this is a runtime
+        // check rather than a compile-time constant.
+        Ok(self.config_file_path.is_some())
     }
     async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
         Ok(true)
@@ -887,25 +997,6 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
 
-        // Latch the target + capture the tracking flag so the
-        // completion watcher knows whether to auto-restore. Also
-        // cancel any in-flight pulse-guide on either axis (the slew
-        // takes ownership of both axes from this point). We do NOT
-        // clear `tracking_requested` here: if any of the StopMotion /
-        // SetMotionMode / ... sends below fail, the in-memory state
-        // would falsely report tracking-off while the wire is still
-        // tracking. The flag is cleared only after the RA :K actually
-        // hits the wire (see the inline write below).
-        let tracking_was_on;
-        {
-            let mut s = self.state.write().await;
-            s.target_ra_hours = Some(ra);
-            s.target_dec_degrees = Some(dec);
-            tracking_was_on = s.tracking_requested;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
-        }
-
         // Compute target encoder ticks for the *current* LST. INDI's
         // EQMOD-style post-stop pickup loop (issue #205) handles the
         // residual that arises because RA drifts during the goto: when
@@ -931,37 +1022,73 @@ impl Telescope for MountDevice {
         // stalling the motor against a hard stop.
         self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
 
-        let snap = self.transport.snapshot().await;
-        let ra_delta = ra_ticks - snap.ra.position_ticks;
-        let dec_delta = dec_ticks - snap.dec.position_ticks;
-        // Both axes use the INDI wire sequence: `:K` + poll `:f`
-        // (decelerate stop — the spec's "motor must be at full stop
-        // before setting the motion mode" requirement) → `:G goto+fast`
-        // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
-        // `:K` is also the wire event that halts any in-progress
-        // sidereal tracking; mirror that into the in-memory
-        // `tracking_requested` flag once the stop has actually
-        // succeeded so the state never gets ahead of the wire on
-        // transport failures.
-        self.stop_and_wait(Axis::Ra).await?;
-        self.state.write().await.tracking_requested = false;
-        issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
-            .await
-            .map_err(Self::ascom)?;
-        self.stop_and_wait(Axis::Dec).await?;
-        issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
-            .await
-            .map_err(Self::ascom)?;
-
-        // Mark slew in progress and spawn the completion watcher. The
-        // watcher polls until both axes report stopped, runs the
-        // EQMOD-style pickup loop (up to 5 iterations) to nudge any
-        // residual under 5", optionally re-issues sidereal tracking
-        // on RA (only if it was on before the slew), applies the
-        // settle delay, then clears `slew_in_progress`.
-        let settle = {
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Latch the target + capture the tracking flag in
+        // the same write. We do NOT clear `tracking_requested` here:
+        // if any of the StopMotion / SetMotionMode / ... sends below
+        // fail, the in-memory state would falsely report tracking-off
+        // while the wire is still tracking. The flag is cleared only
+        // after the RA :K actually hits the wire (see the inline
+        // write below).
+        let tracking_was_on;
+        {
             let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "slew refused: slew already in progress",
+                ));
+            }
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+            tracking_was_on = s.tracking_requested;
             s.slew_in_progress = true;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+        }
+
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        // Wrap motion-issue in an inner future so a single rollback
+        // covers every `?` failure.
+        let result: ASCOMResult<()> = async {
+            let snap = self.transport.snapshot().await;
+            let ra_delta = ra_ticks - snap.ra.position_ticks;
+            let dec_delta = dec_ticks - snap.dec.position_ticks;
+            // Both axes use the INDI wire sequence: `:K` + poll `:f`
+            // (decelerate stop — the spec's "motor must be at full stop
+            // before setting the motion mode" requirement) → `:G goto+fast`
+            // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
+            // `:K` is also the wire event that halts any in-progress
+            // sidereal tracking; mirror that into the in-memory
+            // `tracking_requested` flag once the stop has actually
+            // succeeded so the state never gets ahead of the wire on
+            // transport failures.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.state.write().await.tracking_requested = false;
+            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+                .await
+                .map_err(Self::ascom)?;
+            self.stop_and_wait(Axis::Dec).await?;
+            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+
+        // Hand off to the completion watcher. The watcher polls
+        // until both axes report stopped, runs the EQMOD-style
+        // pickup loop (up to 5 iterations) to nudge any residual
+        // under 5", optionally re-issues sidereal tracking on RA
+        // (only if it was on before the slew), applies the settle
+        // delay, then clears `slew_in_progress`.
+        let settle = {
+            let s = self.state.read().await;
             s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
         };
         spawn_slew_completion_watcher(
@@ -1008,61 +1135,110 @@ impl Telescope for MountDevice {
         if self.state.read().await.at_park {
             return Ok(());
         }
-        // Cancel any in-flight pulse-guide — park takes ownership of
-        // both axes. Watchers see the cleared flags on post-sleep and
-        // bail out without restoring.
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Doing the flag-set after `:J` (the old layout)
+        // left a TOCTOU window where a concurrent `SetPark` could
+        // read mid-slew encoder positions. Cancel any in-flight
+        // pulse-guide in the same write — park takes ownership of
+        // both axes from this point.
         {
             let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "park refused: slew already in progress",
+                ));
+            }
+            s.slew_in_progress = true;
             s.pulse_guiding_ra = false;
             s.pulse_guiding_dec = false;
         }
-        // Stop tracking before slewing home (per ASCOM, tracking remains
-        // off after Park). The wire `:K1` is issued first so the in-memory
-        // flag flip only follows a successful stop.
-        if self.state.read().await.tracking_requested {
-            self.transport
-                .send(Command::StopMotion(Axis::Ra))
-                .await
-                .map_err(Self::ascom)?;
-            self.state.write().await.tracking_requested = false;
-        }
-        // Slew both axes to encoder 0. Same wire sequence as
-        // `slew_to_coordinates_async`: `:K`-and-wait, `:G` with
-        // direction chosen from `sign(0 - current)`, `:S 0`, `:J`.
-        let snap = self.transport.snapshot().await;
-        for (axis, current_ticks) in [
-            (Axis::Ra, snap.ra.position_ticks),
-            (Axis::Dec, snap.dec.position_ticks),
-        ] {
-            self.stop_and_wait(axis).await?;
-            let mode = MotionMode {
-                kind: skywatcher_motor_protocol::command::ModeKind::Goto,
-                speed: skywatcher_motor_protocol::command::Speed::Fast,
-                ccw: current_ticks > 0,
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        // Wrap motion-issue in an inner future so a single rollback
+        // covers every `?` failure.
+        let result: ASCOMResult<()> = async {
+            // Stop tracking before slewing home (per ASCOM, tracking
+            // remains off after Park). The wire `:K1` is issued first
+            // so the in-memory flag flip only follows a successful stop.
+            if self.state.read().await.tracking_requested {
+                self.transport
+                    .send(Command::StopMotion(Axis::Ra))
+                    .await
+                    .map_err(Self::ascom)?;
+                self.state.write().await.tracking_requested = false;
+            }
+            // Slew both axes to the loaded park target.
+            // `set_connected(true)` populated these from config /
+            // handshake; if either is `None` here it's an internal
+            // invariant violation. Surface as a structured ASCOMError
+            // rather than a panic — panicking inside a tokio task
+            // aborts it and leaves the Alpaca client with a
+            // connection-reset.
+            let (target_ra_ticks, target_dec_ticks) = {
+                let s = self.state.read().await;
+                let ra = s.park_ra_ticks.ok_or_else(|| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        "park_ra_ticks not loaded — internal invariant violation",
+                    )
+                })?;
+                let dec = s.park_dec_ticks.ok_or_else(|| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        "park_dec_ticks not loaded — internal invariant violation",
+                    )
+                })?;
+                (ra, dec)
             };
-            self.transport
-                .send(Command::SetMotionMode { axis, mode })
-                .await
-                .map_err(Self::ascom)?;
-            // No `:I` in Goto mode — the firmware computes slew speed
-            // internally. See the matching note in
-            // `slew_to_coordinates_async`.
-            self.transport
-                .send(Command::SetGotoTarget { axis, ticks: 0 })
-                .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::StartMotion(axis))
-                .await
-                .map_err(Self::ascom)?;
+            // Same wire sequence as `slew_to_coordinates_async`:
+            // `:K`-and-wait, `:G` with direction chosen from
+            // `sign(target - current)`, `:S target`, `:J`.
+            let snap = self.transport.snapshot().await;
+            for (axis, current_ticks, target_ticks) in [
+                (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
+                (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
+            ] {
+                self.stop_and_wait(axis).await?;
+                let mode = MotionMode {
+                    kind: skywatcher_motor_protocol::command::ModeKind::Goto,
+                    speed: skywatcher_motor_protocol::command::Speed::Fast,
+                    ccw: current_ticks > target_ticks,
+                };
+                self.transport
+                    .send(Command::SetMotionMode { axis, mode })
+                    .await
+                    .map_err(Self::ascom)?;
+                // No `:I` in Goto mode — the firmware computes slew speed
+                // internally. See the matching note in
+                // `slew_to_coordinates_async`.
+                self.transport
+                    .send(Command::SetGotoTarget {
+                        axis,
+                        ticks: target_ticks,
+                    })
+                    .await
+                    .map_err(Self::ascom)?;
+                self.transport
+                    .send(Command::StartMotion(axis))
+                    .await
+                    .map_err(Self::ascom)?;
+            }
+            Ok(())
         }
-        // Mark slew in progress and spawn the park watcher (sets at_park
-        // = true on completion instead of re-enabling tracking).
-        let settle = {
-            let mut s = self.state.write().await;
-            s.slew_in_progress = true;
-            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
-        };
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+        // Hand off to the park watcher; it owns `slew_in_progress`
+        // from here and will clear it on completion.
+        let settle = self
+            .state
+            .read()
+            .await
+            .slew_settle_time
+            .unwrap_or(self.config.settle_after_slew);
         spawn_park_completion_watcher(
             Arc::clone(&self.state),
             Arc::clone(&self.transport),
@@ -1075,6 +1251,79 @@ impl Telescope for MountDevice {
     async fn unpark(&self) -> ASCOMResult<()> {
         // Unpark does NOT auto-enable tracking.
         self.state.write().await.at_park = false;
+        Ok(())
+    }
+
+    async fn set_park(&self) -> ASCOMResult<()> {
+        // Capability gate: without a config-file path we have nowhere
+        // to persist to. `CanSetPark` advertises `false` in this case,
+        // but ASCOM clients are allowed to call setters whose
+        // capability is `false` and expect `NOT_IMPLEMENTED`.
+        let config_path = self.config_file_path.as_ref().ok_or_else(|| {
+            ASCOMError::new(
+                ASCOMErrorCode::NOT_IMPLEMENTED,
+                "SetPark requires the driver to be started with --config <path>",
+            )
+        })?;
+        self.ensure_connected().await?;
+        // Refuse mid-slew: the "current encoder pair" wouldn't be
+        // stable while the motors are still moving. Also catches
+        // mid-park: AtPark hasn't been set yet but slew_in_progress is.
+        //
+        // Two layers of defense for the concurrent-motion case (per
+        // Copilot review on PR #221, comment 3242621736):
+        //   1. The in-memory `slew_in_progress` flag: park() and
+        //      slew_to_coordinates_async() now set this *before*
+        //      issuing motion (with rollback-on-error), so the
+        //      flag observation here is reliable.
+        //   2. The latest wire snapshot's `running` flag: defense
+        //      in depth against an axis that's running for any
+        //      reason the in-memory flag wouldn't capture (a
+        //      tracking pulse, an external `:J` from a future
+        //      out-of-band path, a flag-set racing the wire send).
+        //      The snapshot is updated by the background poller at
+        //      `polling_interval`; the window where snapshot lags
+        //      reality is bounded by that interval.
+        if self.state.read().await.slew_in_progress {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "SetPark refused while slew or park is in progress",
+            ));
+        }
+        let snap = self.transport.snapshot().await;
+        if snap.ra.running || snap.dec.running {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "SetPark refused while an axis is running per the wire snapshot",
+            ));
+        }
+        let ra_ticks = snap.ra.position_ticks;
+        let dec_ticks = snap.dec.position_ticks;
+        // Disk I/O runs on the blocking pool so the async runtime
+        // isn't held up while we read+parse+stage+fsync+rename. Same
+        // pattern as `services/rp/src/persistence/document.rs::write_sidecar`.
+        let path = config_path.clone();
+        tokio::task::spawn_blocking(move || write_park_to_config(&path, ra_ticks, dec_ticks))
+            .await
+            .map_err(|e| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("set_park write task join error: {e}"),
+                )
+            })?
+            .map_err(Self::ascom)?;
+        // Only mutate the in-memory target after the disk write
+        // succeeds — otherwise a failed write would leave the live
+        // park target out of sync with what's persisted.
+        let mut s = self.state.write().await;
+        s.park_ra_ticks = Some(ra_ticks);
+        s.park_dec_ticks = Some(dec_ticks);
+        debug!(
+            ra_ticks,
+            dec_ticks,
+            path = ?config_path,
+            "set_park persisted to config file"
+        );
         Ok(())
     }
 
@@ -1628,6 +1877,241 @@ async fn stop_axis_and_wait(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Probe whether the parent directory of `config_path` can host the
+/// staging temp file that `SetPark`'s atomic-rename pattern requires.
+///
+/// Called once at startup from `main.rs` so the operator sees a `warn!`
+/// at boot if `SetPark` will fail at runtime due to filesystem
+/// permissions, rather than only discovering it on the first `SetPark`
+/// call. Does **not** change `CanSetPark` — the capability still
+/// advertises support; the probe is purely an early-warning signal.
+///
+/// The probe creates a `NamedTempFile` in the same directory the real
+/// staging file would live in (`config_path.parent()`) and immediately
+/// drops it. Writability of the **parent directory** is what matters
+/// for the atomic-rename pattern: even if the target config file is
+/// itself read-only, `rename(2)` only needs write access to the
+/// containing directory to swap in a new file. The probe therefore
+/// matches what `write_park_to_config` actually does — a false-positive
+/// would mean the probe passes but the real write fails (or vice
+/// versa), defeating the point.
+pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
+    let parent = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    // Drop closes and deletes the temp file; the probe leaves no trace.
+    let _tmp = tempfile::NamedTempFile::new_in(parent)?;
+    Ok(())
+}
+
+/// Canonicalise the operator-supplied config path so `SetPark` writes
+/// to a stable absolute location even if the process later `chdir`s
+/// away (also resolves symlinks, which the atomic-rename pattern
+/// needs — the temp file goes in the *physical* parent directory).
+/// On canonicalisation failure (path doesn't yet exist, symlink loop,
+/// permission denied on a path component) the original path is
+/// returned and a `warn!` is logged — `SetPark` will still attempt the
+/// write against the path as given, surfacing the real error there.
+///
+/// Extracted from `main.rs` so the warn-on-failure branch is unit
+/// testable; the binary calls this from `main()`.
+pub fn canonicalise_config_path(config_path: Option<&PathBuf>) -> Option<PathBuf> {
+    config_path.map(|p| {
+        std::fs::canonicalize(p).unwrap_or_else(|e| {
+            tracing::warn!(
+                "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
+                p
+            );
+            p.clone()
+        })
+    })
+}
+
+/// Early-warning probe wrapper: run [`probe_park_file_writability`] on
+/// the supplied path and log a `warn!` on failure. Used by `main.rs`
+/// at startup — operators get a heads-up at boot if `SetPark` will
+/// fail at runtime due to filesystem permissions, rather than only
+/// discovering it on the first `SetPark` call. `CanSetPark` is not
+/// affected; the capability still advertises support and the actual
+/// `SetPark` will surface a structured error if the probe was correct.
+///
+/// Extracted from `main.rs` so the warn-on-failure branch is unit
+/// testable.
+pub fn warn_if_park_path_unwritable(config_path: &Path) {
+    if let Err(e) = probe_park_file_writability(config_path) {
+        tracing::warn!(
+            "SetPark writes to {:?} will fail at runtime: {e}. \
+             Check permissions on the containing directory if SetPark support is required.",
+            config_path
+        );
+    }
+}
+
+/// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
+/// config file. Each axis is returned independently — a `None` means
+/// the file did not set that key (or set it to JSON `null`), and the
+/// caller will fall back to the handshake-captured value for that axis.
+///
+/// A key that **is** present but holds something other than an integer
+/// inside `i32`'s range is surfaced as a `StarAdvError::Config` rather
+/// than silently treated as `None`. Operator typos (a string,
+/// an i64 too large to be encoder ticks, a float) should fail loudly so
+/// the misconfiguration is visible rather than masked by the handshake
+/// fallback. Other failures (file missing, malformed JSON, `mount` key
+/// missing or not an object) are also surfaced as `StarAdvError::Config`.
+///
+/// Reading the file only at connect time means an operator can
+/// hand-edit the park keys between connects and have the change take
+/// effect on reconnect, without restarting the driver.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
+fn read_park_from_config(config_path: &Path) -> crate::error::Result<(Option<i32>, Option<i32>)> {
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
+    let root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        StarAdvError::Config(format!("parse config {}: {e}", config_path.display()))
+    })?;
+    let mount = root
+        .as_object()
+        .and_then(|o| o.get("mount"))
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            StarAdvError::Config(format!(
+                "config {} has no `mount` object",
+                config_path.display()
+            ))
+        })?;
+    let ra = extract_park_tick(mount.get("park_ra_ticks"), "mount.park_ra_ticks")?;
+    let dec = extract_park_tick(mount.get("park_dec_ticks"), "mount.park_dec_ticks")?;
+    Ok((ra, dec))
+}
+
+/// Decode an optional park-tick JSON value:
+///
+/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
+///   falls back to the handshake-captured value).
+/// - A JSON integer in the `i32` range → `Ok(Some(n))`.
+/// - Anything else (string, float, boolean, array/object, i64 outside
+///   `i32` range) → `Err(StarAdvError::Config)`. Loud failure on
+///   operator typo is the whole reason this helper exists — silently
+///   falling back to handshake would mask the misconfiguration.
+fn extract_park_tick(
+    value: Option<&serde_json::Value>,
+    key: &'static str,
+) -> crate::error::Result<Option<i32>> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let n = v.as_i64().ok_or_else(|| {
+                StarAdvError::Config(format!(
+                    "`{key}` must be an integer (encoder ticks), got {v}"
+                ))
+            })?;
+            i32::try_from(n).map(Some).map_err(|_| {
+                StarAdvError::Config(format!(
+                    "`{key}` value {n} is outside the i32 encoder-tick range"
+                ))
+            })
+        }
+    }
+}
+
+/// Patch the on-disk JSON config with the supplied park encoder pair.
+///
+/// Read-as-`Value` + atomic-rename pattern: load the file as
+/// `serde_json::Value`, mutate **only** the `mount.park_ra_ticks` and
+/// `mount.park_dec_ticks` keys, serialise pretty-printed, write via a
+/// `tempfile::NamedTempFile` in the same directory, `persist` to swap
+/// it in atomically. Every other field of the JSON file — known and
+/// unknown — is preserved as a JSON value. Operator-level formatting
+/// (insertion-order of unrelated keys, custom indentation, comments
+/// disguised as fields) is not preserved byte-for-byte because the
+/// round-trip pretty-prints the whole document; the *semantic* content
+/// outside the two park keys is unchanged.
+///
+/// Durability: fsync the staged file before rename (`tempfile::persist`
+/// uses POSIX `rename(2)`), then fsync the parent directory after
+/// rename so the directory entry update is itself durable. Mirrors
+/// `services/rp/src/persistence/document.rs::write_sidecar_sync`.
+///
+/// The driver never re-serialises its in-memory typed `Config` here:
+/// doing so would round-trip CLI overrides (`--port`, `--baud`, etc.)
+/// back to disk and is structurally avoided. See the design doc's
+/// [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence)
+/// for the contract this helper implements.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
+fn write_park_to_config(
+    config_path: &Path,
+    park_ra_ticks: i32,
+    park_dec_ticks: i32,
+) -> crate::error::Result<()> {
+    use std::io::Write;
+
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
+    let mut root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        StarAdvError::Config(format!("parse config {}: {e}", config_path.display()))
+    })?;
+    let mount = root
+        .as_object_mut()
+        .and_then(|o| o.get_mut("mount"))
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| {
+            StarAdvError::Config(format!(
+                "config {} has no `mount` object",
+                config_path.display()
+            ))
+        })?;
+    mount.insert(
+        "park_ra_ticks".to_string(),
+        serde_json::Value::from(park_ra_ticks),
+    );
+    mount.insert(
+        "park_dec_ticks".to_string(),
+        serde_json::Value::from(park_dec_ticks),
+    );
+    let mut pretty = serde_json::to_string_pretty(&root)
+        .map_err(|e| StarAdvError::Config(format!("serialise config: {e}")))?;
+    // serde_json's pretty-printer omits a trailing newline; add one so
+    // operators editing the file later don't trip POSIX "no newline at
+    // end of file" warnings in diffs.
+    pretty.push('\n');
+
+    // Temp file must live in the **same directory** as the destination
+    // so `persist` can use POSIX `rename` (atomic on the same
+    // filesystem) rather than copy-and-delete. Fall back to the
+    // current dir if the path has no parent (e.g. a bare filename),
+    // which is what Path::parent returns Some("") for — coerce to ".".
+    let parent = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| StarAdvError::Config(format!("create temp file in {parent:?}: {e}")))?;
+    tmp.write_all(pretty.as_bytes())
+        .map_err(|e| StarAdvError::Config(format!("write temp file: {e}")))?;
+    // fsync the file data so a crash after rename cannot surface a
+    // renamed-but-zero-length sidecar.
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| StarAdvError::Config(format!("fsync temp file: {e}")))?;
+    tmp.persist(config_path).map_err(|e| {
+        StarAdvError::Config(format!("atomic rename to {}: {e}", config_path.display()))
+    })?;
+    // fsync the parent directory so the rename itself is durable.
+    // Windows can't open a directory as a regular file handle, so this
+    // is unix-only. Mirrors `services/rp/src/persistence/document.rs`.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| StarAdvError::Config(format!("fsync parent dir {parent:?}: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Spawn the park-completion watcher.
@@ -2883,6 +3367,227 @@ mod tests {
         pickup_reslew_axis(&manager, Axis::Dec, -1_000_000).await;
     }
 
+    // ---- SetPark / Park persistence ----
+
+    fn device_with_path(path: PathBuf) -> MountDevice {
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
+    }
+
+    /// Helper: write a default `Config` to `path` as pretty JSON. Used as
+    /// the seed file for SetPark round-trip tests.
+    fn seed_default_config(path: &Path) {
+        let cfg = Config::default();
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    #[test]
+    fn write_park_to_config_round_trips_through_typed_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = Config::default();
+        cfg.server.port = 12345;
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        write_park_to_config(&path, 8000, -3000).unwrap();
+
+        let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.mount.park_ra_ticks, Some(8000));
+        assert_eq!(back.mount.park_dec_ticks, Some(-3000));
+        // Unrelated fields survive the round-trip.
+        assert_eq!(back.server.port, 12345);
+    }
+
+    #[test]
+    fn write_park_to_config_overwrites_existing_park_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = Config::default();
+        cfg.mount.park_ra_ticks = Some(100);
+        cfg.mount.park_dec_ticks = Some(200);
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        write_park_to_config(&path, 999, -1000).unwrap();
+
+        let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.mount.park_ra_ticks, Some(999));
+        assert_eq!(back.mount.park_dec_ticks, Some(-1000));
+    }
+
+    #[test]
+    fn write_park_to_config_preserves_unknown_keys() {
+        // The driver promises to touch only `mount.park_*_ticks`. Any
+        // other key — including fields the typed `Config` doesn't model
+        // (future schema additions, operator-added scratch values) —
+        // must survive the round-trip. Tested at the raw JSON layer so
+        // the typed `Config`'s field set isn't accidentally what we're
+        // measuring.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "transport": {
+                "kind": "usb",
+                "port": "/dev/ttyACM0",
+                "baud_rate": 115200,
+                "command_timeout": "2s",
+                "polling_interval": "200ms"
+            },
+            "server": {
+                "port": 11117,
+                "discovery_port": null,
+                "tls": null,
+                "auth": null
+            },
+            "mount": {
+                "name": "Test",
+                "unique_id": "test-001",
+                "description": "Test",
+                "site_latitude_deg": 0.0,
+                "site_longitude_deg": 0.0,
+                "future_field": "preserve me"
+            },
+            "top_level_future_field": [1, 2, 3]
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        write_park_to_config(&path, 5, 10).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["mount"]["park_ra_ticks"], serde_json::json!(5));
+        assert_eq!(raw["mount"]["park_dec_ticks"], serde_json::json!(10));
+        assert_eq!(
+            raw["mount"]["future_field"],
+            serde_json::json!("preserve me")
+        );
+        assert_eq!(raw["top_level_future_field"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn write_park_to_config_fails_when_file_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        let err = write_park_to_config(&path, 0, 0).unwrap_err();
+        assert!(matches!(err, StarAdvError::Config(_)));
+    }
+
+    #[test]
+    fn write_park_to_config_fails_when_mount_object_is_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("malformed.json");
+        std::fs::write(&path, "{}").unwrap();
+        let err = write_park_to_config(&path, 0, 0).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("mount"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_park_to_config_fails_on_malformed_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Unclosed bracket — `serde_json::from_str` rejects it.
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = write_park_to_config(&path, 0, 0).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("parse config"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_park_from_config_fails_on_malformed_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("parse config"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn park_returns_invariant_violation_when_in_memory_target_is_missing() {
+        // The `park_*_ticks` invariant is: populated by
+        // `load_park_target_after_connect` before `*requested_connection`
+        // flips true, so any code path that's reached
+        // `ensure_connected()` Ok should see Some on both axes. This
+        // test deliberately violates the invariant by clearing the
+        // values after connect, then calls `park()`. The graceful
+        // failure path (return ASCOMError, do not panic) is the
+        // contract we want to pin — see the comment block on
+        // `MountDevice::park` for the panic-vs-error rationale.
+        let d = connected_device().await;
+        d.state.write().await.park_ra_ticks = None;
+        let err = d.park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("park_ra_ticks"),
+            "message should name the missing axis: {}",
+            err.message
+        );
+
+        // Symmetric for the Dec axis.
+        let d = connected_device().await;
+        d.state.write().await.park_dec_ticks = None;
+        let err = d.park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(err.message.contains("park_dec_ticks"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn debug_impl_includes_config_file_path() {
+        // Pins the manual `fmt::Debug` impl — adding a new field
+        // requires updating the closure. The path field landed in
+        // PR #221; the smoke test catches a future refactor that
+        // forgets to extend the Debug closure.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let d = device_with_path(path.clone());
+        let s = format!("{d:?}");
+        assert!(s.contains("MountDevice"), "{s}");
+        assert!(s.contains("config_file_path"), "{s}");
+    }
+
+    #[tokio::test]
+    async fn can_set_park_is_false_when_no_config_path_was_provided() {
+        let d = device();
+        assert!(!d.can_set_park().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn can_set_park_is_true_when_started_with_a_config_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let d = device_with_path(dir.path().join("config.json"));
+        assert!(d.can_set_park().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_park_returns_not_implemented_without_a_config_path() {
+        let d = device();
+        let err = d.set_park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn set_park_returns_not_connected_when_disconnected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let d = device_with_path(path);
+        let err = d.set_park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
     // ---- PulseGuide tests ----
 
     #[tokio::test]
@@ -2956,6 +3661,462 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn set_connected_rolls_back_transport_when_park_load_fails() {
+        // Regression test for the Copilot review on PR #221
+        // (comment 3238682044): if `transport.connect()` succeeds but
+        // the post-connect park-target load fails, the transport
+        // ref-count was being left incremented (the underlying
+        // transport open) while `requested_connection` stayed `false`
+        // — effectively leaking a connection. The fix runs the
+        // post-connect work through `load_park_target_after_connect`
+        // and calls `transport.disconnect()` on any failure before
+        // surfacing the error.
+        //
+        // We trigger the failure path by handing `MountDevice` a
+        // `config_file_path` that points to a non-existent file:
+        // the handshake will succeed (mock transport is happy), but
+        // `read_park_from_config` will fail with a missing-file error.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        let d = device_with_path(path);
+
+        let err = d.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+
+        // The transport must have been disconnected on rollback.
+        // `is_available()` is the underlying TransportManager flag,
+        // which would be `true` if connect succeeded and no rollback
+        // ran. Asserting it false here proves we balanced the
+        // connect ref-count.
+        assert!(
+            !d.transport.is_available(),
+            "transport should be torn down after rollback"
+        );
+        // And the user-visible `connected()` getter agrees.
+        assert!(!d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_park_refuses_while_slew_in_progress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let d = device_with_path(path);
+        d.set_connected(true).await.unwrap();
+        d.state.write().await.slew_in_progress = true;
+        let err = d.set_park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
+        // Defence-in-depth (per Copilot review on PR #221, comment
+        // 3242621736): even if `slew_in_progress` is false — e.g. an
+        // axis is running for a reason the in-memory flag wouldn't
+        // capture — the wire snapshot's `running` flag must still
+        // gate `SetPark` to avoid persisting mid-motion encoder
+        // ticks.
+        //
+        // To exercise this path independently of the
+        // `slew_in_progress` flag, we connect with a
+        // `CapturingMockFactory`, force `ra.running = true` directly
+        // on the mock state (bypassing the slew_to_*_async flag-set
+        // path), wait for the next background poll so the snapshot
+        // reflects the wire, then call SetPark.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
+        d.set_connected(true).await.unwrap();
+
+        // Force the wire-side running flag without going through
+        // `slew_to_coordinates_async` (which would set
+        // `slew_in_progress` and trip the other guard).
+        {
+            let mut s = mock.state.lock().await;
+            s.ra.running = true;
+            s.ra.initialized = true;
+        }
+        // Wait for the background poll to ingest the new wire state.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if d.transport.snapshot().await.ra.running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            d.transport.snapshot().await.ra.running,
+            "precondition: snapshot must reflect RA running=true"
+        );
+        // slew_in_progress flag is still false — only the wire
+        // snapshot is reporting motion. The new defence layer must
+        // still refuse.
+        assert!(!d.state.read().await.slew_in_progress);
+        let err = d.set_park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("snapshot"),
+            "error should reference the wire snapshot: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn set_park_persists_current_snapshot_and_updates_in_memory_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let d = device_with_path(path.clone());
+        d.set_connected(true).await.unwrap();
+        // Seed the snapshot directly — the polling loop won't overwrite
+        // a stationary mock axis (`advance_one_step` bails on
+        // `!running`), so these values stick.
+        d.transport.seed_ra_position(8000).await;
+        d.transport.seed_dec_position(-3000).await;
+
+        d.set_park().await.unwrap();
+
+        // In-memory target updated.
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(8000));
+        assert_eq!(s.park_dec_ticks, Some(-3000));
+        drop(s);
+
+        // On-disk config updated.
+        let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.mount.park_ra_ticks, Some(8000));
+        assert_eq!(back.mount.park_dec_ticks, Some(-3000));
+    }
+
+    #[tokio::test]
+    async fn park_target_defaults_to_handshake_capture_when_config_has_no_values() {
+        // No config park values → driver should fall back to the
+        // encoder positions captured during the handshake. The mock
+        // starts both axes at 0, so park_ra_ticks / park_dec_ticks
+        // should be Some(0) after connect.
+        let d = device();
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(0));
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[tokio::test]
+    async fn park_target_prefers_config_values_over_handshake_capture() {
+        // Config carries park values → driver should use them, not the
+        // (zeroed) handshake fallback.
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        cfg.mount.park_ra_ticks = Some(5000);
+        cfg.mount.park_dec_ticks = Some(-7000);
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(5000));
+        assert_eq!(s.park_dec_ticks, Some(-7000));
+    }
+
+    #[tokio::test]
+    async fn reconnect_after_set_park_picks_up_persisted_values() {
+        // Regression test for the Copilot review feedback on PR #221:
+        // SetPark persists the new park target to disk and updates the
+        // in-memory state, but the in-memory `MountConfig` does not
+        // change. A subsequent disconnect/reconnect within the same
+        // process must therefore re-read the config file rather than
+        // re-loading from the (stale) in-memory config — otherwise the
+        // SetPark target silently reverts to whatever was in
+        // `MountConfig` at process start (or the handshake fallback).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let d = device_with_path(path.clone());
+        d.set_connected(true).await.unwrap();
+        d.transport.seed_ra_position(8000).await;
+        d.transport.seed_dec_position(-3000).await;
+        d.set_park().await.unwrap();
+
+        // Disconnect: in-memory park state is cleared.
+        d.set_connected(false).await.unwrap();
+        assert_eq!(d.state.read().await.park_ra_ticks, None);
+        assert_eq!(d.state.read().await.park_dec_ticks, None);
+
+        // Reset the mock encoders so reconnect's handshake fallback
+        // would be (0, 0) — proves the re-read picked up SetPark's
+        // values rather than just re-reading handshake.
+        d.transport.seed_ra_position(0).await;
+        d.transport.seed_dec_position(0).await;
+
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(8000));
+        assert_eq!(s.park_dec_ticks, Some(-3000));
+    }
+
+    #[tokio::test]
+    async fn reconnect_with_partial_config_uses_handshake_for_missing_axis() {
+        // Per-axis fallback: if the config sets only park_ra_ticks,
+        // RA comes from the file and Dec comes from the handshake.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Hand-craft a JSON config that sets only park_ra_ticks
+        // (park_dec_ticks absent, which `read_park_from_config`
+        // must read as `None`).
+        let mut cfg = Config::default();
+        cfg.mount.park_ra_ticks = Some(1234);
+        // park_dec_ticks deliberately left as None.
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        let d = device_with_path(path);
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(1234));
+        // Mock handshake reports Dec at 0.
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[test]
+    fn read_park_from_config_returns_none_for_each_missing_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "name": "Test",
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, None);
+        assert_eq!(dec, None);
+    }
+
+    #[test]
+    fn read_park_from_config_parses_both_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1234,
+                "park_dec_ticks": -5678,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, Some(1234));
+        assert_eq!(dec, Some(-5678));
+    }
+
+    #[test]
+    fn read_park_from_config_treats_explicit_null_as_none_per_axis() {
+        // Pins the doc-comment guarantee: a `None` return value means
+        // the file did not set that key OR set it to `null`, and the
+        // two axes are returned independently. Here `park_ra_ticks`
+        // is set to a real value while `park_dec_ticks` is explicitly
+        // JSON `null`; the helper must return `(Some(1234), None)`,
+        // and the caller (`set_connected`) will then fall back to the
+        // handshake-captured value for the Dec axis only.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1234,
+                "park_dec_ticks": null,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, Some(1234));
+        assert_eq!(dec, None);
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_wrong_type() {
+        // Operator typo: park_ra_ticks declared as a string. Used to
+        // be silently treated as None (fell back to handshake);
+        // current contract is to surface the misconfiguration. Per
+        // Copilot review on PR #221 (comment 3238774050).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": "not-an-integer",
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => {
+                assert!(msg.contains("park_ra_ticks"), "{msg}");
+                assert!(msg.contains("integer"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_float_value() {
+        // serde_json::Value::Number for 1.5 isn't representable as
+        // i64; `as_i64()` returns None and we surface a Config error
+        // rather than silently dropping the value.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1.5,
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        assert!(matches!(err, StarAdvError::Config(_)));
+    }
+
+    #[test]
+    fn read_park_from_config_errors_on_out_of_i32_range() {
+        // A value that fits in i64 but not i32 — e.g. someone copied
+        // a large encoder count from a higher-resolution mount, or
+        // a typo added a digit. Either way we should fail loudly so
+        // the operator sees the bad value rather than silently
+        // falling back to handshake.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": i64::from(i32::MAX) + 1_i64,
+                "park_dec_ticks": 0,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => {
+                assert!(msg.contains("park_ra_ticks"), "{msg}");
+                assert!(msg.contains("i32"), "{msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_park_file_writability_passes_on_a_writable_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        probe_park_file_writability(&path).unwrap();
+    }
+
+    #[test]
+    fn canonicalise_config_path_returns_none_when_no_path_given() {
+        assert!(canonicalise_config_path(None).is_none());
+    }
+
+    #[test]
+    fn canonicalise_config_path_returns_resolved_path_when_file_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let got = canonicalise_config_path(Some(&path)).expect("Some");
+        // Result is canonicalised — must exist and resolve to the same
+        // file. On macOS the temp dir lives under /private/var/..., so
+        // an exact string match is fragile; just check it resolves.
+        assert!(got.exists(), "canonical path must exist: {got:?}");
+    }
+
+    #[test]
+    fn canonicalise_config_path_falls_back_to_input_on_failure() {
+        // Path doesn't exist → canonicalize errors → fallback to the
+        // original path. The warn! is logged but the function returns
+        // the path unchanged so SetPark can still surface a real error
+        // at write time.
+        let nonexistent = PathBuf::from("/does/not/exist/config.json");
+        let got = canonicalise_config_path(Some(&nonexistent)).expect("Some");
+        assert_eq!(got, nonexistent);
+    }
+
+    #[test]
+    fn warn_if_park_path_unwritable_returns_quietly_on_writable_directory() {
+        // Smoke test: helper returns `()` on success. The warn! body
+        // is exercised by `warn_if_park_path_unwritable_logs_on_failure`
+        // below (unix-only).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        warn_if_park_path_unwritable(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warn_if_park_path_unwritable_logs_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        // Helper returns `()` even on probe failure — the test passes
+        // as long as the call doesn't panic. The internal warn! body
+        // is what we're measuring for coverage.
+        warn_if_park_path_unwritable(&path);
+        // Restore so TempDir's Drop can clean up.
+        let mut restored = std::fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), restored).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_park_file_writability_fails_on_a_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Drop write permission on the parent directory so
+        // `NamedTempFile::new_in` cannot stage a sibling.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        // Probe should report the underlying I/O error.
+        let err = probe_park_file_writability(&path).unwrap_err();
+        // Restore write perms so TempDir's Drop can clean up.
+        let mut restored = std::fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), restored).unwrap();
+        // PermissionDenied is what Linux/macOS surface; either way
+        // it must be classified as a permission / access issue.
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
+            ),
+            "unexpected error kind: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_park_from_config_fails_when_mount_object_is_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("mount"), "{msg}"),
+            other => panic!("expected Config, got {other:?}"),
+        }
     }
 
     #[tokio::test]
