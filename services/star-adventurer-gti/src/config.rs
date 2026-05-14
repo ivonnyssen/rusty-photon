@@ -3,7 +3,7 @@
 //! See [`docs/services/star-adventurer-gti.md`](../../../docs/services/star-adventurer-gti.md)
 //! §"Configuration" for the canonical schema and field meanings.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::time::Duration;
 
@@ -185,9 +185,14 @@ impl Default for UsbConfig {
 impl Default for UdpConfig {
     fn default() -> Self {
         Self {
-            address: "192.168.4.1".parse().unwrap(),
+            // GTi AP-mode address (192.168.4.1) and a typical bind
+            // address on the same /24. Constructed via `Ipv4Addr::new`
+            // rather than parsing a string so `Default::default()`
+            // can't panic on a typo — the compiler validates the
+            // octet literals.
+            address: IpAddr::V4(Ipv4Addr::new(192, 168, 4, 1)),
             port: default_udp_port(),
-            bind_address: "192.168.4.2".parse().unwrap(),
+            bind_address: IpAddr::V4(Ipv4Addr::new(192, 168, 4, 2)),
             command_timeout: default_command_timeout(),
             polling_interval: default_polling_interval(),
         }
