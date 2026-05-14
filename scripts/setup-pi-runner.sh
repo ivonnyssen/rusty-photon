@@ -181,12 +181,18 @@ sudo -u "$RUNNER_USER" bash -lc "
 "
 
 # === 6. Install + start the systemd service ===
+#
+# svc.sh writes to /etc/systemd/system/ (root-only) AND reads template files
+# from its own directory (under $RUNNER_DIR). Ubuntu Server 24.04 creates
+# $RUNNER_HOME with mode 0750 by default, so the calling sudo-capable user
+# typically cannot `cd` into $RUNNER_DIR; the cd must happen *inside* the
+# sudo invocation so root does both the directory entry and the install.
 
 log "Installing systemd service..."
-( cd "$RUNNER_DIR" && sudo ./svc.sh install "$RUNNER_USER" )
+sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh install '$RUNNER_USER'"
 
 log "Starting service..."
-( cd "$RUNNER_DIR" && sudo ./svc.sh start )
+sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh start"
 
 # svc.sh names the unit something like
 # actions.runner.<owner>-<repo>.<runner-name>.service. Derive it for status.

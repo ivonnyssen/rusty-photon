@@ -168,12 +168,15 @@ deregistration in the UI — useful if the Pi is reimaged.
 
 ### 5. Install as a systemd service
 
-GitHub ships an installer for this:
+GitHub ships an installer for this. Note the `sudo bash -c '...'` wrapping:
+`svc.sh` writes to `/etc/systemd/system/` (root-only) and reads template
+files from its own directory, but Ubuntu Server 24.04 creates
+`/home/gh-runner` with mode `0750` so your regular sudo user can't `cd`
+into it. Running the whole compound under `sudo` lets root do both the
+directory entry and the install:
 
 ```bash
-cd ~gh-runner/actions-runner
-sudo ./svc.sh install gh-runner
-sudo ./svc.sh start
+sudo bash -c 'cd /home/gh-runner/actions-runner && ./svc.sh install gh-runner && ./svc.sh start'
 ```
 
 The service is named `actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service`
@@ -243,18 +246,20 @@ the Pi):
    stale entry).
 2. Generate a fresh token from the "New self-hosted runner" UI on that same
    page.
-3. On the Pi:
+3. On the Pi (the `sudo -u gh-runner bash -c '...'` wrapping is for the
+   same `0750` home-directory reason as §5 — `config.sh` expects to run
+   from inside its own directory):
    ```bash
    sudo systemctl stop actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
-   sudo -u gh-runner ~gh-runner/actions-runner/config.sh remove --token <REMOVAL_TOKEN>
-   sudo -u gh-runner ~gh-runner/actions-runner/config.sh \
+   sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
+   sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh \
      --url https://github.com/ivonnyssen/rusty-photon \
      --token <FRESH_REGISTRATION_TOKEN> \
      --name pi5-nightly \
      --labels raspberry-pi \
      --work _work \
      --unattended \
-     --replace
+     --replace'
    sudo systemctl start actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
    ```
 
@@ -267,10 +272,8 @@ If the Pi is going away or the workflow is being retired:
 
 1. On the Pi:
    ```bash
-   cd ~gh-runner/actions-runner
-   sudo ./svc.sh stop
-   sudo ./svc.sh uninstall
-   sudo -u gh-runner ./config.sh remove --token <REMOVAL_TOKEN>
+   sudo bash -c 'cd /home/gh-runner/actions-runner && ./svc.sh stop && ./svc.sh uninstall'
+   sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
    sudo userdel -r gh-runner
    ```
 2. On GitHub: confirm the runner is gone from
