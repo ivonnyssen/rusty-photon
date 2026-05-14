@@ -302,7 +302,8 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `TrackingRate` | always `Sidereal` in MVP |
 | `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
 | `AtHome` | `false` (no hardware home concept) |
-| `SideOfPier` | derived from RA-axis encoder + site latitude (sign matters: spec defines E/W meaning differently in N vs S hemisphere) |
+| `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
+| `DestinationSideOfPier(ra, dec)` | predicts the pointing state for a slew target — same coordinate-math pipeline as `SlewToCoordinatesAsync` plus the safety-envelope check, then the Dec-encoder past-the-pole classification. See [§Side-of-pier](#side-of-pier) |
 | `SiteLatitude` | from config (read-only; setter returns `NOT_IMPLEMENTED`) |
 | `SiteLongitude` | as above |
 | `SiteElevation` | from config; defaults to `0` |
@@ -400,26 +401,43 @@ Park()
 
 ### Side-of-pier
 
-`SideOfPier` is derived from the RA-axis encoder position and the site
-latitude, following the ASCOM / EQMOD convention:
+`SideOfPier` is derived from the **Dec-axis encoder position**, the
+Dec-axis CPR, and the site latitude — the canonical GEM convention used
+by INDI eqmod (`eqmodbase.cpp::EncodersToRADec`):
 
-- Convert RA-axis encoder ticks → mechanical hour-angle (signed, range
-  `[-12, +12)`).
-- In **northern hemisphere** (`SiteLatitude > 0`): mechanical HA in
-  `[-12, 0)` (object east of meridian, mount in the "normal" pointing
-  state with counterweight east and OTA west) → `PierSide::West`;
-  mechanical HA in `[0, +12)` (object past meridian, mount in the
-  post-meridian-flip / "through-the-pole" state) → `PierSide::East`.
+- In **northern hemisphere** (`SiteLatitude ≥ 0`): a Dec encoder
+  magnitude within ±90° (= `±cpr_dec/4` ticks) of home means the mount
+  reached the target without a meridian flip — counterweight east, OTA
+  west of pier → `PierSide::West`. A Dec encoder magnitude past 90° in
+  either direction means the Dec axis has rotated through one of the
+  celestial poles — counterweight west, OTA east of pier →
+  `PierSide::East`. The boundary at exactly ±90° is included in `West`
+  (the mount can sit at either celestial pole via normal pointing).
 - In **southern hemisphere** (`SiteLatitude < 0`): the convention
   inverts.
 
-The boundary at `HA = 0` (meridian) — not the earlier `HA = ±6` split —
-matches what ConformU and standard GEM drivers (EQMOD, INDI eqmod)
-expect.
+Earlier revisions split on the RA mechanical hour angle at `HA = 0`.
+The Dec-encoder split returns the same value as the HA split for any
+pointing state reachable inside the safety envelope — which is why
+ConformU's `SideofPier` test passed against both — but the two diverge
+when the mount is manually positioned past the pole (e.g. a power-cycle
+with the OTA pointing through-the-pole and the encoder reset placing
+the initial position on the wrong side). The Dec-encoder convention
+reports the right answer for that state; the HA-split convention
+inherits the RA encoder's sign and misreports it. INDI's convention is
+the canonical one.
 
-The MVP does **not** implement `DestinationSideOfPier` (slew-target
-prediction); reads always return one of `East` / `West` based on current
-encoder position.
+`DestinationSideOfPier(targetRA, targetDec)` predicts the pointing
+state without issuing wire traffic. It runs the same coordinate-math
+pipeline `SlewToCoordinatesAsync` uses to pick the target encoder pair
+(`(LST - targetRA, targetDec)` → `(ra_ticks, dec_ticks)`), validates
+the target against the safety envelope with the same
+`INVALID_VALUE` rejection a slew would issue, then applies the
+Dec-encoder past-the-pole check to the target Dec ticks. For any
+target inside the safety envelope, the resulting Dec encoder lands
+within ±90° and `DestinationSideOfPier` therefore predicts `West` in
+the Northern Hemisphere (`East` in the Southern) — the driver never
+plans a meridian flip on its own.
 
 ## Configuration
 
@@ -624,19 +642,16 @@ conformu conformance \
 Expect the conformance run to report:
 
 - **0 errors** — anything here is a real driver regression.
-- **9 issues**, all of which are deferred-by-design or
+- **4 issues**, all of which are deferred-by-design or
   upstream-framework problems:
-  - `DestinationSideOfPier` ×1 and `SOPPierTest` ×4 — the MVP
-    explicitly defers `DestinationSideOfPier` (see [§MVP Scope](#mvp-scope)).
-    `SOPPierTest` depends on it and inherits the failure four
-    times under different RA/Dec inputs.
   - `SOPPierTest` ×2 — the safety envelope correctly rejects
     cross-meridian slews that would land at `RA mech-HA = ±9h`
     (well outside the default ±6h counterweight-horizontal
     envelope). `SOPPierTest` exercises the pier-flip code paths
     by commanding such slews; the driver returns
-    `InvalidValueException` from the safety gate before any
-    wire motion. This is the same envelope-rejection mechanism
+    `InvalidValueException` from both the slew and the
+    matching `DestinationSideOfPier` prediction before any wire
+    motion. This is the same envelope-rejection mechanism
     Phase 4 added — see [§Phase 4 driver-logic changes].
   - `TrackingRate Write` ×2 — an upstream `ascom-alpaca-rs`
     bug: invalid Alpaca enum values are rejected with HTTP
@@ -645,6 +660,14 @@ Expect the conformance run to report:
     returning HTTP 200 with `ErrorNumber=0x401 (InvalidValue)`
     as the Alpaca spec requires. ConformU sends `5` and `-1`
     and flags both.
+
+Previous revisions of this section also listed
+`DestinationSideOfPier ×1` and `SOPPierTest ×4` as expected issues,
+covering the four standard RA/Dec inputs ConformU runs through
+`SOPPierTest`. Issue #202 landed `DestinationSideOfPier` and
+switched the `SideOfPier` derivation to the canonical Dec-encoder
+convention, so the four standard cases now drop from ISSUE to OK.
+Only the two safety-envelope rejections remain.
 
 Any issue or error outside that list — and in particular any
 `SlewTo*` / `SyncTo*` row reporting a tolerance exceedance
@@ -707,6 +730,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
 | **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
 | **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
+| **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. Drops the previous `DestinationSideOfPier ×1` and `SOPPierTest ×4` from the expected-issues list. |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -914,7 +938,8 @@ What's still outstanding from Phase 4:
 - `Tracking` setter / getter (sidereal only)
 - `Park` / `Unpark` (software park to encoder 0/0)
 - `AtPark` / `AtHome` reads
-- `SideOfPier` read
+- `SideOfPier` read (Dec-encoder convention)
+- `DestinationSideOfPier(ra, dec)` prediction
 - `Slewing` poll
 - `UTCDate` / `SiderealTime` (host-clock-derived)
 - Mock transport for BDD tests; feature-gated mock for `test_lib.rs` and
@@ -933,7 +958,6 @@ What's still outstanding from Phase 4:
 | `SetPark`, `CanSetPark` | park position is fixed at encoder 0/0 (the mount's natural power-up state); user-defined park positions are a follow-up |
 | `FindHome`, `CanFindHome` | no hardware home sensor on the GTi |
 | `Action` / custom commands | no driver-specific actions in MVP |
-| `DestinationSideOfPier` | requires slew planner; current-pier read is enough for `rp`'s built-in tools |
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |

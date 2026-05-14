@@ -98,27 +98,47 @@ pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
     fold_to_signed((lst_hours - ra_hours).rem_euclid(24.0), 24.0)
 }
 
-/// Side-of-pier classification derived from the RA-axis mechanical hour
-/// angle and site latitude.
+/// Side-of-pier classification derived from the Dec-axis encoder
+/// position, the Dec-axis CPR, and the site latitude.
 ///
 /// ASCOM `PierSide::West` is the "normal" pointing state of a GEM
-/// (counterweight east, OTA on the west side of the pier); `PierSide::East`
-/// is the "beyond-the-pole" / post-meridian-flip state. For a Northern
-/// Hemisphere observer, an object east of the local meridian (HA negative)
-/// is reached without a flip → `PierSide::West`; once the mount continues
-/// past the meridian (HA positive) the encoder convention is that the OTA
-/// has flipped → `PierSide::East`. Boundary at `HA = 0` (the meridian),
-/// not at `HA = ±6`. Southern hemisphere inverts.
+/// (counterweight east, OTA on the west side of the pier);
+/// `PierSide::East` is the "beyond-the-pole" / post-meridian-flip
+/// state. For a Northern Hemisphere observer, the Dec encoder stays
+/// within ±90° (= `±cpr_dec/4` ticks) of home for any target reached
+/// without a meridian flip → `PierSide::West`. Once the mount rotates
+/// the Dec axis past the celestial pole (encoder magnitude past 90°)
+/// the OTA has crossed to the east side of the pier →
+/// `PierSide::East`. Southern hemisphere inverts the convention.
 ///
-/// ConformU's `SideofPier` test catches the prior `[-6, +6)` boundary as
-/// "pierEast is returned when the mount is observing at an hour angle
-/// between -6.0 and 0.0", which matches the standard GEM convention used
-/// by EQMOD and other Sky-Watcher driver references.
-pub fn side_of_pier(mech_ha: f64, site_latitude_deg: f64) -> PierSide {
-    let ha = fold_to_signed(mech_ha, 24.0);
+/// This is INDI eqmod's canonical GEM convention (see
+/// `eqmodbase.cpp::EncodersToRADec` — `DECurrent > 90° && <= 270°`
+/// → `PIER_EAST`, equivalent to the magnitude-past-90° check applied
+/// to the signed encoder reading our driver carries).
+///
+/// The earlier RA-meridian split (HA = 0) happens to return the same
+/// value as the Dec-encoder check for every pointing state reachable
+/// inside the safety envelope, which is why the two conventions
+/// agreed on the ConformU `SideofPier` cases the previous
+/// implementation passed. They diverge only when the mount has been
+/// manually positioned with the Dec encoder past the pole (e.g. a
+/// power-cycle with the OTA pointing through the pole); the
+/// Dec-encoder convention reports `PierSide::East` for that state,
+/// the HA convention misreports it as whichever side the RA encoder
+/// happens to sit on.
+pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> PierSide {
+    if cpr_dec == 0 {
+        return PierSide::Unknown;
+    }
+    let quarter = (cpr_dec / 4) as i64;
+    // Past-the-pole detection: |Dec encoder| > 90° means the mount
+    // has rotated the Dec axis beyond either celestial pole — which
+    // for a German Equatorial Mount means it is in the
+    // post-meridian-flip / counterweight-up state. The boundary at
+    // exactly ±90° is *not* East: the mount can sit at the pole via
+    // normal-pointing slews without a flip.
+    let east_in_north = (dec_ticks as i64).abs() > quarter;
     let northern = site_latitude_deg >= 0.0;
-    // In N hemisphere: HA >= 0 (object past meridian) → pierEast.
-    let east_in_north = ha >= 0.0;
     let east = if northern {
         east_in_north
     } else {
@@ -329,39 +349,64 @@ mod tests {
     }
 
     #[test]
-    fn side_of_pier_north_meridian_is_east() {
-        // Mechanical HA = 0 (object exactly at meridian) on a northern
-        // site → pierEast (boundary is half-open at 0, treated as the
-        // start of the post-meridian arc).
-        assert_eq!(side_of_pier(0.0, 47.6), PierSide::East);
+    fn side_of_pier_north_equator_is_west() {
+        // Dec encoder at home (0 ticks ≈ celestial equator on the
+        // meridian). Mount is in normal-pointing state → pierWest.
+        assert_eq!(side_of_pier(0, GTI_CPR, 47.6), PierSide::West);
     }
 
     #[test]
-    fn side_of_pier_north_pre_meridian_is_west() {
-        // Object east of meridian (HA negative) → mount is in the
-        // "normal" pointing state → pierWest. This is the case
-        // ConformU flagged when the boundary was wrongly set at ±6.
-        assert_eq!(side_of_pier(-3.0, 47.6), PierSide::West);
-        assert_eq!(side_of_pier(-6.0, 47.6), PierSide::West);
-        assert_eq!(side_of_pier(-0.001, 47.6), PierSide::West);
+    fn side_of_pier_north_within_envelope_is_west() {
+        // Any encoder magnitude up to and including ±cpr/4 (= ±90°)
+        // is reachable without a meridian flip. ConformU's SOPPierTest
+        // exercises these cases; all four must read pierWest.
+        let quarter = (GTI_CPR / 4) as i32;
+        assert_eq!(side_of_pier(quarter / 3, GTI_CPR, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(-quarter / 3, GTI_CPR, 47.6), PierSide::West);
+        // Boundary cases at exactly ±90°: the mount can reach either
+        // celestial pole via normal pointing, so the boundary is
+        // included in `West` (matches INDI eqmod's `> 90°` strict
+        // check).
+        assert_eq!(side_of_pier(quarter, GTI_CPR, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(-quarter, GTI_CPR, 47.6), PierSide::West);
     }
 
     #[test]
-    fn side_of_pier_north_post_meridian_is_east() {
-        // Object west of meridian (HA positive) → mount has passed the
-        // meridian → pierEast.
-        assert_eq!(side_of_pier(3.0, 47.6), PierSide::East);
-        assert_eq!(side_of_pier(6.0, 47.6), PierSide::East);
-        assert_eq!(side_of_pier(11.999, 47.6), PierSide::East);
+    fn side_of_pier_north_past_pole_is_east() {
+        // Dec encoder magnitude past 90° means the mount has rotated
+        // the Dec axis beyond the celestial pole — the post-flip /
+        // counterweight-up state, which ASCOM names pierEast.
+        let quarter = (GTI_CPR / 4) as i32;
+        assert_eq!(side_of_pier(quarter + 1, GTI_CPR, 47.6), PierSide::East);
+        assert_eq!(side_of_pier(-(quarter + 1), GTI_CPR, 47.6), PierSide::East);
+        // Mid-flip and "full flip to equator on the opposite side".
+        let half = (GTI_CPR / 2) as i32;
+        assert_eq!(
+            side_of_pier(quarter + half / 4, GTI_CPR, 47.6),
+            PierSide::East
+        );
+        assert_eq!(side_of_pier(half, GTI_CPR, 47.6), PierSide::East);
     }
 
     #[test]
     fn side_of_pier_southern_hemisphere_inverts() {
-        // Mirror of the northern split at HA = 0.
-        assert_eq!(side_of_pier(0.0, -33.9), PierSide::West);
-        assert_eq!(side_of_pier(-3.0, -33.9), PierSide::East);
-        assert_eq!(side_of_pier(3.0, -33.9), PierSide::West);
-        assert_eq!(side_of_pier(-6.0, -33.9), PierSide::East);
+        // Mirror of the northern split.
+        let quarter = (GTI_CPR / 4) as i32;
+        assert_eq!(side_of_pier(0, GTI_CPR, -33.9), PierSide::East);
+        assert_eq!(side_of_pier(quarter / 3, GTI_CPR, -33.9), PierSide::East);
+        assert_eq!(side_of_pier(quarter, GTI_CPR, -33.9), PierSide::East);
+        assert_eq!(side_of_pier(quarter + 1, GTI_CPR, -33.9), PierSide::West);
+        assert_eq!(side_of_pier(-(quarter + 1), GTI_CPR, -33.9), PierSide::West);
+    }
+
+    #[test]
+    fn side_of_pier_returns_unknown_when_cpr_is_zero() {
+        // Degenerate case — would mean the parameter cache was never
+        // populated. The accessor short-circuits on
+        // `NOT_CONNECTED` before reaching the helper in practice, but
+        // the helper still has to handle this defensively to stay a
+        // total function.
+        assert_eq!(side_of_pier(0, 0, 47.6), PierSide::Unknown);
     }
 
     /// Tiny `f64` helper so the half-revolution fold test can be stated
