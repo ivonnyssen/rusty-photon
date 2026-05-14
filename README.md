@@ -195,6 +195,7 @@ rusty-photon/
 | [docs/skills/development-workflow.md](docs/skills/development-workflow.md) | Skill: design-first, test-first development workflow |
 | [docs/skills/testing.md](docs/skills/testing.md) | Skill: writing and organizing tests |
 | [docs/skills/pre-push.md](docs/skills/pre-push.md) | Skill: running CI quality gates before pushing |
+| [docs/skills/raspberry-pi-runner.md](docs/skills/raspberry-pi-runner.md) | Skill: setting up the Pi 5 ARM64 nightly self-hosted runner |
 | [docs/references/ascom-alpaca.md](docs/references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/decisions/](docs/decisions/) | Architecture Decision Records |
 

@@ -207,6 +207,24 @@ Current services and their commands:
 - **qhy-focuser**: `cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored --nocapture`
 - **sky-survey-camera**: `cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --ignored --nocapture`
 
+### pi-nightly.yml (rolling, self-hosted ARM64)
+
+Runs the workspace build + tests on a Raspberry Pi 5 self-hosted runner
+(Linux/ARM64) once per night. The only CI surface that exercises ARM64;
+catches arch-specific regressions (atomics, alignment, vendored C deps
+like `cfitsio`, cross-arch feature unification) that the x86 GitHub-hosted
+runners cannot. **Triggers are deliberately limited to `schedule` and
+`workflow_dispatch`** — never `pull_request` or `push` — because the repo
+is public and a self-hosted runner accepting PR triggers would let forks
+execute arbitrary code on the Pi. See
+[docs/skills/raspberry-pi-runner.md](raspberry-pi-runner.md) for the full
+security model, setup steps, and decommissioning procedure.
+
+| CI Job | Local Command | Prerequisites | Required? |
+|--------|---------------|---------------|-----------|
+| **arm64-stable** | Same as scheduled `nightly` but on ARM64 stable: `cargo build --locked --workspace --all-features --all-targets` + `cargo nextest run --locked --all-features --all-targets` + `cargo test --locked --all-features --test bdd` + `cargo test --locked --all-features --doc` | self-hosted ARM64 runner, stable, cargo-nextest | Optional |
+| **notify-on-failure** | N/A (CI-only — opens/updates a `pi-nightly` labelled issue when `arm64-stable` fails on a scheduled run) | -- | CI-only |
+
 ### scheduled.yml (rolling)
 
 These jobs only run on push to main, on schedule, or manually -- **not on PRs**.
