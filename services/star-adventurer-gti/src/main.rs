@@ -10,7 +10,8 @@ use tracing::{debug, info, Level};
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
 use star_adventurer_gti::{
-    load_config, probe_park_file_writability, Config, ServerBuilder, TransportFactory,
+    canonicalise_config_path, load_config, warn_if_park_path_unwritable, Config, ServerBuilder,
+    TransportFactory,
 };
 
 #[derive(Parser)]
@@ -95,38 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     apply_cli_overrides(&mut config, &args)?;
 
-    // Canonicalise the config path so SetPark writes back to a stable
-    // location even if the process later chdir's away. `canonicalize`
-    // also resolves symlinks, which is what we want for the atomic
-    // rename (the temp file goes in the same physical directory as the
-    // real destination). Errors here are non-fatal — log and fall back
-    // to the path as given.
-    let config_file_path = args.config.as_ref().map(|p| {
-        std::fs::canonicalize(p).unwrap_or_else(|e| {
-            tracing::warn!(
-                "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
-                p
-            );
-            p.clone()
-        })
-    });
-
-    // Early-warning probe: try staging a temp file in the same
-    // directory `SetPark` would write into. This catches the
-    // "operator pointed `--config` at a read-only location" case
-    // at boot rather than only on the first `SetPark` call. The
-    // probe failing does **not** flip `CanSetPark` to `false` — we
-    // still advertise the capability and let the real `SetPark`
-    // surface a specific error if it ever fires. See
-    // [`probe_park_file_writability`] for the rationale.
+    // Canonicalise the operator-supplied config path so `SetPark` writes
+    // to a stable absolute location; also runs the early-warning
+    // writability probe so a bad path / permissions setup surfaces a
+    // `warn!` at boot instead of only on the first `SetPark` call. Both
+    // helpers live in the library crate so their warn-on-failure
+    // branches are unit-testable.
+    let config_file_path = canonicalise_config_path(args.config.as_ref());
     if let Some(path) = &config_file_path {
-        if let Err(e) = probe_park_file_writability(path) {
-            tracing::warn!(
-                "SetPark writes to {:?} will fail at runtime: {e}. \
-                 Check permissions on the containing directory if SetPark support is required.",
-                path
-            );
-        }
+        warn_if_park_path_unwritable(path);
     }
 
     info!("Starting Star Adventurer GTi driver");

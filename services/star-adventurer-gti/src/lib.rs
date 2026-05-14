@@ -16,7 +16,10 @@ pub use config::{
     UsbConfig,
 };
 pub use error::{Result, StarAdvError};
-pub use mount_device::{probe_park_file_writability, MountDevice};
+pub use mount_device::{
+    canonicalise_config_path, probe_park_file_writability, warn_if_park_path_unwritable,
+    MountDevice,
+};
 pub use transport::serial::SerialTransportFactory;
 pub use transport::udp::UdpTransportFactory;
 pub use transport::{Transport, TransportFactory};

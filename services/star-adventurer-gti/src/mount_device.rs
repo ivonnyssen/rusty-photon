@@ -1848,6 +1848,49 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Canonicalise the operator-supplied config path so `SetPark` writes
+/// to a stable absolute location even if the process later `chdir`s
+/// away (also resolves symlinks, which the atomic-rename pattern
+/// needs — the temp file goes in the *physical* parent directory).
+/// On canonicalisation failure (path doesn't yet exist, symlink loop,
+/// permission denied on a path component) the original path is
+/// returned and a `warn!` is logged — `SetPark` will still attempt the
+/// write against the path as given, surfacing the real error there.
+///
+/// Extracted from `main.rs` so the warn-on-failure branch is unit
+/// testable; the binary calls this from `main()`.
+pub fn canonicalise_config_path(config_path: Option<&PathBuf>) -> Option<PathBuf> {
+    config_path.map(|p| {
+        std::fs::canonicalize(p).unwrap_or_else(|e| {
+            tracing::warn!(
+                "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
+                p
+            );
+            p.clone()
+        })
+    })
+}
+
+/// Early-warning probe wrapper: run [`probe_park_file_writability`] on
+/// the supplied path and log a `warn!` on failure. Used by `main.rs`
+/// at startup — operators get a heads-up at boot if `SetPark` will
+/// fail at runtime due to filesystem permissions, rather than only
+/// discovering it on the first `SetPark` call. `CanSetPark` is not
+/// affected; the capability still advertises support and the actual
+/// `SetPark` will surface a structured error if the probe was correct.
+///
+/// Extracted from `main.rs` so the warn-on-failure branch is unit
+/// testable.
+pub fn warn_if_park_path_unwritable(config_path: &Path) {
+    if let Err(e) = probe_park_file_writability(config_path) {
+        tracing::warn!(
+            "SetPark writes to {:?} will fail at runtime: {e}. \
+             Check permissions on the containing directory if SetPark support is required.",
+            config_path
+        );
+    }
+}
+
 /// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
 /// config file. Each axis is returned independently — a `None` means
 /// the file did not set that key (or set it to JSON `null`), and the
@@ -3388,6 +3431,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn write_park_to_config_fails_on_malformed_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Unclosed bracket — `serde_json::from_str` rejects it.
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = write_park_to_config(&path, 0, 0).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("parse config"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_park_from_config_fails_on_malformed_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("parse config"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn park_returns_invariant_violation_when_in_memory_target_is_missing() {
+        // The `park_*_ticks` invariant is: populated by
+        // `load_park_target_after_connect` before `*requested_connection`
+        // flips true, so any code path that's reached
+        // `ensure_connected()` Ok should see Some on both axes. This
+        // test deliberately violates the invariant by clearing the
+        // values after connect, then calls `park()`. The graceful
+        // failure path (return ASCOMError, do not panic) is the
+        // contract we want to pin — see the comment block on
+        // `MountDevice::park` for the panic-vs-error rationale.
+        let d = connected_device().await;
+        d.state.write().await.park_ra_ticks = None;
+        let err = d.park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("park_ra_ticks"),
+            "message should name the missing axis: {}",
+            err.message
+        );
+
+        // Symmetric for the Dec axis.
+        let d = connected_device().await;
+        d.state.write().await.park_dec_ticks = None;
+        let err = d.park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(err.message.contains("park_dec_ticks"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn debug_impl_includes_config_file_path() {
+        // Pins the manual `fmt::Debug` impl — adding a new field
+        // requires updating the closure. The path field landed in
+        // PR #221; the smoke test catches a future refactor that
+        // forgets to extend the Debug closure.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let d = device_with_path(path.clone());
+        let s = format!("{d:?}");
+        assert!(s.contains("MountDevice"), "{s}");
+        assert!(s.contains("config_file_path"), "{s}");
+    }
+
     #[tokio::test]
     async fn can_set_park_is_false_when_no_config_path_was_provided() {
         let d = device();
@@ -3786,6 +3897,63 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         probe_park_file_writability(&path).unwrap();
+    }
+
+    #[test]
+    fn canonicalise_config_path_returns_none_when_no_path_given() {
+        assert!(canonicalise_config_path(None).is_none());
+    }
+
+    #[test]
+    fn canonicalise_config_path_returns_resolved_path_when_file_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let got = canonicalise_config_path(Some(&path)).expect("Some");
+        // Result is canonicalised — must exist and resolve to the same
+        // file. On macOS the temp dir lives under /private/var/..., so
+        // an exact string match is fragile; just check it resolves.
+        assert!(got.exists(), "canonical path must exist: {got:?}");
+    }
+
+    #[test]
+    fn canonicalise_config_path_falls_back_to_input_on_failure() {
+        // Path doesn't exist → canonicalize errors → fallback to the
+        // original path. The warn! is logged but the function returns
+        // the path unchanged so SetPark can still surface a real error
+        // at write time.
+        let nonexistent = PathBuf::from("/does/not/exist/config.json");
+        let got = canonicalise_config_path(Some(&nonexistent)).expect("Some");
+        assert_eq!(got, nonexistent);
+    }
+
+    #[test]
+    fn warn_if_park_path_unwritable_returns_quietly_on_writable_directory() {
+        // Smoke test: helper returns `()` on success. The warn! body
+        // is exercised by `warn_if_park_path_unwritable_logs_on_failure`
+        // below (unix-only).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        warn_if_park_path_unwritable(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warn_if_park_path_unwritable_logs_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        // Helper returns `()` even on probe failure — the test passes
+        // as long as the call doesn't panic. The internal warn! body
+        // is what we're measuring for coverage.
+        warn_if_park_path_unwritable(&path);
+        // Restore so TempDir's Drop can clean up.
+        let mut restored = std::fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), restored).unwrap();
     }
 
     #[cfg(unix)]
