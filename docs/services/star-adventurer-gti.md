@@ -341,6 +341,24 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
 | `Action(name, parameters)` | `ACTION_NOT_IMPLEMENTED` for all action names in MVP |
 
+#### Host-clock dependency for LST-using reads
+
+`RightAscension`, `Declination` (via the RA path), `Azimuth`,
+`Altitude`, `SiderealTime`, `SlewToCoordinatesAsync`, and
+`DestinationSideOfPier` all compute local apparent sidereal time
+from the host's `SystemTime::now()`. The conversion goes through
+ERFA (`Dtf2d` → `Utctai` → `Gst06a`), and ERFA refuses host UTCs
+that fall outside `eraCal2jd`'s valid year range (`-4799` and
+above). On a real system the only way to trip the refusal is a
+clock set absurdly far in the past — the leap-second-table
+boundary (`IYV + 5`) returns a warning, not an error. When ERFA
+*does* refuse, the trait method returns `INVALID_OPERATION` with
+a `timekeeping error: ...` payload rather than panicking the
+tokio task. The slew-completion watcher's pickup loop matches the
+same pattern: on ERFA failure it logs `warn!`, clears
+`slew_in_progress`, and exits cleanly so the next Alpaca client
+read of `Slewing` flips to `false`.
+
 ### Slew lifecycle
 
 ```

@@ -34,6 +34,16 @@ pub enum StarAdvError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    /// ERFA-side time-conversion failure. The built-in leap-second
+    /// table only covers a finite window past the binary's compile
+    /// date — a host clock set far enough into the future (or before
+    /// 1960) trips ERFA's `Utctai` with "unacceptable date". The
+    /// chrono-validated `Dtf2d` branch is unreachable in practice but
+    /// is folded into the same variant so the call site stays
+    /// total-function.
+    #[error("timekeeping error: {0}")]
+    Timekeeping(String),
 }
 
 impl StarAdvError {
@@ -83,6 +93,7 @@ mod tests {
             StarAdvError::Timeout("read".into()),
             StarAdvError::InvalidOperation("double connect".into()),
             StarAdvError::Config("missing".into()),
+            StarAdvError::Timekeeping("ERFA Utctai returned -1".into()),
         ] {
             let mapped = err.to_ascom_error();
             assert_eq!(mapped.code, ASCOMErrorCode::INVALID_OPERATION);

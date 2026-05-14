@@ -658,7 +658,8 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         Ok(mechanical_ha_to_ra(mech_ha, lst))
     }
 
@@ -687,7 +688,8 @@ impl Telescope for MountDevice {
     async fn azimuth(&self) -> ASCOMResult<f64> {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         let (_alt, az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(az)
     }
@@ -695,16 +697,15 @@ impl Telescope for MountDevice {
     async fn altitude(&self) -> ASCOMResult<f64> {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         let (alt, _az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(alt)
     }
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
-        Ok(local_sidereal_time_hours(
-            SystemTime::now(),
-            self.config.site_longitude_deg,
-        ))
+        local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)
     }
 
     async fn slewing(&self) -> ASCOMResult<bool> {
@@ -861,7 +862,8 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
@@ -932,7 +934,8 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
@@ -1008,7 +1011,8 @@ impl Telescope for MountDevice {
         // that bounded mock drift but undershot real-hardware slews
         // of 3-7 s, leaving 45-120 arc-second RA residuals. The
         // pickup loop closes the gap cleanly.
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg);
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
@@ -1699,8 +1703,23 @@ fn spawn_slew_completion_watcher(
                 if let (Some(target_ra), Some(target_dec), Some(params)) =
                     (target_ra, target_dec, transport.parameters().await)
                 {
-                    let lst =
-                        local_sidereal_time_hours(SystemTime::now(), config.site_longitude_deg);
+                    // ERFA can refuse the host UTC if the leap-second
+                    // table doesn't cover it (driver shipped today,
+                    // run far enough into the future). Match the
+                    // `poll_axes_now` failure pattern: log, clear
+                    // `slew_in_progress`, exit the watcher rather
+                    // than aborting the tokio task.
+                    let lst = match local_sidereal_time_hours(
+                        SystemTime::now(),
+                        config.site_longitude_deg,
+                    ) {
+                        Ok(lst) => lst,
+                        Err(e) => {
+                            tracing::warn!("watcher LST computation failed: {e}");
+                            state.write().await.slew_in_progress = false;
+                            return;
+                        }
+                    };
                     let cur_mech_ha =
                         ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
                     let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
