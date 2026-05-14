@@ -13,12 +13,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::telescope::{
-    AlignmentMode, DriveRate, EquatorialCoordinateType, PierSide, Telescope, TelescopeAxis,
+    AlignmentMode, DriveRate, EquatorialCoordinateType, GuideDirection, PierSide, Telescope,
+    TelescopeAxis,
 };
 use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use skywatcher_motor_protocol::command::MotionMode;
+use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -26,16 +27,22 @@ use tracing::debug;
 use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
-    mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, ra_dec_to_alt_az, ra_ticks_to_mechanical_ha,
-    ra_to_mechanical_ha, side_of_pier as side_of_pier_calc, sidereal_step_period,
+    mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
+    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
+    sidereal_step_period, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
 
+/// Default guide rate as a fraction of sidereal. ASCOM clients see
+/// this multiplied by `SIDEREAL_DEG_PER_SEC` through
+/// `GuideRateRightAscension` / `GuideRateDeclination`.
+const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
+
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
 /// RA/Dec, Slewing) are read through [`TransportManager`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DriverState {
     tracking_requested: bool,
     at_park: bool,
@@ -51,11 +58,43 @@ struct DriverState {
     /// In-memory park-target encoder pair. Populated on the 0→1 connect
     /// transition from `MountConfig::park_*_ticks` if `Some`, otherwise
     /// from the handshake-captured positions. `None` here means "not
-    /// loaded yet" — `Park` reads through `expect()` after
-    /// `ensure_connected()` so an unset value would indicate a logic
-    /// error, not a user-visible state.
+    /// loaded yet" — `Park` reads via `ok_or_else` after
+    /// `ensure_connected()` so an unset value surfaces as an
+    /// `ASCOMError(INVALID_OPERATION)` rather than a panic.
     park_ra_ticks: Option<i32>,
     park_dec_ticks: Option<i32>,
+    /// PulseGuide rate on the RA axis as a fraction of sidereal in
+    /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
+    /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
+    guide_rate_ra_fraction: f64,
+    guide_rate_dec_fraction: f64,
+    /// `true` between issuing a PulseGuide on this axis and the
+    /// watcher clearing the flag after the pulse `duration` has
+    /// elapsed (or earlier, via the cancellation rule — any
+    /// axis-mutating operation clears the flag before issuing its own
+    /// wire commands so the watcher's post-sleep restore bails out).
+    /// See §"PulseGuide lifecycle" in the design doc.
+    pulse_guiding_ra: bool,
+    pulse_guiding_dec: bool,
+}
+
+impl Default for DriverState {
+    fn default() -> Self {
+        Self {
+            tracking_requested: false,
+            at_park: false,
+            target_ra_hours: None,
+            target_dec_degrees: None,
+            slew_settle_time: None,
+            slew_in_progress: false,
+            park_ra_ticks: None,
+            park_dec_ticks: None,
+            guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
+            guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
+            pulse_guiding_ra: false,
+            pulse_guiding_dec: false,
+        }
+    }
 }
 
 pub struct MountDevice {
@@ -428,6 +467,30 @@ async fn pickup_reslew_axis(transport: &TransportManager, axis: Axis, delta: i32
     }
 }
 
+/// Validate an ASCOM `GuideRate*` setter value (deg/sec) and return
+/// the equivalent fraction of sidereal. Rejects values outside the
+/// open interval `(0, SIDEREAL_DEG_PER_SEC)`:
+///
+/// - `≤ 0` is non-physical (zero rate = no motion; negative = wrong
+///   direction).
+/// - `≥ SIDEREAL_DEG_PER_SEC` would push East's `rate_factor = 1 -
+///   fraction` to zero or negative, which divides by zero in the
+///   step-period formula. INDI's eqmod driver imposes the same upper
+///   bound for the same reason.
+fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<f64> {
+    let fraction = deg_per_sec / SIDEREAL_DEG_PER_SEC;
+    if !fraction.is_finite() || fraction <= 0.0 || fraction >= 1.0 {
+        return Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_VALUE,
+            format!(
+                "guide rate {deg_per_sec} deg/sec is outside the supported \
+                 range (0, {SIDEREAL_DEG_PER_SEC})"
+            ),
+        ));
+    }
+    Ok(fraction)
+}
+
 #[async_trait]
 impl Device for MountDevice {
     fn static_name(&self) -> &str {
@@ -492,6 +555,12 @@ impl Device for MountDevice {
             // Keep `at_park` — Phase 4 may persist it across sessions
             // by reading the encoder; for now leaving it as-is matches
             // ASCOM's "AtPark reflects mechanical state" intent.
+            //
+            // Reset guide rates to the default — the design doc says
+            // they re-initialise on each `Connected = true`, matching
+            // INDI's behaviour. Doing the reset on disconnect (instead
+            // of on the next connect) is symmetric with the other
+            // per-session clears here.
             let mut s = self.state.write().await;
             s.target_ra_hours = None;
             s.target_dec_degrees = None;
@@ -499,6 +568,10 @@ impl Device for MountDevice {
             s.slew_in_progress = false;
             s.park_ra_ticks = None;
             s.park_dec_ticks = None;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+            s.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
+            s.guide_rate_dec_fraction = DEFAULT_GUIDE_RATE_FRACTION;
         }
         debug!(connected, "set_connected");
         Ok(())
@@ -551,6 +624,12 @@ impl Telescope for MountDevice {
         // `CanSetPark` to vary with driver state, so this is a runtime
         // check rather than a compile-time constant.
         Ok(self.config_file_path.is_some())
+    }
+    async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
+        Ok(true)
+    }
+    async fn can_set_guide_rates(&self) -> ASCOMResult<bool> {
+        Ok(true)
     }
     async fn does_refraction(&self) -> ASCOMResult<bool> {
         Ok(false)
@@ -651,6 +730,13 @@ impl Telescope for MountDevice {
 
     async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
         self.ensure_connected().await?;
+        // Cancel any in-flight RA pulse before mutating the RA axis.
+        // The pulse-guide watcher's post-sleep restore step checks
+        // `pulse_guiding_ra` and bails if cleared. Without this,
+        // `set_tracking(false)` during an East/West pulse would be
+        // silently undone when the watcher re-issued sidereal tracking
+        // on restore.
+        self.state.write().await.pulse_guiding_ra = false;
         if tracking {
             // Enabling tracking while parked is invalid per ASCOM
             // ITelescopeV3. Disabling tracking while parked stays
@@ -833,6 +919,14 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
+        // Cancel any in-flight pulse-guide on either axis — sync is
+        // an axis-position mutation and we don't want the watcher
+        // restoring tracking against the freshly-set encoder position.
+        {
+            let mut s = self.state.write().await;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+        }
         let params = self
             .transport
             .parameters()
@@ -904,7 +998,9 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
 
         // Latch the target + capture the tracking flag so the
-        // completion watcher knows whether to auto-restore. We do NOT
+        // completion watcher knows whether to auto-restore. Also
+        // cancel any in-flight pulse-guide on either axis (the slew
+        // takes ownership of both axes from this point). We do NOT
         // clear `tracking_requested` here: if any of the StopMotion /
         // SetMotionMode / ... sends below fail, the in-memory state
         // would falsely report tracking-off while the wire is still
@@ -916,6 +1012,8 @@ impl Telescope for MountDevice {
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
             tracking_was_on = s.tracking_requested;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
         }
 
         // Compute target encoder ticks for the *current* LST. INDI's
@@ -1019,6 +1117,14 @@ impl Telescope for MountDevice {
         // Idempotent: already parked → no-op.
         if self.state.read().await.at_park {
             return Ok(());
+        }
+        // Cancel any in-flight pulse-guide — park takes ownership of
+        // both axes. Watchers see the cleared flags on post-sleep and
+        // bail out without restoring.
+        {
+            let mut s = self.state.write().await;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
         }
         // Stop tracking before slewing home (per ASCOM, tracking remains
         // off after Park). The wire `:K1` is issued first so the in-memory
@@ -1180,6 +1286,13 @@ impl Telescope for MountDevice {
             let mut s = self.state.write().await;
             s.slew_in_progress = false;
             s.tracking_requested = false;
+            // Cancel any in-flight pulse-guide on either axis. The
+            // watcher's post-sleep restore step bails when it sees the
+            // flag cleared; `:L1`/`:L2` below already halt any
+            // rate-shifted motion, so there's nothing for the watcher
+            // to restore.
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
         }
         // Issue :L on both axes (instant stop). Log the underlying
         // transport error if either send fails — silent failure here
@@ -1208,6 +1321,174 @@ impl Telescope for MountDevice {
 
     async fn set_slew_settle_time(&self, slew_settle_time: Duration) -> ASCOMResult<()> {
         self.state.write().await.slew_settle_time = Some(slew_settle_time);
+        Ok(())
+    }
+
+    // ---- PulseGuide ----
+
+    async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
+        let s = self.state.read().await;
+        Ok(s.pulse_guiding_ra || s.pulse_guiding_dec)
+    }
+
+    async fn guide_rate_right_ascension(&self) -> ASCOMResult<f64> {
+        let f = self.state.read().await.guide_rate_ra_fraction;
+        Ok(f * SIDEREAL_DEG_PER_SEC)
+    }
+
+    async fn set_guide_rate_right_ascension(
+        &self,
+        guide_rate_right_ascension: f64,
+    ) -> ASCOMResult<()> {
+        let fraction = validate_guide_rate(guide_rate_right_ascension)?;
+        self.state.write().await.guide_rate_ra_fraction = fraction;
+        Ok(())
+    }
+
+    async fn guide_rate_declination(&self) -> ASCOMResult<f64> {
+        let f = self.state.read().await.guide_rate_dec_fraction;
+        Ok(f * SIDEREAL_DEG_PER_SEC)
+    }
+
+    async fn set_guide_rate_declination(&self, guide_rate_declination: f64) -> ASCOMResult<()> {
+        let fraction = validate_guide_rate(guide_rate_declination)?;
+        self.state.write().await.guide_rate_dec_fraction = fraction;
+        Ok(())
+    }
+
+    async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
+        self.ensure_connected().await?;
+        self.ensure_unparked().await?;
+        if self.slewing().await? {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "PulseGuide refused while slewing",
+            ));
+        }
+        // Duration zero is a no-op success per ASCOM convention. Skip
+        // before resolving direction / acquiring locks to keep the
+        // hot-path predictable.
+        if duration.is_zero() {
+            return Ok(());
+        }
+        // Resolve direction → (axis, ccw, rate_factor) under a read
+        // lock. The in-flight check + flag-set happens later under a
+        // write lock so it's atomic against concurrent same-axis
+        // calls (the rate_factor / tracking_was_on snapshots taken
+        // here are stable: rates can be updated concurrently, but
+        // the worst case is a one-tick-late read which ASCOM
+        // tolerates).
+        let (axis, ccw, rate_factor, tracking_was_on) = {
+            let s = self.state.read().await;
+            let (axis, ccw, rate_factor) = match direction {
+                GuideDirection::East => (Axis::Ra, false, 1.0 - s.guide_rate_ra_fraction),
+                GuideDirection::West => (Axis::Ra, false, 1.0 + s.guide_rate_ra_fraction),
+                GuideDirection::North => (Axis::Dec, false, s.guide_rate_dec_fraction),
+                GuideDirection::South => (Axis::Dec, true, s.guide_rate_dec_fraction),
+            };
+            let tracking_was_on = axis == Axis::Ra && s.tracking_requested;
+            (axis, ccw, rate_factor, tracking_was_on)
+        };
+        // Compute the shifted step period from the cached
+        // sidereal-period helper and the rate factor. Validate against
+        // the protocol's 24-bit `:I` payload range before sending —
+        // `encode_u24` silently truncates above `0x00FF_FFFF`, so an
+        // un-validated period would wrap to an unintended speed.
+        // For sidereal_period ≈ 380K on the GTi, the floor is
+        // `rate_factor ≥ sidereal_period / 0xFFFFFF ≈ 0.023`. Tiny
+        // guide-rate fractions trip this; clients see `INVALID_VALUE`.
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let sidereal_period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+        let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
+        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
+        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
+                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
+                     range; pick a guide rate closer to sidereal"
+                ),
+            ));
+        }
+        // Atomically check `pulse_guiding_<axis>` and set it to true
+        // under a single write lock. This closes the TOCTOU window: a
+        // concurrent same-axis `pulse_guide` either acquires the
+        // write lock first (and we see the flag set on the next read),
+        // or acquires it later (and sees our flag). Without the
+        // atomic set, the previous flow let a concurrent caller pass
+        // the in-flight check while we were still awaiting the
+        // `:K`/`:G`/`:I`/`:J` sends. `axis` is always `Ra` or `Dec`
+        // here — `GuideDirection` only resolves to those two — so the
+        // boolean dispatch is exhaustive without a third branch.
+        let is_ra = axis == Axis::Ra;
+        {
+            let mut s = self.state.write().await;
+            let already_in_flight = if is_ra {
+                s.pulse_guiding_ra
+            } else {
+                s.pulse_guiding_dec
+            };
+            if already_in_flight {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "PulseGuide refused while a same-axis pulse is in flight",
+                ));
+            }
+            if is_ra {
+                s.pulse_guiding_ra = true;
+            } else {
+                s.pulse_guiding_dec = true;
+            }
+        }
+        // Wire path: `:K<axis>` (decelerate and wait for the running
+        // flag to clear so `:G` doesn't return `!2 MotorNotStopped`),
+        // `:G<axis>` (Tracking + ccw), `:I<axis>` (shifted period),
+        // `:J<axis>`. Any failure on the wire rolls back the
+        // `pulse_guiding_<axis>` flag so the next caller isn't blocked
+        // by a half-applied pulse, and so `IsPulseGuiding` reports
+        // false consistent with the lack of actual motion.
+        let mode = MotionMode {
+            kind: ModeKind::Tracking,
+            speed: Speed::Slow,
+            ccw,
+        };
+        let wire_result: ASCOMResult<()> = async {
+            self.stop_and_wait(axis).await?;
+            self.transport
+                .send(Command::SetMotionMode { axis, mode })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::SetStepPeriod {
+                    axis,
+                    period: shifted_period,
+                })
+                .await
+                .map_err(Self::ascom)?;
+            self.transport
+                .send(Command::StartMotion(axis))
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = wire_result {
+            clear_pulse_flag(&self.state, axis).await;
+            return Err(e);
+        }
+        spawn_pulse_guide_watcher(
+            Arc::clone(&self.state),
+            Arc::clone(&self.transport),
+            axis,
+            duration,
+            tracking_was_on,
+        );
+        debug!(?direction, ?duration, axis = ?axis, "pulse_guide spawned");
         Ok(())
     }
 }
@@ -1771,6 +2052,102 @@ fn spawn_park_completion_watcher(
             return;
         }
     });
+}
+
+/// Spawn the PulseGuide watcher.
+///
+/// Sleeps for `duration`, then restores prior state on the targeted
+/// axis:
+/// - **RA pulse**: stop-and-wait, then if `tracking_was_on_for_restore`
+///   re-issue `:G1 TRACKING` + `:I1 sidereal_period` + `:J1` so the
+///   user-observable `Tracking` state survives the pulse.
+/// - **Dec pulse**: stop-and-wait (Dec is normally idle; no restore).
+///
+/// The watcher checks the per-axis `pulse_guiding_<axis>` flag before
+/// the restore step and bails out if cleared (the cancellation rule:
+/// any axis-mutating call clears the flag before its own wire commands
+/// so the watcher steps aside). Errors during the restore are logged
+/// at `warn` and swallowed — matches [`pickup_reslew_axis`].
+fn spawn_pulse_guide_watcher(
+    state: Arc<RwLock<DriverState>>,
+    transport: Arc<TransportManager>,
+    axis: Axis,
+    duration: Duration,
+    tracking_was_on_for_restore: bool,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
+        // Bail if the pulse was cancelled externally (another op
+        // cleared the flag), the transport dropped, or the mount
+        // entered a state that takes ownership of the axis
+        // (slew/park).
+        let still_active = {
+            let s = state.read().await;
+            let active = if axis == Axis::Ra {
+                s.pulse_guiding_ra
+            } else {
+                s.pulse_guiding_dec
+            };
+            active && !s.at_park && !s.slew_in_progress
+        };
+        if !still_active || !transport.is_available() {
+            clear_pulse_flag(&state, axis).await;
+            return;
+        }
+        // Stop the axis. Any failure here means we can't safely restore
+        // either, so log and bail.
+        if let Err(e) = stop_axis_and_wait(&transport, axis, AXIS_STOP_TIMEOUT).await {
+            tracing::warn!("pulse-guide restore stop {axis:?} failed: {e}");
+            clear_pulse_flag(&state, axis).await;
+            return;
+        }
+        // RA-only: re-issue sidereal tracking iff the user had it on
+        // at issue time. Dec just stays stopped (Dec is normally idle).
+        if axis == Axis::Ra && tracking_was_on_for_restore {
+            // Re-check the cancellation flag before issuing the restore
+            // commands — a concurrent set_tracking(false) between the
+            // stop above and here would otherwise be silently undone.
+            let still_want_restore = state.read().await.pulse_guiding_ra;
+            if still_want_restore {
+                if let Some(params) = transport.parameters().await {
+                    let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+                    if let Err(e) = transport
+                        .send(Command::SetMotionMode {
+                            axis: Axis::Ra,
+                            mode: MotionMode::TRACKING,
+                        })
+                        .await
+                    {
+                        tracing::warn!("pulse-guide restore :G1 failed: {e}");
+                    } else if let Err(e) = transport
+                        .send(Command::SetStepPeriod {
+                            axis: Axis::Ra,
+                            period,
+                        })
+                        .await
+                    {
+                        tracing::warn!("pulse-guide restore :I1 failed: {e}");
+                    } else if let Err(e) = transport.send(Command::StartMotion(Axis::Ra)).await {
+                        tracing::warn!("pulse-guide restore :J1 failed: {e}");
+                    }
+                }
+            }
+        }
+        clear_pulse_flag(&state, axis).await;
+    });
+}
+
+async fn clear_pulse_flag(state: &Arc<RwLock<DriverState>>, axis: Axis) {
+    // `GuideDirection` only resolves to `Ra` or `Dec` (see the
+    // direction-to-axis match in `MountDevice::pulse_guide`), so this
+    // helper never sees `Axis::Both`. Using a boolean dispatch keeps
+    // the code exhaustive without an unreachable arm.
+    let mut s = state.write().await;
+    if axis == Axis::Ra {
+        s.pulse_guiding_ra = false;
+    } else {
+        s.pulse_guiding_dec = false;
+    }
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -3011,6 +3388,81 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
+    // ---- PulseGuide tests ----
+
+    #[tokio::test]
+    async fn pulse_guide_capability_flags_are_true() {
+        let d = device();
+        assert!(d.can_pulse_guide().await.unwrap());
+        assert!(d.can_set_guide_rates().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn is_pulse_guiding_defaults_to_false_after_connect() {
+        let d = connected_device().await;
+        assert!(!d.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn default_guide_rates_are_half_sidereal() {
+        let d = connected_device().await;
+        let ra = d.guide_rate_right_ascension().await.unwrap();
+        let dec = d.guide_rate_declination().await.unwrap();
+        // 0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00208904
+        let expected = 0.5 * SIDEREAL_DEG_PER_SEC;
+        assert!((ra - expected).abs() < 1e-9, "RA: {ra}");
+        assert!((dec - expected).abs() < 1e-9, "Dec: {dec}");
+    }
+
+    #[tokio::test]
+    async fn set_guide_rate_ra_round_trips_through_fraction() {
+        let d = connected_device().await;
+        let target = 0.001_f64;
+        d.set_guide_rate_right_ascension(target).await.unwrap();
+        let got = d.guide_rate_right_ascension().await.unwrap();
+        assert!(
+            (got - target).abs() < 1e-9,
+            "round-trip: set {target}, got {got}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_guide_rate_rejects_zero_and_negative() {
+        let d = connected_device().await;
+        let err = d.set_guide_rate_right_ascension(0.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        let err = d.set_guide_rate_declination(-0.001).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn set_guide_rate_rejects_at_or_above_sidereal() {
+        // Upper bound is exclusive — fraction = 1.0 zeroes East's
+        // rate factor (`1 - fraction`) and divides by zero in the
+        // step-period formula.
+        let d = connected_device().await;
+        let err = d
+            .set_guide_rate_right_ascension(SIDEREAL_DEG_PER_SEC)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        let err = d
+            .set_guide_rate_right_ascension(SIDEREAL_DEG_PER_SEC * 2.0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_refuses_while_disconnected() {
+        let d = device();
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
     #[tokio::test]
     async fn set_connected_rolls_back_transport_when_park_load_fails() {
         // Regression test for the Copilot review on PR #221
@@ -3275,5 +3727,313 @@ mod tests {
             StarAdvError::Config(msg) => assert!(msg.contains("mount"), "{msg}"),
             other => panic!("expected Config, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_zero_duration_is_no_op() {
+        // Asserting "no wire activity" via the capturing mock: the
+        // pulse_guide returns Ok and no `:K2` / `:G2` / `:I2` / `:J2`
+        // setter frames are emitted on the Dec axis.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        let baseline_len = mock.state.lock().await.command_log.len();
+        d.pulse_guide(GuideDirection::North, Duration::ZERO)
+            .await
+            .unwrap();
+        let log = mock.state.lock().await.command_log.clone();
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+        let dec_setters: Vec<&&[u8]> = new_frames
+            .iter()
+            .filter(|f| {
+                f.len() >= 3
+                    && f[0] == b':'
+                    && f[2] == b'2'
+                    && matches!(f[1], b'G' | b'I' | b'J' | b'K' | b'L')
+            })
+            .collect();
+        assert!(
+            dec_setters.is_empty(),
+            "expected no Dec setter frames, got {dec_setters:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
+        // North → Dec axis, ccw=false → `:G210` (Tracking-Slow-CW).
+        // Step period is sidereal / 0.5 = 2 × sidereal.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        let baseline_len = mock.state.lock().await.command_log.len();
+        // Long enough duration that the watcher's post-sleep restore
+        // doesn't fire during this test — we want to inspect the
+        // pulse-start wire frames only.
+        d.pulse_guide(GuideDirection::North, Duration::from_secs(30))
+            .await
+            .unwrap();
+        // Immediately read the log; the watcher is asleep.
+        let log = mock.state.lock().await.command_log.clone();
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+        let dec_setters: Vec<&&[u8]> = new_frames
+            .iter()
+            .filter(|f| {
+                f.len() >= 3
+                    && f[0] == b':'
+                    && f[2] == b'2'
+                    && matches!(f[1], b'G' | b'I' | b'J' | b'K' | b'L')
+            })
+            .collect();
+        assert_eq!(
+            dec_setters.len(),
+            4,
+            "expected exactly 4 Dec setter frames (:K2 :G2 :I2 :J2), got {dec_setters:?}"
+        );
+        assert_eq!(*dec_setters[0], b":K2\r", "1st Dec setter should be :K2");
+        assert_eq!(
+            *dec_setters[1], b":G210\r",
+            "2nd Dec setter should be :G210 (Tracking-Slow-CW)"
+        );
+        assert_eq!(&dec_setters[2][..3], b":I2", "3rd Dec setter should be :I2");
+        assert_eq!(*dec_setters[3], b":J2\r", "4th Dec setter should be :J2");
+        // IsPulseGuiding flipped synchronously.
+        assert!(d.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_south_issues_tracking_ccw_on_dec_axis() {
+        // South → Dec axis, ccw=true → `:G211` (Tracking-Slow-CCW).
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+
+        let baseline_len = mock.state.lock().await.command_log.len();
+        d.pulse_guide(GuideDirection::South, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let log = mock.state.lock().await.command_log.clone();
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+        let g2 = new_frames
+            .iter()
+            .find(|f| f.starts_with(b":G2"))
+            .expect("expected a :G2 frame");
+        assert_eq!(*g2, b":G211\r", "South → :G211");
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
+        // East at default fraction (0.5) → rate factor = 0.5 → step
+        // period = sidereal_period / 0.5 = 2 × sidereal. Decode the
+        // `:I1` payload and compare against the expected shifted
+        // period.
+        use crate::transport::mock::CapturingMockFactory;
+        use skywatcher_motor_protocol::codec::decode_u24;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        d.set_tracking(true).await.unwrap();
+
+        let baseline_len = mock.state.lock().await.command_log.len();
+        d.pulse_guide(GuideDirection::East, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let log = mock.state.lock().await.command_log.clone();
+        let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+        // First `:I1` after pulse_guide start: payload should be
+        // 2 × P_sid (rate factor = 0.5 → period doubles).
+        let i1 = new_frames
+            .iter()
+            .find(|f| f.starts_with(b":I1") && f.len() == 10)
+            .expect("expected :I1 frame with 6-hex payload");
+        let payload: &[u8; 6] = (&i1[3..9]).try_into().unwrap();
+        let actual_period = decode_u24(payload).unwrap();
+        let mock_state = mock.state.lock().await;
+        let p_sid =
+            crate::coordinates::sidereal_step_period(mock_state.tmr_freq, mock_state.cpr_ra);
+        let expected = 2 * p_sid;
+        drop(mock_state);
+        assert_eq!(
+            actual_period, expected,
+            "East at default 0.5 fraction → period must be 2× sidereal ({p_sid} → {expected}), got {actual_period}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_sets_is_pulse_guiding_synchronously() {
+        // The flag must flip to true before `pulse_guide` returns —
+        // see the atomic check-and-set under the write lock in
+        // `MountDevice::pulse_guide`. The 30-second duration here is
+        // not a "short pulse" test; it just keeps the watcher's
+        // `tokio::time::sleep` from completing during the assertion
+        // read so the only way `is_pulse_guiding()` can be true is
+        // the synchronous flag-set.
+        let d = connected_device().await;
+        d.pulse_guide(GuideDirection::North, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(d.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_watcher_clears_flag_after_duration() {
+        // Short pulse: the watcher should clear `is_pulse_guiding`
+        // within a small multiple of the duration. Poll for up to
+        // 2 seconds.
+        let d = connected_device().await;
+        d.pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if !d.is_pulse_guiding().await.unwrap() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("watcher did not clear is_pulse_guiding within 2s of a 100ms pulse");
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_rolls_back_flag_on_wire_failure() {
+        // `StuckAxisFactory` returns `running=true` on every `:f` poll
+        // so `stop_and_wait` times out after `AXIS_STOP_TIMEOUT` (2 s),
+        // surfacing as a `StarAdvError::Transport` →
+        // `ASCOMErrorCode::INVALID_OPERATION`. The pulse-guide
+        // rollback path must clear `pulse_guiding_<axis>` so a
+        // subsequent caller isn't blocked by the half-applied pulse
+        // and `IsPulseGuiding` reports `false` consistent with the
+        // lack of actual motion.
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(StuckAxisFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            !d.is_pulse_guiding().await.unwrap(),
+            "flag must be cleared after a wire-failure rollback"
+        );
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_rejects_step_period_overflow() {
+        // Tiny guide-rate fractions push the shifted step period
+        // above the protocol's 24-bit `:I` payload range. Without
+        // the check, `encode_u24` would silently truncate to a
+        // wrap-around value and run the mount at a wildly wrong
+        // speed. For the GTi mock's defaults (sidereal_period ≈
+        // 380K), the boundary is `rate_factor ≈ 0.023`; fraction
+        // 0.001 is well below.
+        let d = connected_device().await;
+        d.set_guide_rate_declination(SIDEREAL_DEG_PER_SEC * 0.001)
+            .await
+            .unwrap();
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        // The rollback must clear the flag the period validation
+        // would otherwise have set.
+        assert!(!d.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_rejects_same_axis_while_one_in_flight() {
+        let d = connected_device().await;
+        // Long-running first pulse — watcher is asleep.
+        d.pulse_guide(GuideDirection::North, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let err = d
+            .pulse_guide(GuideDirection::South, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_refuses_while_parked() {
+        let d = connected_device().await;
+        d.park().await.unwrap();
+        // Wait for AtPark = true (park watcher).
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if d.at_park().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
+        // Issue an East pulse while tracking is OFF. After the pulse
+        // completes, tracking_requested should still be false and the
+        // watcher should not have emitted a second `:G110` (restore)
+        // frame.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let cfg = Config::default();
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        assert!(!d.tracking().await.unwrap(), "precondition: tracking off");
+
+        d.pulse_guide(GuideDirection::East, Duration::from_millis(100))
+            .await
+            .unwrap();
+        // Wait for the watcher to finish.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if !d.is_pulse_guiding().await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!d.is_pulse_guiding().await.unwrap());
+        // Tracking still off.
+        assert!(!d.tracking().await.unwrap());
+        // Exactly one `:G110\r` in the log (the pulse-start; no
+        // restore). `:G110` is RA Tracking-Slow-CW; the watcher would
+        // only emit a second one on the restore branch if
+        // `tracking_was_on` was true at issue.
+        let log = mock.state.lock().await.command_log.clone();
+        let g110_count = log.iter().filter(|f| f.as_slice() == b":G110\r").count();
+        assert_eq!(
+            g110_count, 1,
+            "expected 1 :G110 frame (pulse-start only, no restore), got {g110_count}; log {log:?}"
+        );
     }
 }

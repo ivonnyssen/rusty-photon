@@ -255,6 +255,38 @@ pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: u32) -> u32 {
     ((tmr_freq as f64) * sidereal_seconds / (cpr_ra as f64)).round() as u32
 }
 
+/// Sidereal rate in degrees per second.
+///
+/// `360° / 86164.0905 s ≈ 4.17807e-3 deg/sec ≈ 15.04108″/sec`. ASCOM
+/// `GuideRateRightAscension` / `GuideRateDeclination` are expressed in
+/// these units; internally the driver uses a fraction of sidereal in
+/// `(0, 1)` for the rate-shift math.
+pub const SIDEREAL_DEG_PER_SEC: f64 = 360.0 / 86164.0905;
+
+/// Rate-shifted step period for a PulseGuide burst, in timer-counter
+/// units (the same units `:I` takes).
+///
+/// `rate_factor` is the target rate as a multiple of sidereal:
+///   - East  → `1.0 - ra_fraction` (RA tracking slowed)
+///   - West  → `1.0 + ra_fraction` (RA tracking sped up)
+///   - North → `dec_fraction`      (Dec spun from zero)
+///   - South → `dec_fraction`
+///
+/// Step period scales inversely with rate
+/// (`period = sidereal_period / rate_factor`).
+///
+/// The caller is responsible for keeping `rate_factor` strictly
+/// positive — `pulse_guide`'s upstream validation rejects a guide-rate
+/// fraction outside `(0, 1)`, so the East formula `1 - fraction`
+/// stays in `(0, 1)` and never zeroes the divisor.
+pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
+    debug_assert!(
+        rate_factor > 0.0,
+        "rate_factor must be positive (got {rate_factor})"
+    );
+    ((sidereal_period as f64) / rate_factor).round() as u32
+}
+
 /// Fold a value into `[-period/2, +period/2)`. Used by both the RA and
 /// Dec encoder mappings.
 fn fold_to_signed(value: f64, period: f64) -> f64 {
@@ -529,6 +561,54 @@ mod tests {
         assert!(
             (d2 - 2 * d1).abs() <= 1,
             "expected ~2× scaling: 200ms→{d1}, 400ms→{d2}"
+        );
+    }
+
+    #[test]
+    fn pulse_guide_step_period_identity_at_unit_rate_factor() {
+        // Rate factor = 1.0 reproduces the sidereal period exactly
+        // (modulo rounding to integer).
+        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        assert_eq!(pulse_guide_step_period(p_sid, 1.0), p_sid);
+    }
+
+    #[test]
+    fn pulse_guide_step_period_halves_rate_doubles_period() {
+        // Rate factor = 0.5 (Dec North/South at fraction = 0.5, or East
+        // at fraction = 0.5) doubles the step period.
+        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let shifted = pulse_guide_step_period(p_sid, 0.5);
+        assert_eq!(shifted, 2 * p_sid);
+    }
+
+    #[test]
+    fn pulse_guide_step_period_west_at_fraction_half_uses_one_and_a_half_rate() {
+        // West at fraction = 0.5 → rate_factor = 1.5 → period = P_sid / 1.5.
+        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let shifted = pulse_guide_step_period(p_sid, 1.5);
+        let expected = ((p_sid as f64) / 1.5).round() as u32;
+        assert_eq!(shifted, expected);
+        // Sanity: must be smaller than sidereal (faster rate ⇒ shorter
+        // period).
+        assert!(shifted < p_sid);
+    }
+
+    #[test]
+    fn pulse_guide_step_period_small_fraction_grows_period_proportionally() {
+        // fraction = 0.1 on Dec → rate_factor = 0.1 → period = 10 × sidereal.
+        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let shifted = pulse_guide_step_period(p_sid, 0.1);
+        assert_eq!(shifted, 10 * p_sid);
+    }
+
+    #[test]
+    fn sidereal_deg_per_sec_is_about_fifteen_arcseconds_per_second() {
+        // Cross-check the constant against the textbook value: sidereal
+        // rate ≈ 15.04108″/sec.
+        let arcsec_per_sec = SIDEREAL_DEG_PER_SEC * 3600.0;
+        assert!(
+            (arcsec_per_sec - 15.04108).abs() < 1e-4,
+            "expected ~15.04108″/sec, got {arcsec_per_sec}"
         );
     }
 }

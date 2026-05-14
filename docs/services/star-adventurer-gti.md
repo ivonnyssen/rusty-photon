@@ -10,10 +10,10 @@ mount as an ASCOM Telescope for any Alpaca-compatible client (NINA, SGPro,
 `rp`, etc.).
 
 The driver implements the subset of `ITelescopeV3` that the rusty-photon
-ecosystem actually needs (slew, sync, track, park, abort, side-of-pier),
-plus the standard device metadata. PulseGuide, MoveAxis, custom tracking
-rates, and polar-alignment helpers are explicitly deferred (see [§MVP
-Scope](#mvp-scope)).
+ecosystem actually needs (slew, sync, track, park, abort, side-of-pier,
+PulseGuide), plus the standard device metadata. MoveAxis, custom
+tracking rates, and polar-alignment helpers are explicitly deferred
+(see [§MVP Scope](#mvp-scope)).
 
 [Sky-Watcher motor-controller command set]: https://inter-static.skywatcher.com/downloads/skywatcher_motor_controller_command_set.pdf
 
@@ -277,8 +277,8 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanSetTrackingRate` | `false` | sidereal only in MVP |
 | `CanSetRightAscensionRate` | `false` | custom rates deferred |
 | `CanSetDeclinationRate` | `false` | custom rates deferred |
-| `CanSetGuideRates` | `false` | PulseGuide deferred |
-| `CanPulseGuide` | `false` | PulseGuide deferred |
+| `CanSetGuideRates` | `true` | implemented (`GuideRateRightAscension` / `GuideRateDeclination` are independently settable in deg/sec, defaulting to `0.5 × sidereal`) |
+| `CanPulseGuide` | `true` | implemented as rate-shifted tracking (see [§PulseGuide lifecycle](#pulseguide-lifecycle)) |
 | `CanMoveAxis(any)` | `false` | manual slew deferred |
 | `CanFindHome` | `false` | no hardware home position |
 | `CanPark` | `true` | implemented (software park) |
@@ -302,6 +302,9 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `Slewing` | `true` while either axis status (`:f`) reports running in Goto mode; cleared when both stop |
 | `Tracking` | driver-state mirror of last `Tracking` setter |
 | `TrackingRate` | always `Sidereal` in MVP |
+| `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
+| `GuideRateDeclination` | Dec guide rate (deg/sec). Same shape as RA; settable independently per ASCOM. |
+| `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding_ra || pulse_guiding_dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
 | `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
 | `AtHome` | `false` (no hardware home concept) |
 | `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
@@ -333,7 +336,9 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
 | `FindHome()` | `NOT_IMPLEMENTED` |
 | `MoveAxis(*)` | `NOT_IMPLEMENTED` |
-| `PulseGuide(*)` | `NOT_IMPLEMENTED` |
+| `PulseGuide(direction, duration)` | rate-shifted tracking pulse on the targeted axis; returns immediately after spawning the watcher task. Refuses when parked / disconnected / slewing / same-axis pulse already in flight. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire path. |
+| `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
+| `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
 | `Action(name, parameters)` | `ACTION_NOT_IMPLEMENTED` for all action names in MVP |
 
 ### Slew lifecycle
@@ -485,6 +490,90 @@ ASCOM has no notion of `SetPark` being non-durable, so `CanSetPark =
 false` is the right answer when the driver has nowhere to persist to —
 returning `true` and silently losing the park across restarts would
 violate the capability contract.
+
+### PulseGuide lifecycle
+
+A guide pulse is a temporary rate shift on the targeted axis,
+implemented from the existing `:K` / `:G` / `:I` / `:J` tracking
+primitives — no `:P` (that's the ST4 hardware-jack rate setter, not a
+host-driven pulse command). This matches what `indi-eqmod`'s
+`GuideNorth` / `GuideSouth` / `GuideEast` / `GuideWest` do.
+
+```
+PulseGuide(direction, duration)
+   │
+   ├─ validate: !AtPark, !disconnected, !slew_in_progress,
+   │            !pulse_guiding_<targeted_axis>; duration = 0 → return Ok
+   ├─ resolve direction → (axis, ccw, rate_factor):
+   │     East  → (RA,  ccw=false, 1 - guide_rate_ra_fraction)
+   │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
+   │     North → (Dec, ccw=false, guide_rate_dec_fraction)
+   │     South → (Dec, ccw=true,  guide_rate_dec_fraction)
+   ├─ compute shifted period:
+   │     period = round(sidereal_step_period(tmr_freq, cpr_ra) / rate_factor)
+   ├─ capture tracking_was_on = state.tracking_requested (RA pulses only)
+   ├─ set pulse_guiding_<axis> = true                ; synchronous, pre-spawn
+   │
+   ├─ on the wire (in PulseGuide call thread):
+   │     :K<axis>           stop and wait for running flag clear
+   │     :G<axis> TRACKING + ccw
+   │     :I<axis> period
+   │     :J<axis>
+   │
+   ├─ spawn watcher task:
+   │     tokio::sleep(duration)
+   │     if !pulse_guiding_<axis>      → bail (external cancellation)
+   │     if !transport.is_available()  → clear flag, bail
+   │     if state.at_park || slew_in_progress → clear flag, bail
+   │     ── otherwise restore prior state:
+   │     RA  pulse: :K1 + stop-and-wait, then
+   │                if tracking_was_on:
+   │                    :G1 TRACKING (ccw=false)
+   │                    :I1 sidereal_period
+   │                    :J1
+   │     Dec pulse: :K2 + stop-and-wait (Dec is normally idle; no restore)
+   │     clear pulse_guiding_<axis>
+   │
+   └─ return immediately to the Alpaca caller
+```
+
+`IsPulseGuiding` returns `pulse_guiding_ra || pulse_guiding_dec` —
+perpendicular pulses (one RA + one Dec) run concurrently; a same-axis
+re-pulse while one is in flight is rejected with `INVALID_OPERATION`.
+
+**Cross-cutting cancellation rule.** Any operation that mutates a given
+axis — `set_tracking`, `slew_to_coordinates_async`, `park`,
+`abort_slew`, `sync_to_coordinates`, `set_connected(false)` — clears
+the corresponding `pulse_guiding_<axis>` flag *before* issuing its own
+wire commands. The watcher's post-sleep restore step checks the flag
+and bails out if cleared, so the new operation owns the axis without
+racing the watcher. Without this, `set_tracking(false)` during an East
+pulse would be silently undone when the watcher re-issued sidereal
+tracking on restore.
+
+**Dec sign convention.** `+Dec` always maps to `ccw=false`, regardless
+of side-of-pier. The driver does not invert Dec direction after a
+meridian flip — the existing slew/sync pipeline doesn't either; it
+assumes a stable encoder-to-celestial-Dec mapping and requires the
+user to `SyncToCoordinates` after a manual flip to recalibrate. A
+PulseGuide call after a flip with no re-sync will guide in the wrong
+celestial direction; this is consistent with the rest of the driver
+and is the autoguider's responsibility to detect (via guide
+calibration).
+
+**Step-period unit reuse.** `sidereal_step_period(tmr_freq, cpr_ra)`
+is also used for the Dec rate computation. The protocol's step-period
+units are timer-counter ticks per motor step on both axes, and
+`cpr_ra` ≈ `cpr_dec` on the GTi, so reusing the helper avoids a near-
+duplicate `sidereal_step_period_dec`. INDI takes the same shortcut.
+
+**Guide-rate fraction validation.** Internal storage is two fractions
+in `(0.0, 1.0)` open interval (RA and Dec independently). The
+exclusive upper bound matters: `fraction = 1.0` makes East's
+`rate_factor = 0`, which divides by zero in the period formula. INDI
+clamps at 0.9 for the same reason. ASCOM clients see deg/sec through
+`GuideRateRightAscension` / `GuideRateDeclination`; the setter
+validates `(0, SIDEREAL_DEG_PER_SEC)` and converts to fraction.
 
 ### Side-of-pier
 
@@ -689,7 +778,7 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — same shape as `qhy-focuser`. Currently **not wired into the nightly `conformu` workflow** (no `[package.metadata.conformu]` opt-in); see [§"Running ConformU manually"](#running-conformu-manually) for why and how to drive it by hand until `PulseGuide` is implemented |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. Wired into the nightly `conformu` workflow via `[package.metadata.conformu]` in `Cargo.toml`. See [§"Expected ConformU report"](#expected-conformu-report) for the known deferred-by-design / upstream issues. |
 
 The mock transport is a feature-gated in-memory state machine that
 simulates the motor controller — it accepts the same `:cmd<axis>...\r`
@@ -703,39 +792,9 @@ walks toward `goto_target_ticks` and clears `running` on arrival. BDD
 tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.
 
-### Running ConformU manually
+### Expected ConformU report
 
-This service is deliberately **not** in the nightly `conformu`
-workflow rotation. `ConformUTestBuilder::run()` (which the
-in-tree integration test uses, matching `qhy-focuser`) runs two
-phases in sequence: `alpacaprotocol` then `conformance`. The
-`alpacaprotocol` phase polls `IsPulseGuiding` while exercising
-`PulseGuide` PUT-parameter-order tests *even when
-`CanPulseGuide=false`*, and treats the spec-mandated
-`NotImplementedException` from `IsPulseGuiding` as a fatal
-protocol-test failure. The right structural fix is implementing
-`PulseGuide` so `CanPulseGuide` flips to `true` and the polling
-stops being a problem; until then the integration test cannot
-be wired in without either deviating the driver from the ASCOM
-spec or carrying a non-standard test harness that diverges from
-the other services. Neither is wanted. Re-add
-`[package.metadata.conformu]` in `services/star-adventurer-gti/Cargo.toml`
-once PulseGuide lands.
-
-In the meantime, run ConformU's `conformance` phase by hand:
-
-```bash
-# Terminal 1: start the service in mock mode on a fixed port.
-cargo run -p star-adventurer-gti --features mock -- \
-    --config services/star-adventurer-gti/conformu-test-config.json \
-    -l info
-
-# Terminal 2: drive ConformU against it.
-conformu conformance \
-    http://localhost:11117/api/v1/telescope/0
-```
-
-Expect the conformance run to report:
+A clean nightly ConformU run against this driver reports:
 
 - **0 errors** — anything here is a real driver regression.
 - **7 issues**, all of which are cosmetic / inherent to a
@@ -798,11 +857,6 @@ Any issue or error outside that list — and in particular any
 ("`Actual RA: ..., Target RA: ...`" with > 10″ delta) — is a
 real regression. Fix the driver, then refresh this section.
 
-> Note: `conformu alpacaprotocol …` against this service will
-> abort with a fatal `IsPulseGuiding` `NotImplementedException`
-> until `PulseGuide` is implemented. That is the upstream
-> ConformU bug above and is expected.
-
 ## Connection Lifecycle
 
 ```
@@ -854,7 +908,8 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
 | **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
 | **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
-| **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See §"Running ConformU manually". |
+| **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See [§Expected ConformU report](#expected-conformu-report). |
+| **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`, and re-enables `[package.metadata.conformu]` so the full two-phase ConformU integration runs again. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
 
 #### Phase 4 findings (hardware bringup)
@@ -1079,7 +1134,6 @@ What's still outstanding from Phase 4:
 
 | Capability | Why deferred |
 |---|---|
-| `PulseGuide`, `CanPulseGuide`, `GuideRate*` | autoguiding via the mount's ST4-equivalent — protocol command exists (`P`) but driver-side rate calibration plus BDD coverage is a substantial extension; PHD2 already drives guide pulses through `phd2-guider`'s direct-mount path, so no rp-side dependency |
 | `MoveAxis`, `CanMoveAxis(*)` | manual hand-paddle-style slew rates; not needed by `rp`; deferred along with custom tracking rates |
 | `SlewToAltAz*`, `SyncToAltAz`, `CanSlewAltAz*` | RA/Dec coverage is sufficient for `rp`'s tools; Alt/Az slew is a separate path through the coordinate module |
 | `RightAscensionRate`, `DeclinationRate` setters | custom-rate tracking; not needed for sidereal-only MVP |
