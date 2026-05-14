@@ -1232,13 +1232,16 @@ impl Telescope for MountDevice {
         // or acquires it later (and sees our flag). Without the
         // atomic set, the previous flow let a concurrent caller pass
         // the in-flight check while we were still awaiting the
-        // `:K`/`:G`/`:I`/`:J` sends.
+        // `:K`/`:G`/`:I`/`:J` sends. `axis` is always `Ra` or `Dec`
+        // here — `GuideDirection` only resolves to those two — so the
+        // boolean dispatch is exhaustive without a third branch.
+        let is_ra = axis == Axis::Ra;
         {
             let mut s = self.state.write().await;
-            let already_in_flight = match axis {
-                Axis::Ra => s.pulse_guiding_ra,
-                Axis::Dec => s.pulse_guiding_dec,
-                Axis::Both => false,
+            let already_in_flight = if is_ra {
+                s.pulse_guiding_ra
+            } else {
+                s.pulse_guiding_dec
             };
             if already_in_flight {
                 return Err(ASCOMError::new(
@@ -1246,10 +1249,10 @@ impl Telescope for MountDevice {
                     "PulseGuide refused while a same-axis pulse is in flight",
                 ));
             }
-            match axis {
-                Axis::Ra => s.pulse_guiding_ra = true,
-                Axis::Dec => s.pulse_guiding_dec = true,
-                Axis::Both => {}
+            if is_ra {
+                s.pulse_guiding_ra = true;
+            } else {
+                s.pulse_guiding_dec = true;
             }
         }
         // Wire path: `:K<axis>` (decelerate and wait for the running
@@ -1728,10 +1731,10 @@ fn spawn_pulse_guide_watcher(
         // (slew/park).
         let still_active = {
             let s = state.read().await;
-            let active = match axis {
-                Axis::Ra => s.pulse_guiding_ra,
-                Axis::Dec => s.pulse_guiding_dec,
-                Axis::Both => false,
+            let active = if axis == Axis::Ra {
+                s.pulse_guiding_ra
+            } else {
+                s.pulse_guiding_dec
             };
             active && !s.at_park && !s.slew_in_progress
         };
@@ -1783,11 +1786,15 @@ fn spawn_pulse_guide_watcher(
 }
 
 async fn clear_pulse_flag(state: &Arc<RwLock<DriverState>>, axis: Axis) {
+    // `GuideDirection` only resolves to `Ra` or `Dec` (see the
+    // direction-to-axis match in `MountDevice::pulse_guide`), so this
+    // helper never sees `Axis::Both`. Using a boolean dispatch keeps
+    // the code exhaustive without an unreachable arm.
     let mut s = state.write().await;
-    match axis {
-        Axis::Ra => s.pulse_guiding_ra = false,
-        Axis::Dec => s.pulse_guiding_dec = false,
-        Axis::Both => {}
+    if axis == Axis::Ra {
+        s.pulse_guiding_ra = false;
+    } else {
+        s.pulse_guiding_dec = false;
     }
 }
 
@@ -3130,6 +3137,36 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("watcher did not clear is_pulse_guiding within 2s of a 100ms pulse");
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_rolls_back_flag_on_wire_failure() {
+        // `StuckAxisFactory` returns `running=true` on every `:f` poll
+        // so `stop_and_wait` times out after `AXIS_STOP_TIMEOUT` (2 s),
+        // surfacing as a `StarAdvError::Transport` →
+        // `ASCOMErrorCode::INVALID_OPERATION`. The pulse-guide
+        // rollback path must clear `pulse_guiding_<axis>` so a
+        // subsequent caller isn't blocked by the half-applied pulse
+        // and `IsPulseGuiding` reports `false` consistent with the
+        // lack of actual motion.
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(StuckAxisFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        let err = d
+            .pulse_guide(GuideDirection::North, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            !d.is_pulse_guiding().await.unwrap(),
+            "flag must be cleared after a wire-failure rollback"
+        );
     }
 
     #[tokio::test]
