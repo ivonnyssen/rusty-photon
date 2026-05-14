@@ -43,8 +43,8 @@ Feature: Device metadata
       | CanSetTracking              | true         |
       | CanSetRightAscensionRate    | false        |
       | CanSetDeclinationRate       | false        |
-      | CanSetGuideRates            | false        |
-      | CanPulseGuide               | false        |
+      | CanSetGuideRates            | true         |
+      | CanPulseGuide               | true         |
       | CanFindHome                 | false        |
       | CanPark                     | true         |
       | CanUnpark                   | true         |
