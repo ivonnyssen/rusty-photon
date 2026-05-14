@@ -401,22 +401,41 @@ impl Device for MountDevice {
         if connected {
             self.transport.connect().await.map_err(Self::ascom)?;
             // Load the park target now that the handshake has populated
-            // `MountParameters`: prefer config values, fall back to the
-            // encoder positions captured during the handshake. See the
-            // design doc's §"Park lifecycle" for the resolution rules.
+            // `MountParameters`. Source priority, per axis:
+            //   1. `mount.park_*_ticks` from the **on-disk** config file
+            //      when one was supplied via `--config`. Reading fresh
+            //      from disk every connect means a successful `SetPark`
+            //      followed by disconnect/reconnect picks up the new
+            //      target, and an operator hand-edit between connects
+            //      takes effect.
+            //   2. `self.config.park_*_ticks` for `Config::default()`
+            //      runs (no config file) — these never change in-process
+            //      because `SetPark` is unreachable in that mode.
+            //   3. The encoder positions captured during the init
+            //      handshake (`:j1` / `:j2`) when neither of the above
+            //      provided a value.
+            // See the design doc's §"Park lifecycle" for the resolution
+            // rules.
+            let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
+                let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
+                    .await
+                    .map_err(|e| {
+                        ASCOMError::new(
+                            ASCOMErrorCode::INVALID_OPERATION,
+                            format!("park-config read task join error: {e}"),
+                        )
+                    })?;
+                result.map_err(Self::ascom)?
+            } else {
+                (self.config.park_ra_ticks, self.config.park_dec_ticks)
+            };
             let params = self
                 .transport
                 .parameters()
                 .await
                 .ok_or(ASCOMError::NOT_CONNECTED)?;
-            let ra_target = self
-                .config
-                .park_ra_ticks
-                .unwrap_or(params.ra_at_handshake_ticks);
-            let dec_target = self
-                .config
-                .park_dec_ticks
-                .unwrap_or(params.dec_at_handshake_ticks);
+            let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
+            let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
             {
                 let mut s = self.state.write().await;
                 s.park_ra_ticks = Some(ra_target);
@@ -425,8 +444,9 @@ impl Device for MountDevice {
             debug!(
                 ra_target,
                 dec_target,
-                from_config_ra = self.config.park_ra_ticks.is_some(),
-                from_config_dec = self.config.park_dec_ticks.is_some(),
+                from_config_ra = config_ra.is_some(),
+                from_config_dec = config_dec.is_some(),
+                from_file = self.config_file_path.is_some(),
                 "park target loaded"
             );
             *req = true;
@@ -1084,7 +1104,19 @@ impl Telescope for MountDevice {
         let snap = self.transport.snapshot().await;
         let ra_ticks = snap.ra.position_ticks;
         let dec_ticks = snap.dec.position_ticks;
-        write_park_to_config(config_path, ra_ticks, dec_ticks).map_err(Self::ascom)?;
+        // Disk I/O runs on the blocking pool so the async runtime
+        // isn't held up while we read+parse+stage+fsync+rename. Same
+        // pattern as `services/rp/src/persistence/document.rs::write_sidecar`.
+        let path = config_path.clone();
+        tokio::task::spawn_blocking(move || write_park_to_config(&path, ra_ticks, dec_ticks))
+            .await
+            .map_err(|e| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("set_park write task join error: {e}"),
+                )
+            })?
+            .map_err(Self::ascom)?;
         // Only mutate the in-memory target after the disk write
         // succeeds — otherwise a failed write would leave the live
         // park target out of sync with what's persisted.
@@ -1477,6 +1509,45 @@ async fn stop_axis_and_wait(
     }
 }
 
+/// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
+/// config file. Each axis is returned independently — a `None` means
+/// the file did not set that key (or set it to `null`), and the caller
+/// will fall back to the handshake-captured value for that axis.
+///
+/// Failures (file missing, malformed JSON, `mount` key missing or not
+/// an object) are surfaced as `StarAdvError::Config`. Reading the file
+/// only at connect time means an operator can hand-edit the park keys
+/// between connects and have the change take effect on reconnect,
+/// without restarting the driver.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
+fn read_park_from_config(config_path: &Path) -> crate::error::Result<(Option<i32>, Option<i32>)> {
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
+    let root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        StarAdvError::Config(format!("parse config {}: {e}", config_path.display()))
+    })?;
+    let mount = root
+        .as_object()
+        .and_then(|o| o.get("mount"))
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            StarAdvError::Config(format!(
+                "config {} has no `mount` object",
+                config_path.display()
+            ))
+        })?;
+    let ra = mount
+        .get("park_ra_ticks")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    let dec = mount
+        .get("park_dec_ticks")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    Ok((ra, dec))
+}
+
 /// Patch the on-disk JSON config with the supplied park encoder pair.
 ///
 /// Read-as-`Value` + atomic-rename pattern: load the file as
@@ -1484,13 +1555,24 @@ async fn stop_axis_and_wait(
 /// `mount.park_dec_ticks` keys, serialise pretty-printed, write via a
 /// `tempfile::NamedTempFile` in the same directory, `persist` to swap
 /// it in atomically. Every other field of the JSON file — known and
-/// unknown — is preserved verbatim.
+/// unknown — is preserved as a JSON value. Operator-level formatting
+/// (insertion-order of unrelated keys, custom indentation, comments
+/// disguised as fields) is not preserved byte-for-byte because the
+/// round-trip pretty-prints the whole document; the *semantic* content
+/// outside the two park keys is unchanged.
+///
+/// Durability: fsync the staged file before rename (`tempfile::persist`
+/// uses POSIX `rename(2)`), then fsync the parent directory after
+/// rename so the directory entry update is itself durable. Mirrors
+/// `services/rp/src/persistence/document.rs::write_sidecar_sync`.
 ///
 /// The driver never re-serialises its in-memory typed `Config` here:
 /// doing so would round-trip CLI overrides (`--port`, `--baud`, etc.)
 /// back to disk and is structurally avoided. See the design doc's
 /// [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence)
 /// for the contract this helper implements.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
 fn write_park_to_config(
     config_path: &Path,
     park_ra_ticks: i32,
@@ -1541,12 +1623,23 @@ fn write_park_to_config(
         .map_err(|e| StarAdvError::Config(format!("create temp file in {parent:?}: {e}")))?;
     tmp.write_all(pretty.as_bytes())
         .map_err(|e| StarAdvError::Config(format!("write temp file: {e}")))?;
+    // fsync the file data so a crash after rename cannot surface a
+    // renamed-but-zero-length sidecar.
     tmp.as_file()
         .sync_all()
         .map_err(|e| StarAdvError::Config(format!("fsync temp file: {e}")))?;
     tmp.persist(config_path).map_err(|e| {
         StarAdvError::Config(format!("atomic rename to {}: {e}", config_path.display()))
     })?;
+    // fsync the parent directory so the rename itself is durable.
+    // Windows can't open a directory as a regular file handle, so this
+    // is unix-only. Mirrors `services/rp/src/persistence/document.rs`.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| StarAdvError::Config(format!("fsync parent dir {parent:?}: {e}")))?;
+    }
     Ok(())
 }
 
@@ -2930,5 +3023,105 @@ mod tests {
         let s = d.state.read().await;
         assert_eq!(s.park_ra_ticks, Some(5000));
         assert_eq!(s.park_dec_ticks, Some(-7000));
+    }
+
+    #[tokio::test]
+    async fn reconnect_after_set_park_picks_up_persisted_values() {
+        // Regression test for the Copilot review feedback on PR #221:
+        // SetPark persists the new park target to disk and updates the
+        // in-memory state, but the in-memory `MountConfig` does not
+        // change. A subsequent disconnect/reconnect within the same
+        // process must therefore re-read the config file rather than
+        // re-loading from the (stale) in-memory config — otherwise the
+        // SetPark target silently reverts to whatever was in
+        // `MountConfig` at process start (or the handshake fallback).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let d = device_with_path(path.clone());
+        d.set_connected(true).await.unwrap();
+        d.transport.seed_ra_position(8000).await;
+        d.transport.seed_dec_position(-3000).await;
+        d.set_park().await.unwrap();
+
+        // Disconnect: in-memory park state is cleared.
+        d.set_connected(false).await.unwrap();
+        assert_eq!(d.state.read().await.park_ra_ticks, None);
+        assert_eq!(d.state.read().await.park_dec_ticks, None);
+
+        // Reset the mock encoders so reconnect's handshake fallback
+        // would be (0, 0) — proves the re-read picked up SetPark's
+        // values rather than just re-reading handshake.
+        d.transport.seed_ra_position(0).await;
+        d.transport.seed_dec_position(0).await;
+
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(8000));
+        assert_eq!(s.park_dec_ticks, Some(-3000));
+    }
+
+    #[tokio::test]
+    async fn reconnect_with_partial_config_uses_handshake_for_missing_axis() {
+        // Per-axis fallback: if the config sets only park_ra_ticks,
+        // RA comes from the file and Dec comes from the handshake.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        // Hand-craft a JSON config that sets only park_ra_ticks
+        // (park_dec_ticks absent, which `read_park_from_config`
+        // must read as `None`).
+        let mut cfg = Config::default();
+        cfg.mount.park_ra_ticks = Some(1234);
+        // park_dec_ticks deliberately left as None.
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        let d = device_with_path(path);
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(1234));
+        // Mock handshake reports Dec at 0.
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[test]
+    fn read_park_from_config_returns_none_for_each_missing_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "name": "Test",
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, None);
+        assert_eq!(dec, None);
+    }
+
+    #[test]
+    fn read_park_from_config_parses_both_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let json = serde_json::json!({
+            "mount": {
+                "park_ra_ticks": 1234,
+                "park_dec_ticks": -5678,
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (ra, dec) = read_park_from_config(&path).unwrap();
+        assert_eq!(ra, Some(1234));
+        assert_eq!(dec, Some(-5678));
+    }
+
+    #[test]
+    fn read_park_from_config_fails_when_mount_object_is_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let err = read_park_from_config(&path).unwrap_err();
+        match err {
+            StarAdvError::Config(msg) => assert!(msg.contains("mount"), "{msg}"),
+            other => panic!("expected Config, got {other:?}"),
+        }
     }
 }

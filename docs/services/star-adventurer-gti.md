@@ -401,25 +401,32 @@ Park()
    └─ Tracking remains false
 ```
 
-The **park-target encoder pair** is loaded once per connect, in this
-order of preference:
+The **park-target encoder pair** is loaded per axis on every connect,
+in this order of preference:
 
-1. **Config values** — `mount.park_ra_ticks` and `mount.park_dec_ticks`,
-   if present in the running config (both must be `Some`; a missing or
-   `null` value falls through to step 2 for that axis).
-2. **Handshake-captured fallback** — the encoder positions read during
-   the init handshake's `:j1` / `:j2` step (see
+1. **Config-file value** (per axis). When the driver was started with
+   `--config <path>`, the file is re-read on every connect and
+   `mount.park_ra_ticks` / `mount.park_dec_ticks` are used when
+   present. Per-axis: if only `park_ra_ticks` is set, RA comes from
+   the file and Dec falls through to step 3.
+2. **In-memory config value** (per axis). When no `--config` was
+   provided (`Config::default()` run), the `MountConfig` defaults are
+   used; in this mode `SetPark` is unreachable so these values do not
+   change in-process.
+3. **Handshake-captured fallback** (per axis). The encoder position
+   read during the init handshake's `:j1` / `:j2` step (see
    [§"Initialisation sequence"](#initialisation-sequence)). On a
    polar-aligned mount the user typically powered up near the
    counterweight-down, OTA-on-meridian pose, so this is the closest
    mechanically-safe "where I started" target available.
-3. **Last resort** — encoder `(0, 0)`. Only reachable if the handshake
-   somehow produced no position reads, which today is unreachable.
+4. **Last resort** — encoder `0`. Only reachable if the handshake
+   somehow produced no position read, which today is unreachable.
 
-Once loaded into the in-memory park target, the value is fixed for the
-session except via `SetPark` (which captures the current encoder pair
-and persists it back to the config file — see
-[§Park persistence](#park-persistence)).
+Re-reading the config file on every connect means a successful
+`SetPark` (or a manual operator edit between connects) takes effect on
+the next reconnect without restarting the driver. After load the
+in-memory target is fixed for the session unless `SetPark` is called
+again (see [§Park persistence](#park-persistence)).
 
 ### Park persistence
 
@@ -440,19 +447,31 @@ argument). No separate state file. Concretely:
 3. **Read-as-`Value`, write only park keys.** The driver reads the
    on-disk JSON via `serde_json::Value`, mutates *only*
    `mount.park_ra_ticks` and `mount.park_dec_ticks`, and serialises the
-   result. Any field the driver doesn't recognise (future schema
-   additions, operator-added comments-as-fields) is preserved verbatim.
-   The driver **never re-serialises its in-memory typed `Config`** to
-   disk — that path would round-trip the CLI overrides (`--port`,
-   `--baud`, `--server-port`, `--transport`) back into the file and is
-   structurally avoided here.
+   result pretty-printed. Any field the driver doesn't recognise
+   (future schema additions, operator-added comments-as-fields) is
+   preserved as a JSON value. Note: this is a JSON-value preservation,
+   not a byte-for-byte one — `serde_json::to_string_pretty` rewrites
+   whitespace, and `serde_json::Map` is alphabetical by default
+   (BTreeMap, without the `preserve_order` feature), so operator
+   formatting and key order do not survive. The *content* outside the
+   two park keys is unchanged. The driver **never re-serialises its
+   in-memory typed `Config`** to disk — that path would round-trip the
+   CLI overrides (`--port`, `--baud`, `--server-port`, `--transport`)
+   back into the file and is structurally avoided here.
 4. **Atomic rename via `tempfile::NamedTempFile`.** The temp file is
    created in the **same directory** as the destination (required for
-   `persist` to use POSIX `rename` rather than copy-and-delete) and
-   `persist`'d on success. On any error path the temp file
-   auto-deletes via `Drop`, so a panic mid-write doesn't leave a
-   `*.tmp` artifact behind.
-5. **In-memory update follows disk.** The in-memory park target is
+   `persist` to use POSIX `rename` rather than copy-and-delete),
+   `sync_all`'d (fsync the file data) so a crash after rename can't
+   surface a renamed-but-zero-length file, `persist`'d on success,
+   then on unix the parent directory is fsync'd so the rename itself
+   is durable. Same pattern as
+   [`services/rp/src/persistence/document.rs::write_sidecar_sync`](../../services/rp/src/persistence/document.rs).
+   On any error path the temp file auto-deletes via `Drop`, so a
+   panic mid-write doesn't leave a `*.tmp` artifact behind.
+5. **Blocking I/O on the blocking pool.** The whole read+parse+stage+
+   fsync+rename sequence runs inside `tokio::task::spawn_blocking` so
+   the async runtime isn't held up. Same pattern as `write_sidecar`.
+6. **In-memory update follows disk.** The in-memory park target is
    updated only after the file write succeeds. If the file write
    fails, the in-memory park is unchanged and the caller sees an
    ASCOM error — there is no "partial success" state.
