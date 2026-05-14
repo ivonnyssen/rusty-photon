@@ -117,6 +117,17 @@ pub struct MountConfig {
     pub dec_min_degrees: f64,
     #[serde(default = "default_dec_max_degrees")]
     pub dec_max_degrees: f64,
+
+    /// Persisted park-target encoder positions, written by `SetPark`
+    /// and read on every connect. When `None` (default on first run),
+    /// the driver falls back to the encoder positions captured during
+    /// the init handshake (`:j1` / `:j2`). See the design doc's
+    /// [§"Park lifecycle"](../../../docs/services/star-adventurer-gti.md#park-lifecycle)
+    /// and [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence).
+    #[serde(default)]
+    pub park_ra_ticks: Option<i32>,
+    #[serde(default)]
+    pub park_dec_ticks: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -210,6 +221,8 @@ impl Default for MountConfig {
             ra_max_hours: default_ra_max_hours(),
             dec_min_degrees: default_dec_min_degrees(),
             dec_max_degrees: default_dec_max_degrees(),
+            park_ra_ticks: None,
+            park_dec_ticks: None,
         }
     }
 }
@@ -286,6 +299,43 @@ mod tests {
             }
             other => panic!("expected Usb, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn mount_config_park_ticks_default_to_none() {
+        let cfg = MountConfig::default();
+        assert_eq!(cfg.park_ra_ticks, None);
+        assert_eq!(cfg.park_dec_ticks, None);
+    }
+
+    #[test]
+    fn mount_config_deserialises_missing_park_ticks_as_none() {
+        // Existing config files written before the SetPark feature
+        // landed do not carry `park_ra_ticks` / `park_dec_ticks`; the
+        // driver must read them as `None` rather than failing.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0
+        }"#;
+        let m: MountConfig = serde_json::from_str(json).expect("deserialise");
+        assert_eq!(m.park_ra_ticks, None);
+        assert_eq!(m.park_dec_ticks, None);
+    }
+
+    #[test]
+    fn mount_config_round_trips_park_ticks_through_json() {
+        let cfg = MountConfig {
+            park_ra_ticks: Some(8000),
+            park_dec_ticks: Some(-3000),
+            ..MountConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialise");
+        let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.park_ra_ticks, Some(8000));
+        assert_eq!(back.park_dec_ticks, Some(-3000));
     }
 
     #[test]

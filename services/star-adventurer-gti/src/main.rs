@@ -93,12 +93,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     apply_cli_overrides(&mut config, &args)?;
 
+    // Canonicalise the config path so SetPark writes back to a stable
+    // location even if the process later chdir's away. `canonicalize`
+    // also resolves symlinks, which is what we want for the atomic
+    // rename (the temp file goes in the same physical directory as the
+    // real destination). Errors here are non-fatal — log and fall back
+    // to the path as given.
+    let config_file_path = args.config.as_ref().map(|p| {
+        std::fs::canonicalize(p).unwrap_or_else(|e| {
+            tracing::warn!(
+                "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
+                p
+            );
+            p.clone()
+        })
+    });
+
     info!("Starting Star Adventurer GTi driver");
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
     info!("Server port: {}", config.server.port);
 
-    let builder = ServerBuilder::new().with_config(config);
+    let builder = ServerBuilder::new()
+        .with_config(config)
+        .with_config_file_path(config_file_path);
 
     #[cfg(feature = "mock")]
     let builder = {

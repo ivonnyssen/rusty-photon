@@ -171,6 +171,19 @@ impl StarAdventurerWorld {
         self.last_error_code = Some(e.code.raw());
         self.last_error = Some(e.message.to_string());
     }
+
+    /// Re-read the config file the running service was started with and
+    /// parse it back into a [`Config`]. Used by SetPark scenarios to
+    /// assert the file was rewritten in-place.
+    pub fn read_persisted_config(&self) -> Config {
+        let dir = self
+            .temp_dir
+            .as_ref()
+            .expect("temp_dir not initialised — call start_service first");
+        let path = dir.path().join("config.json");
+        let content = std::fs::read_to_string(&path).expect("read persisted config");
+        serde_json::from_str(&content).expect("parse persisted config")
+    }
 }
 
 /// Reasonable defaults for BDD scenarios: USB transport with a mock

@@ -25,6 +25,12 @@ use crate::transport::{Transport, TransportFactory};
 
 /// Snapshot of the values the mount reports during the init handshake. All
 /// 24-bit unsigned wire values; meaningful units are in the design doc.
+///
+/// `ra_at_handshake_ticks` and `dec_at_handshake_ticks` are signed encoder
+/// positions latched at connect time. They serve as the fallback park
+/// target when the config file does not carry explicit `park_ra_ticks` /
+/// `park_dec_ticks` values — see the design doc's
+/// [§"Park lifecycle"](../../../docs/services/star-adventurer-gti.md#park-lifecycle).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MountParameters {
     pub cpr_ra: u32,
@@ -33,6 +39,8 @@ pub struct MountParameters {
     pub high_speed_ratio_ra: u32,
     pub high_speed_ratio_dec: u32,
     pub motor_board_version: u32,
+    pub ra_at_handshake_ticks: i32,
+    pub dec_at_handshake_ticks: i32,
 }
 
 /// Latest poll-loop snapshot. Updated by the background task at
@@ -483,6 +491,8 @@ impl TransportManager {
             high_speed_ratio_ra: hsr_ra,
             high_speed_ratio_dec: hsr_dec,
             motor_board_version: board,
+            ra_at_handshake_ticks: pos_ra,
+            dec_at_handshake_ticks: pos_dec,
         });
         let mut snap = self.snapshot.write().await;
         snap.ra.position_ticks = pos_ra;

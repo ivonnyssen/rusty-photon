@@ -34,6 +34,7 @@ rp-auth = { workspace = true }
 axum = { workspace = true }
 erfars = { workspace = true }
 chrono = { workspace = true }
+tempfile = { workspace = true }
 
 # Intentionally NOT opting in to the nightly ConformU workflow via
 # `[package.metadata.conformu]`: ConformU's `alpacaprotocol` phase
@@ -55,7 +56,6 @@ mockall = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 cucumber = { workspace = true }
-tempfile = { workspace = true }
 cargo-husky = { workspace = true }
 regex = { workspace = true }
 
