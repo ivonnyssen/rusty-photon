@@ -642,32 +642,60 @@ conformu conformance \
 Expect the conformance run to report:
 
 - **0 errors** — anything here is a real driver regression.
-- **4 issues**, all of which are deferred-by-design or
-  upstream-framework problems:
-  - `SOPPierTest` ×2 — the safety envelope correctly rejects
+- **7 issues**, all of which are cosmetic / inherent to a
+  non-flipping GEM:
+  - `SOPPierTest` ×4 — the safety envelope correctly rejects
     cross-meridian slews that would land at `RA mech-HA = ±9h`
     (well outside the default ±6h counterweight-horizontal
     envelope). `SOPPierTest` exercises the pier-flip code paths
-    by commanding such slews; the driver returns
-    `InvalidValueException` from both the slew and the
-    matching `DestinationSideOfPier` prediction before any wire
-    motion. This is the same envelope-rejection mechanism
-    Phase 4 added — see [§Phase 4 driver-logic changes].
-  - `TrackingRate Write` ×2 — an upstream `ascom-alpaca-rs`
-    bug: invalid Alpaca enum values are rejected with HTTP
-    `400 BadRequest` (axum/serde rejection) before reaching
-    the driver's `set_tracking_rate` handler, instead of
-    returning HTTP 200 with `ErrorNumber=0x401 (InvalidValue)`
-    as the Alpaca spec requires. ConformU sends `5` and `-1`
-    and flags both.
+    by commanding such slews. The driver returns
+    `InvalidValueException` from both `SlewToCoordinatesAsync`
+    and `DestinationSideOfPier` (the two go through the same
+    `check_within_safe_envelope` gate) for each of the two
+    ±9 h test points, so ConformU records four exception
+    entries per run. This is the same envelope-rejection
+    mechanism Phase 4 added — see
+    [§Phase 4 driver-logic changes].
+  - `SideofPier` ×1 and `DestinationSideofPier` ×1 —
+    "`pierWest` is returned when the mount is observing at an
+    hour angle between 0.0 and +6.0". ConformU's
+    `SideofPier` test assumes the mount flips at the meridian
+    (the EQMOD / Sky-Watcher Synscan / ASCOM-driver-pattern
+    behaviour) and therefore expects `pierEast` for any target
+    west of the meridian. The Star Adventurer GTi driver does
+    not initiate flips — the safety envelope keeps the
+    encoder within `[-CPR/4, +CPR/4]` of the home position,
+    which the Dec-encoder side-of-pier convention correctly
+    classifies as `pierWest` regardless of whether the target
+    is east or west of the meridian. The ASCOM spec is
+    explicit that `SideOfPier` reports the OTA's mechanical
+    position, not the target's sky position, so the driver's
+    answer is correct for this mount; ConformU's
+    flip-assumption check just doesn't apply.
+  - `DestinationSideOfPier` ×1 — "Same value for
+    DestinationSideOfPier received on both sides of the
+    meridian". Same root cause: the driver never plans a
+    flip, so every in-envelope target lands in the same
+    pointing state.
 
-Previous revisions of this section also listed
-`DestinationSideOfPier ×1` and `SOPPierTest ×4` as expected issues,
-covering the four standard RA/Dec inputs ConformU runs through
-`SOPPierTest`. Issue #202 landed `DestinationSideOfPier` and
-switched the `SideOfPier` derivation to the canonical Dec-encoder
-convention, so the four standard cases now drop from ISSUE to OK.
-Only the two safety-envelope rejections remain.
+Issue counts shift on convention changes:
+
+- Pre-#202 baseline (HA-meridian split, `DestinationSideOfPier`
+  unimplemented): **9 issues** — `DestinationSideOfPier` ×1
+  (NotImplemented), `SOPPierTest` ×4 (inherited from
+  NotImplemented), `SOPPierTest` ×2 (safety envelope),
+  `TrackingRate Write` ×2 (upstream `ascom-alpaca-rs`
+  framework bug — Alpaca enum rejection at the axum/serde
+  layer before reaching the driver).
+- Post-#202 baseline (Dec-encoder split, `DestinationSideOfPier`
+  implemented): **7 issues** as listed above. The
+  `TrackingRate Write` ×2 entries disappeared after an
+  unrelated upstream fix; the four `DestinationSideOfPier`
+  "consistency" / "Exception" entries got reclassified by the
+  Dec-encoder switch (the four inherited-from-NotImplemented
+  ones became three of the new-cause ones plus the two
+  `SideofPier` / `DestinationSideofPier` consistency
+  entries).
 
 Any issue or error outside that list — and in particular any
 `SlewTo*` / `SyncTo*` row reporting a tolerance exceedance
@@ -730,7 +758,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 3 — Implementation** | ✓ landed: codec, transports (USB+UDP), `MountDevice`, ConformU integration (PR #188); BDD step bodies + `@wip` removal (PR #189). All 9 feature files / 77 scenarios green on Linux/Windows/macOS CI. |
 | **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
 | **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
-| **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. Drops the previous `DestinationSideOfPier ×1` and `SOPPierTest ×4` from the expected-issues list. |
+| **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See §"Running ConformU manually". |
 
 #### Phase 4 findings (hardware bringup)
 
