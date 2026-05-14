@@ -997,25 +997,6 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
 
-        // Latch the target + capture the tracking flag so the
-        // completion watcher knows whether to auto-restore. Also
-        // cancel any in-flight pulse-guide on either axis (the slew
-        // takes ownership of both axes from this point). We do NOT
-        // clear `tracking_requested` here: if any of the StopMotion /
-        // SetMotionMode / ... sends below fail, the in-memory state
-        // would falsely report tracking-off while the wire is still
-        // tracking. The flag is cleared only after the RA :K actually
-        // hits the wire (see the inline write below).
-        let tracking_was_on;
-        {
-            let mut s = self.state.write().await;
-            s.target_ra_hours = Some(ra);
-            s.target_dec_degrees = Some(dec);
-            tracking_was_on = s.tracking_requested;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
-        }
-
         // Compute target encoder ticks for the *current* LST. INDI's
         // EQMOD-style post-stop pickup loop (issue #205) handles the
         // residual that arises because RA drifts during the goto: when
@@ -1041,37 +1022,73 @@ impl Telescope for MountDevice {
         // stalling the motor against a hard stop.
         self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
 
-        let snap = self.transport.snapshot().await;
-        let ra_delta = ra_ticks - snap.ra.position_ticks;
-        let dec_delta = dec_ticks - snap.dec.position_ticks;
-        // Both axes use the INDI wire sequence: `:K` + poll `:f`
-        // (decelerate stop — the spec's "motor must be at full stop
-        // before setting the motion mode" requirement) → `:G goto+fast`
-        // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
-        // `:K` is also the wire event that halts any in-progress
-        // sidereal tracking; mirror that into the in-memory
-        // `tracking_requested` flag once the stop has actually
-        // succeeded so the state never gets ahead of the wire on
-        // transport failures.
-        self.stop_and_wait(Axis::Ra).await?;
-        self.state.write().await.tracking_requested = false;
-        issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
-            .await
-            .map_err(Self::ascom)?;
-        self.stop_and_wait(Axis::Dec).await?;
-        issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
-            .await
-            .map_err(Self::ascom)?;
-
-        // Mark slew in progress and spawn the completion watcher. The
-        // watcher polls until both axes report stopped, runs the
-        // EQMOD-style pickup loop (up to 5 iterations) to nudge any
-        // residual under 5", optionally re-issues sidereal tracking
-        // on RA (only if it was on before the slew), applies the
-        // settle delay, then clears `slew_in_progress`.
-        let settle = {
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Latch the target + capture the tracking flag in
+        // the same write. We do NOT clear `tracking_requested` here:
+        // if any of the StopMotion / SetMotionMode / ... sends below
+        // fail, the in-memory state would falsely report tracking-off
+        // while the wire is still tracking. The flag is cleared only
+        // after the RA :K actually hits the wire (see the inline
+        // write below).
+        let tracking_was_on;
+        {
             let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "slew refused: slew already in progress",
+                ));
+            }
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+            tracking_was_on = s.tracking_requested;
             s.slew_in_progress = true;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+        }
+
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        // Wrap motion-issue in an inner future so a single rollback
+        // covers every `?` failure.
+        let result: ASCOMResult<()> = async {
+            let snap = self.transport.snapshot().await;
+            let ra_delta = ra_ticks - snap.ra.position_ticks;
+            let dec_delta = dec_ticks - snap.dec.position_ticks;
+            // Both axes use the INDI wire sequence: `:K` + poll `:f`
+            // (decelerate stop — the spec's "motor must be at full stop
+            // before setting the motion mode" requirement) → `:G goto+fast`
+            // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
+            // `:K` is also the wire event that halts any in-progress
+            // sidereal tracking; mirror that into the in-memory
+            // `tracking_requested` flag once the stop has actually
+            // succeeded so the state never gets ahead of the wire on
+            // transport failures.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.state.write().await.tracking_requested = false;
+            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+                .await
+                .map_err(Self::ascom)?;
+            self.stop_and_wait(Axis::Dec).await?;
+            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+
+        // Hand off to the completion watcher. The watcher polls
+        // until both axes report stopped, runs the EQMOD-style
+        // pickup loop (up to 5 iterations) to nudge any residual
+        // under 5", optionally re-issues sidereal tracking on RA
+        // (only if it was on before the slew), applies the settle
+        // delay, then clears `slew_in_progress`.
+        let settle = {
+            let s = self.state.read().await;
             s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
         };
         spawn_slew_completion_watcher(
@@ -1118,89 +1135,110 @@ impl Telescope for MountDevice {
         if self.state.read().await.at_park {
             return Ok(());
         }
-        // Cancel any in-flight pulse-guide — park takes ownership of
-        // both axes. Watchers see the cleared flags on post-sleep and
-        // bail out without restoring.
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Doing the flag-set after `:J` (the old layout)
+        // left a TOCTOU window where a concurrent `SetPark` could
+        // read mid-slew encoder positions. Cancel any in-flight
+        // pulse-guide in the same write — park takes ownership of
+        // both axes from this point.
         {
             let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "park refused: slew already in progress",
+                ));
+            }
+            s.slew_in_progress = true;
             s.pulse_guiding_ra = false;
             s.pulse_guiding_dec = false;
         }
-        // Stop tracking before slewing home (per ASCOM, tracking remains
-        // off after Park). The wire `:K1` is issued first so the in-memory
-        // flag flip only follows a successful stop.
-        if self.state.read().await.tracking_requested {
-            self.transport
-                .send(Command::StopMotion(Axis::Ra))
-                .await
-                .map_err(Self::ascom)?;
-            self.state.write().await.tracking_requested = false;
-        }
-        // Slew both axes to the loaded park target. `set_connected(true)`
-        // populated these from config / handshake; if either is `None`
-        // here it's an internal invariant violation (only path to reach
-        // this code requires `ensure_connected()` to have observed
-        // `requested_connection = true`, which is only set after
-        // `load_park_target_after_connect` populated both). Surface as
-        // a structured ASCOMError rather than a panic — panicking
-        // inside a tokio task aborts it and leaves the Alpaca client
-        // with a connection-reset rather than a recoverable error code.
-        let (target_ra_ticks, target_dec_ticks) = {
-            let s = self.state.read().await;
-            let ra = s.park_ra_ticks.ok_or_else(|| {
-                ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "park_ra_ticks not loaded — internal invariant violation",
-                )
-            })?;
-            let dec = s.park_dec_ticks.ok_or_else(|| {
-                ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "park_dec_ticks not loaded — internal invariant violation",
-                )
-            })?;
-            (ra, dec)
-        };
-        // Same wire sequence as `slew_to_coordinates_async`:
-        // `:K`-and-wait, `:G` with direction chosen from
-        // `sign(target - current)`, `:S target`, `:J`.
-        let snap = self.transport.snapshot().await;
-        for (axis, current_ticks, target_ticks) in [
-            (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
-            (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
-        ] {
-            self.stop_and_wait(axis).await?;
-            let mode = MotionMode {
-                kind: skywatcher_motor_protocol::command::ModeKind::Goto,
-                speed: skywatcher_motor_protocol::command::Speed::Fast,
-                ccw: current_ticks > target_ticks,
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        // Wrap motion-issue in an inner future so a single rollback
+        // covers every `?` failure.
+        let result: ASCOMResult<()> = async {
+            // Stop tracking before slewing home (per ASCOM, tracking
+            // remains off after Park). The wire `:K1` is issued first
+            // so the in-memory flag flip only follows a successful stop.
+            if self.state.read().await.tracking_requested {
+                self.transport
+                    .send(Command::StopMotion(Axis::Ra))
+                    .await
+                    .map_err(Self::ascom)?;
+                self.state.write().await.tracking_requested = false;
+            }
+            // Slew both axes to the loaded park target.
+            // `set_connected(true)` populated these from config /
+            // handshake; if either is `None` here it's an internal
+            // invariant violation. Surface as a structured ASCOMError
+            // rather than a panic — panicking inside a tokio task
+            // aborts it and leaves the Alpaca client with a
+            // connection-reset.
+            let (target_ra_ticks, target_dec_ticks) = {
+                let s = self.state.read().await;
+                let ra = s.park_ra_ticks.ok_or_else(|| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        "park_ra_ticks not loaded — internal invariant violation",
+                    )
+                })?;
+                let dec = s.park_dec_ticks.ok_or_else(|| {
+                    ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        "park_dec_ticks not loaded — internal invariant violation",
+                    )
+                })?;
+                (ra, dec)
             };
-            self.transport
-                .send(Command::SetMotionMode { axis, mode })
-                .await
-                .map_err(Self::ascom)?;
-            // No `:I` in Goto mode — the firmware computes slew speed
-            // internally. See the matching note in
-            // `slew_to_coordinates_async`.
-            self.transport
-                .send(Command::SetGotoTarget {
-                    axis,
-                    ticks: target_ticks,
-                })
-                .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::StartMotion(axis))
-                .await
-                .map_err(Self::ascom)?;
+            // Same wire sequence as `slew_to_coordinates_async`:
+            // `:K`-and-wait, `:G` with direction chosen from
+            // `sign(target - current)`, `:S target`, `:J`.
+            let snap = self.transport.snapshot().await;
+            for (axis, current_ticks, target_ticks) in [
+                (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
+                (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
+            ] {
+                self.stop_and_wait(axis).await?;
+                let mode = MotionMode {
+                    kind: skywatcher_motor_protocol::command::ModeKind::Goto,
+                    speed: skywatcher_motor_protocol::command::Speed::Fast,
+                    ccw: current_ticks > target_ticks,
+                };
+                self.transport
+                    .send(Command::SetMotionMode { axis, mode })
+                    .await
+                    .map_err(Self::ascom)?;
+                // No `:I` in Goto mode — the firmware computes slew speed
+                // internally. See the matching note in
+                // `slew_to_coordinates_async`.
+                self.transport
+                    .send(Command::SetGotoTarget {
+                        axis,
+                        ticks: target_ticks,
+                    })
+                    .await
+                    .map_err(Self::ascom)?;
+                self.transport
+                    .send(Command::StartMotion(axis))
+                    .await
+                    .map_err(Self::ascom)?;
+            }
+            Ok(())
         }
-        // Mark slew in progress and spawn the park watcher (sets at_park
-        // = true on completion instead of re-enabling tracking).
-        let settle = {
-            let mut s = self.state.write().await;
-            s.slew_in_progress = true;
-            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
-        };
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+        // Hand off to the park watcher; it owns `slew_in_progress`
+        // from here and will clear it on completion.
+        let settle = self
+            .state
+            .read()
+            .await
+            .slew_settle_time
+            .unwrap_or(self.config.settle_after_slew);
         spawn_park_completion_watcher(
             Arc::clone(&self.state),
             Arc::clone(&self.transport),
@@ -1231,6 +1269,21 @@ impl Telescope for MountDevice {
         // Refuse mid-slew: the "current encoder pair" wouldn't be
         // stable while the motors are still moving. Also catches
         // mid-park: AtPark hasn't been set yet but slew_in_progress is.
+        //
+        // Two layers of defense for the concurrent-motion case (per
+        // Copilot review on PR #221, comment 3242621736):
+        //   1. The in-memory `slew_in_progress` flag: park() and
+        //      slew_to_coordinates_async() now set this *before*
+        //      issuing motion (with rollback-on-error), so the
+        //      flag observation here is reliable.
+        //   2. The latest wire snapshot's `running` flag: defense
+        //      in depth against an axis that's running for any
+        //      reason the in-memory flag wouldn't capture (a
+        //      tracking pulse, an external `:J` from a future
+        //      out-of-band path, a flag-set racing the wire send).
+        //      The snapshot is updated by the background poller at
+        //      `polling_interval`; the window where snapshot lags
+        //      reality is bounded by that interval.
         if self.state.read().await.slew_in_progress {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -1238,6 +1291,12 @@ impl Telescope for MountDevice {
             ));
         }
         let snap = self.transport.snapshot().await;
+        if snap.ra.running || snap.dec.running {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "SetPark refused while an axis is running per the wire snapshot",
+            ));
+        }
         let ra_ticks = snap.ra.position_ticks;
         let dec_ticks = snap.dec.position_ticks;
         // Disk I/O runs on the blocking pool so the async runtime
@@ -3650,6 +3709,70 @@ mod tests {
         d.state.write().await.slew_in_progress = true;
         let err = d.set_park().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
+        // Defence-in-depth (per Copilot review on PR #221, comment
+        // 3242621736): even if `slew_in_progress` is false — e.g. an
+        // axis is running for a reason the in-memory flag wouldn't
+        // capture — the wire snapshot's `running` flag must still
+        // gate `SetPark` to avoid persisting mid-motion encoder
+        // ticks.
+        //
+        // To exercise this path independently of the
+        // `slew_in_progress` flag, we connect with a
+        // `CapturingMockFactory`, force `ra.running = true` directly
+        // on the mock state (bypassing the slew_to_*_async flag-set
+        // path), wait for the next background poll so the snapshot
+        // reflects the wire, then call SetPark.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        let mock = factory.mock.clone();
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        seed_default_config(&path);
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
+        d.set_connected(true).await.unwrap();
+
+        // Force the wire-side running flag without going through
+        // `slew_to_coordinates_async` (which would set
+        // `slew_in_progress` and trip the other guard).
+        {
+            let mut s = mock.state.lock().await;
+            s.ra.running = true;
+            s.ra.initialized = true;
+        }
+        // Wait for the background poll to ingest the new wire state.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if d.transport.snapshot().await.ra.running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            d.transport.snapshot().await.ra.running,
+            "precondition: snapshot must reflect RA running=true"
+        );
+        // slew_in_progress flag is still false — only the wire
+        // snapshot is reporting motion. The new defence layer must
+        // still refuse.
+        assert!(!d.state.read().await.slew_in_progress);
+        let err = d.set_park().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("snapshot"),
+            "error should reference the wire snapshot: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
