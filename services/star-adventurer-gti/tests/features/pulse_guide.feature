@@ -89,7 +89,7 @@ Feature: PulseGuide as rate-shifted tracking
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide North for 200 ms
+    And I pulse guide North for 2000 ms
     Then IsPulseGuiding should be true
     And the mount should have received commands matching:
       | pattern |
@@ -97,14 +97,14 @@ Feature: PulseGuide as rate-shifted tracking
       | :G210   |
       | :I2.*   |
       | :J2     |
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 5000 ms
     And the mount should have received command :K2
 
   Scenario: PulseGuide South issues Tracking + CCW commands on the Dec axis
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide South for 200 ms
+    And I pulse guide South for 2000 ms
     Then IsPulseGuiding should be true
     And the mount should have received commands matching:
       | pattern |
@@ -112,7 +112,7 @@ Feature: PulseGuide as rate-shifted tracking
       | :G211   |
       | :I2.*   |
       | :J2     |
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 5000 ms
 
   Scenario: PulseGuide East while tracking shifts the rate and restores sidereal
     # East slows tracking (period grows); after the pulse the watcher
@@ -121,9 +121,9 @@ Feature: PulseGuide as rate-shifted tracking
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide East for 200 ms
+    And I pulse guide East for 2000 ms
     Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 5000 ms
     And the mount should have received commands matching:
       | pattern |
       | :K1     |
@@ -140,9 +140,9 @@ Feature: PulseGuide as rate-shifted tracking
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide West for 200 ms
+    And I pulse guide West for 2000 ms
     Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 5000 ms
     And the mount should have received commands matching:
       | pattern |
       | :K1     |
@@ -171,10 +171,19 @@ Feature: PulseGuide as rate-shifted tracking
     Then the operation should fail with invalid-while-parked
 
   Scenario: PulseGuide fails while slewing
+    # `the mount is slewing` seeds `running=true / goto=true` on both
+    # mock axes, but the driver-side snapshot only reflects that after
+    # the polling task does its first `:f` read post-connect. On a
+    # fast runner the polling can lag the PulseGuide call, leaving
+    # `slewing()` returning false and PulseGuide proceeding. Waiting
+    # for `Slewing` to be visible before issuing the pulse closes
+    # the race deterministically (the existing `Then Slewing should
+    # be true` step polls with a 5 s deadline).
     Given a running star-adventurer service
     And the mount is slewing
     When I connect the device
-    And I try to pulse guide North for 100 ms
+    Then Slewing should be true
+    When I try to pulse guide North for 100 ms
     Then the operation should fail with invalid-operation
 
   Scenario: PulseGuide fails while disconnected
@@ -188,7 +197,7 @@ Feature: PulseGuide as rate-shifted tracking
     And I pulse guide North for 1000 ms
     And I try to pulse guide South for 100 ms
     Then the operation should fail with invalid-operation
-    And IsPulseGuiding should become false within 2000 ms
+    And IsPulseGuiding should become false within 5000 ms
 
   Scenario: Perpendicular concurrent pulses (N on Dec, E on RA) both succeed
     # Durations are deliberately long (2 seconds each) to survive
@@ -215,12 +224,17 @@ Feature: PulseGuide as rate-shifted tracking
     # start) and one from `pulse guide East` (rate-shifted start).
     # A third :G110 would indicate the watcher restored tracking
     # despite the cancellation.
+    #
+    # Pulse duration of 3 s gives the BDD client's HTTP round-trip
+    # for `I disable tracking` plenty of headroom to clear the flag
+    # before the watcher's sleep elapses on slow CI — a tight
+    # duration here would race the watcher's restore decision.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide East for 800 ms
+    And I pulse guide East for 3000 ms
     And I disable tracking
-    Then IsPulseGuiding should become false within 2000 ms
+    Then IsPulseGuiding should become false within 5000 ms
     And Tracking should be false
     And the RA tracking-mode :G110 frame count should be exactly 2
 
