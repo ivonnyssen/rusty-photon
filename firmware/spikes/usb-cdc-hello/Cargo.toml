@@ -12,19 +12,22 @@ path = "src/main.rs"
 harness = false
 
 [dependencies]
+# esp-idf-sys is also a transitive dep through esp-idf-svc, but listing it
+# directly here lets the IDF Component Manager pick up our
+# `[[package.metadata.esp-idf-sys.extra_components]]` block below.
+esp-idf-sys = "0.36"
 esp-idf-svc = { version = "0.51", features = ["std", "binstart"] }
 log = "0.4"
 anyhow = "1"
 
 [build-dependencies]
-embuild = "0.34"
+embuild = "0.33"
 
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-debug = "line-tables-only"
-
-[profile.dev]
-opt-level = "z"
-debug = "line-tables-only"
+# esp-idf-sys synthesizes its own ESP-IDF "main" component and ignores a
+# bare `idf_component.yml` placed next to Cargo.toml. The reliable path is
+# to declare a local ESP-IDF "extras" component (`components/cdc_acm_pull/`)
+# whose own `idf_component.yml` pulls in the managed component from the
+# component registry, then point esp-idf-sys at that directory.
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components/cdc_acm_pull"]
+bindings_header = "components/cdc_acm_pull/bindings.h"

@@ -1,0 +1,3 @@
+# embuild's local cache of ESP-IDF, the Xtensa toolchain, and managed
+# components. Multi-gigabyte, fully reproducible from Cargo.toml + sdkconfig.
+.embuild/

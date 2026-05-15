@@ -57,7 +57,10 @@ struct CdcAcmHostDeviceConfig {
     user_arg: *mut c_void,
 }
 
+// Field names mirror the USB CDC PSTN spec (Table 17: Line Coding Structure)
+// so cross-referencing the C `cdc_acm_host.h` header stays trivial.
 #[repr(C, packed)]
+#[allow(non_snake_case)]
 struct CdcAcmLineCoding {
     dwDTERate: u32,
     bCharFormat: u8,
@@ -67,6 +70,10 @@ struct CdcAcmLineCoding {
 
 extern "C" {
     fn cdc_acm_host_install(driver_config: *const CdcAcmHostDriverConfig) -> i32;
+    // The public C name `cdc_acm_host_open` is a `_Generic` macro that
+    // dispatches between the legacy 5-arg form and a newer struct-based
+    // form. Bind directly to the symbol the legacy dispatch resolves to.
+    #[link_name = "cdc_acm_host_open_v1_dispatch"]
     fn cdc_acm_host_open(
         vid: u16,
         pid: u16,

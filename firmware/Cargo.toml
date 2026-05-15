@@ -14,3 +14,17 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
+
+# Profiles live at the workspace root — Cargo ignores `[profile.*]` in member
+# crates and warns about it. The ESP-IDF build is heavy enough that we always
+# want size-optimized output; the toolchain link step itself is the slowest
+# part, so codegen-units = 1 + LTO is a net win.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.dev]
+opt-level = "z"
+debug = "line-tables-only"
