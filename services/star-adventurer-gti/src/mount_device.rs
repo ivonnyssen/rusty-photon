@@ -28,8 +28,9 @@ use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
-    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
-    sidereal_step_period, SIDEREAL_DEG_PER_SEC,
+    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
+    side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
@@ -165,8 +166,9 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Reject a slew / sync whose target encoder ticks would fall
-    /// outside the configured mechanical envelope.
+    /// Reject a slew / sync / destination-side prediction whose target
+    /// would fall outside the per-pier-side mechanical envelope for
+    /// the chosen pointing state.
     ///
     /// **Why:** the Star Adventurer GTi (like every GEM) has
     /// mechanical limits — slewing past them with cable wraps or the
@@ -175,41 +177,54 @@ impl MountDevice {
     /// On a real-hardware ConformU run that drove the mount into the
     /// counterweight-up region we heard the motor whine and saw the
     /// axis stop physically for several seconds at a time. The
-    /// configured `ra_min_hours` / `ra_max_hours` / `dec_min_degrees` /
-    /// `dec_max_degrees` express the safe envelope; any target
-    /// outside it is rejected with `INVALID_VALUE` and never reaches
-    /// the wire.
+    /// configured `ra_min_hours` / `ra_max_hours` (pre-flip side) and
+    /// `flip_policy.flip_range_hours` (post-flip side) express the
+    /// safe envelopes; any target outside the relevant one is
+    /// rejected with `INVALID_VALUE` and never reaches the wire.
+    ///
+    /// Operates on celestial RA/Dec + LST + `target_is_flipped` rather
+    /// than encoder ticks: the post-flip target encoder lands past the
+    /// celestial pole on the Dec axis (the dec ticks themselves are
+    /// outside `[-cpr_dec/4, +cpr_dec/4]`), so a ticks-based bound
+    /// would falsely reject every flipped target. The celestial-dec
+    /// range check is the actual safety invariant.
     ///
     /// Both axes are validated together so a partial-failure slew
     /// can't issue motion on RA before discovering Dec is out of
     /// range.
     fn check_within_safe_envelope(
         &self,
-        ra_ticks: i32,
-        dec_ticks: i32,
-        cpr_ra: u32,
-        cpr_dec: u32,
+        ra_hours: f64,
+        dec_degrees: f64,
+        lst_hours: f64,
+        target_is_flipped: bool,
     ) -> ASCOMResult<()> {
-        let ra_min_ticks = mechanical_ha_to_ra_ticks(self.config.ra_min_hours, cpr_ra);
-        let ra_max_ticks = mechanical_ha_to_ra_ticks(self.config.ra_max_hours, cpr_ra);
-        if ra_ticks < ra_min_ticks || ra_ticks > ra_max_ticks {
-            let mech_ha = ra_ticks_to_mechanical_ha(ra_ticks, cpr_ra);
+        let target_ha = ra_to_mechanical_ha(ra_hours, lst_hours);
+        if target_is_flipped {
+            let flip_range = self.config.flip_policy.flip_range_hours;
+            if target_ha.abs() > flip_range {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_VALUE,
+                    format!(
+                        "flipped target_HA {target_ha:.3} h outside flip window \
+                         [-{flip_range}, +{flip_range}] h"
+                    ),
+                ));
+            }
+        } else if !(self.config.ra_min_hours..=self.config.ra_max_hours).contains(&target_ha) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "RA target mech-HA {mech_ha:.3} h outside safe envelope [{}, {}] h",
+                    "RA target_HA {target_ha:.3} h outside safe envelope [{}, {}] h",
                     self.config.ra_min_hours, self.config.ra_max_hours
                 ),
             ));
         }
-        let dec_min_ticks = dec_degrees_to_ticks(self.config.dec_min_degrees, cpr_dec);
-        let dec_max_ticks = dec_degrees_to_ticks(self.config.dec_max_degrees, cpr_dec);
-        if dec_ticks < dec_min_ticks || dec_ticks > dec_max_ticks {
-            let dec_deg = dec_ticks_to_degrees(dec_ticks, cpr_dec);
+        if !(self.config.dec_min_degrees..=self.config.dec_max_degrees).contains(&dec_degrees) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "Dec target {dec_deg:.3}° outside safe envelope [{}, {}]°",
+                    "Dec target {dec_degrees:.3}° outside safe envelope [{}, {}]°",
                     self.config.dec_min_degrees, self.config.dec_max_degrees
                 ),
             ));
@@ -446,6 +461,61 @@ async fn watcher_should_abort(
     transport: &TransportManager,
 ) -> bool {
     !state.read().await.slew_in_progress || !transport.is_available()
+}
+
+/// Fold an encoder-tick delta into the shortest equivalent path on a
+/// modular axis of period `cpr`.
+///
+/// The Sky-Watcher firmware's encoder counter is wider than the
+/// physical axis's logical period (cpr): a single revolution is `cpr`
+/// ticks, but the counter can run from `−2²³` to `+2²³ − 1` before
+/// the codec's 24-bit field wraps. A through-wrap meridian-flip slew
+/// can therefore leave the encoder counter outside the canonical
+/// `[−cpr/2, +cpr/2)` band (e.g. `−1.89M` for a flip that landed
+/// physically at `+11.5 h`, modular `+1.74M`). Without folding, the
+/// next slew's `target_ticks − current_ticks` would order a full
+/// extra revolution. This helper folds the raw delta to the
+/// shortest-path equivalent in `[−cpr/2, +cpr/2)`.
+fn fold_delta_to_canonical(delta: i32, cpr: u32) -> i32 {
+    if cpr == 0 {
+        return delta;
+    }
+    let cpr_i = cpr as i32;
+    let half_cpr = cpr_i / 2;
+    let modular = delta.rem_euclid(cpr_i);
+    if modular >= half_cpr {
+        modular - cpr_i
+    } else {
+        modular
+    }
+}
+
+/// Force a flip slew's RA delta to traverse the safe (negative)
+/// `mech_HA` half so the counterweight stays clear of the binding
+/// region at `mech_HA ∈ (+6.95, +11.05)`.
+///
+/// The mechanical binding zone is at positive `mech_HA`
+/// (counterweight above local horizon for any latitude — the binding
+/// is structural, not horizon-dependent). The safe through-wrap route
+/// keeps the encoder in the negative `mech_HA` half, equivalently:
+/// the RA encoder must decrease (CCW direction). If the canonical
+/// shortest path already decreases, use it; otherwise take the long
+/// way (`delta − cpr`) which has the same end position via the
+/// encoder wrap and the safe CCW direction.
+///
+/// Northern + Southern hemispheres share this rule: the GTi's binding
+/// is a mechanical property of the mount head independent of
+/// observer latitude.
+fn flip_slew_ra_delta(canonical_delta: i32, cpr: u32) -> i32 {
+    if cpr == 0 {
+        return canonical_delta;
+    }
+    let cpr_i = cpr as i32;
+    if canonical_delta <= 0 {
+        canonical_delta
+    } else {
+        canonical_delta - cpr_i
+    }
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
@@ -842,19 +912,18 @@ impl Telescope for MountDevice {
     }
 
     async fn destination_side_of_pier(&self, ra: f64, dec: f64) -> ASCOMResult<PierSide> {
-        // Pure prediction — no wire traffic, no slew. Runs the same
-        // coordinate-math pipeline `slew_to_coordinates_async` uses to
-        // pick the target encoder pair, then applies the same Dec >
-        // 90° check `side_of_pier()` uses to classify the resulting
-        // pointing state. The driver never plans a meridian flip, so
-        // any target inside the safety envelope lands with the Dec
-        // encoder within ±90° and therefore predicts pierWest in the
-        // Northern Hemisphere (East in the Southern). Targets outside
-        // the envelope are rejected with `INVALID_VALUE` here for
-        // parity with `slew_to_coordinates_async` — ConformU's
-        // SOPPierTest commands such targets to exercise the
-        // pier-flip code paths, and rejecting them at the
-        // prediction step matches the rejection at the slew step.
+        // Pure prediction — no wire traffic, no slew. Shares the
+        // flip-policy decision tree with `slew_to_coordinates_async`
+        // (see the design doc's
+        // [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)),
+        // then validates the target against the safety envelope for
+        // the chosen side with the same `INVALID_VALUE` rejection a
+        // slew would issue. With `flip_policy.enabled = false` (the
+        // default) the decision tree collapses to "current side", so
+        // any target inside the (pre-flip) safety envelope predicts
+        // `pierWest` in the Northern Hemisphere (`pierEast` in the
+        // Southern). With it enabled, an opposite side is returned
+        // when the current side's envelope rejects the target.
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         let params = self
@@ -864,15 +933,28 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
-        Ok(side_of_pier_calc(
-            dec_ticks,
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
             params.cpr_dec,
             self.config.site_latitude_deg,
-        ))
+        );
+        let chosen_side = select_pier_side_for_target(
+            ra,
+            lst,
+            current_side,
+            &self.config.flip_policy,
+            (self.config.ra_min_hours, self.config.ra_max_hours),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
+            PierSide::West
+        } else {
+            PierSide::East
+        };
+        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
+        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+        Ok(chosen_side)
     }
 
     // ---- Target setters ----
@@ -936,13 +1018,17 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
         // Reject syncs that would set the encoder outside the
         // mount's safe mechanical envelope — a bad sync would let
         // the *next* tracking step push the OTA into a hard stop.
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
+        // Sync uses the pre-flip envelope (`target_is_flipped =
+        // false`); operators must `AbortSlew` and re-sync the pre-
+        // flip pointing first if a manual flip left the mount in a
+        // post-flip state.
+        self.check_within_safe_envelope(ra, dec, lst, false)?;
+        let mech_ha = ra_to_mechanical_ha(ra, lst);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
         self.transport
             .send(Command::SetPosition {
                 axis: Axis::Ra,
@@ -1013,18 +1099,50 @@ impl Telescope for MountDevice {
         // pickup loop closes the gap cleanly.
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+
+        // Phase 6: determine target pier side via the flip policy. With
+        // `flip_policy.enabled = false` (the default), `chosen_side`
+        // always equals `current_side` and the rest of this function
+        // reduces to the pre-Phase-6 pipeline. With it enabled, a
+        // flip slew may be chosen — see the design doc's
+        // [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        let chosen_side = select_pier_side_for_target(
+            ra,
+            lst,
+            current_side,
+            &self.config.flip_policy,
+            (self.config.ra_min_hours, self.config.ra_max_hours),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
+            PierSide::West
+        } else {
+            PierSide::East
+        };
+        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
+        let is_flip_slew = current_side != chosen_side;
+
+        let (ra_ticks, dec_ticks) = if target_is_flipped {
+            target_encoder_flipped(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        } else {
+            target_encoder_normal(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        };
 
         // Refuse before any wire motion if the slew target falls
-        // outside the configured mechanical envelope. ConformU's
-        // pier-flip tests deliberately command across-the-meridian
-        // slews that on a GEM-without-flip translate to encoders
-        // past the counterweight-horizontal boundary; the safety
-        // gate sends those back as `INVALID_VALUE` instead of
-        // stalling the motor against a hard stop.
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
+        // outside the configured mechanical envelope for the chosen
+        // pier side. ConformU's pier-flip tests deliberately command
+        // across-the-meridian slews that on a GEM-without-flip
+        // translate to encoders past the counterweight-horizontal
+        // boundary; the safety gate sends those back as
+        // `INVALID_VALUE` instead of stalling the motor against a
+        // hard stop.
+        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
 
         // Atomically reserve the in-progress slot **before** issuing
         // any motion. Latch the target + capture the tracking flag in
@@ -1057,8 +1175,23 @@ impl Telescope for MountDevice {
         // covers every `?` failure.
         let result: ASCOMResult<()> = async {
             let snap = self.transport.snapshot().await;
-            let ra_delta = ra_ticks - snap.ra.position_ticks;
-            let dec_delta = dec_ticks - snap.dec.position_ticks;
+            // Fold the raw delta to canonical so a snapshot value that
+            // landed outside `[−cpr/2, +cpr/2)` after a prior
+            // through-wrap flip doesn't trigger a full-revolution
+            // correction here.
+            let ra_delta_canonical =
+                fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+            let ra_delta = if is_flip_slew {
+                // Flip slews force the safe (CCW) traversal direction
+                // through the negative-mech_HA half — see
+                // [`flip_slew_ra_delta`] and the design doc's
+                // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
+                flip_slew_ra_delta(ra_delta_canonical, params.cpr_ra)
+            } else {
+                ra_delta_canonical
+            };
+            let dec_delta =
+                fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
             // Both axes use the INDI wire sequence: `:K` + poll `:f`
             // (decelerate stop — the spec's "motor must be at full stop
             // before setting the motion mode" requirement) → `:G goto+fast`
@@ -1776,8 +1909,19 @@ fn spawn_slew_completion_watcher(
                         let new_ra_ticks =
                             pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
                         let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
-                        let ra_delta = new_ra_ticks - snap.ra.position_ticks;
-                        let dec_delta = new_dec_ticks - snap.dec.position_ticks;
+                        // Fold the deltas to canonical so the pickup
+                        // re-slew takes the shortest path even if the
+                        // current encoder snapshot landed outside
+                        // `[−cpr/2, +cpr/2)` after a through-wrap
+                        // flip — see [`fold_delta_to_canonical`].
+                        let ra_delta = fold_delta_to_canonical(
+                            new_ra_ticks - snap.ra.position_ticks,
+                            params.cpr_ra,
+                        );
+                        let dec_delta = fold_delta_to_canonical(
+                            new_dec_ticks - snap.dec.position_ticks,
+                            params.cpr_dec,
+                        );
                         pickup_iterations += 1;
                         debug!(
                             iteration = pickup_iterations,
@@ -4470,5 +4614,107 @@ mod tests {
             g110_count, 1,
             "expected 1 :G110 frame (pulse-start only, no restore), got {g110_count}; log {log:?}"
         );
+    }
+
+    // ---------- Phase 6: through-wrap routing helpers ----------
+
+    const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
+
+    #[test]
+    fn fold_delta_to_canonical_passes_through_small_deltas() {
+        assert_eq!(fold_delta_to_canonical(0, GTI_CPR), 0);
+        assert_eq!(fold_delta_to_canonical(1, GTI_CPR), 1);
+        assert_eq!(fold_delta_to_canonical(-1, GTI_CPR), -1);
+        assert_eq!(fold_delta_to_canonical(100_000, GTI_CPR), 100_000);
+        assert_eq!(fold_delta_to_canonical(-100_000, GTI_CPR), -100_000);
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_collapses_long_way_to_short_way() {
+        let half = GTI_CPR as i32 / 2;
+        // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
+        // shorter path on the modular axis).
+        let folded = fold_delta_to_canonical(half + 100, GTI_CPR);
+        assert_eq!(folded, -half + 100);
+        // Symmetric for the negative direction.
+        let folded = fold_delta_to_canonical(-half - 100, GTI_CPR);
+        assert_eq!(folded, half - 100);
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_recovers_from_through_wrap_encoder() {
+        // After a through-wrap flip slew, the encoder may have landed
+        // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
+        // pickup that computes `target_canonical (+1,738,800) −
+        // current_raw (−1,890,000) = +3,628,800` would order a full
+        // revolution; folding collapses it to the (near-)zero residual
+        // it should be.
+        let target_canonical = 1_738_800_i32;
+        let current_raw = -1_890_000_i32;
+        let raw_delta = target_canonical - current_raw;
+        // raw_delta ≈ cpr. Folded should be small.
+        let folded = fold_delta_to_canonical(raw_delta, GTI_CPR);
+        assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_keeps_negative_delta_intact() {
+        // Canonical CCW (negative) → already on safe direction.
+        let delta = -1_000_000_i32;
+        assert_eq!(flip_slew_ra_delta(delta, GTI_CPR), delta);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_inverts_positive_canonical_delta_to_long_way() {
+        // Canonical CW (positive) → must be flipped to long way through
+        // the wrap (CCW, magnitude = cpr − natural).
+        let delta = 1_000_000_i32; // +0.55 cpr
+        let flipped = flip_slew_ra_delta(delta, GTI_CPR);
+        assert_eq!(flipped, delta - GTI_CPR as i32);
+        assert!(flipped < 0, "must be CCW after the flip");
+        // Same destination, modular.
+        assert_eq!(
+            (flipped - delta).rem_euclid(GTI_CPR as i32),
+            0,
+            "same modular destination"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_at_meridian_target_lands_on_negative_half() {
+        // Plan §2.0 canonical case: current encoder near 0 (pre-flip
+        // pierWest at meridian), target encoder = −cpr/2 (post-flip
+        // mech_HA = −12, the boundary). Natural CCW direction, already
+        // safe.
+        let delta = -(GTI_CPR as i32 / 2);
+        assert_eq!(flip_slew_ra_delta(delta, GTI_CPR), delta);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_for_target_ha_minus_half_takes_long_way() {
+        // target_HA = −0.5: post-flip mech_HA = +11.5, encoder ≈
+        // +1.74M. Current ≈ −75K. Natural delta = +1.815M (CW,
+        // through binding zone). Flip-aware must invert to CCW.
+        let natural = 1_815_000_i32;
+        let flipped = flip_slew_ra_delta(natural, GTI_CPR);
+        assert!(flipped < 0);
+        assert_eq!(
+            flipped.unsigned_abs(),
+            (GTI_CPR as i32 - natural).unsigned_abs()
+        );
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_handles_zero_cpr_defensively() {
+        // cpr = 0 is the degenerate "parameter cache not populated"
+        // case. Callers normally short-circuit on NOT_CONNECTED
+        // before reaching this helper; pass-through is the defensive
+        // fallback so a logic bug there can't divide by zero here.
+        assert_eq!(fold_delta_to_canonical(12_345, 0), 12_345);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
+        assert_eq!(flip_slew_ra_delta(12_345, 0), 12_345);
     }
 }
