@@ -1,6 +1,0 @@
-## ESP-IDF managed components pulled in at build time.
-## See: https://components.espressif.com/components/espressif/usb_host_cdc_acm
-dependencies:
-  espressif/usb_host_cdc_acm: "^2.0"
-  idf:
-    version: ">=5.3.1"
