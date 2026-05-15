@@ -9,10 +9,12 @@ This crate is throwaway — deleted at the end of Phase 1.
 
 ## Status
 
-**Scaffolded, not yet exercised against hardware.** The firmware boots
-and logs a heartbeat over UART. The USB-CDC host sequence itself is
-laid out as a TODO in `src/main.rs` and is the actual work this spike
-is meant to validate.
+**First-cut implementation written, awaiting bench iteration.** Boot
+attempts the full sequence (USB host install → CDC-ACM driver install →
+open `0483:5740` → set 115200 8N1 → assert DTR/RTS → tx `:e1\r` → log
+the response). Failure modes are surfaced as `error!` / `warn!` lines
+in the monitor; the heartbeat keeps logging afterwards so the spike
+stays useful when iterating.
 
 ## Hardware
 
@@ -68,28 +70,57 @@ Manager (Windows) for the `UART` port's `/dev/ttyUSB*` / `COMx` mapping,
 and confirm `espflash` is talking to the right one (`espflash flash
 --port /dev/ttyUSB0` to pin it).
 
-## Next step — the actual spike
+## Bench procedure
 
-Open `src/main.rs`. There is a step-by-step outline of the USB Host
-Library + CDC-ACM class driver sequence to fill in. Iterate against
-the bench until you see `=03300C\r` in the monitor (mount type 0x03,
-firmware version 0x30.0x0C — same banner the desktop driver logs at
-connect time).
+1. Disconnect the mount from your workstation (only one USB host at a
+   time — when the ESP32 enumerates the mount, your PC can't be).
+2. Connect the dev board's **USB** (OTG) port to the mount with a
+   USB-C cable. The mount is self-powered, so the board sourcing VBUS
+   is harmless.
+3. Connect the dev board's **UART** USB-C port to your workstation —
+   the monitor reads from this one.
+4. `cargo run --release` flashes and opens the monitor. Expected log
+   sequence on success:
 
-**Fallback path:** if the `esp-idf-svc` Rust wrapping of
-`cdc_acm_host_*` is incomplete, drop down to raw FFI through
-`esp_idf_sys`. The symbols come from the ESP-IDF `usb_host_cdc_acm`
-component which `sdkconfig.defaults` already pulls in. C reference:
+   ```
+   I (350)  usb_cdc_hello: USB-CDC spike booting on ESP32-S3
+   I (360)  usb_cdc_hello: installing USB host library
+   I (370)  usb_cdc_hello: installing cdc_acm host driver
+   I (380)  usb_cdc_hello: opening GTi (VID=0483 PID=5740)
+   I (520)  usb_cdc_hello: → ":e1\r"
+   I (540)  usb_cdc_hello: ← "=03300C"
+   I (545)  usb_cdc_hello: alive
+   …
+   ```
+
+5. The reply `=03300C` is the success signal: mount type `0x03` (Star
+   Adventurer GTi), firmware `0x30.0x0C`. Anything else is data the
+   spike is teaching us — capture the log and iterate.
+
+## Failure-mode crib sheet
+
+| Symptom | Likely cause | First thing to try |
+|---|---|---|
+| `cdc_acm_host_open failed: rc=0x103` (`ESP_ERR_TIMEOUT`) | device not enumerated | check the cable goes into the **USB** port not the **UART** one; check `lsusb` from the workstation still sees `0483:5740` after you re-attach |
+| `usb_host_install failed: rc=0x102` (`ESP_ERR_INVALID_STATE`) | host stack already up | this should not happen on a cold boot — power-cycle the board |
+| `cdc_acm_host_data_tx_blocking failed: rc=0x103` | tx endpoint NAKed for too long | the mount's USB stack may want DTR/RTS held low first; flip the `set_control_line_state` arguments |
+| TX OK but `no response within 2s` | RX callback never fired, or terminator mismatch | print the raw RX-buf bytes in the warn message — already does that |
+| Garbled / partial response | line coding mismatch, mount expects 9600 | bump `GTI_BAUD` to `9600` in `src/main.rs` |
+
+## Escalation — don't burn more than ~2 days
+
+1. **Switch to TinyUSB host via C bindings.** TinyUSB has a more
+   compact CDC-ACM host driver that some users find easier to get going
+   than ESP-IDF's `cdc_acm_host`.
+2. **Board change to RP2350 (Pico 2 W).** Plan-doc Phase 9 already
+   lists this as a validation target; promote it to primary if the
+   ESP32 USB-host path is uncooperative.
+3. **Architecture change.** USB-to-WiFi bridge dongle, dedicated USB
+   host MCU front-ending the ESP32, etc. Document and revisit the
+   plan-doc Hardware section.
+
+## C reference
+
+When the Rust FFI fights, the closest working code is the ESP-IDF C
+example. Same API, no Rust glue:
 https://github.com/espressif/esp-idf/tree/v5.3.1/examples/peripherals/usb/host/cdc/cdc_acm_host
-
-**Escalation:** if the USB Host Library itself fights (device not
-enumerating, no descriptor, IRQ storms), don't burn more than a day
-chasing it before switching strategy:
-
-1. **TinyUSB host via C bindings.** TinyUSB has a more compact CDC-ACM
-   host driver that some users find easier to get going than ESP-IDF's
-   native one. Trade-off: pulls in another build dependency.
-2. **Board change.** Move the spike to the RP2350 (Pico 2 W) target.
-   The plan time-boxes Phase 0 to 2 days total; if neither USB host
-   path works on either board within that window, revisit the
-   architecture (USB-to-WiFi bridge, dedicated USB host MCU, etc.).
