@@ -141,6 +141,80 @@ pub struct MountConfig {
     pub park_ra_ticks: Option<i32>,
     #[serde(default)]
     pub park_dec_ticks: Option<i32>,
+
+    /// Meridian-flip policy. See the design doc's
+    /// [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+    /// Defaults to `enabled = false` so the driver behaves identically
+    /// to pre-Phase-6 builds until an operator opts in on a
+    /// hardware-validated mount.
+    #[serde(default)]
+    pub flip_policy: FlipPolicy,
+}
+
+/// Master switch + parameters for driver-planned meridian flips.
+///
+/// `enabled = false` (the shipped default) disables every flip code
+/// path: `CanSetPierSide` reports `false`, `SetSideOfPier` returns
+/// `NOT_IMPLEMENTED`, `DestinationSideOfPier` always returns the
+/// current side, and slews use the pre-flip coordinate pipeline only.
+///
+/// With `enabled = true`, the driver may pick the flipped pier side
+/// for a slew (or honour an explicit `SetSideOfPier` call) when the
+/// target's hour angle falls inside the meridian window of width
+/// `2 × flip_range_hours`. See the design doc for the full decision
+/// tree and the per-side safety envelopes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FlipPolicy {
+    /// Master switch. Defaults `false` until the first real-hardware
+    /// meridian flip on a GTi has been verified.
+    #[serde(default = "default_flip_policy_enabled")]
+    pub enabled: bool,
+
+    /// Half-width of the target-HA window around the meridian where
+    /// the flipped state is mechanically reachable. Targets with
+    /// `|target_HA| > flip_range_hours` are unflippable: the slew
+    /// planner uses normal pointing only and `DestinationSideOfPier`
+    /// returns the current side. Valid range `(0, 0.95]`; the upper
+    /// bound matches the Phase 1.1 hardware-verified headroom past
+    /// counterweight-horizontal on the pre-flip side.
+    #[serde(default = "default_flip_range_hours")]
+    pub flip_range_hours: f64,
+}
+
+impl Default for FlipPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: default_flip_policy_enabled(),
+            flip_range_hours: default_flip_range_hours(),
+        }
+    }
+}
+
+/// Outer bound on `FlipPolicy::flip_range_hours`. Larger values would
+/// push the post-flip mechanical hour angle into the unverified
+/// mirror of the Phase 4 counterweight-up binding zone. See the plan
+/// `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
+pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
+
+impl FlipPolicy {
+    /// Validate the policy against the constraints documented in the
+    /// design doc and §2.6 of the plan. Returns `Err(message)` on a
+    /// bad value; the caller surfaces it as a startup error.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !self.flip_range_hours.is_finite() {
+            return Err(format!(
+                "flip_policy.flip_range_hours must be finite, got {}",
+                self.flip_range_hours
+            ));
+        }
+        if self.flip_range_hours <= 0.0 || self.flip_range_hours > MAX_FLIP_RANGE_HOURS {
+            return Err(format!(
+                "flip_policy.flip_range_hours must be in (0, {MAX_FLIP_RANGE_HOURS}] hours, got {}",
+                self.flip_range_hours
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -179,6 +253,12 @@ fn default_dec_min_degrees() -> f64 {
 }
 fn default_dec_max_degrees() -> f64 {
     90.0
+}
+fn default_flip_policy_enabled() -> bool {
+    false
+}
+fn default_flip_range_hours() -> f64 {
+    0.5
 }
 fn default_true() -> bool {
     true
@@ -241,6 +321,7 @@ impl Default for MountConfig {
             dec_max_degrees: default_dec_max_degrees(),
             park_ra_ticks: None,
             park_dec_ticks: None,
+            flip_policy: FlipPolicy::default(),
         }
     }
 }
@@ -354,6 +435,130 @@ mod tests {
         let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back.park_ra_ticks, Some(8000));
         assert_eq!(back.park_dec_ticks, Some(-3000));
+    }
+
+    #[test]
+    fn flip_policy_default_is_disabled_with_half_hour_range() {
+        // The shipped default disables every flip code path — a fresh
+        // install must behave identically to pre-Phase-6 builds until
+        // the operator explicitly opts in on a hardware-validated mount.
+        let p = FlipPolicy::default();
+        assert!(!p.enabled);
+        assert!(
+            (p.flip_range_hours - 0.5).abs() < f64::EPSILON,
+            "got {}",
+            p.flip_range_hours
+        );
+    }
+
+    #[test]
+    fn mount_config_default_includes_disabled_flip_policy() {
+        let cfg = MountConfig::default();
+        assert!(!cfg.flip_policy.enabled);
+    }
+
+    #[test]
+    fn mount_config_deserialises_missing_flip_policy_as_default() {
+        // Existing config files written before Phase 6 do not carry
+        // `flip_policy`; the driver must read them as
+        // `FlipPolicy::default()` rather than failing.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0
+        }"#;
+        let m: MountConfig = serde_json::from_str(json).expect("deserialise");
+        assert!(!m.flip_policy.enabled);
+        assert!((m.flip_policy.flip_range_hours - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mount_config_round_trips_enabled_flip_policy_through_json() {
+        let cfg = MountConfig {
+            flip_policy: FlipPolicy {
+                enabled: true,
+                flip_range_hours: 0.7,
+            },
+            ..MountConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialise");
+        let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
+        assert!(back.flip_policy.enabled);
+        assert!((back.flip_policy.flip_range_hours - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flip_policy_deserialises_with_partial_fields() {
+        // serde_default on each field means a partial block — only one
+        // key present — fills the other in from the default.
+        let json = r#"{"enabled": true}"#;
+        let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
+        assert!(p.enabled);
+        assert!((p.flip_range_hours - 0.5).abs() < f64::EPSILON);
+
+        let json = r#"{"flip_range_hours": 0.25}"#;
+        let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
+        assert!(!p.enabled);
+        assert!((p.flip_range_hours - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flip_policy_validate_accepts_defaults() {
+        FlipPolicy::default().validate().unwrap();
+    }
+
+    #[test]
+    fn flip_policy_validate_accepts_upper_bound() {
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: MAX_FLIP_RANGE_HOURS,
+        };
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn flip_policy_validate_rejects_zero() {
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: 0.0,
+        };
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("flip_range_hours"), "got: {err}");
+    }
+
+    #[test]
+    fn flip_policy_validate_rejects_negative() {
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: -0.1,
+        };
+        p.validate().unwrap_err();
+    }
+
+    #[test]
+    fn flip_policy_validate_rejects_above_upper_bound() {
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: MAX_FLIP_RANGE_HOURS + 1e-6,
+        };
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("flip_range_hours"), "got: {err}");
+    }
+
+    #[test]
+    fn flip_policy_validate_rejects_non_finite() {
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: f64::INFINITY,
+        };
+        p.validate().unwrap_err();
+        let p = FlipPolicy {
+            enabled: true,
+            flip_range_hours: f64::NAN,
+        };
+        p.validate().unwrap_err();
     }
 
     #[test]
