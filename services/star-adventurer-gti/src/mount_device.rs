@@ -24,7 +24,7 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::config::MountConfig;
+use crate::config::{HomePose, MountConfig};
 use crate::coordinates::{
     dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
@@ -352,6 +352,78 @@ impl MountDevice {
             from_config_dec = config_dec.is_some(),
             from_file = self.config_file_path.is_some(),
             "park target loaded"
+        );
+        Ok(())
+    }
+
+    /// Post-connect encoder seed for the operator's configured
+    /// [`HomePose`].
+    ///
+    /// The Sky-Watcher firmware's encoder counter resets to `(0, 0)`
+    /// every time the mount powers up. With `home_pose !=
+    /// OtaOnMeridianAtEquator`, the codebase's convention for `(0, 0)`
+    /// doesn't match the operator's physical pose, so we issue
+    /// `:E1` / `:E2` (no-motion encoder seed) right after connect to
+    /// align the firmware's encoder counter with the codebase's
+    /// convention for the configured pose.
+    ///
+    /// Skipped when:
+    /// - The home pose is the codebase default (no offset needed).
+    /// - The firmware reports a non-zero encoder reading at connect
+    ///   time. That indicates the mount has already been slewed or
+    ///   synced this power cycle — re-seeding would clobber it.
+    ///
+    /// Documented operator assumption: when `home_pose != default`,
+    /// the operator powers up the mount **at** the configured pose and
+    /// connects the driver before any slew or sync. Reconnecting
+    /// mid-session after a slew is safe (the non-zero-encoder guard
+    /// catches it).
+    async fn seed_home_pose_after_connect(&self) -> ASCOMResult<()> {
+        if self.config.home_pose == HomePose::default() {
+            return Ok(());
+        }
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let snap = self.transport.snapshot().await;
+        if snap.ra.position_ticks != 0 || snap.dec.position_ticks != 0 {
+            debug!(
+                ra = snap.ra.position_ticks,
+                dec = snap.dec.position_ticks,
+                "skipping home_pose encoder seed: firmware encoder is non-zero"
+            );
+            return Ok(());
+        }
+        let mech_ha = self.config.home_pose.codebase_mech_ha_hours();
+        let dec_deg = self
+            .config
+            .home_pose
+            .codebase_dec_encoder_degrees(self.config.site_latitude_deg);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Ra,
+                ticks: ra_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        self.transport.seed_ra_position(ra_ticks).await;
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Dec,
+                ticks: dec_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        self.transport.seed_dec_position(dec_ticks).await;
+        debug!(
+            home_pose = ?self.config.home_pose,
+            ra_ticks,
+            dec_ticks,
+            "seeded firmware encoder for home_pose"
         );
         Ok(())
     }
@@ -738,6 +810,12 @@ impl Device for MountDevice {
             // remained false, leaking a connection. Per the Copilot review
             // on PR #221 (comment 3238682044).
             if let Err(e) = self.load_park_target_after_connect().await {
+                if let Err(disc_err) = self.transport.disconnect().await {
+                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+                }
+                return Err(e);
+            }
+            if let Err(e) = self.seed_home_pose_after_connect().await {
                 if let Err(disc_err) = self.transport.disconnect().await {
                     tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
                 }
