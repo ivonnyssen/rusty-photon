@@ -825,8 +825,8 @@ re-adding `[package.metadata.conformu]` to the package's
 1. **`SideOfPierTests` aborts CheckMethods.** ConformU
    (`TelescopeTester.cs::SopPierTest`) slews to mechanical-HA
    ±9 h to verify pier-side reporting on both sides of the
-   meridian. The `[-6, +6]` h safety envelope correctly rejects
-   those slews on real hardware, but the
+   meridian. The `[-6.95, +6.95]` h safety envelope correctly
+   rejects those slews on real hardware, but the
    `InvalidValueException` is caught by ConformU's
    "Exception when testing device" handler at CheckMethods scope
    and the rest of the suite is abandoned — so the CI test exits
@@ -844,27 +844,32 @@ re-adding `[package.metadata.conformu]` to the package's
    convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
    HA ∈ (0, +6]) and records ISSUEs for every HA > 0 case in
    both `SideofPier` and `DestinationSideofPier`.
-3. **PulseGuide Dec moves at full sidereal rate.** ConformU's
-   PulseGuide tolerance check expects
-   `guide_rate_dec_fraction × sidereal × duration` of declination
-   change (37.6″ for a 5 s pulse at the default 0.5× rate);
-   the driver actually moves ~71.4″ (~ 2×). The same factor-of-2
-   shows up at every HA test point in both North/South pulses,
-   so it is an axis-rate calculation bug in the rate-shifted
-   tracking burst introduced by PR #206, not a Dec-vs-encoder
-   coordinate issue.
+3. **PulseGuide rate-shifted tracking produces the wrong
+   motion on every axis.** ConformU's PulseGuide tolerance
+   check expects `guide_rate × sidereal × duration` of motion
+   on the pulsed axis and ~0 on the other. The driver fails
+   the check in all four directions across HA ±3 and ±9
+   (24 ISSUEs total): Dec North/South moves at ~2× the
+   configured rate (71.4″ vs 37.6″ expected for a 5 s pulse at
+   the default 0.5× sidereal rate); RA East slows by only ~10 %
+   instead of the configured 50 % (Δ RA 0.48 s vs 2.51 s
+   expected); and RA West pulses move east (Δ RA +0.48 s where
+   ConformU expects −2.51 s). The implementation is the
+   rate-shifted tracking burst PR #206 introduced, not a
+   Dec-vs-encoder coordinate issue.
 
-To run ConformU's `conformance` phase by hand against the running
-service (no nightly opt-in needed):
+To reproduce locally, run the in-tree integration test — same
+binary, same config, same ConformU invocation the workflow used:
 
 ```bash
-# Terminal 1: start the service in mock mode on a fixed port.
-cargo run -p star-adventurer-gti --features mock -- \
-    --transport mock --server-port 11117
-
-# Terminal 2: point ConformU at it.
-conformu conformance http://localhost:11117/api/v1/telescope/0
+cargo test -p star-adventurer-gti --features conformu \
+    --test conformu_integration -- --ignored --nocapture
 ```
+
+The test config (`tests/conformu_integration.rs`) sets
+`site_latitude_deg = 47.6062` so ConformU's
+`SIDE_OF_PIER_INVALID_LATITUDE = 10°` gate does not skip the
+side-of-pier model tests.
 
 ### Expected ConformU report
 
@@ -877,15 +882,29 @@ After (1) is worked around by widening the mock test envelope:
 
 - **0 errors** — anything here is a real driver regression.
 - **~58 issues**, dominated by:
-  - PulseGuide North/South/East/West tolerance failures at
-    HA ±3 and ±9 (×24 entries) — driver bug (3).
-  - `SideofPier` and `DestinationSideofPier` "`pierWest` is
-    returned when the mount is observing at an hour angle
-    between 0.0 and +6.0" (×8 entries) — driver bug (2).
+  - PulseGuide tolerance failures at HA ±3 and ±9 in all four
+    directions (24 entries) — driver bug (3). Each pulsed-axis
+    "Moved {N,S,E,W} but outside test tolerance" row counts
+    once, and each accompanying "{East-West,North-South}
+    movement was outside test tolerance" row (the axis the
+    pulse is *not* supposed to move) counts once.
+  - `SideofPier` and `DestinationSideofPier`
+    "`pierWest` is returned when the mount is observing at an
+    hour angle between 0.0 and +6.0" (8 entries) — driver
+    bug (2). ConformU's `SideofPier` test assumes a
+    flip-at-meridian GEM (EQMOD / Sky-Watcher Synscan /
+    ASCOM-driver-pattern behaviour) and expects `pierEast`
+    for any target west of the meridian; the driver returns
+    `pierWest` everywhere because the safety envelope keeps
+    the Dec encoder within `[-CPR/4, +CPR/4]` and
+    `coordinates::side_of_pier` only flips when that bound is
+    crossed.
   - `SideofPier` / `DestinationSideofPier`
     "reports physical pier side rather than pointing state"
     and "Same value … on both sides of the meridian"
-    (×4 entries) — manifestation of bug (2).
+    (4 entries) — same root cause as bug (2): a non-flipping
+    mount lands every in-envelope target in the same
+    pointing state.
 
 Historical baselines (`alpacaprotocol`-only or partial
 `conformance` runs):
@@ -1122,8 +1141,19 @@ In addition to the codec fixes:
   `dec_min_degrees` / `dec_max_degrees`. `SyncToCoordinates`,
   `SlewToCoordinatesAsync`, and `Park` reject targets outside
   the envelope with `INVALID_VALUE` before any wire motion.
-  Defaults: `±6 h` RA (counterweight-horizontal east/west on a
-  Northern-Hemisphere polar-aligned GTi), `±90°` Dec.
+  Defaults: `±6.95 h` RA — `0.05 h` (`3 arcmin`) inside the
+  GTi's hardware-verified `±6.99 h` mechanical limit (per the
+  2026-05-13 hardware test) and INDI eqmod's baked-in `±7 h`
+  envelope for every Sky-Watcher mount (`zeroRAEncoder ±
+  (totalRAEncoder/4 + totalRAEncoder/24)` in
+  `eqmodbase.cpp::Goto`). The buffer is deliberate: the ASCOM
+  `SlewToCoordinates(ra, dec)` round-trip means the driver
+  re-reads LST a few tens of ms after the client computed the
+  target, so a target quantised exactly to the mechanical limit
+  would drift past it; and the deferred Phase 2 meridian-flip
+  planner will need headroom between the configured envelope
+  and the mechanical stops to plan multi-stage flip slews —
+  `±90°` Dec.
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
