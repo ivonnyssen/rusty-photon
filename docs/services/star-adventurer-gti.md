@@ -797,7 +797,7 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. Wired into the nightly `conformu` workflow via `[package.metadata.conformu]` in `Cargo.toml`. See [§"Expected ConformU report"](#expected-conformu-report) for the known deferred-by-design / upstream issues. |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. **Currently NOT wired into the nightly `conformu` workflow** (issue #201): three independent conformance-phase failures need driver work first. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 The mock transport is a feature-gated in-memory state machine that
 simulates the motor controller — it accepts the same `:cmd<axis>...\r`
@@ -811,73 +811,115 @@ walks toward `goto_target_ticks` and clears `running` on arrival. BDD
 tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.
 
+### Running ConformU manually
+
+This service is deliberately **not** in the nightly `conformu`
+workflow rotation (issue #201). `ConformUTestBuilder::run()` (which
+the in-tree integration test uses) runs `alpacaprotocol` then
+`conformance`. With PulseGuide landed (PR #206), the
+`alpacaprotocol` phase now completes — but the `conformance` phase
+surfaces three independent failures that need driver work before
+re-adding `[package.metadata.conformu]` to the package's
+`Cargo.toml`:
+
+1. **`SideOfPierTests` aborts CheckMethods.** ConformU
+   (`TelescopeTester.cs::SopPierTest`) slews to mechanical-HA
+   ±9 h to verify pier-side reporting on both sides of the
+   meridian. The `[-6.95, +6.95]` h safety envelope correctly
+   rejects those slews on real hardware, but the
+   `InvalidValueException` is caught by ConformU's
+   "Exception when testing device" handler at CheckMethods scope
+   and the rest of the suite is abandoned — so the CI test exits
+   with one ISSUE and no further diagnostics. Widening the
+   envelope just for the mock test config (e.g.
+   `ra_min_hours = -12`, `ra_max_hours = 12`) lets CheckMethods
+   complete and exposes the other two failures below.
+2. **`SideOfPier` returns `pierWest` for every in-envelope
+   target.** `coordinates::side_of_pier` keys on
+   `|dec_ticks| > cpr_dec/4` (the Dec-encoder-past-pole
+   "physical flip" convention). Inside the safety envelope the
+   Dec encoder never crosses that threshold, so the driver
+   reports `West` regardless of which side of the meridian the
+   mount is observing. ConformU asserts the ASCOM pointing-state
+   convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
+   HA ∈ (0, +6]) and records ISSUEs for every HA > 0 case in
+   both `SideofPier` and `DestinationSideofPier`.
+3. **PulseGuide rate-shifted tracking produces the wrong
+   motion on every axis.** ConformU's PulseGuide tolerance
+   check expects `guide_rate × sidereal × duration` of motion
+   on the pulsed axis and ~0 on the other. The driver fails
+   the check in all four directions across HA ±3 and ±9
+   (24 ISSUEs total): Dec North/South moves at ~2× the
+   configured rate (71.4″ vs 37.6″ expected for a 5 s pulse at
+   the default 0.5× sidereal rate); RA East slows by only ~10 %
+   instead of the configured 50 % (Δ RA 0.48 s vs 2.51 s
+   expected); and RA West pulses move east (Δ RA +0.48 s where
+   ConformU expects −2.51 s). The implementation is the
+   rate-shifted tracking burst PR #206 introduced, not a
+   Dec-vs-encoder coordinate issue.
+
+To reproduce locally, run the in-tree integration test — same
+binary, same config, same ConformU invocation the workflow used:
+
+```bash
+cargo test -p star-adventurer-gti --features conformu \
+    --test conformu_integration -- --ignored --nocapture
+```
+
+The test config (`tests/conformu_integration.rs`) sets
+`site_latitude_deg = 47.6062` so ConformU's
+`SIDE_OF_PIER_INVALID_LATITUDE = 10°` gate does not skip the
+side-of-pier model tests.
+
 ### Expected ConformU report
 
-A clean nightly ConformU run against this driver reports:
+These are the conformance-phase findings against the current
+driver (PR #206). They are *not* a green run — fixing (2) and (3)
+above is on the roadmap before the package is re-added to the
+nightly workflow.
+
+After (1) is worked around by widening the mock test envelope:
 
 - **0 errors** — anything here is a real driver regression.
-- **7 issues**, all of which are cosmetic / inherent to a
-  non-flipping GEM:
-  - `SOPPierTest` ×4 — the safety envelope correctly rejects
-    cross-meridian slews that would land at `RA mech-HA = ±9h`
-    (well outside the default ±6.95h envelope, which sits
-    3 arcmin inside the GTi's mechanical limit of ±6.99h and
-    INDI eqmod's baked-in ±7h envelope, `zeroRAEncoder ±
-    (totalRAEncoder/4 + totalRAEncoder/24)`). `SOPPierTest`
-    exercises the pier-flip code paths by commanding such
-    slews. The driver returns
-    `InvalidValueException` from both `SlewToCoordinatesAsync`
-    and `DestinationSideOfPier` (the two go through the same
-    `check_within_safe_envelope` gate) for each of the two
-    ±9 h test points, so ConformU records four exception
-    entries per run. This is the same envelope-rejection
-    mechanism Phase 4 added — see
-    [§Phase 4 driver-logic changes].
-  - `SideofPier` ×1 and `DestinationSideofPier` ×1 —
+- **~58 issues**, dominated by:
+  - PulseGuide tolerance failures at HA ±3 and ±9 in all four
+    directions (24 entries) — driver bug (3). Each pulsed-axis
+    "Moved {N,S,E,W} but outside test tolerance" row counts
+    once, and each accompanying "{East-West,North-South}
+    movement was outside test tolerance" row (the axis the
+    pulse is *not* supposed to move) counts once.
+  - `SideofPier` and `DestinationSideofPier`
     "`pierWest` is returned when the mount is observing at an
-    hour angle between 0.0 and +6.0". ConformU's
-    `SideofPier` test assumes the mount flips at the meridian
-    (the EQMOD / Sky-Watcher Synscan / ASCOM-driver-pattern
-    behaviour) and therefore expects `pierEast` for any target
-    west of the meridian. The Star Adventurer GTi driver does
-    not initiate flips — the safety envelope keeps the
-    encoder within `[-CPR/4, +CPR/4]` of the home position,
-    which the Dec-encoder side-of-pier convention correctly
-    classifies as `pierWest` regardless of whether the target
-    is east or west of the meridian. The ASCOM spec is
-    explicit that `SideOfPier` reports the OTA's mechanical
-    position, not the target's sky position, so the driver's
-    answer is correct for this mount; ConformU's
-    flip-assumption check just doesn't apply.
-  - `DestinationSideOfPier` ×1 — "Same value for
-    DestinationSideOfPier received on both sides of the
-    meridian". Same root cause: the driver never plans a
-    flip, so every in-envelope target lands in the same
+    hour angle between 0.0 and +6.0" (8 entries) — driver
+    bug (2). ConformU's `SideofPier` test assumes a
+    flip-at-meridian GEM (EQMOD / Sky-Watcher Synscan /
+    ASCOM-driver-pattern behaviour) and expects `pierEast`
+    for any target west of the meridian; the driver returns
+    `pierWest` everywhere because the safety envelope keeps
+    the Dec encoder within `[-CPR/4, +CPR/4]` and
+    `coordinates::side_of_pier` only flips when that bound is
+    crossed.
+  - `SideofPier` / `DestinationSideofPier`
+    "reports physical pier side rather than pointing state"
+    and "Same value … on both sides of the meridian"
+    (4 entries) — same root cause as bug (2): a non-flipping
+    mount lands every in-envelope target in the same
     pointing state.
 
-Issue counts shift on convention changes:
+Historical baselines (`alpacaprotocol`-only or partial
+`conformance` runs):
 
 - Pre-#202 baseline (HA-meridian split, `DestinationSideOfPier`
-  unimplemented): **9 issues** — `DestinationSideOfPier` ×1
+  unimplemented): 9 issues — `DestinationSideOfPier` ×1
   (NotImplemented), `SOPPierTest` ×4 (inherited from
   NotImplemented), `SOPPierTest` ×2 (safety envelope),
   `TrackingRate Write` ×2 (upstream `ascom-alpaca-rs`
   framework bug — Alpaca enum rejection at the axum/serde
   layer before reaching the driver).
 - Post-#202 baseline (Dec-encoder split, `DestinationSideOfPier`
-  implemented): **7 issues** as listed above. The
-  `TrackingRate Write` ×2 entries disappeared after an
-  unrelated upstream fix; the four `DestinationSideOfPier`
-  "consistency" / "Exception" entries got reclassified by the
-  Dec-encoder switch (the four inherited-from-NotImplemented
-  ones became three of the new-cause ones plus the two
-  `SideofPier` / `DestinationSideofPier` consistency
-  entries).
-
-Any issue or error outside that list — and in particular any
-`SlewTo*` / `SyncTo*` row reporting a tolerance exceedance
-("`Actual RA: ..., Target RA: ...`" with > 10″ delta) — is a
-real regression. Fix the driver, then refresh this section.
+  implemented, PulseGuide not yet landed, conformance never
+  reached SideOfPierTests because alpacaprotocol failed on
+  `IsPulseGuiding`): 7 issues as previously documented.
 
 ## Connection Lifecycle
 
@@ -931,7 +973,8 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase 4 — Real-hardware bringup** | partially landed — first hardware connect surfaced several protocol-decoding gaps that the mock had hidden. Details below. |
 | **Phase A5 — `:I`/`:M` on slew + EQMOD pickup** | landed (issue #205) — reinstates `:I` on the slew path, switches goto to `:H` (delta target) + `:M` (break-point), and adds an iterative post-stop pickup loop to close the residual RA drift the Phase 4 ConformU run flagged. |
 | **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See [§Expected ConformU report](#expected-conformu-report). |
-| **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`, and re-enables `[package.metadata.conformu]` so the full two-phase ConformU integration runs again. |
+| **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`. Re-enabled `[package.metadata.conformu]` so the full two-phase ConformU integration ran again — but the `conformance` phase, which `alpacaprotocol`-only manual runs hadn't exercised, surfaced three failures that PR #206's review hadn't caught; see Phase A8. |
+| **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
 
 #### Phase 4 findings (hardware bringup)
