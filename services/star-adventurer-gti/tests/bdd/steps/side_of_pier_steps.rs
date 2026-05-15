@@ -17,14 +17,9 @@ async fn dec_encoder_reports_angle(world: &mut StarAdventurerWorld, deg: f64) {
     world.queue_seed("dec_ticks", ticks.into()).await;
 }
 
-#[when("I try to set SideOfPier to East")]
-async fn try_set_side_of_pier_east(world: &mut StarAdventurerWorld) {
-    use ascom_alpaca::api::telescope::PierSide;
-    match world.mount().set_side_of_pier(PierSide::East).await {
-        Ok(()) => world.clear_error(),
-        Err(e) => world.record_error(e),
-    }
-}
+// The parametric `I try to set SideOfPier to {word}` step is
+// registered in `meridian_flip_steps.rs`; existing scenarios that
+// match this phrase exactly resolve there instead.
 
 #[when(expr = "I read DestinationSideOfPier for RA {float} hours and Dec {float} degrees")]
 async fn read_destination_side(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {
