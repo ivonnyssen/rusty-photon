@@ -1,4 +1,3 @@
-@wip
 Feature: Meridian-flip support
   Phase 6 introduces driver-planned meridian flips controlled by
   MountConfig.flip_policy. With enabled = false (the shipped default)
