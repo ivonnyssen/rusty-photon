@@ -347,6 +347,141 @@ impl MountDevice {
         );
         Ok(())
     }
+
+    /// Execute a slew to celestial (ra, dec) on the explicitly-chosen
+    /// pier side. Used by both `slew_to_coordinates_async` (where the
+    /// side is picked from the flip policy decision tree) and
+    /// `set_side_of_pier` (where the user pins the side directly).
+    ///
+    /// Caller must have already validated: connected, coords in
+    /// range, not parked. The helper then:
+    ///   1. Computes target encoder ticks for the chosen side
+    ///      (pre-flip or post-flip) and validates against the
+    ///      per-side safety envelope.
+    ///   2. Atomically latches `slew_in_progress` and the
+    ///      target RA/Dec.
+    ///   3. Computes deltas with `fold_delta_to_canonical` (handles a
+    ///      post-through-wrap raw encoder) and applies
+    ///      `flip_slew_ra_delta` on the RA axis for flip slews
+    ///      (forces CCW direction through the safe negative-mech_HA
+    ///      half).
+    ///   4. Issues the INDI wire sequence per axis and hands off to
+    ///      the slew-completion watcher.
+    async fn execute_slew_with_explicit_side(
+        &self,
+        ra: f64,
+        dec: f64,
+        chosen_side: PierSide,
+    ) -> ASCOMResult<()> {
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
+            PierSide::West
+        } else {
+            PierSide::East
+        };
+        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
+        let (ra_ticks, dec_ticks) = if target_is_flipped {
+            target_encoder_flipped(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        } else {
+            target_encoder_normal(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        };
+        // Refuse before any wire motion if the slew target falls
+        // outside the configured mechanical envelope for the chosen
+        // pier side.
+        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Latch the target + capture the tracking flag in
+        // the same write.
+        let tracking_was_on;
+        {
+            let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "slew refused: slew already in progress",
+                ));
+            }
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+            tracking_was_on = s.tracking_requested;
+            s.slew_in_progress = true;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+        }
+
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        let result: ASCOMResult<()> = async {
+            let snap = self.transport.snapshot().await;
+            let current_side = side_of_pier_calc(
+                snap.dec.position_ticks,
+                params.cpr_dec,
+                self.config.site_latitude_deg,
+            );
+            let is_flip_slew = current_side != chosen_side;
+            // Fold the raw delta to canonical so a snapshot value that
+            // landed outside `[−cpr/2, +cpr/2)` after a prior
+            // through-wrap flip doesn't trigger a full-revolution
+            // correction here.
+            let ra_delta_canonical =
+                fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+            let ra_delta = if is_flip_slew {
+                // Flip slews force the safe (CCW) traversal direction
+                // through the negative-mech_HA half — see
+                // [`flip_slew_ra_delta`] and the design doc's
+                // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
+                flip_slew_ra_delta(ra_delta_canonical, params.cpr_ra)
+            } else {
+                ra_delta_canonical
+            };
+            let dec_delta =
+                fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+            // Both axes use the INDI wire sequence: `:K` + poll `:f`
+            // (decelerate stop) → `:G goto+fast` → `:I 6` → `:H |delta|`
+            // → `:M breaks` → `:J`. The RA-axis `:K` is also the wire
+            // event that halts any in-progress sidereal tracking;
+            // mirror that into the in-memory `tracking_requested`
+            // flag only after the stop has actually succeeded so the
+            // state never gets ahead of the wire on transport failures.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.state.write().await.tracking_requested = false;
+            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+                .await
+                .map_err(Self::ascom)?;
+            self.stop_and_wait(Axis::Dec).await?;
+            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+
+        // Hand off to the completion watcher.
+        let settle = {
+            let s = self.state.read().await;
+            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
+        };
+        spawn_slew_completion_watcher(
+            Arc::clone(&self.state),
+            Arc::clone(&self.transport),
+            self.config.clone(),
+            self.transport.polling_interval_for_watcher(),
+            settle,
+            tracking_was_on,
+        );
+        Ok(())
+    }
 }
 
 /// Upper bound on how long the synchronous `SlewToCoordinates` /
@@ -698,6 +833,16 @@ impl Telescope for MountDevice {
     async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
         Ok(true)
     }
+    async fn can_set_pier_side(&self) -> ASCOMResult<bool> {
+        // Phase 6: CanSetPierSide tracks `flip_policy.enabled`. With
+        // the policy disabled (the shipped default), `SetSideOfPier`
+        // returns NOT_IMPLEMENTED — the driver behaves as a
+        // non-flipping GEM. With it enabled (only after a successful
+        // first real-hardware GTi flip), the slew planner accepts
+        // explicit flip requests. See the design doc's
+        // [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+        Ok(self.config.flip_policy.enabled)
+    }
     async fn can_set_guide_rates(&self) -> ASCOMResult<bool> {
         Ok(true)
     }
@@ -957,6 +1102,86 @@ impl Telescope for MountDevice {
         Ok(chosen_side)
     }
 
+    async fn set_side_of_pier(&self, side_of_pier: PierSide) -> ASCOMResult<()> {
+        // Phase 6: explicit meridian-flip trigger. With
+        // `flip_policy.enabled = false` (the default), every code path
+        // here short-circuits to NOT_IMPLEMENTED — the driver behaves
+        // as a non-flipping GEM. With the policy enabled, this method
+        // routes through `slew_to_coordinates_async` to the current
+        // celestial target with the chosen side. See the design doc's
+        // [§"`SetSideOfPier(side)`"](../../../docs/services/star-adventurer-gti.md#setsideofpierside).
+        if !self.config.flip_policy.enabled {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::NOT_IMPLEMENTED,
+                "SetSideOfPier requires flip_policy.enabled = true",
+            ));
+        }
+        if side_of_pier == PierSide::Unknown {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "SetSideOfPier rejects PierSide::Unknown",
+            ));
+        }
+        self.ensure_connected().await?;
+        self.ensure_unparked().await?;
+        // Refuse mid-slew. The slew planner also self-refuses via its
+        // own `slew_in_progress` check, but rejecting here yields a
+        // cleaner error before we read the snapshot and compute a
+        // stale celestial target.
+        if self.state.read().await.slew_in_progress {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "SetSideOfPier refused: slew already in progress",
+            ));
+        }
+        // Compute the mount's current celestial position from the
+        // encoder snapshot + LST. A flip slew keeps the OTA on this
+        // same celestial direction while landing on the requested
+        // pier side.
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        if side_of_pier == current_side {
+            // No-op success. Per ASCOM, SetSideOfPier(current_side)
+            // is a valid request; we don't issue motion or perturb
+            // the in-memory target.
+            return Ok(());
+        }
+        // The flipped Dec encoder is past the celestial pole, so a
+        // direct ra_ticks → ra → dec_ticks → dec round trip would land
+        // on the wrong sky position. Read the *celestial* current
+        // pointing from the snapshot (LST + mech_HA → RA, and the
+        // hemispheric Dec mapping). `execute_slew_with_explicit_side`
+        // will re-flip the encoder for the chosen side.
+        let cur_mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
+        let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
+        let cur_dec_encoder = dec_ticks_to_degrees(snap.dec.position_ticks, params.cpr_dec);
+        // Folded `[-180, +180)`; convert to celestial declination
+        // `[-90, +90]` by mirroring through ±90°.
+        let cur_dec = if cur_dec_encoder.abs() > 90.0 {
+            cur_dec_encoder.signum() * (180.0 - cur_dec_encoder.abs())
+        } else {
+            cur_dec_encoder
+        };
+        // Drive the slew with the chosen-side encoder math directly,
+        // bypassing the policy decision tree. The selector's
+        // stay-on-current preference is correct for slew_to_coordinates
+        // but wrong for an explicit SetSideOfPier — the user pinned the
+        // side, honour it.
+        self.execute_slew_with_explicit_side(cur_ra, cur_dec, side_of_pier)
+            .await
+    }
+
     // ---- Target setters ----
 
     async fn target_right_ascension(&self) -> ASCOMResult<f64> {
@@ -1120,123 +1345,8 @@ impl Telescope for MountDevice {
             (self.config.ra_min_hours, self.config.ra_max_hours),
             self.config.site_latitude_deg,
         );
-        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
-            PierSide::West
-        } else {
-            PierSide::East
-        };
-        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
-        let is_flip_slew = current_side != chosen_side;
-
-        let (ra_ticks, dec_ticks) = if target_is_flipped {
-            target_encoder_flipped(ra, dec, lst, params.cpr_ra, params.cpr_dec)
-        } else {
-            target_encoder_normal(ra, dec, lst, params.cpr_ra, params.cpr_dec)
-        };
-
-        // Refuse before any wire motion if the slew target falls
-        // outside the configured mechanical envelope for the chosen
-        // pier side. ConformU's pier-flip tests deliberately command
-        // across-the-meridian slews that on a GEM-without-flip
-        // translate to encoders past the counterweight-horizontal
-        // boundary; the safety gate sends those back as
-        // `INVALID_VALUE` instead of stalling the motor against a
-        // hard stop.
-        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
-
-        // Atomically reserve the in-progress slot **before** issuing
-        // any motion. Latch the target + capture the tracking flag in
-        // the same write. We do NOT clear `tracking_requested` here:
-        // if any of the StopMotion / SetMotionMode / ... sends below
-        // fail, the in-memory state would falsely report tracking-off
-        // while the wire is still tracking. The flag is cleared only
-        // after the RA :K actually hits the wire (see the inline
-        // write below).
-        let tracking_was_on;
-        {
-            let mut s = self.state.write().await;
-            if s.slew_in_progress {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "slew refused: slew already in progress",
-                ));
-            }
-            s.target_ra_hours = Some(ra);
-            s.target_dec_degrees = Some(dec);
-            tracking_was_on = s.tracking_requested;
-            s.slew_in_progress = true;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
-        }
-
-        // From here on, any error path must clear `slew_in_progress`
-        // — otherwise the driver gets stuck reporting Slewing forever.
-        // Wrap motion-issue in an inner future so a single rollback
-        // covers every `?` failure.
-        let result: ASCOMResult<()> = async {
-            let snap = self.transport.snapshot().await;
-            // Fold the raw delta to canonical so a snapshot value that
-            // landed outside `[−cpr/2, +cpr/2)` after a prior
-            // through-wrap flip doesn't trigger a full-revolution
-            // correction here.
-            let ra_delta_canonical =
-                fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
-            let ra_delta = if is_flip_slew {
-                // Flip slews force the safe (CCW) traversal direction
-                // through the negative-mech_HA half — see
-                // [`flip_slew_ra_delta`] and the design doc's
-                // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
-                flip_slew_ra_delta(ra_delta_canonical, params.cpr_ra)
-            } else {
-                ra_delta_canonical
-            };
-            let dec_delta =
-                fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
-            // Both axes use the INDI wire sequence: `:K` + poll `:f`
-            // (decelerate stop — the spec's "motor must be at full stop
-            // before setting the motion mode" requirement) → `:G goto+fast`
-            // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
-            // `:K` is also the wire event that halts any in-progress
-            // sidereal tracking; mirror that into the in-memory
-            // `tracking_requested` flag once the stop has actually
-            // succeeded so the state never gets ahead of the wire on
-            // transport failures.
-            self.stop_and_wait(Axis::Ra).await?;
-            self.state.write().await.tracking_requested = false;
-            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
-                .await
-                .map_err(Self::ascom)?;
-            self.stop_and_wait(Axis::Dec).await?;
-            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
-                .await
-                .map_err(Self::ascom)?;
-            Ok(())
-        }
-        .await;
-        if let Err(e) = result {
-            self.state.write().await.slew_in_progress = false;
-            return Err(e);
-        }
-
-        // Hand off to the completion watcher. The watcher polls
-        // until both axes report stopped, runs the EQMOD-style
-        // pickup loop (up to 5 iterations) to nudge any residual
-        // under 5", optionally re-issues sidereal tracking on RA
-        // (only if it was on before the slew), applies the settle
-        // delay, then clears `slew_in_progress`.
-        let settle = {
-            let s = self.state.read().await;
-            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
-        };
-        spawn_slew_completion_watcher(
-            Arc::clone(&self.state),
-            Arc::clone(&self.transport),
-            self.config.clone(),
-            self.transport.polling_interval_for_watcher(),
-            settle,
-            tracking_was_on,
-        );
-        Ok(())
+        self.execute_slew_with_explicit_side(ra, dec, chosen_side)
+            .await
     }
 
     async fn slew_to_target_async(&self) -> ASCOMResult<()> {
@@ -4716,5 +4826,110 @@ mod tests {
     #[test]
     fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
         assert_eq!(flip_slew_ra_delta(12_345, 0), 12_345);
+    }
+
+    // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
+
+    async fn flip_enabled_device() -> MountDevice {
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        cfg.mount.flip_policy.enabled = true;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        MountDevice::new(cfg.mount, manager)
+    }
+
+    async fn flip_enabled_connected_device() -> MountDevice {
+        let d = flip_enabled_device().await;
+        d.set_connected(true).await.unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn can_set_pier_side_defaults_to_false() {
+        let d = fast_settle_connected().await;
+        assert!(!d.can_set_pier_side().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn can_set_pier_side_is_true_when_flip_policy_enabled() {
+        let d = flip_enabled_connected_device().await;
+        assert!(d.can_set_pier_side().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_returns_not_implemented_when_flip_policy_disabled() {
+        let d = fast_settle_connected().await;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_rejects_unknown_with_invalid_value() {
+        let d = flip_enabled_connected_device().await;
+        let err = d.set_side_of_pier(PierSide::Unknown).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_when_not_connected() {
+        let d = flip_enabled_device().await;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_while_parked() {
+        let d = flip_enabled_connected_device().await;
+        // Park puts AtPark = true; SetSideOfPier must refuse with
+        // INVALID_WHILE_PARKED before reaching the slew planner.
+        d.state.write().await.at_park = true;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_while_slew_in_progress() {
+        let d = flip_enabled_connected_device().await;
+        d.state.write().await.slew_in_progress = true;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_to_current_side_succeeds_as_noop() {
+        let d = flip_enabled_connected_device().await;
+        // Mock starts with Dec encoder = 0 (within ±90°), site latitude
+        // = 0° (northern convention since `>= 0`), so current side is
+        // pierWest. SetSideOfPier(West) is a no-op.
+        d.set_side_of_pier(PierSide::West).await.unwrap();
+        // State unchanged.
+        assert!(!d.state.read().await.slew_in_progress);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
+        let d = flip_enabled_connected_device().await;
+        d.set_side_of_pier(PierSide::East).await.unwrap();
+        // Slew was issued — the state should now show slew_in_progress
+        // until the watcher clears it. The watcher may have already
+        // completed in the mock (instant-settle config), so accept
+        // either: the slew was either still in progress at this read,
+        // or already finished with the encoder mutated.
+        let s = d.state.read().await;
+        let slewing = s.slew_in_progress;
+        let target_set = s.target_ra_hours.is_some() && s.target_dec_degrees.is_some();
+        drop(s);
+        assert!(
+            slewing || target_set,
+            "expected slew to have been issued (slew_in_progress or target_ra latched)"
+        );
     }
 }
