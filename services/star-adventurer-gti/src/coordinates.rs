@@ -23,6 +23,7 @@ use erfars::constants::ERFA_DPI;
 use erfars::rotationtime::Gst06a;
 use erfars::timescales::{Dtf2d, Taitt, Utctai};
 
+use crate::config::FlipPolicy;
 use crate::error::{Result, StarAdvError};
 
 /// Convert RA-axis encoder ticks to a mechanical hour-angle in the range
@@ -189,6 +190,124 @@ pub fn mechanical_ha_to_ra_ticks(mech_ha_hours: f64, cpr: u32) -> i32 {
         return 0;
     }
     (mech_ha_hours * (cpr as f64) / 24.0).round() as i32
+}
+
+/// Compute the target's RA/Dec encoder pair for the "normal"
+/// (pre-flip) pointing state.
+///
+/// The RA encoder is mapped from the mechanical hour-angle
+/// `mech_HA = LST − target_RA` (signed, folded to `[−12, +12)`) and
+/// the Dec encoder is the celestial declination — the existing
+/// behaviour for every slew before Phase 6, extracted into a helper
+/// so [`target_encoder_flipped`] can share the structure.
+pub fn target_encoder_normal(
+    ra_hours: f64,
+    dec_degrees: f64,
+    lst_hours: f64,
+    cpr_ra: u32,
+    cpr_dec: u32,
+) -> (i32, i32) {
+    let mech_ha = ra_to_mechanical_ha(ra_hours, lst_hours);
+    let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, cpr_ra);
+    let dec_ticks = dec_degrees_to_ticks(dec_degrees, cpr_dec);
+    (ra_ticks, dec_ticks)
+}
+
+/// Compute the target's RA/Dec encoder pair for the "flipped"
+/// (post-meridian-flip) pointing state.
+///
+/// `mech_HA_flipped = mech_HA_normal + 12 h` (folded to `[−12, +12)`)
+/// puts the RA encoder at the mirror position across the encoder
+/// wrap at `±12 h`. `dec_encoder_flipped = sign(dec) · (180° − |dec|)`
+/// puts the Dec encoder past the celestial pole on the same
+/// hemispheric side — the OTA rotates through the pole to land on the
+/// other end of the Dec axis, keeping the OTA on the same celestial
+/// target while the counterweight crosses to the opposite side of the
+/// pier. See the design doc's
+/// [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+///
+/// The `dec = 0` case is degenerate: `sign(0.0).signum()` is `+1.0`,
+/// so the flipped encoder lands at exactly `+180°` (or equivalently
+/// `−180°` after fold). Both encoder values reduce to the same
+/// physical mechanical position at the encoder wrap; downstream
+/// callers don't distinguish between them.
+pub fn target_encoder_flipped(
+    ra_hours: f64,
+    dec_degrees: f64,
+    lst_hours: f64,
+    cpr_ra: u32,
+    cpr_dec: u32,
+) -> (i32, i32) {
+    let mech_ha_normal = ra_to_mechanical_ha(ra_hours, lst_hours);
+    let mech_ha_flipped = fold_to_signed(mech_ha_normal + 12.0, 24.0);
+    let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha_flipped, cpr_ra);
+    let dec_flipped = dec_degrees.signum() * (180.0 - dec_degrees.abs());
+    let dec_ticks = dec_degrees_to_ticks(dec_flipped, cpr_dec);
+    (ra_ticks, dec_ticks)
+}
+
+/// Return the ASCOM-opposite pier side. `Unknown` maps to `Unknown`
+/// — the driver does not invent a side it has no information about.
+pub fn opposite_pier_side(side: PierSide) -> PierSide {
+    match side {
+        PierSide::West => PierSide::East,
+        PierSide::East => PierSide::West,
+        PierSide::Unknown => PierSide::Unknown,
+    }
+}
+
+/// Choose the target pier side for a slew (or for the
+/// `DestinationSideOfPier` prediction).
+///
+/// Decision tree (mirrors the design doc's
+/// [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)):
+///
+/// 1. If `policy.enabled == false`, return `current` unchanged.
+/// 2. Compute the target's mechanical hour-angle from `target_ra`
+///    and `lst`.
+/// 3. If the *current* side's safety envelope covers `target_HA`,
+///    stay on the current side. The pre-flip side (`pierWest` in the
+///    Northern Hemisphere, `pierEast` in the Southern) covers
+///    `target_HA ∈ pre_flip_ra_hours_envelope`; the post-flip side
+///    covers `|target_HA| ≤ policy.flip_range_hours`.
+/// 4. Otherwise return [`opposite_pier_side`]`(current)`.
+///
+/// When `current` is [`PierSide::Unknown`] the helper returns
+/// `Unknown` regardless of policy — the driver has no encoder
+/// classification to anchor a flip decision on. This mirrors how
+/// [`side_of_pier`] degrades when `cpr_dec == 0`.
+pub fn select_pier_side_for_target(
+    target_ra_hours: f64,
+    lst_hours: f64,
+    current: PierSide,
+    policy: &FlipPolicy,
+    pre_flip_ra_hours_envelope: (f64, f64),
+    site_latitude_deg: f64,
+) -> PierSide {
+    if !policy.enabled {
+        return current;
+    }
+    if current == PierSide::Unknown {
+        return PierSide::Unknown;
+    }
+    let target_ha = ra_to_mechanical_ha(target_ra_hours, lst_hours);
+    let northern = site_latitude_deg >= 0.0;
+    let pre_flip_side = if northern {
+        PierSide::West
+    } else {
+        PierSide::East
+    };
+    let current_covers = if current == pre_flip_side {
+        let (lo, hi) = pre_flip_ra_hours_envelope;
+        (lo..=hi).contains(&target_ha)
+    } else {
+        target_ha.abs() <= policy.flip_range_hours
+    };
+    if current_covers {
+        current
+    } else {
+        opposite_pier_side(current)
+    }
 }
 
 /// Convert a declination (degrees, `[-90, +90]`) to Dec-axis encoder ticks.
@@ -656,6 +775,278 @@ mod tests {
         let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
         let shifted = pulse_guide_step_period(p_sid, 0.1);
         assert_eq!(shifted, 10 * p_sid);
+    }
+
+    // ---------- Phase 6: target_encoder_{normal,flipped} ----------
+
+    #[test]
+    fn target_encoder_normal_matches_existing_ra_dec_to_ticks_pipeline() {
+        // The "normal" helper is the existing slew-issue pipeline,
+        // extracted. Targets at LST=12h, RA=12h → mech_HA=0 (meridian);
+        // any dec → encoder reflects that dec.
+        let (ra_ticks, dec_ticks) = target_encoder_normal(12.0, 30.0, 12.0, GTI_CPR, GTI_CPR);
+        assert_eq!(ra_ticks, 0);
+        // Dec encoder at 30° / 360° × CPR.
+        let expected_dec = (30.0 * (GTI_CPR as f64) / 360.0).round() as i32;
+        assert_eq!(dec_ticks, expected_dec);
+    }
+
+    #[test]
+    fn target_encoder_flipped_at_lat45_zenith_east_matches_plan_example() {
+        // Plan §2.0 worked example, LAT 45°N: target HA = −0.5,
+        // dec = +45°. Pre-flip mech_HA = −0.5, dec_enc = +45°. Post-flip
+        // mech_HA = +11.5, dec_enc = +135°.
+        let lst = 5.0; // arbitrary
+        let target_ra = lst + 0.5; // mech_HA = lst − ra = −0.5
+        let target_dec = 45.0;
+        let (ra_ticks, dec_ticks) =
+            target_encoder_flipped(target_ra, target_dec, lst, GTI_CPR, GTI_CPR);
+        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
+        let dec_enc_flipped = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        assert!(
+            (mech_ha_flipped - 11.5).abs() < 1e-6,
+            "expected mech_HA_flipped ≈ +11.5, got {mech_ha_flipped}"
+        );
+        assert!(
+            (dec_enc_flipped - 135.0).abs() < 1e-6,
+            "expected dec_enc_flipped ≈ +135°, got {dec_enc_flipped}"
+        );
+    }
+
+    #[test]
+    fn target_encoder_flipped_wraps_through_negative_for_positive_target_ha() {
+        // target_HA = +0.5 (just west of meridian). Pre-flip mech_HA =
+        // +0.5; post-flip = +0.5 + 12 = +12.5 → folds to −11.5.
+        let lst = 5.0;
+        let target_ra = lst - 0.5; // mech_HA = +0.5
+        let (ra_ticks, _dec) = target_encoder_flipped(target_ra, 30.0, lst, GTI_CPR, GTI_CPR);
+        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
+        assert!(
+            (mech_ha_flipped + 11.5).abs() < 1e-6,
+            "expected mech_HA_flipped ≈ −11.5, got {mech_ha_flipped}"
+        );
+    }
+
+    #[test]
+    fn target_encoder_flipped_at_meridian_lands_at_encoder_wrap() {
+        // target_HA = 0 (exact meridian). Post-flip mech_HA = 0 + 12 = 12
+        // → folds to −12 (per fold_to_signed's `folded >= half → −period`
+        // branch).
+        let lst = 5.0;
+        let target_ra = lst; // mech_HA = 0
+        let (ra_ticks, _) = target_encoder_flipped(target_ra, 30.0, lst, GTI_CPR, GTI_CPR);
+        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
+        assert!(
+            (mech_ha_flipped + 12.0).abs() < 1e-6 || (mech_ha_flipped - 12.0).abs() < 1e-6,
+            "expected mech_HA_flipped at the ±12 wrap, got {mech_ha_flipped}"
+        );
+    }
+
+    #[test]
+    fn target_encoder_flipped_dec_negative_target_flips_through_south_pole() {
+        // dec = −45° → flipped dec_enc = −(180 − 45) = −135°.
+        let (_, dec_ticks) = target_encoder_flipped(6.0, -45.0, 6.0, GTI_CPR, GTI_CPR);
+        let dec_enc = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        assert!(
+            (dec_enc + 135.0).abs() < 1e-6,
+            "expected dec_enc ≈ −135°, got {dec_enc}"
+        );
+    }
+
+    #[test]
+    fn target_encoder_flipped_dec_at_pole_stays_at_pole() {
+        // dec = +90° (celestial pole). Flipped encoder = sign(+90) ·
+        // (180 − 90) = +90. The pole is the same physical position
+        // whether you're flipped or not — only the OTA's rotation about
+        // its optical axis differs.
+        let (_, dec_ticks) = target_encoder_flipped(6.0, 90.0, 6.0, GTI_CPR, GTI_CPR);
+        let dec_enc = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        assert!(
+            (dec_enc - 90.0).abs() < 1e-6,
+            "expected dec_enc ≈ +90°, got {dec_enc}"
+        );
+    }
+
+    // ---------- Phase 6: select_pier_side_for_target ----------
+
+    fn flip_disabled() -> FlipPolicy {
+        FlipPolicy {
+            enabled: false,
+            flip_range_hours: 0.5,
+        }
+    }
+    fn flip_enabled() -> FlipPolicy {
+        FlipPolicy {
+            enabled: true,
+            flip_range_hours: 0.5,
+        }
+    }
+    const NORTHERN_ENV: (f64, f64) = (-6.95, 6.95);
+    const LAT_NORTH: f64 = 45.0;
+    const LAT_SOUTH: f64 = -33.0;
+
+    #[test]
+    fn select_pier_side_when_policy_disabled_returns_current() {
+        let policy = flip_disabled();
+        let lst = 12.0;
+        // Even with target way outside the pre-flip envelope, !enabled
+        // means "leave the side alone".
+        for current in [PierSide::West, PierSide::East, PierSide::Unknown] {
+            let chosen =
+                select_pier_side_for_target(0.0, lst, current, &policy, NORTHERN_ENV, LAT_NORTH);
+            assert_eq!(chosen, current, "current={current:?}");
+        }
+    }
+
+    #[test]
+    fn select_pier_side_returns_unknown_when_current_is_unknown() {
+        // No encoder info means no flip decision — even with the policy
+        // enabled, return Unknown.
+        let policy = flip_enabled();
+        let chosen = select_pier_side_for_target(
+            0.0,
+            12.0,
+            PierSide::Unknown,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::Unknown);
+    }
+
+    #[test]
+    fn select_pier_side_north_pierwest_stays_for_inside_pre_flip_envelope() {
+        // Northern hemisphere, currently on the "normal" (pre-flip) side
+        // = pierWest. Target HA = −3 (well inside [−6.95, +6.95]). Stay.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst + 3.0; // mech_HA = lst − ra = −3
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::West,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::West);
+    }
+
+    #[test]
+    fn select_pier_side_north_piereast_inside_flip_window_stays() {
+        // Currently pierEast (post-flip), target_HA inside the flip
+        // window. Stay flipped (no unnecessary flip back).
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst - 0.3; // mech_HA = +0.3 (within ±0.5)
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::East,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn select_pier_side_north_piereast_outside_flip_window_flips_back_to_west() {
+        // Currently pierEast (flipped), target outside the flip window
+        // but inside the pre-flip envelope. Auto-flip back to pierWest
+        // — the post-flip side cannot reach the target.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst + 3.0; // mech_HA = −3, outside ±0.5
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::East,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::West);
+    }
+
+    #[test]
+    fn select_pier_side_north_pierwest_outside_pre_flip_envelope_flips_to_east() {
+        // Currently pierWest, target HA past +6.95 (outside pre-flip
+        // envelope and outside the flip window). Selector returns the
+        // opposite side; subsequent envelope validation will reject the
+        // slew with INVALID_VALUE regardless, but the prediction is
+        // deterministic.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst - 7.5; // mech_HA = +7.5
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::West,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn select_pier_side_north_flip_window_boundary_at_exact_flip_range_is_covered() {
+        // |target_HA| = flip_range_hours exactly is on the *inclusive*
+        // edge of the post-flip safe band — staying flipped is
+        // valid. The slew planner's envelope check (issue-time)
+        // matches this boundary handling.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst - 0.5; // mech_HA = +0.5 = flip_range_hours
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::East,
+            &policy,
+            NORTHERN_ENV,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn select_pier_side_southern_hemisphere_inverts_normal_side_label() {
+        // In the Southern Hemisphere the "normal" pointing maps to
+        // pierEast (Dec encoder within ±90° reads as East per the
+        // existing side_of_pier convention). So a target inside the
+        // pre-flip envelope on the current normal side means: current =
+        // pierEast → stay pierEast. Mirror of the Northern test above.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst + 3.0; // mech_HA = −3
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::East,
+            &policy,
+            NORTHERN_ENV,
+            LAT_SOUTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+        // And the post-flip side (pierWest in south): outside flip
+        // window means flip back to East (normal in south).
+        let chosen = select_pier_side_for_target(
+            target_ra,
+            lst,
+            PierSide::West,
+            &policy,
+            NORTHERN_ENV,
+            LAT_SOUTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn opposite_pier_side_round_trips() {
+        assert_eq!(opposite_pier_side(PierSide::West), PierSide::East);
+        assert_eq!(opposite_pier_side(PierSide::East), PierSide::West);
+        assert_eq!(opposite_pier_side(PierSide::Unknown), PierSide::Unknown);
     }
 
     #[test]

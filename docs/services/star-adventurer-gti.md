@@ -721,20 +721,29 @@ before any wire motion.
 `DestinationSideOfPier(ra, dec)` and `SlewToCoordinatesAsync(ra,
 dec)` share the same selector:
 
-1. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
-2. If `flip_policy.enabled = false`, return the current `SideOfPier`.
-3. If `|target_HA| > flip_policy.flip_range_hours`, the target is
-   unflippable — return the current side (only the pre-flip side is
-   reachable).
-4. Otherwise the target lies inside the flip window: return whichever
-   side keeps the mount in its current sky region without an
-   unnecessary flip. Concretely, return the *current* side when the
-   target is reachable from it; return the *opposite* side when the
-   current side's envelope rejects the target.
+1. If `flip_policy.enabled = false`, return the current `SideOfPier`.
+2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
+3. If the *current* side's safety envelope covers `target_HA`, stay
+   on the current side (no unnecessary flip). The pre-flip side (the
+   "normal" pointing — `pierWest` in the Northern Hemisphere,
+   `pierEast` in the Southern) covers `target_HA ∈ [ra_min_hours,
+   ra_max_hours]`; the post-flip side covers `target_HA ∈
+   [−flip_range_hours, +flip_range_hours]`.
+4. Otherwise return the *opposite* side.
 
 The driver does not pre-emptively flip; it only flips when the target
 can't be reached from the current side or when `SetSideOfPier` forces
-it.
+it. The post-flip envelope's reach (`flip_range_hours`) is small —
+`0.5 h` by default — so the practical pattern is: pre-flip side
+covers most of the sky; an explicit or implicit flip rotates the
+mount through the meridian to the post-flip side for tracking a
+target past meridian crossing; the next slew that targets HA outside
+the flip window auto-flips back to the pre-flip side.
+
+When neither side's envelope covers the target (e.g. an
+above-the-pole pointing past `ra_max_hours`), the selector returns
+the *opposite* side; the subsequent envelope validation rejects the
+slew with `INVALID_VALUE` regardless of which side was chosen.
 
 #### `SetSideOfPier(side)`
 
