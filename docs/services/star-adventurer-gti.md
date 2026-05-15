@@ -828,7 +828,8 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
     "flip_policy": {
       "enabled": false,
       "flip_range_hours": 0.5
-    }
+    },
+    "home_pose": null
   }
 }
 ```
@@ -879,6 +880,49 @@ Notes:
   reachable. Valid range `(0, 0.95]`; the upper bound is the verified
   safe headroom past counterweight-horizontal on the pre-flip side.
   See [§Meridian flip](#meridian-flip).
+- `home_pose` defaults `null` — no encoder seeding on connect, the
+  driver trusts whatever encoder value the firmware reports.
+  Operators powering up the mount at a recognised Astro-Physics park
+  position set it to the matching `ap_park_<n>` string (`"ap_park_1"`
+  through `"ap_park_5"`) and the driver issues `:E1` / `:E2` on
+  connect to seed the firmware encoder to the codebase's convention
+  for that pose. See [§Home pose](#home-pose).
+
+### Home pose
+
+The Sky-Watcher firmware resets its encoder counter to `(0, 0)` on
+every power-up. The codebase's coordinate math interprets that zero
+against the configured `home_pose`, so the operator's physical
+power-up pose lines up with the driver's celestial-coordinate
+readings without an explicit `SyncToCoordinates` step.
+
+The five named poses follow the Astro-Physics
+["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
+document. Each pose is mirror-symmetric between the Northern and
+Southern Hemispheres, and the driver applies the hemisphere case-split
+internally from `site_latitude_deg`. AP Park 4 / Park 5 are
+post-meridian-flip poses (saddle east); the seed step lands the
+encoder past the celestial pole on the Dec axis and at the `±12 h`
+encoder wrap on the RA axis for Park 4.
+
+| `home_pose` | AP description | Codebase `mech_HA` | Codebase `dec_encoder` |
+|---|---|---|---|
+| `null` (default) | No seeding — trust the firmware encoder as-is. Pre-Phase-6 behaviour. | — | — |
+| `ap_park_1` | RA horizontal, saddle west, OTA level facing the polar-side horizon. | `0 h` | `±(90 − \|lat\|)°` (sign matches hemisphere) |
+| `ap_park_2` | OTA level facing the east horizon (target at celestial east-rising equator). Hemisphere-independent. | `−6 h` | `0°` |
+| `ap_park_3` | OTA along polar axis pointing at the visible celestial pole — Sky-Watcher's stock power-up pose. | `0 h` | `±90°` (sign matches hemisphere) |
+| `ap_park_4` | Post-flip mirror of Park 1: saddle east, OTA level facing the anti-polar horizon. | `−12 h` (encoder wrap) | `∓(90 + \|lat\|)°` (sign anti-hemisphere) |
+| `ap_park_5` | Post-flip mirror of Park 1: saddle east, OTA level facing the polar-side horizon. APCC-only in AP's own software. | `0 h` (post-flip wrap) | `±(90 + \|lat\|)°` (sign matches hemisphere) |
+
+The seed step is skipped when the firmware reports a non-zero
+encoder reading on connect — that indicates the mount has already
+been slewed or synced this power cycle, and the driver does not
+clobber the existing position. Reconnecting mid-session after a
+slew is therefore safe.
+
+Documented operator assumption: when `home_pose` is set, the operator
+powers up the mount **at** the configured pose and connects the
+driver before any slew or sync.
 
 ### CLI arguments
 
@@ -1067,6 +1111,11 @@ init handshake:
   :g1, :g2          (high-speed ratio)     → cache
   :e1               (motor board version)  → debug! log
   :j1, :j2          (initial positions)    → cache
+   ↓
+load park target from config / handshake → in-memory park ticks
+   ↓
+if home_pose is set AND firmware encoder is (0, 0):
+  :E1, :E2  (seed encoder to the AP pose's codebase convention)
    ↓
 start background polling task (interval = config.polling_interval)
    ↓
@@ -1373,6 +1422,11 @@ What's still outstanding from Phase 4:
   ambiguous bits of the spec against this driver.
 - [EQMOD project](https://eq-mod.sourceforge.net/) — Windows-side
   reference driver and protocol-decoding documentation.
+- [Astro-Physics "Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
+  — canonical reference for the five named park positions (Park 1
+  through Park 5) the [§Home pose](#home-pose) config exposes,
+  including the per-hemisphere celestial-Dec formulae and the
+  east-side / west-side scope orientations.
 
 ### Misleading and explicitly out-of-scope
 
