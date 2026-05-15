@@ -284,8 +284,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanPark` | `true` | implemented (software park) |
 | `CanUnpark` | `true` | implemented |
 | `CanSetPark` | runtime-determined | `true` when the driver was started with `--config <path>` (the path it would write back to); `false` for `Config::default()` runs (smoke-tests, no-arg launches). See [§Park persistence](#park-persistence) |
-| `CanSetPierSide` | `false` | mount manages pier side via slew direction |
-| `CanSetSideOfPier` | `false` | same as above |
+| `CanSetPierSide` | runtime-determined | `true` when `flip_policy.enabled` is set on a hardware-validated mount; `false` otherwise (`SetSideOfPier` returns `NOT_IMPLEMENTED`). See [§Meridian flip](#meridian-flip) |
 | `DoesRefraction` | `false` | mount applies no refraction model; host (rp) provides refracted coords |
 | `TrackingRates` | `[Sidereal]` | sidereal only in MVP |
 
@@ -308,7 +307,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
 | `AtHome` | `false` (no hardware home concept) |
 | `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
-| `DestinationSideOfPier(ra, dec)` | predicts the pointing state for a slew target — same coordinate-math pipeline as `SlewToCoordinatesAsync` plus the safety-envelope check, then the Dec-encoder past-the-pole classification. See [§Side-of-pier](#side-of-pier) |
+| `DestinationSideOfPier(ra, dec)` | predicts the pointing state the driver would land at for a slew target. Runs the flip-policy decision (current side + target HA + `flip_policy.enabled`), maps to encoder ticks for the chosen side, and validates the per-side safety envelope. With `flip_policy.enabled = false` always returns the current side (driver never plans a flip). See [§Side-of-pier](#side-of-pier) and [§Meridian flip](#meridian-flip) |
 | `SiteLatitude` | from config (read-only; setter returns `NOT_IMPLEMENTED`) |
 | `SiteLongitude` | as above |
 | `SiteElevation` | from config; defaults to `0` |
@@ -332,6 +331,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `Park()` | stop tracking, slew both axes to the in-memory park-target encoder pair (loaded from config or captured at handshake — see [§Park lifecycle](#park-lifecycle)), when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
 | `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if the driver was started without `--config`, if not connected, or while slewing |
+| `SetSideOfPier(side)` | request a meridian flip to the named side. No-op success when `side == current_side`; otherwise issues a through-wrap flip slew to the current target. Returns `NOT_IMPLEMENTED` when `flip_policy.enabled = false`; `INVALID_VALUE` when `side` is `Unknown`; the usual `NOT_CONNECTED` / `INVALID_WHILE_PARKED` / `INVALID_OPERATION` (while slewing) refusals otherwise. See [§Meridian flip](#meridian-flip) |
 | `Tracking = true` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:G<RA>` (Tracking + sidereal) + `:I<RA>` (sidereal step period) + `:J<RA>`. Dec axis untouched |
 | `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
 | `FindHome()` | `NOT_IMPLEMENTED` |
@@ -367,11 +367,26 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
    ├─ remember: TargetRightAscension/Declination = (ra, dec)
+   ├─ pick pier side: flip policy (current side + target HA +
+   │           `flip_policy.enabled`) — see [§Meridian flip](#meridian-flip).
+   │           With `enabled = false` always chooses the current side.
    ├─ compute: (ra_target_ticks, dec_target_ticks) from
-   │           ra/dec + LST(now) + sync offset + side-of-pier choice
-   │           (the post-stop pickup loop closes the residual that
-   │           arises from RA drifting at sidereal rate during the
-   │           goto, so the LST snapshot is taken at issue time)
+   │           ra/dec + LST(now) + sync offset + chosen pier side.
+   │           Pre-flip (pierWest) target is `(LST − ra, dec)`;
+   │           flipped (pierEast) target is `(LST − ra + 12 h)` mod 24
+   │           folded signed, with dec past the pole at
+   │           `sign(dec) · (180° − |dec|)`. The post-stop pickup loop
+   │           closes the residual that arises from RA drifting at
+   │           sidereal rate during the goto, so the LST snapshot is
+   │           taken at issue time.
+   ├─ validate per-side safety envelope (pre-flip side reuses
+   │           `ra_*_hours` / `dec_*_degrees`; flipped side uses the
+   │           mirror band through the encoder wrap at ±12 h —
+   │           see [§Meridian flip](#meridian-flip))
+   ├─ flip slew? route the RA axis through the negative-`mech_HA`
+   │           half (counterweight-below-horizon arc). The wire
+   │           sequence below is unchanged; only the encoder target
+   │           and `:G`'s CCW bit differ.
    │
    ├─ for each axis (INDI-style wire sequence — see
    │   indi-eqmod/skywatcher.cpp::SlewTo):
@@ -623,16 +638,151 @@ inherits the RA encoder's sign and misreports it. INDI's convention is
 the canonical one.
 
 `DestinationSideOfPier(targetRA, targetDec)` predicts the pointing
-state without issuing wire traffic. It runs the same coordinate-math
-pipeline `SlewToCoordinatesAsync` uses to pick the target encoder pair
-(`(LST - targetRA, targetDec)` → `(ra_ticks, dec_ticks)`), validates
-the target against the safety envelope with the same
-`INVALID_VALUE` rejection a slew would issue, then applies the
-Dec-encoder past-the-pole check to the target Dec ticks. For any
-target inside the safety envelope, the resulting Dec encoder lands
-within ±90° and `DestinationSideOfPier` therefore predicts `West` in
-the Northern Hemisphere (`East` in the Southern) — the driver never
-plans a meridian flip on its own.
+state without issuing wire traffic. It runs the same flip-policy
+decision tree `SlewToCoordinatesAsync` uses to pick the target side
+(see [§Meridian flip](#meridian-flip)), maps the target to encoder
+ticks for the chosen side, and validates against the corresponding
+per-side safety envelope with the same `INVALID_VALUE` rejection a
+slew would issue. With `flip_policy.enabled = false` the decision
+collapses to "current side", so for any target inside the (pre-flip)
+safety envelope `DestinationSideOfPier` returns `West` in the
+Northern Hemisphere (`East` in the Southern) — the driver does not
+plan flips. With `flip_policy.enabled = true` the prediction can
+return the opposite side when the target requires a flip to reach.
+
+### Meridian flip
+
+A meridian flip transitions the German Equatorial Mount from "normal
+pointing" (`PierSide::West`: counterweight east, OTA west of pier) to
+"flipped pointing" (`PierSide::East`: counterweight west, OTA east of
+pier, Dec axis rotated past the celestial pole) while keeping the OTA
+on the same celestial target. On a flip-capable mount the move is a
+single slew with the RA encoder routed through a half of the encoder
+range that keeps the counterweight clear of the pier.
+
+The GTi's mechanical envelope — hardware-confirmed 2026-05-13 — is
+`mech_HA ∈ [−6.99 h, +6.99 h]` for the pre-flip half. The post-flip
+half is mechanically symmetric across the encoder wrap at `±12 h`: the
+counterweight rises off the local horizon on the mirror side of the
+pier. The routing detail and the geometric symmetry argument live in
+[`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md)
+§2.0; this section specifies the behavioural contract the driver
+implements on top of it.
+
+#### Flip policy
+
+`MountConfig::flip_policy` controls whether and when the driver plans
+a flip. Two fields in MVP (auto-flip-during-tracking knobs are
+deferred to Phase 2.5 — see [§Deferred](#deferred-not-in-mvp)):
+
+- **`enabled: bool`** (default `false`) — master switch. With
+  `enabled = false`: `CanSetPierSide = false`, `SetSideOfPier` returns
+  `NOT_IMPLEMENTED`, `DestinationSideOfPier` always returns the
+  current pier side (driver never plans a flip), and
+  `SlewToCoordinatesAsync` uses the pre-flip (`pierWest` in the
+  Northern Hemisphere) coordinate pipeline only — behaviour identical
+  to Phase 5. With `enabled = true`: the capability flag flips on
+  and the slew planner picks the target pier side per the policy
+  below.
+- **`flip_range_hours: f64`** (default `0.5`) — half-width of the
+  target-HA window around the meridian where the flipped state is
+  mechanically reachable. Targets with `|target_HA| > flip_range_hours`
+  are unflippable (the post-flip `mech_HA` would land outside the
+  symmetric mirror band); the slew planner uses normal pointing only
+  and `DestinationSideOfPier` returns the current side. Valid range
+  `(0, 0.95]`. The upper bound matches the headroom past
+  counterweight-horizontal on the pre-flip side (Phase 1.1 hardware
+  verification); a larger value would push the post-flip `mech_HA`
+  into the unverified mirror of the binding zone.
+
+#### Per-pier-side safety envelopes
+
+The pre-flip safe zone (`MountConfig::ra_min_hours` /
+`ra_max_hours` / `dec_min_degrees` / `dec_max_degrees`, defaults
+`[−6.95, +6.95]` h RA and `[−90, +90]°` Dec) covers `pierWest`
+operation as in Phase 1.1.
+
+The post-flip (`pierEast`) safe zone mirrors the pre-flip RA zone
+through the encoder wrap at `±12 h`. For a target HA satisfying
+`|target_HA| ≤ flip_range_hours`, the post-flip mech-HA is
+`target_HA + 12 h` (folded signed into `[−12, +12)`), which lands in
+the symmetric band `[+12 − flip_range_hours, +12] ∪ [−12, −12 +
+flip_range_hours]`. The Dec encoder lands past either celestial pole
+— `|dec_encoder| > 90°` (Northern Hemisphere; Southern inverts).
+
+A flip-aware slew validates against the envelope for the *chosen*
+side: a flip slew checks the post-flip RA band and the
+past-the-pole Dec mapping; a normal slew checks the pre-flip zone.
+Targets outside the relevant zone are rejected with `INVALID_VALUE`
+before any wire motion.
+
+#### Pier-side decision tree
+
+`DestinationSideOfPier(ra, dec)` and `SlewToCoordinatesAsync(ra,
+dec)` share the same selector:
+
+1. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
+2. If `flip_policy.enabled = false`, return the current `SideOfPier`.
+3. If `|target_HA| > flip_policy.flip_range_hours`, the target is
+   unflippable — return the current side (only the pre-flip side is
+   reachable).
+4. Otherwise the target lies inside the flip window: return whichever
+   side keeps the mount in its current sky region without an
+   unnecessary flip. Concretely, return the *current* side when the
+   target is reachable from it; return the *opposite* side when the
+   current side's envelope rejects the target.
+
+The driver does not pre-emptively flip; it only flips when the target
+can't be reached from the current side or when `SetSideOfPier` forces
+it.
+
+#### `SetSideOfPier(side)`
+
+`SetSideOfPier(side)` is the explicit flip trigger:
+
+- `side == current_side`: no-op success.
+- `side != current_side`: triggers a through-wrap flip slew that
+  keeps the OTA on the current target while landing on the requested
+  pier side.
+- `PierSide::Unknown`: rejected with `INVALID_VALUE`.
+
+`SetSideOfPier` returns `NOT_IMPLEMENTED` when `flip_policy.enabled
+= false`, and follows the standard `NOT_CONNECTED` /
+`INVALID_WHILE_PARKED` / `INVALID_OPERATION` (already-slewing) gate.
+After a successful flip the next encoder snapshot's `SideOfPier` reads
+the new value (the Dec encoder has moved past the pole);
+`TargetRightAscension` / `TargetDeclination` remain unchanged.
+
+#### Through-wrap slew routing
+
+When the slew planner decides to flip (either via `SetSideOfPier` or
+because the decision tree picked the opposite side), the RA axis is
+routed through the negative-`mech_HA` half of the encoder range — the
+half where the counterweight stays at or below the local horizon. The
+RA encoder traverses from its current value through `mech_HA = 0`
+("home") and the encoder wrap at `−12 h ≡ +12 h` to the post-flip
+target. The Dec encoder simultaneously rotates through the celestial
+pole to land past `±90°`.
+
+The slew lifecycle (see [§Slew lifecycle](#slew-lifecycle)) is
+otherwise unchanged: the same `:K → :G → :I → :H → :M → :J`
+wire sequence per axis, the same EQMOD pickup loop, the same settle
+delay. The flip slew differs from a normal slew only in which
+encoder target the planner computes and which CCW bit `:G` issues for
+the RA axis (forced to the negative-direction sign on a flip slew, so
+the routing goes "under" the polar axis rather than taking the
+shortest encoder path).
+
+#### Hardware validation
+
+`flip_policy.enabled` defaults to `false` until at least one
+successful real-hardware flip on a GTi has been recorded. The
+mechanical symmetry argument (plan §2.8) is strong, but the
+through-wrap traversal is the first time the GTi's negative-`mech_HA`
+half is exercised past the pre-flip safe envelope, and asymmetric
+failure modes like cable wrap will surface there. The first real
+`SetSideOfPier(East)` on hardware is the validation gate; until then
+operators leave `flip_policy.enabled` at its default.
 
 ## Configuration
 
@@ -665,7 +815,11 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
     "settle_after_slew": "2s",
     "tracking_rate": "sidereal",
     "park_ra_ticks": null,
-    "park_dec_ticks": null
+    "park_dec_ticks": null,
+    "flip_policy": {
+      "enabled": false,
+      "flip_range_hours": 0.5
+    }
   }
 }
 ```
@@ -706,6 +860,16 @@ Notes:
   rules around when the driver writes to this file. When absent, the
   park target falls back to the encoder positions captured during the
   init handshake.
+- `flip_policy.enabled` defaults `false`. Set to `true` only after
+  the first real-hardware meridian flip has been verified on the
+  specific mount (see [§Hardware validation](#hardware-validation)).
+  While `false`, `CanSetPierSide` reports `false` and the driver
+  ignores flip routing entirely.
+- `flip_policy.flip_range_hours` defaults `0.5`. Half-width of the
+  target-HA window around the meridian where the flipped state is
+  reachable. Valid range `(0, 0.95]`; the upper bound is the verified
+  safe headroom past counterweight-horizontal on the pre-flip side.
+  See [§Meridian flip](#meridian-flip).
 
 ### CLI arguments
 
@@ -933,6 +1097,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See [§Expected ConformU report](#expected-conformu-report). |
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`, and re-enables `[package.metadata.conformu]` so the full two-phase ConformU integration runs again. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
+| **Phase 6 — meridian-flip support** | implementation in progress — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), per-pier-side safe envelopes, through-wrap slew routing for flip slews, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. `flip_policy.enabled` defaults `false` and awaits a successful first real-hardware flip on a GTi before the default is reconsidered. Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -1134,7 +1299,7 @@ What's still outstanding from Phase 4:
   tunable goto rate becomes a requirement.
 
 
-### In-scope (Phases 1–3, all landed)
+### In-scope
 
 - USB transport at 115200 baud (`/dev/serial/by-id/...` path in config)
 - UDP transport at 192.168.4.1:11880 (bind to local 192.168.4.x)
@@ -1156,7 +1321,13 @@ What's still outstanding from Phase 4:
   driver has a config path to write to — see [§Park persistence](#park-persistence))
 - `AtPark` / `AtHome` reads
 - `SideOfPier` read (Dec-encoder convention)
-- `DestinationSideOfPier(ra, dec)` prediction
+- `DestinationSideOfPier(ra, dec)` prediction (flip-policy-aware when
+  `flip_policy.enabled` — see [§Meridian flip](#meridian-flip))
+- `SetSideOfPier(side)` — explicit meridian-flip trigger, gated on
+  `flip_policy.enabled` (Phase 6, in progress; default `false` pending
+  first-hardware verification — see [§Meridian flip](#meridian-flip))
+- Per-pier-side safety envelopes and through-wrap slew routing for
+  flip slews (Phase 6, in progress)
 - `Slewing` poll
 - `UTCDate` / `SiderealTime` (host-clock-derived)
 - Mock transport for BDD tests; feature-gated mock for `test_lib.rs` and
@@ -1176,6 +1347,8 @@ What's still outstanding from Phase 4:
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |
+| Auto-flip during tracking (Phase 2.5: `flip_policy.auto_flip_during_tracking` + `auto_flip_at_meridian_offset_hours`) | hosts like NINA / SGP / `rp` own flip timing themselves; mid-exposure auto-flip is a footgun for astrophotography and a separate state machine. Phase 6 lands explicit `SetSideOfPier`-driven flips only |
+| Altitude-based safety floor (Phase 3 in [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md)) | replaces the rectangular Dec envelope with an altitude floor; independent of Phase 6 and can land in either order |
 
 ## References
 

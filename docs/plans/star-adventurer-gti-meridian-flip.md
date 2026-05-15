@@ -13,12 +13,18 @@
   3 arcmin inside the mechanical limit, ASCOM `SlewToCoordinates`
   LST-roundtrip drift no longer pushes boundary targets over the
   cliff. No CPR-dependent comparator constant needed.
-- **Phase 2 — meridian-flip support: planning.** The GTi-specific
-  geometric finding below (the flip can be routed to avoid the
-  counterweight-up binding region) shifts this from "blocked on
-  flip-capable hardware" toward "implementable + hardware-validatable
-  on the GTi", subject to one remaining open question — see
-  §"Open questions".
+- **Phase 2 — meridian-flip support: implementation in progress** on
+  branch `worktree-meridian-flip-phase`. Scope landed in this PR:
+  §§2.1, 2.2, 2.3, 2.4, 2.6, 2.7 — coordinate helpers, per-pier-side
+  envelopes, through-wrap slew routing, `SetSideOfPier`, the `enabled`
+  + `flip_range_hours` config fields, and BDD coverage.
+  §2.5 (auto-flip during tracking) and the
+  `auto_flip_during_tracking` / `auto_flip_at_meridian_offset_hours`
+  config fields are deferred to a follow-up — hosts (NINA / SGP /
+  rp) own flip timing in MVP; explicit `SetSideOfPier` calls drive
+  flips. §2.8 hardware validation is the next milestone: until the
+  first real GTi flip lands, `flip_policy.enabled` defaults `false`
+  and the driver behaves identically to Phase 5.
 - **Phase 3 — altitude-based safety floor: planning.** Replaces the
   rectangular Dec envelope (`dec_min_degrees` / `dec_max_degrees`)
   with a single `min_altitude_degrees` floor computed from HA + dec +
