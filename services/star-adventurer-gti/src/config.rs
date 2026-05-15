@@ -234,11 +234,22 @@ impl FlipPolicy {
 /// against the `home_pose` setting so the user-visible RA/Dec/Alt/Az
 /// reflect where the OTA actually points.
 ///
-/// Variants are named after the Astro-Physics
+/// The five `ApPark*` variants follow the Astro-Physics
 /// ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
-/// document where applicable. Park 2 is omitted (no clean polar-aligned
-/// interpretation at mid-latitudes); Park 4 / Park 5 are post-flip
-/// equivalents of Park 1 / Park 4 and can be added if/when needed.
+/// document. Each AP pose is mirror-symmetric between the Northern and
+/// Southern Hemispheres around the observer's local meridian — the
+/// counterweight-shaft direction inverts and the celestial-Dec sign of
+/// the target inverts, so the codebase reading for each pose accounts
+/// for the observer's hemisphere from `site_latitude_deg`. The
+/// `codebase_*` accessor helpers do the hemisphere case-split
+/// internally; callers pass `site_latitude_deg` unchanged and get back
+/// a single signed encoder-reading value.
+///
+/// AP Park 4 and Park 5 are "east-side" (post-meridian-flip) poses;
+/// the codebase reads them with `mech_HA` at the encoder wrap (`±12 h`)
+/// for Park 4 (target on the meridian, anti-pole side) and at
+/// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
+/// horizon), and the Dec encoder is past the celestial pole.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HomePose {
@@ -248,55 +259,148 @@ pub enum HomePose {
     /// counterweight is on the east end, and the OTA points at the
     /// south meridian at the celestial equator (north observer) /
     /// north meridian at the equator (south observer). Codebase
-    /// mech_HA = 0, dec_encoder = 0.
+    /// `mech_HA = 0`, `dec_encoder = 0`.
     #[default]
     OtaOnMeridianAtEquator,
-    /// Astro-Physics Park 1. RA axis at the "horizontal Dec axis"
-    /// position (saddle west, CW east); OTA tube level, pointing at
-    /// the polar-side horizon (az 0° for north, az 180° for south).
-    /// Codebase mech_HA = 0, dec_encoder = `+(90 − |latitude|)` for
-    /// north / `−(90 − |latitude|)` for south.
-    #[serde(rename = "park_1")]
-    Park1,
-    /// Astro-Physics Park 3 — also Sky-Watcher's power-on home. OTA
-    /// tube along the polar axis pointing at the visible celestial
-    /// pole (Polaris for north observers, SCP for south). Counterweight
-    /// shaft along the anti-pole side of the polar axis. Codebase
-    /// mech_HA = 0, dec_encoder = `+90°` for north / `−90°` for south.
-    #[serde(rename = "park_3")]
-    Park3,
+    /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
+    /// saddle on the *west* end, counterweight on the east end). OTA
+    /// tube level, pointing at the polar-side horizon — north horizon
+    /// for north observers, south horizon for south observers.
+    ///
+    /// AP table: `Dec = (90 − Latitude)` for north,
+    /// `(−90 − Latitude)` for south. Codebase reading:
+    /// `mech_HA = 0`, `dec_encoder = ±(90 − |latitude|)` (sign matches
+    /// the hemisphere).
+    #[serde(rename = "ap_park_1")]
+    ApPark1,
+    /// AP Park 2. "RA axis vertical, Dec = 0". OTA level facing the
+    /// east horizon, counterweight shaft pointing down. The "RA
+    /// axis vertical" description is the visual look near the equator;
+    /// at any latitude the codebase reading is `mech_HA = −6 h`
+    /// (target on the east-rising celestial equator), `dec_encoder
+    /// = 0`. Hemisphere-independent.
+    #[serde(rename = "ap_park_2")]
+    ApPark2,
+    /// AP Park 3 (also Sky-Watcher's power-on home). OTA along the
+    /// polar axis pointing at the visible celestial pole — Polaris
+    /// for north observers, SCP for south observers. Counterweight
+    /// shaft along the anti-pole half of the polar axis.
+    ///
+    /// AP table: `Dec = 90` (visible pole). Codebase reading:
+    /// `mech_HA = 0`, `dec_encoder = +90°` for north / `−90°` for
+    /// south.
+    #[serde(rename = "ap_park_3")]
+    ApPark3,
+    /// AP Park 4. East-side / post-meridian-flip equivalent of Park 1:
+    /// saddle on the *east* end of the Dec axis, counterweight shaft
+    /// horizontal pointing due west. OTA level facing the *anti-polar*
+    /// horizon — south horizon for north observers, north horizon for
+    /// south observers.
+    ///
+    /// AP table: `Dec = (−90 + Latitude)` for north,
+    /// `(90 + Latitude)` for south. The target's celestial dec lands
+    /// at `±(90 − |latitude|)` (sign anti-hemisphere), and the
+    /// post-flip Dec encoder = `sign(dec) · (180 − |dec|) =
+    /// ∓(90 + |latitude|)`. Codebase reading: `mech_HA = −12 h`
+    /// (= `+12 h` via the encoder wrap),
+    /// `dec_encoder = ∓(90 + |latitude|)`.
+    #[serde(rename = "ap_park_4")]
+    ApPark4,
+    /// AP Park 5. East-side / post-meridian-flip equivalent of Park 1
+    /// (mirror of Park 4 across the polar-axis plane): saddle on the
+    /// *east* end, counterweight shaft horizontal pointing due west.
+    /// OTA level facing the *polar-side* horizon — north horizon for
+    /// north observers, south horizon for south observers.
+    ///
+    /// AP table: `Dec = (90 − Latitude)` for north,
+    /// `(−90 − Latitude)` for south. The celestial dec is at the same
+    /// magnitude as Park 1 but reached from the post-flip side, so
+    /// the post-flip Dec encoder = `±(90 + |latitude|)` (sign matches
+    /// the hemisphere). Codebase reading: `mech_HA = 0` (target on
+    /// the anti-meridian, post-flip wrap brings mech_HA back to 0),
+    /// `dec_encoder = ±(90 + |latitude|)`.
+    ///
+    /// (`Note: Park 5 shown below is only available in APCC and the
+    /// AP V2 driver.` per the AP doc — it's an APCC extension, not on
+    /// the keypad.)
+    #[serde(rename = "ap_park_5")]
+    ApPark5,
 }
 
 impl HomePose {
-    /// Codebase-convention `mech_HA` (signed hours) corresponding to
-    /// firmware encoder `(0, 0)` at this home pose. All three supported
-    /// poses share `mech_HA = 0` (the Dec axis is east-west horizontal
-    /// at power-up); the difference between them is purely in the Dec
-    /// encoder mapping.
+    /// Codebase-convention `mech_HA` (signed hours, `[−12, +12)`)
+    /// corresponding to firmware encoder `(0, 0)` at this home pose.
+    ///
+    /// `mech_HA` reflects the RA-axis rotation, independent of pier
+    /// side. Park 1, Park 3, and Park 5 all have the dec axis
+    /// east-west horizontal (`mech_HA = 0`); Park 2 has the OTA at
+    /// the east horizon, which puts target HA = −6 h regardless of
+    /// hemisphere; Park 4 has the target on the meridian but
+    /// approached from the post-flip side, which folds to `−12 h` at
+    /// the encoder wrap.
     pub fn codebase_mech_ha_hours(&self) -> f64 {
-        0.0
+        match self {
+            Self::OtaOnMeridianAtEquator => 0.0,
+            Self::ApPark1 => 0.0,
+            Self::ApPark2 => -6.0,
+            Self::ApPark3 => 0.0,
+            Self::ApPark4 => -12.0,
+            Self::ApPark5 => 0.0,
+        }
     }
 
     /// Codebase-convention Dec encoder reading (degrees, signed,
     /// `[−180, +180)`) corresponding to firmware encoder `(0, 0)` at
     /// this home pose, given the observer's latitude.
+    ///
+    /// Hemisphere handling: each AP pose's celestial-Dec target sign
+    /// inverts between Northern and Southern observers (the OTA
+    /// points at the visible pole / horizon, which has opposite Dec
+    /// signs). This helper folds that into a single signed encoder
+    /// reading.
     pub fn codebase_dec_encoder_degrees(&self, latitude_deg: f64) -> f64 {
         let northern = latitude_deg >= 0.0;
         let lat_abs = latitude_deg.abs();
         match self {
             Self::OtaOnMeridianAtEquator => 0.0,
-            Self::Park1 => {
+            Self::ApPark1 => {
+                // Celestial dec at the polar-side horizon = ±(90 − |lat|),
+                // pre-flip side → encoder = celestial dec.
                 if northern {
                     90.0 - lat_abs
                 } else {
                     -(90.0 - lat_abs)
                 }
             }
-            Self::Park3 => {
+            Self::ApPark2 => 0.0,
+            Self::ApPark3 => {
+                // OTA at the visible celestial pole. Encoder = ±90°.
                 if northern {
                     90.0
                 } else {
                     -90.0
+                }
+            }
+            Self::ApPark4 => {
+                // Post-flip, target on the anti-polar horizon at the
+                // meridian. Celestial dec = ∓(90 − |lat|) (sign
+                // opposite the hemisphere). Post-flip Dec encoder =
+                // sign(dec) · (180 − |dec|) = ∓(90 + |lat|).
+                if northern {
+                    -(90.0 + lat_abs)
+                } else {
+                    90.0 + lat_abs
+                }
+            }
+            Self::ApPark5 => {
+                // Post-flip, target on the polar-side horizon at the
+                // anti-meridian. Celestial dec = ±(90 − |lat|) (sign
+                // matches the hemisphere). Post-flip Dec encoder =
+                // sign(dec) · (180 − |dec|) = ±(90 + |lat|).
+                if northern {
+                    90.0 + lat_abs
+                } else {
+                    -(90.0 + lat_abs)
                 }
             }
         }
@@ -536,53 +640,142 @@ mod tests {
 
     #[test]
     fn home_pose_deserialises_from_snake_case() {
-        let p: HomePose = serde_json::from_str(r#""park_1""#).expect("park_1");
-        assert_eq!(p, HomePose::Park1);
-        let p: HomePose = serde_json::from_str(r#""park_3""#).expect("park_3");
-        assert_eq!(p, HomePose::Park3);
-        let p: HomePose =
-            serde_json::from_str(r#""ota_on_meridian_at_equator""#).expect("default variant");
-        assert_eq!(p, HomePose::OtaOnMeridianAtEquator);
+        for (json, expected) in [
+            (
+                r#""ota_on_meridian_at_equator""#,
+                HomePose::OtaOnMeridianAtEquator,
+            ),
+            (r#""ap_park_1""#, HomePose::ApPark1),
+            (r#""ap_park_2""#, HomePose::ApPark2),
+            (r#""ap_park_3""#, HomePose::ApPark3),
+            (r#""ap_park_4""#, HomePose::ApPark4),
+            (r#""ap_park_5""#, HomePose::ApPark5),
+        ] {
+            let got: HomePose = serde_json::from_str(json).expect(json);
+            assert_eq!(got, expected, "json input {json}");
+        }
     }
 
     #[test]
-    fn home_pose_park1_dec_encoder_matches_ap_table_north() {
-        // AP doc: Park 1 Northern Hemisphere: Dec = (90 - Latitude).
+    fn home_pose_ap_park_1_matches_ap_table_both_hemispheres() {
+        // AP table: North Dec = (90 - Lat), South Dec = (-90 - Lat).
+        // North: lat 32.7° → +57.3°. South: lat -33° → -57°.
         assert!(
-            (HomePose::Park1.codebase_dec_encoder_degrees(32.7157) - (90.0 - 32.7157)).abs() < 1e-9
+            (HomePose::ApPark1.codebase_dec_encoder_degrees(32.7) - 57.3).abs() < 1e-9,
+            "Park 1 N at 32.7°: got {}",
+            HomePose::ApPark1.codebase_dec_encoder_degrees(32.7)
         );
-        assert!((HomePose::Park1.codebase_dec_encoder_degrees(45.0) - 45.0).abs() < 1e-9);
-        assert!((HomePose::Park1.codebase_dec_encoder_degrees(0.0) - 90.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn home_pose_park1_dec_encoder_matches_ap_table_south() {
-        // AP doc: Park 1 Southern Hemisphere: Dec = (-90 - Latitude),
-        // which for negative latitude `lat` is `-(90 - |lat|)`.
         assert!(
-            (HomePose::Park1.codebase_dec_encoder_degrees(-33.9) - (-(90.0 - 33.9))).abs() < 1e-9
+            (HomePose::ApPark1.codebase_dec_encoder_degrees(-33.0) - (-57.0)).abs() < 1e-9,
+            "Park 1 S at −33°: got {}",
+            HomePose::ApPark1.codebase_dec_encoder_degrees(-33.0)
         );
-        assert!((HomePose::Park1.codebase_dec_encoder_degrees(-45.0) - (-45.0)).abs() < 1e-9);
+        // mech_HA is 0 for both hemispheres (RA horizontal).
+        assert_eq!(HomePose::ApPark1.codebase_mech_ha_hours(), 0.0);
     }
 
     #[test]
-    fn home_pose_park3_is_visible_pole() {
-        // AP Park 3 / Sky-Watcher home: OTA at the visible pole. Codebase
-        // dec_encoder = +90° in N, -90° in S.
-        assert_eq!(HomePose::Park3.codebase_dec_encoder_degrees(32.7), 90.0);
-        assert_eq!(HomePose::Park3.codebase_dec_encoder_degrees(-33.9), -90.0);
-        assert_eq!(HomePose::Park3.codebase_dec_encoder_degrees(0.0), 90.0);
+    fn home_pose_ap_park_2_is_hemisphere_independent() {
+        // Park 2: "RA axis vertical, Dec = 0", both hemispheres.
+        // The OTA points at the east-rising celestial equator → target
+        // HA = −6 h, dec = 0, regardless of latitude.
+        assert_eq!(HomePose::ApPark2.codebase_mech_ha_hours(), -6.0);
+        for lat in [-89.0, -33.0, 0.0, 32.7, 89.0] {
+            assert_eq!(
+                HomePose::ApPark2.codebase_dec_encoder_degrees(lat),
+                0.0,
+                "Park 2 dec at lat {lat}"
+            );
+        }
+    }
+
+    #[test]
+    fn home_pose_ap_park_3_visible_pole_inverts_with_hemisphere() {
+        // AP Park 3 / Sky-Watcher home: OTA at the visible pole.
+        // North: dec = +90° (NCP). South: dec = -90° (SCP). The
+        // hemisphere case-split sits inside the helper.
+        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(32.7), 90.0);
+        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(-33.0), -90.0);
+        // Boundary: lat = 0 falls into the "north" arm by the `>= 0`
+        // convention `side_of_pier` uses.
+        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(0.0), 90.0);
+        assert_eq!(HomePose::ApPark3.codebase_mech_ha_hours(), 0.0);
+    }
+
+    #[test]
+    fn home_pose_ap_park_4_post_flip_dec_inverts_with_hemisphere() {
+        // AP table: North Dec_celestial = (−90 + Lat), South =
+        // (90 + Lat). The post-flip Dec encoder is at
+        // sign(dec_celestial) · (180 − |dec_celestial|).
+        // North: lat 32.7° → celestial = −57.3°, encoder = −122.7°.
+        // South: lat −33° → celestial = +57°, encoder = +123°.
+        assert!(
+            (HomePose::ApPark4.codebase_dec_encoder_degrees(32.7) - (-122.7)).abs() < 1e-9,
+            "Park 4 N at 32.7°: got {}",
+            HomePose::ApPark4.codebase_dec_encoder_degrees(32.7)
+        );
+        assert!(
+            (HomePose::ApPark4.codebase_dec_encoder_degrees(-33.0) - 123.0).abs() < 1e-9,
+            "Park 4 S at −33°: got {}",
+            HomePose::ApPark4.codebase_dec_encoder_degrees(-33.0)
+        );
+        // Park 4 sits at the encoder wrap (anti-meridian post-flip).
+        assert_eq!(HomePose::ApPark4.codebase_mech_ha_hours(), -12.0);
+    }
+
+    #[test]
+    fn home_pose_ap_park_5_post_flip_dec_matches_hemisphere() {
+        // AP table: North Dec_celestial = (90 − Lat), South =
+        // (−90 − Lat). Post-flip encoder = ±(90 + |lat|),
+        // sign matching the hemisphere.
+        // North: lat 32.7° → encoder = +122.7°.
+        // South: lat −33° → encoder = −123°.
+        assert!(
+            (HomePose::ApPark5.codebase_dec_encoder_degrees(32.7) - 122.7).abs() < 1e-9,
+            "Park 5 N at 32.7°: got {}",
+            HomePose::ApPark5.codebase_dec_encoder_degrees(32.7)
+        );
+        assert!(
+            (HomePose::ApPark5.codebase_dec_encoder_degrees(-33.0) - (-123.0)).abs() < 1e-9,
+            "Park 5 S at −33°: got {}",
+            HomePose::ApPark5.codebase_dec_encoder_degrees(-33.0)
+        );
+        // Park 5 target is on the anti-meridian; post-flip mech_HA
+        // folds back to 0.
+        assert_eq!(HomePose::ApPark5.codebase_mech_ha_hours(), 0.0);
+    }
+
+    #[test]
+    fn home_pose_park4_and_park5_dec_encoders_are_mirror_images_about_zero() {
+        // Park 4 and Park 5 differ only in which horizon the OTA faces;
+        // the post-flip Dec encoder magnitudes match, with opposite
+        // signs (Park 4's sign is anti-hemisphere, Park 5's is
+        // pro-hemisphere).
+        for lat in [-45.0, -33.0, 32.7, 45.0] {
+            let p4 = HomePose::ApPark4.codebase_dec_encoder_degrees(lat);
+            let p5 = HomePose::ApPark5.codebase_dec_encoder_degrees(lat);
+            assert!((p4 + p5).abs() < 1e-9, "lat {lat}: p4 {p4}, p5 {p5}");
+        }
     }
 
     #[test]
     fn home_pose_round_trips_through_mount_config_json() {
-        let cfg = MountConfig {
-            home_pose: HomePose::Park3,
-            ..MountConfig::default()
-        };
-        let json = serde_json::to_string(&cfg).expect("serialise");
-        let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
-        assert_eq!(back.home_pose, HomePose::Park3);
+        for pose in [
+            HomePose::OtaOnMeridianAtEquator,
+            HomePose::ApPark1,
+            HomePose::ApPark2,
+            HomePose::ApPark3,
+            HomePose::ApPark4,
+            HomePose::ApPark5,
+        ] {
+            let cfg = MountConfig {
+                home_pose: pose,
+                ..MountConfig::default()
+            };
+            let json = serde_json::to_string(&cfg).expect("serialise");
+            let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
+            assert_eq!(back.home_pose, pose, "round trip for {pose:?}");
+        }
     }
 
     #[test]
