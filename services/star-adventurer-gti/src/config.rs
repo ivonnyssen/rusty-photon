@@ -96,14 +96,27 @@ pub struct MountConfig {
     /// rejected with `INVALID_VALUE` and never reach the wire.
     ///
     /// `mech_HA = 0` is "OTA on the meridian, counterweight down" on
-    /// a polar-aligned Northern-Hemisphere setup. `±6 h` corresponds
-    /// to the counterweight horizontal east / west; the mount's
-    /// physical stops live shortly past that (cable wrap + the
-    /// counterweight shaft contacting the pier). Defaults are
-    /// `[-6.0, +6.0]` — the empirically-safe envelope on a Star
-    /// Adventurer GTi. Tune narrower if your specific setup
+    /// a polar-aligned Northern-Hemisphere setup. `±6 h` is the
+    /// counterweight-horizontal east / west position; the GTi's
+    /// hardware-verified mechanical limit sits at `±6.99 h` (reached
+    /// cleanly with no audible motor stress or counterweight-pier
+    /// contact during the 2026-05-13 hardware test), aligning with
+    /// INDI eqmod's baked-in `±7 h` envelope for every Sky-Watcher
+    /// mount (`zeroRAEncoder ± (totalRAEncoder/4 +
+    /// totalRAEncoder/24)` in `eqmodbase.cpp::Goto`).
+    ///
+    /// Defaults are `[-6.95, +6.95]` — `0.05 h` (`3 arcmin`) inside
+    /// the mechanical limit. The buffer covers two needs at once:
+    /// the ASCOM `SlewToCoordinates(ra, dec)` round-trip means the
+    /// driver re-reads LST a few tens of ms after the client
+    /// computed the target, so a target quantised exactly to the
+    /// limit would drift past it; and the deferred Phase 2
+    /// meridian-flip planner will need headroom between the
+    /// configured envelope and the mechanical stops to plan
+    /// multi-stage flip slews. Tune narrower if your specific setup
     /// (mount-head-extension, OTA length, cable routing) clears
-    /// less.
+    /// less; tune wider only after verifying the extra travel on
+    /// hardware.
     #[serde(default = "default_ra_min_hours")]
     pub ra_min_hours: f64,
     #[serde(default = "default_ra_max_hours")]
@@ -156,10 +169,10 @@ fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
 }
 fn default_ra_min_hours() -> f64 {
-    -6.0
+    -6.95
 }
 fn default_ra_max_hours() -> f64 {
-    6.0
+    6.95
 }
 fn default_dec_min_degrees() -> f64 {
     -90.0

@@ -2616,7 +2616,7 @@ mod tests {
         // The slew-lifecycle tests pass hardcoded RA/Dec targets
         // (typically `(6.0 h, 30°)`) whose mech-HA depends on the
         // wallclock LST and would intermittently fall outside the
-        // production default envelope of `±6 h / ±90°`. Open the
+        // production default envelope of `±6.95 h / ±90°`. Open the
         // envelope all the way for these tests; the safety-gate
         // behaviour is covered separately by
         // [`fast_settle_connected_narrow_envelope`].
@@ -2638,7 +2638,7 @@ mod tests {
     /// Like `fast_settle_connected`, but with a narrow mechanical
     /// envelope so the safety-gate tests can land target coords
     /// that are clearly outside the envelope without first needing
-    /// to push past the GTi default `±6h` / `±90°`.
+    /// to push past the GTi default `±6.95h` / `±90°`.
     async fn fast_settle_connected_narrow_envelope() -> MountDevice {
         let mut cfg = Config::default();
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
