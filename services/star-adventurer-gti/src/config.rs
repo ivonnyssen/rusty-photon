@@ -150,15 +150,18 @@ pub struct MountConfig {
     #[serde(default)]
     pub flip_policy: FlipPolicy,
 
-    /// Physical pose the mount is in at power-up. The firmware's
-    /// encoder counter resets to `(0, 0)` whenever the mount is
-    /// powered on, and the driver interprets that zero against the
-    /// configured pose so the codebase's celestial-coordinate math
-    /// matches reality. See [`HomePose`] for the supported variants;
-    /// defaults to `OtaOnMeridianAtEquator` for backward compatibility
-    /// with pre-Phase-6 installs.
+    /// Physical pose the mount is in at power-up.
+    ///
+    /// When `Some(ApPark*)`, the driver seeds the firmware encoder on
+    /// connect (no motion, just `:E1` / `:E2`) so the codebase's
+    /// celestial-coordinate math matches the operator's physical
+    /// pose. When `None` (the default), the driver does no seeding
+    /// and trusts the firmware encoder as-is — the codebase's
+    /// historical pre-Phase-6 behaviour. See [`HomePose`] for the
+    /// supported AP park positions and the wiring in
+    /// `MountDevice::seed_home_pose_after_connect`.
     #[serde(default)]
-    pub home_pose: HomePose,
+    pub home_pose: Option<HomePose>,
 }
 
 /// Master switch + parameters for driver-planned meridian flips.
@@ -227,17 +230,18 @@ impl FlipPolicy {
     }
 }
 
-/// Physical pose the operator powers the mount up in.
+/// Physical pose the operator powers the mount up in, expressed as
+/// one of the Astro-Physics
+/// ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
+/// positions.
 ///
 /// The Sky-Watcher firmware resets its encoder counter to `(0, 0)`
-/// every power-up. The driver's coordinate math interprets `(0, 0)`
-/// against the `home_pose` setting so the user-visible RA/Dec/Alt/Az
-/// reflect where the OTA actually points.
+/// every power-up. When `home_pose: Some(ApPark*)`, the driver
+/// seeds the firmware encoder on connect so the codebase's coordinate
+/// math interprets that zero against the operator's physical pose.
 ///
-/// The five `ApPark*` variants follow the Astro-Physics
-/// ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
-/// document. Each AP pose is mirror-symmetric between the Northern and
-/// Southern Hemispheres around the observer's local meridian — the
+/// Each AP pose is mirror-symmetric between the Northern and Southern
+/// Hemispheres around the observer's local meridian — the
 /// counterweight-shaft direction inverts and the celestial-Dec sign of
 /// the target inverts, so the codebase reading for each pose accounts
 /// for the observer's hemisphere from `site_latitude_deg`. The
@@ -250,18 +254,8 @@ impl FlipPolicy {
 /// for Park 4 (target on the meridian, anti-pole side) and at
 /// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
 /// horizon), and the Dec encoder is past the celestial pole.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum HomePose {
-    /// Codebase's original assumption (pre-Phase-6 default). At
-    /// firmware encoder `(0, 0)`, the Dec axis is horizontal
-    /// east-west, the saddle/OTA is on the west end, the
-    /// counterweight is on the east end, and the OTA points at the
-    /// south meridian at the celestial equator (north observer) /
-    /// north meridian at the equator (south observer). Codebase
-    /// `mech_HA = 0`, `dec_encoder = 0`.
-    #[default]
-    OtaOnMeridianAtEquator,
     /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
     /// saddle on the *west* end, counterweight on the east end). OTA
     /// tube level, pointing at the polar-side horizon — north horizon
@@ -340,7 +334,6 @@ impl HomePose {
     /// the encoder wrap.
     pub fn codebase_mech_ha_hours(&self) -> f64 {
         match self {
-            Self::OtaOnMeridianAtEquator => 0.0,
             Self::ApPark1 => 0.0,
             Self::ApPark2 => -6.0,
             Self::ApPark3 => 0.0,
@@ -362,7 +355,6 @@ impl HomePose {
         let northern = latitude_deg >= 0.0;
         let lat_abs = latitude_deg.abs();
         match self {
-            Self::OtaOnMeridianAtEquator => 0.0,
             Self::ApPark1 => {
                 // Celestial dec at the polar-side horizon = ±(90 − |lat|),
                 // pre-flip side → encoder = celestial dec.
@@ -512,7 +504,7 @@ impl Default for MountConfig {
             park_ra_ticks: None,
             park_dec_ticks: None,
             flip_policy: FlipPolicy::default(),
-            home_pose: HomePose::default(),
+            home_pose: None,
         }
     }
 }
@@ -629,22 +621,18 @@ mod tests {
     }
 
     #[test]
-    fn home_pose_default_is_ota_on_meridian_at_equator() {
+    fn home_pose_default_is_none_for_backward_compat() {
+        // `home_pose: None` means "no encoder seeding on connect" —
+        // the codebase's pre-Phase-6 behaviour. Operators powering up
+        // at an AP park position opt in by setting `home_pose:
+        // "ap_park_<n>"`.
         let cfg = MountConfig::default();
-        assert_eq!(cfg.home_pose, HomePose::OtaOnMeridianAtEquator);
-        // And the codebase-convention encoder reading at this default
-        // is (mech_HA=0, dec_enc=0) — the historical assumption.
-        assert_eq!(cfg.home_pose.codebase_mech_ha_hours(), 0.0);
-        assert_eq!(cfg.home_pose.codebase_dec_encoder_degrees(32.7), 0.0);
+        assert_eq!(cfg.home_pose, None);
     }
 
     #[test]
     fn home_pose_deserialises_from_snake_case() {
         for (json, expected) in [
-            (
-                r#""ota_on_meridian_at_equator""#,
-                HomePose::OtaOnMeridianAtEquator,
-            ),
             (r#""ap_park_1""#, HomePose::ApPark1),
             (r#""ap_park_2""#, HomePose::ApPark2),
             (r#""ap_park_3""#, HomePose::ApPark3),
@@ -760,8 +748,17 @@ mod tests {
 
     #[test]
     fn home_pose_round_trips_through_mount_config_json() {
+        // None round-trips as the missing/null field.
+        let cfg = MountConfig {
+            home_pose: None,
+            ..MountConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialise");
+        let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.home_pose, None, "None round trip");
+
+        // Every AP park variant round-trips through Some(...).
         for pose in [
-            HomePose::OtaOnMeridianAtEquator,
             HomePose::ApPark1,
             HomePose::ApPark2,
             HomePose::ApPark3,
@@ -769,17 +766,17 @@ mod tests {
             HomePose::ApPark5,
         ] {
             let cfg = MountConfig {
-                home_pose: pose,
+                home_pose: Some(pose),
                 ..MountConfig::default()
             };
             let json = serde_json::to_string(&cfg).expect("serialise");
             let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
-            assert_eq!(back.home_pose, pose, "round trip for {pose:?}");
+            assert_eq!(back.home_pose, Some(pose), "round trip for {pose:?}");
         }
     }
 
     #[test]
-    fn mount_config_deserialises_missing_home_pose_as_default() {
+    fn mount_config_deserialises_missing_home_pose_as_none() {
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -788,7 +785,7 @@ mod tests {
             "site_longitude_deg": 0.0
         }"#;
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
-        assert_eq!(m.home_pose, HomePose::OtaOnMeridianAtEquator);
+        assert_eq!(m.home_pose, None);
     }
 
     #[test]

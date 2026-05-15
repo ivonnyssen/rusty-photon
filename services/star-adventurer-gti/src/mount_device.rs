@@ -24,7 +24,7 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::config::{HomePose, MountConfig};
+use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
@@ -379,9 +379,12 @@ impl MountDevice {
     /// mid-session after a slew is safe (the non-zero-encoder guard
     /// catches it).
     async fn seed_home_pose_after_connect(&self) -> ASCOMResult<()> {
-        if self.config.home_pose == HomePose::default() {
+        let Some(home_pose) = self.config.home_pose else {
+            // No pose configured — trust the firmware encoder as-is.
+            // This is the codebase's historical (pre-Phase-6) behaviour
+            // and what existing pre-`home_pose` config files expect.
             return Ok(());
-        }
+        };
         let params = self
             .transport
             .parameters()
@@ -396,11 +399,8 @@ impl MountDevice {
             );
             return Ok(());
         }
-        let mech_ha = self.config.home_pose.codebase_mech_ha_hours();
-        let dec_deg = self
-            .config
-            .home_pose
-            .codebase_dec_encoder_degrees(self.config.site_latitude_deg);
+        let mech_ha = home_pose.codebase_mech_ha_hours();
+        let dec_deg = home_pose.codebase_dec_encoder_degrees(self.config.site_latitude_deg);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
         self.transport
@@ -420,7 +420,7 @@ impl MountDevice {
             .map_err(Self::ascom)?;
         self.transport.seed_dec_position(dec_ticks).await;
         debug!(
-            home_pose = ?self.config.home_pose,
+            home_pose = ?home_pose,
             ra_ticks,
             dec_ticks,
             "seeded firmware encoder for home_pose"
