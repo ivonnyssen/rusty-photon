@@ -19,8 +19,15 @@
   flip-capable hardware" toward "implementable + hardware-validatable
   on the GTi", subject to one remaining open question — see
   §"Open questions".
+- **Phase 3 — altitude-based safety floor: planning.** Replaces the
+  rectangular Dec envelope (`dec_min_degrees` / `dec_max_degrees`)
+  with a single `min_altitude_degrees` floor computed from HA + dec +
+  site latitude. The rectangular envelope doesn't follow the tilted
+  local-horizon circle on the celestial sphere; the altitude floor
+  does. Independent of Phase 2 (no interaction; can land in either
+  order).
 
-This plan covers three related items that surfaced while landing
+This plan covers related items that surfaced while landing
 issue #202 (Dec-encoder `SideOfPier` + `DestinationSideOfPier`).
 
 ## Motivation
@@ -437,6 +444,221 @@ Validation plan, integrated into normal Phase 2 hardware-bringup:
    pickup loop handle the wrap point in their delta computations
    (this is firmware-level behaviour and should already be correct,
    but worth a wire-trace pass).
+
+---
+
+## Phase 3 — Altitude-based safety floor
+
+### 3.0 Motivation
+
+The current Dec safety envelope is rectangular in encoder space
+(`MountConfig::dec_min_degrees` / `dec_max_degrees`, defaults
+`[-90°, +90°]`). The default is essentially a no-op (full celestial
+Dec range), and tightening it doesn't capture what operators actually
+want.
+
+What operators usually mean by "don't slew there" is *"don't point
+below the horizon"* (or below some atmospheric-refraction-safe
+altitude floor). The local horizon is a **tilted great circle** on
+the celestial sphere — it intersects the celestial equator at
+`HA = ±6 h` and dips to alt `−(90° − LAT)` at the anti-meridian. A
+rectangular Dec envelope can't track this circle. Two failure modes:
+
+- **Too loose** with `dec_min_degrees = -90°` (the shipped default):
+  the driver happily accepts a slew to `(HA = -3 h, dec = -40°)` at
+  LAT 45°N — apparent altitude = `-4°` (below horizon, target
+  invisible). The mount tracks toward the ground.
+- **Too tight** with `dec_min_degrees = -25°`: the driver rejects a
+  slew to `(HA = -3 h, dec = -30°)` at LAT 45°N — apparent altitude
+  = `+4.5°` (legitimate above-horizon target).
+
+The rectangular-Dec gate is the wrong shape for the constraint
+operators actually care about. Phase 3 replaces it with a
+**target-altitude floor** computed from HA + dec + site latitude.
+
+### 3.1 Math
+
+Standard spherical-astronomy formula:
+
+```
+sin(target_alt) = sin(LAT) · sin(target_dec)
+                + cos(LAT) · cos(target_dec) · cos(target_HA)
+```
+
+The check rejects the slew if `target_alt < min_altitude_degrees`.
+
+Worked examples at LAT 45°N (reproducing the cases from the
+2026-05-15 planning conversation):
+
+| Target | HA | dec | alt | Decision (floor = 0°) |
+|---|---|---|---|---|
+| Meridian, alt 5° | 0 h | −40° | +5° | Accept |
+| East horizon at equator | −6 h | 0° | 0° | Accept (edge) |
+| 5° east of meridian, alt 5° | −0.5 h | −39.4° | +5° | Accept |
+| Low west, mid-dec | −3 h | −40° | −4° | **Reject** |
+| Low west, higher dec | −3 h | −30° | +4.5° | Accept |
+| North celestial pole | any | +90° | +45° | Accept (always) |
+
+### 3.2 Coordinate-math helper
+
+New pure function in
+`services/star-adventurer-gti/src/coordinates.rs`:
+
+```rust
+/// Compute the target's local altitude in degrees from the
+/// target's mechanical hour-angle (signed hours), declination
+/// (degrees), and the observer's site latitude (degrees).
+///
+/// Pure spherical-astronomy formula:
+/// `sin(alt) = sin(lat)·sin(dec) + cos(lat)·cos(dec)·cos(HA)`.
+pub fn target_altitude_degrees(
+    mech_ha_hours: f64,
+    dec_degrees: f64,
+    site_latitude_degrees: f64,
+) -> f64 {
+    let lat = site_latitude_degrees.to_radians();
+    let dec = dec_degrees.to_radians();
+    let ha = (mech_ha_hours * 15.0).to_radians();
+    (lat.sin() * dec.sin() + lat.cos() * dec.cos() * ha.cos())
+        .asin()
+        .to_degrees()
+}
+```
+
+Unit-tested directly against the worked examples above.
+
+### 3.3 Envelope-check rework
+
+Modify `MountDevice::check_within_safe_envelope` in
+`services/star-adventurer-gti/src/mount_device.rs`:
+
+1. Keep the existing RA mech-HA check (mechanical safety —
+   counterweight clearance — unchanged from Phase 1.1).
+2. Replace the rectangular Dec check with an altitude floor:
+   - Compute `target_alt = target_altitude_degrees(mech_ha_hours,
+     dec_degrees, self.config.site_latitude_deg)`.
+   - If `target_alt < self.config.min_altitude_degrees`, reject
+     with `INVALID_VALUE` and an error message naming the
+     computed altitude.
+
+Call-site change: the function currently takes `(ra_ticks,
+dec_ticks, cpr_ra, cpr_dec)`. Phase 3 needs `(mech_ha_hours,
+dec_degrees)` for the altitude computation in addition to (or
+replacing) the encoder-tick pair. Callers already have both
+quantities — see `slew_to_coordinates_async` lines 867-870 —
+so the change is mechanical.
+
+### 3.4 Configuration
+
+```json
+"mount": {
+  ...
+  "ra_min_hours": -6.95,
+  "ra_max_hours": 6.95,
+  "min_altitude_degrees": 0.0,
+  ...
+}
+```
+
+Field semantics:
+
+- **`min_altitude_degrees: f64`** (default `0.0`) — reject slews to
+  targets whose computed apparent altitude is below this floor.
+  - `0.0` — geometric horizon. Most natural default: rejects
+    below-horizon pointing while accepting everything at or above.
+  - `5.0` or `10.0` — operator buffer for atmospheric refraction,
+    light pollution near horizon, or local obstructions.
+  - **Negative** values theoretically allow below-horizon pointing
+    (e.g., parking the OTA pointing down for dust-cap operations
+    or sky-flats with a closed observatory). Accepted but the
+    driver logs `info!` at startup so it's discoverable in support
+    transcripts.
+
+Dropped from `MountConfig`:
+
+- `dec_min_degrees` — was a no-op at the default; superseded.
+- `dec_max_degrees` — same.
+
+### 3.5 Migration
+
+This is a **breaking config schema change**, even if most installs
+won't notice:
+
+- **Default config files** (no explicit dec envelope, just the
+  defaults): the JSON no longer has `dec_min_degrees`
+  / `dec_max_degrees` after upgrading. Behaviour change: targets
+  below horizon previously accepted are now rejected (the right
+  behaviour, but it *is* a change).
+- **Config files with explicit Dec bounds**: serde rejects the
+  unknown field on parse if we go strict-by-default. Either:
+  - **Strict from the start**: rev the config schema version, ship
+    a one-line migration note in the release notes ("remove
+    `dec_min_degrees` / `dec_max_degrees`; optionally add
+    `min_altitude_degrees`"). Cleanest if the user base is small.
+  - **Deprecation window**: keep the fields in the schema for one
+    release, emit a `warn!` log when present, and ignore the
+    values. Drop them in the following release.
+
+Pick strict-from-start; the GTi service has a single operator
+right now and migration is trivial.
+
+### 3.6 BDD scenarios
+
+New scenarios in
+`services/star-adventurer-gti/tests/features/slew.feature`:
+
+- Slew to target *at* the south horizon (alt = 0°) at meridian is
+  accepted at the edge (`min_altitude_degrees = 0`).
+- Slew to target just below south horizon (alt = -0.1° at
+  meridian, dec ≈ -45.1° at LAT 45°N) is rejected with
+  invalid-value.
+- Slew to east horizon at celestial equator (HA = -6 h, dec = 0°)
+  is accepted (alt = 0).
+- Slew to target above horizon at extreme dec (e.g., `(HA = -3 h,
+  dec = -30°)` at LAT 45°N → alt +4.5°) is accepted.
+- Slew with `min_altitude_degrees = 5°` rejects the alt +4.5°
+  target — sanity check that the configured floor actually applies.
+- Slew with `min_altitude_degrees = -45°` accepts a target near
+  nadir — sanity check that negative floors are usable.
+
+### 3.7 Test plan
+
+- Unit tests for `target_altitude_degrees` against the worked
+  examples in §3.1 (LAT 45°N) plus a few extreme cases (LAT 0°
+  equator, LAT 90°N pole, southern-hemisphere LAT).
+- Unit tests for `check_within_safe_envelope` confirming altitude
+  rejection at the boundary (floor = 0°, target alt = -0.001° →
+  reject; target alt = +0.001° → accept).
+- Re-run the existing safety-gate unit tests — `slew_async_refuses_
+  ra_outside_safe_envelope` etc. — and update the ones that exercise
+  the Dec rectangle (`slew_async_refuses_dec_outside_safe_envelope`)
+  to exercise the altitude floor instead.
+- ConformU nightly: expect the same 7-issue baseline. The
+  altitude floor is more permissive than the current `±90°` Dec
+  envelope for in-envelope-but-below-horizon targets, but ConformU
+  doesn't probe those.
+
+### 3.8 Open questions
+
+1. **Refraction handling.** Geometric horizon (alt = 0°) is the
+   strict math answer; the *apparent* horizon (including
+   atmospheric refraction) is at geometric alt ≈ -0.5° because the
+   atmosphere bends low-altitude light up. For safety purposes
+   geometric is more conservative (reject before the target
+   visibly drops below horizon). For operator usability,
+   refraction-corrected is friendlier. **Recommend geometric** —
+   simpler, defensible, and users who want refracted can drop
+   `min_altitude_degrees` to `-0.5`.
+
+2. **Does the altitude check apply to `Park`?** Park is an
+   encoder-target operation, not a celestial slew. The altitude
+   computation needs HA and dec; for a parked encoder position
+   those derive from the park encoder ticks + current LST. Two
+   options: (a) skip the altitude check for park (treat park
+   targets as mechanically-defined and trust the operator), or
+   (b) compute the park target's celestial coordinates and apply
+   the floor. Recommend (a) — Park is set by `SetPark` from the
+   current position, which the operator chose explicitly.
 
 ---
 
