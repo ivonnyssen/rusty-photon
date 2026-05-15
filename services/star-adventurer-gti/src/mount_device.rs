@@ -26,11 +26,10 @@ use tracing::debug;
 
 use crate::config::MountConfig;
 use crate::coordinates::{
-    dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
+    dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
-    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
-    side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
-    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    ra_to_mechanical_ha, select_pier_side_for_target, side_of_pier as side_of_pier_calc,
+    sidereal_step_period, target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::TransportManager;
@@ -64,6 +63,14 @@ struct DriverState {
     /// `ASCOMError(INVALID_OPERATION)` rather than a panic.
     park_ra_ticks: Option<i32>,
     park_dec_ticks: Option<i32>,
+    /// Pier side the most recent slew was *issued for*. Read by the
+    /// slew-completion watcher's pickup loop so it picks
+    /// `target_encoder_normal` vs `target_encoder_flipped` for the
+    /// corrective re-slew. Without this, a successful flip slew would
+    /// be undone by the pickup loop's first iteration (the post-flip
+    /// Dec encoder is past the pole, and a pre-flip encoder target
+    /// would order a slew back through the pole).
+    target_pier_side: Option<PierSide>,
     /// PulseGuide rate on the RA axis as a fraction of sidereal in
     /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
@@ -90,6 +97,7 @@ impl Default for DriverState {
             slew_in_progress: false,
             park_ra_ticks: None,
             park_dec_ticks: None,
+            target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             pulse_guiding_ra: false,
@@ -410,6 +418,7 @@ impl MountDevice {
             }
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
+            s.target_pier_side = Some(chosen_side);
             tracking_was_on = s.tracking_requested;
             s.slew_in_progress = true;
             s.pulse_guiding_ra = false;
@@ -872,10 +881,17 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        Ok(mechanical_ha_to_ra(mech_ha, lst))
+        let (ra, _dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
+            snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        Ok(ra)
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
@@ -890,10 +906,17 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        Ok(dec_ticks_to_degrees(
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let (_ra, dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
             snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
             params.cpr_dec,
-        ))
+            self.config.site_latitude_deg,
+        );
+        Ok(dec)
     }
 
     async fn declination_rate(&self) -> ASCOMResult<f64> {
@@ -1157,22 +1180,19 @@ impl Telescope for MountDevice {
             // the in-memory target.
             return Ok(());
         }
-        // The flipped Dec encoder is past the celestial pole, so a
-        // direct ra_ticks → ra → dec_ticks → dec round trip would land
-        // on the wrong sky position. Read the *celestial* current
-        // pointing from the snapshot (LST + mech_HA → RA, and the
-        // hemispheric Dec mapping). `execute_slew_with_explicit_side`
-        // will re-flip the encoder for the chosen side.
-        let cur_mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
-        let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
-        let cur_dec_encoder = dec_ticks_to_degrees(snap.dec.position_ticks, params.cpr_dec);
-        // Folded `[-180, +180)`; convert to celestial declination
-        // `[-90, +90]` by mirroring through ±90°.
-        let cur_dec = if cur_dec_encoder.abs() > 90.0 {
-            cur_dec_encoder.signum() * (180.0 - cur_dec_encoder.abs())
-        } else {
-            cur_dec_encoder
-        };
+        // Read the *celestial* current pointing from the snapshot —
+        // `encoder_to_celestial` applies the post-flip RA/Dec mapping
+        // when the Dec encoder is past the pole.
+        // `execute_slew_with_explicit_side` will re-compute the target
+        // encoder for the chosen side.
+        let (cur_ra, cur_dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
+            snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
         // Drive the slew with the chosen-side encoder math directly,
         // bypassing the policy decision tree. The selector's
         // stay-on-current preference is correct for slew_to_coordinates
@@ -1939,9 +1959,9 @@ fn spawn_slew_completion_watcher(
             // residual is bounded by the slew duration × sidereal
             // rate (~15"/s of RA drift per second of slew).
             if pickup_iterations < PICKUP_MAX_ITERATIONS {
-                let (target_ra, target_dec) = {
+                let (target_ra, target_dec, target_pier_side) = {
                     let s = state.read().await;
-                    (s.target_ra_hours, s.target_dec_degrees)
+                    (s.target_ra_hours, s.target_dec_degrees, s.target_pier_side)
                 };
                 if let (Some(target_ra), Some(target_dec), Some(params)) =
                     (target_ra, target_dec, transport.parameters().await)
@@ -1967,10 +1987,20 @@ fn spawn_slew_completion_watcher(
                             return;
                         }
                     };
-                    let cur_mech_ha =
-                        ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
-                    let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
-                    let cur_dec = dec_ticks_to_degrees(snap.dec.position_ticks, params.cpr_dec);
+                    // Flip-aware: `encoder_to_celestial` applies the
+                    // post-flip RA/Dec mapping when the Dec encoder is
+                    // past the pole. Without it, the residual check
+                    // would interpret a successful flip as a 12-hour
+                    // RA residual and the pickup loop would try to undo
+                    // the flip on its first iteration.
+                    let (cur_ra, cur_dec) = encoder_to_celestial(
+                        snap.ra.position_ticks,
+                        snap.dec.position_ticks,
+                        lst,
+                        params.cpr_ra,
+                        params.cpr_dec,
+                        config.site_latitude_deg,
+                    );
                     // RA residual is on a 24-hour circle; take the
                     // shorter arc. Convert hours → arc-seconds
                     // (15°/hour × 3600″/°).
@@ -2016,9 +2046,38 @@ fn spawn_slew_completion_watcher(
                             None => polling_interval * 2,
                         };
                         last_pickup_at = Some(now);
-                        let new_ra_ticks =
-                            pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
-                        let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                        // Flip-aware target-encoder computation. With a
+                        // pre-flip target side, reuse `pickup_target_ra_ticks`
+                        // for the same LST pre-compensation that pre-Phase-6
+                        // builds relied on. With a post-flip target side,
+                        // compute the projected target via
+                        // `target_encoder_flipped` so the pickup re-slew
+                        // lands on the flipped encoder (past-the-pole Dec
+                        // and the mirror-band RA mech_HA) rather than
+                        // undoing the flip back to the pre-flip side.
+                        let pre_flip_side = if config.site_latitude_deg >= 0.0 {
+                            PierSide::West
+                        } else {
+                            PierSide::East
+                        };
+                        let target_is_flipped = target_pier_side
+                            .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
+                            .is_some();
+                        let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
+                            let lst_proj = lst + projection.as_secs_f64() / 3600.0;
+                            target_encoder_flipped(
+                                target_ra,
+                                target_dec,
+                                lst_proj,
+                                params.cpr_ra,
+                                params.cpr_dec,
+                            )
+                        } else {
+                            let new_ra =
+                                pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
+                            let new_dec = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                            (new_ra, new_dec)
+                        };
                         // Fold the deltas to canonical so the pickup
                         // re-slew takes the shortest path even if the
                         // current encoder snapshot landed outside

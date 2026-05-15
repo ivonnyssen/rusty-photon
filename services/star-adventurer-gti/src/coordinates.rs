@@ -246,6 +246,54 @@ pub fn target_encoder_flipped(
     (ra_ticks, dec_ticks)
 }
 
+/// Compute the OTA's celestial pointing `(RA hours, Dec degrees)`
+/// from the encoder snapshot + LST + latitude.
+///
+/// Inverse of [`target_encoder_normal`] / [`target_encoder_flipped`].
+/// Detects post-flip state from the Dec encoder past the celestial
+/// pole (the same convention [`side_of_pier`] uses) and applies the
+/// corresponding celestial mapping:
+///
+/// - Pre-flip: `RA = (LST − mech_HA) mod 24`, `Dec = dec_encoder`.
+/// - Post-flip: `RA = (LST − mech_HA + 12) mod 24`, `Dec = sign(dec_enc) · (180° − |dec_enc|)`.
+///
+/// Without the post-flip correction every read path
+/// (`right_ascension`, `declination`, `altitude`, `azimuth`, and the
+/// slew watcher's pickup-loop residual check) would report the
+/// encoder-direction RA/Dec rather than the OTA's celestial
+/// pointing, and the pickup loop would interpret a successful flip
+/// as a 12-hour RA residual and try to undo it.
+pub fn encoder_to_celestial(
+    ra_ticks: i32,
+    dec_ticks: i32,
+    lst_hours: f64,
+    cpr_ra: u32,
+    cpr_dec: u32,
+    site_latitude_deg: f64,
+) -> (f64, f64) {
+    let mech_ha = ra_ticks_to_mechanical_ha(ra_ticks, cpr_ra);
+    let dec_enc = dec_ticks_to_degrees(dec_ticks, cpr_dec);
+    let pier = side_of_pier(dec_ticks, cpr_dec, site_latitude_deg);
+    let pre_flip_side = if site_latitude_deg >= 0.0 {
+        PierSide::West
+    } else {
+        PierSide::East
+    };
+    let is_flipped = pier != pre_flip_side && pier != PierSide::Unknown;
+    if is_flipped {
+        let ra = (lst_hours - mech_ha + 12.0).rem_euclid(24.0);
+        // `dec_enc.signum()` returns ±1 for any non-zero value; the
+        // degenerate `dec_enc == 0` post-flip case (dec encoder at the
+        // wrap) is unreachable when `is_flipped == true` because
+        // `side_of_pier`'s `|dec_ticks| > cpr/4` check is strict.
+        let dec = dec_enc.signum() * (180.0 - dec_enc.abs());
+        (ra, dec)
+    } else {
+        let ra = (lst_hours - mech_ha).rem_euclid(24.0);
+        (ra, dec_enc)
+    }
+}
+
 /// Return the ASCOM-opposite pier side. `Unknown` maps to `Unknown`
 /// — the driver does not invent a side it has no information about.
 pub fn opposite_pier_side(side: PierSide) -> PierSide {
@@ -1040,6 +1088,94 @@ mod tests {
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);
+    }
+
+    // ---------- Phase 6: encoder_to_celestial ----------
+
+    #[test]
+    fn encoder_to_celestial_pre_flip_inverts_pre_flip_pipeline() {
+        // For pre-flip state (Dec encoder within ±90°), the helper
+        // must invert target_encoder_normal exactly.
+        let lst = 5.0;
+        for (ra, dec) in [(12.0, 30.0), (3.5, -45.0), (0.0, 0.0), (23.9, 89.9)] {
+            let (ra_ticks, dec_ticks) = target_encoder_normal(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_back, dec_back) =
+                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, 47.6);
+            assert!(
+                ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
+                "ra round-trip: {ra} → {ra_back}"
+            );
+            assert!(
+                (dec - dec_back).abs() < 1e-4,
+                "dec round-trip: {dec} → {dec_back}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_to_celestial_post_flip_inverts_flipped_pipeline_north() {
+        // Plan §2.0 worked example, LAT 45°N: target HA = −0.5, dec
+        // = +45°. After a flip, the encoder lands at the flipped
+        // position; encoder_to_celestial must recover the celestial
+        // RA/Dec of the OTA pointing.
+        let lst = 5.0;
+        for (ra, dec) in [(lst + 0.5, 45.0), (lst - 0.3, 30.0), (lst, 0.0)] {
+            let (ra_ticks, dec_ticks) = target_encoder_flipped(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_back, dec_back) =
+                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, 47.6);
+            assert!(
+                ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
+                "post-flip ra round-trip: {ra} → {ra_back}"
+            );
+            assert!(
+                (dec - dec_back).abs() < 1e-4,
+                "post-flip dec round-trip: {dec} → {dec_back}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_to_celestial_post_flip_inverts_flipped_pipeline_south() {
+        // Same flip round-trip but for a southern-hemisphere observer.
+        // The pre-flip side label inverts (pierEast in south), so the
+        // post-flip detection inverts too — `side_of_pier` does this
+        // internally and `encoder_to_celestial` consumes it.
+        let lst = 5.0;
+        for (ra, dec) in [(lst + 0.5, 45.0), (lst, -30.0), (lst, 0.0)] {
+            let (ra_ticks, dec_ticks) = target_encoder_flipped(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_back, dec_back) =
+                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, -33.0);
+            assert!(
+                ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
+                "south post-flip ra round-trip: {ra} → {ra_back}"
+            );
+            assert!(
+                (dec - dec_back).abs() < 1e-4,
+                "south post-flip dec round-trip: {dec} → {dec_back}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_to_celestial_at_meridian_dec_zero_is_lst() {
+        // Encoder at (0, 0) means mech_HA = 0 and dec encoder = 0 →
+        // pre-flip pierWest in north → celestial (LST, 0).
+        let lst = 7.25;
+        let (ra, dec) = encoder_to_celestial(0, 0, lst, GTI_CPR, GTI_CPR, 47.6);
+        assert!((ra - lst).abs() < 1e-6, "ra = {ra}, expected {lst}");
+        assert!(dec.abs() < 1e-6, "dec = {dec}");
+    }
+
+    #[test]
+    fn encoder_to_celestial_at_post_flip_wrap_dec_pole_recovers_zero_dec() {
+        // Dec encoder at exactly +cpr/2 ticks (= ±180°, the encoder
+        // wrap). `dec_ticks_to_degrees` folds to -180; side_of_pier
+        // returns East in north (past 90°); celestial dec = -1 *
+        // (180 - 180) = 0. RA mapping uses the post-flip +12h shift.
+        let lst = 12.0;
+        let half_cpr = (GTI_CPR / 2) as i32;
+        let (_ra, dec) = encoder_to_celestial(0, half_cpr, lst, GTI_CPR, GTI_CPR, 47.6);
+        assert!(dec.abs() < 1e-6, "dec at wrap = {dec}");
     }
 
     #[test]
