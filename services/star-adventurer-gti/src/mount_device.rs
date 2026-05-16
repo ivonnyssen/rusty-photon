@@ -312,8 +312,14 @@ impl MountDevice {
     /// 2. `self.config.park_*_ticks` for `Config::default()` runs (no
     ///    config file) — these never change in-process because
     ///    `SetPark` is unreachable in that mode.
-    /// 3. The encoder positions captured during the init handshake
-    ///    (`:j1` / `:j2`) when neither of the above provided a value.
+    /// 3. The **current** firmware encoder reading from the snapshot
+    ///    when neither of the above provided a value.
+    ///    `seed_home_pose_after_connect` runs first in [`set_connected`]
+    ///    so the snapshot already reflects the home_pose's logical
+    ///    encoder values on a fresh power-up; a mid-session reconnect
+    ///    (firmware encoder non-zero) leaves the snapshot at the
+    ///    handshake reading, which is the "park where the OTA already
+    ///    is" semantic operators expect from a reconnect.
     ///
     /// Extracted from [`set_connected`] so a failure here (file missing,
     /// malformed JSON, lost transport mid-load) can be rolled back by the
@@ -333,13 +339,16 @@ impl MountDevice {
         } else {
             (self.config.park_ra_ticks, self.config.park_dec_ticks)
         };
-        let params = self
-            .transport
-            .parameters()
-            .await
-            .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
-        let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
+        // Read the live snapshot rather than `params.ra_at_handshake_ticks`:
+        // `seed_home_pose_after_connect` runs before this function and
+        // mutates the snapshot when the operator has configured a
+        // `home_pose`, so the snapshot is the source-of-truth for the
+        // post-seed encoder state. Using the pre-seed handshake reading
+        // would default the park target to firmware-zero (mech_HA = 0h,
+        // mech_dec = 0°) — not the home_pose the operator powered up at.
+        let snap = self.transport.snapshot().await;
+        let ra_target = config_ra.unwrap_or(snap.ra.position_ticks);
+        let dec_target = config_dec.unwrap_or(snap.dec.position_ticks);
         {
             let mut s = self.state.write().await;
             s.park_ra_ticks = Some(ra_target);
@@ -909,18 +918,26 @@ impl Device for MountDevice {
         if connected {
             self.transport.connect().await.map_err(Self::ascom)?;
             // Post-connect work that can fail (config-file read, parameter
-            // cache lookup) runs inside `load_park_target_after_connect`
-            // so we can roll the connect back on any error — otherwise the
-            // transport ref-count would stay incremented while `*req`
-            // remained false, leaking a connection. Per the Copilot review
-            // on PR #221 (comment 3238682044).
-            if let Err(e) = self.load_park_target_after_connect().await {
+            // cache lookup, encoder seed) runs in functions that the
+            // caller can roll back on any error — otherwise the transport
+            // ref-count would stay incremented while `*req` remained
+            // false, leaking a connection. Per the Copilot review on
+            // PR #221 (comment 3238682044).
+            //
+            // Order matters: `seed_home_pose_after_connect` runs FIRST so
+            // the snapshot reflects the home_pose's logical encoder values
+            // before `load_park_target_after_connect` picks its default
+            // park target from the snapshot. Otherwise the handshake's
+            // pre-seed reading (firmware-zero on a fresh power-up) would
+            // become the park fallback and `Park` would drive the mount
+            // to mech_HA = 0h / mech_dec = 0° instead of the home pose.
+            if let Err(e) = self.seed_home_pose_after_connect().await {
                 if let Err(disc_err) = self.transport.disconnect().await {
                     tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
                 }
                 return Err(e);
             }
-            if let Err(e) = self.seed_home_pose_after_connect().await {
+            if let Err(e) = self.load_park_target_after_connect().await {
                 if let Err(disc_err) = self.transport.disconnect().await {
                     tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
                 }
@@ -4417,15 +4434,50 @@ mod tests {
 
     #[tokio::test]
     async fn park_target_defaults_to_handshake_capture_when_config_has_no_values() {
-        // No config park values → driver should fall back to the
-        // encoder positions captured during the handshake. The mock
-        // starts both axes at 0, so park_ra_ticks / park_dec_ticks
-        // should be Some(0) after connect.
+        // No config park values **and no `home_pose`** → driver falls
+        // back to the live snapshot, which on a fresh connect equals
+        // the handshake-captured encoder reading. The mock starts both
+        // axes at 0 and the home_pose seed is a no-op when none is
+        // configured, so park_ra_ticks / park_dec_ticks should be
+        // Some(0) after connect.
         let d = device();
         d.set_connected(true).await.unwrap();
         let s = d.state.read().await;
         assert_eq!(s.park_ra_ticks, Some(0));
         assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[tokio::test]
+    async fn park_target_defaults_to_home_pose_encoder_when_home_pose_configured() {
+        // Operator configures `home_pose: ap_park_3` (Sky-Watcher's
+        // stock power-up pose) and leaves `park_*_ticks` null. After
+        // connect, `seed_home_pose_after_connect` writes the home_pose's
+        // logical encoder values to the firmware via `:E`, and the
+        // park-target fallback must pick those up from the snapshot —
+        // otherwise `Park` would slew the mount to firmware-encoder-
+        // zero (mech_HA = 0h, mech_dec = 0°) instead of the pose the
+        // operator powered up at. Regression test for the
+        // meridian-flip-phase hardware-validation observation that
+        // `Park` from `home_pose: ap_park_3` drove the OTA to
+        // meridian / celestial equator instead of NCP.
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // ApPark3 codebase convention: mech_HA = -6h, dec encoder = +90°
+        // (northern hemisphere). Mock cpr = 0x375F00 = 3,628,800 for
+        // both axes, so ra = -6/24 * cpr = -907,200 and
+        // dec = 90/360 * cpr = +907,200.
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(-907200));
+        assert_eq!(s.park_dec_ticks, Some(907200));
     }
 
     #[tokio::test]

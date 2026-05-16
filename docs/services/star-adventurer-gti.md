@@ -128,8 +128,9 @@ CPR varies between the GTi's RA and Dec axes and between firmware
 revisions; the driver reads both rather than assuming.
 
 The protocol exposes **no native park position** and **no site lat/lon**.
-We implement software park (target encoder pair sourced from config or
-captured at handshake — see [§Park lifecycle](#park-lifecycle) and
+We implement software park (target encoder pair sourced from config,
+or — failing that — the live snapshot after the optional `home_pose`
+encoder seed, see [§Park lifecycle](#park-lifecycle) and
 [§Park persistence](#park-persistence)) and require site lat/lon in the
 config (see [§ASCOM Telescope Mapping](#ascom-telescope-mapping)).
 
@@ -452,13 +453,22 @@ in this order of preference:
    provided (`Config::default()` run), the `MountConfig` defaults are
    used; in this mode `SetPark` is unreachable so these values do not
    change in-process.
-3. **Handshake-captured fallback** (per axis). The encoder position
-   read during the init handshake's `:j1` / `:j2` step (see
-   [§"Initialisation sequence"](#initialisation-sequence)). On a
-   polar-aligned mount the user typically powered up near the
-   counterweight-down, OTA-on-meridian pose, so this is the closest
-   mechanically-safe "where I started" target available.
-4. **Last resort** — encoder `0`. Only reachable if the handshake
+3. **Live-snapshot fallback** (per axis). The current encoder
+   reading from the [`TransportManager`] snapshot. Two cases:
+   - **Fresh power-up with `home_pose` configured.** The driver
+     runs [`seed_home_pose_after_connect`](#home-pose) before
+     loading the park target, so the snapshot already reflects
+     the home_pose's logical encoder values (e.g. `ap_park_3` →
+     `mech_HA = -6h`, `mech_dec = +90°`). `Park` therefore
+     defaults to "return to the pose the operator powered up at".
+   - **Mid-session reconnect** *or* **fresh power-up without
+     `home_pose`.** The home_pose seed skips on a non-zero
+     firmware encoder (and is a no-op when no `home_pose` is
+     configured), so the snapshot equals the
+     handshake-captured `:j1` / `:j2` reading. This is the
+     "park where the OTA already is" semantic operators expect
+     from a reconnect.
+4. **Last resort** — encoder `0`. Only reachable if the snapshot
    somehow produced no position read, which today is unreachable.
 
 Re-reading the config file on every connect means a successful
@@ -920,8 +930,11 @@ Notes:
   `SetPark` is called. Operators may set them by hand to pin a known
   mechanical pose. See [§Park persistence](#park-persistence) for the
   rules around when the driver writes to this file. When absent, the
-  park target falls back to the encoder positions captured during the
-  init handshake.
+  park target falls back to the live snapshot reading. With
+  `home_pose` set and a fresh power-up, that's the home_pose's
+  logical encoder values (`Park` defaults to "return to the pose
+  you powered up at"); otherwise it's the handshake-captured
+  reading. See [§Park lifecycle](#park-lifecycle).
 - `flip_policy.enabled` defaults `false`. Set to `true` only after
   the first real-hardware meridian flip has been verified on the
   specific mount (see [§Hardware validation](#hardware-validation)).
