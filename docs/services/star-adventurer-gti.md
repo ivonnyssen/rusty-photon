@@ -772,15 +772,30 @@ crosses the *visible* celestial pole rather than the below-horizon
 one.
 
 **RA axis:** routed through the negative-`mech_HA` half of the encoder
-range — the half where the counterweight stays at or below the local
-horizon. The RA encoder traverses from its current value through
-`mech_HA = 0` ("home") and the encoder wrap at `−12 h ≡ +12 h` to the
-post-flip target. The driver enforces this by forcing `:G`'s CCW bit
-to `1` on flip slews and adjusting the `:H` increment to the
-complementary magnitude when the canonical-shortest direction would
-have gone the other way (the GTi's mechanical binding zone at
+range (`mech_HA ∈ [−12, 0]`) — the half where the counterweight stays
+at or below the local horizon. The mechanical binding zone at
 `mech_HA ∈ (+6.95, +11.05)` is the same for every observer latitude,
-so the routing rule is hemisphere-independent).
+so the rule is hemisphere-independent.
+
+The safe direction depends on the *current* encoder position:
+
+- `|current_ticks| ≤ cpr_ra/4` (current in the pre-flip envelope,
+  `mech_HA ∈ [−6, +6]`): force CCW (negative delta). Path decreases
+  through the negative half to the target. This is the forward-flip
+  case (pre-flip → post-flip wrap).
+- `|current_ticks| > cpr_ra/4` (current at or past the wrap,
+  `mech_HA` near `±12`): force CW (positive delta). Path increases
+  *away from the wrap* into the safe negative half. This is the
+  flip-back case (post-flip → pre-flip).
+
+A naive "always CCW for flip slews" rule works for forward flips but
+drives the counterweight into the binding zone on flip-back: from
+raw `−cpr/2` going CCW wraps the encoder past `+12` and crosses
+`mech_HA = +6 to +9` (the binding peak). Hardware validation #3 hit
+this exact failure mode on the back-to-Park-3 slew, slamming the CW
+shaft into the pier and dropping the USB-CDC. The current-position-
+aware rule (mirroring the Dec routing) selects the right direction
+in both cases.
 
 **Dec axis:** routed through the visible celestial pole, NOT the
 below-horizon pole. For a polar-aligned mount, only one of the two
