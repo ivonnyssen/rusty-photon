@@ -32,7 +32,7 @@ use crate::coordinates::{
     sidereal_step_period, target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
-use crate::transport_manager::TransportManager;
+use crate::transport_manager::{MountSnapshot, TransportManager};
 
 /// Default guide rate as a fraction of sidereal. ASCOM clients see
 /// this multiplied by `SIDEREAL_DEG_PER_SEC` through
@@ -633,6 +633,26 @@ const PICKUP_TOLERANCE_ARCSEC: f64 = 5.0;
 /// pickup loop at 5 iterations to keep a pathological case (motor
 /// stalled, encoder oscillating, …) from running forever.
 const PICKUP_MAX_ITERATIONS: u32 = 5;
+
+/// Consecutive `poll_axes_now` failures the slew/park watcher
+/// tolerates before giving up. A single transient USB-CDC glitch
+/// (queue flush race, brief renumeration, …) recovers within one
+/// frame and shouldn't take the watcher offline for the rest of
+/// the slew — the original "one strike and exit" policy meant any
+/// pre-binding hiccup left a runaway motor with no observer. Three
+/// attempts × [`WATCHER_POLL_RETRY_BACKOFF`] keeps the cumulative
+/// recovery window well inside the polling cadence so a genuinely
+/// blocked axis is still detected within ~1 s of the firmware
+/// latching the bit.
+const WATCHER_POLL_RETRY_LIMIT: u32 = 3;
+
+/// Sleep between consecutive `poll_axes_now` retry attempts in the
+/// slew/park watcher. Short enough that the cumulative
+/// `WATCHER_POLL_RETRY_LIMIT × WATCHER_POLL_RETRY_BACKOFF` budget
+/// stays inside the next polling tick; long enough that a tokio-
+/// serial read can flush whatever junk the kernel buffered during
+/// a brief CDC glitch before the next attempt.
+const WATCHER_POLL_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Issue the per-axis INDI slew sequence:
 /// `:G<axis>` (goto + fast, direction by sign of `delta`) →
@@ -2053,12 +2073,15 @@ fn spawn_slew_completion_watcher(
             }
 
             // Direct poll instead of reading the (now-paused) background
-            // snapshot. On failure (transport closed mid-slew, command
-            // timeout, ...), treat as an abort to avoid spinning.
-            let snap = match transport.poll_axes_now().await {
+            // snapshot. [`watcher_poll_with_retry`] tolerates a handful
+            // of transient transport errors so a single USB-CDC glitch
+            // doesn't take the watcher offline mid-slew; on retry
+            // exhaustion it also issues a best-effort `:L` on both
+            // axes so the motor isn't left commutating with no
+            // observer.
+            let snap = match watcher_poll_with_retry(&transport, "slew_watcher").await {
                 Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("watcher poll_axes_now failed: {e}");
+                Err(_) => {
                     state.write().await.slew_in_progress = false;
                     return;
                 }
@@ -2378,6 +2401,71 @@ async fn stop_axis_and_wait(
     }
 }
 
+/// Retrying wrapper around [`TransportManager::poll_axes_now`] used by
+/// both the slew and park completion watchers. Tolerates up to
+/// [`WATCHER_POLL_RETRY_LIMIT`] consecutive transport errors so a
+/// single transient USB-CDC glitch (a brief renumeration, a stale
+/// kernel buffer, …) doesn't take the watcher offline for the rest
+/// of a goto.
+///
+/// On every successful poll the snapshot is emitted at `debug` so a
+/// post-mortem can reconstruct the last-known-good state observed
+/// before any failure. On every failed attempt the underlying error
+/// is logged at `warn` with the attempt counter.
+///
+/// On retry exhaustion, the helper makes a best-effort `:L` on both
+/// axes before returning the underlying error: even when we can no
+/// longer observe state, the firmware may still be commutating step
+/// pulses, and a runaway motor with no observer is the worst case
+/// the original exit-on-first-error policy created. The `:L` calls
+/// are fire-and-forget — if they fail too, there's nothing useful
+/// the watcher can do beyond logging and bailing.
+async fn watcher_poll_with_retry(
+    transport: &TransportManager,
+    context: &'static str,
+) -> crate::error::Result<MountSnapshot> {
+    let mut last_err: Option<StarAdvError> = None;
+    for attempt in 0..WATCHER_POLL_RETRY_LIMIT {
+        match transport.poll_axes_now().await {
+            Ok(snap) => {
+                debug!(
+                    context = context,
+                    ra_ticks = snap.ra.position_ticks,
+                    ra_running = snap.ra.running,
+                    ra_blocked = snap.ra.blocked,
+                    ra_goto = snap.ra.goto,
+                    dec_ticks = snap.dec.position_ticks,
+                    dec_running = snap.dec.running,
+                    dec_blocked = snap.dec.blocked,
+                    dec_goto = snap.dec.goto,
+                    "watcher snapshot"
+                );
+                return Ok(snap);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    context = context,
+                    attempt = attempt + 1,
+                    limit = WATCHER_POLL_RETRY_LIMIT,
+                    "watcher poll_axes_now transient error: {e}"
+                );
+                last_err = Some(e);
+                if attempt + 1 < WATCHER_POLL_RETRY_LIMIT {
+                    tokio::time::sleep(WATCHER_POLL_RETRY_BACKOFF).await;
+                }
+            }
+        }
+    }
+    tracing::warn!(
+        context = context,
+        "watcher poll_axes_now retries exhausted — best-effort :L on both axes before bailing"
+    );
+    let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
+    let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+    Err(last_err
+        .unwrap_or_else(|| StarAdvError::Transport("watcher poll retries exhausted".to_string())))
+}
+
 /// Probe whether the parent directory of `config_path` can host the
 /// staging temp file that `SetPark`'s atomic-rename pattern requires.
 ///
@@ -2644,10 +2732,14 @@ fn spawn_park_completion_watcher(
                 state.write().await.slew_in_progress = false;
                 return;
             }
-            let snap = match transport.poll_axes_now().await {
+            // See [`watcher_poll_with_retry`] in the slew watcher above:
+            // tolerates transient transport errors, debug-logs every
+            // successful snapshot for post-mortems, and issues a
+            // best-effort `:L` on retry exhaustion so the motor halts
+            // even when the wire has gone away.
+            let snap = match watcher_poll_with_retry(&transport, "park_watcher").await {
                 Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("park watcher poll_axes_now failed: {e}");
+                Err(_) => {
                     state.write().await.slew_in_progress = false;
                     return;
                 }
@@ -5347,5 +5439,145 @@ mod tests {
             slewing || target_set,
             "expected slew to have been issued (slew_in_progress or target_ra latched)"
         );
+    }
+
+    // ---- watcher_poll_with_retry --------------------------------------
+    //
+    // The slew/park watchers' transport-error path used to exit on the
+    // first failed `poll_axes_now`, which made a single transient USB-
+    // CDC glitch take the watcher offline for the rest of the slew. The
+    // helper now retries [`WATCHER_POLL_RETRY_LIMIT`] times and on
+    // exhaustion fires a best-effort `:L` on both axes so a runaway
+    // motor doesn't continue commutating with no observer.
+
+    use crate::transport::{Transport, TransportFactory};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Inject N consecutive transport failures and count `:L<axis>`
+    /// frames that crossed the wire. Shared between the test and the
+    /// inner [`FlakyTransport`] so the test can observe both knobs.
+    struct FlakyController {
+        fail_remaining: AtomicU32,
+        stop_calls_ra: AtomicU32,
+        stop_calls_dec: AtomicU32,
+    }
+
+    /// Wraps [`crate::transport::mock::MockTransport`] and fails the
+    /// first `fail_remaining` round-trips. Every `:L<axis>` frame is
+    /// counted before the fail check so even a `:L` that lands during
+    /// the failure window still registers (the retry-exhaustion path
+    /// fires `:L` regardless of whether the transport is responsive).
+    struct FlakyTransport {
+        inner: crate::transport::mock::MockTransport,
+        ctrl: Arc<FlakyController>,
+    }
+
+    #[async_trait]
+    impl Transport for FlakyTransport {
+        async fn round_trip(
+            &self,
+            request: &[u8],
+            timeout: Duration,
+        ) -> crate::error::Result<Vec<u8>> {
+            if request.len() >= 3 && request[1] == b'L' {
+                match request[2] {
+                    b'1' => {
+                        self.ctrl.stop_calls_ra.fetch_add(1, Ordering::SeqCst);
+                    }
+                    b'2' => {
+                        self.ctrl.stop_calls_dec.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            }
+            if self.ctrl.fail_remaining.load(Ordering::SeqCst) > 0 {
+                self.ctrl.fail_remaining.fetch_sub(1, Ordering::SeqCst);
+                return Err(StarAdvError::Transport("flaky test eof".to_string()));
+            }
+            self.inner.round_trip(request, timeout).await
+        }
+
+        async fn close(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FlakyTransportFactory {
+        ctrl: Arc<FlakyController>,
+    }
+
+    #[async_trait]
+    impl TransportFactory for FlakyTransportFactory {
+        async fn open(&self, _config: &Config) -> crate::error::Result<Arc<dyn Transport>> {
+            Ok(Arc::new(FlakyTransport {
+                inner: crate::transport::mock::MockTransport::new(),
+                ctrl: self.ctrl.clone(),
+            }))
+        }
+    }
+
+    async fn flaky_manager() -> (Arc<TransportManager>, Arc<FlakyController>) {
+        let ctrl = Arc::new(FlakyController {
+            fail_remaining: AtomicU32::new(0),
+            stop_calls_ra: AtomicU32::new(0),
+            stop_calls_dec: AtomicU32::new(0),
+        });
+        let factory = Arc::new(FlakyTransportFactory { ctrl: ctrl.clone() });
+        let manager = Arc::new(TransportManager::new(Config::default(), factory));
+        // Connect with fail_remaining = 0 so the handshake completes,
+        // then return the controller so the test can flip the failure
+        // budget on without interfering with init.
+        manager.connect().await.unwrap();
+        (manager, ctrl)
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_returns_ok_on_first_success() {
+        let (manager, ctrl) = flaky_manager().await;
+        let snap = watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect("happy-path poll should succeed");
+        // No retries needed → no best-effort :L was issued.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+        // Mock transport seeds positions at handshake; just confirm the
+        // returned snapshot looks structurally valid (no panic, both
+        // axes populated even if zero).
+        let _ = snap.ra.position_ticks;
+        let _ = snap.dec.position_ticks;
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_recovers_after_transient_error() {
+        let (manager, ctrl) = flaky_manager().await;
+        // Fail the next round-trip exactly once: the helper's second
+        // attempt should land on a healthy transport and return Ok.
+        ctrl.fail_remaining.store(1, Ordering::SeqCst);
+        watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect("retry should recover from a single transient error");
+        // No retry-exhaustion path → no best-effort :L.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
+        let (manager, ctrl) = flaky_manager().await;
+        // Saturate the failure budget so every retry attempt errors.
+        ctrl.fail_remaining.store(u32::MAX, Ordering::SeqCst);
+        let err = watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect_err("retry budget should be exhausted");
+        match err {
+            StarAdvError::Transport(_) => {}
+            other => panic!("expected Transport error, got {other:?}"),
+        }
+        // Best-effort `:L` must fire on both axes regardless of whether
+        // it lands — the test counts the frames before the fail check
+        // in the flaky transport.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 1);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 1);
     }
 }

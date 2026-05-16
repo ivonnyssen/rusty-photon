@@ -1389,6 +1389,19 @@ In addition to the codec fixes:
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
+- **Transient-error tolerance with best-effort halt** — the
+  slew/park watchers tolerate up to three consecutive
+  `poll_axes_now` failures (with a 100 ms backoff between
+  attempts) before giving up, so a single USB-CDC glitch
+  doesn't take the watcher offline for the rest of a goto.
+  On retry exhaustion the helper fires `:L` on both axes
+  best-effort so the motor isn't left commutating with no
+  observer, then clears `slew_in_progress` and exits.
+  Every successful poll is also emitted at `debug` with the
+  full per-axis snapshot (position, running, blocked, goto)
+  so post-mortems can reconstruct the last-known-good state
+  observed before any failure. See
+  `mount_device::watcher_poll_with_retry`.
 - **EQMOD-style iterative pickup** — Phase A5 added a pickup
   loop in the slew watcher: after both axes report stopped,
   the watcher reads current RA/Dec, compares against the
