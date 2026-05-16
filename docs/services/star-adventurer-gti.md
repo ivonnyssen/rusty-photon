@@ -765,22 +765,59 @@ the new value (the Dec encoder has moved past the pole);
 #### Through-wrap slew routing
 
 When the slew planner decides to flip (either via `SetSideOfPier` or
-because the decision tree picked the opposite side), the RA axis is
-routed through the negative-`mech_HA` half of the encoder range — the
-half where the counterweight stays at or below the local horizon. The
-RA encoder traverses from its current value through `mech_HA = 0`
-("home") and the encoder wrap at `−12 h ≡ +12 h` to the post-flip
-target. The Dec encoder simultaneously rotates through the celestial
-pole to land past `±90°`.
+because the decision tree picked the opposite side), both axes are
+routed through specific safe segments of their encoder ranges. The
+RA axis stays in the counterweight-below-horizon half; the Dec axis
+crosses the *visible* celestial pole rather than the below-horizon
+one.
+
+**RA axis:** routed through the negative-`mech_HA` half of the encoder
+range — the half where the counterweight stays at or below the local
+horizon. The RA encoder traverses from its current value through
+`mech_HA = 0` ("home") and the encoder wrap at `−12 h ≡ +12 h` to the
+post-flip target. The driver enforces this by forcing `:G`'s CCW bit
+to `1` on flip slews and adjusting the `:H` increment to the
+complementary magnitude when the canonical-shortest direction would
+have gone the other way (the GTi's mechanical binding zone at
+`mech_HA ∈ (+6.95, +11.05)` is the same for every observer latitude,
+so the routing rule is hemisphere-independent).
+
+**Dec axis:** routed through the visible celestial pole, NOT the
+below-horizon pole. For a polar-aligned mount, only one of the two
+celestial poles is above the local horizon — NCP at altitude `+lat`
+for Northern observers, SCP at altitude `+|lat|` for Southern. The
+encoder positions are `+cpr_dec/4` (NCP) and `−cpr_dec/4` (SCP). The
+Dec axis must traverse the visible pole during a flip slew; routing
+through the below-horizon pole drives the OTA into the ground
+(altitude `−|lat|` at the dip).
+
+The rule, expressed by encoder side:
+
+- **Northern** observer (safe pole `+cpr_dec/4`):
+  - `current_dec_encoder` in the pre-flip half (`|enc| ≤ cpr_dec/4`):
+    force the Dec slew CW (positive delta). The path crosses
+    `+cpr_dec/4` from below.
+  - `current_dec_encoder` in the post-flip half (`|enc| > cpr_dec/4`):
+    force CCW (negative delta). The path descends back through
+    `+cpr_dec/4`.
+- **Southern** observer: inverted. Safe pole is `−cpr_dec/4` (SCP).
+
+The canonical fold's boundary case at exactly `±cpr_dec/2` (e.g.
+flipping from `dec_encoder = 0` to a celestial target of `dec = 0`
+where the post-flip target is `+180° ≡ −180°`) lands on the negative
+direction by default; for a Northern observer that routes through
+SCP and is the failure mode the first real-hardware validation
+exposed. The fix forces the long way around (`delta − cpr` or
+`delta + cpr`) so the path always crosses the *safe* pole.
 
 The slew lifecycle (see [§Slew lifecycle](#slew-lifecycle)) is
 otherwise unchanged: the same `:K → :G → :I → :H → :M → :J`
 wire sequence per axis, the same EQMOD pickup loop, the same settle
 delay. The flip slew differs from a normal slew only in which
-encoder target the planner computes and which CCW bit `:G` issues for
-the RA axis (forced to the negative-direction sign on a flip slew, so
-the routing goes "under" the polar axis rather than taking the
-shortest encoder path).
+encoder target the planner computes and which CCW bit `:G` issues
+per axis (forced to the safe-direction sign on flip slews, so the
+routing goes "under" the polar axis on RA and through the visible
+pole on Dec rather than taking the shortest-encoder path).
 
 #### Hardware validation
 
