@@ -44,7 +44,7 @@ Files created:
 * `services/pa-falcon-rotator/src/io.rs` — `SerialReader`, `SerialWriter`, `SerialPortFactory` traits with `#[cfg_attr(test, mockall::automock)]`. `SerialPair` struct.
 * `services/pa-falcon-rotator/src/serial.rs` — `TokioSerialPortFactory` implementing `SerialPortFactory` via `tokio-serial`. Stubbed (`unimplemented!()`).
 * `services/pa-falcon-rotator/src/mock.rs` — `#[cfg(feature = "mock")] pub struct MockSerialPortFactory` with a small deterministic state machine: stored mechanical position, is-moving flag, motor-reverse flag, derotation flag, voltage_raw. Returns canned `FR_OK` for `F#`, `FV:1.3` for `FV`, etc. Stubbed body for now.
-* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `SyncDeg(f64)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers.
+* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers.
 * `services/pa-falcon-rotator/src/serial_manager.rs` — `SerialManager` struct: `config`, `connection_count` (`AtomicU32`), `serial_available` (`AtomicBool`), `reader`/`writer` (`Mutex<Option<Box<dyn ...>>>`), `command_lock` (`Mutex<()>`), `sync_offset` (`Mutex<f64>`), `target_position` (`Mutex<Option<f64>>`), `last_limit_detected` (`Mutex<Option<bool>>`), `serial_factory`. Stubbed methods: `connect`, `disconnect`, `is_available`, `send_command`, `read_status` (issues `FA` + edge-checks `limit_detect`), `read_voltage`, `move_to`, `halt`, `sync`, `get_sync_offset`, `target_position`, `get_target_position`.
 * `services/pa-falcon-rotator/src/rotator_device.rs` — `FalconRotatorDevice` impl skeleton. `Device` trait stub. `Rotator` trait stub.
 * `services/pa-falcon-rotator/src/switch_device.rs` — `FalconStatusSwitchDevice` impl skeleton. `Device` trait stub. `Switch` trait stub.
@@ -97,7 +97,7 @@ Implementation:
 * `parse_full_status(&str) -> Result<FalconStatus>` — splits on `:`, validates `FR_OK` prefix, parses each field. Trims trailing `\n` / whitespace per the ppba pattern.
 * `parse_firmware_version(&str)`, `parse_position_deg(&str)`, `parse_position_steps(&str)`, `parse_voltage_raw(&str)`, `parse_is_running(&str)`, `parse_reverse(&str)` — one for every response shape.
 * `validate_ping_response(&str) -> Result<()>` — accepts `FR_OK` ± trailing whitespace.
-* `validate_echo(command, response)` — generic echo validator for `MD:`, `SD:`, `DR:`, `FH`, `FN:` shapes.
+* `validate_echo(command, response)` — generic echo validator for `MD:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).)
 
 Tests:
 
@@ -276,7 +276,7 @@ Implementation in `switch_device.rs`:
 * `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`, others → `InvalidValue`.
 * `Switch::get_switch_description(0) → Ok("Raw ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`.
 * `Switch::can_write(_) → Ok(false)`.
-* `Switch::set_switch / set_switch_value → INVALID_OPERATION` (no writable switches).
+* `Switch::set_switch / set_switch_value / set_switch_name → INVALID_OPERATION` (no writable switches; names are fixed in config).
 * `Switch::min_switch_value(0) → 0.0`, `(1) → 0.0`.
 * `Switch::max_switch_value(0) → 1023.0`, `(1) → 1.0`.
 * `Switch::switch_step(0) → 1.0`, `(1) → 1.0`.
