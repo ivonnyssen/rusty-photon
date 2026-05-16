@@ -133,14 +133,18 @@ pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
 /// Side-of-pier classification derived from the Dec-axis encoder
 /// position, the Dec-axis CPR, and the site latitude.
 ///
-/// ASCOM `PierSide::West` is the "normal" pointing state of a GEM
-/// (counterweight east, OTA on the west side of the pier);
-/// `PierSide::East` is the "beyond-the-pole" / post-meridian-flip
-/// state. For a Northern Hemisphere observer, the Dec encoder stays
-/// within ±90° (= `±cpr_dec/4` ticks) of home for any target reached
-/// without a meridian flip → `PierSide::West`. Once the mount rotates
-/// the Dec axis past the celestial pole (encoder magnitude past 90°)
-/// the OTA has crossed to the east side of the pier →
+/// Per the ASCOM spec, `pierEast` means "Through the Pole — the
+/// cross-axis (Dec) has rotated 180° from its initial pier side";
+/// `pierWest` is the "Normal pointing" state (cross-axis has not
+/// rotated 180°). It's an *operational* (pre-flip vs post-flip)
+/// classification of the Dec axis, not a geometric "OTA east of
+/// pier" classification of the saddle's mechanical position.
+///
+/// For a Northern Hemisphere observer, the Dec encoder stays within
+/// ±90° (= `±cpr_dec/4` ticks) of home for any target reached
+/// without a meridian flip → `PierSide::West`. Once the mount
+/// rotates the Dec axis past the celestial pole (encoder magnitude
+/// past 90°) the cross-axis has rotated through 180° →
 /// `PierSide::East`. Southern hemisphere inverts the convention.
 ///
 /// This is INDI eqmod's canonical GEM convention (see
@@ -148,27 +152,22 @@ pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
 /// → `PIER_EAST`, equivalent to the magnitude-past-90° check applied
 /// to the signed encoder reading our driver carries).
 ///
-/// The earlier RA-meridian split (HA = 0) happens to return the same
-/// value as the Dec-encoder check for every pointing state reachable
-/// inside the safety envelope, which is why the two conventions
-/// agreed on the ConformU `SideofPier` cases the previous
-/// implementation passed. They diverge only when the mount has been
-/// manually positioned with the Dec encoder past the pole (e.g. a
-/// power-cycle with the OTA pointing through the pole); the
-/// Dec-encoder convention reports `PierSide::East` for that state,
-/// the HA convention misreports it as whichever side the RA encoder
-/// happens to sit on.
+/// Caveat: this differs from the AP "Park Positions Defined" naming,
+/// which labels poses by saddle position rather than dec-axis state.
+/// AP Park 1 N (saddle west, dec past pole) reports `pierEast`
+/// here; AP Park 5 N (saddle east, dec normal) reports `pierWest`.
+/// The encoder values for each park pose are still mechanically
+/// correct — only the operational-vs-geometric label disagrees.
 pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> PierSide {
     if cpr_dec == 0 {
         return PierSide::Unknown;
     }
     let quarter = (cpr_dec / 4) as i64;
     // Past-the-pole detection: |Dec encoder| > 90° means the mount
-    // has rotated the Dec axis beyond either celestial pole — which
-    // for a German Equatorial Mount means it is in the
-    // post-meridian-flip / counterweight-up state. The boundary at
-    // exactly ±90° is *not* East: the mount can sit at the pole via
-    // normal-pointing slews without a flip.
+    // has rotated the Dec axis beyond either celestial pole — the
+    // post-meridian-flip / cross-axis-rotated-180° state. The
+    // boundary at exactly ±90° is *not* East: the mount can sit at
+    // the pole via normal-pointing slews without a flip.
     let east_in_north = (dec_ticks as i64).abs() > quarter;
     let northern = site_latitude_deg >= 0.0;
     let east = if northern {

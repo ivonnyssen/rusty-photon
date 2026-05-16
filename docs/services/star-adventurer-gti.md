@@ -1015,23 +1015,38 @@ document. Each AP pose describes a fixed mechanical pier side
 both hemispheres — but the driver's natural-vs-flipped pier convention
 flips between hemispheres (N natural = pierWest, S natural = pierEast,
 see `pre_flip_side` in `mount_device.rs`). So a pose like Park 1
-(OTA on the west side of the mount) is the **natural pier** in the
-North and the **flipped pier** in the South, and its encoder
-representation differs accordingly:
+The codebase's `mech_HA` is hemisphere-independent: the saddle east/west
+position is determined by the encoder alone (`|mech_HA| ≤ 6 h` →
+saddle west; `|mech_HA| > 6 h` → saddle east). The dec encoder *is*
+hemisphere-dependent — at fixed `mech_HA`, the dec=0 reference points
+at different celestial coords for N vs S, so the rotation needed to
+reach the AP-described OTA pointing differs in magnitude.
 
-- Natural side: `mech_HA = celestial_HA`, `dec_enc = celestial_dec`.
-- Flipped side: `mech_HA = celestial_HA + 12 h` folded to `[−12, +12)`,
-  `dec_enc = sign(celestial_dec) · (180° − |celestial_dec|)` (past
-  the celestial pole on the encoder).
+The encoder values below were corrected via hardware verification at
+lat 32.7°N on 2026-05-17. The earlier mapping (commit `2725a2f`) had
+Park 1 and Park 5 swapped: it claimed Park 1 N was at
+`(mech_HA=−12, dec_enc=+(90−|lat|)°)`, but that encoder pose
+physically corresponds to AP Park 5 N (saddle east). The corrected
+mapping places each AP pose at the encoder values that physically
+match it.
 
 | `home_pose` | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
 |---|---|---|---|---|
 | `null` (default) | No seeding — trust the firmware encoder as-is. Pre-Phase-6 behaviour. | — | — | — |
-| `ap_park_1` | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(−12 h, +(90 − \|lat\|)°)` (natural) | `(0 h, −(90 + \|lat\|)°)` (flipped past pole) |
+| `ap_park_1` | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(0 h, +(90 + \|lat\|)°)` (saddle west, dec past pole) | `(0 h, −(90 + \|lat\|)°)` (saddle west, dec past pole) |
 | `ap_park_2` | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
 | `ap_park_3` | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
-| `ap_park_4` | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (flipped past pole) | `(0 h, +(90 − \|lat\|)°)` (natural) |
-| `ap_park_5` | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(0 h, +(90 + \|lat\|)°)` (flipped past pole) | `(−12 h, −(90 − \|lat\|)°)` (natural) |
+| `ap_park_4` | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (saddle east, dec past pole) | `(−12 h, +(90 + \|lat\|)°)` (saddle east, dec past pole) |
+| `ap_park_5` | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(−12 h, +(90 − \|lat\|)°)` (saddle east, dec normal) | `(−12 h, −(90 − \|lat\|)°)` (saddle east, dec normal) |
+
+Note on `SideOfPier` reporting: the codebase's `side_of_pier` uses
+the ASCOM-spec convention (dec-past-pole indicates `pierEast`),
+*not* the AP "OTA east of mount" geometric convention. AP Park 5 N
+has saddle east physically but dec encoder normal (`+57°`), so the
+codebase reports it as `pierWest` (pre-flip). AP Park 1 N has
+saddle west but dec past pole (`+123°`), so the codebase reports
+it as `pierEast` (post-flip). The encoder values match the AP
+physical pose; only the `pierSide` label differs in convention.
 
 The seed step is skipped when the firmware reports an encoder
 reading beyond a small fresh-power-up tolerance
