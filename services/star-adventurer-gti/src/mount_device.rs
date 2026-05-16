@@ -39,6 +39,18 @@ use crate::transport_manager::{MountSnapshot, TransportManager};
 /// `GuideRateRightAscension` / `GuideRateDeclination`.
 const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
 
+/// Maximum absolute encoder reading at connect that
+/// [`MountDevice::seed_home_pose_after_connect`] still treats as
+/// "fresh power-up" and applies the `home_pose` seed to. The
+/// Sky-Watcher firmware does not always read exactly `0` after a
+/// power-cycle — empirically the validation GTi reports `dec = −1`
+/// on connect, a single-tick initialisation artifact (≈ 0.4″ at the
+/// GTi's CPR). Any genuine post-slew encoder reading is tens of
+/// thousands of ticks away from zero, so this tolerance comfortably
+/// distinguishes "just powered up" from "the operator already moved
+/// the mount this session".
+const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 100;
+
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
 /// RA/Dec, Slewing) are read through [`TransportManager`].
@@ -379,14 +391,21 @@ impl MountDevice {
     /// Skipped when:
     /// - The home pose is the codebase default (no offset needed).
     /// - The firmware reports a non-zero encoder reading at connect
-    ///   time. That indicates the mount has already been slewed or
-    ///   synced this power cycle — re-seeding would clobber it.
+    ///   time **beyond a small fresh-power-up tolerance**. That
+    ///   indicates the mount has already been slewed or synced this
+    ///   power cycle — re-seeding would clobber it. The tolerance
+    ///   exists because the Sky-Watcher firmware does not always
+    ///   read exactly `(0, 0)` after a power-cycle: on the validation
+    ///   GTi we observed `dec = −1` on fresh power-up, a 1-tick
+    ///   initialisation artifact (~0.4″) that obviously still
+    ///   represents the "just powered up" state.
     ///
     /// Documented operator assumption: when `home_pose != default`,
     /// the operator powers up the mount **at** the configured pose and
     /// connects the driver before any slew or sync. Reconnecting
     /// mid-session after a slew is safe (the non-zero-encoder guard
-    /// catches it).
+    /// catches it — a real slew lands tens of thousands of ticks away
+    /// from zero, well outside the tolerance).
     async fn seed_home_pose_after_connect(&self) -> ASCOMResult<()> {
         let Some(home_pose) = self.config.home_pose else {
             // No pose configured — trust the firmware encoder as-is.
@@ -400,11 +419,14 @@ impl MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let snap = self.transport.snapshot().await;
-        if snap.ra.position_ticks != 0 || snap.dec.position_ticks != 0 {
+        if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+            || snap.dec.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+        {
             debug!(
                 ra = snap.ra.position_ticks,
                 dec = snap.dec.position_ticks,
-                "skipping home_pose encoder seed: firmware encoder is non-zero"
+                tolerance = FRESH_POWER_UP_TICK_TOLERANCE,
+                "skipping home_pose encoder seed: firmware encoder is non-zero beyond tolerance"
             );
             return Ok(());
         }
@@ -4444,6 +4466,67 @@ mod tests {
         d.set_connected(true).await.unwrap();
         let s = d.state.read().await;
         assert_eq!(s.park_ra_ticks, Some(0));
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[tokio::test]
+    async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
+        // Sky-Watcher firmware does not always read exactly (0, 0)
+        // after a power-cycle: the validation GTi reports dec = -1 on
+        // fresh power-up. Without the FRESH_POWER_UP_TICK_TOLERANCE
+        // guard the strict `!= 0` check would skip the seed and the
+        // mount would silently end up with a wrong celestial mapping
+        // (and a wrong Park target via the snapshot fallback).
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        // Force the dec encoder to a 1-tick fresh-power-up artifact
+        // before the manager opens the transport.
+        {
+            let mut state = factory.mock.state.lock().await;
+            state.dec.position_ticks = -1;
+        }
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // ApPark3 N hemisphere with mock cpr = 0x375F00 = 3,628,800:
+        // expected seed → ra_ticks = -907,200, dec_ticks = +907,200.
+        // If the seed had been skipped, the park target would be
+        // (0, -1) (the pre-seed snapshot).
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(-907200));
+        assert_eq!(s.park_dec_ticks, Some(907200));
+    }
+
+    #[tokio::test]
+    async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
+        // A real post-slew encoder is tens of thousands of ticks away
+        // from zero — well beyond FRESH_POWER_UP_TICK_TOLERANCE. The
+        // seed must skip in that case so a mid-session reconnect does
+        // not clobber the operator's slewed-to position.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        {
+            let mut state = factory.mock.state.lock().await;
+            state.ra.position_ticks = 50_000;
+        }
+        let mut cfg = Config::default();
+        cfg.mount.ra_min_hours = -12.0;
+        cfg.mount.ra_max_hours = 12.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // Seed skipped → park target falls back to the snapshot (the
+        // pre-seed handshake reading), so park_ra_ticks should equal
+        // the firmware's reported 50,000 (not -907,200).
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(50_000));
         assert_eq!(s.park_dec_ticks, Some(0));
     }
 

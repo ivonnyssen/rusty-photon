@@ -986,11 +986,18 @@ representation differs accordingly:
 | `ap_park_4` | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (flipped past pole) | `(0 h, +(90 − \|lat\|)°)` (natural) |
 | `ap_park_5` | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(0 h, +(90 + \|lat\|)°)` (flipped past pole) | `(−12 h, −(90 − \|lat\|)°)` (natural) |
 
-The seed step is skipped when the firmware reports a non-zero
-encoder reading on connect — that indicates the mount has already
-been slewed or synced this power cycle, and the driver does not
-clobber the existing position. Reconnecting mid-session after a
-slew is therefore safe.
+The seed step is skipped when the firmware reports an encoder
+reading beyond a small fresh-power-up tolerance
+(`FRESH_POWER_UP_TICK_TOLERANCE`, currently 100 ticks ≈ 10″ at the
+GTi's CPR). The tolerance exists because the Sky-Watcher firmware
+does not always read exactly `(0, 0)` after a power-cycle —
+empirically the validation GTi reports `dec = −1` on connect, a
+single-tick initialisation artifact (~0.4″) that obviously still
+represents the just-powered-up state. Any genuine post-slew
+encoder is tens of thousands of ticks away from zero, so the
+tolerance comfortably distinguishes "fresh power-up" from
+"already slewed this session". Reconnecting mid-session after a
+slew is therefore still safe.
 
 Documented operator assumption: when `home_pose` is set, the operator
 powers up the mount **at** the configured pose and connects the
