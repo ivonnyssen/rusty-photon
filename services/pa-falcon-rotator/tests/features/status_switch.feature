@@ -45,8 +45,13 @@ Feature: Status Switch device
     And I read GetSwitchValue for id 1
     Then the switch value should be 1.0
 
-  Scenario: SetSwitch on either switch is rejected with INVALID_OPERATION
+  Scenario Outline: SetSwitch on either switch is rejected with INVALID_OPERATION
     Given a running pa-falcon-rotator service
     When I connect the rotator
-    And I call SetSwitch on id 0 with true
+    And I call SetSwitch on id <id> with true
     Then the set should fail with code 1035
+
+    Examples:
+      | id |
+      | 0  |
+      | 1  |

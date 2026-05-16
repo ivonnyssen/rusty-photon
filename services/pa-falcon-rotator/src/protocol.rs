@@ -8,8 +8,19 @@ use crate::error::Result;
 
 /// Commands the driver issues to the Falcon Rotator.
 ///
-/// Variants intentionally omit `FF` (firmware reload) — the design doc lists
-/// it as a maintenance operation the driver never sends.
+/// Two Falcon commands are deliberately absent from this enum even though
+/// they exist on the wire:
+///
+/// - `FF` (firmware reload) — design-doc maintenance operation the driver
+///   must never issue.
+/// - `SD:<deg>` (device-side sync) — would rewrite the Falcon's stored
+///   counter and change `MechanicalPosition`, violating ASCOM `Sync`'s
+///   "leave MechanicalPosition unchanged" contract. ASCOM `Sync` is
+///   implemented as a driver-side offset instead; see
+///   `docs/services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd`.
+///
+/// Keeping these variants out of the public surface removes the temptation
+/// to reach for them from later phases.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// `F#` — ping / status check. Expect `FR_OK`.
@@ -28,8 +39,6 @@ pub enum Command {
     DerotationOff,
     /// `DR:<ms>` — enable de-rotation at `ms` ms/step.
     DerotationRate(u32),
-    /// `SD:<deg>` — device-side sync (rewrite stored counter).
-    SyncDeg(f64),
     /// `MD:<deg>` — move to absolute degrees.
     MoveDeg(f64),
     /// `MS:<steps>` — move to absolute steps.

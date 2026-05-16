@@ -43,6 +43,15 @@ Feature: Movement
     And I read IsMoving
     Then an FA command should have been issued
 
+  Scenario: TargetPosition returns the requested sky angle while a move is outstanding
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And the rotator reports mechanical position 0.00 degrees
+    And the driver-side sync offset is 0.00 degrees
+    And I call MoveAbsolute with 180.00
+    And I read TargetPosition
+    Then TargetPosition should be 180.00 degrees
+
   Scenario: MoveAbsolute with NaN is rejected with INVALID_VALUE
     Given a running pa-falcon-rotator service
     When I connect the rotator

@@ -12,7 +12,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
@@ -142,5 +142,31 @@ impl Switch for FalconStatusSwitchDevice {
     async fn state_change_complete(&self, _id: usize) -> ASCOMResult<bool> {
         // Read-only switches never change asynchronously.
         Ok(true)
+    }
+
+    // Both advertised switches are read-only (`CanWrite = false`). The Switch
+    // trait's defaults return `NOT_IMPLEMENTED`, but the design doc's Switch
+    // layout section pins the contract to `INVALID_OPERATION` — overriding
+    // the three write surfaces here so the wire-level error code matches.
+
+    async fn set_switch(&self, _id: usize, _state: bool) -> ASCOMResult<()> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_OPERATION,
+            "Falcon status switches are read-only",
+        ))
+    }
+
+    async fn set_switch_value(&self, _id: usize, _value: f64) -> ASCOMResult<()> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_OPERATION,
+            "Falcon status switches are read-only",
+        ))
+    }
+
+    async fn set_switch_name(&self, _id: usize, _name: String) -> ASCOMResult<()> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_OPERATION,
+            "Falcon status switch names are fixed",
+        ))
     }
 }

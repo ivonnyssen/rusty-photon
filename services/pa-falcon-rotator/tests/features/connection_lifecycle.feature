@@ -27,3 +27,20 @@ Feature: Connection lifecycle
     When I connect the rotator
     And I connect the rotator
     Then the rotator should be connected
+
+  Scenario: Shared port stays open while either device is connected
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I connect the status switch
+    And I disconnect the rotator
+    Then the status switch should be connected
+    And the handshake should have run exactly once
+
+  Scenario: Shared port closes only when the last device disconnects
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I connect the status switch
+    And I disconnect the rotator
+    And I disconnect the status switch
+    Then the rotator should be disconnected
+    And the status switch should be disconnected

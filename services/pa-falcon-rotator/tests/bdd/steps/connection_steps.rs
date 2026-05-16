@@ -25,6 +25,18 @@ async fn disconnect_rotator(world: &mut FalconRotatorWorld) {
     todo!("connection_steps::disconnect_rotator implemented in Phase 3d")
 }
 
+#[when("I connect the status switch")]
+async fn connect_status_switch(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("connection_steps::connect_status_switch implemented in Phase 3d")
+}
+
+#[when("I disconnect the status switch")]
+async fn disconnect_status_switch(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("connection_steps::disconnect_status_switch implemented in Phase 3d")
+}
+
 #[then("the rotator should be connected")]
 async fn rotator_should_be_connected(world: &mut FalconRotatorWorld) {
     let _ = world;
@@ -41,4 +53,22 @@ async fn rotator_should_be_disconnected(world: &mut FalconRotatorWorld) {
 async fn handshake_issued_ping_first(world: &mut FalconRotatorWorld) {
     let _ = world;
     todo!("connection_steps::handshake_issued_ping_first implemented in Phase 3d")
+}
+
+#[then("the status switch should be connected")]
+async fn status_switch_should_be_connected(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("connection_steps::status_switch_should_be_connected implemented in Phase 3d")
+}
+
+#[then("the status switch should be disconnected")]
+async fn status_switch_should_be_disconnected(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("connection_steps::status_switch_should_be_disconnected implemented in Phase 3d")
+}
+
+#[then("the handshake should have run exactly once")]
+async fn handshake_ran_exactly_once(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("connection_steps::handshake_ran_exactly_once implemented in Phase 3d")
 }
