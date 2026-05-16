@@ -9,12 +9,32 @@ This crate is throwaway — deleted at the end of Phase 1.
 
 ## Status
 
-**First-cut implementation written, awaiting bench iteration.** Boot
-attempts the full sequence (USB host install → CDC-ACM driver install →
-open `0483:5740` → set 115200 8N1 → assert DTR/RTS → tx `:e1\r` → log
-the response). Failure modes are surfaced as `error!` / `warn!` lines
-in the monitor; the heartbeat keeps logging afterwards so the spike
-stays useful when iterating.
+**Phase 0 done — round-trip confirmed against real hardware on
+2026-05-15.** Captured boot log:
+
+```
+I (366) usb_cdc_hello: USB-CDC spike booting on ESP32-S3
+I (366) usb_cdc_hello: installing USB host library
+I (406) usb_cdc_hello: installing cdc_acm host driver
+I (406) usb_cdc_hello: opening GTi (VID=0483 PID=5740)
+I (806) usb_cdc_hello: → ":e1\r"
+I (806) usb_cdc_hello: ← "=03300C"
+I (806) usb_cdc_hello: alive
+```
+
+Boot to first round-trip: **806 ms**. Mount reports type `0x03`
+(Star Adventurer GTi), firmware `0x30.0x0C` — same banner the desktop
+driver gets. The three Phase 0 unknowns are answered:
+
+- USB Host Library on ESP32-S3 works.
+- The managed `espressif/usb_host_cdc_acm` component links cleanly
+  when threaded through a local extras component
+  (`components/cdc_acm_pull/`, see CMakeLists / idf_component.yml).
+- The STM32 VCP on the GTi enumerates at full-speed and accepts bulk
+  TX/RX at 115200 8N1 with DTR=RTS=1. No reset gymnastics required.
+
+This crate stays around for regression checks but the real work moves
+to Phase 1 (`no_std`-ifying `skywatcher-motor-protocol`).
 
 ## Hardware
 
