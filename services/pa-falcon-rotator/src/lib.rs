@@ -1,9 +1,10 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Pegasus Falcon Rotator Driver
 //!
-//! ASCOM Alpaca driver exposing the Pegasus Astro Falcon Rotator (firmware
-//! >= 1.3) as two devices on one server: an `IRotatorV4` for motion and an
-//! `ISwitchV3` for status (raw input voltage + limit-detect flag).
+//! ASCOM Alpaca driver exposing the Pegasus Astro Falcon Rotator
+//! (firmware 1.3 or newer) as two devices on one server: an `IRotatorV4`
+//! for motion and an `ISwitchV3` for status (raw input voltage +
+//! limit-detect flag).
 //!
 //! See `docs/services/falcon-rotator.md` for the behavioural contract.
 
