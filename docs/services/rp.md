@@ -1686,7 +1686,7 @@ The choice of solver and the supervision posture are settled by
 doc — HTTP contract, supervision contract, configuration, mock test
 double — lives at [`docs/services/plate-solver.md`](plate-solver.md).
 Implementation sequencing is in
-[`docs/plans/plate-solver.md`](../plans/plate-solver.md).
+[`docs/plans/archive/plate-solver.md`](../plans/archive/plate-solver.md).
 
 ### File Accessibility
 

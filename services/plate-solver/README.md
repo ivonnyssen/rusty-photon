@@ -5,12 +5,12 @@ solve API to `rp`. Operator installs ASTAP separately (BYO per ADR-005);
 `plate-solver` ships no ASTAP binary or index database.
 
 See [`docs/services/plate-solver.md`](../../docs/services/plate-solver.md)
-for the design contract and [`docs/plans/plate-solver.md`](../../docs/plans/plate-solver.md)
-for implementation sequencing.
+for the design contract and [`docs/plans/archive/plate-solver.md`](../../docs/plans/archive/plate-solver.md)
+for implementation sequencing (archived 2026-05-15).
 
 ## Status
 
-All eight phases of the [implementation plan](../../docs/plans/plate-solver.md#phases)
+All eight phases of the [implementation plan](../../docs/plans/archive/plate-solver.md#phases)
 have shipped: design doc, crate scaffolding + `AstapRunner` trait +
 `.wcs` parser, BDD scenarios, HTTP server + supervision,
 process-supervisor recipes, nightly cross-platform real-ASTAP smoke,
@@ -211,5 +211,5 @@ top of the same `/health` endpoint this service already exposes.
 - `pixel_scale_arcsec`: arcseconds per pixel.
 - `rotation_deg`: degrees.
 
-Full HTTP contract in [`docs/plans/plate-solver.md`](../../docs/plans/plate-solver.md)
+Full HTTP contract in [`docs/plans/archive/plate-solver.md`](../../docs/plans/archive/plate-solver.md)
 §"HTTP contract".

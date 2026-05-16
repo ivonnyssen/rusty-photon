@@ -10,8 +10,8 @@
 //! - `@requires-astap` — gates a small cross-platform real-ASTAP
 //!   smoke that fires only when `ASTAP_BINARY` is set in the
 //!   environment. PR jobs do not set it; the dedicated nightly
-//!   workflow does. See `docs/plans/plate-solver.md` §"Real-ASTAP
-//!   coverage: cadence and gating".
+//!   workflow does. See `docs/plans/archive/plate-solver.md`
+//!   §"Real-ASTAP coverage: cadence and gating".
 //!
 //! Both filter forms accept the tag with or without a leading `@`,
 //! matching `services/rp/tests/bdd.rs`'s pattern (cucumber-rs may

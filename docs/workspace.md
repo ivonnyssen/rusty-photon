@@ -44,7 +44,7 @@ belong in any single service design doc.
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [i18n-cli-spike.md](plans/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de) |
-| [plate-solver.md](plans/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing) |
+| [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
 
 ## Shared Crates
 

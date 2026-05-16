@@ -797,10 +797,10 @@ its size (subprocess supervision, ASTAP CLI argument layout, `.wcs`
 parsing, per-platform install verification) and because ADR-005
 already called for "a separate plan to sequence the plate-solver
 rp-managed-service implementation." Tracked end-to-end in
-[`docs/plans/plate-solver.md`](plate-solver.md), where all eight
+[`docs/plans/archive/plate-solver.md`](plate-solver.md), where all eight
 phases (Phase 1 design doc through Phase 8 LGPL §4/§6 review) landed.
 
-- [x] **`docs/plans/plate-solver.md`** sequenced the service itself:
+- [x] **`docs/plans/archive/plate-solver.md`** sequenced the service itself:
       workspace member skeleton, ASTAP subprocess wrapper, HTTP API,
       BDD scenarios, supervision integration with sentinel, and the
       per-platform end-to-end solve passes that retired ADR-005 Open

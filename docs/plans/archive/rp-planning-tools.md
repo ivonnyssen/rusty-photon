@@ -7,7 +7,7 @@ tools"). See **Outcomes** below.
 **Date:** 2026-05-03
 **Branch:** `worktree-planning-tools`
 **Parent design doc:** [`docs/services/rp.md`](../../services/rp.md)
-**Closest precedent:** [`docs/plans/plate-solver.md`](../plate-solver.md) (eight-phase, design-first plan)
+**Closest precedent:** [`docs/plans/archive/plate-solver.md`](plate-solver.md) (eight-phase, design-first plan)
 
 ## Outcomes (2026-05-09)
 
@@ -736,7 +736,7 @@ Within that fixed scope, dependencies are mostly linear:
   — design-first, test-first phasing
 - [`docs/skills/testing.md`](../../skills/testing.md) — BDD and unit
   test conventions; `@wip` filter (§2.7)
-- [`docs/plans/plate-solver.md`](../plate-solver.md) — closest
+- [`docs/plans/archive/plate-solver.md`](plate-solver.md) — closest
   precedent for an eight-phase, design-first plan in this workspace
 - [`docs/plans/archive/image-evaluation-tools.md`](image-evaluation-tools.md)
   §"Phase 6c-prep — Telescope (mount) primitives" — prerequisite for
