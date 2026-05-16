@@ -1,9 +1,36 @@
 # Plan: sky-survey-camera mount-following + simulated pointing offset
 
+**Status: COMPLETE (archived 2026-05-15).** All four phases shipped.
+Phases 1–3 landed via PR #142 (squash commit `f2e1086`); Phase 4
+landed via PR #187 (squash commit `7b924aa`, with subsequent
+Copilot-round follow-up commits). The canonical behavioral contracts
+live in [`docs/services/sky-survey-camera.md`](../../services/sky-survey-camera.md);
+the service itself is at [`services/sky-survey-camera/`](../../../services/sky-survey-camera/).
+
+Forward-work items called out by this plan are tracked as a standalone
+issue (the others were explicitly skipped — see notes):
+
+- #237 — Optional ASCOM Rotator support for follow mode (Future work item 1)
+- Non-linear pointing models (Future work item 2) — not tracked; no consumer pulling on it.
+- Sidereal drift during exposure (Future work item 3) — not tracked; no consumer pulling on it.
+- OmniSim PR upstream (Future work item 4) — not tracked; community contribution that benefits other consumers more than us.
+
+**Design-to-implementation divergence to flag for future readers:** the
+design decision §"`POST /sky-survey/position` returns 409 in follow-mode"
+was **reversed during Phase 4**. The shipped F6 behavior is that `POST`
+in follow mode arms a *one-shot pointing override* (consumed by the next
+light exposure), and a new contract **F7** was added to specify that
+override's semantics. This change was necessary to make the closed-loop
+centering scenario converge — a persistent offset would never let the
+loop reach zero residual. The plan body below preserves the original
+"returns 409" framing as a historical artifact; consult the canonical
+F1–F7 contracts in [`docs/services/sky-survey-camera.md`](../../services/sky-survey-camera.md)
+§"Behavioral Contracts" for the actual shipped behavior.
+
 **Date:** 2026-05-03
 **Branch:** `worktree-trail-mount`
-**Parent service:** [`docs/services/sky-survey-camera.md`](../services/sky-survey-camera.md) — retires the *Telescope-following mode* item under Future Work.
-**Consumer plan:** [`docs/plans/archive/image-evaluation-tools.md` Phase 6c-3](archive/image-evaluation-tools.md#phase-6c-3--center_on_target-design--bdd--impl) — `center_on_target` BDD currently has to fake convergence via a synthetic `PlateSolveOps` adapter ("OmniSim does not model pointing"). This plan removes that caveat for the end-to-end path.
+**Parent service:** [`docs/services/sky-survey-camera.md`](../../services/sky-survey-camera.md) — retires the *Telescope-following mode* item under Future Work.
+**Consumer plan:** [`docs/plans/archive/image-evaluation-tools.md` Phase 6c-3](image-evaluation-tools.md#phase-6c-3--center_on_target-design--bdd--impl) — `center_on_target` BDD currently has to fake convergence via a synthetic `PlateSolveOps` adapter ("OmniSim does not model pointing"). This plan removes that caveat for the end-to-end path.
 
 ## Background
 
@@ -166,7 +193,7 @@ Each phase is its own PR. All four phases land on this branch (`worktree-trail-m
 
 ### Phase 1 — Service design doc update
 
-Status: **done** — landed in `4e7691d`.
+Status: **done** — landed in PR #142 (squash commit `f2e1086`).
 
 - [ ] Update `docs/services/sky-survey-camera.md`:
   - "Configuration" — add the `pointing.telescope` schema block with field-by-field description.
@@ -181,7 +208,7 @@ Status: **done** — landed in `4e7691d`.
 
 ### Phase 2 — `PointingSource` refactor + telescope-follow mode (no offset yet)
 
-Status: **done** — landed in `6ce90ae`.
+Status: **done** — landed in PR #142 (squash commit `f2e1086`).
 
 - [ ] `services/sky-survey-camera/src/pointing.rs` — introduce `PointingSource` enum. `Static(SharedPointing)` is the existing path, no behaviour change. `Telescope(TelescopeFollow)` is a new struct holding `Arc<dyn Telescope>` + its config; `snapshot()` reads RA/Dec from the mount, returns a `PointingState`. **Offset stays at zero in this phase** so the diff is bounded.
 - [ ] `services/sky-survey-camera/src/config.rs` — extend `PointingConfig` with the optional `telescope: Option<TelescopeFollowConfig>`. Wire `humantime_serde` for `request_timeout`. Reuse `rp_auth::config::ClientAuthConfig` (already a workspace dep transitively via `rp`; if not, add the workspace dep — no new crates.io download).
@@ -193,7 +220,7 @@ Status: **done** — landed in `6ce90ae`.
 
 ### Phase 3 — Pointing offset injection + F5/F6 BDD
 
-Status: **done** — landed in `9d4f518`. The mount stub stayed in-crate
+Status: **done** — landed in PR #142 (squash commit `f2e1086`). The mount stub stayed in-crate
 (`tests/bdd/world.rs`) rather than landing in `bdd-infra`, since no
 other service-level BDD currently needs an ASCOM Telescope mock. If a
 second crate eventually needs one, the `MountStubBehavior` /
@@ -210,8 +237,18 @@ second crate eventually needs one, the `MountStubBehavior` /
 
 ### Phase 4 — Closed-loop centering BDD
 
-Status: **ready to start.** Both consumer-side phases have landed on
-`main`:
+Status: **done** — landed in PR #187 (squash commit `7b924aa`, plus
+Copilot-round follow-ups `d5dd83d`, `878ad55`, `e346761`, `b1f97b9`,
+`8e736a7`). The shipped implementation diverged from the plan in one
+load-bearing way: F6 was changed from "return 409" to "arm a one-shot
+pointing override", and F7 was added to specify that override's
+semantics. Without that change, a persistent offset would never let the
+centering loop converge to zero residual. See the archive banner at the
+top of this file for the divergence summary, and
+[`docs/services/sky-survey-camera.md`](../../services/sky-survey-camera.md)
+§"Behavioral Contracts" for the canonical F1–F7 contracts.
+
+Both consumer-side phases have landed on `main`:
 
 - **6c-2** (`plate_solve` MCP tool in `rp`) — shipped in #156
   (`415c934`). `services/rp/src/mcp/built_in/plate_solve.rs` and
