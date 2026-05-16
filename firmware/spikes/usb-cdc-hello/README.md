@@ -11,19 +11,21 @@ exercisable even after Phase 1 migrates the higher-level work elsewhere.
 ## Status
 
 **Phase 0 done — round-trip confirmed against real hardware on
-2026-05-15.** Captured boot log:
+2026-05-15, re-verified post-fixes on 2026-05-16.** Captured boot log
+from the current build:
 
 ```
-I (366) usb_cdc_hello: USB-CDC spike booting on ESP32-S3
-I (366) usb_cdc_hello: installing USB host library
-I (406) usb_cdc_hello: installing cdc_acm host driver
-I (406) usb_cdc_hello: opening GTi (VID=0483 PID=5740)
-I (806) usb_cdc_hello: → ":e1\r"
-I (806) usb_cdc_hello: ← "=03300C"
-I (806) usb_cdc_hello: alive
+I (1159) usb_cdc_hello: USB-CDC spike booting on ESP32-S3
+I (1169) usb_cdc_hello: installing USB host library
+I (1199) usb_cdc_hello: installing cdc_acm host driver
+I (1199) usb_cdc_hello: opening GTi (VID=0483 PID=5740)
+I (1599) usb_cdc_hello: → ":e1\r"
+I (1599) usb_cdc_hello: ← "=03300C"
+I (1599) usb_cdc_hello: alive
 ```
 
-Boot to first round-trip: **806 ms**. Mount reports type `0x03`
+Boot to first round-trip: **1.6 s** (~1 s of which is octal-PSRAM init).
+The `open` → response leg is 400 ms.  Mount reports type `0x03`
 (Star Adventurer GTi), firmware `0x30.0x0C` — same banner the desktop
 driver gets. The three Phase 0 unknowns are answered:
 
