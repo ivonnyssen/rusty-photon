@@ -63,7 +63,7 @@ Accessibility").
   ASTAP SIGSEGV, hang, or deadlock cannot threaten `rp`'s session
   state. This rationale is the load-bearing argument for choosing
   rp-managed-service over plugin shape; see
-  `docs/plans/plate-solver.md` §"Stability and supervision" for
+  `docs/plans/archive/plate-solver.md` §"Stability and supervision" for
   the full discriminator.
 - **Tenet 4 — Remote interfaces only.** HTTP between rp and the
   service. The service-to-ASTAP boundary is a CLI subprocess, not an
@@ -78,7 +78,7 @@ Accessibility").
 ### HTTP API
 
 The service exposes exactly two endpoints. The contract is frozen by
-`docs/plans/plate-solver.md` §"HTTP contract"; this section
+`docs/plans/archive/plate-solver.md` §"HTTP contract"; this section
 states the behavior, not the wire format details.
 
 #### `POST /api/v1/solve`
@@ -419,7 +419,7 @@ the real ASTAP binary, gated by a runtime check on the
 `ASTAP_BINARY` environment variable. Scenarios skip silently when
 the env var is unset (the PR-required path). They fire when the env
 var is set, which is the dedicated nightly cross-platform smoke
-workflow's job. See `docs/plans/plate-solver.md` §"Real-ASTAP
+workflow's job. See `docs/plans/archive/plate-solver.md` §"Real-ASTAP
 coverage: cadence and gating" for the rationale and the `bdd.rs`
 filter snippet.
 
@@ -493,7 +493,7 @@ operational tooling (Prometheus blackbox exporter, Nagios, etc.).
 ## References
 
 - ADR-005 — `docs/decisions/005-plate-solver.md`
-- Implementation plan — `docs/plans/plate-solver.md`
+- Implementation plan — `docs/plans/archive/plate-solver.md`
 - rp design doc, §"Plate Solver" — `docs/services/rp.md`
 - rp design doc, §"Sentinel Watchdog Integration" — `docs/services/rp.md`
 - rp design doc, §"File Accessibility" — `docs/services/rp.md`

@@ -1,7 +1,7 @@
 //! BDD step definitions for the closed-loop centering scenario.
 //!
 //! Phase-4 integration path from
-//! `docs/plans/sky-survey-camera-mount-following.md`: the camera is a
+//! `docs/plans/archive/sky-survey-camera-mount-following.md`: the camera is a
 //! real `sky-survey-camera` process configured to follow OmniSim's
 //! Telescope. The scenario primes a one-shot pointing override on
 //! the camera (F7) before invoking `center_on_target`, so iter 0

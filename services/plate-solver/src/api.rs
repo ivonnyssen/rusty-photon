@@ -2,7 +2,7 @@
 //! `GET /health`.
 //!
 //! Frozen contract details live in
-//! `docs/plans/plate-solver.md` §"HTTP contract" and the
+//! `docs/plans/archive/plate-solver.md` §"HTTP contract" and the
 //! behavior contract is in `docs/services/plate-solver.md`.
 
 use crate::error::AppError;

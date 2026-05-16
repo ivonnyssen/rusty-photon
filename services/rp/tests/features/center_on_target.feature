@@ -235,7 +235,7 @@ Feature: Center on target compound tool
       | dec              | 91    |
 
   # Closed-loop scenarios (Phase 4 of
-  # docs/plans/sky-survey-camera-mount-following.md): the camera is a
+  # docs/plans/archive/sky-survey-camera-mount-following.md): the camera is a
   # real `sky-survey-camera` process following OmniSim's Telescope.
   # Before invoking `center_on_target`, the scenario `POST`s to the
   # camera's `/sky-survey/position` endpoint, which in follow mode

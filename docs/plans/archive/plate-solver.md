@@ -1,9 +1,30 @@
 # Plan: `plate-solver` service
 
+**Status: COMPLETE (archived 2026-05-15).** All eight phases shipped;
+ADR-005 open questions 1–6 retired (item 4 partially — solve-time
+trending now tracked under forward-work issues below). The service
+lives at [`services/plate-solver/`](../../../services/plate-solver/);
+the design contract is [`docs/services/plate-solver.md`](../../services/plate-solver.md).
+
+Forward-work items called out by this plan are tracked as standalone
+issues:
+
+- #232 — Sentinel HTTP service supervision (Phase 5 deferred)
+- #233 — Committable m31 happy-path FITS fixture (Phase 6 deferred)
+- #234 — Solve-time budget assertion in nightly (Phase 6 deferred)
+- #235 — Windows ARM64 verification (ADR-005 OQ 3, out of scope for v1)
+- #236 — Automated nightly hinted-vs-blind perf trending (Phase 7 deferred)
+
+The rp-side `plate_solve` MCP tool — listed by this plan's Phase 7 as
+forward work in the parent plan's Phase 6c-2 — has since landed
+([`services/rp/src/mcp/built_in/plate_solve.rs`](../../../services/rp/src/mcp/built_in/plate_solve.rs)
++ [`crates/rp-plate-solver/`](../../../crates/rp-plate-solver/)). No
+follow-up issue needed for it.
+
 **Date:** 2026-05-02
 **Branch:** `worktree-astap`
-**ADR:** [005-plate-solver](../decisions/005-plate-solver.md)
-**Parent plan:** [archive/image-evaluation-tools.md Phase 6c-1](archive/image-evaluation-tools.md#phase-6c-1--plate-solver-rp-managed-service)
+**ADR:** [005-plate-solver](../../decisions/005-plate-solver.md)
+**Parent plan:** [image-evaluation-tools.md Phase 6c-1](image-evaluation-tools.md#phase-6c-1--plate-solver-rp-managed-service)
 
 ## Background
 
@@ -699,7 +720,7 @@ Status: **complete.**
 The plan's original framing assumed a Sentinel "configured
 restart-command per service" feature the existing Sentinel doesn't
 have — Sentinel today is an Alpaca SafetyMonitor poller and notifier
-([`docs/services/sentinel.md`](../services/sentinel.md)), not a
+([`docs/services/sentinel.md`](../../services/sentinel.md)), not a
 generic HTTP service supervisor. The honest answer for v1: the
 operator's OS process supervisor (systemd / launchd / NSSM) is the
 recovery mechanism; future Sentinel work can layer on the `/health`
