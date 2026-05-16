@@ -23,6 +23,13 @@ anyhow = "1"
 [build-dependencies]
 embuild = "0.33"
 
+# `esp_idf_sdkconfig_defaults` is resolved relative to esp-idf-sys's
+# `workspace_dir`, which for us is `firmware/` (the nested workspace),
+# not this crate's directory. Without this key, the spike's
+# `sdkconfig.defaults` is never read.
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["spikes/usb-cdc-hello/sdkconfig.defaults"]
+
 # esp-idf-sys synthesizes its own ESP-IDF "main" component and ignores a
 # bare `idf_component.yml` placed next to Cargo.toml. The reliable path is
 # to declare a local ESP-IDF "extras" component (`components/cdc_acm_pull/`)

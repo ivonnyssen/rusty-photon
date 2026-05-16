@@ -11,7 +11,11 @@
 //!
 //! The CDC-ACM host driver's Rust API isn't wrapped by `esp-idf-svc`, so the
 //! driver entry points are declared as `extern "C"` here. The managed
-//! component is pulled in via `idf_component.yml`.
+//! component is pulled in via `[[package.metadata.esp-idf-sys.extra_components]]`
+//! in `Cargo.toml`, which points at the local `components/cdc_acm_pull/`
+//! extras component; that component's own `idf_component.yml` is what the
+//! IDF Component Manager actually reads. (A bare `idf_component.yml` next
+//! to `Cargo.toml` is silently ignored.)
 
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
@@ -112,6 +116,13 @@ fn rx_buf() -> &'static Mutex<Vec<u8>> {
 }
 
 extern "C" fn on_rx(data: *const u8, data_len: usize, _user_arg: *mut c_void) -> bool {
+    // SAFETY: the cdc_acm_host data_cb contract (see usb_host_cdc_acm
+    // `cdc_acm_host.h`) guarantees `data` is non-null and `data_len > 0` for
+    // every invocation, but this is an unsafe boundary from C — guard cheaply
+    // so a buggy driver build can't UB us.
+    if data.is_null() || data_len == 0 {
+        return true;
+    }
     let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
     if let Ok(mut buf) = rx_buf().lock() {
         buf.extend_from_slice(slice);

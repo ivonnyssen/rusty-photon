@@ -2,9 +2,14 @@
 
 ## Status
 
-**Not started.** Boards on order. This plan captures the design discussion
-from the conversation on 2026-05-11 so future sessions can pick it up
-without re-deriving the architecture. Parent service:
+**Phase 0 done (2026-05-15).** Round-trip `:e1\r` → `=03300C\r` confirmed
+against a real Star Adventurer GTi on an ESP32-S3-DevKitC-1; boot to
+first response 806 ms. See [`firmware/spikes/usb-cdc-hello/README.md`](../../firmware/spikes/usb-cdc-hello/README.md)
+for the captured monitor log and reproducer. Phases 1+ not started.
+
+This plan captures the design discussion from the conversation on
+2026-05-11 so future sessions can pick it up without re-deriving the
+architecture. Parent service:
 [`docs/services/star-adventurer-gti.md`](../services/star-adventurer-gti.md).
 
 ## Goal
@@ -32,9 +37,13 @@ Non-goals (out of this port; deferred items inherit from the parent MVP):
 
 Two boards in hand for evaluation:
 
-1. **Espressif ESP32-S3-DevKitC-1, N16R8** (16 MB flash, 8 MB PSRAM,
-   WiFi 4, USB-OTG). Primary target. Dual USB-C: one for
-   programming/console, one for native USB host to the mount.
+1. **Espressif ESP32-S3-DevKitC-1, N8R8** (8 MB flash, 8 MB PSRAM,
+   WiFi 4, USB-OTG). Primary target — this is the variant Phase 0 ran
+   on. Dual USB-C: one for programming/console (CP2102 bridge), one
+   for native USB host to the mount. The N16R8 variant works
+   identically except for `CONFIG_ESPTOOLPY_FLASHSIZE_*` and partition
+   sizing; pin the flash size in each crate's `sdkconfig.defaults` to
+   what's actually on the board.
 2. **Raspberry Pi Pico 2 W (RP2350 + CYW43439)**. Secondary target,
    booted in **RISC-V mode** (Hazard3 cores) — same hardware can also
    boot as Cortex-M33, but the point of this board is the pure-Rust /
@@ -260,8 +269,8 @@ ClientID=1 -d ClientTransactionID=1` returns `{"Value": false, ...}`.
 - Cert + key embedded at compile time via `build.rs` (reads from a
   user-supplied `firmware/certs/` directory that's `.gitignore`d).
 - Document the **private-CA recipe** in
-  [`docs/references/embedded-firmware-provisioning.md`](../references/embedded-firmware-provisioning.md)
-  (new file in this phase). Recipe: user generates a private CA with
+  `docs/references/embedded-firmware-provisioning.md` (new file in this
+  phase). Recipe: user generates a private CA with
   OpenSSL, issues a cert for the firmware, imports the CA cert into
   their client trust stores once.
 - Verify with `curl --cacert ca.pem https://<ip>:11117/...` and then
@@ -302,9 +311,8 @@ desktop service.
   disconnect.
 - Smoke test with `rp` mount tools end-to-end.
 - Document install + provisioning UX in
-  [`docs/services/star-adventurer-gti-embedded.md`](../services/star-adventurer-gti-embedded.md)
-  (new sibling to the existing service doc, focused on the firmware
-  deployment).
+  `docs/services/star-adventurer-gti-embedded.md` (new sibling to the
+  existing service doc, focused on the firmware deployment).
 
 ### Phase 9 — RP2350 RISC-V port  *(optional, parallel-trackable)*
 

@@ -5,7 +5,8 @@ interface as USB host, write `:e1\r`, and read back `=03300C\r`.
 Nothing else.
 
 Phase 0 of [`docs/plans/star-adventurer-gti-embedded.md`](../../../docs/plans/star-adventurer-gti-embedded.md).
-This crate is throwaway — deleted at the end of Phase 1.
+Kept in-tree as a Phase 0 regression check so the USB-host wiring stays
+exercisable even after Phase 1 migrates the higher-level work elsewhere.
 
 ## Status
 
@@ -38,9 +39,11 @@ to Phase 1 (`no_std`-ifying `skywatcher-motor-protocol`).
 
 ## Hardware
 
-- Espressif **ESP32-S3-DevKitC-1, N16R8** (16 MB flash, 8 MB PSRAM).
-  Two USB-C ports: one labelled `UART` for programming + console, one
-  labelled `USB` for the native USB-OTG (host to the mount).
+- Espressif **ESP32-S3-DevKitC-1, N8R8** (8 MB flash, 8 MB octal PSRAM).
+  Two USB-C ports: one labelled `UART` for programming + console (via
+  the CP2102 bridge), one labelled `USB` for the native USB-OTG (host
+  to the mount). The N16R8 variant works identically with the obvious
+  `sdkconfig.defaults` change.
 - USB-C cable between the board's `USB` port and the mount's USB-C
   port. The dev board sources VBUS as host — the GTi has its own
   power supply, so this should be fine.

@@ -1,9 +1,10 @@
 # `firmware/` — MCU targets
 
-Nested Cargo workspace for microcontroller targets. **Excluded from the
-host workspace** (top-level `Cargo.toml` `exclude = ["firmware"]`)
-because these crates build against the esp-rs Xtensa Rust fork and
-target triples like `xtensa-esp32s3-espidf` or
+Nested Cargo workspace for microcontroller targets. The host workspace
+at the repo root uses an explicit, globless `members = [...]` list, so
+`firmware/` is simply not a member — no `exclude` is needed. Kept
+separate because these crates build against the esp-rs Xtensa Rust fork
+and target triples like `xtensa-esp32s3-espidf` or
 `riscv32imac-unknown-none-elf`, which can't share the host workspace's
 build graph.
 

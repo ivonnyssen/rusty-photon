@@ -1,7 +1,11 @@
-# USB Host Library + CDC-ACM class driver.
-# These are the two ESP-IDF components the spike needs.
-CONFIG_USB_HOST_HUBS_SUPPORTED=y
+# USB host control-transfer buffer. Default 64 is too small for the
+# GTi's enumeration descriptors plus our line-coding control transfers.
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
+
+# Note: USB-hub enumeration (`CONFIG_USB_HOST_EXT_HUB_SUPPORT`) is
+# experimental in IDF v5.3 (gated on `CONFIG_IDF_EXPERIMENTAL_FEATURES`)
+# and not needed for direct-attached single-device topologies. Add it
+# back when the multi-device consolidation firmware lands.
 
 # Main task gets a generous stack — the USB host event loop sits on top
 # of FreeRTOS and the spike spawns blocking calls from main.
@@ -10,7 +14,9 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # Default log level. Override per-module at runtime with EspLogger.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
-# Match the project's target board (DevKitC-1 N16R8).
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Match the project's target board (DevKitC-1 N8R8 — 8 MB flash, 8 MB
+# octal PSRAM). If you have the N16R8 variant, change to
+# CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
