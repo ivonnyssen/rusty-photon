@@ -72,3 +72,15 @@ async fn handshake_ran_exactly_once(world: &mut FalconRotatorWorld) {
     let _ = world;
     todo!("connection_steps::handshake_ran_exactly_once implemented in Phase 3d")
 }
+
+#[then(expr = "the operation should fail with code {int}")]
+async fn operation_should_fail_with(world: &mut FalconRotatorWorld, code: u16) {
+    let _ = (world, code);
+    todo!("connection_steps::operation_should_fail_with implemented in Phase 3d")
+}
+
+#[then(expr = "the switch read should fail with code {int}")]
+async fn switch_read_should_fail_with(world: &mut FalconRotatorWorld, code: u16) {
+    let _ = (world, code);
+    todo!("connection_steps::switch_read_should_fail_with implemented in Phase 3d")
+}

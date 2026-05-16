@@ -33,6 +33,54 @@ async fn read_switch_bool(world: &mut FalconRotatorWorld, id: usize) {
     todo!("status_switch_steps::read_switch_bool implemented in Phase 3e")
 }
 
+#[when(expr = "I read GetSwitchName for id {int}")]
+async fn read_switch_name(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_switch_name implemented in Phase 3e")
+}
+
+#[when(expr = "I read GetSwitchDescription for id {int}")]
+async fn read_switch_description(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_switch_description implemented in Phase 3e")
+}
+
+#[when(expr = "I read MinSwitchValue for id {int}")]
+async fn read_min_switch_value(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_min_switch_value implemented in Phase 3e")
+}
+
+#[when(expr = "I read MaxSwitchValue for id {int}")]
+async fn read_max_switch_value(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_max_switch_value implemented in Phase 3e")
+}
+
+#[when(expr = "I read SwitchStep for id {int}")]
+async fn read_switch_step(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_switch_step implemented in Phase 3e")
+}
+
+#[when(expr = "I read CanWrite for id {int}")]
+async fn read_can_write(world: &mut FalconRotatorWorld, id: usize) {
+    let _ = (world, id);
+    todo!("status_switch_steps::read_can_write implemented in Phase 3e")
+}
+
+#[then(expr = "the switch name should be {string}")]
+async fn switch_name_should_be(world: &mut FalconRotatorWorld, expected: String) {
+    let _ = (world, expected);
+    todo!("status_switch_steps::switch_name_should_be implemented in Phase 3e")
+}
+
+#[then(expr = "the switch description should mention {string}")]
+async fn switch_description_should_mention(world: &mut FalconRotatorWorld, substring: String) {
+    let _ = (world, substring);
+    todo!("status_switch_steps::switch_description_should_mention implemented in Phase 3e")
+}
+
 #[when(expr = "I call SetSwitch on id {int} with {word}")]
 async fn call_set_switch(world: &mut FalconRotatorWorld, id: usize, value: String) {
     let _ = (world, id, value);

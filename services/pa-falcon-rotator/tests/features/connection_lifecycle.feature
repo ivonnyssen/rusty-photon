@@ -44,3 +44,23 @@ Feature: Connection lifecycle
     And I disconnect the status switch
     Then the rotator should be disconnected
     And the status switch should be disconnected
+
+  # Error-model contract: every device-bound op rejects with NOT_CONNECTED
+  # (ASCOM code 1031 = 0x407) when called while disconnected. Three
+  # representative ops — one rotator read, one rotator write, one switch
+  # read — pin the guard without re-listing every property.
+
+  Scenario: Rotator Position read returns NOT_CONNECTED when disconnected
+    Given a running pa-falcon-rotator service
+    When I read Position
+    Then the operation should fail with code 1031
+
+  Scenario: Rotator MoveAbsolute returns NOT_CONNECTED when disconnected
+    Given a running pa-falcon-rotator service
+    When I call MoveAbsolute with 90.00
+    Then the move should fail with code 1031
+
+  Scenario: Status Switch GetSwitchValue returns NOT_CONNECTED when disconnected
+    Given a running pa-falcon-rotator service
+    When I read GetSwitchValue for id 0
+    Then the switch read should fail with code 1031

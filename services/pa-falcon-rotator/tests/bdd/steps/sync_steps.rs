@@ -15,6 +15,18 @@ async fn call_sync_nan(world: &mut FalconRotatorWorld) {
     todo!("sync_steps::call_sync_nan implemented in Phase 3d")
 }
 
+#[when("I call Sync with Infinity")]
+async fn call_sync_infinity(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("sync_steps::call_sync_infinity implemented in Phase 3d")
+}
+
+#[when("I call Sync with -Infinity")]
+async fn call_sync_neg_infinity(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("sync_steps::call_sync_neg_infinity implemented in Phase 3d")
+}
+
 #[then(expr = "Sync should fail with code {int}")]
 async fn sync_should_fail_with(world: &mut FalconRotatorWorld, code: u16) {
     let _ = (world, code);

@@ -55,3 +55,63 @@ Feature: Status Switch device
       | id |
       | 0  |
       | 1  |
+
+  # Per-id metadata pins, mirroring the design doc's Switch layout table:
+  # id 0 -> "Input Voltage (raw)", numeric, range [0, 1023] step 1
+  # id 1 -> "Limit Hit",            boolean, range [0,    1] step 1
+
+  Scenario: Switch id 0 advertises its name
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read GetSwitchName for id 0
+    Then the switch name should be "Input Voltage (raw)"
+
+  Scenario: Switch id 1 advertises its name
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read GetSwitchName for id 1
+    Then the switch name should be "Limit Hit"
+
+  Scenario: Switch id 0 advertises its description
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read GetSwitchDescription for id 0
+    Then the switch description should mention "voltage"
+
+  Scenario: Switch id 1 advertises its description
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read GetSwitchDescription for id 1
+    Then the switch description should mention "limit"
+
+  Scenario Outline: Switch ranges and step size match the design contract
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read MinSwitchValue for id <id>
+    Then the switch value should be <min>
+    When I read MaxSwitchValue for id <id>
+    Then the switch value should be <max>
+    When I read SwitchStep for id <id>
+    Then the switch value should be <step>
+
+    Examples:
+      | id | min | max    | step |
+      | 0  | 0.0 | 1023.0 | 1.0  |
+      | 1  | 0.0 | 1.0    | 1.0  |
+
+  Scenario Outline: Reads on an out-of-range switch id are rejected with INVALID_VALUE
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I read <method> for id 2
+    Then the switch read should fail with code 1025
+
+    Examples:
+      | method                |
+      | GetSwitchName         |
+      | GetSwitchDescription  |
+      | GetSwitchValue        |
+      | GetSwitch             |
+      | MinSwitchValue        |
+      | MaxSwitchValue        |
+      | SwitchStep            |
+      | CanWrite              |

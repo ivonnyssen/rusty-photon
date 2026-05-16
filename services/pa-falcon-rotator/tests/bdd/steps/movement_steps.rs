@@ -21,10 +21,22 @@ async fn move_mechanical(world: &mut FalconRotatorWorld, mech: f64) {
     todo!("movement_steps::move_mechanical implemented in Phase 3d")
 }
 
-#[when(expr = "I call MoveAbsolute with NaN")]
+#[when("I call MoveAbsolute with NaN")]
 async fn move_absolute_nan(world: &mut FalconRotatorWorld) {
     let _ = world;
     todo!("movement_steps::move_absolute_nan implemented in Phase 3d")
+}
+
+#[when("I call MoveAbsolute with Infinity")]
+async fn move_absolute_infinity(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("movement_steps::move_absolute_infinity implemented in Phase 3d")
+}
+
+#[when("I call MoveAbsolute with -Infinity")]
+async fn move_absolute_neg_infinity(world: &mut FalconRotatorWorld) {
+    let _ = world;
+    todo!("movement_steps::move_absolute_neg_infinity implemented in Phase 3d")
 }
 
 #[when("I read IsMoving")]

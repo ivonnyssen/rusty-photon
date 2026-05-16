@@ -20,6 +20,24 @@ use crate::config::SwitchConfig;
 use crate::error::FalconRotatorError;
 use crate::serial_manager::SerialManager;
 
+/// Number of switches advertised by this device. The design doc pins this at 2
+/// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
+const SWITCH_COUNT: usize = 2;
+
+/// Reject switch ids outside `0..SWITCH_COUNT` with `INVALID_VALUE` per the
+/// ASCOM convention: id-range validation precedes operation-permission
+/// checks, so out-of-range ids never hit `INVALID_OPERATION` paths.
+fn validate_id(id: usize) -> ASCOMResult<()> {
+    if id >= SWITCH_COUNT {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_VALUE,
+            format!("Switch id {id} out of range (valid: 0..{SWITCH_COUNT})"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Falcon Status Switch device for ASCOM Alpaca.
 pub struct FalconStatusSwitchDevice {
     config: SwitchConfig,
@@ -102,10 +120,11 @@ impl Device for FalconStatusSwitchDevice {
 #[async_trait]
 impl Switch for FalconStatusSwitchDevice {
     async fn max_switch(&self) -> ASCOMResult<usize> {
-        Ok(2)
+        Ok(SWITCH_COUNT)
     }
 
-    async fn can_write(&self, _id: usize) -> ASCOMResult<bool> {
+    async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
+        validate_id(id)?;
         Ok(false)
     }
 
@@ -139,7 +158,8 @@ impl Switch for FalconStatusSwitchDevice {
         unimplemented!("FalconStatusSwitchDevice::switch_step is implemented in Phase 3e")
     }
 
-    async fn state_change_complete(&self, _id: usize) -> ASCOMResult<bool> {
+    async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
+        validate_id(id)?;
         // Read-only switches never change asynchronously.
         Ok(true)
     }
@@ -148,25 +168,65 @@ impl Switch for FalconStatusSwitchDevice {
     // trait's defaults return `NOT_IMPLEMENTED`, but the design doc's Switch
     // layout section pins the contract to `INVALID_OPERATION` — overriding
     // the three write surfaces here so the wire-level error code matches.
+    //
+    // ASCOM convention: id-range validation happens first, so a write against
+    // a bogus id returns `INVALID_VALUE` rather than the operation-rejection
+    // code.
 
-    async fn set_switch(&self, _id: usize, _state: bool) -> ASCOMResult<()> {
+    async fn set_switch(&self, id: usize, _state: bool) -> ASCOMResult<()> {
+        validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
             "Falcon status switches are read-only",
         ))
     }
 
-    async fn set_switch_value(&self, _id: usize, _value: f64) -> ASCOMResult<()> {
+    async fn set_switch_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
+        validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
             "Falcon status switches are read-only",
         ))
     }
 
-    async fn set_switch_name(&self, _id: usize, _name: String) -> ASCOMResult<()> {
+    async fn set_switch_name(&self, id: usize, _name: String) -> ASCOMResult<()> {
+        validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
             "Falcon status switch names are fixed",
         ))
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_id_accepts_zero() {
+        validate_id(0).unwrap();
+    }
+
+    #[test]
+    fn validate_id_accepts_one() {
+        validate_id(1).unwrap();
+    }
+
+    #[test]
+    fn validate_id_rejects_two() {
+        let err = validate_id(2).unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(
+            err.message.contains("Switch id 2 out of range"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_id_rejects_large_id() {
+        let err = validate_id(usize::MAX).unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 }

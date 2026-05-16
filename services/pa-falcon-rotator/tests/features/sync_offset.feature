@@ -21,8 +21,14 @@ Feature: Driver-side Sync
     And I read Position
     Then Position should be 37.50 degrees
 
-  Scenario: Sync with NaN is rejected with INVALID_VALUE
+  Scenario Outline: Sync rejects non-finite angles with INVALID_VALUE
     Given a running pa-falcon-rotator service
     When I connect the rotator
-    And I call Sync with NaN
+    And I call Sync with <value>
     Then Sync should fail with code 1025
+
+    Examples:
+      | value     |
+      | NaN       |
+      | Infinity  |
+      | -Infinity |
