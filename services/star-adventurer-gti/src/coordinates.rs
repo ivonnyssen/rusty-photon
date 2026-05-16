@@ -311,13 +311,17 @@ pub fn opposite_pier_side(side: PierSide) -> PierSide {
 /// [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)):
 ///
 /// 1. If `policy.enabled == false`, return `current` unchanged.
-/// 2. Compute the target's mechanical hour-angle from `target_ra`
-///    and `lst`.
-/// 3. If the *current* side's safety envelope covers `target_HA`,
-///    stay on the current side. The pre-flip side (`pierWest` in the
-///    Northern Hemisphere, `pierEast` in the Southern) covers
-///    `target_HA ∈ pre_flip_ra_hours_envelope`; the post-flip side
-///    covers `|target_HA| ≤ policy.flip_range_hours`.
+/// 2. Compute the target's celestial-HA and the resulting mech_HA on
+///    each pier side (`mech_HA_normal = HA`; `mech_HA_flipped = HA + 12`
+///    folded).
+/// 3. If the *current* side can reach the target without entering the
+///    counterweight binding zone, stay on the current side. For the
+///    pre-flip side that's `mech_HA_normal ∉ binding_zone`; for the
+///    post-flip side that's `|target_HA| ≤ flip_range_hours` (the
+///    operational rule that keeps the mount on flipped only briefly
+///    past the meridian — there's no mechanical reason to leave the
+///    flipped side at e.g. `mech_HA_flipped = 0` ≈ anti-meridian, but
+///    the operational convention is to flip back).
 /// 4. Otherwise return [`opposite_pier_side`]`(current)`.
 ///
 /// When `current` is [`PierSide::Unknown`] the helper returns
@@ -329,7 +333,7 @@ pub fn select_pier_side_for_target(
     lst_hours: f64,
     current: PierSide,
     policy: &FlipPolicy,
-    pre_flip_ra_hours_envelope: (f64, f64),
+    binding_zone_hours: (f64, f64),
     site_latitude_deg: f64,
 ) -> PierSide {
     if !policy.enabled {
@@ -346,9 +350,14 @@ pub fn select_pier_side_for_target(
         PierSide::East
     };
     let current_covers = if current == pre_flip_side {
-        let (lo, hi) = pre_flip_ra_hours_envelope;
-        (lo..=hi).contains(&target_ha)
+        // Natural side: mech_HA = celestial HA. "Covers" means not in
+        // binding zone — including the safe wrap region near ±12.
+        let (zone_min, zone_max) = binding_zone_hours;
+        !(zone_min <= zone_max && (zone_min..=zone_max).contains(&target_ha))
     } else {
+        // Post-flip side: operational rule, stay on flipped only near
+        // meridian. The binding zone for flipped-side mech_HA is
+        // separately enforced by `check_within_safe_envelope`.
         target_ha.abs() <= policy.flip_range_hours
     };
     if current_covers {
@@ -483,6 +492,13 @@ pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
         "rate_factor must be positive (got {rate_factor})"
     );
     ((sidereal_period as f64) / rate_factor).round() as u32
+}
+
+/// Fold an hour-angle value into `[-12, +12)`. Public helper so
+/// callers can compute "flipped" mech_HA = `fold_ha(mech_HA_normal + 12)`
+/// without re-deriving the modular-arithmetic convention.
+pub fn fold_ha(hours: f64) -> f64 {
+    fold_to_signed(hours, 24.0)
 }
 
 /// Fold a value into `[-period/2, +period/2)`. Used by both the RA and
@@ -929,7 +945,7 @@ mod tests {
             flip_range_hours: 0.5,
         }
     }
-    const NORTHERN_ENV: (f64, f64) = (-6.95, 6.95);
+    const BINDING_ZONE: (f64, f64) = (6.95, 11.05);
     const LAT_NORTH: f64 = 45.0;
     const LAT_SOUTH: f64 = -33.0;
 
@@ -941,7 +957,7 @@ mod tests {
         // means "leave the side alone".
         for current in [PierSide::West, PierSide::East, PierSide::Unknown] {
             let chosen =
-                select_pier_side_for_target(0.0, lst, current, &policy, NORTHERN_ENV, LAT_NORTH);
+                select_pier_side_for_target(0.0, lst, current, &policy, BINDING_ZONE, LAT_NORTH);
             assert_eq!(chosen, current, "current={current:?}");
         }
     }
@@ -956,7 +972,7 @@ mod tests {
             12.0,
             PierSide::Unknown,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::Unknown);
@@ -974,7 +990,7 @@ mod tests {
             lst,
             PierSide::West,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::West);
@@ -992,7 +1008,7 @@ mod tests {
             lst,
             PierSide::East,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
@@ -1011,7 +1027,7 @@ mod tests {
             lst,
             PierSide::East,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::West);
@@ -1032,7 +1048,7 @@ mod tests {
             lst,
             PierSide::West,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
@@ -1052,7 +1068,7 @@ mod tests {
             lst,
             PierSide::East,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
@@ -1073,7 +1089,7 @@ mod tests {
             lst,
             PierSide::East,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);
@@ -1084,7 +1100,7 @@ mod tests {
             lst,
             PierSide::West,
             &policy,
-            NORTHERN_ENV,
+            BINDING_ZONE,
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);

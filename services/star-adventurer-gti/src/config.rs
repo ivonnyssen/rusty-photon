@@ -91,36 +91,39 @@ pub struct MountConfig {
     #[serde(default)]
     pub tracking_rate: TrackingRateName,
 
-    /// Safe RA mechanical-hour-angle envelope. Slews / syncs whose
-    /// target falls outside `[ra_min_hours, ra_max_hours]` are
+    /// Counterweight-binding zone in encoder `mech_HA` (signed hours,
+    /// folded to `[−12, +12)`). Slews / syncs whose target's
+    /// `mech_HA` on the chosen pier side falls inside
+    /// `[binding_zone_min_hours, binding_zone_max_hours]` are
     /// rejected with `INVALID_VALUE` and never reach the wire.
     ///
-    /// `mech_HA = 0` is "OTA on the meridian, counterweight down" on
-    /// a polar-aligned Northern-Hemisphere setup. `±6 h` is the
-    /// counterweight-horizontal east / west position; the GTi's
-    /// hardware-verified mechanical limit sits at `±6.99 h` (reached
-    /// cleanly with no audible motor stress or counterweight-pier
-    /// contact during the 2026-05-13 hardware test), aligning with
-    /// INDI eqmod's baked-in `±7 h` envelope for every Sky-Watcher
-    /// mount (`zeroRAEncoder ± (totalRAEncoder/4 +
-    /// totalRAEncoder/24)` in `eqmodbase.cpp::Goto`).
+    /// On the GTi this is **one-sided and asymmetric**: as the OTA
+    /// tracks westward past meridian on natural pierWest, the
+    /// counterweight swings *up* to a max altitude of +57° (south)
+    /// at `mech_HA = +6`, then comes down toward the east horizon at
+    /// `mech_HA = +12`. The arc where the CW is high enough to bind
+    /// the pier from the east side is `(+6.95, +11.05)`. The
+    /// negative-mech_HA side is the mirror: the CW swings *down*
+    /// below horizon (into the ground beneath the pier), so no
+    /// mirror binding zone exists.
     ///
-    /// Defaults are `[-6.95, +6.95]` — `0.05 h` (`3 arcmin`) inside
-    /// the mechanical limit. The buffer covers two needs at once:
-    /// the ASCOM `SlewToCoordinates(ra, dec)` round-trip means the
-    /// driver re-reads LST a few tens of ms after the client
-    /// computed the target, so a target quantised exactly to the
-    /// limit would drift past it; and the deferred Phase 2
-    /// meridian-flip planner will need headroom between the
-    /// configured envelope and the mechanical stops to plan
-    /// multi-stage flip slews. Tune narrower if your specific setup
-    /// (mount-head-extension, OTA length, cable routing) clears
-    /// less; tune wider only after verifying the extra travel on
-    /// hardware.
-    #[serde(default = "default_ra_min_hours")]
-    pub ra_min_hours: f64,
-    #[serde(default = "default_ra_max_hours")]
-    pub ra_max_hours: f64,
+    /// This is **separate from** the `flip_policy.flip_range_hours`
+    /// rule: this check is the hard mechanical-safety floor,
+    /// applied to every slew destination on its chosen pier side
+    /// (natural mech_HA = celestial HA; flipped mech_HA =
+    /// celestial HA + 12 folded). `flip_range_hours` is the
+    /// operational pier-side preference and lives separately.
+    ///
+    /// Defaults are `(6.95, 11.05)` — the hardware-verified GTi
+    /// binding zone. Set `binding_zone_min_hours = binding_zone_max_hours`
+    /// (or any non-overlapping pair) to disable the check entirely;
+    /// only do this for tests or for mounts whose binding zone is
+    /// known to be elsewhere. See the design doc's
+    /// [§Per-pier safety envelopes](../../../docs/services/star-adventurer-gti.md#per-pier-safety-envelopes).
+    #[serde(default = "default_binding_zone_min_hours")]
+    pub binding_zone_min_hours: f64,
+    #[serde(default = "default_binding_zone_max_hours")]
+    pub binding_zone_max_hours: f64,
 
     /// Safe Dec mechanical-degree envelope. Same enforcement and
     /// rationale as the RA limits. Defaults `[-90.0, +90.0]` — the
@@ -482,11 +485,11 @@ fn default_discovery_port() -> Option<u16> {
 fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
 }
-fn default_ra_min_hours() -> f64 {
-    -6.95
-}
-fn default_ra_max_hours() -> f64 {
+fn default_binding_zone_min_hours() -> f64 {
     6.95
+}
+fn default_binding_zone_max_hours() -> f64 {
+    11.05
 }
 fn default_dec_min_degrees() -> f64 {
     -90.0
@@ -555,8 +558,8 @@ impl Default for MountConfig {
             site_elevation_m: 0.0,
             settle_after_slew: default_settle_after_slew(),
             tracking_rate: TrackingRateName::Sidereal,
-            ra_min_hours: default_ra_min_hours(),
-            ra_max_hours: default_ra_max_hours(),
+            binding_zone_min_hours: default_binding_zone_min_hours(),
+            binding_zone_max_hours: default_binding_zone_max_hours(),
             dec_min_degrees: default_dec_min_degrees(),
             dec_max_degrees: default_dec_max_degrees(),
             park_ra_ticks: None,

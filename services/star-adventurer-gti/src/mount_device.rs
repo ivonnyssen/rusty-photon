@@ -196,18 +196,28 @@ impl MountDevice {
     /// a hard stop while the encoder counter continues to advance.
     /// On a real-hardware ConformU run that drove the mount into the
     /// counterweight-up region we heard the motor whine and saw the
-    /// axis stop physically for several seconds at a time. The
-    /// configured `ra_min_hours` / `ra_max_hours` (pre-flip side) and
-    /// `flip_policy.flip_range_hours` (post-flip side) express the
-    /// safe envelopes; any target outside the relevant one is
-    /// rejected with `INVALID_VALUE` and never reaches the wire.
+    /// axis stop physically for several seconds at a time.
     ///
-    /// Operates on celestial RA/Dec + LST + `target_is_flipped` rather
-    /// than encoder ticks: the post-flip target encoder lands past the
-    /// celestial pole on the Dec axis (the dec ticks themselves are
-    /// outside `[-cpr_dec/4, +cpr_dec/4]`), so a ticks-based bound
-    /// would falsely reject every flipped target. The celestial-dec
-    /// range check is the actual safety invariant.
+    /// The check is in **encoder `mech_HA` space** (signed hours
+    /// folded to `[−12, +12)`). For a target on the natural pier
+    /// side, `target_mech_HA = celestial_HA`. For a flipped target,
+    /// `target_mech_HA = celestial_HA + 12 h` folded. If the chosen-
+    /// side `mech_HA` falls inside the configured binding zone
+    /// `[binding_zone_min_hours, binding_zone_max_hours]`, the slew
+    /// is rejected with `INVALID_VALUE`.
+    ///
+    /// Note: this is a *destination-only* check (matching INDI EQMOD's
+    /// `EncoderTarget`-style envelope). The slew path is not analysed;
+    /// the slew-direction logic in
+    /// [`flip_slew_ra_delta`](#flip_slew_ra_delta) and the per-axis
+    /// `ccw = current > target` rule in `execute_slew_with_explicit_side`
+    /// pick the safe direction.
+    ///
+    /// `flip_policy.flip_range_hours` is **not** consulted here — that
+    /// rule lives in [`select_pier_side_for_target`] for pier-side
+    /// preference only. Park 1 / Park 5 (anti-meridian poses with
+    /// `mech_HA = ±12` on the chosen pier) are reachable via slew
+    /// because their mech_HA is outside the binding zone.
     ///
     /// Both axes are validated together so a partial-failure slew
     /// can't issue motion on RA before discovering Dec is out of
@@ -219,24 +229,22 @@ impl MountDevice {
         lst_hours: f64,
         target_is_flipped: bool,
     ) -> ASCOMResult<()> {
-        let target_ha = ra_to_mechanical_ha(ra_hours, lst_hours);
-        if target_is_flipped {
-            let flip_range = self.config.flip_policy.flip_range_hours;
-            if target_ha.abs() > flip_range {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_VALUE,
-                    format!(
-                        "flipped target_HA {target_ha:.3} h outside flip window \
-                         [-{flip_range}, +{flip_range}] h"
-                    ),
-                ));
+        let target_mech_ha = {
+            let normal = ra_to_mechanical_ha(ra_hours, lst_hours);
+            if target_is_flipped {
+                crate::coordinates::fold_ha(normal + 12.0)
+            } else {
+                normal
             }
-        } else if !(self.config.ra_min_hours..=self.config.ra_max_hours).contains(&target_ha) {
+        };
+        let zone_min = self.config.binding_zone_min_hours;
+        let zone_max = self.config.binding_zone_max_hours;
+        if zone_min <= zone_max && (zone_min..=zone_max).contains(&target_mech_ha) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "RA target_HA {target_ha:.3} h outside safe envelope [{}, {}] h",
-                    self.config.ra_min_hours, self.config.ra_max_hours
+                    "target mech_HA {target_mech_ha:.3} h is inside the counterweight \
+                     binding zone [{zone_min}, {zone_max}] h"
                 ),
             ));
         }
@@ -1334,7 +1342,10 @@ impl Telescope for MountDevice {
             lst,
             current_side,
             &self.config.flip_policy,
-            (self.config.ra_min_hours, self.config.ra_max_hours),
+            (
+                self.config.binding_zone_min_hours,
+                self.config.binding_zone_max_hours,
+            ),
             self.config.site_latitude_deg,
         );
         let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
@@ -1584,7 +1595,10 @@ impl Telescope for MountDevice {
             lst,
             current_side,
             &self.config.flip_policy,
-            (self.config.ra_min_hours, self.config.ra_max_hours),
+            (
+                self.config.binding_zone_min_hours,
+                self.config.binding_zone_max_hours,
+            ),
             self.config.site_latitude_deg,
         );
         self.execute_slew_with_explicit_side(ra, dec, chosen_side)
@@ -2923,8 +2937,9 @@ mod tests {
         let mut cfg = Config::default();
         // Same rationale as `fast_settle_device`: open the
         // mechanical-envelope check for tests that don't exercise it.
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -3227,8 +3242,9 @@ mod tests {
         // envelope all the way for these tests; the safety-gate
         // behaviour is covered separately by
         // [`fast_settle_connected_narrow_envelope`].
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -3242,19 +3258,24 @@ mod tests {
         d
     }
 
-    /// Like `fast_settle_connected`, but with a narrow mechanical
-    /// envelope so the safety-gate tests can land target coords
-    /// that are clearly outside the envelope without first needing
-    /// to push past the GTi default `±6.95h` / `±90°`.
+    /// Like `fast_settle_connected`, but with a narrow safety
+    /// configuration (a small binding zone + tight Dec range) so the
+    /// safety-gate tests can land target coords that are clearly
+    /// inside the binding zone or outside the Dec band without first
+    /// needing to push past the GTi default `(6.95, 11.05)` /
+    /// `±90°`.
     async fn fast_settle_connected_narrow_envelope() -> MountDevice {
         let mut cfg = Config::default();
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Allow exactly the meridian band ±1 h of HA / ±5° of Dec.
-        cfg.mount.ra_min_hours = -1.0;
-        cfg.mount.ra_max_hours = 1.0;
+        // Narrow binding zone covering `mech_HA ∈ [0.5, 1.5] h` so a
+        // target 1 h past meridian on the natural side is inside it,
+        // and tight Dec band `[-5°, +5°]` so off-equator targets are
+        // rejected.
+        cfg.mount.binding_zone_min_hours = 0.5;
+        cfg.mount.binding_zone_max_hours = 1.5;
         cfg.mount.dec_min_degrees = -5.0;
         cfg.mount.dec_max_degrees = 5.0;
         let manager = Arc::new(TransportManager::new(
@@ -3284,14 +3305,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slew_async_refuses_ra_outside_safe_envelope() {
-        // Envelope: HA in [-1 h, +1 h]. Target RA = LST + 3 h puts
-        // mech-HA at -3 h — well outside.
+    async fn slew_async_refuses_ra_target_in_binding_zone() {
+        // Binding zone covers `mech_HA ∈ [0.5, 1.5] h`. Target RA =
+        // LST − 1 puts `mech_HA = LST − (LST − 1) = +1 h` — squarely
+        // in the middle of the zone, so the slew must be rejected
+        // with `INVALID_VALUE` before any wire motion.
         let d = fast_settle_connected_narrow_envelope().await;
         let lst = d.sidereal_time().await.unwrap();
-        let target = (lst + 3.0).rem_euclid(24.0);
+        let target = (lst - 1.0).rem_euclid(24.0);
         let err = d.slew_to_coordinates_async(target, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(
+            err.message.contains("binding zone"),
+            "error message must call out the binding zone: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
@@ -3437,8 +3465,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -3518,8 +3547,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -3587,8 +3617,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -4023,8 +4054,9 @@ mod tests {
 
     fn device_with_path(path: PathBuf) -> MountDevice {
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -4385,8 +4417,9 @@ mod tests {
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         seed_default_config(&path);
@@ -4486,8 +4519,9 @@ mod tests {
             state.dec.position_ticks = -1;
         }
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
         cfg.mount.site_latitude_deg = 32.7157;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
@@ -4515,8 +4549,9 @@ mod tests {
             state.ra.position_ticks = 50_000;
         }
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
         cfg.mount.site_latitude_deg = 32.7157;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
@@ -4544,8 +4579,9 @@ mod tests {
         // `Park` from `home_pose: ap_park_3` drove the OTA to
         // meridian / celestial equator instead of NCP.
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
         cfg.mount.site_latitude_deg = 32.7157;
         let manager = Arc::new(TransportManager::new(
@@ -4568,8 +4604,9 @@ mod tests {
         // Config carries park values → driver should use them, not the
         // (zeroed) handshake fallback.
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.park_ra_ticks = Some(5000);
         cfg.mount.park_dec_ticks = Some(-7000);
         let manager = Arc::new(TransportManager::new(
@@ -5059,8 +5096,9 @@ mod tests {
         // and `IsPulseGuiding` reports `false` consistent with the
         // lack of actual motion.
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(StuckAxisFactory),
@@ -5479,8 +5517,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.flip_policy.enabled = true;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
