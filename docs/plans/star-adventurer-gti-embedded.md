@@ -2,9 +2,11 @@
 
 ## Status
 
-**Phase 0 done (2026-05-15).** Round-trip `:e1\r` → `=03300C\r` confirmed
-against a real Star Adventurer GTi on an ESP32-S3-DevKitC-1; boot to
-first response 806 ms. See [`firmware/spikes/usb-cdc-hello/README.md`](../../firmware/spikes/usb-cdc-hello/README.md)
+**Phase 0 done (2026-05-15, re-verified 2026-05-16).** Round-trip
+`:e1\r` → `=03300C\r` confirmed against a real Star Adventurer GTi on
+an ESP32-S3-DevKitC-1; cold-boot to first response **~1.6 s** with
+octal-PSRAM init enabled (the `open` → response leg is ~400 ms). See
+[`firmware/spikes/usb-cdc-hello/README.md`](../../firmware/spikes/usb-cdc-hello/README.md)
 for the captured monitor log and reproducer. Phases 1+ not started.
 
 This plan captures the design discussion from the conversation on
@@ -166,11 +168,16 @@ bench**, and the highest-risk work (USB host) is first.
 **Goal:** prove the ESP32-S3 can open USB-CDC to the mount and round-trip
 a single `:e1\r` command. Nothing else.
 
-- New `firmware/spikes/usb-cdc-hello/` (throwaway crate; deleted at the
-  end of Phase 1).
-- `cargo generate esp-rs/esp-template`.
+- New `firmware/spikes/usb-cdc-hello/` (kept in-tree as a Phase 0
+  regression check after the spike succeeds).
+- Scaffold an `esp-idf-svc` + `std` binary crate (the `esp-template`
+  generator is one path; we ended up hand-rolling the cargo manifest +
+  `.cargo/config.toml` + `sdkconfig.defaults` to wire in the managed
+  `espressif/usb_host_cdc_acm` component).
 - Open USB host CDC, write `:e1\r`, read until `\r`, print the response
-  bytes via `defmt-rtt`.
+  bytes via `esp-idf-svc`'s `EspLogger` over the UART0 console
+  (`CONFIG_ESP_CONSOLE_UART_DEFAULT`, 115200 8N1 through the CP2102
+  bridge on the dev board).
 - Expected reply: `=03300C\r` (mount-type 0x03, firmware version 0x30.0x0C).
 
 **Done when:** firmware boots, enumerates the mount, prints the firmware

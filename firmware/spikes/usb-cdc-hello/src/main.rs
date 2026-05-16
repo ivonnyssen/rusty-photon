@@ -111,6 +111,11 @@ fn check(name: &str, rc: i32) -> Result<()> {
 /// whenever the running buffer ends in `\r`.
 static RX_BUF: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
 
+/// Hard cap on the RX buffer. The longest SkyWatcher response we expect is
+/// well under 20 bytes; 256 leaves >10x headroom while keeping a misbehaving
+/// device (no `\r` terminator, runaway chatter) from chewing through heap.
+const RX_BUF_LIMIT: usize = 256;
+
 fn rx_buf() -> &'static Mutex<Vec<u8>> {
     RX_BUF.get_or_init(|| Mutex::new(Vec::with_capacity(64)))
 }
@@ -125,7 +130,20 @@ extern "C" fn on_rx(data: *const u8, data_len: usize, _user_arg: *mut c_void) ->
     }
     let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
     if let Ok(mut buf) = rx_buf().lock() {
-        buf.extend_from_slice(slice);
+        if buf.len() + slice.len() > RX_BUF_LIMIT {
+            warn!(
+                "RX buffer would exceed {RX_BUF_LIMIT} bytes (have {}, +{} new); dropping accumulated bytes",
+                buf.len(),
+                slice.len()
+            );
+            buf.clear();
+            // After clearing, only keep the new chunk if it itself fits.
+            if slice.len() <= RX_BUF_LIMIT {
+                buf.extend_from_slice(slice);
+            }
+        } else {
+            buf.extend_from_slice(slice);
+        }
     }
     true
 }
@@ -168,6 +186,9 @@ fn run_spike() -> Result<()> {
             let rc = unsafe { usb_host_lib_handle_events(u32::MAX, &mut event_flags) };
             if rc != ESP_OK as i32 {
                 error!("usb_host_lib_handle_events: rc={rc}");
+                // Back off so a stuck error path doesn't busy-loop the UART
+                // log and starve other FreeRTOS tasks.
+                thread::sleep(Duration::from_millis(100));
                 continue;
             }
             if event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS != 0 {
