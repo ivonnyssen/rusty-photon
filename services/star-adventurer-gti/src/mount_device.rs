@@ -522,8 +522,22 @@ impl MountDevice {
             } else {
                 ra_delta_canonical
             };
-            let dec_delta =
+            let dec_delta_canonical =
                 fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+            let dec_delta = if is_flip_slew {
+                // Flip slews force the Dec axis to traverse the
+                // visible celestial pole (NCP for north, SCP for
+                // south) rather than the below-horizon pole — see
+                // [`flip_slew_dec_delta`].
+                flip_slew_dec_delta(
+                    dec_delta_canonical,
+                    snap.dec.position_ticks,
+                    params.cpr_dec,
+                    self.config.site_latitude_deg >= 0.0,
+                )
+            } else {
+                dec_delta_canonical
+            };
             // Both axes use the INDI wire sequence: `:K` + poll `:f`
             // (decelerate stop) → `:G goto+fast` → `:I 6` → `:H |delta|`
             // → `:M breaks` → `:J`. The RA-axis `:K` is also the wire
@@ -731,6 +745,59 @@ fn flip_slew_ra_delta(canonical_delta: i32, cpr: u32) -> i32 {
         canonical_delta
     } else {
         canonical_delta - cpr_i
+    }
+}
+
+/// Force a flip slew's Dec delta to traverse the **visible** celestial
+/// pole rather than the below-horizon pole.
+///
+/// During a Dec flip-slew the encoder must cross one of the `±cpr/4`
+/// boundaries (the two celestial poles). For a polar-aligned mount,
+/// only ONE pole is above the local horizon: NCP at altitude `+lat`
+/// for northern observers (encoder `+cpr/4`), SCP at altitude `+|lat|`
+/// for southern (encoder `−cpr/4`). The other pole is below the
+/// horizon and the path through it dips the OTA below the local
+/// horizon — exactly the failure mode we hit during the first
+/// hardware validation when the OTA was driven through SCP at LAT
+/// 32.7°N. (The fold-canonical-delta's boundary case at exactly
+/// `±cpr/2` produces the negative direction, which from `encoder = 0`
+/// pre-flip routes the Dec axis through SCP.)
+///
+/// Rule, expressed in encoder side:
+///
+/// - **Northern** observer:
+///   - `current` in the *pre-flip* half (`|enc| ≤ cpr/4`): force CW
+///     (positive delta) — the path increases toward `+cpr/4` (NCP).
+///   - `current` in the *post-flip* half (`|enc| > cpr/4`): force
+///     CCW (negative delta) — the path decreases back through
+///     `+cpr/4` (NCP).
+/// - **Southern** observer: inverse — the safe pole is `−cpr/4`
+///   (SCP) so the directions flip.
+///
+/// When the canonical shortest path already goes the safe direction,
+/// it's returned unchanged. When it doesn't, the long way around
+/// (`delta − cpr` or `delta + cpr`) lands at the same modular
+/// destination via the safe pole.
+fn flip_slew_dec_delta(
+    canonical_delta: i32,
+    current_ticks: i32,
+    cpr_dec: u32,
+    northern: bool,
+) -> i32 {
+    if cpr_dec == 0 || canonical_delta == 0 {
+        return canonical_delta;
+    }
+    let cpr_i = cpr_dec as i32;
+    let quarter = cpr_i / 4;
+    let in_pre_flip = current_ticks.abs() <= quarter;
+    let safe_direction_positive = if northern { in_pre_flip } else { !in_pre_flip };
+    let canonical_positive = canonical_delta > 0;
+    if canonical_positive == safe_direction_positive {
+        canonical_delta
+    } else if canonical_delta > 0 {
+        canonical_delta - cpr_i
+    } else {
+        canonical_delta + cpr_i
     }
 }
 
@@ -4963,6 +5030,173 @@ mod tests {
     #[test]
     fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
         assert_eq!(flip_slew_ra_delta(12_345, 0), 12_345);
+    }
+
+    // ---------- flip_slew_dec_delta (Dec routing through the visible pole) ----------
+
+    /// Trace the absolute encoder traversal range from `start` by `delta`
+    /// and report `true` iff the trajectory crosses `pole_ticks` (the
+    /// unsafe-pole position) on its way to the end.
+    fn path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32) -> bool {
+        let cpr_i = cpr as i32;
+        let end = start + delta;
+        let (lo, hi) = if end >= start {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        // Test all modular replicas of `pole_ticks` that could fall in
+        // `[lo, hi]`. Since `|delta| ≤ cpr`, at most one replica matters.
+        (-2..=2).any(|k| {
+            let p = pole_ticks + k * cpr_i;
+            p >= lo && p <= hi
+        })
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw() {
+        // Park 3: start at encoder +cpr/4 (= +90°, NCP). Target = +135°
+        // encoder = +3*cpr/8 (celestial dec = +45° on the flipped side).
+        // Natural delta = +cpr/8 (positive CW). Path stays in upper
+        // half, doesn't touch SCP. Use canonical.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = quarter; // +90° encoder
+        let target = (cpr as f64 * 3.0 / 8.0).round() as i32; // +135°
+        let canonical = target - current; // +cpr/8
+        assert_eq!(
+            flip_slew_dec_delta(canonical, current, cpr, true),
+            canonical,
+            "Park 3 → +135° should use the natural CW direction"
+        );
+        // Confirm the path avoids SCP (-cpr/4).
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_pre_flip_zero_to_post_flip_dec_zero_takes_long_way() {
+        // The bug case from the first hardware run: starting at encoder
+        // = 0 (codebase historical home), the canonical fold of a slew
+        // to dec_encoder = ±cpr/2 returns negative (CCW), which routes
+        // the Dec axis through −cpr/4 (SCP, below horizon for north).
+        // The fix forces the CW long way through +cpr/4 (NCP).
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let half_cpr = cpr as i32 / 2;
+        let canonical = -half_cpr; // post-flip target for celestial dec = 0
+        let issued = flip_slew_dec_delta(canonical, 0, cpr, true);
+        assert_eq!(issued, half_cpr, "must force CW through NCP");
+        // Verify path crosses NCP and not SCP.
+        assert!(path_crosses_pole(0, issued, quarter, cpr));
+        assert!(!path_crosses_pole(0, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_flip_back_from_upper_post_flip_uses_natural_ccw() {
+        // Flip-back: starting at encoder +3*cpr/8 (= +135°, upper
+        // post-flip), target = 0 (pre-flip celestial equator). Natural
+        // CCW (negative direction) crosses +cpr/4 (NCP). Don't take
+        // the long way — CCW is safe here.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = (cpr as f64 * 3.0 / 8.0).round() as i32;
+        let target = 0;
+        let canonical = target - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert_eq!(
+            issued, canonical,
+            "flip-back from +135° must use natural CCW"
+        );
+        // Verify path crosses NCP (the safe pole) and not SCP.
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_positive_uses_cw() {
+        // Pre-flip but below celestial equator: encoder = -cpr/8
+        // (= -45°). Target = +3*cpr/8 (= +135° encoder, post-flip
+        // dec=+45). CW path: -45 → 0 → +90 (NCP) → +135. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -(cpr as i32 / 8);
+        let target = (cpr as i32 * 3) / 8;
+        let canonical = target - current; // positive, half cpr
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert_eq!(issued, canonical, "natural CW direction is safe");
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_negative_forces_long_cw() {
+        // Pre-flip below equator: encoder = -cpr/8. Target =
+        // -3*cpr/8 (post-flip negative). Natural CCW (negative) path:
+        // -cpr/8 → -cpr/4 (SCP) → -3*cpr/8. UNSAFE. Force long-way CW:
+        // -cpr/8 → +cpr/4 (NCP) → +cpr/2 → wraps → -3*cpr/8. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -(cpr as i32 / 8);
+        let target_canonical = -(cpr as i32 * 3) / 8;
+        let canonical = target_canonical - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        // Forced to positive direction (long way).
+        assert!(issued > 0);
+        // Lands at the same modular destination.
+        assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+        // Path crosses NCP, not SCP.
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_lower_post_flip_to_pre_flip_uses_ccw_through_wrap() {
+        // Lower post-flip: encoder = -3*cpr/8 (= -135°, celestial
+        // dec=-45 on post-flip side). Target = 0 (pre-flip equator).
+        // Natural CW (positive) path: -3*cpr/8 → -cpr/4 (SCP) → 0.
+        // UNSAFE. Force CCW (negative) long-way: -3*cpr/8 →
+        // -cpr/2 → wraps → +cpr/2 → +cpr/4 (NCP) → 0. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -((cpr as i32 * 3) / 8);
+        let canonical = 0 - current; // positive
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert!(issued < 0, "must force CCW long way");
+        assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_south_inverts_safe_pole() {
+        // Southern observer: SCP is visible, NCP is below horizon.
+        // Repeat the "park 3 start" case but with southern config:
+        // start at encoder = -cpr/4 (Park 3 south = SCP). Target =
+        // -3*cpr/8. Natural CCW (negative). Should be used as-is.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -quarter; // SCP for southern Park 3
+        let target = -((cpr as i32 * 3) / 8);
+        let canonical = target - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, false);
+        assert_eq!(
+            issued, canonical,
+            "south Park 3 → -3cpr/8 must use natural CCW"
+        );
+        // For south, the unsafe pole is +cpr/4 (NCP). Verify path
+        // doesn't cross it.
+        assert!(!path_crosses_pole(current, issued, quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_handles_zero_cpr_defensively() {
+        assert_eq!(flip_slew_dec_delta(12_345, 0, 0, true), 12_345);
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_zero_canonical_returns_zero() {
+        assert_eq!(flip_slew_dec_delta(0, 0, GTI_CPR, true), 0);
     }
 
     // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
