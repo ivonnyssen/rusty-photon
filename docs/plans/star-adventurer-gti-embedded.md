@@ -90,8 +90,8 @@ changes is the implementation of each layer's I/O surface.
 
 ## Repo layout
 
-New top-level directory, **excluded from the main Cargo workspace** (host
-target vs xtensa/riscv target):
+New top-level directory, a **separate nested Cargo workspace** outside
+the host workspace (host target vs xtensa/riscv target):
 
 ```
 firmware/
@@ -119,9 +119,11 @@ firmware/
     (same shape; target = riscv32imac-unknown-none-elf)
 ```
 
-Top-level `Cargo.toml` adds `exclude = ["firmware"]` so host `cargo build
---workspace` stays unaffected. The nested `firmware/Cargo.toml` is its
-own workspace.
+The host `Cargo.toml` lists workspace members explicitly (no globs), so
+`firmware/` is simply not a member — host `cargo build --workspace`
+ignores it without needing an explicit `exclude`. The nested
+`firmware/Cargo.toml` is its own workspace, with its own target
+triple, toolchain pin, and lock file.
 
 Existing `crates/skywatcher-motor-protocol` gains a `no_std` feature
 (default `std`) — same crate, both targets. Existing
