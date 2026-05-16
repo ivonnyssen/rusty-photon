@@ -963,21 +963,28 @@ readings without an explicit `SyncToCoordinates` step.
 
 The five named poses follow the Astro-Physics
 ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
-document. Each pose is mirror-symmetric between the Northern and
-Southern Hemispheres, and the driver applies the hemisphere case-split
-internally from `site_latitude_deg`. AP Park 4 / Park 5 are
-post-meridian-flip poses (saddle east); the seed step lands the
-encoder past the celestial pole on the Dec axis and at the `±12 h`
-encoder wrap on the RA axis for Park 4.
+document. Each AP pose describes a fixed mechanical pier side
+(OTA-on-west-of-mount or OTA-on-east-of-mount) that's the same for
+both hemispheres — but the driver's natural-vs-flipped pier convention
+flips between hemispheres (N natural = pierWest, S natural = pierEast,
+see `pre_flip_side` in `mount_device.rs`). So a pose like Park 1
+(OTA on the west side of the mount) is the **natural pier** in the
+North and the **flipped pier** in the South, and its encoder
+representation differs accordingly:
 
-| `home_pose` | AP description | Codebase `mech_HA` | Codebase `dec_encoder` |
-|---|---|---|---|
-| `null` (default) | No seeding — trust the firmware encoder as-is. Pre-Phase-6 behaviour. | — | — |
-| `ap_park_1` | RA horizontal, saddle west, OTA level facing the polar-side horizon. | `0 h` | `±(90 − \|lat\|)°` (sign matches hemisphere) |
-| `ap_park_2` | OTA level facing the east horizon (target at celestial east-rising equator). Hemisphere-independent. | `−6 h` | `0°` |
-| `ap_park_3` | OTA along polar axis pointing at the visible celestial pole — Sky-Watcher's stock power-up pose. | `0 h` | `±90°` (sign matches hemisphere) |
-| `ap_park_4` | Post-flip mirror of Park 1: saddle east, OTA level facing the anti-polar horizon. | `−12 h` (encoder wrap) | `∓(90 + \|lat\|)°` (sign anti-hemisphere) |
-| `ap_park_5` | Post-flip mirror of Park 1: saddle east, OTA level facing the polar-side horizon. APCC-only in AP's own software. | `0 h` (post-flip wrap) | `±(90 + \|lat\|)°` (sign matches hemisphere) |
+- Natural side: `mech_HA = celestial_HA`, `dec_enc = celestial_dec`.
+- Flipped side: `mech_HA = celestial_HA + 12 h` folded to `[−12, +12)`,
+  `dec_enc = sign(celestial_dec) · (180° − |celestial_dec|)` (past
+  the celestial pole on the encoder).
+
+| `home_pose` | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
+|---|---|---|---|---|
+| `null` (default) | No seeding — trust the firmware encoder as-is. Pre-Phase-6 behaviour. | — | — | — |
+| `ap_park_1` | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(−12 h, +(90 − \|lat\|)°)` (natural) | `(0 h, −(90 + \|lat\|)°)` (flipped past pole) |
+| `ap_park_2` | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
+| `ap_park_3` | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
+| `ap_park_4` | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (flipped past pole) | `(0 h, +(90 − \|lat\|)°)` (natural) |
+| `ap_park_5` | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(0 h, +(90 + \|lat\|)°)` (flipped past pole) | `(−12 h, −(90 − \|lat\|)°)` (natural) |
 
 The seed step is skipped when the firmware reports a non-zero
 encoder reading on connect — that indicates the mount has already

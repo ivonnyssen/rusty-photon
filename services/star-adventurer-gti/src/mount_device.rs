@@ -408,7 +408,7 @@ impl MountDevice {
             );
             return Ok(());
         }
-        let mech_ha = home_pose.codebase_mech_ha_hours();
+        let mech_ha = home_pose.codebase_mech_ha_hours(self.config.site_latitude_deg);
         let dec_deg = home_pose.codebase_dec_encoder_degrees(self.config.site_latitude_deg);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
