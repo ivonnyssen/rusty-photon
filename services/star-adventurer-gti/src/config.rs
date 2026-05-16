@@ -335,8 +335,13 @@ impl HomePose {
     pub fn codebase_mech_ha_hours(&self) -> f64 {
         match self {
             Self::ApPark1 => 0.0,
+            // Park 2 and Park 3 share the same RA position ("RA axis
+            // vertical" per the AP doc) — the only difference is the
+            // Dec encoder rotation. Both put the dec axis tilted
+            // south-up out of the east-west horizontal, with target
+            // HA = −6 h in the codebase's convention.
             Self::ApPark2 => -6.0,
-            Self::ApPark3 => 0.0,
+            Self::ApPark3 => -6.0,
             Self::ApPark4 => -12.0,
             Self::ApPark5 => 0.0,
         }
@@ -687,7 +692,14 @@ mod tests {
         // Boundary: lat = 0 falls into the "north" arm by the `>= 0`
         // convention `side_of_pier` uses.
         assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(0.0), 90.0);
-        assert_eq!(HomePose::ApPark3.codebase_mech_ha_hours(), 0.0);
+        // Park 3 shares the same RA position as Park 2 (both "RA axis
+        // vertical" per the AP doc): codebase mech_HA = −6 h, not 0.
+        // Verified on hardware at LAT 32.7°N (2026-05-15): with
+        // mech_HA = 0 the dec-only slew from Park 3 to celestial dec=0
+        // landed the OTA at the *east* horizon (HA = -6), confirming
+        // the RA position is offset 6 h from the codebase mech_HA = 0
+        // convention.
+        assert_eq!(HomePose::ApPark3.codebase_mech_ha_hours(), -6.0);
     }
 
     #[test]
