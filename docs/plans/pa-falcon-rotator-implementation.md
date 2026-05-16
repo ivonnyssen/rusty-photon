@@ -218,9 +218,8 @@ Implementation in `rotator_device.rs`:
 * `Rotator::position` — `serial_manager.read_status().await.map(|s| normalise(s.position_deg + serial_manager.sync_offset()))`.
 * `Rotator::mechanical_position` — `serial_manager.read_status().await.map(|s| normalise(s.position_deg))`.
 * `Rotator::target_position`:
-    - If `serial_manager.target_position().await.is_some()` → return that value.
-    - Else → return current `position()`.
-    - `is_moving` check: on every read, if `target_position` is `Some` and `read_status().is_moving == false`, clear it before returning the fallback `position`.
+    - If `serial_manager.target_position().await.is_some()` → return that value. The stored target survives a successful move; it is cleared only by `Halt` or by the next `Move*`. This lets clients compare `Position` against `TargetPosition` post-move to verify they landed where they asked.
+    - Else → return current `position()` (one fresh `FA`).
 * `Rotator::reverse` (get) — `serial_manager.read_status().await.map(|s| s.motor_reverse)`.
 * `Rotator::set_reverse(b)` — validate input not-NaN (n/a — `bool`), call `serial_manager.set_reverse(b)`.
 * `Rotator::step_size → Ok(0.01155)`.
@@ -237,8 +236,8 @@ Implementation in `rotator_device.rs`:
     - `set_target_position(normalise(sky_deg))`, `move_mechanical(normalise(sky_deg - sync_offset))`.
 * `Rotator::move_mechanical(mech_deg)`:
     - Validate finite.
-    - `target_sky = normalise(mech_deg + sync_offset)` (so `TargetPosition` reads still report a sky value).
-    - `set_target_position(target_sky)`, `move_mechanical(normalise(mech_deg))`.
+    - The wire command is `MD:<normalise(mech_deg)>` directly (no offset applied to the wire value — matches the design-doc mapping table).
+    - However the driver-side cache is kept in sky coordinates for consistency across `Move*` variants: `target_sky = normalise(mech_deg + sync_offset)`. So `set_target_position(target_sky)` followed by `move_mechanical(normalise(mech_deg))`.
 * `Rotator::sync(sky_deg)`:
     - Validate finite.
     - `serial_manager.sync(sky_deg)`.
@@ -326,7 +325,7 @@ Implementation in `services/pa-falcon-rotator/tests/conformu_integration.rs`:
 Implementation:
 
 * `README.md` Services table — add a `pa-falcon-rotator` row between `star-adventurer-gti` and the `[cov-*]` block. Update `[cov-pa-falcon-rotator]` markdown reference links at the bottom. Add a short `### pa-falcon-rotator` paragraph under the Services list.
-* `docs/workspace.md` Services table — flip the phase note on the `pa-falcon-rotator` row from "Phase 1 — design landed; implementation in flight" (added in PR #1) to its production form (drop the parenthetical).
+* `docs/workspace.md` Services table — flip the phase note on the `pa-falcon-rotator` row from `(Phase 1 — design landed; implementation tracked in [`docs/plans/pa-falcon-rotator-implementation.md`](plans/pa-falcon-rotator-implementation.md))` (added in PR #1) to its production form (drop the parenthetical entirely).
 * `docs/workspace.md` Plans table — flip the entry on this plan from "active" to "archived 2026-MM-DD" and move the file to `docs/plans/archive/`.
 * If we adopt sentinel integration: add a sentinel monitor for the rotator port (deferred — outside this plan).
 

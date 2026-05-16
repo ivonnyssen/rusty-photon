@@ -34,7 +34,7 @@ The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deli
 +-------------------+
 ```
 
-A single serial connection is shared by both registered devices and all of their clients. The `SerialManager` ref-counts `set_connected(true)` so the port is opened on the first connect and closed when the last device disconnects. A `command_lock` serialises every device-bound write/read pair so concurrent property reads queue cleanly on the one physical port. The `SerialManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last commanded `MD` target), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)).
+A single serial connection is shared by both registered devices and all of their clients. The `SerialManager` ref-counts `set_connected(true)` so the port is opened on the first connect and closed when the last device disconnects. A `command_lock` serialises every device-bound write/read pair so concurrent property reads queue cleanly on the one physical port. The `SerialManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last requested target in **sky** coordinates), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)).
 
 ### Why no cache
 
@@ -108,8 +108,7 @@ Field types:
 
 ### Commands the driver does **not** send
 
-- **`FF`** — firmware reload is a maintenance operation with no response and unknown post-conditions. The driver never issues it. Operators perform firmware updates via the vendor tool.
-- **`FF`** is also excluded from `SupportedActions` for the same reason.
+- **`FF`** — firmware reload is a maintenance operation with no response and unknown post-conditions. The driver never issues it, and excludes it from `SupportedActions` so ASCOM clients cannot trigger it via the `Action` endpoint either. Operators perform firmware updates via the vendor tool.
 
 ## ASCOM Rotator Mapping
 
@@ -128,12 +127,12 @@ The Falcon has a single physical-angle concept. ASCOM's `IRotatorV3+` separates 
 | `Halt()` | `FH`. Clears `TargetPosition` and `is_moving` on success. |
 | `Move(delta)` | Relative move: `target = (MechanicalPosition + delta - sync_offset) mod 360`, then `MD:<target>`. ASCOM defines `Move` in **sky** coordinates, so the same `sync_offset` is applied. |
 | `MoveAbsolute(skyDeg)` | `target_mechanical = (skyDeg - sync_offset) mod 360`, then `MD:<target_mechanical>`. |
-| `MoveMechanical(mechDeg)` | `MD:<mechDeg mod 360>` directly — no offset applied. |
+| `MoveMechanical(mechDeg)` | Wire command: `MD:<mechDeg mod 360>` directly — `sync_offset` is **not** applied to the wire value. Internal `target_position` is still stored in sky coordinates (`mechDeg + sync_offset`) so subsequent `TargetPosition` reads stay in the same frame regardless of which `Move*` variant set them. |
 | `Sync(skyDeg)` | `sync_offset = (skyDeg - MechanicalPosition) mod 360`. **Driver-side only.** The Falcon's `SD` command is *not* used here: ASCOM Sync must leave `MechanicalPosition` unchanged, but `SD` rewrites the device's stored counter. |
 
 ### Sync semantics — why driver-side, not `SD`
 
-ASCOM's `Sync(skyAngle)` is specified as: *the value reported by `Position` becomes `skyAngle`, the value reported by `MechanicalPosition` is unchanged*. The Falcon's `SD:<deg>` command rewrites the device's stored counter, which would change `MechanicalPosition` on the next `FA` poll and break the ASCOM contract. The driver therefore tracks the offset in software (an `f64` in `CachedState`, initialised to `0.0` on connect) and never issues `SD`.
+ASCOM's `Sync(skyAngle)` is specified as: *the value reported by `Position` becomes `skyAngle`, the value reported by `MechanicalPosition` is unchanged*. The Falcon's `SD:<deg>` command rewrites the device's stored counter, which would change `MechanicalPosition` on the next `FA` read and break the ASCOM contract. The driver therefore tracks the offset in software as `SerialManager::sync_offset: Mutex<f64>` (initialised to `0.0` on connect) and never issues `SD`.
 
 A side-effect of this choice: the sync offset is **not** persisted across driver restarts. If a deployment needs persistent sync, that is a follow-up — see [Open questions](#open-questions).
 
@@ -144,7 +143,7 @@ A side-effect of this choice: the sync offset is **not** persisted across driver
 1. `Move(delta)` / `MoveAbsolute(skyDeg)` / `MoveMechanical(mechDeg)` each compute the sky target, write `target_position = Some(sky_target)`, convert to mechanical, then issue `MD:<mech>`.
 2. While the move is in progress, `is_moving()` reads `FA.is_moving` directly from the device on every call. There is no driver-side "is the move done?" flag — the device is the authoritative source.
 3. `TargetPosition` reads return the stored sky target if `Some`; otherwise they return the current `Position` (one fresh `FA` read).
-4. `target_position` is cleared (`None`) in three places: on `Halt`, on the *next* `Move*` (the new target overwrites; this is a momentary transition not a clear-then-set), and when `FA.is_moving == 0` is observed by an `is_moving()` call that finds `target_position = Some(...)` — at that point the move has completed and the stored target is no longer "in flight."
+4. `target_position` is cleared (`None`) in exactly two places: on `Halt`, and on the *next* `Move*` (the new target overwrites; this is a momentary transition, not a clear-then-set). A **successful move does not clear `target_position`** — the stored target remains readable so clients can verify "did I land where I asked?" by comparing `Position` to `TargetPosition` after `IsMoving` falls false.
 
 The Falcon's `is_moving` flag is the authoritative completion signal. We deliberately do **not** compare `FA.position_in_deg` to `target_position` for completion — angular comparison would have to handle backlash, overshoot, and wraparound, and the device already tells us the answer.
 
@@ -230,6 +229,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
   },
   "server": {
     "port": 11118,
+    "discovery_port": 32227,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -348,7 +348,7 @@ For each of `Move(delta)`, `MoveAbsolute(skyDeg)`, `MoveMechanical(mechDeg)`:
 3. Compute the mechanical target (per the [mapping table](#ascom-rotator-mapping)).
 4. Normalise into `[0.0, 360.0)`.
 5. Store the target: `target_position = Some(mechanical_target)`.
-6. Under the command lock, write `MD:<target>\n` to the device and validate the echo response (`MD:<target>` ± `\n`).
+6. Under the command lock, write `MD:<target>\n` to the device and validate the echo response (`MD:<target>`, optionally with a trailing `\n`).
 7. Return `Ok(())` to the client (ASCOM `Move*` returns immediately; the move is asynchronous).
 8. Move completion is reported by `IsMoving` reads — each one issues a fresh `FA`. `target_position` survives completion so `TargetPosition` reads stay populated until either `Halt` or the next `Move*`.
 
