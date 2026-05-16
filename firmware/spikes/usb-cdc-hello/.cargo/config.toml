@@ -1,0 +1,22 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = [
+    "--cfg",
+    "espidf_time64",
+]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32s3"
+ESP_IDF_VERSION = "v5.3.1"
+# Tell esp-idf-sys's build script which crate's `[package.metadata.esp-idf-sys]`
+# block to read. The `firmware/` parent is a virtual Cargo workspace, so
+# `cargo metadata` reports no root_package and esp-idf-sys would otherwise
+# silently fall back to defaults (no extra components, no managed deps).
+ESP_IDF_SYS_ROOT_CRATE = "usb-cdc-hello"

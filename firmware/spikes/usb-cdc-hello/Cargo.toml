@@ -1,0 +1,40 @@
+[package]
+name = "usb-cdc-hello"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Phase 0 spike: round-trip :e1 over USB-CDC host to a Star Adventurer GTi"
+
+[[bin]]
+name = "usb-cdc-hello"
+path = "src/main.rs"
+harness = false
+
+[dependencies]
+# esp-idf-sys is also a transitive dep through esp-idf-svc, but listing it
+# directly here lets the IDF Component Manager pick up our
+# `[[package.metadata.esp-idf-sys.extra_components]]` block below.
+esp-idf-sys = "0.36"
+esp-idf-svc = { version = "0.51", features = ["std", "binstart"] }
+log = "0.4"
+anyhow = "1"
+
+[build-dependencies]
+embuild = "0.33"
+
+# `esp_idf_sdkconfig_defaults` is resolved relative to esp-idf-sys's
+# `workspace_dir`, which for us is `firmware/` (the nested workspace),
+# not this crate's directory. Without this key, the spike's
+# `sdkconfig.defaults` is never read.
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["spikes/usb-cdc-hello/sdkconfig.defaults"]
+
+# esp-idf-sys synthesizes its own ESP-IDF "main" component and ignores a
+# bare `idf_component.yml` placed next to Cargo.toml. The reliable path is
+# to declare a local ESP-IDF "extras" component (`components/cdc_acm_pull/`)
+# whose own `idf_component.yml` pulls in the managed component from the
+# component registry, then point esp-idf-sys at that directory.
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components/cdc_acm_pull"]
+bindings_header = "components/cdc_acm_pull/bindings.h"
