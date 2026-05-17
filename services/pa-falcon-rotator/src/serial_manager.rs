@@ -10,15 +10,27 @@
 //! - `last_limit_detected` — used by `read_status` to log a `warn!` on the
 //!   rising edge of `FA.limit_detect`.
 
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 use crate::config::SerialConfig;
-use crate::error::Result;
+use crate::error::{FalconRotatorError, Result};
 use crate::io::{SerialPortFactory, SerialReader, SerialWriter};
-use crate::protocol::{Command, FalconStatus};
+use crate::protocol::{
+    parse_firmware_version, parse_full_status, parse_voltage_raw, validate_echo,
+    validate_ping_response, Command, FalconStatus,
+};
+
+/// Normalise a degree value into `[0.0, 360.0)`.
+///
+/// Handles negative deltas (e.g. from `Move(delta < 0)`) by adding a full
+/// turn before the second modulo so the result is always non-negative.
+fn normalise_deg(deg: f64) -> f64 {
+    ((deg % 360.0) + 360.0) % 360.0
+}
 
 /// Shared serial port manager.
 pub struct SerialManager {
@@ -53,57 +65,291 @@ impl SerialManager {
 
     /// Connect to the serial port (ref-counted; first connect runs the handshake).
     pub async fn connect(&self) -> Result<()> {
-        let _ = (&self.config, &self.serial_factory);
-        unimplemented!("SerialManager::connect is implemented in Phase 3c")
+        let count = self.connection_count.fetch_add(1, Ordering::SeqCst);
+
+        if count > 0 {
+            debug!(
+                "Additional device connecting (connection count: {})",
+                count + 1
+            );
+            return Ok(());
+        }
+
+        debug!("First device connecting, opening serial port");
+
+        let pair = match self
+            .serial_factory
+            .open(
+                &self.config.port,
+                self.config.baud_rate,
+                self.config.timeout,
+            )
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                // Roll back the optimistic refcount bump.
+                self.connection_count.store(0, Ordering::SeqCst);
+                return Err(FalconRotatorError::ConnectionFailed(format!(
+                    "open {}: {e}",
+                    self.config.port
+                )));
+            }
+        };
+
+        *self.reader.lock().await = Some(pair.reader);
+        *self.writer.lock().await = Some(pair.writer);
+
+        if let Err(e) = self.run_handshake().await {
+            // Handshake failed: tear the connection down so the next
+            // `connect()` retries the open + handshake cleanly instead of
+            // short-circuiting on the elevated refcount.
+            *self.reader.lock().await = None;
+            *self.writer.lock().await = None;
+            self.connection_count.store(0, Ordering::SeqCst);
+            return Err(e);
+        }
+
+        self.serial_available.store(true, Ordering::SeqCst);
+        info!(
+            "Serial port opened on {} (connection count: 1)",
+            self.config.port
+        );
+        Ok(())
     }
 
     /// Disconnect from the serial port (ref-counted; last disconnect closes).
     pub async fn disconnect(&self) {
-        unimplemented!("SerialManager::disconnect is implemented in Phase 3c")
+        let prev_count =
+            match self
+                .connection_count
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    if count > 0 {
+                        Some(count - 1)
+                    } else {
+                        None
+                    }
+                }) {
+                Ok(prev) => prev,
+                Err(_) => {
+                    debug!("disconnect() called with connection count already at 0");
+                    return;
+                }
+            };
+
+        if prev_count == 1 {
+            debug!("Last device disconnecting, closing serial port");
+            self.serial_available.store(false, Ordering::SeqCst);
+            *self.reader.lock().await = None;
+            *self.writer.lock().await = None;
+            *self.sync_offset.lock().await = 0.0;
+            *self.target_position.lock().await = None;
+            *self.last_limit_detected.lock().await = None;
+            info!("Serial port closed (connection count: 0)");
+        } else {
+            debug!(
+                "Device disconnecting (connection count: {})",
+                prev_count - 1
+            );
+        }
     }
 
     /// Whether the serial port is currently open.
     pub fn is_available(&self) -> bool {
-        self.serial_available
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.serial_available.load(Ordering::SeqCst)
     }
 
     /// Issue a command on the device under the command lock, returning the raw response.
-    pub async fn send_command(&self, _command: Command) -> Result<String> {
-        let _ = (&self.reader, &self.writer, &self.command_lock);
-        unimplemented!("SerialManager::send_command is implemented in Phase 3c")
+    ///
+    /// Public surface for callers that need to address a protocol command
+    /// not covered by the higher-level helpers below. Refuses with
+    /// `NotConnected` if the port isn't open.
+    pub async fn send_command(&self, command: Command) -> Result<String> {
+        if !self.is_available() {
+            return Err(FalconRotatorError::NotConnected);
+        }
+        self.send_command_internal(&command).await
+    }
+
+    /// Internal command send + read used by the handshake (which runs before
+    /// `serial_available` is `true`) and by the higher-level helpers.
+    async fn send_command_internal(&self, command: &Command) -> Result<String> {
+        let _cmd_guard = self.command_lock.lock().await;
+        let command_str = command.to_command_string();
+        debug!("Sending command: {}", command_str);
+
+        {
+            let mut writer_guard = self.writer.lock().await;
+            let writer = writer_guard
+                .as_mut()
+                .ok_or(FalconRotatorError::NotConnected)?;
+            writer.write_message(&command_str).await?;
+        }
+
+        let response = {
+            let mut reader_guard = self.reader.lock().await;
+            let reader = reader_guard
+                .as_mut()
+                .ok_or(FalconRotatorError::NotConnected)?;
+            reader
+                .read_line()
+                .await?
+                .ok_or_else(|| FalconRotatorError::Communication("Connection closed".to_string()))?
+        };
+
+        debug!("Received response: {}", response);
+        Ok(response)
+    }
+
+    /// Connect-time handshake: F# → FV → DR:0 → FA → VS.
+    ///
+    /// The FA and VS reads are smoke tests — we just want to confirm the
+    /// wire format is honoured and that the device responds, so the parsed
+    /// results are discarded.
+    async fn run_handshake(&self) -> Result<()> {
+        // F# — ping
+        let resp = self
+            .send_command_internal(&Command::Ping)
+            .await
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("ping: {e}")))?;
+        validate_ping_response(&resp)
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("ping: {e}")))?;
+
+        // FV — firmware version (surfaced at info!)
+        let resp = self
+            .send_command_internal(&Command::FirmwareVersion)
+            .await
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("firmware: {e}")))?;
+        let version = parse_firmware_version(&resp)
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("firmware: {e}")))?;
+        info!("Falcon firmware v{}", version);
+
+        // DR:0 — force de-rotation off
+        let resp = self
+            .send_command_internal(&Command::DerotationOff)
+            .await
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("derotation: {e}")))?;
+        validate_echo(&Command::DerotationOff, &resp)
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("derotation: {e}")))?;
+
+        // FA — smoke test full status (parsed result discarded; no-cache design)
+        let resp = self
+            .send_command_internal(&Command::FullStatus)
+            .await
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("full status: {e}")))?;
+        let _ = parse_full_status(&resp)
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("full status: {e}")))?;
+
+        // VS — smoke test voltage
+        let resp = self
+            .send_command_internal(&Command::Voltage)
+            .await
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("voltage: {e}")))?;
+        let _ = parse_voltage_raw(&resp)
+            .map_err(|e| FalconRotatorError::ConnectionFailed(format!("voltage: {e}")))?;
+
+        Ok(())
     }
 
     /// Issue `FA` and parse the response; also performs the `limit_detect` edge log.
+    ///
+    /// Logs `warn!` exactly once on the `None → true` or `Some(false) → true`
+    /// transition of `FA.limit_detect`. The state initialises to `None` on
+    /// connect, so a fresh connection that reports `limit_detect = 1` on its
+    /// very first observation through `read_status` still surfaces the warning.
     pub async fn read_status(&self) -> Result<FalconStatus> {
-        let _ = &self.last_limit_detected;
-        unimplemented!("SerialManager::read_status is implemented in Phase 3c")
+        let response = self.send_command_internal(&Command::FullStatus).await?;
+        let status = parse_full_status(&response)?;
+
+        let target = *self.target_position.lock().await;
+        let mut last = self.last_limit_detected.lock().await;
+        let rising_edge = match *last {
+            None => status.limit_detect,
+            Some(prev) => !prev && status.limit_detect,
+        };
+        *last = Some(status.limit_detect);
+        drop(last);
+
+        if rising_edge {
+            warn!(
+                "Falcon reported limit_detect after move toward {:?}",
+                target
+            );
+        }
+
+        Ok(status)
     }
 
     /// Issue `VS` and return the raw ADC count.
     pub async fn read_voltage_raw(&self) -> Result<u32> {
-        unimplemented!("SerialManager::read_voltage_raw is implemented in Phase 3c")
+        let response = self.send_command_internal(&Command::Voltage).await?;
+        parse_voltage_raw(&response)
     }
 
-    /// Move to a mechanical angle (caller has already normalised + applied offset).
-    pub async fn move_mechanical(&self, _target_mech_deg: f64) -> Result<()> {
-        unimplemented!("SerialManager::move_mechanical is implemented in Phase 3c")
+    /// Move to a mechanical angle. The caller has already applied the sync
+    /// offset; this method only normalises into `[0, 360)` before serialising
+    /// to `MD:nn.nn`.
+    pub async fn move_mechanical(&self, target_mech_deg: f64) -> Result<()> {
+        if !self.is_available() {
+            return Err(FalconRotatorError::NotConnected);
+        }
+        let cmd = Command::MoveDeg(normalise_deg(target_mech_deg));
+        let response = self.send_command_internal(&cmd).await?;
+        validate_echo(&cmd, &response)?;
+        Ok(())
     }
 
-    /// Issue `FH`, validate the echo, and clear `target_position`.
+    /// Issue `FH`, validate the `FH:1` echo, and clear the stored target.
     pub async fn halt(&self) -> Result<()> {
-        unimplemented!("SerialManager::halt is implemented in Phase 3c")
+        if !self.is_available() {
+            return Err(FalconRotatorError::NotConnected);
+        }
+        let response = self.send_command_internal(&Command::Halt).await?;
+        validate_echo(&Command::Halt, &response)?;
+        *self.target_position.lock().await = None;
+        Ok(())
     }
 
     /// Read `FA` then write `FN:b` iff the device's `motor_reverse` differs.
-    pub async fn set_reverse(&self, _want: bool) -> Result<()> {
-        unimplemented!("SerialManager::set_reverse is implemented in Phase 3c")
+    ///
+    /// EEPROM-wear protection (design doc Reverse semantics): the Falcon
+    /// persists `FN:b` to EEPROM on every write, so we read first and skip
+    /// the write when the device already reports the requested value.
+    pub async fn set_reverse(&self, want: bool) -> Result<()> {
+        if !self.is_available() {
+            return Err(FalconRotatorError::NotConnected);
+        }
+        let current = self.read_status().await?.motor_reverse;
+        if current == want {
+            debug!(
+                "set_reverse({}): device already matches, skipping FN write",
+                want
+            );
+            return Ok(());
+        }
+        let cmd = Command::SetReverse(want);
+        let response = self.send_command_internal(&cmd).await?;
+        validate_echo(&cmd, &response)?;
+        Ok(())
     }
 
     /// Driver-side sync: store `(sky_deg - mech) mod 360` in `sync_offset`.
-    pub async fn sync(&self, _sky_deg: f64) -> Result<()> {
-        let _ = &self.sync_offset;
-        unimplemented!("SerialManager::sync is implemented in Phase 3c")
+    ///
+    /// Per the design doc Sync semantics, ASCOM `Sync` must leave
+    /// `MechanicalPosition` unchanged, so the offset lives in driver memory
+    /// and the Falcon's `SD` command is never issued.
+    pub async fn sync(&self, sky_deg: f64) -> Result<()> {
+        if !self.is_available() {
+            return Err(FalconRotatorError::NotConnected);
+        }
+        let mech = self.read_status().await?.position_deg;
+        let offset = normalise_deg(sky_deg - mech);
+        *self.sync_offset.lock().await = offset;
+        debug!(
+            "sync: sky={:.4} mech={:.4} → sync_offset={:.4}",
+            sky_deg, mech, offset
+        );
+        Ok(())
     }
 
     /// Read the current driver-side sync offset.
@@ -134,5 +380,451 @@ impl std::fmt::Debug for SerialManager {
             .field("connection_count", &self.connection_count)
             .field("serial_available", &self.serial_available)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    // ---- normalise_deg ---------------------------------------------------
+
+    #[test]
+    fn normalise_deg_zero_is_zero() {
+        assert!((normalise_deg(0.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normalise_deg_under_360_passthrough() {
+        assert!((normalise_deg(180.0) - 180.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normalise_deg_wraps_positive_overflow() {
+        assert!((normalise_deg(370.0) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normalise_deg_wraps_negative_into_positive() {
+        assert!((normalise_deg(-10.0) - 350.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normalise_deg_handles_two_turn_overflow() {
+        assert!((normalise_deg(720.0)).abs() < 1e-9);
+    }
+}
+
+/// Mock-backed integration tests for the SerialManager. These exercise the
+/// connect handshake, ref-counting, command dispatch, and driver-side state
+/// against the deterministic `MockSerialPortFactory`. Gated on `feature =
+/// "mock"` per the qhy-focuser precedent.
+#[cfg(all(test, feature = "mock"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod mock_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::mock::MockSerialPortFactory;
+    use std::sync::Mutex as StdMutex;
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    fn test_config() -> Config {
+        Config {
+            serial: SerialConfig {
+                port: "/dev/mock".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn manager_with(factory: Arc<MockSerialPortFactory>) -> Arc<SerialManager> {
+        Arc::new(SerialManager::new(
+            test_config(),
+            factory as Arc<dyn SerialPortFactory>,
+        ))
+    }
+
+    // ---- Connect / disconnect -------------------------------------------
+
+    #[tokio::test]
+    async fn test_connect_makes_available() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        assert!(!manager.is_available());
+        manager.connect().await.unwrap();
+        assert!(manager.is_available());
+        manager.disconnect().await;
+        assert!(!manager.is_available());
+    }
+
+    #[tokio::test]
+    async fn test_connect_increments_refcount_handshake_runs_once() {
+        // First connect runs the handshake (F#, FV, DR:0, FA, VS = 5 commands).
+        // A second concurrent connect just bumps the refcount; no extra
+        // commands should hit the wire.
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+
+        manager.connect().await.unwrap();
+        let after_first = factory.command_log().await;
+        assert_eq!(after_first.len(), 5, "expected 5 handshake commands");
+
+        manager.connect().await.unwrap();
+        let after_second = factory.command_log().await;
+        assert_eq!(
+            after_second, after_first,
+            "second connect must not issue any new commands"
+        );
+
+        // First disconnect just decrements; port stays open.
+        manager.disconnect().await;
+        assert!(manager.is_available());
+
+        // Last disconnect closes.
+        manager.disconnect().await;
+        assert!(!manager.is_available());
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_underflow_protection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        // Two extra disconnects before any connect should not panic.
+        manager.disconnect().await;
+        manager.disconnect().await;
+        assert!(!manager.is_available());
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_resets_driver_state() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+
+        manager.connect().await.unwrap();
+        manager.set_target_position(123.45).await;
+        // Drive the limit_detect tracker so it holds Some(_)
+        factory.set_limit_detect(true).await;
+        let _ = manager.read_status().await.unwrap();
+        // Set a non-zero sync offset.
+        factory.set_mech_position_deg(45.0).await;
+        manager.sync(90.0).await.unwrap();
+        assert!((manager.sync_offset().await - 45.0).abs() < 1e-9);
+
+        manager.disconnect().await;
+
+        // All driver-side state should be reset on full disconnect.
+        assert_eq!(manager.target_position().await, None);
+        assert!((manager.sync_offset().await).abs() < 1e-9);
+        assert_eq!(*manager.last_limit_detected.lock().await, None);
+    }
+
+    // ---- Handshake failure paths ---------------------------------------
+
+    /// Factory that always returns a synthetic SerialPort error so we can
+    /// exercise the `connect → ConnectionFailed → refcount rollback` path.
+    #[derive(Default)]
+    struct FailingFactory;
+
+    #[async_trait::async_trait]
+    impl SerialPortFactory for FailingFactory {
+        async fn open(
+            &self,
+            _port: &str,
+            _baud_rate: u32,
+            _timeout: std::time::Duration,
+        ) -> Result<crate::io::SerialPair> {
+            Err(FalconRotatorError::SerialPort("synthetic".into()))
+        }
+        async fn port_exists(&self, _port: &str) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_open_failure_returns_connection_failed_and_resets_refcount() {
+        let manager = Arc::new(SerialManager::new(
+            test_config(),
+            Arc::new(FailingFactory) as Arc<dyn SerialPortFactory>,
+        ));
+        let err = manager.connect().await.unwrap_err();
+        assert!(
+            matches!(err, FalconRotatorError::ConnectionFailed(_)),
+            "got {err:?}"
+        );
+        assert!(!manager.is_available());
+        // Second attempt must re-enter the first-time path (refcount was
+        // rolled back), not short-circuit on the elevated count.
+        let err2 = manager.connect().await.unwrap_err();
+        assert!(matches!(err2, FalconRotatorError::ConnectionFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_connect_handshake_ping_failure_rolls_back() {
+        // Reader that always returns garbage for the very first read so the
+        // ping validator fails. We hand-build the factory so we can control
+        // the first response without going through the rich mock.
+        #[derive(Default)]
+        struct GarbageReader {
+            sent: bool,
+        }
+        #[async_trait::async_trait]
+        impl SerialReader for GarbageReader {
+            async fn read_line(&mut self) -> Result<Option<String>> {
+                self.sent = true;
+                Ok(Some("BAD_PREFIX".to_string()))
+            }
+        }
+        struct SinkWriter;
+        #[async_trait::async_trait]
+        impl SerialWriter for SinkWriter {
+            async fn write_message(&mut self, _message: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+        struct GarbageFactory;
+        #[async_trait::async_trait]
+        impl SerialPortFactory for GarbageFactory {
+            async fn open(
+                &self,
+                _port: &str,
+                _baud_rate: u32,
+                _timeout: std::time::Duration,
+            ) -> Result<crate::io::SerialPair> {
+                Ok(crate::io::SerialPair {
+                    reader: Box::new(GarbageReader::default()),
+                    writer: Box::new(SinkWriter),
+                })
+            }
+            async fn port_exists(&self, _port: &str) -> bool {
+                true
+            }
+        }
+
+        let manager = Arc::new(SerialManager::new(
+            test_config(),
+            Arc::new(GarbageFactory) as Arc<dyn SerialPortFactory>,
+        ));
+        let err = manager.connect().await.unwrap_err();
+        assert!(
+            matches!(err, FalconRotatorError::ConnectionFailed(ref msg) if msg.contains("ping")),
+            "got {err:?}"
+        );
+        assert!(!manager.is_available());
+        assert!(manager.reader.lock().await.is_none());
+    }
+
+    // ---- Command dispatch ----------------------------------------------
+
+    #[tokio::test]
+    async fn test_send_command_requires_connection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let err = manager.send_command(Command::Ping).await.unwrap_err();
+        assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn test_read_status_returns_parsed_status() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        factory.set_mech_position_deg(50.0).await;
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+
+        let status = manager.read_status().await.unwrap();
+        assert!((status.position_deg - 50.0).abs() < 1e-9);
+        assert!(!status.is_moving);
+    }
+
+    #[tokio::test]
+    async fn test_read_voltage_raw_returns_default() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        factory.set_voltage_raw(812).await;
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        let v = manager.read_voltage_raw().await.unwrap();
+        assert_eq!(v, 812);
+    }
+
+    // ---- Move / halt ----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_move_mechanical_sends_md_with_normalised_angle() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        manager.move_mechanical(-30.0).await.unwrap(); // → 330°
+        let log = factory.command_log().await;
+        assert_eq!(log, vec!["MD:330.00".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_move_mechanical_requires_connection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let err = manager.move_mechanical(45.0).await.unwrap_err();
+        assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn test_halt_sends_fh_and_clears_target() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        manager.set_target_position(180.0).await;
+        factory.clear_command_log().await;
+
+        manager.halt().await.unwrap();
+        assert_eq!(factory.command_log().await, vec!["FH".to_string()]);
+        assert_eq!(manager.target_position().await, None);
+    }
+
+    #[tokio::test]
+    async fn test_halt_requires_connection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let err = manager.halt().await.unwrap_err();
+        assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    // ---- set_reverse (EEPROM-wear protection) --------------------------
+
+    #[tokio::test]
+    async fn test_set_reverse_skips_write_when_equal() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        factory.set_motor_reverse(true).await;
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        manager.set_reverse(true).await.unwrap();
+        // Only the FA read; no FN write.
+        assert_eq!(factory.command_log().await, vec!["FA".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_set_reverse_writes_when_different() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        // Mock starts with reverse=false.
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        manager.set_reverse(true).await.unwrap();
+        // Reads FA first, then writes FN:1.
+        assert_eq!(
+            factory.command_log().await,
+            vec!["FA".to_string(), "FN:1".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_reverse_requires_connection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let err = manager.set_reverse(true).await.unwrap_err();
+        assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    // ---- sync (driver-side offset) -------------------------------------
+
+    #[tokio::test]
+    async fn test_sync_offset_arithmetic() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        // mech = 120°, sync to 30° → offset = (30 - 120) mod 360 = 270.
+        factory.set_mech_position_deg(120.0).await;
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+
+        manager.sync(30.0).await.unwrap();
+        let offset = manager.sync_offset().await;
+        assert!(
+            (offset - 270.0).abs() < 1e-9,
+            "expected offset 270.0, got {offset}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_requires_connection() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let err = manager.sync(0.0).await.unwrap_err();
+        assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    // ---- limit_detect edge log -----------------------------------------
+
+    /// Tracing layer that counts events at WARN level. We use a counter
+    /// rather than capturing the full event text so the assertion stays
+    /// resilient to changes in the warning format.
+    #[derive(Clone, Default)]
+    struct WarnCounter(Arc<StdMutex<u32>>);
+
+    impl<S: Subscriber> Layer<S> for WarnCounter {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            if event.metadata().level() == &tracing::Level::WARN {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+    }
+
+    impl WarnCounter {
+        fn count(&self) -> u32 {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_limit_detect_edge_log_fires_once_on_rising_edge() {
+        let counter = WarnCounter::default();
+        let subscriber = tracing_subscriber::registry().with(counter.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+
+        // First read: limit_detect=false. State: None → Some(false). No warn.
+        let _ = manager.read_status().await.unwrap();
+        assert_eq!(counter.count(), 0);
+
+        // Flip the device's flag and read again. State: Some(false) →
+        // Some(true). One warn fires.
+        factory.set_limit_detect(true).await;
+        let _ = manager.read_status().await.unwrap();
+        assert_eq!(
+            counter.count(),
+            1,
+            "expected exactly one warn on rising edge"
+        );
+
+        // Same flag again: Some(true) → Some(true). No new warn.
+        let _ = manager.read_status().await.unwrap();
+        assert_eq!(counter.count(), 1, "no new warn while flag stays high");
+    }
+
+    #[tokio::test]
+    async fn test_limit_detect_edge_log_fires_on_first_observation_when_high() {
+        let counter = WarnCounter::default();
+        let subscriber = tracing_subscriber::registry().with(counter.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let factory = Arc::new(MockSerialPortFactory::default());
+        factory.set_limit_detect(true).await;
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+
+        // The handshake's FA doesn't pass through read_status, so the edge
+        // tracker is still None when read_status fires for real. None →
+        // Some(true) should warn.
+        let _ = manager.read_status().await.unwrap();
+        assert_eq!(counter.count(), 1);
+    }
+
+    // ---- Debug ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_debug_representation_contains_serial_manager() {
+        let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
+        let debug_str = format!("{manager:?}");
+        assert!(debug_str.contains("SerialManager"));
     }
 }

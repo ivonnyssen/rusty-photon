@@ -289,6 +289,39 @@ impl SerialPortFactory for MockSerialPortFactory {
     }
 }
 
+impl MockSerialPortFactory {
+    /// Seed the mock's mechanical position before opening a connection.
+    pub async fn set_mech_position_deg(&self, value: f64) {
+        self.state.lock().await.device_state.mech_position_deg = normalise_deg(value);
+    }
+
+    /// Seed the mock's `motor_reverse` flag (mirrors EEPROM persistence).
+    pub async fn set_motor_reverse(&self, value: bool) {
+        self.state.lock().await.device_state.motor_reverse = value;
+    }
+
+    /// Seed the mock's `limit_detect` flag visible to the next `FA`.
+    pub async fn set_limit_detect(&self, value: bool) {
+        self.state.lock().await.device_state.limit_detect = value;
+    }
+
+    /// Seed the raw ADC count returned by `VS`.
+    pub async fn set_voltage_raw(&self, value: u32) {
+        self.state.lock().await.device_state.voltage_raw = value;
+    }
+
+    /// Snapshot every command the writer has seen, in order received.
+    pub async fn command_log(&self) -> Vec<String> {
+        self.state.lock().await.command_log.clone()
+    }
+
+    /// Clear the recorded command log. Useful between handshake and the
+    /// command-under-test in unit tests so assertions only see the latter.
+    pub async fn clear_command_log(&self) {
+        self.state.lock().await.command_log.clear();
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
