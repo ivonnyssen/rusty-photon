@@ -1,4 +1,3 @@
-@wip
 Feature: Status Switch device
   A second ASCOM device on the same Alpaca server exposes two read-only
   switches the Rotator interface has no slot for: id 0 reports the Falcon's

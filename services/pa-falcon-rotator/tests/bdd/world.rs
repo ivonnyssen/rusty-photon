@@ -56,6 +56,8 @@ pub struct FalconRotatorWorld {
     pub switch_value_result: Option<f64>,
     pub switch_bool_result: Option<bool>,
     pub max_switch_result: Option<usize>,
+    /// Captured `GetSwitchName` / `GetSwitchDescription` reads.
+    pub switch_string_result: Option<String>,
 
     /// Last failure surfaced over Alpaca, if any.
     pub last_error_code: Option<u16>,

@@ -25,6 +25,29 @@ use crate::serial_manager::SerialManager;
 /// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
 const SWITCH_COUNT: usize = 2;
 
+/// Id 0: input voltage (raw ADC count from the Falcon's `VS` command).
+const SWITCH_ID_VOLTAGE: usize = 0;
+/// Id 1: limit-hit flag (mirrors `FA.limit_detect`).
+const SWITCH_ID_LIMIT: usize = 1;
+
+/// Voltage-switch metadata pinned by the design doc's Switch layout table:
+/// `MaxSwitchValue = 1023` assumes a 10-bit ADC on the Falcon's MCU; widening
+/// it is a follow-up tracked in the design doc once hardware characterisation
+/// is in hand.
+const VOLTAGE_SWITCH_NAME: &str = "Input Voltage (raw)";
+const VOLTAGE_SWITCH_DESCRIPTION: &str =
+    "Raw input-voltage ADC count from the Falcon's VS command; scale not yet calibrated";
+const VOLTAGE_MIN_VALUE: f64 = 0.0;
+const VOLTAGE_MAX_VALUE: f64 = 1023.0;
+const VOLTAGE_STEP: f64 = 1.0;
+
+/// Limit-hit-switch metadata: boolean (0/1) mirror of `FA.limit_detect`.
+const LIMIT_SWITCH_NAME: &str = "Limit Hit";
+const LIMIT_SWITCH_DESCRIPTION: &str = "Mirrors FA.limit_detect for the most recent status read";
+const LIMIT_MIN_VALUE: f64 = 0.0;
+const LIMIT_MAX_VALUE: f64 = 1.0;
+const LIMIT_STEP: f64 = 1.0;
+
 /// Guard that returns `NOT_CONNECTED` if the device is not connected. Mirrors
 /// `ppba-driver`'s `ensure_connected!` macro: every device-bound Switch method
 /// runs this **before** id validation so a disconnected client always sees
@@ -152,41 +175,92 @@ impl Switch for FalconStatusSwitchDevice {
         Ok(false)
     }
 
-    async fn get_switch_name(&self, _id: usize) -> ASCOMResult<String> {
+    async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::get_switch_name is implemented in Phase 3e")
+        validate_id(id)?;
+        let name = match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_SWITCH_NAME,
+            SWITCH_ID_LIMIT => LIMIT_SWITCH_NAME,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        };
+        Ok(name.to_string())
     }
 
-    async fn get_switch_description(&self, _id: usize) -> ASCOMResult<String> {
+    async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        unimplemented!(
-            "FalconStatusSwitchDevice::get_switch_description is implemented in Phase 3e"
-        )
+        validate_id(id)?;
+        let description = match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_SWITCH_DESCRIPTION,
+            SWITCH_ID_LIMIT => LIMIT_SWITCH_DESCRIPTION,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        };
+        Ok(description.to_string())
     }
 
-    async fn get_switch(&self, _id: usize) -> ASCOMResult<bool> {
+    async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::get_switch is implemented in Phase 3e")
+        validate_id(id)?;
+        // ASCOM rule: GetSwitch returns false at MinSwitchValue, true otherwise.
+        // For the voltage switch (Min = 0) that means "true iff raw > 0".
+        // For the limit-hit switch (Min = 0, Max = 1) the 0.5 threshold is
+        // the conventional midpoint test, matching the design doc's contract.
+        let value = self.get_switch_value(id).await?;
+        let threshold = match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_MIN_VALUE,
+            SWITCH_ID_LIMIT => 0.5,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        };
+        Ok(value > threshold)
     }
 
-    async fn get_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+    async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::get_switch_value is implemented in Phase 3e")
+        validate_id(id)?;
+        match id {
+            SWITCH_ID_VOLTAGE => self
+                .serial_manager
+                .read_voltage_raw()
+                .await
+                .map(f64::from)
+                .map_err(Self::to_ascom_error),
+            SWITCH_ID_LIMIT => self
+                .serial_manager
+                .read_status()
+                .await
+                .map(|s| if s.limit_detect { 1.0 } else { 0.0 })
+                .map_err(Self::to_ascom_error),
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        }
     }
 
-    async fn min_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+    async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::min_switch_value is implemented in Phase 3e")
+        validate_id(id)?;
+        Ok(match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_MIN_VALUE,
+            SWITCH_ID_LIMIT => LIMIT_MIN_VALUE,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        })
     }
 
-    async fn max_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+    async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::max_switch_value is implemented in Phase 3e")
+        validate_id(id)?;
+        Ok(match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_MAX_VALUE,
+            SWITCH_ID_LIMIT => LIMIT_MAX_VALUE,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        })
     }
 
-    async fn switch_step(&self, _id: usize) -> ASCOMResult<f64> {
+    async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        unimplemented!("FalconStatusSwitchDevice::switch_step is implemented in Phase 3e")
+        validate_id(id)?;
+        Ok(match id {
+            SWITCH_ID_VOLTAGE => VOLTAGE_STEP,
+            SWITCH_ID_LIMIT => LIMIT_STEP,
+            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        })
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
@@ -342,5 +416,237 @@ mod tests {
         let device = disconnected_device();
         let err = device.set_switch_value(99, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+}
+
+/// Connected-device tests for the seven Switch getters. Gated on
+/// `feature = "mock"` so the rich `MockSerialPortFactory` can stand in for
+/// the real Falcon — matching the qhy-focuser / serial_manager precedent.
+#[cfg(all(test, feature = "mock"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod mock_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::io::SerialPortFactory;
+    use crate::mock::MockSerialPortFactory;
+
+    async fn connected_device() -> (FalconStatusSwitchDevice, Arc<MockSerialPortFactory>) {
+        let config = Config::default();
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = Arc::new(SerialManager::new(
+            config,
+            Arc::clone(&factory) as Arc<dyn SerialPortFactory>,
+        ));
+        let device = FalconStatusSwitchDevice::new(SwitchConfig::default(), manager);
+        device.set_connected(true).await.unwrap();
+        (device, factory)
+    }
+
+    // ---- max_switch -----------------------------------------------------
+
+    #[tokio::test]
+    async fn max_switch_reports_two() {
+        let (device, _) = connected_device().await;
+        assert_eq!(device.max_switch().await.unwrap(), SWITCH_COUNT);
+    }
+
+    // ---- get_switch_name -----------------------------------------------
+
+    #[tokio::test]
+    async fn get_switch_name_id_0_is_input_voltage_raw() {
+        let (device, _) = connected_device().await;
+        let name = device.get_switch_name(SWITCH_ID_VOLTAGE).await.unwrap();
+        assert_eq!(name, VOLTAGE_SWITCH_NAME);
+    }
+
+    #[tokio::test]
+    async fn get_switch_name_id_1_is_limit_hit() {
+        let (device, _) = connected_device().await;
+        let name = device.get_switch_name(SWITCH_ID_LIMIT).await.unwrap();
+        assert_eq!(name, LIMIT_SWITCH_NAME);
+    }
+
+    #[tokio::test]
+    async fn get_switch_name_out_of_range_returns_invalid_value() {
+        let (device, _) = connected_device().await;
+        let err = device.get_switch_name(2).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    // ---- get_switch_description ----------------------------------------
+
+    #[tokio::test]
+    async fn get_switch_description_id_0_mentions_voltage() {
+        let (device, _) = connected_device().await;
+        let desc = device
+            .get_switch_description(SWITCH_ID_VOLTAGE)
+            .await
+            .unwrap();
+        assert!(
+            desc.to_lowercase().contains("voltage"),
+            "expected description to mention voltage, got: {desc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_switch_description_id_1_mentions_limit() {
+        let (device, _) = connected_device().await;
+        let desc = device
+            .get_switch_description(SWITCH_ID_LIMIT)
+            .await
+            .unwrap();
+        assert!(
+            desc.to_lowercase().contains("limit"),
+            "expected description to mention limit, got: {desc}"
+        );
+    }
+
+    // ---- min / max / step (pins the design-doc Switch layout table) ----
+
+    #[tokio::test]
+    async fn voltage_switch_range_is_zero_to_1023_step_1() {
+        let (device, _) = connected_device().await;
+        assert_eq!(
+            device.min_switch_value(SWITCH_ID_VOLTAGE).await.unwrap(),
+            0.0
+        );
+        assert_eq!(
+            device.max_switch_value(SWITCH_ID_VOLTAGE).await.unwrap(),
+            1023.0
+        );
+        assert_eq!(device.switch_step(SWITCH_ID_VOLTAGE).await.unwrap(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn limit_switch_range_is_zero_to_one_step_1() {
+        let (device, _) = connected_device().await;
+        assert_eq!(device.min_switch_value(SWITCH_ID_LIMIT).await.unwrap(), 0.0);
+        assert_eq!(device.max_switch_value(SWITCH_ID_LIMIT).await.unwrap(), 1.0);
+        assert_eq!(device.switch_step(SWITCH_ID_LIMIT).await.unwrap(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn metadata_getters_reject_out_of_range_id() {
+        let (device, _) = connected_device().await;
+        for err in [
+            device.min_switch_value(2).await.unwrap_err(),
+            device.max_switch_value(2).await.unwrap_err(),
+            device.switch_step(2).await.unwrap_err(),
+            device.get_switch_description(2).await.unwrap_err(),
+        ] {
+            assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        }
+    }
+
+    // ---- get_switch_value ----------------------------------------------
+
+    #[tokio::test]
+    async fn get_switch_value_id_0_returns_raw_voltage() {
+        let (device, factory) = connected_device().await;
+        factory.set_voltage_raw(812).await;
+        let value = device.get_switch_value(SWITCH_ID_VOLTAGE).await.unwrap();
+        assert_eq!(value, 812.0);
+    }
+
+    #[tokio::test]
+    async fn get_switch_value_id_1_is_one_when_limit_detected() {
+        let (device, factory) = connected_device().await;
+        factory.set_limit_detect(true).await;
+        let value = device.get_switch_value(SWITCH_ID_LIMIT).await.unwrap();
+        assert_eq!(value, 1.0);
+    }
+
+    #[tokio::test]
+    async fn get_switch_value_id_1_is_zero_when_limit_clear() {
+        let (device, _) = connected_device().await;
+        // limit_detect defaults to false in the mock.
+        let value = device.get_switch_value(SWITCH_ID_LIMIT).await.unwrap();
+        assert_eq!(value, 0.0);
+    }
+
+    #[tokio::test]
+    async fn get_switch_value_issues_vs_for_id_0() {
+        let (device, factory) = connected_device().await;
+        factory.clear_command_log().await;
+        let _ = device.get_switch_value(SWITCH_ID_VOLTAGE).await.unwrap();
+        let log = factory.command_log().await;
+        assert!(
+            log.iter().any(|c| c == "VS"),
+            "expected VS on the wire, got: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_switch_value_issues_fa_for_id_1() {
+        let (device, factory) = connected_device().await;
+        factory.clear_command_log().await;
+        let _ = device.get_switch_value(SWITCH_ID_LIMIT).await.unwrap();
+        let log = factory.command_log().await;
+        assert!(
+            log.iter().any(|c| c == "FA"),
+            "expected FA on the wire, got: {log:?}"
+        );
+    }
+
+    // ---- get_switch (boolean projection of get_switch_value) -----------
+
+    #[tokio::test]
+    async fn get_switch_id_0_is_true_when_raw_above_zero() {
+        let (device, factory) = connected_device().await;
+        factory.set_voltage_raw(1).await;
+        assert!(device.get_switch(SWITCH_ID_VOLTAGE).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn get_switch_id_0_is_false_when_raw_is_zero() {
+        let (device, factory) = connected_device().await;
+        factory.set_voltage_raw(0).await;
+        assert!(!device.get_switch(SWITCH_ID_VOLTAGE).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn get_switch_id_1_is_true_when_limit_set() {
+        let (device, factory) = connected_device().await;
+        factory.set_limit_detect(true).await;
+        assert!(device.get_switch(SWITCH_ID_LIMIT).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn get_switch_id_1_is_false_when_limit_clear() {
+        let (device, _) = connected_device().await;
+        assert!(!device.get_switch(SWITCH_ID_LIMIT).await.unwrap());
+    }
+
+    // ---- write rejections (already enforced for disconnected; check
+    // INVALID_OPERATION fires when the device IS connected) -------------
+
+    #[tokio::test]
+    async fn set_switch_returns_invalid_operation_when_connected() {
+        let (device, _) = connected_device().await;
+        let err = device
+            .set_switch(SWITCH_ID_VOLTAGE, true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_switch_value_returns_invalid_operation_when_connected() {
+        let (device, _) = connected_device().await;
+        let err = device
+            .set_switch_value(SWITCH_ID_VOLTAGE, 0.0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_switch_name_returns_invalid_operation_when_connected() {
+        let (device, _) = connected_device().await;
+        let err = device
+            .set_switch_name(SWITCH_ID_VOLTAGE, "x".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 }
