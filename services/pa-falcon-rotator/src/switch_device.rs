@@ -104,7 +104,15 @@ impl Device for FalconStatusSwitchDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.connected().await? == connected {
+        // Hold the write lock across the whole check-and-modify so two
+        // concurrent `Connected=true` requests for this switch don't both
+        // increment the shared SerialManager refcount before either sets
+        // the per-device flag. Same fix shape as `FalconRotatorDevice` —
+        // see PR #241 round-5 review.
+        let mut requested = self.requested_connection.write().await;
+        let serial_ok = self.serial_manager.is_available();
+        let already = *requested && serial_ok;
+        if already == connected {
             return Ok(());
         }
         match connected {
@@ -113,10 +121,10 @@ impl Device for FalconStatusSwitchDevice {
                     .connect()
                     .await
                     .map_err(Self::to_ascom_error)?;
-                *self.requested_connection.write().await = true;
+                *requested = true;
             }
             false => {
-                *self.requested_connection.write().await = false;
+                *requested = false;
                 self.serial_manager.disconnect().await;
             }
         }

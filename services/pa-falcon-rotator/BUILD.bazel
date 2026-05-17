@@ -121,7 +121,10 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":pa-falcon-rotator_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    # Depend on the mock-feature library so `MockSerialPortFactory` (gated
+    # on `feature = "mock"`) is visible to the in-process BDD world. The
+    # Cargo test uses `required-features = ["mock"]` for the same reason.
+    deps = [":pa-falcon-rotator_lib_mock", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

@@ -15,6 +15,12 @@ mod steps;
 
 #[tokio::main]
 async fn main() {
+    // Mirror the `bdd_main!` macro's first step: chdir to `BDD_PACKAGE_DIR`
+    // when running under Bazel so `tests/features` resolves relative to the
+    // package directory rather than the Bazel runfiles root. No-op under
+    // `cargo test`, which doesn't set the env var.
+    bdd_infra::__bdd_bazel_chdir();
+
     use cucumber::World as _;
     use world::FalconRotatorWorld;
 

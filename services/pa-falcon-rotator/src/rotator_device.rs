@@ -88,7 +88,17 @@ impl Device for FalconRotatorDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.connected().await? == connected {
+        // Hold the write lock for the whole check-and-modify so two concurrent
+        // `Connected=true` requests against this device can't both observe
+        // `requested_connection == false`, both call `SerialManager::connect`
+        // (incrementing the shared refcount twice), and then both set the
+        // single per-device flag. Without the guard, a single later
+        // `set_connected(false)` would decrement the refcount only once and
+        // leave the port open — see PR #241 round-5 review.
+        let mut requested = self.requested_connection.write().await;
+        let serial_ok = self.serial_manager.is_available();
+        let already = *requested && serial_ok;
+        if already == connected {
             return Ok(());
         }
         match connected {
@@ -97,10 +107,10 @@ impl Device for FalconRotatorDevice {
                     .connect()
                     .await
                     .map_err(Self::to_ascom_error)?;
-                *self.requested_connection.write().await = true;
+                *requested = true;
             }
             false => {
-                *self.requested_connection.write().await = false;
+                *requested = false;
                 self.serial_manager.disconnect().await;
             }
         }
@@ -219,11 +229,15 @@ impl Rotator for FalconRotatorDevice {
         // (mech + offset + delta) - offset = mech + delta.
         let target_sky = normalise_deg(status.position_deg + offset + position);
         let target_mech = normalise_deg(target_sky - offset);
-        self.serial_manager.set_target_position(target_sky).await;
+        // Set TargetPosition only after the MD command has been accepted —
+        // a failed echo on the wire must NOT leave a stale target the
+        // client could read back via TargetPosition (PR #241 round-5).
         self.serial_manager
             .move_mechanical(target_mech)
             .await
-            .map_err(Self::to_ascom_error)
+            .map_err(Self::to_ascom_error)?;
+        self.serial_manager.set_target_position(target_sky).await;
+        Ok(())
     }
 
     async fn move_absolute(&self, position: f64) -> ASCOMResult<()> {
@@ -237,11 +251,12 @@ impl Rotator for FalconRotatorDevice {
         let offset = self.serial_manager.sync_offset().await;
         let target_sky = normalise_deg(position);
         let target_mech = normalise_deg(position - offset);
-        self.serial_manager.set_target_position(target_sky).await;
         self.serial_manager
             .move_mechanical(target_mech)
             .await
-            .map_err(Self::to_ascom_error)
+            .map_err(Self::to_ascom_error)?;
+        self.serial_manager.set_target_position(target_sky).await;
+        Ok(())
     }
 
     async fn move_mechanical(&self, position: f64) -> ASCOMResult<()> {
@@ -259,11 +274,12 @@ impl Rotator for FalconRotatorDevice {
         // consistent across the three Move variants.
         let offset = self.serial_manager.sync_offset().await;
         let target_sky = normalise_deg(position + offset);
-        self.serial_manager.set_target_position(target_sky).await;
         self.serial_manager
             .move_mechanical(normalise_deg(position))
             .await
-            .map_err(Self::to_ascom_error)
+            .map_err(Self::to_ascom_error)?;
+        self.serial_manager.set_target_position(target_sky).await;
+        Ok(())
     }
 
     async fn sync(&self, position: f64) -> ASCOMResult<()> {
