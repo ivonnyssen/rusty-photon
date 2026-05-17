@@ -28,8 +28,9 @@ use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
-    ra_to_mechanical_ha, select_pier_side_for_target, side_of_pier as side_of_pier_calc,
-    sidereal_step_period, target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
+    side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::{MountSnapshot, TransportManager};
@@ -553,11 +554,19 @@ impl MountDevice {
             let ra_delta_canonical =
                 fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
             let ra_delta = if is_flip_slew {
-                // Flip slews force the safe (CCW) traversal direction
-                // through the negative-mech_HA half — see
+                // Flip slews steer the polar-axis sweep out of the
+                // counterweight binding zone — see
                 // [`flip_slew_ra_delta`] and the design doc's
                 // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
-                flip_slew_ra_delta(ra_delta_canonical, snap.ra.position_ticks, params.cpr_ra)
+                flip_slew_ra_delta(
+                    ra_delta_canonical,
+                    snap.ra.position_ticks,
+                    params.cpr_ra,
+                    (
+                        self.config.binding_zone_min_hours,
+                        self.config.binding_zone_max_hours,
+                    ),
+                )
             } else {
                 ra_delta_canonical
             };
@@ -779,50 +788,78 @@ fn fold_delta_to_canonical(delta: i32, cpr: u32) -> i32 {
     }
 }
 
-/// Force a flip slew's RA delta to keep the encoder in the
-/// counterweight-below-horizon half of the RA axis (`mech_HA` in
-/// `[−12, 0]`), avoiding the binding region at `mech_HA ∈ (+6.95,
-/// +11.05)` where the counterweight contacts the pier.
+/// Force a flip slew's RA delta to keep the polar-axis sweep out of
+/// the counterweight-binding zone `mech_HA ∈ (zone_min, zone_max)`
+/// (default `(+6.95, +11.05)` on the GTi), where the counterweight
+/// contacts the pier.
 ///
-/// The mechanical binding zone is at positive `mech_HA` and is a
+/// The mechanical binding zone is at positive `mech_HA` only and is a
 /// structural property of the mount head independent of observer
 /// latitude. Both forward flips (pre-flip → post-flip) and flip-backs
 /// (post-flip → pre-flip) need their RA paths constrained.
 ///
-/// Rule, expressed by current encoder position:
+/// Strategy: take the canonical short path unless its linear mech_HA
+/// sweep from `current_ticks` through `current_ticks + canonical_delta`
+/// crosses the binding zone (modulo the 24-hour wrap). If it would,
+/// take the long way around (`canonical ± cpr_i`) which lands at the
+/// same modular destination via the safe arc on the other side.
 ///
-/// - `|current_ticks| ≤ cpr/4` (current in the pre-flip envelope,
-///   `mech_HA ∈ [−6, +6]`): force CCW (negative delta). The path
-///   decreases from the safe arc into the negative half, ending in
-///   either `[−6.95, +6.95]` (no-flip target) or near `±cpr/2`
-///   (post-flip wrap).
-/// - `|current_ticks| > cpr/4` (current at or past the wrap,
-///   `mech_HA` near `±12`): force CW (positive delta). The path
-///   increases away from the wrap into the safe negative half. Going
-///   CCW here would step *back across the wrap* into the positive
-///   half and through the binding zone — what hardware validation
-///   #3 exposed.
-///
-/// When the canonical shortest-path direction is already the forced
-/// one, it's returned unchanged. Otherwise the long way around
-/// (`delta − cpr` or `delta + cpr`) lands at the same modular
-/// destination via the safe half.
-fn flip_slew_ra_delta(canonical_delta: i32, current_ticks: i32, cpr: u32) -> i32 {
+/// Previously a sign-blind heuristic (`|current| > cpr/4 ⇒ "safe is
+/// positive"`) was used. That mis-fired at Park 4 N
+/// (current ≈ -cpr/2, canonical ≈ -4k CCW just past the wrap): the
+/// heuristic flipped the small CCW step into a +cpr/2 + small CW full
+/// revolution that swept across mech_HA (+6.95, +11.05) and slammed
+/// the CW shaft into the pier (hardware validation 2026-05-16). The
+/// path-aware check uses the actual binding zone, so it preserves the
+/// safe canonical step when it doesn't cross.
+fn flip_slew_ra_delta(
+    canonical_delta: i32,
+    current_ticks: i32,
+    cpr: u32,
+    binding_zone_hours: (f64, f64),
+) -> i32 {
     if cpr == 0 || canonical_delta == 0 {
         return canonical_delta;
     }
     let cpr_i = cpr as i32;
-    let quarter = cpr_i / 4;
-    let in_pre_flip = current_ticks.abs() <= quarter;
-    let safe_direction_positive = !in_pre_flip;
-    let canonical_positive = canonical_delta > 0;
-    if canonical_positive == safe_direction_positive {
-        canonical_delta
-    } else if canonical_delta > 0 {
+    let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
+    let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
+    if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
+        return canonical_delta;
+    }
+    if canonical_delta > 0 {
         canonical_delta - cpr_i
     } else {
         canonical_delta + cpr_i
     }
+}
+
+/// Does the linear mech_HA sweep from `start_ha` by `delta_ha` enter
+/// `(zone_min, zone_max)` (modulo 24 h)? The sweep is the open
+/// interval `(min(start, start+delta), max(start, start+delta))`; the
+/// binding zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
+/// — enough to cover any `|delta_ha| ≤ 12` path. An empty zone
+/// (`zone_min ≥ zone_max`) is treated as no zone.
+fn canonical_path_crosses_binding_zone(
+    start_ha: f64,
+    delta_ha: f64,
+    binding_zone_hours: (f64, f64),
+) -> bool {
+    let (zone_min, zone_max) = binding_zone_hours;
+    if zone_min >= zone_max {
+        return false;
+    }
+    let path_lo = start_ha.min(start_ha + delta_ha);
+    let path_hi = start_ha.max(start_ha + delta_ha);
+    for k in [-1.0_f64, 0.0, 1.0] {
+        let bz_lo = zone_min + 24.0 * k;
+        let bz_hi = zone_max + 24.0 * k;
+        // Open-interval overlap: paths grazing the boundary stay safe.
+        if path_lo < bz_hi && bz_lo < path_hi {
+            return true;
+        }
+    }
+    false
 }
 
 /// Force a flip slew's Dec delta to traverse the **visible** celestial
@@ -5217,6 +5254,10 @@ mod tests {
 
     const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
 
+    /// Hardware-verified GTi counterweight binding zone in mech_HA hours
+    /// (matches `default_binding_zone_min/max_hours` in `config.rs`).
+    const GTI_BINDING_ZONE: (f64, f64) = (6.95, 11.05);
+
     #[test]
     fn fold_delta_to_canonical_passes_through_small_deltas() {
         assert_eq!(fold_delta_to_canonical(0, GTI_CPR), 0);
@@ -5262,7 +5303,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = 0;
         let canonical = -(cpr as i32 / 2);
-        let issued = flip_slew_ra_delta(canonical, current, cpr);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
         assert_eq!(issued, canonical, "natural CCW already in the safe half");
     }
 
@@ -5276,7 +5317,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = -75_600; // mech_HA = -0.5
         let canonical = 1_815_000_i32;
-        let issued = flip_slew_ra_delta(canonical, current, cpr);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
         assert!(issued < 0, "must force CCW long way");
         assert_eq!(
             (issued - canonical).rem_euclid(cpr as i32),
@@ -5298,7 +5339,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = -(cpr as i32 / 2);
         let canonical = cpr as i32 / 4;
-        let issued = flip_slew_ra_delta(canonical, current, cpr);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
         assert_eq!(
             issued, canonical,
             "flip-back from -cpr/2 must use natural CW"
@@ -5318,7 +5359,7 @@ mod tests {
         let current = cpr as i32 / 2;
         let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
         let canonical = fold_delta_to_canonical(canonical_raw, cpr); // +cpr/4
-        let issued = flip_slew_ra_delta(canonical, current, cpr);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
         assert!(issued > 0, "post-flip wrap → safe arc must use CW");
         assert_eq!(issued, canonical, "canonical CW is already safe here");
     }
@@ -5334,12 +5375,82 @@ mod tests {
 
     #[test]
     fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
-        assert_eq!(flip_slew_ra_delta(12_345, 0, 0), 12_345);
+        assert_eq!(flip_slew_ra_delta(12_345, 0, 0, GTI_BINDING_ZONE), 12_345);
     }
 
     #[test]
     fn flip_slew_ra_delta_zero_canonical_returns_zero() {
-        assert_eq!(flip_slew_ra_delta(0, 0, GTI_CPR), 0);
+        assert_eq!(flip_slew_ra_delta(0, 0, GTI_CPR, GTI_BINDING_ZONE), 0);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_park4_to_park5_north_uses_canonical_through_wrap() {
+        // Hardware regression (2026-05-16): Park 4 N → Park 5 N flip
+        // slew. Snap.ra ≈ raw -1,810,272 (mech_HA -11.974, post-flip
+        // pierEast just east of the saddle-east wrap). The slew planner
+        // chose pierWest (target HA -12 outside the flip window), with
+        // target encoder near +cpr/2 (mech_HA +11.999, the saddle-east
+        // wrap from the other side). fold_delta_to_canonical produces a
+        // small CCW step (~-3.8k ticks) that physically nudges the RA
+        // encoder past the -12 wrap and into +12 folded — the path stays
+        // entirely in the safe arc (no positive mech_HA visited). The
+        // old sign-blind heuristic forced canonical + cpr ≈ +3.625M
+        // ticks CW, a near-full polar-axis revolution that swept
+        // mech_HA through (+6.95, +11.05) and slammed the CW shaft into
+        // the pier — the operator powered the mount off mid-sweep.
+        let cpr = GTI_CPR;
+        let current = -1_810_272_i32;
+        let canonical = -3_798_i32;
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert_eq!(
+            issued, canonical,
+            "canonical CCW wrap-crossing must be preserved; old long-way CW \
+             would full-revolution through the binding zone"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_canonical_path_crossing_binding_zone_takes_long_way() {
+        // Current at mech_HA = +5 (just below the binding zone), target
+        // at mech_HA = +11.5 (just above it). Canonical short path
+        // would sweep mech_HA from +5 to +11.5, entering (+6.95, +11.05)
+        // around mech_HA = +7. Force the long way around through the
+        // safe negative half.
+        let cpr = GTI_CPR;
+        let current = (cpr as i32) * 5 / 24; // mech_HA = +5
+        let canonical = (cpr as i32) * 13 / 48; // +6.5 hours of mech_HA
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert!(
+            issued < 0,
+            "canonical path enters (6.95, 11.05); must take CCW long way (got {issued})"
+        );
+        assert_eq!(
+            (issued - canonical).rem_euclid(cpr as i32),
+            0,
+            "same modular destination"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_empty_binding_zone_always_uses_canonical() {
+        // Empty zone (min ≥ max) disables routing; the function
+        // collapses to the canonical short delta regardless of which
+        // half the current sits in. Matches the BDD-test config that
+        // sets `binding_zone_min = 24.0, binding_zone_max = 0.0` to
+        // bypass the safety gate.
+        let cpr = GTI_CPR;
+        let empty_zone = (24.0_f64, 0.0_f64);
+        for (current, canonical) in [
+            (0_i32, -(cpr as i32 / 2)),
+            (-(cpr as i32 / 2), cpr as i32 / 4),
+            (-1_810_272_i32, -3_798_i32),
+        ] {
+            assert_eq!(
+                flip_slew_ra_delta(canonical, current, cpr, empty_zone),
+                canonical,
+                "empty zone must pass canonical through (current={current}, canonical={canonical})"
+            );
+        }
     }
 
     // ---------- flip_slew_dec_delta (Dec routing through the visible pole) ----------
