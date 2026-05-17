@@ -26,18 +26,31 @@ use tracing::debug;
 
 use crate::config::MountConfig;
 use crate::coordinates::{
-    dec_degrees_to_ticks, dec_ticks_to_degrees, local_sidereal_time_hours, mechanical_ha_to_ra,
+    dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
-    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
-    sidereal_step_period, SIDEREAL_DEG_PER_SEC,
+    ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
+    side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
-use crate::transport_manager::TransportManager;
+use crate::transport_manager::{MountSnapshot, TransportManager};
 
 /// Default guide rate as a fraction of sidereal. ASCOM clients see
 /// this multiplied by `SIDEREAL_DEG_PER_SEC` through
 /// `GuideRateRightAscension` / `GuideRateDeclination`.
 const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
+
+/// Maximum absolute encoder reading at connect that
+/// [`MountDevice::seed_home_pose_after_connect`] still treats as
+/// "fresh power-up" and applies the `home_pose` seed to. The
+/// Sky-Watcher firmware does not always read exactly `0` after a
+/// power-cycle — empirically the validation GTi reports `dec = −1`
+/// on connect, a single-tick initialisation artifact (≈ 0.4″ at the
+/// GTi's CPR). Any genuine post-slew encoder reading is tens of
+/// thousands of ticks away from zero, so this tolerance comfortably
+/// distinguishes "just powered up" from "the operator already moved
+/// the mount this session".
+const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 100;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
@@ -63,6 +76,14 @@ struct DriverState {
     /// `ASCOMError(INVALID_OPERATION)` rather than a panic.
     park_ra_ticks: Option<i32>,
     park_dec_ticks: Option<i32>,
+    /// Pier side the most recent slew was *issued for*. Read by the
+    /// slew-completion watcher's pickup loop so it picks
+    /// `target_encoder_normal` vs `target_encoder_flipped` for the
+    /// corrective re-slew. Without this, a successful flip slew would
+    /// be undone by the pickup loop's first iteration (the post-flip
+    /// Dec encoder is past the pole, and a pre-flip encoder target
+    /// would order a slew back through the pole).
+    target_pier_side: Option<PierSide>,
     /// PulseGuide rate on the RA axis as a fraction of sidereal in
     /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
@@ -89,6 +110,7 @@ impl Default for DriverState {
             slew_in_progress: false,
             park_ra_ticks: None,
             park_dec_ticks: None,
+            target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             pulse_guiding_ra: false,
@@ -165,8 +187,9 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Reject a slew / sync whose target encoder ticks would fall
-    /// outside the configured mechanical envelope.
+    /// Reject a slew / sync / destination-side prediction whose target
+    /// would fall outside the per-pier-side mechanical envelope for
+    /// the chosen pointing state.
     ///
     /// **Why:** the Star Adventurer GTi (like every GEM) has
     /// mechanical limits — slewing past them with cable wraps or the
@@ -174,42 +197,63 @@ impl MountDevice {
     /// a hard stop while the encoder counter continues to advance.
     /// On a real-hardware ConformU run that drove the mount into the
     /// counterweight-up region we heard the motor whine and saw the
-    /// axis stop physically for several seconds at a time. The
-    /// configured `ra_min_hours` / `ra_max_hours` / `dec_min_degrees` /
-    /// `dec_max_degrees` express the safe envelope; any target
-    /// outside it is rejected with `INVALID_VALUE` and never reaches
-    /// the wire.
+    /// axis stop physically for several seconds at a time.
+    ///
+    /// The check is in **encoder `mech_HA` space** (signed hours
+    /// folded to `[−12, +12)`). For a target on the natural pier
+    /// side, `target_mech_HA = celestial_HA`. For a flipped target,
+    /// `target_mech_HA = celestial_HA + 12 h` folded. If the chosen-
+    /// side `mech_HA` falls inside the configured binding zone
+    /// `[binding_zone_min_hours, binding_zone_max_hours]`, the slew
+    /// is rejected with `INVALID_VALUE`.
+    ///
+    /// Note: this is a *destination-only* check (matching INDI EQMOD's
+    /// `EncoderTarget`-style envelope). The slew path is not analysed;
+    /// the slew-direction logic in
+    /// [`flip_slew_ra_delta`](#flip_slew_ra_delta) and the per-axis
+    /// `ccw = current > target` rule in `execute_slew_with_explicit_side`
+    /// pick the safe direction.
+    ///
+    /// `flip_policy.flip_range_hours` is **not** consulted here — that
+    /// rule lives in [`select_pier_side_for_target`] for pier-side
+    /// preference only. Park 1 / Park 5 (anti-meridian poses with
+    /// `mech_HA = ±12` on the chosen pier) are reachable via slew
+    /// because their mech_HA is outside the binding zone.
     ///
     /// Both axes are validated together so a partial-failure slew
     /// can't issue motion on RA before discovering Dec is out of
     /// range.
     fn check_within_safe_envelope(
         &self,
-        ra_ticks: i32,
-        dec_ticks: i32,
-        cpr_ra: u32,
-        cpr_dec: u32,
+        ra_hours: f64,
+        dec_degrees: f64,
+        lst_hours: f64,
+        target_is_flipped: bool,
     ) -> ASCOMResult<()> {
-        let ra_min_ticks = mechanical_ha_to_ra_ticks(self.config.ra_min_hours, cpr_ra);
-        let ra_max_ticks = mechanical_ha_to_ra_ticks(self.config.ra_max_hours, cpr_ra);
-        if ra_ticks < ra_min_ticks || ra_ticks > ra_max_ticks {
-            let mech_ha = ra_ticks_to_mechanical_ha(ra_ticks, cpr_ra);
+        let target_mech_ha = {
+            let normal = ra_to_mechanical_ha(ra_hours, lst_hours);
+            if target_is_flipped {
+                crate::coordinates::fold_ha(normal + 12.0)
+            } else {
+                normal
+            }
+        };
+        let zone_min = self.config.binding_zone_min_hours;
+        let zone_max = self.config.binding_zone_max_hours;
+        if zone_min <= zone_max && (zone_min..=zone_max).contains(&target_mech_ha) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "RA target mech-HA {mech_ha:.3} h outside safe envelope [{}, {}] h",
-                    self.config.ra_min_hours, self.config.ra_max_hours
+                    "target mech_HA {target_mech_ha:.3} h is inside the counterweight \
+                     binding zone [{zone_min}, {zone_max}] h"
                 ),
             ));
         }
-        let dec_min_ticks = dec_degrees_to_ticks(self.config.dec_min_degrees, cpr_dec);
-        let dec_max_ticks = dec_degrees_to_ticks(self.config.dec_max_degrees, cpr_dec);
-        if dec_ticks < dec_min_ticks || dec_ticks > dec_max_ticks {
-            let dec_deg = dec_ticks_to_degrees(dec_ticks, cpr_dec);
+        if !(self.config.dec_min_degrees..=self.config.dec_max_degrees).contains(&dec_degrees) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "Dec target {dec_deg:.3}° outside safe envelope [{}, {}]°",
+                    "Dec target {dec_degrees:.3}° outside safe envelope [{}, {}]°",
                     self.config.dec_min_degrees, self.config.dec_max_degrees
                 ),
             ));
@@ -289,8 +333,14 @@ impl MountDevice {
     /// 2. `self.config.park_*_ticks` for `Config::default()` runs (no
     ///    config file) — these never change in-process because
     ///    `SetPark` is unreachable in that mode.
-    /// 3. The encoder positions captured during the init handshake
-    ///    (`:j1` / `:j2`) when neither of the above provided a value.
+    /// 3. The **current** firmware encoder reading from the snapshot
+    ///    when neither of the above provided a value.
+    ///    `seed_home_pose_after_connect` runs first in [`set_connected`]
+    ///    so the snapshot already reflects the home_pose's logical
+    ///    encoder values on a fresh power-up; a mid-session reconnect
+    ///    (firmware encoder non-zero) leaves the snapshot at the
+    ///    handshake reading, which is the "park where the OTA already
+    ///    is" semantic operators expect from a reconnect.
     ///
     /// Extracted from [`set_connected`] so a failure here (file missing,
     /// malformed JSON, lost transport mid-load) can be rolled back by the
@@ -310,13 +360,16 @@ impl MountDevice {
         } else {
             (self.config.park_ra_ticks, self.config.park_dec_ticks)
         };
-        let params = self
-            .transport
-            .parameters()
-            .await
-            .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let ra_target = config_ra.unwrap_or(params.ra_at_handshake_ticks);
-        let dec_target = config_dec.unwrap_or(params.dec_at_handshake_ticks);
+        // Read the live snapshot rather than `params.ra_at_handshake_ticks`:
+        // `seed_home_pose_after_connect` runs before this function and
+        // mutates the snapshot when the operator has configured a
+        // `home_pose`, so the snapshot is the source-of-truth for the
+        // post-seed encoder state. Using the pre-seed handshake reading
+        // would default the park target to firmware-zero (mech_HA = 0h,
+        // mech_dec = 0°) — not the home_pose the operator powered up at.
+        let snap = self.transport.snapshot().await;
+        let ra_target = config_ra.unwrap_or(snap.ra.position_ticks);
+        let dec_target = config_dec.unwrap_or(snap.dec.position_ticks);
         {
             let mut s = self.state.write().await;
             s.park_ra_ticks = Some(ra_target);
@@ -329,6 +382,246 @@ impl MountDevice {
             from_config_dec = config_dec.is_some(),
             from_file = self.config_file_path.is_some(),
             "park target loaded"
+        );
+        Ok(())
+    }
+
+    /// Post-connect encoder seed for the operator's configured
+    /// [`HomePose`].
+    ///
+    /// The Sky-Watcher firmware's encoder counter resets to `(0, 0)`
+    /// every time the mount powers up. With `home_pose !=
+    /// OtaOnMeridianAtEquator`, the codebase's convention for `(0, 0)`
+    /// doesn't match the operator's physical pose, so we issue
+    /// `:E1` / `:E2` (no-motion encoder seed) right after connect to
+    /// align the firmware's encoder counter with the codebase's
+    /// convention for the configured pose.
+    ///
+    /// Skipped when:
+    /// - The home pose is the codebase default (no offset needed).
+    /// - The firmware reports a non-zero encoder reading at connect
+    ///   time **beyond a small fresh-power-up tolerance**. That
+    ///   indicates the mount has already been slewed or synced this
+    ///   power cycle — re-seeding would clobber it. The tolerance
+    ///   exists because the Sky-Watcher firmware does not always
+    ///   read exactly `(0, 0)` after a power-cycle: on the validation
+    ///   GTi we observed `dec = −1` on fresh power-up, a 1-tick
+    ///   initialisation artifact (~0.4″) that obviously still
+    ///   represents the "just powered up" state.
+    ///
+    /// Documented operator assumption: when `home_pose != default`,
+    /// the operator powers up the mount **at** the configured pose and
+    /// connects the driver before any slew or sync. Reconnecting
+    /// mid-session after a slew is safe (the non-zero-encoder guard
+    /// catches it — a real slew lands tens of thousands of ticks away
+    /// from zero, well outside the tolerance).
+    async fn seed_home_pose_after_connect(&self) -> ASCOMResult<()> {
+        let Some(home_pose) = self.config.home_pose else {
+            // No pose configured — trust the firmware encoder as-is.
+            // This is the codebase's historical (pre-Phase-6) behaviour
+            // and what existing pre-`home_pose` config files expect.
+            return Ok(());
+        };
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let snap = self.transport.snapshot().await;
+        if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+            || snap.dec.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+        {
+            debug!(
+                ra = snap.ra.position_ticks,
+                dec = snap.dec.position_ticks,
+                tolerance = FRESH_POWER_UP_TICK_TOLERANCE,
+                "skipping home_pose encoder seed: firmware encoder is non-zero beyond tolerance"
+            );
+            return Ok(());
+        }
+        let mech_ha = home_pose.codebase_mech_ha_hours(self.config.site_latitude_deg);
+        let dec_deg = home_pose.codebase_dec_encoder_degrees(self.config.site_latitude_deg);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Ra,
+                ticks: ra_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        self.transport.seed_ra_position(ra_ticks).await;
+        self.transport
+            .send(Command::SetPosition {
+                axis: Axis::Dec,
+                ticks: dec_ticks,
+            })
+            .await
+            .map_err(Self::ascom)?;
+        self.transport.seed_dec_position(dec_ticks).await;
+        debug!(
+            home_pose = ?home_pose,
+            ra_ticks,
+            dec_ticks,
+            "seeded firmware encoder for home_pose"
+        );
+        Ok(())
+    }
+
+    /// Execute a slew to celestial (ra, dec) on the explicitly-chosen
+    /// pier side. Used by both `slew_to_coordinates_async` (where the
+    /// side is picked from the flip policy decision tree) and
+    /// `set_side_of_pier` (where the user pins the side directly).
+    ///
+    /// Caller must have already validated: connected, coords in
+    /// range, not parked. The helper then:
+    ///   1. Computes target encoder ticks for the chosen side
+    ///      (pre-flip or post-flip) and validates against the
+    ///      per-side safety envelope.
+    ///   2. Atomically latches `slew_in_progress` and the
+    ///      target RA/Dec.
+    ///   3. Computes deltas with `fold_delta_to_canonical` (handles a
+    ///      post-through-wrap raw encoder) and applies
+    ///      `flip_slew_ra_delta` on the RA axis for flip slews
+    ///      (forces CCW direction through the safe negative-mech_HA
+    ///      half).
+    ///   4. Issues the INDI wire sequence per axis and hands off to
+    ///      the slew-completion watcher.
+    async fn execute_slew_with_explicit_side(
+        &self,
+        ra: f64,
+        dec: f64,
+        chosen_side: PierSide,
+    ) -> ASCOMResult<()> {
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
+            PierSide::West
+        } else {
+            PierSide::East
+        };
+        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
+        let (ra_ticks, dec_ticks) = if target_is_flipped {
+            target_encoder_flipped(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        } else {
+            target_encoder_normal(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+        };
+        // Refuse before any wire motion if the slew target falls
+        // outside the configured mechanical envelope for the chosen
+        // pier side.
+        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+
+        // Atomically reserve the in-progress slot **before** issuing
+        // any motion. Latch the target + capture the tracking flag in
+        // the same write.
+        let tracking_was_on;
+        {
+            let mut s = self.state.write().await;
+            if s.slew_in_progress {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "slew refused: slew already in progress",
+                ));
+            }
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+            s.target_pier_side = Some(chosen_side);
+            tracking_was_on = s.tracking_requested;
+            s.slew_in_progress = true;
+            s.pulse_guiding_ra = false;
+            s.pulse_guiding_dec = false;
+        }
+
+        // From here on, any error path must clear `slew_in_progress`
+        // — otherwise the driver gets stuck reporting Slewing forever.
+        let result: ASCOMResult<()> = async {
+            let snap = self.transport.snapshot().await;
+            let current_side = side_of_pier_calc(
+                snap.dec.position_ticks,
+                params.cpr_dec,
+                self.config.site_latitude_deg,
+            );
+            let is_flip_slew = current_side != chosen_side;
+            // Fold the raw delta to canonical so a snapshot value that
+            // landed outside `[−cpr/2, +cpr/2)` after a prior
+            // through-wrap flip doesn't trigger a full-revolution
+            // correction here.
+            let ra_delta_canonical =
+                fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+            let ra_delta = if is_flip_slew {
+                // Flip slews steer the polar-axis sweep out of the
+                // counterweight binding zone — see
+                // [`flip_slew_ra_delta`] and the design doc's
+                // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
+                flip_slew_ra_delta(
+                    ra_delta_canonical,
+                    snap.ra.position_ticks,
+                    params.cpr_ra,
+                    (
+                        self.config.binding_zone_min_hours,
+                        self.config.binding_zone_max_hours,
+                    ),
+                )
+            } else {
+                ra_delta_canonical
+            };
+            let dec_delta_canonical =
+                fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+            let dec_delta = if is_flip_slew {
+                // Flip slews force the Dec axis to traverse the
+                // visible celestial pole (NCP for north, SCP for
+                // south) rather than the below-horizon pole — see
+                // [`flip_slew_dec_delta`].
+                flip_slew_dec_delta(
+                    dec_delta_canonical,
+                    snap.dec.position_ticks,
+                    params.cpr_dec,
+                    self.config.site_latitude_deg >= 0.0,
+                )
+            } else {
+                dec_delta_canonical
+            };
+            // Both axes use the INDI wire sequence: `:K` + poll `:f`
+            // (decelerate stop) → `:G goto+fast` → `:I 6` → `:H |delta|`
+            // → `:M breaks` → `:J`. The RA-axis `:K` is also the wire
+            // event that halts any in-progress sidereal tracking;
+            // mirror that into the in-memory `tracking_requested`
+            // flag only after the stop has actually succeeded so the
+            // state never gets ahead of the wire on transport failures.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.state.write().await.tracking_requested = false;
+            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+                .await
+                .map_err(Self::ascom)?;
+            self.stop_and_wait(Axis::Dec).await?;
+            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+                .await
+                .map_err(Self::ascom)?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.state.write().await.slew_in_progress = false;
+            return Err(e);
+        }
+
+        // Hand off to the completion watcher.
+        let settle = {
+            let s = self.state.read().await;
+            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
+        };
+        spawn_slew_completion_watcher(
+            Arc::clone(&self.state),
+            Arc::clone(&self.transport),
+            self.config.clone(),
+            self.transport.polling_interval_for_watcher(),
+            settle,
+            tracking_was_on,
         );
         Ok(())
     }
@@ -389,6 +682,26 @@ const PICKUP_TOLERANCE_ARCSEC: f64 = 5.0;
 /// stalled, encoder oscillating, …) from running forever.
 const PICKUP_MAX_ITERATIONS: u32 = 5;
 
+/// Consecutive `poll_axes_now` failures the slew/park watcher
+/// tolerates before giving up. A single transient USB-CDC glitch
+/// (queue flush race, brief renumeration, …) recovers within one
+/// frame and shouldn't take the watcher offline for the rest of
+/// the slew — the original "one strike and exit" policy meant any
+/// pre-binding hiccup left a runaway motor with no observer. Three
+/// attempts × [`WATCHER_POLL_RETRY_BACKOFF`] keeps the cumulative
+/// recovery window well inside the polling cadence so a genuinely
+/// blocked axis is still detected within ~1 s of the firmware
+/// latching the bit.
+const WATCHER_POLL_RETRY_LIMIT: u32 = 3;
+
+/// Sleep between consecutive `poll_axes_now` retry attempts in the
+/// slew/park watcher. Short enough that the cumulative
+/// `WATCHER_POLL_RETRY_LIMIT × WATCHER_POLL_RETRY_BACKOFF` budget
+/// stays inside the next polling tick; long enough that a tokio-
+/// serial read can flush whatever junk the kernel buffered during
+/// a brief CDC glitch before the next attempt.
+const WATCHER_POLL_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+
 /// Issue the per-axis INDI slew sequence:
 /// `:G<axis>` (goto + fast, direction by sign of `delta`) →
 /// `:I<axis>6` (step period) →
@@ -446,6 +759,160 @@ async fn watcher_should_abort(
     transport: &TransportManager,
 ) -> bool {
     !state.read().await.slew_in_progress || !transport.is_available()
+}
+
+/// Fold an encoder-tick delta into the shortest equivalent path on a
+/// modular axis of period `cpr`.
+///
+/// The Sky-Watcher firmware's encoder counter is wider than the
+/// physical axis's logical period (cpr): a single revolution is `cpr`
+/// ticks, but the counter can run from `−2²³` to `+2²³ − 1` before
+/// the codec's 24-bit field wraps. A through-wrap meridian-flip slew
+/// can therefore leave the encoder counter outside the canonical
+/// `[−cpr/2, +cpr/2)` band (e.g. `−1.89M` for a flip that landed
+/// physically at `+11.5 h`, modular `+1.74M`). Without folding, the
+/// next slew's `target_ticks − current_ticks` would order a full
+/// extra revolution. This helper folds the raw delta to the
+/// shortest-path equivalent in `[−cpr/2, +cpr/2)`.
+fn fold_delta_to_canonical(delta: i32, cpr: u32) -> i32 {
+    if cpr == 0 {
+        return delta;
+    }
+    let cpr_i = cpr as i32;
+    let half_cpr = cpr_i / 2;
+    let modular = delta.rem_euclid(cpr_i);
+    if modular >= half_cpr {
+        modular - cpr_i
+    } else {
+        modular
+    }
+}
+
+/// Force a flip slew's RA delta to keep the polar-axis sweep out of
+/// the counterweight-binding zone `mech_HA ∈ (zone_min, zone_max)`
+/// (default `(+6.95, +11.05)` on the GTi), where the counterweight
+/// contacts the pier.
+///
+/// The mechanical binding zone is at positive `mech_HA` only and is a
+/// structural property of the mount head independent of observer
+/// latitude. Both forward flips (pre-flip → post-flip) and flip-backs
+/// (post-flip → pre-flip) need their RA paths constrained.
+///
+/// Strategy: take the canonical short path unless its linear mech_HA
+/// sweep from `current_ticks` through `current_ticks + canonical_delta`
+/// crosses the binding zone (modulo the 24-hour wrap). If it would,
+/// take the long way around (`canonical ± cpr_i`) which lands at the
+/// same modular destination via the safe arc on the other side.
+///
+/// Previously a sign-blind heuristic (`|current| > cpr/4 ⇒ "safe is
+/// positive"`) was used. That mis-fired at Park 4 N
+/// (current ≈ -cpr/2, canonical ≈ -4k CCW just past the wrap): the
+/// heuristic flipped the small CCW step into a +cpr/2 + small CW full
+/// revolution that swept across mech_HA (+6.95, +11.05) and slammed
+/// the CW shaft into the pier (hardware validation 2026-05-16). The
+/// path-aware check uses the actual binding zone, so it preserves the
+/// safe canonical step when it doesn't cross.
+fn flip_slew_ra_delta(
+    canonical_delta: i32,
+    current_ticks: i32,
+    cpr: u32,
+    binding_zone_hours: (f64, f64),
+) -> i32 {
+    if cpr == 0 || canonical_delta == 0 {
+        return canonical_delta;
+    }
+    let cpr_i = cpr as i32;
+    let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
+    let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
+    if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
+        return canonical_delta;
+    }
+    if canonical_delta > 0 {
+        canonical_delta - cpr_i
+    } else {
+        canonical_delta + cpr_i
+    }
+}
+
+/// Does the linear mech_HA sweep from `start_ha` by `delta_ha` enter
+/// `(zone_min, zone_max)` (modulo 24 h)? The sweep is the open
+/// interval `(min(start, start+delta), max(start, start+delta))`; the
+/// binding zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
+/// — enough to cover any `|delta_ha| ≤ 12` path. An empty zone
+/// (`zone_min ≥ zone_max`) is treated as no zone.
+fn canonical_path_crosses_binding_zone(
+    start_ha: f64,
+    delta_ha: f64,
+    binding_zone_hours: (f64, f64),
+) -> bool {
+    let (zone_min, zone_max) = binding_zone_hours;
+    if zone_min >= zone_max {
+        return false;
+    }
+    let path_lo = start_ha.min(start_ha + delta_ha);
+    let path_hi = start_ha.max(start_ha + delta_ha);
+    for k in [-1.0_f64, 0.0, 1.0] {
+        let bz_lo = zone_min + 24.0 * k;
+        let bz_hi = zone_max + 24.0 * k;
+        // Open-interval overlap: paths grazing the boundary stay safe.
+        if path_lo < bz_hi && bz_lo < path_hi {
+            return true;
+        }
+    }
+    false
+}
+
+/// Force a flip slew's Dec delta to traverse the **visible** celestial
+/// pole rather than the below-horizon pole.
+///
+/// During a Dec flip-slew the encoder must cross one of the `±cpr/4`
+/// boundaries (the two celestial poles). For a polar-aligned mount,
+/// only ONE pole is above the local horizon: NCP at altitude `+lat`
+/// for northern observers (encoder `+cpr/4`), SCP at altitude `+|lat|`
+/// for southern (encoder `−cpr/4`). The other pole is below the
+/// horizon and the path through it dips the OTA below the local
+/// horizon — exactly the failure mode we hit during the first
+/// hardware validation when the OTA was driven through SCP at LAT
+/// 32.7°N. (The fold-canonical-delta's boundary case at exactly
+/// `±cpr/2` produces the negative direction, which from `encoder = 0`
+/// pre-flip routes the Dec axis through SCP.)
+///
+/// Rule, expressed in encoder side:
+///
+/// - **Northern** observer:
+///   - `current` in the *pre-flip* half (`|enc| ≤ cpr/4`): force CW
+///     (positive delta) — the path increases toward `+cpr/4` (NCP).
+///   - `current` in the *post-flip* half (`|enc| > cpr/4`): force
+///     CCW (negative delta) — the path decreases back through
+///     `+cpr/4` (NCP).
+/// - **Southern** observer: inverse — the safe pole is `−cpr/4`
+///   (SCP) so the directions flip.
+///
+/// When the canonical shortest path already goes the safe direction,
+/// it's returned unchanged. When it doesn't, the long way around
+/// (`delta − cpr` or `delta + cpr`) lands at the same modular
+/// destination via the safe pole.
+fn flip_slew_dec_delta(
+    canonical_delta: i32,
+    current_ticks: i32,
+    cpr_dec: u32,
+    northern: bool,
+) -> i32 {
+    if cpr_dec == 0 || canonical_delta == 0 {
+        return canonical_delta;
+    }
+    let cpr_i = cpr_dec as i32;
+    let quarter = cpr_i / 4;
+    let in_pre_flip = current_ticks.abs() <= quarter;
+    let safe_direction_positive = if northern { in_pre_flip } else { !in_pre_flip };
+    let canonical_positive = canonical_delta > 0;
+    if canonical_positive == safe_direction_positive {
+        canonical_delta
+    } else if canonical_delta > 0 {
+        canonical_delta - cpr_i
+    } else {
+        canonical_delta + cpr_i
+    }
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
@@ -518,11 +985,25 @@ impl Device for MountDevice {
         if connected {
             self.transport.connect().await.map_err(Self::ascom)?;
             // Post-connect work that can fail (config-file read, parameter
-            // cache lookup) runs inside `load_park_target_after_connect`
-            // so we can roll the connect back on any error — otherwise the
-            // transport ref-count would stay incremented while `*req`
-            // remained false, leaking a connection. Per the Copilot review
-            // on PR #221 (comment 3238682044).
+            // cache lookup, encoder seed) runs in functions that the
+            // caller can roll back on any error — otherwise the transport
+            // ref-count would stay incremented while `*req` remained
+            // false, leaking a connection. Per the Copilot review on
+            // PR #221 (comment 3238682044).
+            //
+            // Order matters: `seed_home_pose_after_connect` runs FIRST so
+            // the snapshot reflects the home_pose's logical encoder values
+            // before `load_park_target_after_connect` picks its default
+            // park target from the snapshot. Otherwise the handshake's
+            // pre-seed reading (firmware-zero on a fresh power-up) would
+            // become the park fallback and `Park` would drive the mount
+            // to mech_HA = 0h / mech_dec = 0° instead of the home pose.
+            if let Err(e) = self.seed_home_pose_after_connect().await {
+                if let Err(disc_err) = self.transport.disconnect().await {
+                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+                }
+                return Err(e);
+            }
             if let Err(e) = self.load_park_target_after_connect().await {
                 if let Err(disc_err) = self.transport.disconnect().await {
                     tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
@@ -628,6 +1109,16 @@ impl Telescope for MountDevice {
     async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
         Ok(true)
     }
+    async fn can_set_pier_side(&self) -> ASCOMResult<bool> {
+        // Phase 6: CanSetPierSide tracks `flip_policy.enabled`. With
+        // the policy disabled (the shipped default), `SetSideOfPier`
+        // returns NOT_IMPLEMENTED — the driver behaves as a
+        // non-flipping GEM. With it enabled (only after a successful
+        // first real-hardware GTi flip), the slew planner accepts
+        // explicit flip requests. See the design doc's
+        // [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+        Ok(self.config.flip_policy.enabled)
+    }
     async fn can_set_guide_rates(&self) -> ASCOMResult<bool> {
         Ok(true)
     }
@@ -657,10 +1148,17 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        Ok(mechanical_ha_to_ra(mech_ha, lst))
+        let (ra, _dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
+            snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        Ok(ra)
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
@@ -675,10 +1173,17 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        Ok(dec_ticks_to_degrees(
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let (_ra, dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
             snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
             params.cpr_dec,
-        ))
+            self.config.site_latitude_deg,
+        );
+        Ok(dec)
     }
 
     async fn declination_rate(&self) -> ASCOMResult<f64> {
@@ -842,19 +1347,18 @@ impl Telescope for MountDevice {
     }
 
     async fn destination_side_of_pier(&self, ra: f64, dec: f64) -> ASCOMResult<PierSide> {
-        // Pure prediction — no wire traffic, no slew. Runs the same
-        // coordinate-math pipeline `slew_to_coordinates_async` uses to
-        // pick the target encoder pair, then applies the same Dec >
-        // 90° check `side_of_pier()` uses to classify the resulting
-        // pointing state. The driver never plans a meridian flip, so
-        // any target inside the safety envelope lands with the Dec
-        // encoder within ±90° and therefore predicts pierWest in the
-        // Northern Hemisphere (East in the Southern). Targets outside
-        // the envelope are rejected with `INVALID_VALUE` here for
-        // parity with `slew_to_coordinates_async` — ConformU's
-        // SOPPierTest commands such targets to exercise the
-        // pier-flip code paths, and rejecting them at the
-        // prediction step matches the rejection at the slew step.
+        // Pure prediction — no wire traffic, no slew. Shares the
+        // flip-policy decision tree with `slew_to_coordinates_async`
+        // (see the design doc's
+        // [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)),
+        // then validates the target against the safety envelope for
+        // the chosen side with the same `INVALID_VALUE` rejection a
+        // slew would issue. With `flip_policy.enabled = false` (the
+        // default) the decision tree collapses to "current side", so
+        // any target inside the (pre-flip) safety envelope predicts
+        // `pierWest` in the Northern Hemisphere (`pierEast` in the
+        // Southern). With it enabled, an opposite side is returned
+        // when the current side's envelope rejects the target.
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         let params = self
@@ -864,15 +1368,108 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
-        Ok(side_of_pier_calc(
-            dec_ticks,
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
             params.cpr_dec,
             self.config.site_latitude_deg,
-        ))
+        );
+        let chosen_side = select_pier_side_for_target(
+            ra,
+            lst,
+            current_side,
+            &self.config.flip_policy,
+            (
+                self.config.binding_zone_min_hours,
+                self.config.binding_zone_max_hours,
+            ),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = if self.config.site_latitude_deg >= 0.0 {
+            PierSide::West
+        } else {
+            PierSide::East
+        };
+        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
+        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+        Ok(chosen_side)
+    }
+
+    async fn set_side_of_pier(&self, side_of_pier: PierSide) -> ASCOMResult<()> {
+        // Phase 6: explicit meridian-flip trigger. With
+        // `flip_policy.enabled = false` (the default), every code path
+        // here short-circuits to NOT_IMPLEMENTED — the driver behaves
+        // as a non-flipping GEM. With the policy enabled, this method
+        // routes through `slew_to_coordinates_async` to the current
+        // celestial target with the chosen side. See the design doc's
+        // [§"`SetSideOfPier(side)`"](../../../docs/services/star-adventurer-gti.md#setsideofpierside).
+        if !self.config.flip_policy.enabled {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::NOT_IMPLEMENTED,
+                "SetSideOfPier requires flip_policy.enabled = true",
+            ));
+        }
+        if side_of_pier == PierSide::Unknown {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                "SetSideOfPier rejects PierSide::Unknown",
+            ));
+        }
+        self.ensure_connected().await?;
+        self.ensure_unparked().await?;
+        // Refuse mid-slew. The slew planner also self-refuses via its
+        // own `slew_in_progress` check, but rejecting here yields a
+        // cleaner error before we read the snapshot and compute a
+        // stale celestial target.
+        if self.state.read().await.slew_in_progress {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "SetSideOfPier refused: slew already in progress",
+            ));
+        }
+        // Compute the mount's current celestial position from the
+        // encoder snapshot + LST. A flip slew keeps the OTA on this
+        // same celestial direction while landing on the requested
+        // pier side.
+        let params = self
+            .transport
+            .parameters()
+            .await
+            .ok_or(ASCOMError::NOT_CONNECTED)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(Self::ascom)?;
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        if side_of_pier == current_side {
+            // No-op success. Per ASCOM, SetSideOfPier(current_side)
+            // is a valid request; we don't issue motion or perturb
+            // the in-memory target.
+            return Ok(());
+        }
+        // Read the *celestial* current pointing from the snapshot —
+        // `encoder_to_celestial` applies the post-flip RA/Dec mapping
+        // when the Dec encoder is past the pole.
+        // `execute_slew_with_explicit_side` will re-compute the target
+        // encoder for the chosen side.
+        let (cur_ra, cur_dec) = encoder_to_celestial(
+            snap.ra.position_ticks,
+            snap.dec.position_ticks,
+            lst,
+            params.cpr_ra,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
+        );
+        // Drive the slew with the chosen-side encoder math directly,
+        // bypassing the policy decision tree. The selector's
+        // stay-on-current preference is correct for slew_to_coordinates
+        // but wrong for an explicit SetSideOfPier — the user pinned the
+        // side, honour it.
+        self.execute_slew_with_explicit_side(cur_ra, cur_dec, side_of_pier)
+            .await
     }
 
     // ---- Target setters ----
@@ -936,13 +1533,17 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
         // Reject syncs that would set the encoder outside the
         // mount's safe mechanical envelope — a bad sync would let
         // the *next* tracking step push the OTA into a hard stop.
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
+        // Sync uses the pre-flip envelope (`target_is_flipped =
+        // false`); operators must `AbortSlew` and re-sync the pre-
+        // flip pointing first if a manual flip left the mount in a
+        // post-flip state.
+        self.check_within_safe_envelope(ra, dec, lst, false)?;
+        let mech_ha = ra_to_mechanical_ha(ra, lst);
+        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
+        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
         self.transport
             .send(Command::SetPosition {
                 axis: Axis::Ra,
@@ -1013,97 +1614,32 @@ impl Telescope for MountDevice {
         // pickup loop closes the gap cleanly.
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(Self::ascom)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
 
-        // Refuse before any wire motion if the slew target falls
-        // outside the configured mechanical envelope. ConformU's
-        // pier-flip tests deliberately command across-the-meridian
-        // slews that on a GEM-without-flip translate to encoders
-        // past the counterweight-horizontal boundary; the safety
-        // gate sends those back as `INVALID_VALUE` instead of
-        // stalling the motor against a hard stop.
-        self.check_within_safe_envelope(ra_ticks, dec_ticks, params.cpr_ra, params.cpr_dec)?;
-
-        // Atomically reserve the in-progress slot **before** issuing
-        // any motion. Latch the target + capture the tracking flag in
-        // the same write. We do NOT clear `tracking_requested` here:
-        // if any of the StopMotion / SetMotionMode / ... sends below
-        // fail, the in-memory state would falsely report tracking-off
-        // while the wire is still tracking. The flag is cleared only
-        // after the RA :K actually hits the wire (see the inline
-        // write below).
-        let tracking_was_on;
-        {
-            let mut s = self.state.write().await;
-            if s.slew_in_progress {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "slew refused: slew already in progress",
-                ));
-            }
-            s.target_ra_hours = Some(ra);
-            s.target_dec_degrees = Some(dec);
-            tracking_was_on = s.tracking_requested;
-            s.slew_in_progress = true;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
-        }
-
-        // From here on, any error path must clear `slew_in_progress`
-        // — otherwise the driver gets stuck reporting Slewing forever.
-        // Wrap motion-issue in an inner future so a single rollback
-        // covers every `?` failure.
-        let result: ASCOMResult<()> = async {
-            let snap = self.transport.snapshot().await;
-            let ra_delta = ra_ticks - snap.ra.position_ticks;
-            let dec_delta = dec_ticks - snap.dec.position_ticks;
-            // Both axes use the INDI wire sequence: `:K` + poll `:f`
-            // (decelerate stop — the spec's "motor must be at full stop
-            // before setting the motion mode" requirement) → `:G goto+fast`
-            // → `:I 6` → `:H |delta|` → `:M breaks` → `:J`. The RA-axis
-            // `:K` is also the wire event that halts any in-progress
-            // sidereal tracking; mirror that into the in-memory
-            // `tracking_requested` flag once the stop has actually
-            // succeeded so the state never gets ahead of the wire on
-            // transport failures.
-            self.stop_and_wait(Axis::Ra).await?;
-            self.state.write().await.tracking_requested = false;
-            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
-                .await
-                .map_err(Self::ascom)?;
-            self.stop_and_wait(Axis::Dec).await?;
-            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
-                .await
-                .map_err(Self::ascom)?;
-            Ok(())
-        }
-        .await;
-        if let Err(e) = result {
-            self.state.write().await.slew_in_progress = false;
-            return Err(e);
-        }
-
-        // Hand off to the completion watcher. The watcher polls
-        // until both axes report stopped, runs the EQMOD-style
-        // pickup loop (up to 5 iterations) to nudge any residual
-        // under 5", optionally re-issues sidereal tracking on RA
-        // (only if it was on before the slew), applies the settle
-        // delay, then clears `slew_in_progress`.
-        let settle = {
-            let s = self.state.read().await;
-            s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
-        };
-        spawn_slew_completion_watcher(
-            Arc::clone(&self.state),
-            Arc::clone(&self.transport),
-            self.config.clone(),
-            self.transport.polling_interval_for_watcher(),
-            settle,
-            tracking_was_on,
+        // Phase 6: determine target pier side via the flip policy. With
+        // `flip_policy.enabled = false` (the default), `chosen_side`
+        // always equals `current_side` and the rest of this function
+        // reduces to the pre-Phase-6 pipeline. With it enabled, a
+        // flip slew may be chosen — see the design doc's
+        // [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
+        let snap = self.transport.snapshot().await;
+        let current_side = side_of_pier_calc(
+            snap.dec.position_ticks,
+            params.cpr_dec,
+            self.config.site_latitude_deg,
         );
-        Ok(())
+        let chosen_side = select_pier_side_for_target(
+            ra,
+            lst,
+            current_side,
+            &self.config.flip_policy,
+            (
+                self.config.binding_zone_min_hours,
+                self.config.binding_zone_max_hours,
+            ),
+            self.config.site_latitude_deg,
+        );
+        self.execute_slew_with_explicit_side(ra, dec, chosen_side)
+            .await
     }
 
     async fn slew_to_target_async(&self) -> ASCOMResult<()> {
@@ -1627,12 +2163,15 @@ fn spawn_slew_completion_watcher(
             }
 
             // Direct poll instead of reading the (now-paused) background
-            // snapshot. On failure (transport closed mid-slew, command
-            // timeout, ...), treat as an abort to avoid spinning.
-            let snap = match transport.poll_axes_now().await {
+            // snapshot. [`watcher_poll_with_retry`] tolerates a handful
+            // of transient transport errors so a single USB-CDC glitch
+            // doesn't take the watcher offline mid-slew; on retry
+            // exhaustion it also issues a best-effort `:L` on both
+            // axes so the motor isn't left commutating with no
+            // observer.
+            let snap = match watcher_poll_with_retry(&transport, "slew_watcher").await {
                 Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("watcher poll_axes_now failed: {e}");
+                Err(_) => {
                     state.write().await.slew_in_progress = false;
                     return;
                 }
@@ -1696,9 +2235,9 @@ fn spawn_slew_completion_watcher(
             // residual is bounded by the slew duration × sidereal
             // rate (~15"/s of RA drift per second of slew).
             if pickup_iterations < PICKUP_MAX_ITERATIONS {
-                let (target_ra, target_dec) = {
+                let (target_ra, target_dec, target_pier_side) = {
                     let s = state.read().await;
-                    (s.target_ra_hours, s.target_dec_degrees)
+                    (s.target_ra_hours, s.target_dec_degrees, s.target_pier_side)
                 };
                 if let (Some(target_ra), Some(target_dec), Some(params)) =
                     (target_ra, target_dec, transport.parameters().await)
@@ -1724,10 +2263,20 @@ fn spawn_slew_completion_watcher(
                             return;
                         }
                     };
-                    let cur_mech_ha =
-                        ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
-                    let cur_ra = mechanical_ha_to_ra(cur_mech_ha, lst);
-                    let cur_dec = dec_ticks_to_degrees(snap.dec.position_ticks, params.cpr_dec);
+                    // Flip-aware: `encoder_to_celestial` applies the
+                    // post-flip RA/Dec mapping when the Dec encoder is
+                    // past the pole. Without it, the residual check
+                    // would interpret a successful flip as a 12-hour
+                    // RA residual and the pickup loop would try to undo
+                    // the flip on its first iteration.
+                    let (cur_ra, cur_dec) = encoder_to_celestial(
+                        snap.ra.position_ticks,
+                        snap.dec.position_ticks,
+                        lst,
+                        params.cpr_ra,
+                        params.cpr_dec,
+                        config.site_latitude_deg,
+                    );
                     // RA residual is on a 24-hour circle; take the
                     // shorter arc. Convert hours → arc-seconds
                     // (15°/hour × 3600″/°).
@@ -1773,11 +2322,51 @@ fn spawn_slew_completion_watcher(
                             None => polling_interval * 2,
                         };
                         last_pickup_at = Some(now);
-                        let new_ra_ticks =
-                            pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
-                        let new_dec_ticks = dec_degrees_to_ticks(target_dec, params.cpr_dec);
-                        let ra_delta = new_ra_ticks - snap.ra.position_ticks;
-                        let dec_delta = new_dec_ticks - snap.dec.position_ticks;
+                        // Flip-aware target-encoder computation. With a
+                        // pre-flip target side, reuse `pickup_target_ra_ticks`
+                        // for the same LST pre-compensation that pre-Phase-6
+                        // builds relied on. With a post-flip target side,
+                        // compute the projected target via
+                        // `target_encoder_flipped` so the pickup re-slew
+                        // lands on the flipped encoder (past-the-pole Dec
+                        // and the mirror-band RA mech_HA) rather than
+                        // undoing the flip back to the pre-flip side.
+                        let pre_flip_side = if config.site_latitude_deg >= 0.0 {
+                            PierSide::West
+                        } else {
+                            PierSide::East
+                        };
+                        let target_is_flipped = target_pier_side
+                            .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
+                            .is_some();
+                        let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
+                            let lst_proj = lst + projection.as_secs_f64() / 3600.0;
+                            target_encoder_flipped(
+                                target_ra,
+                                target_dec,
+                                lst_proj,
+                                params.cpr_ra,
+                                params.cpr_dec,
+                            )
+                        } else {
+                            let new_ra =
+                                pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
+                            let new_dec = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                            (new_ra, new_dec)
+                        };
+                        // Fold the deltas to canonical so the pickup
+                        // re-slew takes the shortest path even if the
+                        // current encoder snapshot landed outside
+                        // `[−cpr/2, +cpr/2)` after a through-wrap
+                        // flip — see [`fold_delta_to_canonical`].
+                        let ra_delta = fold_delta_to_canonical(
+                            new_ra_ticks - snap.ra.position_ticks,
+                            params.cpr_ra,
+                        );
+                        let dec_delta = fold_delta_to_canonical(
+                            new_dec_ticks - snap.dec.position_ticks,
+                            params.cpr_dec,
+                        );
                         pickup_iterations += 1;
                         debug!(
                             iteration = pickup_iterations,
@@ -1900,6 +2489,71 @@ async fn stop_axis_and_wait(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Retrying wrapper around [`TransportManager::poll_axes_now`] used by
+/// both the slew and park completion watchers. Tolerates up to
+/// [`WATCHER_POLL_RETRY_LIMIT`] consecutive transport errors so a
+/// single transient USB-CDC glitch (a brief renumeration, a stale
+/// kernel buffer, …) doesn't take the watcher offline for the rest
+/// of a goto.
+///
+/// On every successful poll the snapshot is emitted at `debug` so a
+/// post-mortem can reconstruct the last-known-good state observed
+/// before any failure. On every failed attempt the underlying error
+/// is logged at `warn` with the attempt counter.
+///
+/// On retry exhaustion, the helper makes a best-effort `:L` on both
+/// axes before returning the underlying error: even when we can no
+/// longer observe state, the firmware may still be commutating step
+/// pulses, and a runaway motor with no observer is the worst case
+/// the original exit-on-first-error policy created. The `:L` calls
+/// are fire-and-forget — if they fail too, there's nothing useful
+/// the watcher can do beyond logging and bailing.
+async fn watcher_poll_with_retry(
+    transport: &TransportManager,
+    context: &'static str,
+) -> crate::error::Result<MountSnapshot> {
+    let mut last_err: Option<StarAdvError> = None;
+    for attempt in 0..WATCHER_POLL_RETRY_LIMIT {
+        match transport.poll_axes_now().await {
+            Ok(snap) => {
+                debug!(
+                    context = context,
+                    ra_ticks = snap.ra.position_ticks,
+                    ra_running = snap.ra.running,
+                    ra_blocked = snap.ra.blocked,
+                    ra_goto = snap.ra.goto,
+                    dec_ticks = snap.dec.position_ticks,
+                    dec_running = snap.dec.running,
+                    dec_blocked = snap.dec.blocked,
+                    dec_goto = snap.dec.goto,
+                    "watcher snapshot"
+                );
+                return Ok(snap);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    context = context,
+                    attempt = attempt + 1,
+                    limit = WATCHER_POLL_RETRY_LIMIT,
+                    "watcher poll_axes_now transient error: {e}"
+                );
+                last_err = Some(e);
+                if attempt + 1 < WATCHER_POLL_RETRY_LIMIT {
+                    tokio::time::sleep(WATCHER_POLL_RETRY_BACKOFF).await;
+                }
+            }
+        }
+    }
+    tracing::warn!(
+        context = context,
+        "watcher poll_axes_now retries exhausted — best-effort :L on both axes before bailing"
+    );
+    let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
+    let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+    Err(last_err
+        .unwrap_or_else(|| StarAdvError::Transport("watcher poll retries exhausted".to_string())))
 }
 
 /// Probe whether the parent directory of `config_path` can host the
@@ -2168,10 +2822,14 @@ fn spawn_park_completion_watcher(
                 state.write().await.slew_in_progress = false;
                 return;
             }
-            let snap = match transport.poll_axes_now().await {
+            // See [`watcher_poll_with_retry`] in the slew watcher above:
+            // tolerates transient transport errors, debug-logs every
+            // successful snapshot for post-mortems, and issues a
+            // best-effort `:L` on retry exhaustion so the motor halts
+            // even when the wire has gone away.
+            let snap = match watcher_poll_with_retry(&transport, "park_watcher").await {
                 Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("park watcher poll_axes_now failed: {e}");
+                Err(_) => {
                     state.write().await.slew_in_progress = false;
                     return;
                 }
@@ -2316,8 +2974,9 @@ mod tests {
         let mut cfg = Config::default();
         // Same rationale as `fast_settle_device`: open the
         // mechanical-envelope check for tests that don't exercise it.
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -2620,8 +3279,9 @@ mod tests {
         // envelope all the way for these tests; the safety-gate
         // behaviour is covered separately by
         // [`fast_settle_connected_narrow_envelope`].
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -2635,19 +3295,24 @@ mod tests {
         d
     }
 
-    /// Like `fast_settle_connected`, but with a narrow mechanical
-    /// envelope so the safety-gate tests can land target coords
-    /// that are clearly outside the envelope without first needing
-    /// to push past the GTi default `±6.95h` / `±90°`.
+    /// Like `fast_settle_connected`, but with a narrow safety
+    /// configuration (a small binding zone + tight Dec range) so the
+    /// safety-gate tests can land target coords that are clearly
+    /// inside the binding zone or outside the Dec band without first
+    /// needing to push past the GTi default `(6.95, 11.05)` /
+    /// `±90°`.
     async fn fast_settle_connected_narrow_envelope() -> MountDevice {
         let mut cfg = Config::default();
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Allow exactly the meridian band ±1 h of HA / ±5° of Dec.
-        cfg.mount.ra_min_hours = -1.0;
-        cfg.mount.ra_max_hours = 1.0;
+        // Narrow binding zone covering `mech_HA ∈ [0.5, 1.5] h` so a
+        // target 1 h past meridian on the natural side is inside it,
+        // and tight Dec band `[-5°, +5°]` so off-equator targets are
+        // rejected.
+        cfg.mount.binding_zone_min_hours = 0.5;
+        cfg.mount.binding_zone_max_hours = 1.5;
         cfg.mount.dec_min_degrees = -5.0;
         cfg.mount.dec_max_degrees = 5.0;
         let manager = Arc::new(TransportManager::new(
@@ -2677,14 +3342,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slew_async_refuses_ra_outside_safe_envelope() {
-        // Envelope: HA in [-1 h, +1 h]. Target RA = LST + 3 h puts
-        // mech-HA at -3 h — well outside.
+    async fn slew_async_refuses_ra_target_in_binding_zone() {
+        // Binding zone covers `mech_HA ∈ [0.5, 1.5] h`. Target RA =
+        // LST − 1 puts `mech_HA = LST − (LST − 1) = +1 h` — squarely
+        // in the middle of the zone, so the slew must be rejected
+        // with `INVALID_VALUE` before any wire motion.
         let d = fast_settle_connected_narrow_envelope().await;
         let lst = d.sidereal_time().await.unwrap();
-        let target = (lst + 3.0).rem_euclid(24.0);
+        let target = (lst - 1.0).rem_euclid(24.0);
         let err = d.slew_to_coordinates_async(target, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(
+            err.message.contains("binding zone"),
+            "error message must call out the binding zone: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
@@ -2830,8 +3502,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -2911,8 +3584,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -2980,8 +3654,9 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
         let d = MountDevice::new(cfg.mount, manager);
         d.set_connected(true).await.unwrap();
@@ -3416,8 +4091,9 @@ mod tests {
 
     fn device_with_path(path: PathBuf) -> MountDevice {
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(MockTransportFactory),
@@ -3778,8 +4454,9 @@ mod tests {
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         seed_default_config(&path);
@@ -3849,10 +4526,12 @@ mod tests {
 
     #[tokio::test]
     async fn park_target_defaults_to_handshake_capture_when_config_has_no_values() {
-        // No config park values → driver should fall back to the
-        // encoder positions captured during the handshake. The mock
-        // starts both axes at 0, so park_ra_ticks / park_dec_ticks
-        // should be Some(0) after connect.
+        // No config park values **and no `home_pose`** → driver falls
+        // back to the live snapshot, which on a fresh connect equals
+        // the handshake-captured encoder reading. The mock starts both
+        // axes at 0 and the home_pose seed is a no-op when none is
+        // configured, so park_ra_ticks / park_dec_ticks should be
+        // Some(0) after connect.
         let d = device();
         d.set_connected(true).await.unwrap();
         let s = d.state.read().await;
@@ -3861,12 +4540,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
+        // Sky-Watcher firmware does not always read exactly (0, 0)
+        // after a power-cycle: the validation GTi reports dec = -1 on
+        // fresh power-up. Without the FRESH_POWER_UP_TICK_TOLERANCE
+        // guard the strict `!= 0` check would skip the seed and the
+        // mount would silently end up with a wrong celestial mapping
+        // (and a wrong Park target via the snapshot fallback).
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        // Force the dec encoder to a 1-tick fresh-power-up artifact
+        // before the manager opens the transport.
+        {
+            let mut state = factory.mock.state.lock().await;
+            state.dec.position_ticks = -1;
+        }
+        let mut cfg = Config::default();
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // ApPark3 N hemisphere with mock cpr = 0x375F00 = 3,628,800:
+        // expected seed → ra_ticks = -907,200, dec_ticks = +907,200.
+        // If the seed had been skipped, the park target would be
+        // (0, -1) (the pre-seed snapshot).
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(-907200));
+        assert_eq!(s.park_dec_ticks, Some(907200));
+    }
+
+    #[tokio::test]
+    async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
+        // A real post-slew encoder is tens of thousands of ticks away
+        // from zero — well beyond FRESH_POWER_UP_TICK_TOLERANCE. The
+        // seed must skip in that case so a mid-session reconnect does
+        // not clobber the operator's slewed-to position.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        {
+            let mut state = factory.mock.state.lock().await;
+            state.ra.position_ticks = 50_000;
+        }
+        let mut cfg = Config::default();
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // Seed skipped → park target falls back to the snapshot (the
+        // pre-seed handshake reading), so park_ra_ticks should equal
+        // the firmware's reported 50,000 (not -907,200).
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(50_000));
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[tokio::test]
+    async fn park_target_defaults_to_home_pose_encoder_when_home_pose_configured() {
+        // Operator configures `home_pose: ap_park_3` (Sky-Watcher's
+        // stock power-up pose) and leaves `park_*_ticks` null. After
+        // connect, `seed_home_pose_after_connect` writes the home_pose's
+        // logical encoder values to the firmware via `:E`, and the
+        // park-target fallback must pick those up from the snapshot —
+        // otherwise `Park` would slew the mount to firmware-encoder-
+        // zero (mech_HA = 0h, mech_dec = 0°) instead of the pose the
+        // operator powered up at. Regression test for the
+        // meridian-flip-phase hardware-validation observation that
+        // `Park` from `home_pose: ap_park_3` drove the OTA to
+        // meridian / celestial equator instead of NCP.
+        let mut cfg = Config::default();
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        // ApPark3 codebase convention: mech_HA = -6h, dec encoder = +90°
+        // (northern hemisphere). Mock cpr = 0x375F00 = 3,628,800 for
+        // both axes, so ra = -6/24 * cpr = -907,200 and
+        // dec = 90/360 * cpr = +907,200.
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(-907200));
+        assert_eq!(s.park_dec_ticks, Some(907200));
+    }
+
+    #[tokio::test]
     async fn park_target_prefers_config_values_over_handshake_capture() {
         // Config carries park values → driver should use them, not the
         // (zeroed) handshake fallback.
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.park_ra_ticks = Some(5000);
         cfg.mount.park_dec_ticks = Some(-7000);
         let manager = Arc::new(TransportManager::new(
@@ -4356,8 +5133,9 @@ mod tests {
         // and `IsPulseGuiding` reports `false` consistent with the
         // lack of actual motion.
         let mut cfg = Config::default();
-        cfg.mount.ra_min_hours = -12.0;
-        cfg.mount.ra_max_hours = 12.0;
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
             cfg.clone(),
             Arc::new(StuckAxisFactory),
@@ -4470,5 +5248,621 @@ mod tests {
             g110_count, 1,
             "expected 1 :G110 frame (pulse-start only, no restore), got {g110_count}; log {log:?}"
         );
+    }
+
+    // ---------- Phase 6: through-wrap routing helpers ----------
+
+    const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
+
+    /// Hardware-verified GTi counterweight binding zone in mech_HA hours
+    /// (matches `default_binding_zone_min/max_hours` in `config.rs`).
+    const GTI_BINDING_ZONE: (f64, f64) = (6.95, 11.05);
+
+    #[test]
+    fn fold_delta_to_canonical_passes_through_small_deltas() {
+        assert_eq!(fold_delta_to_canonical(0, GTI_CPR), 0);
+        assert_eq!(fold_delta_to_canonical(1, GTI_CPR), 1);
+        assert_eq!(fold_delta_to_canonical(-1, GTI_CPR), -1);
+        assert_eq!(fold_delta_to_canonical(100_000, GTI_CPR), 100_000);
+        assert_eq!(fold_delta_to_canonical(-100_000, GTI_CPR), -100_000);
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_collapses_long_way_to_short_way() {
+        let half = GTI_CPR as i32 / 2;
+        // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
+        // shorter path on the modular axis).
+        let folded = fold_delta_to_canonical(half + 100, GTI_CPR);
+        assert_eq!(folded, -half + 100);
+        // Symmetric for the negative direction.
+        let folded = fold_delta_to_canonical(-half - 100, GTI_CPR);
+        assert_eq!(folded, half - 100);
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_recovers_from_through_wrap_encoder() {
+        // After a through-wrap flip slew, the encoder may have landed
+        // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
+        // pickup that computes `target_canonical (+1,738,800) −
+        // current_raw (−1,890,000) = +3,628,800` would order a full
+        // revolution; folding collapses it to the (near-)zero residual
+        // it should be.
+        let target_canonical = 1_738_800_i32;
+        let current_raw = -1_890_000_i32;
+        let raw_delta = target_canonical - current_raw;
+        // raw_delta ≈ cpr. Folded should be small.
+        let folded = fold_delta_to_canonical(raw_delta, GTI_CPR);
+        assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_forward_flip_from_pre_flip_zero_uses_natural_ccw() {
+        // Forward flip starting at encoder ≈ 0 (mech_HA ≈ 0, pre-flip
+        // pierWest at meridian). Target = −cpr/2 (post-flip wrap).
+        // Canonical CCW; path stays in negative half. Safe.
+        let cpr = GTI_CPR;
+        let current = 0;
+        let canonical = -(cpr as i32 / 2);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert_eq!(issued, canonical, "natural CCW already in the safe half");
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_forward_flip_target_minus_half_h_takes_long_way() {
+        // The plan §2.0 canonical case: pre-flip mech_HA = −0.5, target
+        // post-flip mech_HA = +11.5, canonical = +cpr*11.5/24 -
+        // (-cpr*0.5/24) = +cpr/2 + small. (Approximated by +1.815M
+        // ticks at cpr_ra = 3.6288M.) Force CCW long way through the
+        // wrap.
+        let cpr = GTI_CPR;
+        let current = -75_600; // mech_HA = -0.5
+        let canonical = 1_815_000_i32;
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert!(issued < 0, "must force CCW long way");
+        assert_eq!(
+            (issued - canonical).rem_euclid(cpr as i32),
+            0,
+            "same modular destination"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_flip_back_from_minus_half_cpr_uses_natural_cw() {
+        // Flip-back: current at raw -cpr/2 (post-flip wrap, mech_HA = -12).
+        // Target = -cpr/4 (Park 3, mech_HA = -6). Canonical = +cpr/4
+        // (positive CW). The path is mech_HA -12 → -11 → ... → -6,
+        // entirely in the safe negative half. Use canonical.
+        //
+        // Regression for hardware validation #3: my prior `always CCW`
+        // rule forced -3*cpr/4 here, routing through +6 to +9 binding
+        // zone and slamming the CW shaft into the pier.
+        let cpr = GTI_CPR;
+        let current = -(cpr as i32 / 2);
+        let canonical = cpr as i32 / 4;
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert_eq!(
+            issued, canonical,
+            "flip-back from -cpr/2 must use natural CW"
+        );
+        assert!(issued > 0);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_flip_back_from_plus_half_cpr_forces_cw_through_wrap() {
+        // Flip-back from raw +cpr/2 (mech_HA = +12 = -12 modular,
+        // post-flip wrap from the other direction). Target = -cpr/4.
+        // Canonical = -cpr/4 - +cpr/2 = -3cpr/4 → fold to +cpr/4 (CW,
+        // because |−3cpr/4| > half_cpr). Force CW; path stays in safe
+        // half going from +cpr/2 → +cpr/2 + cpr/4 = +3cpr/4 raw
+        // (modular: -cpr/4 = mech_HA -6).
+        let cpr = GTI_CPR;
+        let current = cpr as i32 / 2;
+        let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
+        let canonical = fold_delta_to_canonical(canonical_raw, cpr); // +cpr/4
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert!(issued > 0, "post-flip wrap → safe arc must use CW");
+        assert_eq!(issued, canonical, "canonical CW is already safe here");
+    }
+
+    #[test]
+    fn fold_delta_to_canonical_handles_zero_cpr_defensively() {
+        // cpr = 0 is the degenerate "parameter cache not populated"
+        // case. Callers normally short-circuit on NOT_CONNECTED
+        // before reaching this helper; pass-through is the defensive
+        // fallback so a logic bug there can't divide by zero here.
+        assert_eq!(fold_delta_to_canonical(12_345, 0), 12_345);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
+        assert_eq!(flip_slew_ra_delta(12_345, 0, 0, GTI_BINDING_ZONE), 12_345);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_zero_canonical_returns_zero() {
+        assert_eq!(flip_slew_ra_delta(0, 0, GTI_CPR, GTI_BINDING_ZONE), 0);
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_park4_to_park5_north_uses_canonical_through_wrap() {
+        // Hardware regression (2026-05-16): Park 4 N → Park 5 N flip
+        // slew. Snap.ra ≈ raw -1,810,272 (mech_HA -11.974, post-flip
+        // pierEast just east of the saddle-east wrap). The slew planner
+        // chose pierWest (target HA -12 outside the flip window), with
+        // target encoder near +cpr/2 (mech_HA +11.999, the saddle-east
+        // wrap from the other side). fold_delta_to_canonical produces a
+        // small CCW step (~-3.8k ticks) that physically nudges the RA
+        // encoder past the -12 wrap and into +12 folded — the path stays
+        // entirely in the safe arc (no positive mech_HA visited). The
+        // old sign-blind heuristic forced canonical + cpr ≈ +3.625M
+        // ticks CW, a near-full polar-axis revolution that swept
+        // mech_HA through (+6.95, +11.05) and slammed the CW shaft into
+        // the pier — the operator powered the mount off mid-sweep.
+        let cpr = GTI_CPR;
+        let current = -1_810_272_i32;
+        let canonical = -3_798_i32;
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert_eq!(
+            issued, canonical,
+            "canonical CCW wrap-crossing must be preserved; old long-way CW \
+             would full-revolution through the binding zone"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_canonical_path_crossing_binding_zone_takes_long_way() {
+        // Current at mech_HA = +5 (just below the binding zone), target
+        // at mech_HA = +11.5 (just above it). Canonical short path
+        // would sweep mech_HA from +5 to +11.5, entering (+6.95, +11.05)
+        // around mech_HA = +7. Force the long way around through the
+        // safe negative half.
+        let cpr = GTI_CPR;
+        let current = (cpr as i32) * 5 / 24; // mech_HA = +5
+        let canonical = (cpr as i32) * 13 / 48; // +6.5 hours of mech_HA
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        assert!(
+            issued < 0,
+            "canonical path enters (6.95, 11.05); must take CCW long way (got {issued})"
+        );
+        assert_eq!(
+            (issued - canonical).rem_euclid(cpr as i32),
+            0,
+            "same modular destination"
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_empty_binding_zone_always_uses_canonical() {
+        // Empty zone (min ≥ max) disables routing; the function
+        // collapses to the canonical short delta regardless of which
+        // half the current sits in. Matches the BDD-test config that
+        // sets `binding_zone_min = 24.0, binding_zone_max = 0.0` to
+        // bypass the safety gate.
+        let cpr = GTI_CPR;
+        let empty_zone = (24.0_f64, 0.0_f64);
+        for (current, canonical) in [
+            (0_i32, -(cpr as i32 / 2)),
+            (-(cpr as i32 / 2), cpr as i32 / 4),
+            (-1_810_272_i32, -3_798_i32),
+        ] {
+            assert_eq!(
+                flip_slew_ra_delta(canonical, current, cpr, empty_zone),
+                canonical,
+                "empty zone must pass canonical through (current={current}, canonical={canonical})"
+            );
+        }
+    }
+
+    // ---------- flip_slew_dec_delta (Dec routing through the visible pole) ----------
+
+    /// Trace the absolute encoder traversal range from `start` by `delta`
+    /// and report `true` iff the trajectory crosses `pole_ticks` (the
+    /// unsafe-pole position) on its way to the end.
+    fn path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32) -> bool {
+        let cpr_i = cpr as i32;
+        let end = start + delta;
+        let (lo, hi) = if end >= start {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        // Test all modular replicas of `pole_ticks` that could fall in
+        // `[lo, hi]`. Since `|delta| ≤ cpr`, at most one replica matters.
+        (-2..=2).any(|k| {
+            let p = pole_ticks + k * cpr_i;
+            p >= lo && p <= hi
+        })
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw() {
+        // Park 3: start at encoder +cpr/4 (= +90°, NCP). Target = +135°
+        // encoder = +3*cpr/8 (celestial dec = +45° on the flipped side).
+        // Natural delta = +cpr/8 (positive CW). Path stays in upper
+        // half, doesn't touch SCP. Use canonical.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = quarter; // +90° encoder
+        let target = (cpr as f64 * 3.0 / 8.0).round() as i32; // +135°
+        let canonical = target - current; // +cpr/8
+        assert_eq!(
+            flip_slew_dec_delta(canonical, current, cpr, true),
+            canonical,
+            "Park 3 → +135° should use the natural CW direction"
+        );
+        // Confirm the path avoids SCP (-cpr/4).
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_pre_flip_zero_to_post_flip_dec_zero_takes_long_way() {
+        // The bug case from the first hardware run: starting at encoder
+        // = 0 (codebase historical home), the canonical fold of a slew
+        // to dec_encoder = ±cpr/2 returns negative (CCW), which routes
+        // the Dec axis through −cpr/4 (SCP, below horizon for north).
+        // The fix forces the CW long way through +cpr/4 (NCP).
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let half_cpr = cpr as i32 / 2;
+        let canonical = -half_cpr; // post-flip target for celestial dec = 0
+        let issued = flip_slew_dec_delta(canonical, 0, cpr, true);
+        assert_eq!(issued, half_cpr, "must force CW through NCP");
+        // Verify path crosses NCP and not SCP.
+        assert!(path_crosses_pole(0, issued, quarter, cpr));
+        assert!(!path_crosses_pole(0, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_flip_back_from_upper_post_flip_uses_natural_ccw() {
+        // Flip-back: starting at encoder +3*cpr/8 (= +135°, upper
+        // post-flip), target = 0 (pre-flip celestial equator). Natural
+        // CCW (negative direction) crosses +cpr/4 (NCP). Don't take
+        // the long way — CCW is safe here.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = (cpr as f64 * 3.0 / 8.0).round() as i32;
+        let target = 0;
+        let canonical = target - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert_eq!(
+            issued, canonical,
+            "flip-back from +135° must use natural CCW"
+        );
+        // Verify path crosses NCP (the safe pole) and not SCP.
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_positive_uses_cw() {
+        // Pre-flip but below celestial equator: encoder = -cpr/8
+        // (= -45°). Target = +3*cpr/8 (= +135° encoder, post-flip
+        // dec=+45). CW path: -45 → 0 → +90 (NCP) → +135. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -(cpr as i32 / 8);
+        let target = (cpr as i32 * 3) / 8;
+        let canonical = target - current; // positive, half cpr
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert_eq!(issued, canonical, "natural CW direction is safe");
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_negative_forces_long_cw() {
+        // Pre-flip below equator: encoder = -cpr/8. Target =
+        // -3*cpr/8 (post-flip negative). Natural CCW (negative) path:
+        // -cpr/8 → -cpr/4 (SCP) → -3*cpr/8. UNSAFE. Force long-way CW:
+        // -cpr/8 → +cpr/4 (NCP) → +cpr/2 → wraps → -3*cpr/8. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -(cpr as i32 / 8);
+        let target_canonical = -(cpr as i32 * 3) / 8;
+        let canonical = target_canonical - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        // Forced to positive direction (long way).
+        assert!(issued > 0);
+        // Lands at the same modular destination.
+        assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+        // Path crosses NCP, not SCP.
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_north_lower_post_flip_to_pre_flip_uses_ccw_through_wrap() {
+        // Lower post-flip: encoder = -3*cpr/8 (= -135°, celestial
+        // dec=-45 on post-flip side). Target = 0 (pre-flip equator).
+        // Natural CW (positive) path: -3*cpr/8 → -cpr/4 (SCP) → 0.
+        // UNSAFE. Force CCW (negative) long-way: -3*cpr/8 →
+        // -cpr/2 → wraps → +cpr/2 → +cpr/4 (NCP) → 0. SAFE.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -((cpr as i32 * 3) / 8);
+        let canonical = 0 - current; // positive
+        let issued = flip_slew_dec_delta(canonical, current, cpr, true);
+        assert!(issued < 0, "must force CCW long way");
+        assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+        assert!(path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_south_inverts_safe_pole() {
+        // Southern observer: SCP is visible, NCP is below horizon.
+        // Repeat the "park 3 start" case but with southern config:
+        // start at encoder = -cpr/4 (Park 3 south = SCP). Target =
+        // -3*cpr/8. Natural CCW (negative). Should be used as-is.
+        let cpr = GTI_CPR;
+        let quarter = cpr as i32 / 4;
+        let current = -quarter; // SCP for southern Park 3
+        let target = -((cpr as i32 * 3) / 8);
+        let canonical = target - current; // negative
+        let issued = flip_slew_dec_delta(canonical, current, cpr, false);
+        assert_eq!(
+            issued, canonical,
+            "south Park 3 → -3cpr/8 must use natural CCW"
+        );
+        // For south, the unsafe pole is +cpr/4 (NCP). Verify path
+        // doesn't cross it.
+        assert!(!path_crosses_pole(current, issued, quarter, cpr));
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_handles_zero_cpr_defensively() {
+        assert_eq!(flip_slew_dec_delta(12_345, 0, 0, true), 12_345);
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_zero_canonical_returns_zero() {
+        assert_eq!(flip_slew_dec_delta(0, 0, GTI_CPR, true), 0);
+    }
+
+    // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
+
+    async fn flip_enabled_device() -> MountDevice {
+        let mut cfg = Config::default();
+        if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.polling_interval = Duration::from_millis(20);
+        }
+        cfg.mount.settle_after_slew = Duration::from_millis(0);
+        // Disable the binding-zone check for this test.
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
+        cfg.mount.flip_policy.enabled = true;
+        let manager = Arc::new(TransportManager::new(
+            cfg.clone(),
+            Arc::new(MockTransportFactory),
+        ));
+        MountDevice::new(cfg.mount, manager)
+    }
+
+    async fn flip_enabled_connected_device() -> MountDevice {
+        let d = flip_enabled_device().await;
+        d.set_connected(true).await.unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn can_set_pier_side_defaults_to_false() {
+        let d = fast_settle_connected().await;
+        assert!(!d.can_set_pier_side().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn can_set_pier_side_is_true_when_flip_policy_enabled() {
+        let d = flip_enabled_connected_device().await;
+        assert!(d.can_set_pier_side().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_returns_not_implemented_when_flip_policy_disabled() {
+        let d = fast_settle_connected().await;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_rejects_unknown_with_invalid_value() {
+        let d = flip_enabled_connected_device().await;
+        let err = d.set_side_of_pier(PierSide::Unknown).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_when_not_connected() {
+        let d = flip_enabled_device().await;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_while_parked() {
+        let d = flip_enabled_connected_device().await;
+        // Park puts AtPark = true; SetSideOfPier must refuse with
+        // INVALID_WHILE_PARKED before reaching the slew planner.
+        d.state.write().await.at_park = true;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_refuses_while_slew_in_progress() {
+        let d = flip_enabled_connected_device().await;
+        d.state.write().await.slew_in_progress = true;
+        let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_to_current_side_succeeds_as_noop() {
+        let d = flip_enabled_connected_device().await;
+        // Mock starts with Dec encoder = 0 (within ±90°), site latitude
+        // = 0° (northern convention since `>= 0`), so current side is
+        // pierWest. SetSideOfPier(West) is a no-op.
+        d.set_side_of_pier(PierSide::West).await.unwrap();
+        // State unchanged.
+        assert!(!d.state.read().await.slew_in_progress);
+    }
+
+    #[tokio::test]
+    async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
+        let d = flip_enabled_connected_device().await;
+        d.set_side_of_pier(PierSide::East).await.unwrap();
+        // Slew was issued — the state should now show slew_in_progress
+        // until the watcher clears it. The watcher may have already
+        // completed in the mock (instant-settle config), so accept
+        // either: the slew was either still in progress at this read,
+        // or already finished with the encoder mutated.
+        let s = d.state.read().await;
+        let slewing = s.slew_in_progress;
+        let target_set = s.target_ra_hours.is_some() && s.target_dec_degrees.is_some();
+        drop(s);
+        assert!(
+            slewing || target_set,
+            "expected slew to have been issued (slew_in_progress or target_ra latched)"
+        );
+    }
+
+    // ---- watcher_poll_with_retry --------------------------------------
+    //
+    // The slew/park watchers' transport-error path used to exit on the
+    // first failed `poll_axes_now`, which made a single transient USB-
+    // CDC glitch take the watcher offline for the rest of the slew. The
+    // helper now retries [`WATCHER_POLL_RETRY_LIMIT`] times and on
+    // exhaustion fires a best-effort `:L` on both axes so a runaway
+    // motor doesn't continue commutating with no observer.
+
+    use crate::transport::{Transport, TransportFactory};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Inject N consecutive transport failures and count `:L<axis>`
+    /// frames that crossed the wire. Shared between the test and the
+    /// inner [`FlakyTransport`] so the test can observe both knobs.
+    struct FlakyController {
+        fail_remaining: AtomicU32,
+        stop_calls_ra: AtomicU32,
+        stop_calls_dec: AtomicU32,
+    }
+
+    /// Wraps [`crate::transport::mock::MockTransport`] and fails the
+    /// first `fail_remaining` round-trips. Every `:L<axis>` frame is
+    /// counted before the fail check so even a `:L` that lands during
+    /// the failure window still registers (the retry-exhaustion path
+    /// fires `:L` regardless of whether the transport is responsive).
+    struct FlakyTransport {
+        inner: crate::transport::mock::MockTransport,
+        ctrl: Arc<FlakyController>,
+    }
+
+    #[async_trait]
+    impl Transport for FlakyTransport {
+        async fn round_trip(
+            &self,
+            request: &[u8],
+            timeout: Duration,
+        ) -> crate::error::Result<Vec<u8>> {
+            if request.len() >= 3 && request[1] == b'L' {
+                match request[2] {
+                    b'1' => {
+                        self.ctrl.stop_calls_ra.fetch_add(1, Ordering::SeqCst);
+                    }
+                    b'2' => {
+                        self.ctrl.stop_calls_dec.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            }
+            if self.ctrl.fail_remaining.load(Ordering::SeqCst) > 0 {
+                self.ctrl.fail_remaining.fetch_sub(1, Ordering::SeqCst);
+                return Err(StarAdvError::Transport("flaky test eof".to_string()));
+            }
+            self.inner.round_trip(request, timeout).await
+        }
+
+        async fn close(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FlakyTransportFactory {
+        ctrl: Arc<FlakyController>,
+    }
+
+    #[async_trait]
+    impl TransportFactory for FlakyTransportFactory {
+        async fn open(&self, _config: &Config) -> crate::error::Result<Arc<dyn Transport>> {
+            Ok(Arc::new(FlakyTransport {
+                inner: crate::transport::mock::MockTransport::new(),
+                ctrl: self.ctrl.clone(),
+            }))
+        }
+    }
+
+    async fn flaky_manager() -> (Arc<TransportManager>, Arc<FlakyController>) {
+        let ctrl = Arc::new(FlakyController {
+            fail_remaining: AtomicU32::new(0),
+            stop_calls_ra: AtomicU32::new(0),
+            stop_calls_dec: AtomicU32::new(0),
+        });
+        let factory = Arc::new(FlakyTransportFactory { ctrl: ctrl.clone() });
+        let manager = Arc::new(TransportManager::new(Config::default(), factory));
+        // Connect with fail_remaining = 0 so the handshake completes,
+        // then return the controller so the test can flip the failure
+        // budget on without interfering with init.
+        manager.connect().await.unwrap();
+        (manager, ctrl)
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_returns_ok_on_first_success() {
+        let (manager, ctrl) = flaky_manager().await;
+        let snap = watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect("happy-path poll should succeed");
+        // No retries needed → no best-effort :L was issued.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+        // Mock transport seeds positions at handshake; just confirm the
+        // returned snapshot looks structurally valid (no panic, both
+        // axes populated even if zero).
+        let _ = snap.ra.position_ticks;
+        let _ = snap.dec.position_ticks;
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_recovers_after_transient_error() {
+        let (manager, ctrl) = flaky_manager().await;
+        // Fail the next round-trip exactly once: the helper's second
+        // attempt should land on a healthy transport and return Ok.
+        ctrl.fail_remaining.store(1, Ordering::SeqCst);
+        watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect("retry should recover from a single transient error");
+        // No retry-exhaustion path → no best-effort :L.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
+        let (manager, ctrl) = flaky_manager().await;
+        // Saturate the failure budget so every retry attempt errors.
+        ctrl.fail_remaining.store(u32::MAX, Ordering::SeqCst);
+        let err = watcher_poll_with_retry(&manager, "test")
+            .await
+            .expect_err("retry budget should be exhausted");
+        match err {
+            StarAdvError::Transport(_) => {}
+            other => panic!("expected Transport error, got {other:?}"),
+        }
+        // Best-effort `:L` must fire on both axes regardless of whether
+        // it lands — the test counts the frames before the fail check
+        // in the flaky transport.
+        assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 1);
+        assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 1);
     }
 }
