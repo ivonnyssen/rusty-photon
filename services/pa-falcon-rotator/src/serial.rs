@@ -1,15 +1,86 @@
 //! Serial port implementation using tokio-serial
 //!
 //! Concrete `SerialPortFactory` driving real hardware over `tokio-serial`.
-//! Phase 3 fills in the actual open / read / write logic; Phase 2 only needs
-//! the symbol to exist so `ServerBuilder::default()` compiles.
+//! Falcon framing is 9600-8N1 ASCII with LF terminators in both directions, so
+//! the reader uses `BufReader::read_line` and the writer appends `\n` on
+//! behalf of the caller (matching the [`SerialWriter`](crate::io::SerialWriter)
+//! contract).
 
+use std::io::ErrorKind;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tracing::debug;
 
-use crate::error::Result;
-use crate::io::{SerialPair, SerialPortFactory};
+use crate::error::{FalconRotatorError, Result};
+use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
+
+/// Serial reader backed by `tokio-serial`, framing on LF.
+pub struct TokioSerialReader {
+    reader: BufReader<ReadHalf<SerialStream>>,
+    buffer: String,
+}
+
+impl TokioSerialReader {
+    pub fn new(reader: ReadHalf<SerialStream>) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            buffer: String::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl SerialReader for TokioSerialReader {
+    async fn read_line(&mut self) -> Result<Option<String>> {
+        self.buffer.clear();
+        match self.reader.read_line(&mut self.buffer).await {
+            Ok(0) => Ok(None),
+            Ok(_) => {
+                let line = self.buffer.trim_end().to_string();
+                debug!("Serial read: {}", line);
+                Ok(Some(line))
+            }
+            Err(e) if e.kind() == ErrorKind::TimedOut => {
+                Err(FalconRotatorError::Timeout("Serial read timed out".into()))
+            }
+            Err(e) => Err(FalconRotatorError::Io(e)),
+        }
+    }
+}
+
+/// Serial writer backed by `tokio-serial`. Appends the LF terminator.
+pub struct TokioSerialWriter {
+    writer: WriteHalf<SerialStream>,
+}
+
+impl TokioSerialWriter {
+    pub fn new(writer: WriteHalf<SerialStream>) -> Self {
+        Self { writer }
+    }
+}
+
+#[async_trait]
+impl SerialWriter for TokioSerialWriter {
+    async fn write_message(&mut self, message: &str) -> Result<()> {
+        debug!("Serial write: {}", message);
+        self.writer
+            .write_all(message.as_bytes())
+            .await
+            .map_err(|e| FalconRotatorError::Communication(format!("Failed to write: {e}")))?;
+        self.writer
+            .write_all(b"\n")
+            .await
+            .map_err(|e| FalconRotatorError::Communication(format!("Failed to write LF: {e}")))?;
+        self.writer
+            .flush()
+            .await
+            .map_err(|e| FalconRotatorError::Communication(format!("Failed to flush: {e}")))?;
+        Ok(())
+    }
+}
 
 /// Serial port factory backed by `tokio-serial`.
 #[derive(Default, Clone)]
@@ -23,8 +94,25 @@ impl TokioSerialPortFactory {
 
 #[async_trait]
 impl SerialPortFactory for TokioSerialPortFactory {
-    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
-        unimplemented!("TokioSerialPortFactory::open is implemented in Phase 3b")
+    async fn open(&self, port: &str, baud_rate: u32, timeout: Duration) -> Result<SerialPair> {
+        debug!(
+            "Opening serial port {} at {} baud with {:?} timeout",
+            port, baud_rate, timeout
+        );
+
+        let stream = tokio_serial::new(port, baud_rate)
+            .timeout(timeout)
+            .open_native_async()
+            .map_err(|e| FalconRotatorError::SerialPort(format!("Failed to open {port}: {e}")))?;
+
+        debug!("Serial port {} opened successfully", port);
+
+        let (reader, writer) = tokio::io::split(stream);
+
+        Ok(SerialPair {
+            reader: Box::new(TokioSerialReader::new(reader)),
+            writer: Box::new(TokioSerialWriter::new(writer)),
+        })
     }
 
     async fn port_exists(&self, port: &str) -> bool {
@@ -55,5 +143,28 @@ mod tests {
         let factory = TokioSerialPortFactory::new();
         let path = std::env::current_exe().unwrap();
         assert!(factory.port_exists(path.to_str().unwrap()).await);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_open_nonexistent_port_returns_serial_port_error() {
+        let factory = TokioSerialPortFactory::new();
+        let result = factory
+            .open(
+                "/dev/nonexistent_falcon_12345",
+                9600,
+                Duration::from_secs(1),
+            )
+            .await;
+        match result {
+            Err(FalconRotatorError::SerialPort(msg)) => {
+                assert!(
+                    msg.contains("/dev/nonexistent_falcon_12345"),
+                    "expected port name in error message, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected SerialPort error, got {other:?}"),
+            Ok(_) => panic!("expected error opening nonexistent port"),
+        }
     }
 }
