@@ -17,14 +17,40 @@ async fn configured_with_park_ticks(world: &mut StarAdventurerWorld, park_ra: i3
 #[when("I park the mount")]
 async fn park_mount(world: &mut StarAdventurerWorld) {
     world.mount().park().await.unwrap();
+    // ASCOM Park is async-shaped in this driver: park() returns once
+    // the goto motor commands have been issued; the watcher flips
+    // `AtPark` after observing both axes settled at the park target.
+    // Scenarios chaining off "I park the mount" expect AtPark to be
+    // true by the next step — wait for the watcher to land it, with
+    // a deadline matching `the device is parked` in slew_steps.rs.
+    // Windows + macOS CI lost this race against the watcher on PR
+    // #244 while Linux happened to win; the explicit wait makes the
+    // step deterministic across platforms.
+    wait_for_at_park(world).await;
 }
 
 #[when("I try to park the mount")]
 async fn try_park_mount(world: &mut StarAdventurerWorld) {
     match world.mount().park().await {
-        Ok(()) => world.clear_error(),
+        Ok(()) => {
+            world.clear_error();
+            wait_for_at_park(world).await;
+        }
         Err(e) => world.record_error(e),
     }
+}
+
+/// Poll `AtPark` until it flips to `true` or a 5-second deadline
+/// elapses. Matches the pattern in `slew_steps::device_is_parked`.
+async fn wait_for_at_park(world: &mut StarAdventurerWorld) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if world.mount().at_park().await.unwrap_or(false) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("park watcher did not set AtPark within 5s");
 }
 
 #[when("I unpark the mount")]
