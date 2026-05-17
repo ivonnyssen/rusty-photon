@@ -129,10 +129,12 @@ revisions; the driver reads both rather than assuming.
 
 The protocol exposes **no native park position** and **no site lat/lon**.
 We implement software park (target encoder pair sourced from config,
-or — failing that — the live snapshot after the optional `home_pose`
-encoder seed, see [§Park lifecycle](#park-lifecycle) and
-[§Park persistence](#park-persistence)) and require site lat/lon in the
-config (see [§ASCOM Telescope Mapping](#ascom-telescope-mapping)).
+or — failing that — the live snapshot after the
+`unpark_from_ap_position` encoder seed, see
+[§Park lifecycle](#park-lifecycle), [§Park persistence](#park-persistence),
+and [§Unpark from AP position](#unpark-from-ap-position)) and require
+site lat/lon in the config (see
+[§ASCOM Telescope Mapping](#ascom-telescope-mapping)).
 
 ## Protocol Reference
 
@@ -340,7 +342,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `PulseGuide(direction, duration)` | rate-shifted tracking pulse on the targeted axis; returns immediately after spawning the watcher task. Refuses when parked / disconnected / slewing / same-axis pulse already in flight. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire path. |
 | `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
-| `Action(name, parameters)` | `ACTION_NOT_IMPLEMENTED` for all action names in MVP |
+| `Action(name, parameters)` | Driver-specific Actions: `SetUnparkFromApPosition`, `SetPreferredApPark`, `UnparkFromApPosition`. See [§Custom Actions for runtime control](#custom-actions-for-runtime-control). All other action names return `ACTION_NOT_IMPLEMENTED`. |
 
 #### Host-clock dependency for LST-using reads
 
@@ -455,19 +457,20 @@ in this order of preference:
    change in-process.
 3. **Live-snapshot fallback** (per axis). The current encoder
    reading from the [`TransportManager`] snapshot. Two cases:
-   - **Fresh power-up with `home_pose` configured.** The driver
-     runs [`seed_home_pose_after_connect`](#home-pose) before
-     loading the park target, so the snapshot already reflects
-     the home_pose's logical encoder values (e.g. `ap_park_3` →
-     `mech_HA = -6h`, `mech_dec = +90°`). `Park` therefore
-     defaults to "return to the pose the operator powered up at".
-   - **Mid-session reconnect** *or* **fresh power-up without
-     `home_pose`.** The home_pose seed skips on a non-zero
-     firmware encoder (and is a no-op when no `home_pose` is
-     configured), so the snapshot equals the
-     handshake-captured `:j1` / `:j2` reading. This is the
-     "park where the OTA already is" semantic operators expect
-     from a reconnect.
+   - **Fresh power-up with `unpark_from_ap_position` set to a named
+     park (`ap_park_1..ap_park_5`).** The driver runs
+     [`seed_after_connect`](#unpark-from-ap-position) before loading
+     the park target, so the snapshot already reflects the named
+     pose's logical encoder values (e.g. `ap_park_3` → `mech_HA =
+     -6h`, `mech_dec = +90°`). `Park` therefore defaults to "return
+     to the pose the operator powered up at".
+   - **Mid-session reconnect** *or* **fresh power-up with
+     `unpark_from_ap_position = "ap_park_0"`.** The seed skips on a
+     non-fresh firmware encoder (and is unconditionally a no-op when
+     `ap_park_0` is configured), so the snapshot equals the
+     handshake-captured `:j1` / `:j2` reading. This is the "park
+     where the OTA already is" semantic operators expect from a
+     reconnect.
 4. **Last resort** — encoder `0`. Only reachable if the snapshot
    somehow produced no position read, which today is unreachable.
 
@@ -954,7 +957,8 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
       "enabled": false,
       "flip_range_hours": 0.5
     },
-    "home_pose": null
+    "unpark_from_ap_position": "ap_park_0",
+    "preferred_ap_park": "ap_park_3"
   }
 }
 ```
@@ -1008,10 +1012,11 @@ Notes:
   mechanical pose. See [§Park persistence](#park-persistence) for the
   rules around when the driver writes to this file. When absent, the
   park target falls back to the live snapshot reading. With
-  `home_pose` set and a fresh power-up, that's the home_pose's
-  logical encoder values (`Park` defaults to "return to the pose
-  you powered up at"); otherwise it's the handshake-captured
-  reading. See [§Park lifecycle](#park-lifecycle).
+  `unpark_from_ap_position` set to a named park (`ap_park_1..ap_park_5`)
+  and a fresh power-up, that's the named pose's logical encoder values
+  (`Park` defaults to "return to the pose you powered up at"); otherwise
+  it's the handshake-captured reading. See
+  [§Park lifecycle](#park-lifecycle).
 - `flip_policy.enabled` defaults `false`. Set to `true` only after
   the first real-hardware meridian flip has been verified on the
   specific mount (see [§Hardware validation](#hardware-validation)).
@@ -1022,23 +1027,61 @@ Notes:
   reachable. Valid range `(0, 0.95]`; the upper bound is the verified
   safe headroom past counterweight-horizontal on the pre-flip side.
   See [§Meridian flip](#meridian-flip).
-- `home_pose` defaults `null` — no encoder seeding on connect, the
-  driver trusts whatever encoder value the firmware reports.
-  Operators powering up the mount at a recognised Astro-Physics park
-  position set it to the matching `ap_park_<n>` string (`"ap_park_1"`
-  through `"ap_park_5"`) and the driver issues `:E1` / `:E2` on
-  connect to seed the firmware encoder to the codebase's convention
-  for that pose. See [§Home pose](#home-pose).
+- `unpark_from_ap_position` is **required** (no default in the schema
+  sense, but the ship default is `"ap_park_0"`). Carries the
+  operator's declared physical position assumption — one of
+  `"ap_park_0"` through `"ap_park_5"`. `ap_park_0` ("current
+  position") is the safe-by-default value: no encoder seeding on
+  connect; the driver trusts whatever the firmware reports and the
+  operator plate-solves and `SyncToCoordinates` to ground-truth.
+  Setting it to a named park (`ap_park_1..ap_park_5`) tells the driver
+  to seed the firmware encoder via `:E1` / `:E2` on every
+  fresh-power-up connect to the codebase's convention for that
+  pose — the operator's contract is to physically place the OTA at
+  that park before powering on. Runtime-modifiable via the
+  `SetUnparkFromApPosition` custom Action (persisted to the same
+  config file). See [§Unpark from AP position](#unpark-from-ap-position).
+- `preferred_ap_park` (optional) — the AP park `Park()` slews to.
+  Defaults to `"ap_park_3"` (the visible-celestial-pole pose, the
+  Sky-Watcher stock power-up pose). Runtime-modifiable via the
+  `SetPreferredApPark` custom Action. The legacy
+  `park_ra_ticks` / `park_dec_ticks` keys remain as raw-encoder
+  overrides for ops pinning a specific tick pair; when both are
+  set, the explicit tick pair wins.
 
-### Home pose
+### Unpark from AP position
+
+#### The position-assumption problem
 
 The Sky-Watcher firmware resets its encoder counter to `(0, 0)` on
-every power-up. The codebase's coordinate math interprets that zero
-against the configured `home_pose`, so the operator's physical
-power-up pose lines up with the driver's celestial-coordinate
-readings without an explicit `SyncToCoordinates` step.
+every power-up. Raw `0` is a coordinate-frame value, not a
+physical-position value — which celestial point it corresponds to is
+purely a function of where the operator physically placed the OTA
+before powering on. The driver therefore *always* relies on an
+operator-supplied position assumption to anchor the encoder math.
 
-The five named poses follow the Astro-Physics
+Every install declares that assumption explicitly via the required
+`mount.unpark_from_ap_position` config field. The field carries one
+of the named AP-park strings (`ap_park_0` through `ap_park_5`) and
+has no default in the schema sense — but the **ship default** is
+`ap_park_0`, which encodes the safest possible assumption ("I don't
+know where the OTA is; I will plate-solve and sync"). Operators who
+run a permanent observatory at a specific physical park override the
+default to the matching `ap_park_N` and the driver seeds the firmware
+encoder accordingly on fresh-power-up connect.
+
+#### The named poses
+
+| `unpark_from_ap_position` | Semantics | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
+|---|---|---|---|---|---|
+| `ap_park_0` (default) | **Current position.** No seeding — trust the firmware encoder as-is. Operator's responsibility is to plate-solve and `SyncToCoordinates` before any blind-pointing slew. Safe default for unknown / variable physical setups. | — | — | — | — |
+| `ap_park_1` | Fresh-power-up seed to this pose. | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(0 h, +(90 + \|lat\|)°)` (saddle west, dec past pole) | `(0 h, −(90 + \|lat\|)°)` (saddle west, dec past pole) |
+| `ap_park_2` | Fresh-power-up seed to this pose. | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
+| `ap_park_3` | Fresh-power-up seed to this pose. | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
+| `ap_park_4` | Fresh-power-up seed to this pose. | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (saddle east, dec past pole) | `(−12 h, +(90 + \|lat\|)°)` (saddle east, dec past pole) |
+| `ap_park_5` | Fresh-power-up seed to this pose. | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(−12 h, +(90 − \|lat\|)°)` (saddle east, dec normal) | `(−12 h, −(90 − \|lat\|)°)` (saddle east, dec normal) |
+
+The named poses (1–5) follow the Astro-Physics
 ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
 document. Each AP pose describes a fixed mechanical pier side
 (OTA-on-west-of-mount or OTA-on-east-of-mount) that's the same for
@@ -1058,22 +1101,13 @@ hemisphere-dependent — at fixed `mech_HA`, the dec=0 reference points
 at different celestial coords for N vs S, so the rotation needed to
 reach the AP-described OTA pointing differs in magnitude.
 
-The encoder values below were corrected via hardware verification at
+The encoder values above were corrected via hardware verification at
 lat 32.7°N on 2026-05-17. The earlier mapping (commit `2725a2f`) had
 Park 1 and Park 5 swapped: it claimed Park 1 N was at
 `(mech_HA=−12, dec_enc=+(90−|lat|)°)`, but that encoder pose
 physically corresponds to AP Park 5 N (saddle east). The corrected
 mapping places each AP pose at the encoder values that physically
 match it.
-
-| `home_pose` | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
-|---|---|---|---|---|
-| `null` (default) | No seeding — trust the firmware encoder as-is. Pre-Phase-6 behaviour. | — | — | — |
-| `ap_park_1` | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(0 h, +(90 + \|lat\|)°)` (saddle west, dec past pole) | `(0 h, −(90 + \|lat\|)°)` (saddle west, dec past pole) |
-| `ap_park_2` | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
-| `ap_park_3` | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
-| `ap_park_4` | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (saddle east, dec past pole) | `(−12 h, +(90 + \|lat\|)°)` (saddle east, dec past pole) |
-| `ap_park_5` | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(−12 h, +(90 − \|lat\|)°)` (saddle east, dec normal) | `(−12 h, −(90 − \|lat\|)°)` (saddle east, dec normal) |
 
 Note on `SideOfPier` reporting: the codebase's `side_of_pier` uses
 the ASCOM-spec convention (dec-past-pole indicates `pierEast`),
@@ -1084,33 +1118,107 @@ saddle west but dec past pole (`+123°`), so the codebase reports
 it as `pierEast` (post-flip). The encoder values match the AP
 physical pose; only the `pierSide` label differs in convention.
 
-The seed step is skipped when the firmware reports an encoder
-reading beyond a small fresh-power-up tolerance
-(`FRESH_POWER_UP_TICK_TOLERANCE`, currently 10 ticks ≈ 4″ at the
-GTi's CPR). The tolerance exists because the Sky-Watcher firmware
-does not always read exactly `(0, 0)` after a power-cycle —
-empirically the validation GTi reports `dec = −1` on connect, a
-single-tick initialisation artifact (~0.4″) that obviously still
-represents the just-powered-up state. Any genuine post-slew
-encoder is tens of thousands of ticks away from zero, so a tight
-tolerance is enough to absorb the firmware artifact without ever
-masking a real mid-session position. Reconnecting mid-session
-after a slew is therefore still safe.
+#### Fresh-power-up auto-seed
 
-`seed_home_pose_after_connect` emits two `info!()`-level log lines
-per connect (when `home_pose` is configured) so hardware-validation
-sessions can sanity-check the firmware encoder state at a glance: a
-`pre-seed encoder snapshot at connect` line with the firmware's
-pre-seed `(ra, dec)` ticks, and a `seeded firmware encoder for
-home_pose` line with the post-seed values. Operators expect the
-pre-seed pair to read approximately `(0, 0)` on a fresh power-up;
-any larger reading is a signal that either the previous slew's
-state survived the connection state machine or the build is
-running against a mock transport rather than the real wire.
+`seed_after_connect` (renamed from `seed_home_pose_after_connect`)
+fires on every connect when the configured
+`unpark_from_ap_position` is one of `ap_park_1..ap_park_5` AND the
+firmware encoder reading is within `FRESH_POWER_UP_TICK_TOLERANCE`
+(currently 10 ticks, ~4″) of `(0, 0)`. When the configured value is
+`ap_park_0` the seed is unconditionally skipped — the operator has
+asserted that they will ground-truth the position themselves and the
+driver does not touch the encoder.
 
-Documented operator assumption: when `home_pose` is set, the operator
-powers up the mount **at** the configured pose and connects the
-driver before any slew or sync.
+The tolerance exists because the Sky-Watcher firmware does not always
+read exactly `(0, 0)` after a power-cycle — empirically the
+validation GTi reports `dec = −1` on connect, a single-tick
+initialisation artifact (~0.4″) that obviously still represents the
+just-powered-up state. Any genuine post-slew encoder is tens of
+thousands of ticks away from zero, so a tight tolerance is enough
+to absorb the firmware artifact without ever masking a real
+mid-session position. Reconnecting mid-session after a slew is
+therefore still safe — the seed skips on non-fresh encoders and
+the live session state is preserved.
+
+`seed_after_connect` emits two `info!()`-level log lines per connect
+(when the configured pose is one of the named parks): a `pre-seed
+encoder snapshot at connect` line with the firmware's pre-seed `(ra,
+dec)` ticks, and a `seeded firmware encoder for unpark_from_ap_position`
+line with the post-seed values. Operators expect the pre-seed pair
+to read approximately `(0, 0)` on a fresh power-up; any larger
+reading is a signal that either the previous slew's state survived
+the connection state machine or the build is running against a mock
+transport rather than the real wire.
+
+Documented operator assumption: when `unpark_from_ap_position` is
+set to one of `ap_park_1..ap_park_5`, the operator powers up the
+mount **at** that configured pose and connects the driver before
+any slew or sync.
+
+#### Custom Actions for runtime control
+
+Three driver-specific Actions (ASCOM `Action(name, parameters)`)
+expose runtime control over the position assumption and the
+preferred-park target. All three are advertised via `SupportedActions`.
+
+| Action name | Parameters | Behaviour |
+|---|---|---|
+| `SetUnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Validates the park name, writes the value into the running config file (atomic-rename pattern, mirrors `SetPark` persistence — see [§Park persistence](#park-persistence)), updates the in-memory config. The new value takes effect on the *next* fresh-power-up auto-seed; the current session's encoder is not touched. Refuses if the driver was started without `--config`. |
+| `SetPreferredApPark` | `park` (`ap_park_1..ap_park_5`) | Sets the AP-park target that `Park()` will slew to. Persisted to config alongside the same file-write pattern. `ap_park_0` is not a valid value here — "current position" is not a slew target. The legacy `park_ra_ticks` / `park_dec_ticks` config keys remain as raw-encoder overrides for ops who pinned a specific tick pair; when both forms are set, the explicit tick pair wins. |
+| `UnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Recovery operation. For `ap_park_0`, semantically equivalent to standard `Unpark()` — clears `AtPark`, no encoder change. For any named park (`ap_park_1..ap_park_5`), runs the [`ResetMountEncoders` sequence](#resetmountencoders-sequence) to safely write the park's encoder values *regardless of the current encoder state*, then clears `AtPark`. Operator is asserting "the OTA is physically at this park"; the driver makes firmware state match. |
+
+Standard ASCOM `Unpark()` is unchanged — it always just clears the
+`AtPark` flag with no encoder write. The two operations
+(`Unpark()` and `UnparkFromApPosition(ap_park_0)`) are structurally
+equivalent; the custom Action exists to express the recovery flow
+for the named-park cases.
+
+#### `ResetMountEncoders` sequence
+
+Wraps the bare `:E1` / `:E2` writes in a safe-stop-then-seed envelope
+so the operation works correctly regardless of in-flight firmware
+state (pending `:G` goto, active `:I` tracking, latched `:M`
+brakes):
+
+```
+:K1                          stop RA  (existing stop_axis_and_wait)
+:K2                          stop Dec
+poll :f1, :f2 until idle
+:E1 <ra_ticks_for_park>      write seed encoder
+:E2 <dec_ticks_for_park>     write seed encoder
+clear driver-internal slew / target / tracking-flag state
+```
+
+Invoked by:
+
+- `UnparkFromApPosition(ap_park_N)` for `N ≥ 1` (operator-confirmed
+  physical position).
+- Auto-seed path on fresh-power-up connect (the stop steps are no-ops
+  in that state; the encoder writes are the only meaningful work).
+
+Not invoked by the standard `Unpark()` flow — that path is for
+"resume from where I parked," and writing the encoder there would
+silently destroy session state.
+
+#### Recovery procedures
+
+What to do after various crash / disconnect scenarios:
+
+| Scenario | Procedure |
+|---|---|
+| Driver crashed, mount still powered, OTA points at solvable sky | Reconnect (no power cycle) → `UnparkFromApPosition(ap_park_0)` (or standard `Unpark()`) → plate-solve current view → `SyncToCoordinates(plate_solved_coords)`. Encoder counter is intact from the session; sync writes the offset to match celestial truth. |
+| Driver crashed, mount still powered, OTA points at unsolvable sky (below horizon, clouded out) | Reconnect → `UnparkFromApPosition(ap_park_N)` where `N` is the AP park you've physically positioned the OTA at. The `ResetMountEncoders` sequence stops in-flight motion and writes the park's encoder values; subsequent slews start from a known frame. Alternatively, power-cycle the mount and let the fresh-power-up auto-seed run from the persisted `unpark_from_ap_position` config value. |
+| Mount lost power (planned shutdown or otherwise) | Before the next power-on, physically position the OTA at whatever `unpark_from_ap_position` is configured for (or update the config / call `SetUnparkFromApPosition` first). On power-on connect, the fresh-power-up auto-seed writes the encoder to that park's values. |
+
+The only genuinely dangerous pattern is "crash + power-cycle without
+re-parking AND with a non-`ap_park_0` `unpark_from_ap_position`
+configured" — the auto-seed will fire against fresh-power-up encoder
+and the driver will believe the OTA is at the configured park when
+it's actually wherever the crash left it. The operator-discipline
+mitigation is "if you power-cycle after a crash, physically re-park
+first." A heavier mitigation (refusing `Unpark()` after fresh-seed
+without an explicit operator confirmation gate) is deferred — opt-in
+behind a future config flag if hardware sessions show it's needed.
 
 ### CLI arguments
 
@@ -1344,7 +1452,8 @@ init handshake:
    ↓
 load park target from config / handshake → in-memory park ticks
    ↓
-if home_pose is set AND firmware encoder is (0, 0):
+if unpark_from_ap_position ∈ ap_park_1..ap_park_5
+   AND firmware encoder is within FRESH_POWER_UP_TICK_TOLERANCE of (0, 0):
   :E1, :E2  (seed encoder to the AP pose's codebase convention)
    ↓
 start background polling task (interval = config.polling_interval)
@@ -1610,7 +1719,8 @@ What's still outstanding from Phase 4:
 - Connect / disconnect lifecycle, ref-counted transport
 - Init handshake: `:F`, `:a`, `:b`, `:g`, `:e`, `:j`
 - ASCOM device metadata (`Description`, `DriverInfo`, `DriverVersion`,
-  `InterfaceVersion`, `Name`, `SupportedActions = []`)
+  `InterfaceVersion`, `Name`, `SupportedActions` lists the three
+  driver-specific Actions — see [§Unpark from AP position](#unpark-from-ap-position))
 - Site lat/lon/elevation from config (read-only via ASCOM)
 - `RightAscension` / `Declination` reads (encoder + LST + sync offset)
 - `Azimuth` / `Altitude` reads (derived from RA/Dec)
@@ -1647,7 +1757,7 @@ What's still outstanding from Phase 4:
 | `RightAscensionRate`, `DeclinationRate` setters | custom-rate tracking; not needed for sidereal-only MVP |
 | `TrackingRate` setter (lunar / solar / king) | sidereal covers astrophotography; lunar/solar are uncommon and add a small mode-switch matrix |
 | `FindHome`, `CanFindHome` | no hardware home sensor on the GTi |
-| `Action` / custom commands | no driver-specific actions in MVP |
+| Operator-confirmation gate on `Unpark()` after fresh-power-up seed | Hardware-discipline mitigation for the "crash + power-cycle without re-park" failure mode. Today's design relies on operator discipline ("if you power-cycle after a crash, physically re-park first"); a confirmation gate is the heavier alternative. Deferred behind a future config flag, to be added if hardware sessions show the discipline assumption breaks. |
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |
@@ -1670,7 +1780,7 @@ What's still outstanding from Phase 4:
   reference driver and protocol-decoding documentation.
 - [Astro-Physics "Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
   — canonical reference for the five named park positions (Park 1
-  through Park 5) the [§Home pose](#home-pose) config exposes,
+  through Park 5) the [§Unpark from AP position](#unpark-from-ap-position) config exposes,
   including the per-hemisphere celestial-Dec formulae and the
   east-side / west-side scope orientations.
 
