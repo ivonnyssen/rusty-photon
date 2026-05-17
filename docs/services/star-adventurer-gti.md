@@ -814,31 +814,42 @@ RA axis stays in the counterweight-below-horizon half; the Dec axis
 crosses the *visible* celestial pole rather than the below-horizon
 one.
 
-**RA axis:** routed through the negative-`mech_HA` half of the encoder
-range (`mech_HA ∈ [−12, 0]`) — the half where the counterweight stays
-at or below the local horizon. The mechanical binding zone at
-`mech_HA ∈ (+6.95, +11.05)` is the same for every observer latitude,
-so the rule is hemisphere-independent.
+**RA axis:** the counterweight binding zone at
+`mech_HA ∈ (+6.95, +11.05)` is one-sided and hemisphere-independent;
+every other arc of the polar-axis circle is safe. The routing rule is
+therefore stated directly in terms of the binding zone rather than as
+a sign proxy:
 
-The safe direction depends on the *current* encoder position:
+- Compute the canonical short delta's mech_HA sweep
+  (`[current_mech_HA, current_mech_HA + canonical_delta_ha]`).
+- If that sweep stays outside `(zone_min, zone_max)` (modulo 24 h —
+  the binding-zone copy at `k ∈ {-1, 0, +1}` is checked, enough to
+  cover any `|canonical_delta_ha| ≤ 12 h` path), use the canonical
+  direction.
+- Otherwise take the long way (`canonical ± cpr_ra`), which lands at
+  the same modular destination via the safe arc on the other side.
 
-- `|current_ticks| ≤ cpr_ra/4` (current in the pre-flip envelope,
-  `mech_HA ∈ [−6, +6]`): force CCW (negative delta). Path decreases
-  through the negative half to the target. This is the forward-flip
-  case (pre-flip → post-flip wrap).
-- `|current_ticks| > cpr_ra/4` (current at or past the wrap,
-  `mech_HA` near `±12`): force CW (positive delta). Path increases
-  *away from the wrap* into the safe negative half. This is the
-  flip-back case (post-flip → pre-flip).
+This handles the forward-flip case (pre-flip near meridian → post-flip
+wrap, canonical CCW already in the safe negative half), the flip-back
+case (post-flip wrap on either side of the `±12` boundary → pre-flip
+near meridian, canonical short path stays in the safe arc), and the
+edge case the prior sign-blind heuristic mis-fired on:
+**hardware validation 2026-05-16, Park 4 N → Park 5 N flip-back.**
+Current `mech_HA ≈ −11.97` (post-flip pierEast just east of the
+saddle-east wrap), target `mech_HA ≈ +11.99` (pre-flip pierWest just
+west of the same wrap). Canonical short delta is a ~4 k-tick CCW
+nudge that physically just crosses the `−12 ↔ +12` wrap; the old
+`|current| > cpr_ra/4 ⇒ "safe is positive"` rule misread that as
+"in the post-flip half, force positive" and issued a `+cpr_ra − 4 k`
+≈ +3.625 M-tick CW full revolution that swept mech_HA through
+`(+6.95, +11.05)` and slammed the CW shaft into the pier. The
+path-aware check preserves the safe canonical step.
 
-A naive "always CCW for flip slews" rule works for forward flips but
-drives the counterweight into the binding zone on flip-back: from
-raw `−cpr/2` going CCW wraps the encoder past `+12` and crosses
-`mech_HA = +6 to +9` (the binding peak). Hardware validation #3 hit
-this exact failure mode on the back-to-Park-3 slew, slamming the CW
-shaft into the pier and dropping the USB-CDC. The current-position-
-aware rule (mirroring the Dec routing) selects the right direction
-in both cases.
+Empty zone (`zone_min ≥ zone_max`) disables the routing — the
+canonical short delta is always used. BDD tests rely on this to keep
+small-distance scenarios from accidentally triggering the long way
+when the wall-clock LST puts a synthetic target inside the default
+zone.
 
 **Dec axis:** routed through the visible celestial pole, NOT the
 below-horizon pole. For a polar-aligned mount, only one of the two
@@ -879,14 +890,33 @@ pole on Dec rather than taking the shortest-encoder path).
 
 #### Hardware validation
 
-`flip_policy.enabled` defaults to `false` until at least one
-successful real-hardware flip on a GTi has been recorded. The
-mechanical symmetry argument (plan §2.8) is strong, but the
-through-wrap traversal is the first time the GTi's negative-`mech_HA`
-half is exercised past the pre-flip safe envelope, and asymmetric
-failure modes like cable wrap will surface there. The first real
-`SetSideOfPier(East)` on hardware is the validation gate; until then
-operators leave `flip_policy.enabled` at its default.
+`flip_policy.enabled` defaults to `false` until the through-wrap
+flip-back path is hardware-verified end-to-end on a GTi.
+
+**2026-05-16, lat 32.7°N (San Diego).** The AP Park 1–5 sequence ran
+end-to-end:
+
+1. `Park 3 → Park 2`: small Dec slew (−90° to celestial equator).
+2. `Park 2 → staging (HA = 0, Dec = −57.3°)`: pre-flip pierWest small
+   slew; no routing change.
+3. `SetSideOfPier(East) → Park 4 N`: through-wrap flip slew — RA
+   −180° (saddle west → east) + Dec +294° CW (through wrap, past
+   NCP, ending past-pole at `dec_encoder ≈ −122.78°`).
+4. `Slew to (LST + 12 h, Dec = +57.3°) → Park 5 N`: flip-back over
+   the saddle-east wrap. Wire issued was RA **−3,631 ticks CCW**
+   (canonical short path, ~0.024° of polar-axis rotation) + Dec
+   −180° CCW via NCP. The earlier sign-blind heuristic issued a
+   +3.625 M-tick CW full revolution instead and the operator
+   powered the mount off mid-sweep — see §"Through-wrap slew
+   routing" above for the path-aware fix.
+5. `Park → Park 3 N`: clean unwind.
+
+All five poses confirmed visually. The dec axis's analogous routing
+helper (`flip_slew_dec_delta`) was not exercised on its
+sign-blind edge case in this session (current dec was on the
+`+cpr_dec/2` side of the wrap where the old heuristic happens to be
+correct); a follow-up issue tracks porting the path-aware fix to that
+function.
 
 ## Configuration
 
@@ -1296,7 +1326,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase A6 — Dec-encoder `SideOfPier` + `DestinationSideOfPier`** | landed (issue #202) — switches `SideOfPier` from the RA mech-HA split at `HA = 0` to the canonical INDI eqmod Dec-encoder convention (`East` when `\|dec_encoder\| > cpr_dec/4`), and lands `DestinationSideOfPier` reusing the same coordinate-math pipeline as `SlewToCoordinatesAsync`. ConformU expected-issues count moves from 9 to 7: the `DestinationSideOfPier` NotImplemented entry and the four inherited `SOPPierTest` entries clear, the two upstream `TrackingRate Write` entries disappear (unrelated framework fix), and three new "non-flipping mount" entries appear that reflect ConformU's flip-aware-GEM assumption rather than driver bugs. See [§Expected ConformU report](#expected-conformu-report). |
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`, and re-enables `[package.metadata.conformu]` so the full two-phase ConformU integration runs again. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
-| **Phase 6 — meridian-flip support** | implementation in progress — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), per-pier-side safe envelopes, through-wrap slew routing for flip slews, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. `flip_policy.enabled` defaults `false` and awaits a successful first real-hardware flip on a GTi before the default is reconsidered. Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric counterweight binding-zone safety envelope, binding-zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 
 #### Phase 4 findings (hardware bringup)
 

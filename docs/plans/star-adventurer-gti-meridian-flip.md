@@ -13,18 +13,23 @@
   3 arcmin inside the mechanical limit, ASCOM `SlewToCoordinates`
   LST-roundtrip drift no longer pushes boundary targets over the
   cliff. No CPR-dependent comparator constant needed.
-- **Phase 2 — meridian-flip support: implementation in progress** on
-  branch `worktree-meridian-flip-phase`. Scope landed in this PR:
+- **Phase 2 — meridian-flip support: hardware-validated 2026-05-16**
+  on branch `worktree-meridian-flip-phase`. Scope landed in this PR:
   §§2.1, 2.2, 2.3, 2.4, 2.6, 2.7 — coordinate helpers, per-pier-side
-  envelopes, through-wrap slew routing, `SetSideOfPier`, the `enabled`
+  envelopes, asymmetric counterweight binding-zone envelope,
+  binding-zone-path-aware through-wrap RA routing,
+  visible-pole Dec routing, `SetSideOfPier`, the `enabled`
   + `flip_range_hours` config fields, and BDD coverage.
   §2.5 (auto-flip during tracking) and the
   `auto_flip_during_tracking` / `auto_flip_at_meridian_offset_hours`
   config fields are deferred to a follow-up — hosts (NINA / SGP /
   rp) own flip timing in MVP; explicit `SetSideOfPier` calls drive
-  flips. §2.8 hardware validation is the next milestone: until the
-  first real GTi flip lands, `flip_policy.enabled` defaults `false`
-  and the driver behaves identically to Phase 5.
+  flips. §2.8 hardware validation completed at lat 32.7°N: end-to-end
+  AP Park 1–5 traversal including the through-wrap saddle-east flip
+  and its flip-back. A flip-back regression (sign-blind heuristic in
+  `flip_slew_ra_delta`) was caught mid-session and fixed in commit
+  `072cc72`. `flip_policy.enabled` still defaults `false` — operators
+  opt in once they've replayed the validation locally.
 - **Phase 3 — altitude-based safety floor: planning.** Replaces the
   rectangular Dec envelope (`dec_min_degrees` / `dec_max_degrees`)
   with a single `min_altitude_degrees` floor computed from HA + dec +
@@ -450,6 +455,45 @@ Validation plan, integrated into normal Phase 2 hardware-bringup:
    pickup loop handle the wrap point in their delta computations
    (this is firmware-level behaviour and should already be correct,
    but worth a wire-trace pass).
+
+#### Outcome (2026-05-16, lat 32.7°N)
+
+Both validation items passed. Cable wrap was not exercised destructively
+(the user kept hand-stop authority over the mount throughout). The
+through-wrap saddle-east flip (`SetSideOfPier(East)` from
+`(mech_HA = 0, dec = -57.3°)` pierWest staging) issued RA −1.81 M ticks
+CCW (−180° polar-axis) + Dec +2.38 M ticks CW (+294° through wrap past
+NCP), landing cleanly at Park 4 N (saddle east, OTA south horizon
+level). No motor stall, no audible binding, no transport-layer fallout.
+
+The flip-back from saddle-east (Park 4 N → Park 5 N at
+`(mech_HA = ±12, dec = +57.3°)`) exposed a sign-blind heuristic in
+`flip_slew_ra_delta`. The function's old rule —
+`|current_ticks| > cpr_ra/4 ⇒ "safe direction is positive"` — was
+designed for the `+cpr_ra/2` wrap (where positive direction wraps into
+the safe negative half) and inverted incorrectly at `-cpr_ra/2`. For
+the Park 5 slew, current was `-1,810,272` (just east of the
+saddle-east wrap on the negative side), canonical short delta was
+`-3,798` ticks CCW (a ~0.03° polar-axis nudge that physically just
+crosses the `-12 ↔ +12` wrap, staying in the safe arc). The old rule
+flipped that to `+cpr_ra - 3,798 = +3,625,002` ticks CW, a 359.6°
+polar-axis revolution that swept `mech_HA` through the binding zone
+and slammed the CW shaft into the pier. The operator powered the
+mount off mid-sweep.
+
+Fix landed in commit `072cc72` — the routing now checks whether the
+canonical short delta's mech_HA sweep actually crosses
+`(zone_min, zone_max)`, using the configured binding zone (checked
+modulo 24 h at `k ∈ {-1, 0, +1}` to handle the wrap). Re-run of the
+same Park 5 slew issued RA −3,631 ticks CCW (the canonical safe step)
+and the mount landed at Park 5 N visually confirmed.
+
+A structurally analogous sign-blindness exists in `flip_slew_dec_delta`
+— the dec routing assumes "safe direction in north for post-flip half
+is negative" but inverts at the `-cpr_dec/2` side of the wrap. This
+session's Park 4 → Park 5 dec was on the `+cpr_dec/2` side where the
+old heuristic happens to be correct, so the dec bug wasn't exercised.
+Tracked in a follow-up issue.
 
 ---
 
