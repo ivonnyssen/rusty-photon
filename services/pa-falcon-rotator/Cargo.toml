@@ -49,3 +49,4 @@ cargo-husky = { workspace = true }
 [[test]]
 name = "bdd"
 harness = false
+required-features = ["mock"]

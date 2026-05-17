@@ -1,4 +1,3 @@
-@wip
 Feature: Reverse (EEPROM-wear-aware)
   FN:b writes the motor-reverse flag to EEPROM, which has finite write
   endurance. The driver therefore reads FA first and only issues FN when the

@@ -211,6 +211,36 @@ Removes:
 
 ### 3d — Rotator device (Phase 3 first BDD-greening sub-phase)
 
+**BDD harness pivot (landed in this sub-phase):** the Phase 2 scaffold targeted
+the subprocess-style harness (`bdd_infra::bdd_main!` + `ServiceHandle`),
+modelled on `qhy-focuser`. Phase 3d's feature scenarios verify wire-level
+contracts that aren't observable over Alpaca HTTP alone — "F# was the first
+command issued", "MD:284.80 was sent", "no FN command was sent", "no SD on
+the wire" — so the BDD entry point was switched to run the
+`ServerBuilder` in-process on an ephemeral port. The world holds an
+`Arc<MockSerialPortFactory>` shared with the SerialManager, which gives
+step bodies direct access to the wire command log and lets them seed mock
+state (mechanical position, voltage, motor_reverse, limit_detect) without
+plumbing those through Alpaca's API. The same client-side proxies
+(`Arc<dyn Rotator>` / `Arc<dyn Switch>` from `AlpacaClient::get_devices`)
+still drive the Alpaca HTTP surface, so the dispatch / serialisation /
+auth path is exercised end-to-end.
+
+The pivot required:
+
+* Switching `tests/bdd.rs` from the `bdd_infra::bdd_main!` macro (Miri shim
+  for subprocess-spawning suites) to a plain `#[tokio::main] async fn main`
+  — see `docs/skills/testing.md` §5.2, which explicitly notes the macro is
+  needed only for harnesses that call `ServiceHandle::start`.
+* Marking the BDD test with `required-features = ["mock"]` in
+  `services/pa-falcon-rotator/Cargo.toml` because `tests/bdd/world.rs` now
+  imports `MockSerialPortFactory` (feature-gated in `src/lib.rs`).
+* Adding a read-only `MockSerialPortFactory::mech_position_deg()` getter
+  so the `MechanicalPosition should be unchanged` step compares the
+  Alpaca-reported value to the mock's current state, instead of hard-
+  coding the value from the prior `Given the rotator reports mechanical
+  position 142.30°` step.
+
 Implementation in `rotator_device.rs`:
 
 * `FalconRotatorDevice::new(config, serial_manager)`.

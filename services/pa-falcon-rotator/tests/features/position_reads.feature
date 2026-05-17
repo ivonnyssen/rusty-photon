@@ -1,4 +1,3 @@
-@wip
 Feature: Position reads
   Each property read maps to a single FA request — there is no cached state.
   MechanicalPosition is the device's raw position in [0, 360). Position adds

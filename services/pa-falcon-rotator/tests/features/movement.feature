@@ -1,4 +1,3 @@
-@wip
 Feature: Movement
   Move, MoveAbsolute, and MoveMechanical each translate ASCOM angle semantics
   into a single MD:nn.nn command, store the sky-coordinate target, and return

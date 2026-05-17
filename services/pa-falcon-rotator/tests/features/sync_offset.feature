@@ -1,4 +1,3 @@
-@wip
 Feature: Driver-side Sync
   ASCOM Sync(skyAngle) sets the value reported by Position to skyAngle while
   leaving MechanicalPosition unchanged. The Falcon's SD command rewrites the

@@ -21,10 +21,20 @@ async fn read_max_switch(world: &mut FalconRotatorWorld) {
     todo!("status_switch_steps::read_max_switch implemented in Phase 3e")
 }
 
+// `I read GetSwitchValue for id N` is referenced by a Phase 3d scenario in
+// `connection_lifecycle.feature` (NOT_CONNECTED for disconnected switch),
+// so its body lands here ahead of the rest of 3e — the
+// `ensure_connected!` guard on the switch getter handles that case
+// without needing Phase 3e's actual value plumbing.
 #[when(expr = "I read GetSwitchValue for id {int}")]
 async fn read_switch_value(world: &mut FalconRotatorWorld, id: usize) {
-    let _ = (world, id);
-    todo!("status_switch_steps::read_switch_value implemented in Phase 3e")
+    match world.status_switch().get_switch_value(id).await {
+        Ok(v) => {
+            world.switch_value_result = Some(v);
+            world.last_error_code = None;
+        }
+        Err(e) => world.last_error_code = Some(e.code.raw()),
+    }
 }
 
 #[when(expr = "I read GetSwitch for id {int}")]

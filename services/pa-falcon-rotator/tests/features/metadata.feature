@@ -1,4 +1,3 @@
-@wip
 Feature: Rotator metadata
   The Falcon Rotator advertises ASCOM IRotatorV4 metadata that is fixed for
   the device family — clients use these values to size their UI and decide

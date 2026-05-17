@@ -1,10 +1,20 @@
+//! BDD entry point for pa-falcon-rotator.
+//!
+//! Tests run in-process: each scenario builds a `BoundServer` on an ephemeral
+//! port, holds a shared `Arc<MockSerialPortFactory>` so steps can drive mock
+//! state and inspect the wire-level command log, and drives the Rotator /
+//! Switch trait surface via in-process Alpaca HTTP clients. The
+//! `bdd_infra::bdd_main!` macro is **not** used here — it's a Miri shim for
+//! BDD suites that spawn child processes via `ServiceHandle`, which we don't.
+
 #[path = "bdd/world.rs"]
 mod world;
 
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
-bdd_infra::bdd_main! {
+#[tokio::main]
+async fn main() {
     use cucumber::World as _;
     use world::FalconRotatorWorld;
 
@@ -12,9 +22,7 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
-                    if let Some(handle) = world.service_handle.as_mut() {
-                        handle.stop().await;
-                    }
+                    world.shutdown().await;
                 }
             })
         })

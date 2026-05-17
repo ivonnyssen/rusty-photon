@@ -268,7 +268,7 @@ impl SerialWriter for MockSerialWriter {
 /// scenarios start from where the previous session left off — mirroring real
 /// hardware where the Falcon's EEPROM keeps its `motor_reverse` setting and
 /// the mechanical position survives a power cycle.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct MockSerialPortFactory {
     state: Arc<Mutex<MockState>>,
 }
@@ -293,6 +293,13 @@ impl MockSerialPortFactory {
     /// Seed the mock's mechanical position before opening a connection.
     pub async fn set_mech_position_deg(&self, value: f64) {
         self.state.lock().await.device_state.mech_position_deg = normalise_deg(value);
+    }
+
+    /// Read the mock's current mechanical position. Used by tests that
+    /// verify a code path *did not* mutate the device counter (e.g. ASCOM
+    /// Sync, which must leave MechanicalPosition untouched).
+    pub async fn mech_position_deg(&self) -> f64 {
+        self.state.lock().await.device_state.mech_position_deg
     }
 
     /// Seed the mock's `motor_reverse` flag (mirrors EEPROM persistence).

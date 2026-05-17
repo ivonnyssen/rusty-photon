@@ -1,4 +1,3 @@
-@wip
 Feature: Connection lifecycle
   The pa-falcon-rotator service exposes a Rotator and a Status Switch device on
   a single ASCOM Alpaca server. A successful first connect performs the Falcon

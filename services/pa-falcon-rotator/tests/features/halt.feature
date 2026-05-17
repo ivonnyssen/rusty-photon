@@ -1,4 +1,3 @@
-@wip
 Feature: Halt
   Halt writes FH and clears the stored target. After Halt, TargetPosition
   falls back to the current Position — the driver no longer has a pending

@@ -389,7 +389,7 @@ Deferred:
 
 Per [`docs/skills/testing.md`](../skills/testing.md):
 
-- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Scenarios drive the binary via Alpaca HTTP, using `MockSerialPortFactory` for stable responses. Use `@wip` on every scenario until Phase 3 makes them green.
+- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Scenarios run the `ServerBuilder` **in-process** on an ephemeral port and drive the registered devices through Alpaca HTTP clients (`AlpacaClient::get_devices`). The world holds an `Arc<MockSerialPortFactory>` shared with the SerialManager, which lets step bodies (a) seed mock state — reported mechanical position, voltage, `motor_reverse`, `limit_detect` — and (b) assert on the wire-level `command_log` for contracts like "F# is the first command" or "no SD was issued". The `tests/bdd.rs` entry point uses a plain `#[tokio::main]` rather than the `bdd_infra::bdd_main!` macro, because the macro is only needed for harnesses that spawn child processes via `ServiceHandle` (see [`testing.md` §5.2](../skills/testing.md#52-entry-point-structure)). Use `@wip` on every scenario until Phase 3 makes them green.
 - **Unit tests** (`#[cfg(test)]` in `src/`): protocol serialisation, `FA` response parsing (happy path + every failure mode in the [error table](#error-model)), config defaults, sync-offset arithmetic, normalisation rules.
 - **Property tests** (`proptest`): position normalisation is idempotent; round-trip `Move(delta)` → `Move(-delta)` returns to the original sky angle modulo floating-point error.
 - **Server tests** (`#[cfg(feature = "mock")]`): bootstrap a server on `127.0.0.1:0` and confirm the bound address parses correctly (the `bound_addr=` contract).

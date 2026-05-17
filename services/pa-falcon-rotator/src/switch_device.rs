@@ -145,32 +145,39 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     async fn get_switch_name(&self, _id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::get_switch_name is implemented in Phase 3e")
     }
 
     async fn get_switch_description(&self, _id: usize) -> ASCOMResult<String> {
+        ensure_connected!(self);
         unimplemented!(
             "FalconStatusSwitchDevice::get_switch_description is implemented in Phase 3e"
         )
     }
 
     async fn get_switch(&self, _id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::get_switch is implemented in Phase 3e")
     }
 
     async fn get_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::get_switch_value is implemented in Phase 3e")
     }
 
     async fn min_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::min_switch_value is implemented in Phase 3e")
     }
 
     async fn max_switch_value(&self, _id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::max_switch_value is implemented in Phase 3e")
     }
 
     async fn switch_step(&self, _id: usize) -> ASCOMResult<f64> {
+        ensure_connected!(self);
         unimplemented!("FalconStatusSwitchDevice::switch_step is implemented in Phase 3e")
     }
 
