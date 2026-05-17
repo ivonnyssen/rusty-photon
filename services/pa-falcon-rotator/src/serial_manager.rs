@@ -32,6 +32,18 @@ fn normalise_deg(deg: f64) -> f64 {
     ((deg % 360.0) + 360.0) % 360.0
 }
 
+/// Quantise a degree value to the `MD:nn.nn` wire precision (1/100°) by
+/// rounding to two decimal places.
+///
+/// Without this step, `format!("{:.2}", 359.999)` rounds up to `"360.00"`,
+/// which violates the documented `[0, 360)` wire range. Quantising first
+/// produces `360.00` as an `f64`, which the subsequent `normalise_deg`
+/// call wraps back to `0.0` before formatting — keeping the wire output
+/// inside the documented range.
+fn quantise_to_wire(deg: f64) -> f64 {
+    (deg * 100.0).round() / 100.0
+}
+
 /// Shared serial port manager.
 pub struct SerialManager {
     config: SerialConfig,
@@ -40,6 +52,12 @@ pub struct SerialManager {
     reader: Arc<Mutex<Option<Box<dyn SerialReader>>>>,
     writer: Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
     command_lock: Arc<Mutex<()>>,
+    /// Serialises every `connect` / `disconnect` invocation so the
+    /// open + handshake pair is atomic against concurrent device
+    /// connects / disconnects. Without it, a second `connect` could
+    /// race past `fetch_add` and return `Ok` while the first caller's
+    /// handshake is still running (and may yet fail).
+    connect_lock: Arc<Mutex<()>>,
     sync_offset: Arc<Mutex<f64>>,
     target_position: Arc<Mutex<Option<f64>>>,
     last_limit_detected: Arc<Mutex<Option<bool>>>,
@@ -56,6 +74,7 @@ impl SerialManager {
             reader: Arc::new(Mutex::new(None)),
             writer: Arc::new(Mutex::new(None)),
             command_lock: Arc::new(Mutex::new(())),
+            connect_lock: Arc::new(Mutex::new(())),
             sync_offset: Arc::new(Mutex::new(0.0)),
             target_position: Arc::new(Mutex::new(None)),
             last_limit_detected: Arc::new(Mutex::new(None)),
@@ -64,10 +83,18 @@ impl SerialManager {
     }
 
     /// Connect to the serial port (ref-counted; first connect runs the handshake).
+    ///
+    /// `connect_lock` is held for the entire body so a concurrent
+    /// `connect` from the second device cannot return `Ok` before the
+    /// first caller's handshake has either succeeded (and flipped
+    /// `serial_available` to `true`) or failed (and rolled the refcount
+    /// back to 0).
     pub async fn connect(&self) -> Result<()> {
-        let count = self.connection_count.fetch_add(1, Ordering::SeqCst);
+        let _conn_guard = self.connect_lock.lock().await;
+        let count = self.connection_count.load(Ordering::SeqCst);
 
         if count > 0 {
+            self.connection_count.store(count + 1, Ordering::SeqCst);
             debug!(
                 "Additional device connecting (connection count: {})",
                 count + 1
@@ -77,7 +104,7 @@ impl SerialManager {
 
         debug!("First device connecting, opening serial port");
 
-        let pair = match self
+        let pair = self
             .serial_factory
             .open(
                 &self.config.port,
@@ -85,17 +112,9 @@ impl SerialManager {
                 self.config.timeout,
             )
             .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                // Roll back the optimistic refcount bump.
-                self.connection_count.store(0, Ordering::SeqCst);
-                return Err(FalconRotatorError::ConnectionFailed(format!(
-                    "open {}: {e}",
-                    self.config.port
-                )));
-            }
-        };
+            .map_err(|e| {
+                FalconRotatorError::ConnectionFailed(format!("open {}: {e}", self.config.port))
+            })?;
 
         *self.reader.lock().await = Some(pair.reader);
         *self.writer.lock().await = Some(pair.writer);
@@ -106,10 +125,10 @@ impl SerialManager {
             // short-circuiting on the elevated refcount.
             *self.reader.lock().await = None;
             *self.writer.lock().await = None;
-            self.connection_count.store(0, Ordering::SeqCst);
             return Err(e);
         }
 
+        self.connection_count.store(1, Ordering::SeqCst);
         self.serial_available.store(true, Ordering::SeqCst);
         info!(
             "Serial port opened on {} (connection count: 1)",
@@ -119,27 +138,34 @@ impl SerialManager {
     }
 
     /// Disconnect from the serial port (ref-counted; last disconnect closes).
+    ///
+    /// `connect_lock` is held for the entire body so disconnect cannot
+    /// race with a concurrent first-connect's handshake. On the final
+    /// decrement we additionally take `command_lock` before dropping
+    /// the reader/writer so any in-flight `send_command_internal` has
+    /// completed its write+read pair — otherwise a racing close could
+    /// leave a half-issued command and a stranded response on the wire.
     pub async fn disconnect(&self) {
-        let prev_count =
-            match self
-                .connection_count
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                    if count > 0 {
-                        Some(count - 1)
-                    } else {
-                        None
-                    }
-                }) {
-                Ok(prev) => prev,
-                Err(_) => {
-                    debug!("disconnect() called with connection count already at 0");
-                    return;
-                }
-            };
+        let _conn_guard = self.connect_lock.lock().await;
+        let count = self.connection_count.load(Ordering::SeqCst);
 
-        if prev_count == 1 {
+        if count == 0 {
+            debug!("disconnect() called with connection count already at 0");
+            return;
+        }
+
+        let new_count = count - 1;
+        self.connection_count.store(new_count, Ordering::SeqCst);
+
+        if new_count == 0 {
             debug!("Last device disconnecting, closing serial port");
             self.serial_available.store(false, Ordering::SeqCst);
+            // Drain any in-flight command before dropping the serial
+            // halves. New commands route through `send_command` (public)
+            // which has already seen `serial_available = false` and will
+            // refuse with `NotConnected`, so this lock is only contended
+            // by a command that started before the store above.
+            let _cmd_guard = self.command_lock.lock().await;
             *self.reader.lock().await = None;
             *self.writer.lock().await = None;
             *self.sync_offset.lock().await = 0.0;
@@ -147,10 +173,7 @@ impl SerialManager {
             *self.last_limit_detected.lock().await = None;
             info!("Serial port closed (connection count: 0)");
         } else {
-            debug!(
-                "Device disconnecting (connection count: {})",
-                prev_count - 1
-            );
+            debug!("Device disconnecting (connection count: {})", new_count);
         }
     }
 
@@ -287,13 +310,24 @@ impl SerialManager {
     }
 
     /// Move to a mechanical angle. The caller has already applied the sync
-    /// offset; this method only normalises into `[0, 360)` before serialising
-    /// to `MD:nn.nn`.
+    /// offset; this method validates finiteness, quantises to the `MD:nn.nn`
+    /// wire precision, normalises into `[0, 360)`, and emits the command.
+    ///
+    /// The quantise-before-normalise step matters because `format!("{:.2}",
+    /// 359.999)` rounds up to `"360.00"`, which violates the documented
+    /// `[0, 360)` wire range. Rounding first lets `normalise_deg` wrap that
+    /// `360.0` back to `0.0` so the wire output stays in range.
     pub async fn move_mechanical(&self, target_mech_deg: f64) -> Result<()> {
         if !self.is_available() {
             return Err(FalconRotatorError::NotConnected);
         }
-        let cmd = Command::MoveDeg(normalise_deg(target_mech_deg));
+        if !target_mech_deg.is_finite() {
+            return Err(FalconRotatorError::InvalidValue(format!(
+                "move target must be finite, got {target_mech_deg}"
+            )));
+        }
+        let wire_deg = normalise_deg(quantise_to_wire(target_mech_deg));
+        let cmd = Command::MoveDeg(wire_deg);
         let response = self.send_command_internal(&cmd).await?;
         validate_echo(&cmd, &response)?;
         Ok(())
@@ -341,6 +375,11 @@ impl SerialManager {
     pub async fn sync(&self, sky_deg: f64) -> Result<()> {
         if !self.is_available() {
             return Err(FalconRotatorError::NotConnected);
+        }
+        if !sky_deg.is_finite() {
+            return Err(FalconRotatorError::InvalidValue(format!(
+                "sync target must be finite, got {sky_deg}"
+            )));
         }
         let mech = self.read_status().await?.position_deg;
         let offset = normalise_deg(sky_deg - mech);
@@ -414,6 +453,27 @@ mod tests {
     fn normalise_deg_handles_two_turn_overflow() {
         assert!((normalise_deg(720.0)).abs() < 1e-9);
     }
+
+    // ---- quantise_to_wire ------------------------------------------------
+
+    #[test]
+    fn quantise_to_wire_rounds_up_to_360_from_just_below() {
+        assert!((quantise_to_wire(359.999) - 360.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quantise_to_wire_preserves_two_decimal_values() {
+        assert!((quantise_to_wire(123.45) - 123.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quantise_to_wire_then_normalise_keeps_wire_in_range() {
+        // Composition is what `move_mechanical` actually uses.
+        let v = normalise_deg(quantise_to_wire(359.999));
+        assert!((v).abs() < 1e-9, "expected 0.0, got {v}");
+        let formatted = format!("{v:.2}");
+        assert_eq!(formatted, "0.00");
+    }
 }
 
 /// Mock-backed integration tests for the SerialManager. These exercise the
@@ -470,7 +530,21 @@ mod mock_tests {
 
         manager.connect().await.unwrap();
         let after_first = factory.command_log().await;
-        assert_eq!(after_first.len(), 5, "expected 5 handshake commands");
+        // Pin the exact handshake sequence (per design doc Connection
+        // Lifecycle): F# → FV → DR:0 → FA → VS. A future reorder or
+        // dropped smoke-test command should fail here loudly, not at
+        // the once-unskipped BDD scenario.
+        assert_eq!(
+            after_first,
+            vec![
+                "F#".to_string(),
+                "FV".to_string(),
+                "DR:0".to_string(),
+                "FA".to_string(),
+                "VS".to_string(),
+            ],
+            "handshake order must match design doc Connection Lifecycle"
+        );
 
         manager.connect().await.unwrap();
         let after_second = factory.command_log().await;
@@ -668,6 +742,51 @@ mod mock_tests {
     }
 
     #[tokio::test]
+    async fn test_move_mechanical_rejects_non_finite() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = manager.move_mechanical(bad).await.unwrap_err();
+            assert!(
+                matches!(err, FalconRotatorError::InvalidValue(_)),
+                "expected InvalidValue for {bad}, got {err:?}"
+            );
+        }
+        assert!(
+            factory.command_log().await.is_empty(),
+            "no command should reach the wire for non-finite targets"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_move_mechanical_wraps_just_under_360_to_zero() {
+        // `format!("{:.2}", 359.999)` rounds to "360.00", which would
+        // violate the documented [0, 360) wire range. After quantise +
+        // normalise the wire should carry "MD:0.00".
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        manager.move_mechanical(359.999).await.unwrap();
+        assert_eq!(factory.command_log().await, vec!["MD:0.00".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_move_mechanical_exact_360_wraps_to_zero() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        manager.move_mechanical(360.0).await.unwrap();
+        assert_eq!(factory.command_log().await, vec!["MD:0.00".to_string()]);
+    }
+
+    #[tokio::test]
     async fn test_halt_sends_fh_and_clears_target() {
         let factory = Arc::new(MockSerialPortFactory::default());
         let manager = manager_with(Arc::clone(&factory));
@@ -748,6 +867,24 @@ mod mock_tests {
         let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
         let err = manager.sync(0.0).await.unwrap_err();
         assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn test_sync_rejects_non_finite() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        let starting_offset = manager.sync_offset().await;
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = manager.sync(bad).await.unwrap_err();
+            assert!(
+                matches!(err, FalconRotatorError::InvalidValue(_)),
+                "expected InvalidValue for {bad}, got {err:?}"
+            );
+        }
+        // Offset must not have been mutated by any of the rejections.
+        assert!((manager.sync_offset().await - starting_offset).abs() < 1e-9);
     }
 
     // ---- limit_detect edge log -----------------------------------------
