@@ -1086,16 +1086,27 @@ physical pose; only the `pierSide` label differs in convention.
 
 The seed step is skipped when the firmware reports an encoder
 reading beyond a small fresh-power-up tolerance
-(`FRESH_POWER_UP_TICK_TOLERANCE`, currently 100 ticks ≈ 10″ at the
+(`FRESH_POWER_UP_TICK_TOLERANCE`, currently 10 ticks ≈ 4″ at the
 GTi's CPR). The tolerance exists because the Sky-Watcher firmware
 does not always read exactly `(0, 0)` after a power-cycle —
 empirically the validation GTi reports `dec = −1` on connect, a
 single-tick initialisation artifact (~0.4″) that obviously still
 represents the just-powered-up state. Any genuine post-slew
-encoder is tens of thousands of ticks away from zero, so the
-tolerance comfortably distinguishes "fresh power-up" from
-"already slewed this session". Reconnecting mid-session after a
-slew is therefore still safe.
+encoder is tens of thousands of ticks away from zero, so a tight
+tolerance is enough to absorb the firmware artifact without ever
+masking a real mid-session position. Reconnecting mid-session
+after a slew is therefore still safe.
+
+`seed_home_pose_after_connect` emits two `info!()`-level log lines
+per connect (when `home_pose` is configured) so hardware-validation
+sessions can sanity-check the firmware encoder state at a glance: a
+`pre-seed encoder snapshot at connect` line with the firmware's
+pre-seed `(ra, dec)` ticks, and a `seeded firmware encoder for
+home_pose` line with the post-seed values. Operators expect the
+pre-seed pair to read approximately `(0, 0)` on a fresh power-up;
+any larger reading is a signal that either the previous slew's
+state survived the connection state machine or the build is
+running against a mock transport rather than the real wire.
 
 Documented operator assumption: when `home_pose` is set, the operator
 powers up the mount **at** the configured pose and connects the
