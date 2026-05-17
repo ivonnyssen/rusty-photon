@@ -894,6 +894,14 @@ fn flip_slew_dec_delta(
 /// any modular replica of `pole_ticks`. Used by [`flip_slew_dec_delta`]
 /// to detect when the canonical short path would dip the OTA through
 /// the below-horizon pole.
+///
+/// `start` can sit anywhere in the signed-24-bit wire range
+/// (`±2²³ ≈ ±8.4M ticks`), which for the GTi's `cpr_dec ≈ 3.6M` puts
+/// the relevant modular replica index up to `k = ±3` away from zero.
+/// Rather than enumerating a fixed `k` window, the check shifts the
+/// sweep into pole-relative coordinates `[a, b] = [lo − pole, hi − pole]`
+/// and tests whether that interval contains any integer multiple of
+/// `cpr` — equivalent to the largest multiple `≤ b` being `≥ a`.
 fn canonical_path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32) -> bool {
     let cpr_i = cpr as i32;
     let end = start + delta;
@@ -902,14 +910,12 @@ fn canonical_path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32
     } else {
         (end, start)
     };
-    // `|delta| ≤ cpr` by the canonical-fold invariant, but `start` can
-    // sit far outside `[-cpr/2, +cpr/2)` after through-wrap flips —
-    // scanning `k ∈ [-2, +2]` covers every replica that could fall in
-    // `[lo, hi]`.
-    (-2..=2).any(|k| {
-        let p = pole_ticks + k * cpr_i;
-        p >= lo && p <= hi
-    })
+    let a = lo - pole_ticks;
+    let b = hi - pole_ticks;
+    // Largest multiple of `cpr_i` that is `≤ b`. If that multiple is
+    // also `≥ a` it lies inside `[a, b]`, so the corresponding pole
+    // replica `pole_ticks + k·cpr` lies inside `[lo, hi]`.
+    b.div_euclid(cpr_i) * cpr_i >= a
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
@@ -5602,6 +5608,61 @@ mod tests {
         assert_eq!(
             issued, canonical,
             "raw outside canonical band must still produce the safe canonical path"
+        );
+    }
+
+    #[test]
+    fn canonical_path_crosses_pole_detects_high_index_modular_replica_near_wire_limit() {
+        // The signed-24-bit wire range carries raw encoder values up to
+        // ~±8.4M ticks. For `cpr_dec = 3.6M` (GTi) the relevant modular
+        // replica of the below-horizon pole can sit at `k = +3`
+        // (≈ +9.98M) and the path-aware check must still find it. A
+        // prior hardcoded `k ∈ -2..=2` scan missed this band and
+        // returned `false` for sweeps that genuinely contain a pole
+        // replica — letting the helper route the OTA through the
+        // below-horizon pole.
+        let cpr = GTI_CPR;
+        let cpr_i = cpr as i32;
+        let pole = -cpr_i / 4; // N: SCP at -cpr/4 = -907,200
+                               // Sweep [+8_300_000, +10_000_000] contains the k=+3 replica
+                               // at -907,200 + 3·3,628,800 = +9,979,200.
+        let start = 8_300_000_i32;
+        let delta = 1_700_000_i32;
+        assert!(
+            canonical_path_crosses_pole(start, delta, pole, cpr),
+            "k=+3 replica at +9_979_200 must be detected inside sweep [+8.3M, +10M]"
+        );
+        // Drive it through `flip_slew_dec_delta` for the end-to-end
+        // assertion: canonical positive must be flipped to the long-way
+        // negative because the canonical path crosses SCP.
+        let issued = flip_slew_dec_delta(delta, start, cpr, true);
+        assert!(
+            issued < 0,
+            "canonical path crosses SCP at wire boundary; must force long way (got {issued})"
+        );
+        assert_eq!(
+            (issued - delta).rem_euclid(cpr_i),
+            0,
+            "long way must land at the same modular destination"
+        );
+        // Mirror replica on the negative side: sweep [-10M, -8.3M]
+        // contains the k=-3 replica at -907_200 - 3·3_628_800 =
+        // -11,793,600... no wait, k=-3 puts it at -11.79M. That's
+        // outside the sweep. The relevant southern-mirror replica
+        // when `pole = -cpr/4` and we're at the negative wire boundary
+        // is k=-2: -907_200 - 2·3_628_800 = -8,164,800, which IS in
+        // [-10M, -8.3M] — well within the old `-2..=2` window. The
+        // negative wire boundary doesn't suffer the same k=±3 miss
+        // because the pole is at -cpr/4, not +cpr/4, so the asymmetry
+        // shifts the danger band onto the positive side only for
+        // northern observers. Southern observers (pole at +cpr/4) get
+        // the mirror — exercise that too.
+        let pole_south = cpr_i / 4;
+        // Sweep [-10M, -8.3M] contains the k=-3 replica at
+        // +907_200 - 3·3_628_800 = -9_979_200.
+        assert!(
+            canonical_path_crosses_pole(-10_000_000, 1_700_000, pole_south, cpr),
+            "k=-3 replica at -9_979_200 must be detected for southern pole"
         );
     }
 
