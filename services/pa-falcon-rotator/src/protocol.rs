@@ -130,6 +130,11 @@ pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
     let position_deg: f64 = fields[1]
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_deg: {e}")))?;
+    if !position_deg.is_finite() {
+        return Err(FalconRotatorError::ParseError(format!(
+            "FA position_deg: non-finite value {position_deg} in {response:?}"
+        )));
+    }
     let is_moving = parse_bool(fields[2], "FA is_moving")?;
     let limit_detect = parse_bool(fields[3], "FA limit_detect")?;
     let do_derotation = parse_bool(fields[4], "FA do_derotation")?;
@@ -158,8 +163,15 @@ pub fn parse_firmware_version(response: &str) -> Result<String> {
 /// Parse the `FD:nn.nn` degrees response.
 pub fn parse_position_deg(response: &str) -> Result<f64> {
     let rest = strip_known_prefix(response, "FD:")?;
-    rest.parse()
-        .map_err(|e| FalconRotatorError::ParseError(format!("FD: {e}")))
+    let value: f64 = rest
+        .parse()
+        .map_err(|e| FalconRotatorError::ParseError(format!("FD: {e}")))?;
+    if !value.is_finite() {
+        return Err(FalconRotatorError::ParseError(format!(
+            "FD: non-finite value {value} in {response:?}"
+        )));
+    }
+    Ok(value)
 }
 
 /// Parse the `FP:n..` steps response.
@@ -400,6 +412,24 @@ mod tests {
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
+    #[test]
+    fn parse_full_status_rejects_nan_position() {
+        let err = parse_full_status("FR_OK:0:NaN:0:0:0:0").unwrap_err();
+        assert!(matches!(err, FalconRotatorError::ParseError(_)));
+    }
+
+    #[test]
+    fn parse_full_status_rejects_positive_infinity_position() {
+        let err = parse_full_status("FR_OK:0:inf:0:0:0:0").unwrap_err();
+        assert!(matches!(err, FalconRotatorError::ParseError(_)));
+    }
+
+    #[test]
+    fn parse_full_status_rejects_negative_infinity_position() {
+        let err = parse_full_status("FR_OK:0:-inf:0:0:0:0").unwrap_err();
+        assert!(matches!(err, FalconRotatorError::ParseError(_)));
+    }
+
     // ---- parse_firmware_version -------------------------------------------
 
     #[test]
@@ -444,6 +474,30 @@ mod tests {
     fn parse_position_deg_rejects_bad_value() {
         assert!(matches!(
             parse_position_deg("FD:nope").unwrap_err(),
+            FalconRotatorError::ParseError(_)
+        ));
+    }
+
+    #[test]
+    fn parse_position_deg_rejects_nan() {
+        assert!(matches!(
+            parse_position_deg("FD:NaN").unwrap_err(),
+            FalconRotatorError::ParseError(_)
+        ));
+    }
+
+    #[test]
+    fn parse_position_deg_rejects_positive_infinity() {
+        assert!(matches!(
+            parse_position_deg("FD:inf").unwrap_err(),
+            FalconRotatorError::ParseError(_)
+        ));
+    }
+
+    #[test]
+    fn parse_position_deg_rejects_negative_infinity() {
+        assert!(matches!(
+            parse_position_deg("FD:-inf").unwrap_err(),
             FalconRotatorError::ParseError(_)
         ));
     }

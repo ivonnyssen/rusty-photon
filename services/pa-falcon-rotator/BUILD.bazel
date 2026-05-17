@@ -47,6 +47,29 @@ rust_test(
     ),
 )
 
+# Integration test target: Cargo auto-discovers tests/*.rs as integration
+# binaries, rules_rust does not. Each Cargo integration test needs its own
+# rust_test entry here so `bazel test //...` runs them.
+rust_test(
+    name = "property_tests",
+    srcs = ["tests/property_tests.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/property_tests.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    deps = [":pa-falcon-rotator_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # BDD cucumber tests require a mock-feature binary (see qhy-focuser BUILD for
 # the same pattern).
 rust_library(

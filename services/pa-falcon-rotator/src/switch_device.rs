@@ -15,6 +15,7 @@ use ascom_alpaca::api::{Device, Switch};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tracing::debug;
 
 use crate::config::SwitchConfig;
 use crate::error::FalconRotatorError;
@@ -23,6 +24,20 @@ use crate::serial_manager::SerialManager;
 /// Number of switches advertised by this device. The design doc pins this at 2
 /// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
 const SWITCH_COUNT: usize = 2;
+
+/// Guard that returns `NOT_CONNECTED` if the device is not connected. Mirrors
+/// `ppba-driver`'s `ensure_connected!` macro: every device-bound Switch method
+/// runs this **before** id validation so a disconnected client always sees
+/// `NOT_CONNECTED` (1031) regardless of the id passed in, matching the design
+/// doc's [Error Model](../../../docs/services/falcon-rotator.md#error-model).
+macro_rules! ensure_connected {
+    ($self:ident) => {
+        if !$self.connected().await.is_ok_and(|connected| connected) {
+            debug!("Falcon Status Switch device not connected");
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+    };
+}
 
 /// Reject switch ids outside `0..SWITCH_COUNT` with `INVALID_VALUE` per the
 /// ASCOM convention: id-range validation precedes operation-permission
@@ -124,6 +139,7 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         validate_id(id)?;
         Ok(false)
     }
@@ -159,6 +175,7 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
+        ensure_connected!(self);
         validate_id(id)?;
         // Read-only switches never change asynchronously.
         Ok(true)
@@ -174,6 +191,7 @@ impl Switch for FalconStatusSwitchDevice {
     // code.
 
     async fn set_switch(&self, id: usize, _state: bool) -> ASCOMResult<()> {
+        ensure_connected!(self);
         validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
@@ -182,6 +200,7 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     async fn set_switch_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
+        ensure_connected!(self);
         validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
@@ -190,6 +209,7 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     async fn set_switch_name(&self, id: usize, _name: String) -> ASCOMResult<()> {
+        ensure_connected!(self);
         validate_id(id)?;
         Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_OPERATION,
@@ -201,7 +221,39 @@ impl Switch for FalconStatusSwitchDevice {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+
     use super::*;
+    use crate::config::Config;
+    use crate::io::{SerialPair, SerialPortFactory};
+
+    /// Test-only no-op factory: never used at runtime (the connection-guard
+    /// tests assert behaviour while disconnected, so `open` is never called).
+    struct NoopFactory;
+
+    #[async_trait]
+    impl SerialPortFactory for NoopFactory {
+        async fn open(
+            &self,
+            _port: &str,
+            _baud_rate: u32,
+            _timeout: Duration,
+        ) -> crate::error::Result<SerialPair> {
+            unimplemented!("test factory should never open a port")
+        }
+
+        async fn port_exists(&self, _port: &str) -> bool {
+            true
+        }
+    }
+
+    fn disconnected_device() -> FalconStatusSwitchDevice {
+        let config = Config::default();
+        let manager = Arc::new(SerialManager::new(config, Arc::new(NoopFactory)));
+        FalconStatusSwitchDevice::new(SwitchConfig::default(), manager)
+    }
 
     #[test]
     fn validate_id_accepts_zero() {
@@ -228,5 +280,52 @@ mod tests {
     fn validate_id_rejects_large_id() {
         let err = validate_id(usize::MAX).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn can_write_returns_not_connected_when_disconnected() {
+        let device = disconnected_device();
+        let err = device.can_write(0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn state_change_complete_returns_not_connected_when_disconnected() {
+        let device = disconnected_device();
+        let err = device.state_change_complete(0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn set_switch_returns_not_connected_when_disconnected() {
+        let device = disconnected_device();
+        let err = device.set_switch(0, true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn set_switch_value_returns_not_connected_when_disconnected() {
+        let device = disconnected_device();
+        let err = device.set_switch_value(0, 0.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn set_switch_name_returns_not_connected_when_disconnected() {
+        let device = disconnected_device();
+        let err = device
+            .set_switch_name(0, "x".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn connection_guard_precedes_id_validation() {
+        // Disconnected + out-of-range id should report NOT_CONNECTED, not
+        // INVALID_VALUE — the guard runs first per the design doc's error model.
+        let device = disconnected_device();
+        let err = device.set_switch_value(99, 0.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 }

@@ -19,8 +19,8 @@
 Sub-phases land as commits on dedicated PR branches:
 
 * **PR #1** (this PR) — `feature/falcon-rotator-driver`: design doc + this plan.
-* **PR #2** — `feature/pa-falcon-rotator-phase2`: BDD scaffold + service skeleton in one commit (the qhy/star precedent). Based on `main` after PR #1 merges.
-* **PR #3** — `feature/pa-falcon-rotator-protocol`: Phase 3a (`protocol.rs` + unit tests). No `@wip` removed.
+* **PR #2** — `feature/pa-falcon-rotator-phase2`: BDD scaffold + service skeleton in one commit (the qhy/star precedent). Based on `main` after PR #1 merges. **PR #3 (Phase 3a — protocol layer) was subsequently folded into this PR** at user request, so the deliverable on this branch is 2a + 2b + 3a in one PR; the next branch is therefore PR #4.
+* **PR #3** — *(folded into PR #2 above)* — was `feature/pa-falcon-rotator-protocol`: Phase 3a (`protocol.rs` + unit tests). No `@wip` removed.
 * **PR #4** — `feature/pa-falcon-rotator-plumbing`: Phase 3b–3c (`config`, `error`, `io`, `serial`, `mock`, `serial_manager`). No `@wip` removed.
 * **PR #5** — `feature/pa-falcon-rotator-rotator-device`: Phase 3d (Rotator trait impl). Removes `@wip` from `connection_lifecycle`, `metadata`, `position_reads`, `movement`, `halt`, `reverse`, `sync_offset`.
 * **PR #6** — `feature/pa-falcon-rotator-switch-device`: Phase 3e (Switch trait impl). Removes `@wip` from `status_switch`.
@@ -44,7 +44,7 @@ Files created:
 * `services/pa-falcon-rotator/src/io.rs` — `SerialReader`, `SerialWriter`, `SerialPortFactory` traits with `#[cfg_attr(test, mockall::automock)]`. `SerialPair` struct.
 * `services/pa-falcon-rotator/src/serial.rs` — `TokioSerialPortFactory` implementing `SerialPortFactory` via `tokio-serial`. Stubbed (`unimplemented!()`).
 * `services/pa-falcon-rotator/src/mock.rs` — `#[cfg(feature = "mock")] pub struct MockSerialPortFactory` with a small deterministic state machine: stored mechanical position, is-moving flag, motor-reverse flag, derotation flag, voltage_raw. Returns canned `FR_OK` for `F#`, `FV:1.3` for `FV`, etc. Stubbed body for now.
-* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers.
+* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers (replaced in §3a on this same PR — see Branching strategy).
 * `services/pa-falcon-rotator/src/serial_manager.rs` — `SerialManager` struct: `config`, `connection_count` (`AtomicU32`), `serial_available` (`AtomicBool`), `reader`/`writer` (`Mutex<Option<Box<dyn ...>>>`), `command_lock` (`Mutex<()>`), `sync_offset` (`Mutex<f64>`), `target_position` (`Mutex<Option<f64>>`), `last_limit_detected` (`Mutex<Option<bool>>`), `serial_factory`. Stubbed methods: `connect`, `disconnect`, `is_available`, `send_command`, `read_status` (issues `FA` + edge-checks `limit_detect`), `read_voltage`, `move_to`, `halt`, `sync`, `get_sync_offset`, `target_position`, `get_target_position`.
 * `services/pa-falcon-rotator/src/rotator_device.rs` — `FalconRotatorDevice` impl skeleton. `Device` trait stub. `Rotator` trait stub.
 * `services/pa-falcon-rotator/src/switch_device.rs` — `FalconStatusSwitchDevice` impl skeleton. `Device` trait stub. `Switch` trait stub.
@@ -97,19 +97,20 @@ Implementation:
 * `parse_full_status(&str) -> Result<FalconStatus>` — splits on `:`, validates `FR_OK` prefix, parses each field. Trims trailing `\n` / whitespace per the ppba pattern.
 * `parse_firmware_version(&str)`, `parse_position_deg(&str)`, `parse_position_steps(&str)`, `parse_voltage_raw(&str)`, `parse_is_running(&str)`, `parse_reverse(&str)` — one for every response shape.
 * `validate_ping_response(&str) -> Result<()>` — accepts `FR_OK` ± trailing whitespace.
-* `validate_echo(command, response)` — generic echo validator for `MD:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).)
+* `validate_echo(command, response)` — generic echo validator for `MD:`, `MS:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).) Non-echo commands (`Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `IsRunning`) are rejected so a caller misrouting them fails loudly.
 
 Tests:
 
 * Inline `#[cfg(test)] mod tests` covering:
     - `parse_full_status` happy path: `FR_OK:4332:50.00:0:0:0:0` → expected `FalconStatus`.
-    - Every failure mode: wrong prefix, too-few-fields, bad float, bad bool. Each as a separate test fn.
-    - `parse_full_status` with trailing `\n`.
-    - `parse_full_status` with `limit_detect = 1`.
+    - Every failure mode: wrong prefix, too-few-fields, too-many-fields, bad steps, bad float, bad bool, empty input. Each as a separate test fn.
+    - Non-finite `position_deg` rejection: `NaN`, `+inf`, `-inf` (for both `parse_full_status` and the standalone `parse_position_deg`) — `f64::parse` accepts the textual forms, so an explicit `is_finite()` check protects ASCOM clients from non-finite positions.
+    - `parse_full_status` with trailing `\n` / CRLF.
+    - `parse_full_status` with `limit_detect = 1` and all-flags-high.
     - Each command's `to_command_string()` exact-string check.
-    - `validate_ping_response`: `FR_OK`, `FR_OK\n`, reject `INVALID`, reject empty.
-    - `validate_echo` for representative commands.
-* `tests/property_tests.rs`: serialize → parse round-trip on `FalconStatus` for random valid field values.
+    - `validate_ping_response`: `FR_OK`, `FR_OK\n`, `  FR_OK \r\n`, reject `INVALID`, reject empty.
+    - `validate_echo` for each echo-bearing shape (`MD`, `MS`, `DR:0`, `DR:<ms>`, `FH:1`, `FN:0`/`FN:1`) plus rejection of `Ping` / `FullStatus` / `IsRunning`.
+* `tests/property_tests.rs`: serialize → parse round-trip on `FalconStatus` for random valid field values. Degrees are generated as integer hundredths so the `{:.2}` write format and the `f64` parse compare exactly without epsilon. Bazel `rust_test` target named `property_tests` mirrors the bdd target's dev-deps wiring (`rules_rust` does not auto-discover `tests/*.rs`).
 
 Removes:
 
