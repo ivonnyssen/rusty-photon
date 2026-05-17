@@ -16,17 +16,18 @@
 
 ## Branching strategy
 
-Sub-phases land as commits on dedicated PR branches:
+The whole driver lands on a **single feature branch** — sub-phases ship as individual commits, not as separate PRs:
 
-* **PR #1** (this PR) — `feature/falcon-rotator-driver`: design doc + this plan.
-* **PR #2** — `feature/pa-falcon-rotator-phase2`: BDD scaffold + service skeleton in one commit (the qhy/star precedent). Based on `main` after PR #1 merges. **PR #3 (Phase 3a — protocol layer) was subsequently folded into this PR** at user request, so the deliverable on this branch is 2a + 2b + 3a in one PR; the next branch is therefore PR #4.
-* **PR #3** — *(folded into PR #2 above)* — was `feature/pa-falcon-rotator-protocol`: Phase 3a (`protocol.rs` + unit tests). No `@wip` removed.
-* **PR #4** — `feature/pa-falcon-rotator-plumbing`: Phase 3b–3c (`config`, `error`, `io`, `serial`, `mock`, `serial_manager`). No `@wip` removed.
-* **PR #5** — `feature/pa-falcon-rotator-rotator-device`: Phase 3d (Rotator trait impl). Removes `@wip` from `connection_lifecycle`, `metadata`, `position_reads`, `movement`, `halt`, `reverse`, `sync_offset`.
-* **PR #6** — `feature/pa-falcon-rotator-switch-device`: Phase 3e (Switch trait impl). Removes `@wip` from `status_switch`.
-* **PR #7** — `feature/pa-falcon-rotator-conformu`: Phase 3f–3h (`test_lib`, ConformU, README + workspace.md final-state updates).
+* **PR #1** (`feature/falcon-rotator-driver`, merged) — design doc + this plan.
+* **PR #2** (this PR — `feature/pa-falcon-rotator-phase2`) — everything from 2a onward. Each sub-phase below ends in its own commit so reviewers can step through the progression in `git log`, but they all merge to `main` in a single PR.
 
-Each PR rebases onto `main` after the previous merges; ordering is strict — every PR depends on the previous one compiling.
+The original plan split phases 3b–3h across PRs #3–#7 (`feature/pa-falcon-rotator-protocol`, `…-plumbing`, `…-rotator-device`, `…-switch-device`, `…-conformu`). That was abandoned at user request after Phase 3a landed: the seven-PR chain added rebase / review overhead without changing the shape of the work, and the per-sub-phase commit history on a single branch gives the same step-through visibility. **Do not open separate PRs for 3b–3h.**
+
+Sub-phase commit invariants on this branch:
+
+* Each sub-phase commit is independently green: `cargo rail run --profile commit -q` and `cargo fmt --check` clean.
+* `@wip` filtering keeps the BDD suite green between sub-phases — a scenario only loses its `@wip` tag in the commit that makes it pass.
+* The branch is therefore mergeable to `main` at any sub-phase boundary if priorities change; nothing in 3b–3h is structurally required for the prior sub-phases to be useful.
 
 ## Sub-phases
 
@@ -345,11 +346,11 @@ Removes:
 
 `2a + 2b → 3a → 3b → 3c → 3d → 3e → 3f → 3g → 3h`.
 
-The only inter-PR gate is that each rebases onto the previous's `main`-merged state. Within Phase 3, sub-phases 3a–3c can technically land in one PR (no `@wip` removed, no behavioural diff visible to ASCOM clients) — splitting them is a reviewer ergonomics call, not a correctness one.
+All sub-phases ship as separate commits on the same branch (PR #2 — see [Branching strategy](#branching-strategy)). Ordering is strict in the commit stream — every sub-phase depends on the previous one compiling. Sub-phases 3a–3c are behaviourally invisible to ASCOM clients (no `@wip` removed); 3d / 3e are where the BDD scenarios start going green.
 
 ## Hardware validation
 
-After PR #6 (Switch device) merges, run the binary against the actual Falcon v1:
+After Phase 3e (Switch device) lands as a commit, run the binary against the actual Falcon v1:
 
 1. Plug the Falcon into a Linux box.
 2. `cargo run -p pa-falcon-rotator -- -c examples/config-linux.json`.
@@ -364,7 +365,7 @@ After PR #6 (Switch device) merges, run the binary against the actual Falcon v1:
     - `curl http://127.0.0.1:11118/api/v1/rotator/0/connected -d "Connected=false" -X PUT`
 4. Then run ConformU against real hardware: `conformu conformance http://127.0.0.1:11118/api/v1/rotator/0` and same against `/switch/0`. Both should pass with zero errors.
 
-This validation surfaces any discrepancies between the design doc's behavioural assumptions and real hardware. Capture findings as follow-up issues against the design doc rather than blocking PR #6 — the design is allowed to evolve once hardware truth is in.
+This validation surfaces any discrepancies between the design doc's behavioural assumptions and real hardware. Capture findings as follow-up issues against the design doc rather than blocking the PR — the design is allowed to evolve once hardware truth is in.
 
 ## Follow-ups (post-MVP)
 
