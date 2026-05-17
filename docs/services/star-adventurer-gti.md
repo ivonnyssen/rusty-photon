@@ -1045,6 +1045,12 @@ document. Each AP pose describes a fixed mechanical pier side
 both hemispheres — but the driver's natural-vs-flipped pier convention
 flips between hemispheres (N natural = pierWest, S natural = pierEast,
 see `pre_flip_side` in `mount_device.rs`). So a pose like Park 1
+(OTA-on-west-of-mount, mechanically) is on the **natural** side in the
+Northern Hemisphere and on the **flipped** side in the Southern
+Hemisphere — and its dec-encoder representation differs accordingly
+(natural side gives `|dec_enc| ≤ 90°`; flipped side gives `|dec_enc| > 90°`
+via the past-pole encoding).
+
 The codebase's `mech_HA` is hemisphere-independent: the saddle east/west
 position is determined by the encoder alone (`|mech_HA| ≤ 6 h` →
 saddle west; `|mech_HA| > 6 h` → saddle east). The dec encoder *is*
