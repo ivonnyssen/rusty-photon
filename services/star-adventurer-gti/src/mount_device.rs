@@ -844,27 +844,25 @@ fn canonical_path_crosses_binding_zone(
 /// for northern observers (encoder `+cpr/4`), SCP at altitude `+|lat|`
 /// for southern (encoder `−cpr/4`). The other pole is below the
 /// horizon and the path through it dips the OTA below the local
-/// horizon — exactly the failure mode we hit during the first
-/// hardware validation when the OTA was driven through SCP at LAT
-/// 32.7°N. (The fold-canonical-delta's boundary case at exactly
-/// `±cpr/2` produces the negative direction, which from `encoder = 0`
-/// pre-flip routes the Dec axis through SCP.)
+/// horizon — exactly the failure mode hit during the first hardware
+/// validation when the OTA was driven through SCP at lat 32.7°N.
 ///
-/// Rule, expressed in encoder side:
-///
-/// - **Northern** observer:
-///   - `current` in the *pre-flip* half (`|enc| ≤ cpr/4`): force CW
-///     (positive delta) — the path increases toward `+cpr/4` (NCP).
-///   - `current` in the *post-flip* half (`|enc| > cpr/4`): force
-///     CCW (negative delta) — the path decreases back through
-///     `+cpr/4` (NCP).
-/// - **Southern** observer: inverse — the safe pole is `−cpr/4`
-///   (SCP) so the directions flip.
-///
-/// When the canonical shortest path already goes the safe direction,
-/// it's returned unchanged. When it doesn't, the long way around
-/// (`delta − cpr` or `delta + cpr`) lands at the same modular
+/// Strategy (mirroring [`flip_slew_ra_delta`]): take the canonical
+/// short path unless its linear dec-encoder sweep from `current_ticks`
+/// through `current_ticks + canonical_delta` crosses the
+/// below-horizon-pole encoder position at any modular replica
+/// (`−cpr/4` for N, `+cpr/4` for S). If it would, take the long way
+/// around (`canonical ± cpr_dec`), which lands at the same modular
 /// destination via the safe pole.
+///
+/// Previously a sign-blind heuristic (`|current| ≤ cpr/4 ⇒ "safe is
+/// positive (toward NCP for N)"`) was used. It happens to give the
+/// right answer for every realistic flip-slew (current, target) pair
+/// after folding raw to the canonical band, but the path-aware check
+/// makes the safety property explicit, mirrors the RA helper's
+/// structure, and is naturally robust to `current_ticks` outside the
+/// canonical band (the modular-replica scan covers all continuous
+/// sweeps regardless of where raw has accumulated).
 fn flip_slew_dec_delta(
     canonical_delta: i32,
     current_ticks: i32,
@@ -875,22 +873,37 @@ fn flip_slew_dec_delta(
         return canonical_delta;
     }
     let cpr_i = cpr_dec as i32;
-    let quarter = cpr_i / 4;
-    // Fold raw current into [-cpr/2, +cpr/2) before classifying — raw
-    // can drift outside the canonical band after long-way flip slews
-    // or power-up encoder noise, and the half-classification only makes
-    // sense for the folded position.
-    let current_folded = fold_delta_to_canonical(current_ticks, cpr_dec);
-    let in_pre_flip = current_folded.abs() <= quarter;
-    let safe_direction_positive = if northern { in_pre_flip } else { !in_pre_flip };
-    let canonical_positive = canonical_delta > 0;
-    if canonical_positive == safe_direction_positive {
-        canonical_delta
-    } else if canonical_delta > 0 {
+    let unsafe_pole = if northern { -cpr_i / 4 } else { cpr_i / 4 };
+    if !canonical_path_crosses_pole(current_ticks, canonical_delta, unsafe_pole, cpr_dec) {
+        return canonical_delta;
+    }
+    if canonical_delta > 0 {
         canonical_delta - cpr_i
     } else {
         canonical_delta + cpr_i
     }
+}
+
+/// True iff the linear encoder sweep `[start, start + delta]` crosses
+/// any modular replica of `pole_ticks`. Used by [`flip_slew_dec_delta`]
+/// to detect when the canonical short path would dip the OTA through
+/// the below-horizon pole.
+fn canonical_path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32) -> bool {
+    let cpr_i = cpr as i32;
+    let end = start + delta;
+    let (lo, hi) = if end >= start {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    // `|delta| ≤ cpr` by the canonical-fold invariant, but `start` can
+    // sit far outside `[-cpr/2, +cpr/2)` after through-wrap flips —
+    // scanning `k ∈ [-2, +2]` covers every replica that could fall in
+    // `[lo, hi]`.
+    (-2..=2).any(|k| {
+        let p = pole_ticks + k * cpr_i;
+        p >= lo && p <= hi
+    })
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
@@ -5387,25 +5400,6 @@ mod tests {
 
     // ---------- flip_slew_dec_delta (Dec routing through the visible pole) ----------
 
-    /// Trace the absolute encoder traversal range from `start` by `delta`
-    /// and report `true` iff the trajectory crosses `pole_ticks` (the
-    /// unsafe-pole position) on its way to the end.
-    fn path_crosses_pole(start: i32, delta: i32, pole_ticks: i32, cpr: u32) -> bool {
-        let cpr_i = cpr as i32;
-        let end = start + delta;
-        let (lo, hi) = if end >= start {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        // Test all modular replicas of `pole_ticks` that could fall in
-        // `[lo, hi]`. Since `|delta| ≤ cpr`, at most one replica matters.
-        (-2..=2).any(|k| {
-            let p = pole_ticks + k * cpr_i;
-            p >= lo && p <= hi
-        })
-    }
-
     #[test]
     fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw() {
         // Park 3: start at encoder +cpr/4 (= +90°, NCP). Target = +135°
@@ -5424,7 +5418,7 @@ mod tests {
         );
         // Confirm the path avoids SCP (-cpr/4).
         let issued = flip_slew_dec_delta(canonical, current, cpr, true);
-        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5441,8 +5435,8 @@ mod tests {
         let issued = flip_slew_dec_delta(canonical, 0, cpr, true);
         assert_eq!(issued, half_cpr, "must force CW through NCP");
         // Verify path crosses NCP and not SCP.
-        assert!(path_crosses_pole(0, issued, quarter, cpr));
-        assert!(!path_crosses_pole(0, issued, -quarter, cpr));
+        assert!(canonical_path_crosses_pole(0, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(0, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5462,8 +5456,8 @@ mod tests {
             "flip-back from +135° must use natural CCW"
         );
         // Verify path crosses NCP (the safe pole) and not SCP.
-        assert!(path_crosses_pole(current, issued, quarter, cpr));
-        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+        assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5478,8 +5472,8 @@ mod tests {
         let canonical = target - current; // positive, half cpr
         let issued = flip_slew_dec_delta(canonical, current, cpr, true);
         assert_eq!(issued, canonical, "natural CW direction is safe");
-        assert!(path_crosses_pole(current, issued, quarter, cpr));
-        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+        assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5499,8 +5493,8 @@ mod tests {
         // Lands at the same modular destination.
         assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
         // Path crosses NCP, not SCP.
-        assert!(path_crosses_pole(current, issued, quarter, cpr));
-        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+        assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5517,8 +5511,8 @@ mod tests {
         let issued = flip_slew_dec_delta(canonical, current, cpr, true);
         assert!(issued < 0, "must force CCW long way");
         assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
-        assert!(path_crosses_pole(current, issued, quarter, cpr));
-        assert!(!path_crosses_pole(current, issued, -quarter, cpr));
+        assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
     }
 
     #[test]
@@ -5539,7 +5533,7 @@ mod tests {
         );
         // For south, the unsafe pole is +cpr/4 (NCP). Verify path
         // doesn't cross it.
-        assert!(!path_crosses_pole(current, issued, quarter, cpr));
+        assert!(!canonical_path_crosses_pole(current, issued, quarter, cpr));
     }
 
     #[test]
@@ -5553,36 +5547,28 @@ mod tests {
     }
 
     #[test]
-    fn flip_slew_dec_delta_folds_raw_current_outside_canonical_band() {
-        // `current_ticks` is the raw encoder counter. After through-wrap
-        // flip slews (or via power-up encoder noise / manual encoder
-        // writes), raw can sit outside `[-cpr/2, +cpr/2)`. The
-        // pre-flip/post-flip half classification only makes sense on the
-        // folded position; without folding, a raw in (3·cpr/4, 5·cpr/4)
-        // whose folded value is in (-cpr/4, +cpr/4) would be misread as
-        // post-flip and the helper would pick the wrong safe direction.
+    fn flip_slew_dec_delta_handles_raw_current_outside_canonical_band() {
+        // `current_ticks` is the raw encoder counter, which can sit
+        // outside `[-cpr/2, +cpr/2)` after through-wrap flip slews,
+        // manual `:E` writes, or power-up encoder noise. The path-aware
+        // check operates on the continuous sweep `[raw, raw + canonical]`
+        // and the modular-replica pole scan, so raw outside the canonical
+        // band is handled naturally — no fold needed. Sanity-check that
+        // a small positive canonical from a raw in the positive
+        // disagreement zone (which a prior heuristic-based version would
+        // have misread as post-flip and routed the long way through the
+        // below-horizon pole) passes through unchanged.
         let cpr = GTI_CPR;
         let cpr_i = cpr as i32;
-        let raw = cpr_i * 7 / 8; // 7·cpr/8 — in the positive disagreement zone
-        assert!(
-            raw.abs() > cpr_i / 4,
-            "raw must look post-flip without folding"
-        );
-        let folded = fold_delta_to_canonical(raw, cpr);
-        assert!(
-            folded.abs() <= cpr_i / 4,
-            "folded must be in the pre-flip half"
-        );
-        // Folded says pre-flip → safe direction (N) is positive; the
-        // canonical positive delta already matches, so the helper must
-        // return it unchanged. Without the fold, the helper would
-        // misclassify as post-flip and force the long way around
-        // (canonical − cpr ≈ −3.5M, a near-full-revolution).
+        let raw = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
         let canonical = 100_000_i32;
+        // Sweep [+3,175,200, +3,275,200]. The unsafe pole at -cpr/4
+        // (= -907,200) has modular replicas at -cpr/4, +3·cpr/4, etc.;
+        // none fall inside the sweep, so canonical is preserved.
         let issued = flip_slew_dec_delta(canonical, raw, cpr, true);
         assert_eq!(
             issued, canonical,
-            "raw in disagreement zone must fold to pre-flip half before classifying"
+            "raw outside canonical band must still produce the safe canonical path"
         );
     }
 
