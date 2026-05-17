@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::config::MountConfig;
 use crate::coordinates::{
@@ -50,7 +50,7 @@ const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
 /// thousands of ticks away from zero, so this tolerance comfortably
 /// distinguishes "just powered up" from "the operator already moved
 /// the mount this session".
-const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 100;
+const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 10;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
@@ -428,6 +428,12 @@ impl MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let snap = self.transport.snapshot().await;
+        info!(
+            pre_seed_ra_ticks = snap.ra.position_ticks,
+            pre_seed_dec_ticks = snap.dec.position_ticks,
+            home_pose = ?home_pose,
+            "pre-seed encoder snapshot at connect"
+        );
         if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
             || snap.dec.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
         {
@@ -459,10 +465,10 @@ impl MountDevice {
             .await
             .map_err(Self::ascom)?;
         self.transport.seed_dec_position(dec_ticks).await;
-        debug!(
+        info!(
+            seeded_ra_ticks = ra_ticks,
+            seeded_dec_ticks = dec_ticks,
             home_pose = ?home_pose,
-            ra_ticks,
-            dec_ticks,
             "seeded firmware encoder for home_pose"
         );
         Ok(())
@@ -4599,6 +4605,33 @@ mod tests {
         // the firmware's reported 50,000 (not -907,200).
         let s = d.state.read().await;
         assert_eq!(s.park_ra_ticks, Some(50_000));
+        assert_eq!(s.park_dec_ticks, Some(0));
+    }
+
+    #[tokio::test]
+    async fn home_pose_seed_skips_just_above_fresh_power_up_tolerance() {
+        // Pins the tight 10-tick fresh-power-up floor. A reading of 50
+        // ticks (~18″ at the GTi's CPR) is well above the single-tick
+        // firmware artifact and indicates the operator has already moved
+        // the mount; the seed must skip so the slewed-to position is not
+        // clobbered. If the tolerance is ever loosened back toward the
+        // historical 100-tick floor, this test catches it.
+        use crate::transport::mock::CapturingMockFactory;
+        let factory = CapturingMockFactory::new();
+        {
+            let mut state = factory.mock.state.lock().await;
+            state.ra.position_ticks = 50;
+        }
+        let mut cfg = Config::default();
+        cfg.mount.binding_zone_min_hours = 24.0;
+        cfg.mount.binding_zone_max_hours = 0.0;
+        cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+        cfg.mount.site_latitude_deg = 32.7157;
+        let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+        let d = MountDevice::new(cfg.mount, manager);
+        d.set_connected(true).await.unwrap();
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, Some(50));
         assert_eq!(s.park_dec_ticks, Some(0));
     }
 
