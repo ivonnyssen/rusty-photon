@@ -269,15 +269,21 @@ Removes:
 
 ### 3e — Status Switch device
 
-Implementation in `switch_device.rs`:
+Already in place on the PR #2 scaffold (added across the round-2 / round-3 review fixes), and **must be kept** when filling in the rest:
 
-* `FalconStatusSwitchDevice::new(config, serial_manager)`.
-* `Device` trait — same shape as Rotator's.
+* `FalconStatusSwitchDevice::new(config, serial_manager)` — constructor.
+* `Device` trait — full implementation (mirrors Rotator's shape).
+* `ensure_connected!` macro at the top of `switch_device.rs` — runs as the first line of every device-bound method, **before** id validation, returning `NOT_CONNECTED` (1031) if `connected() == false`. Mirrors `ppba-driver`'s precedent (see `services/ppba-driver/src/switch_device.rs:22-29`).
+* `validate_id(id)` helper — rejects ids outside `0..2` with `INVALID_VALUE`.
 * `Switch::max_switch → Ok(2)`.
-* `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`, others → `InvalidValue`.
+* `Switch::can_write(_) → Ok(false)` (with `ensure_connected!` + `validate_id`).
+* `Switch::state_change_complete(_) → Ok(true)` — sync device, no async to wait for (matches `ppba-driver` precedent, **not** the prior `NOT_IMPLEMENTED` sketch).
+* `Switch::set_switch / set_switch_value / set_switch_name → INVALID_OPERATION` — no writable switches; names are fixed in config. All three carry `ensure_connected!` + `validate_id`.
+
+3e's actual job is to fill in the seven currently-`unimplemented!()` getter methods and thread them through the **existing** `ensure_connected!` + `validate_id` helpers (in that order — guard first, validation second):
+
+* `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`.
 * `Switch::get_switch_description(0) → Ok("Raw ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`.
-* `Switch::can_write(_) → Ok(false)`.
-* `Switch::set_switch / set_switch_value / set_switch_name → INVALID_OPERATION` (no writable switches; names are fixed in config).
 * `Switch::min_switch_value(0) → 0.0`, `(1) → 0.0`.
 * `Switch::max_switch_value(0) → 1023.0`, `(1) → 1.0`.
 * `Switch::switch_step(0) → 1.0`, `(1) → 1.0`.
@@ -285,7 +291,8 @@ Implementation in `switch_device.rs`:
 * `Switch::get_switch_value(1)` — `serial_manager.read_status().await.map(|s| if s.limit_detect { 1.0 } else { 0.0 })`.
 * `Switch::get_switch(0)` — `get_switch_value(0).await.map(|v| v > 0.0)`.
 * `Switch::get_switch(1)` — `get_switch_value(1).await.map(|v| v > 0.5)`.
-* `Switch::can_async / set_async_value / state_change_complete / cancel_async` — `NOT_IMPLEMENTED` (Switch V3 async ops are optional for read-only devices).
+
+The Switch V3 async surface (`can_async`, `set_async`, `set_async_value`, `cancel_async`) is intentionally left to the trait defaults (which return `NOT_IMPLEMENTED`) — only `state_change_complete` is explicitly overridden, because ConformU expects it to answer for sync devices.
 
 BDD step bodies in `status_switch_steps.rs`:
 
@@ -293,7 +300,7 @@ BDD step bodies in `status_switch_steps.rs`:
 
 Tests:
 
-* `switch_device::tests` — metadata strings, range bounds, write-rejection.
+* `switch_device::tests` — extend the existing `validate_id_*` and `*_returns_not_connected_when_disconnected` tests (already in place from PR #2) with per-id metadata-string and range-bound tests for the seven getters once they're implemented. The connection-guard tests do not need to be re-written.
 
 Removes:
 

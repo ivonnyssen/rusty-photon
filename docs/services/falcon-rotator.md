@@ -316,6 +316,7 @@ services/pa-falcon-rotator/
 │   │   ├── reverse.feature
 │   │   ├── sync_offset.feature
 │   │   └── status_switch.feature
+│   ├── property_tests.rs         # proptest round-trip on FalconStatus wire format
 │   └── conformu_integration.rs   # ASCOM Rotator + Switch conformance (#[ignore])
 └── examples/
     ├── config-linux.json
