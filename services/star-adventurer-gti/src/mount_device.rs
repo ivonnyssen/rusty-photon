@@ -903,7 +903,12 @@ fn flip_slew_dec_delta(
     }
     let cpr_i = cpr_dec as i32;
     let quarter = cpr_i / 4;
-    let in_pre_flip = current_ticks.abs() <= quarter;
+    // Fold raw current into [-cpr/2, +cpr/2) before classifying — raw
+    // can drift outside the canonical band after long-way flip slews
+    // or power-up encoder noise, and the half-classification only makes
+    // sense for the folded position.
+    let current_folded = fold_delta_to_canonical(current_ticks, cpr_dec);
+    let in_pre_flip = current_folded.abs() <= quarter;
     let safe_direction_positive = if northern { in_pre_flip } else { !in_pre_flip };
     let canonical_positive = canonical_delta > 0;
     if canonical_positive == safe_direction_positive {
@@ -5618,6 +5623,40 @@ mod tests {
     #[test]
     fn flip_slew_dec_delta_zero_canonical_returns_zero() {
         assert_eq!(flip_slew_dec_delta(0, 0, GTI_CPR, true), 0);
+    }
+
+    #[test]
+    fn flip_slew_dec_delta_folds_raw_current_outside_canonical_band() {
+        // `current_ticks` is the raw encoder counter. After through-wrap
+        // flip slews (or via power-up encoder noise / manual encoder
+        // writes), raw can sit outside `[-cpr/2, +cpr/2)`. The
+        // pre-flip/post-flip half classification only makes sense on the
+        // folded position; without folding, a raw in (3·cpr/4, 5·cpr/4)
+        // whose folded value is in (-cpr/4, +cpr/4) would be misread as
+        // post-flip and the helper would pick the wrong safe direction.
+        let cpr = GTI_CPR;
+        let cpr_i = cpr as i32;
+        let raw = cpr_i * 7 / 8; // 7·cpr/8 — in the positive disagreement zone
+        assert!(
+            raw.abs() > cpr_i / 4,
+            "raw must look post-flip without folding"
+        );
+        let folded = fold_delta_to_canonical(raw, cpr);
+        assert!(
+            folded.abs() <= cpr_i / 4,
+            "folded must be in the pre-flip half"
+        );
+        // Folded says pre-flip → safe direction (N) is positive; the
+        // canonical positive delta already matches, so the helper must
+        // return it unchanged. Without the fold, the helper would
+        // misclassify as post-flip and force the long way around
+        // (canonical − cpr ≈ −3.5M, a near-full-revolution).
+        let canonical = 100_000_i32;
+        let issued = flip_slew_dec_delta(canonical, raw, cpr, true);
+        assert_eq!(
+            issued, canonical,
+            "raw in disagreement zone must fold to pre-flip half before classifying"
+        );
     }
 
     // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
