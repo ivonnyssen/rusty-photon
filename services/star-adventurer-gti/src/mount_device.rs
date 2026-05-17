@@ -26,7 +26,7 @@ use tracing::debug;
 
 use crate::config::MountConfig;
 use crate::coordinates::{
-    dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
+    dec_degrees_to_ticks, encoder_to_celestial, fold_delta_to_canonical, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
     ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
     side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
@@ -759,33 +759,6 @@ async fn watcher_should_abort(
     transport: &TransportManager,
 ) -> bool {
     !state.read().await.slew_in_progress || !transport.is_available()
-}
-
-/// Fold an encoder-tick delta into the shortest equivalent path on a
-/// modular axis of period `cpr`.
-///
-/// The Sky-Watcher firmware's encoder counter is wider than the
-/// physical axis's logical period (cpr): a single revolution is `cpr`
-/// ticks, but the counter can run from `−2²³` to `+2²³ − 1` before
-/// the codec's 24-bit field wraps. A through-wrap meridian-flip slew
-/// can therefore leave the encoder counter outside the canonical
-/// `[−cpr/2, +cpr/2)` band (e.g. `−1.89M` for a flip that landed
-/// physically at `+11.5 h`, modular `+1.74M`). Without folding, the
-/// next slew's `target_ticks − current_ticks` would order a full
-/// extra revolution. This helper folds the raw delta to the
-/// shortest-path equivalent in `[−cpr/2, +cpr/2)`.
-fn fold_delta_to_canonical(delta: i32, cpr: u32) -> i32 {
-    if cpr == 0 {
-        return delta;
-    }
-    let cpr_i = cpr as i32;
-    let half_cpr = cpr_i / 2;
-    let modular = delta.rem_euclid(cpr_i);
-    if modular >= half_cpr {
-        modular - cpr_i
-    } else {
-        modular
-    }
 }
 
 /// Force a flip slew's RA delta to keep the polar-axis sweep out of
@@ -5264,43 +5237,6 @@ mod tests {
     const GTI_BINDING_ZONE: (f64, f64) = (6.95, 11.05);
 
     #[test]
-    fn fold_delta_to_canonical_passes_through_small_deltas() {
-        assert_eq!(fold_delta_to_canonical(0, GTI_CPR), 0);
-        assert_eq!(fold_delta_to_canonical(1, GTI_CPR), 1);
-        assert_eq!(fold_delta_to_canonical(-1, GTI_CPR), -1);
-        assert_eq!(fold_delta_to_canonical(100_000, GTI_CPR), 100_000);
-        assert_eq!(fold_delta_to_canonical(-100_000, GTI_CPR), -100_000);
-    }
-
-    #[test]
-    fn fold_delta_to_canonical_collapses_long_way_to_short_way() {
-        let half = GTI_CPR as i32 / 2;
-        // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
-        // shorter path on the modular axis).
-        let folded = fold_delta_to_canonical(half + 100, GTI_CPR);
-        assert_eq!(folded, -half + 100);
-        // Symmetric for the negative direction.
-        let folded = fold_delta_to_canonical(-half - 100, GTI_CPR);
-        assert_eq!(folded, half - 100);
-    }
-
-    #[test]
-    fn fold_delta_to_canonical_recovers_from_through_wrap_encoder() {
-        // After a through-wrap flip slew, the encoder may have landed
-        // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
-        // pickup that computes `target_canonical (+1,738,800) −
-        // current_raw (−1,890,000) = +3,628,800` would order a full
-        // revolution; folding collapses it to the (near-)zero residual
-        // it should be.
-        let target_canonical = 1_738_800_i32;
-        let current_raw = -1_890_000_i32;
-        let raw_delta = target_canonical - current_raw;
-        // raw_delta ≈ cpr. Folded should be small.
-        let folded = fold_delta_to_canonical(raw_delta, GTI_CPR);
-        assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
-    }
-
-    #[test]
     fn flip_slew_ra_delta_forward_flip_from_pre_flip_zero_uses_natural_ccw() {
         // Forward flip starting at encoder ≈ 0 (mech_HA ≈ 0, pre-flip
         // pierWest at meridian). Target = −cpr/2 (post-flip wrap).
@@ -5367,15 +5303,6 @@ mod tests {
         let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
         assert!(issued > 0, "post-flip wrap → safe arc must use CW");
         assert_eq!(issued, canonical, "canonical CW is already safe here");
-    }
-
-    #[test]
-    fn fold_delta_to_canonical_handles_zero_cpr_defensively() {
-        // cpr = 0 is the degenerate "parameter cache not populated"
-        // case. Callers normally short-circuit on NOT_CONNECTED
-        // before reaching this helper; pass-through is the defensive
-        // fallback so a logic bug there can't divide by zero here.
-        assert_eq!(fold_delta_to_canonical(12_345, 0), 12_345);
     }
 
     #[test]
