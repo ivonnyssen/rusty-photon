@@ -169,7 +169,7 @@ pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> Pie
     // position. Without folding, a raw in `(3·cpr/4, 5·cpr/4)` whose
     // folded value lies in `(-cpr/4, +cpr/4)` would be misread as
     // post-flip and the East/West label would invert.
-    let folded = fold_delta_to_canonical(dec_ticks, cpr_dec);
+    let folded = fold_to_canonical_band(dec_ticks, cpr_dec);
     // Past-the-pole detection: |Dec encoder| > 90° means the mount
     // has rotated the Dec axis beyond either celestial pole — the
     // post-meridian-flip / cross-axis-rotated-180° state. The
@@ -533,7 +533,7 @@ fn fold_to_signed(value: f64, period: f64) -> f64 {
 /// and the [`side_of_pier`] half-classification would misread the
 /// physical position. This helper collapses the raw value to its
 /// canonical-band equivalent.
-pub fn fold_delta_to_canonical(value: i32, cpr: u32) -> i32 {
+pub fn fold_to_canonical_band(value: i32, cpr: u32) -> i32 {
     if cpr == 0 {
         return value;
     }
@@ -727,7 +727,7 @@ mod tests {
         let cpr_i = GTI_CPR as i32;
         let raw_positive_zone = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
         assert!(raw_positive_zone.abs() > cpr_i / 4);
-        let folded = fold_delta_to_canonical(raw_positive_zone, GTI_CPR);
+        let folded = fold_to_canonical_band(raw_positive_zone, GTI_CPR);
         assert!(folded.abs() <= cpr_i / 4, "must fold into pre-flip half");
         assert_eq!(
             side_of_pier(raw_positive_zone, GTI_CPR, 47.6),
@@ -750,28 +750,28 @@ mod tests {
     }
 
     #[test]
-    fn fold_delta_to_canonical_passes_through_small_deltas() {
-        assert_eq!(fold_delta_to_canonical(0, GTI_CPR), 0);
-        assert_eq!(fold_delta_to_canonical(1, GTI_CPR), 1);
-        assert_eq!(fold_delta_to_canonical(-1, GTI_CPR), -1);
-        assert_eq!(fold_delta_to_canonical(100_000, GTI_CPR), 100_000);
-        assert_eq!(fold_delta_to_canonical(-100_000, GTI_CPR), -100_000);
+    fn fold_to_canonical_band_passes_through_small_deltas() {
+        assert_eq!(fold_to_canonical_band(0, GTI_CPR), 0);
+        assert_eq!(fold_to_canonical_band(1, GTI_CPR), 1);
+        assert_eq!(fold_to_canonical_band(-1, GTI_CPR), -1);
+        assert_eq!(fold_to_canonical_band(100_000, GTI_CPR), 100_000);
+        assert_eq!(fold_to_canonical_band(-100_000, GTI_CPR), -100_000);
     }
 
     #[test]
-    fn fold_delta_to_canonical_collapses_long_way_to_short_way() {
+    fn fold_to_canonical_band_collapses_long_way_to_short_way() {
         let half = GTI_CPR as i32 / 2;
         // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
         // shorter path on the modular axis).
-        let folded = fold_delta_to_canonical(half + 100, GTI_CPR);
+        let folded = fold_to_canonical_band(half + 100, GTI_CPR);
         assert_eq!(folded, -half + 100);
         // Symmetric for the negative direction.
-        let folded = fold_delta_to_canonical(-half - 100, GTI_CPR);
+        let folded = fold_to_canonical_band(-half - 100, GTI_CPR);
         assert_eq!(folded, half - 100);
     }
 
     #[test]
-    fn fold_delta_to_canonical_recovers_from_through_wrap_encoder() {
+    fn fold_to_canonical_band_recovers_from_through_wrap_encoder() {
         // After a through-wrap flip slew, the encoder may have landed
         // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
         // pickup that computes `target_canonical (+1,738,800) −
@@ -782,17 +782,17 @@ mod tests {
         let current_raw = -1_890_000_i32;
         let raw_delta = target_canonical - current_raw;
         // raw_delta ≈ cpr. Folded should be small.
-        let folded = fold_delta_to_canonical(raw_delta, GTI_CPR);
+        let folded = fold_to_canonical_band(raw_delta, GTI_CPR);
         assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
     }
 
     #[test]
-    fn fold_delta_to_canonical_handles_zero_cpr_defensively() {
+    fn fold_to_canonical_band_handles_zero_cpr_defensively() {
         // cpr = 0 is the degenerate "parameter cache not populated"
         // case. Callers normally short-circuit on NOT_CONNECTED
         // before reaching this helper; pass-through is the defensive
         // fallback so a logic bug there can't divide by zero here.
-        assert_eq!(fold_delta_to_canonical(12_345, 0), 12_345);
+        assert_eq!(fold_to_canonical_band(12_345, 0), 12_345);
     }
 
     /// Tiny `f64` helper so the half-revolution fold test can be stated

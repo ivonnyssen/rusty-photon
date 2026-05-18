@@ -26,7 +26,7 @@ use tracing::{debug, info};
 
 use crate::config::MountConfig;
 use crate::coordinates::{
-    dec_degrees_to_ticks, encoder_to_celestial, fold_delta_to_canonical, local_sidereal_time_hours,
+    dec_degrees_to_ticks, encoder_to_celestial, fold_to_canonical_band, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, pickup_target_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az,
     ra_ticks_to_mechanical_ha, ra_to_mechanical_ha, select_pier_side_for_target,
     side_of_pier as side_of_pier_calc, sidereal_step_period, target_encoder_flipped,
@@ -497,7 +497,7 @@ impl MountDevice {
     ///      per-side safety envelope.
     ///   2. Atomically latches `slew_in_progress` and the
     ///      target RA/Dec.
-    ///   3. Computes deltas with `fold_delta_to_canonical` (handles a
+    ///   3. Computes deltas with `fold_to_canonical_band` (handles a
     ///      post-through-wrap raw encoder) and applies
     ///      `flip_slew_ra_delta` on the RA axis for flip slews
     ///      (forces CCW direction through the safe negative-mech_HA
@@ -569,7 +569,7 @@ impl MountDevice {
             // through-wrap flip doesn't trigger a full-revolution
             // correction here.
             let ra_delta_canonical =
-                fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+                fold_to_canonical_band(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
             let binding_zone = (
                 self.config.binding_zone_min_hours,
                 self.config.binding_zone_max_hours,
@@ -602,7 +602,7 @@ impl MountDevice {
                 ra_delta_canonical
             };
             let dec_delta_canonical =
-                fold_delta_to_canonical(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+                fold_to_canonical_band(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
             let dec_delta = if is_flip_slew {
                 // Flip slews force the Dec axis to traverse the
                 // visible celestial pole (NCP for north, SCP for
@@ -2440,12 +2440,12 @@ fn spawn_slew_completion_watcher(
                         // re-slew takes the shortest path even if the
                         // current encoder snapshot landed outside
                         // `[−cpr/2, +cpr/2)` after a through-wrap
-                        // flip — see [`fold_delta_to_canonical`].
-                        let ra_delta = fold_delta_to_canonical(
+                        // flip — see [`fold_to_canonical_band`].
+                        let ra_delta = fold_to_canonical_band(
                             new_ra_ticks - snap.ra.position_ticks,
                             params.cpr_ra,
                         );
-                        let dec_delta = fold_delta_to_canonical(
+                        let dec_delta = fold_to_canonical_band(
                             new_dec_ticks - snap.dec.position_ticks,
                             params.cpr_dec,
                         );
@@ -5431,7 +5431,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = cpr as i32 / 2;
         let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
-        let canonical = fold_delta_to_canonical(canonical_raw, cpr); // +cpr/4
+        let canonical = fold_to_canonical_band(canonical_raw, cpr); // +cpr/4
         let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert!(issued > 0, "post-flip wrap → safe arc must use CW");
         assert_eq!(issued, canonical, "canonical CW is already safe here");
@@ -5460,7 +5460,7 @@ mod tests {
         // pierEast just east of the saddle-east wrap). The slew planner
         // chose pierWest (target HA -12 outside the flip window), with
         // target encoder near +cpr/2 (mech_HA +11.999, the saddle-east
-        // wrap from the other side). fold_delta_to_canonical produces a
+        // wrap from the other side). fold_to_canonical_band produces a
         // small CCW step (~-3.8k ticks) that physically nudges the RA
         // encoder past the -12 wrap and into +12 folded — the path stays
         // entirely in the safe arc (no positive mech_HA visited). The
@@ -5554,7 +5554,7 @@ mod tests {
         let target_h = 0.9_f64;
         let current = (cur_h * cpr as f64 / 24.0).round() as i32;
         let target = (target_h * cpr as f64 / 24.0).round() as i32;
-        let canonical = fold_delta_to_canonical(target - current, cpr);
+        let canonical = fold_to_canonical_band(target - current, cpr);
         let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert!(
             issued > 0,
@@ -5781,57 +5781,65 @@ mod tests {
     }
 
     #[test]
-    fn canonical_path_crosses_pole_detects_high_index_modular_replica_near_wire_limit() {
-        // The signed-24-bit wire range carries raw encoder values up to
-        // ~±8.4M ticks. For `cpr_dec = 3.6M` (GTi) the relevant modular
-        // replica of the below-horizon pole can sit at `k = +3`
-        // (≈ +9.98M) and the path-aware check must still find it. A
-        // prior hardcoded `k ∈ -2..=2` scan missed this band and
-        // returned `false` for sweeps that genuinely contain a pole
-        // replica — letting the helper route the OTA through the
-        // below-horizon pole.
+    fn canonical_path_crosses_pole_north_detects_k_plus_3_replica_at_positive_wire_boundary() {
+        // Signed-24-bit wire range carries `start` up to ~+8.4M ticks.
+        // For Northern observer the unsafe pole is `-cpr/4 = -907_200`;
+        // its modular replicas sit at `pole + k·cpr` for any integer k.
+        // With `cpr_dec = 3.6M`, a sweep near `+wire/2` reaches the
+        // `k = +3` replica at `-907_200 + 3·3_628_800 = +9_979_200`.
+        // The prior hardcoded `k ∈ -2..=2` scan missed this band; the
+        // div_euclid check finds it.
         let cpr = GTI_CPR;
         let cpr_i = cpr as i32;
-        let pole = -cpr_i / 4; // N: SCP at -cpr/4 = -907,200
-                               // Sweep [+8_300_000, +10_000_000] contains the k=+3 replica
-                               // at -907,200 + 3·3,628,800 = +9,979,200.
-        let start = 8_300_000_i32;
-        let delta = 1_700_000_i32;
+        let pole = -cpr_i / 4; // SCP for N
+        let start = 8_300_000_i32; // near +wire/2 (= +8.39M)
+        let delta = 1_700_000_i32; // sweep end at +10M, containing +9.98M
         assert!(
             canonical_path_crosses_pole(start, delta, pole, cpr),
             "k=+3 replica at +9_979_200 must be detected inside sweep [+8.3M, +10M]"
         );
-        // Drive it through `flip_slew_dec_delta` for the end-to-end
-        // assertion: canonical positive must be flipped to the long-way
-        // negative because the canonical path crosses SCP.
+        // End-to-end: helper recognises canonical crosses, forces the
+        // long way (negative delta), lands at the same modular dest.
         let issued = flip_slew_dec_delta(delta, start, cpr, true);
         assert!(
             issued < 0,
-            "canonical path crosses SCP at wire boundary; must force long way (got {issued})"
+            "canonical sweep crosses SCP at wire boundary; must force long way (got {issued})"
         );
         assert_eq!(
             (issued - delta).rem_euclid(cpr_i),
             0,
             "long way must land at the same modular destination"
         );
-        // Mirror replica on the negative side: sweep [-10M, -8.3M]
-        // contains the k=-3 replica at -907_200 - 3·3_628_800 =
-        // -11,793,600... no wait, k=-3 puts it at -11.79M. That's
-        // outside the sweep. The relevant southern-mirror replica
-        // when `pole = -cpr/4` and we're at the negative wire boundary
-        // is k=-2: -907_200 - 2·3_628_800 = -8,164,800, which IS in
-        // [-10M, -8.3M] — well within the old `-2..=2` window. The
-        // negative wire boundary doesn't suffer the same k=±3 miss
-        // because the pole is at -cpr/4, not +cpr/4, so the asymmetry
-        // shifts the danger band onto the positive side only for
-        // northern observers. Southern observers (pole at +cpr/4) get
-        // the mirror — exercise that too.
-        let pole_south = cpr_i / 4;
-        // Sweep [-10M, -8.3M] contains the k=-3 replica at
-        // +907_200 - 3·3_628_800 = -9_979_200.
+    }
+
+    #[test]
+    fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_boundary() {
+        // Mirror of the Northern case. For Southern observer the unsafe
+        // pole is `+cpr/4 = +907_200`; the modular replicas sit at
+        // `pole + k·cpr`. A sweep near `-wire/2` reaches the `k = -3`
+        // replica at `+907_200 + (-3)·3_628_800 = -9_979_200`. The
+        // same div_euclid check (the helper has no hemisphere-specific
+        // branches) must find it.
+        let cpr = GTI_CPR;
+        let cpr_i = cpr as i32;
+        let pole = cpr_i / 4; // NCP, unsafe for S
+        let start = -10_000_000_i32; // near -wire/2
+        let delta = 1_700_000_i32; // sweep end at -8.3M, containing -9.98M
         assert!(
-            canonical_path_crosses_pole(-10_000_000, 1_700_000, pole_south, cpr),
-            "k=-3 replica at -9_979_200 must be detected for southern pole"
+            canonical_path_crosses_pole(start, delta, pole, cpr),
+            "k=-3 replica at -9_979_200 must be detected inside sweep [-10M, -8.3M]"
+        );
+        // End-to-end through `flip_slew_dec_delta` with `northern=false`
+        // — the test the original combined version was missing.
+        let issued = flip_slew_dec_delta(delta, start, cpr, false);
+        assert!(
+            issued < 0,
+            "canonical sweep crosses NCP at wire boundary; must force long way (got {issued})"
+        );
+        assert_eq!(
+            (issued - delta).rem_euclid(cpr_i),
+            0,
+            "long way must land at the same modular destination"
         );
     }
 
