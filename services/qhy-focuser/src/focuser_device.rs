@@ -78,7 +78,16 @@ impl Device for QhyFocuserDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.connected().await? == connected {
+        // Hold the write lock across the whole check-and-modify so two
+        // concurrent `Connected=true` requests for this device don't both
+        // observe `requested_connection == false`, both call
+        // `SerialManager::connect` (incrementing the shared refcount twice),
+        // and then both set the single per-device flag — see issue #250 and
+        // the matching fix in PR #241 (pa-falcon-rotator commit 8cd6e16).
+        let mut requested = self.requested_connection.write().await;
+        let serial_ok = self.serial_manager.is_available();
+        let already = *requested && serial_ok;
+        if already == connected {
             return Ok(());
         }
         match connected {
@@ -87,11 +96,11 @@ impl Device for QhyFocuserDevice {
                     .connect()
                     .await
                     .map_err(Self::to_ascom_error)?;
-                *self.requested_connection.write().await = true;
+                *requested = true;
                 debug!("Focuser device connected");
             }
             false => {
-                *self.requested_connection.write().await = false;
+                *requested = false;
                 self.serial_manager.disconnect().await;
                 debug!("Focuser device disconnected");
             }
