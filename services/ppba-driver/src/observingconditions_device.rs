@@ -88,7 +88,17 @@ impl Device for PpbaObservingConditionsDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.connected().await? == connected {
+        // Hold the write lock for the whole check-and-modify so two concurrent
+        // `Connected=true` requests against this device can't both observe
+        // `requested_connection == false`, both call `SerialManager::connect`
+        // (incrementing the shared refcount twice), and then both set the
+        // single per-device flag. Without the guard, a single later
+        // `set_connected(false)` would decrement the refcount only once and
+        // leave the port open — see issue #251.
+        let mut requested = self.requested_connection.write().await;
+        let serial_ok = self.serial_manager.is_available();
+        let already = *requested && serial_ok;
+        if already == connected {
             return Ok(());
         }
         match connected {
@@ -97,11 +107,11 @@ impl Device for PpbaObservingConditionsDevice {
                     .connect()
                     .await
                     .map_err(Self::to_ascom_error)?;
-                *self.requested_connection.write().await = true;
+                *requested = true;
                 debug!("ObservingConditions device connected");
             }
             false => {
-                *self.requested_connection.write().await = false;
+                *requested = false;
                 self.serial_manager.disconnect().await;
                 debug!("ObservingConditions device disconnected");
             }
