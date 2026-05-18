@@ -8,7 +8,9 @@
 //! order) — both of which the feature files exercise.
 //!
 //! Devices are driven via Alpaca HTTP through the in-process client, so the
-//! real authentication / serialisation / dispatch path is still exercised.
+//! real serialisation / dispatch path is still exercised. The harness sets
+//! `config.server.auth = None`, so authentication is **not** covered here —
+//! cover that separately if it becomes a regression risk.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

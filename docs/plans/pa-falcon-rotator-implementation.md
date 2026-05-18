@@ -223,8 +223,10 @@ step bodies direct access to the wire command log and lets them seed mock
 state (mechanical position, voltage, motor_reverse, limit_detect) without
 plumbing those through Alpaca's API. The same client-side proxies
 (`Arc<dyn Rotator>` / `Arc<dyn Switch>` from `AlpacaClient::get_devices`)
-still drive the Alpaca HTTP surface, so the dispatch / serialisation /
-auth path is exercised end-to-end.
+still drive the Alpaca HTTP surface, so the dispatch / serialisation
+path is exercised end-to-end. The harness sets `config.server.auth =
+None`, so the authentication layer is **not** covered by BDD; add a
+dedicated auth-enabled scenario if that becomes a regression risk.
 
 The pivot required:
 
