@@ -316,7 +316,7 @@ Already in place on the PR #2 scaffold (added across the round-2 / round-3 revie
 3e's actual job is to fill in the seven currently-`unimplemented!()` getter methods and thread them through the **existing** `ensure_connected!` + `validate_id` helpers (in that order — guard first, validation second):
 
 * `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`.
-* `Switch::get_switch_description(0) → Ok("Raw ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`.
+* `Switch::get_switch_description(0) → Ok("Raw input-voltage ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`. The word "voltage" in the id-0 description is load-bearing: `status_switch.feature` asserts `Then the switch description should mention "voltage"` (lowercase, substring) so the description must surface "voltage" rather than only the wire-command name `VS`.
 * `Switch::min_switch_value(0) → 0.0`, `(1) → 0.0`.
 * `Switch::max_switch_value(0) → 1023.0`, `(1) → 1.0`.
 * `Switch::switch_step(0) → 1.0`, `(1) → 1.0`.
@@ -333,7 +333,7 @@ BDD step bodies in `status_switch_steps.rs`:
 
 Tests:
 
-* `switch_device::tests` — extend the existing `validate_id_*` and `*_returns_not_connected_when_disconnected` tests (already in place from PR #2) with per-id metadata-string and range-bound tests for the seven getters once they're implemented. The connection-guard tests do not need to be re-written.
+* `switch_device::tests` keeps the existing `validate_id_*` and `*_returns_not_connected_when_disconnected` tests (they continue to drive the `NoopFactory` path so they need no MockSerialPortFactory state). The connected-device coverage for the seven getters lands as a sibling `#[cfg(all(test, feature = "mock"))] mod mock_tests` module — mirroring `serial_manager::mock_tests` — because the existing `tests` module's `disconnected_device()` helper uses `NoopFactory`, whose `open` panics, so it cannot drive `set_connected(true)` for the new per-id metadata / range / wire-command-issued / `INVALID_OPERATION`-when-connected assertions.
 
 Removes:
 
