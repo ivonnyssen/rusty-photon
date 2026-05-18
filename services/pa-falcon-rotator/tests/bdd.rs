@@ -32,11 +32,13 @@ async fn main() {
                 }
             })
         })
-        // Skip every scenario tagged `@wip` so a clean Phase 2 commit can
-        // ride on `main` while Phase 3 fills the implementations in. We use
-        // `filter_run_and_exit` (NOT the bare variant) per docs/skills/testing.md
-        // §2.7 — without `_and_exit` the binary returns 0 even on failures and
-        // CI silently passes on broken scenarios (see issue #171).
+        // Skip scenarios tagged `@wip` so an in-flight scenario can ride
+        // on the branch without breaking the green-suite invariant; the tag
+        // gets stripped in the commit that turns the scenario green. We use
+        // `filter_run_and_exit` (NOT the bare `filter_run`) per
+        // docs/skills/testing.md §2.7 — without `_and_exit` the binary
+        // returns 0 even on scenario failures and CI silently passes on
+        // broken scenarios (see issue #171).
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");

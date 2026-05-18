@@ -75,6 +75,25 @@ impl Command {
             Command::SetReverse(on) => format!("FN:{}", if *on { 1 } else { 0 }),
         }
     }
+
+    /// Reject command instances that would serialise to an invalid wire
+    /// payload — currently just non-finite `MoveDeg(f64)`, which would
+    /// emit `MD:NaN` / `MD:inf` / `MD:-inf`.
+    ///
+    /// `SerialManager::move_mechanical` already validates before constructing
+    /// the variant, so this is defence-in-depth for callers that route
+    /// through the public `SerialManager::send_command` entry point with a
+    /// hand-built `Command`. `to_command_string` stays infallible.
+    pub fn validate(&self) -> Result<()> {
+        if let Command::MoveDeg(deg) = self {
+            if !deg.is_finite() {
+                return Err(FalconRotatorError::InvalidValue(format!(
+                    "MoveDeg target must be finite, got {deg}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Parsed Falcon `FA` full-status response.
@@ -318,6 +337,46 @@ mod tests {
     #[test]
     fn command_is_running_serialises_to_fr() {
         assert_eq!(Command::IsRunning.to_command_string(), "FR");
+    }
+
+    // ---- Command::validate -----------------------------------------------
+
+    #[test]
+    fn validate_accepts_finite_move_deg() {
+        Command::MoveDeg(180.0).validate().unwrap();
+        Command::MoveDeg(0.0).validate().unwrap();
+        Command::MoveDeg(-90.0).validate().unwrap();
+        Command::MoveDeg(359.99).validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_move_deg() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = Command::MoveDeg(bad).validate().unwrap_err();
+            assert!(
+                matches!(err, FalconRotatorError::InvalidValue(_)),
+                "expected InvalidValue for {bad}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_passthrough_for_non_move_deg_variants() {
+        // Every other variant is structurally infallible — validate() must
+        // accept them without inspecting payload shape.
+        Command::Ping.validate().unwrap();
+        Command::FullStatus.validate().unwrap();
+        Command::FirmwareVersion.validate().unwrap();
+        Command::PositionDeg.validate().unwrap();
+        Command::PositionSteps.validate().unwrap();
+        Command::Voltage.validate().unwrap();
+        Command::DerotationOff.validate().unwrap();
+        Command::DerotationRate(50).validate().unwrap();
+        Command::MoveSteps(31_192).validate().unwrap();
+        Command::Halt.validate().unwrap();
+        Command::IsRunning.validate().unwrap();
+        Command::SetReverse(true).validate().unwrap();
+        Command::SetReverse(false).validate().unwrap();
     }
 
     #[test]

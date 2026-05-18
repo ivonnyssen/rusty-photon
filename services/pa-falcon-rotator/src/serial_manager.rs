@@ -191,6 +191,12 @@ impl SerialManager {
         if !self.is_available() {
             return Err(FalconRotatorError::NotConnected);
         }
+        // Defence-in-depth: reject Commands whose payload would serialise
+        // to an invalid wire string. The intra-crate `move_mechanical`
+        // path validates before constructing `Command::MoveDeg`, so this
+        // only fires for callers that hand-build a Command and route
+        // through this public entry point.
+        command.validate()?;
         self.send_command_internal(&command).await
     }
 
@@ -696,6 +702,33 @@ mod mock_tests {
         let manager = manager_with(Arc::new(MockSerialPortFactory::default()));
         let err = manager.send_command(Command::Ping).await.unwrap_err();
         assert!(matches!(err, FalconRotatorError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn test_send_command_rejects_non_finite_move_deg() {
+        // Defence-in-depth at the public `send_command` boundary: a
+        // hand-built `Command::MoveDeg(NaN)` would otherwise serialise to
+        // `MD:NaN\n` on the wire. `send_command` must refuse before the
+        // writer sees it.
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = manager
+                .send_command(Command::MoveDeg(bad))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, FalconRotatorError::InvalidValue(_)),
+                "expected InvalidValue for {bad}, got {err:?}"
+            );
+        }
+        assert!(
+            factory.command_log().await.is_empty(),
+            "no command should reach the wire for non-finite targets"
+        );
     }
 
     #[tokio::test]

@@ -115,12 +115,17 @@ impl FalconRotatorWorld {
             }
         });
 
-        let http_addr = SocketAddr::from(([127, 0, 0, 1], local_addr.port()));
-        let (rotator, status_switch) = acquire_devices(http_addr).await;
-
+        // Park the spawned task on `self` immediately so a panic inside
+        // `acquire_devices` (it currently `panic!`s after a 5s timeout) does
+        // not drop the `JoinHandle` and detach the in-process server. The
+        // cucumber `after` hook calls `World::shutdown`, which aborts the
+        // handle — but only if it's visible on the world.
         self.mock = Some(mock);
         self.server_handle = Some(server_handle);
+        let http_addr = SocketAddr::from(([127, 0, 0, 1], local_addr.port()));
         self.server_addr = Some(http_addr);
+
+        let (rotator, status_switch) = acquire_devices(http_addr).await;
         self.rotator = Some(rotator);
         self.status_switch = Some(status_switch);
     }
