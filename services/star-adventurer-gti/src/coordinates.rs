@@ -163,12 +163,19 @@ pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> Pie
         return PierSide::Unknown;
     }
     let quarter = (cpr_dec / 4) as i64;
+    // Fold the raw counter into the canonical band before classifying:
+    // raw can sit outside `[-cpr/2, +cpr/2)` after through-wrap flip
+    // slews, and the half-classification only makes sense on the folded
+    // position. Without folding, a raw in `(3·cpr/4, 5·cpr/4)` whose
+    // folded value lies in `(-cpr/4, +cpr/4)` would be misread as
+    // post-flip and the East/West label would invert.
+    let folded = fold_to_canonical_band(dec_ticks, cpr_dec);
     // Past-the-pole detection: |Dec encoder| > 90° means the mount
     // has rotated the Dec axis beyond either celestial pole — the
     // post-meridian-flip / cross-axis-rotated-180° state. The
     // boundary at exactly ±90° is *not* East: the mount can sit at
     // the pole via normal-pointing slews without a flip.
-    let east_in_north = (dec_ticks as i64).abs() > quarter;
+    let east_in_north = (folded as i64).abs() > quarter;
     let northern = site_latitude_deg >= 0.0;
     let east = if northern {
         east_in_north
@@ -512,6 +519,34 @@ fn fold_to_signed(value: f64, period: f64) -> f64 {
     }
 }
 
+/// Fold an encoder-tick value (position or delta) into the shortest
+/// equivalent representation in `[-cpr/2, +cpr/2)`.
+///
+/// The Sky-Watcher firmware's encoder counter is wider than the physical
+/// axis's logical period (cpr): a single revolution is `cpr` ticks, but
+/// the counter can run from `−2²³` to `+2²³ − 1` before the codec's
+/// 24-bit field wraps. A through-wrap meridian-flip slew can therefore
+/// leave the encoder counter outside the canonical `[−cpr/2, +cpr/2)`
+/// band (e.g. `−1.89M` for a flip that landed physically at `+11.5 h`,
+/// modular `+1.74M`). Without folding, the next slew's
+/// `target_ticks − current_ticks` would order a full extra revolution,
+/// and the [`side_of_pier`] half-classification would misread the
+/// physical position. This helper collapses the raw value to its
+/// canonical-band equivalent.
+pub fn fold_to_canonical_band(value: i32, cpr: u32) -> i32 {
+    if cpr == 0 {
+        return value;
+    }
+    let cpr_i = cpr as i32;
+    let half_cpr = cpr_i / 2;
+    let modular = value.rem_euclid(cpr_i);
+    if modular >= half_cpr {
+        modular - cpr_i
+    } else {
+        modular
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -678,6 +713,86 @@ mod tests {
         // the helper still has to handle this defensively to stay a
         // total function.
         assert_eq!(side_of_pier(0, 0, 47.6), PierSide::Unknown);
+    }
+
+    #[test]
+    fn side_of_pier_folds_raw_outside_canonical_band() {
+        // `dec_ticks` is the raw encoder counter — it can drift outside
+        // `[-cpr/2, +cpr/2)` after through-wrap flip slews, manual `:E`
+        // writes, or power-up encoder noise. The East/West label must
+        // reflect the *physical* dec-axis position (folded), not the raw
+        // counter value. Raw in `(3·cpr/4, 5·cpr/4)` folds to within
+        // `(-cpr/4, +cpr/4)` — i.e. pre-flip → pierWest for a Northern
+        // observer.
+        let cpr_i = GTI_CPR as i32;
+        let raw_positive_zone = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
+        assert!(raw_positive_zone.abs() > cpr_i / 4);
+        let folded = fold_to_canonical_band(raw_positive_zone, GTI_CPR);
+        assert!(folded.abs() <= cpr_i / 4, "must fold into pre-flip half");
+        assert_eq!(
+            side_of_pier(raw_positive_zone, GTI_CPR, 47.6),
+            PierSide::West,
+            "raw in positive disagreement zone must classify by folded position"
+        );
+        // Mirror on the negative side.
+        let raw_negative_zone = -cpr_i * 7 / 8;
+        assert_eq!(
+            side_of_pier(raw_negative_zone, GTI_CPR, 47.6),
+            PierSide::West,
+            "raw in negative disagreement zone must classify by folded position"
+        );
+        // And the southern hemisphere mirror.
+        assert_eq!(
+            side_of_pier(raw_positive_zone, GTI_CPR, -33.9),
+            PierSide::East,
+            "south: raw in disagreement zone must classify by folded position"
+        );
+    }
+
+    #[test]
+    fn fold_to_canonical_band_passes_through_small_deltas() {
+        assert_eq!(fold_to_canonical_band(0, GTI_CPR), 0);
+        assert_eq!(fold_to_canonical_band(1, GTI_CPR), 1);
+        assert_eq!(fold_to_canonical_band(-1, GTI_CPR), -1);
+        assert_eq!(fold_to_canonical_band(100_000, GTI_CPR), 100_000);
+        assert_eq!(fold_to_canonical_band(-100_000, GTI_CPR), -100_000);
+    }
+
+    #[test]
+    fn fold_to_canonical_band_collapses_long_way_to_short_way() {
+        let half = GTI_CPR as i32 / 2;
+        // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
+        // shorter path on the modular axis).
+        let folded = fold_to_canonical_band(half + 100, GTI_CPR);
+        assert_eq!(folded, -half + 100);
+        // Symmetric for the negative direction.
+        let folded = fold_to_canonical_band(-half - 100, GTI_CPR);
+        assert_eq!(folded, half - 100);
+    }
+
+    #[test]
+    fn fold_to_canonical_band_recovers_from_through_wrap_encoder() {
+        // After a through-wrap flip slew, the encoder may have landed
+        // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
+        // pickup that computes `target_canonical (+1,738,800) −
+        // current_raw (−1,890,000) = +3,628,800` would order a full
+        // revolution; folding collapses it to the (near-)zero residual
+        // it should be.
+        let target_canonical = 1_738_800_i32;
+        let current_raw = -1_890_000_i32;
+        let raw_delta = target_canonical - current_raw;
+        // raw_delta ≈ cpr. Folded should be small.
+        let folded = fold_to_canonical_band(raw_delta, GTI_CPR);
+        assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
+    }
+
+    #[test]
+    fn fold_to_canonical_band_handles_zero_cpr_defensively() {
+        // cpr = 0 is the degenerate "parameter cache not populated"
+        // case. Callers normally short-circuit on NOT_CONNECTED
+        // before reaching this helper; pass-through is the defensive
+        // fallback so a logic bug there can't divide by zero here.
+        assert_eq!(fold_to_canonical_band(12_345, 0), 12_345);
     }
 
     /// Tiny `f64` helper so the half-revolution fold test can be stated
