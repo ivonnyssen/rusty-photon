@@ -1288,7 +1288,40 @@ src/
                            parameter cache (CPR, TMR_Freq, hsr per axis)
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
-  mount_device.rs        — ASCOM Device + Telescope trait impl
+  mount_device.rs        — module entry point: `DriverState`,
+                           `MountDevice` struct + constructors,
+                           `pre_flip_side_for_latitude` helper, public
+                           re-exports of the park-persistence helpers
+  mount_device/
+    device.rs            — `impl Device for MountDevice` (connect /
+                           description / driver info)
+    telescope.rs         — `impl Telescope for MountDevice` (the ASCOM
+                           surface: capability flags, coordinate reads,
+                           slew / sync / park / side-of-pier / pulse-guide)
+    inherent.rs          — inherent methods on `MountDevice` shared
+                           between the trait impls: validation,
+                           preconditions, motion-control wrappers,
+                           post-connect lifecycle hooks
+                           (`seed_home_pose_after_connect`,
+                            `load_park_target_after_connect`),
+                           the slew planner
+                           (`execute_slew_with_explicit_side`),
+                           plus the `validate_guide_rate` helper
+    slew.rs              — wire-level slew helpers (`:K`/`:G`/`:I`/
+                           `:H`/`:M`/`:J` sequence, decelerate-and-wait)
+                           and flip-aware delta-routing geometry
+                           (CW-exclusion-zone path checks,
+                            below-horizon-pole avoidance)
+    watchers.rs          — tokio tasks observing slew / park /
+                           pulse-guide completion in the background:
+                           EQMOD pickup loop, post-slew tracking
+                           restore, settle delay, retrying snapshot
+                           poller
+    park_persistence.rs  — JSON config-file read/write for `SetPark`
+                           (read-as-`Value` + atomic-rename pattern)
+                           and the boot-time writability probe
+    tests.rs             — `#[cfg(test, feature = "mock")]` unit tests
+                           for `MountDevice` and the private helpers
   lib.rs                 — ServerBuilder, module declarations
   main.rs                — CLI entry point
 tests/
