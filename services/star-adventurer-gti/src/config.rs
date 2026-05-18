@@ -91,34 +91,36 @@ pub struct MountConfig {
     #[serde(default)]
     pub tracking_rate: TrackingRateName,
 
-    /// Counterweight-binding zone in encoder `mech_HA` (signed hours,
-    /// folded to `[−12, +12)`). Slews / syncs whose target's
-    /// `mech_HA` on the chosen pier side falls inside
-    /// `[binding_zone_min_hours, binding_zone_max_hours]` are
-    /// rejected with `INVALID_VALUE` and never reach the wire.
+    /// CW exclusion zone in encoder `mech_HA` (signed
+    /// hours, folded to `[−12, +12)`). Slews / syncs whose chosen
+    /// pier side's `mech_HA` falls inside
+    /// `(binding_zone_min_hours, binding_zone_max_hours)` are
+    /// rejected with `INVALID_VALUE` and never reach the wire. Flip
+    /// slews additionally check that the *path swept* by the polar
+    /// axis stays clear of the zone — see [`flip_slew_ra_delta`].
     ///
-    /// On the GTi this is **one-sided and asymmetric**: as the OTA
-    /// tracks westward past meridian on natural pierWest, the
-    /// counterweight swings *up* to a max altitude of +57° (south)
-    /// at `mech_HA = +6`, then comes down toward the east horizon at
-    /// `mech_HA = +12`. The arc where the CW is high enough to bind
-    /// the pier from the east side is `(+6.95, +11.05)`. The
-    /// negative-mech_HA side is the mirror: the CW swings *down*
-    /// below horizon (into the ground beneath the pier), so no
-    /// mirror binding zone exists.
+    /// The physical constraint on the GTi is "the counterweights
+    /// must not rise more than 0.95 h (≈ 14°) above horizontal at
+    /// any point." This carves a one-sided arc on the positive
+    /// `mech_HA` side: the CW shaft crosses horizontal at
+    /// `mech_HA = +0.95`, peaks at `mech_HA = +6`, and crosses
+    /// horizontal again at `mech_HA = +11.05`. The negative-mech_HA
+    /// mirror is *not* a CW exclusion zone — the CW swings below horizontal
+    /// into the ground beneath the pier rather than above the mount
+    /// head.
     ///
-    /// This is **separate from** the `flip_policy.flip_range_hours`
-    /// rule: this check is the hard mechanical-safety floor,
-    /// applied to every slew destination on its chosen pier side
-    /// (natural mech_HA = celestial HA; flipped mech_HA =
-    /// celestial HA + 12 folded). `flip_range_hours` is the
-    /// operational pier-side preference and lives separately.
+    /// Defaults are `(0.95, 11.05)` — the wide-zone reading of the
+    /// "0.95 h above horizontal" rule, hardware-verified at lat
+    /// 32.7°N. The narrower `(6.95, 11.05)` zone the driver used
+    /// previously captured only the *outer* portion (CW descending
+    /// past the pier from above), missing the inner ascent through
+    /// which the OTA contacted the tripod during the 2026-05-17
+    /// session.
     ///
-    /// Defaults are `(6.95, 11.05)` — the hardware-verified GTi
-    /// binding zone. Set `binding_zone_min_hours = binding_zone_max_hours`
-    /// (or any non-overlapping pair) to disable the check entirely;
-    /// only do this for tests or for mounts whose binding zone is
-    /// known to be elsewhere. See the design doc's
+    /// Set `binding_zone_min_hours = binding_zone_max_hours` (or any
+    /// non-overlapping pair) to disable the check entirely; only do
+    /// this for tests or for mounts whose CW exclusion arc is known to
+    /// be elsewhere. See the design doc's
     /// [§Per-pier safety envelopes](../../../docs/services/star-adventurer-gti.md#per-pier-safety-envelopes).
     #[serde(default = "default_binding_zone_min_hours")]
     pub binding_zone_min_hours: f64,
@@ -208,7 +210,7 @@ impl Default for FlipPolicy {
 
 /// Outer bound on `FlipPolicy::flip_range_hours`. Larger values would
 /// push the post-flip mechanical hour angle into the unverified
-/// mirror of the Phase 4 counterweight-up binding zone. See the plan
+/// mirror of the Phase 4 counterweight-up CW exclusion zone. See the plan
 /// `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
 pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
 
@@ -484,7 +486,7 @@ fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
 }
 fn default_binding_zone_min_hours() -> f64 {
-    6.95
+    0.95
 }
 fn default_binding_zone_max_hours() -> f64 {
     11.05
