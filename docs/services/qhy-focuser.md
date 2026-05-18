@@ -151,6 +151,13 @@ cargo run -p qhy-focuser --features mock
 5. Move detection: polling compares position to target, clears `is_moving` when reached
 6. On disconnect: ref-count decremented, port closed when last device disconnects
 
+**Failure recovery.** If open (step 2) or handshake (step 3) fails, the
+ref-count is rolled back and any partial reader/writer is released. A
+subsequent `set_connected(true)` re-enters the first-connection path and
+re-attempts open + handshake from scratch — the device does not wedge on
+a transient failure (unplugged USB during handshake, slow-to-boot
+firmware, bad serial path, etc.).
+
 ## References
 
 - **INDI QHY Focuser Driver** (reference implementation used for protocol reverse-engineering): [qhy_focuser.cpp](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.cpp), [qhy_focuser.h](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.h)
