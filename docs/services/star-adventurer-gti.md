@@ -708,45 +708,59 @@ deferred to Phase 2.5 — see [§Deferred](#deferred-not-in-mvp)):
   verification); a larger value would push the post-flip `mech_HA`
   into the unverified mirror of the binding zone.
 
-#### Safety envelope (counterweight binding zone)
+#### Safety envelope (counterweight-forbidden zone)
 
-Mechanical safety on a GEM is dominated by one specific hazard:
-when the OTA tracks westward past meridian on the natural pierWest,
-the counterweight swings up to peak altitude at `mech_HA = +6` and
-then back down toward the east horizon at `mech_HA = +12`. There's
-a narrow arc on the way down — `mech_HA ∈ (+6.95, +11.05)` — where
-the CW shaft binds against the pier structure on the east side. The
-binding is **asymmetric** (no symmetric mirror on the negative
-mech_HA side, because the negative half puts the CW into the floor
-beneath the pier, not against pier hardware).
+Mechanical safety on the GTi is dominated by one specific hazard:
+**the counterweights must not rise more than 0.95 h (≈ 14°) above
+horizontal at any point in a slew path.** As the dec axis rotates
+around the polar axis, the CW shaft crosses horizontal at
+`mech_HA = +0.95`, peaks at `mech_HA = +6`, and crosses horizontal
+again at `mech_HA = +11.05`. The arc where the CW is more than
+0.95 h above horizontal — and where in turn the OTA on the opposite
+end of the dec axis can contact the tripod or pier — is the
+contiguous range `(+0.95, +11.05)`. The constraint is **one-sided**:
+the negative-mech_HA half puts the CW into the floor beneath the
+pier rather than above the mount head, so no mirror zone applies.
 
 The driver enforces this as a single interval on the **chosen-side
 encoder mech_HA**, in `MountConfig::binding_zone_min_hours` and
-`binding_zone_max_hours` (defaults `6.95` and `11.05` — the
-hardware-verified GTi values):
+`binding_zone_max_hours` (defaults `0.95` and `11.05` — the wide
+zone derived from the 0.95 h rule and hardware-verified at lat
+32.7°N):
 
-- A slew or sync is rejected with `INVALID_VALUE` if its target
-  mech_HA falls inside the binding-zone interval.
+- A slew or sync's *target* mech_HA inside the interval is rejected
+  with `INVALID_VALUE` before any motion (the destination check).
+- A slew's *path* — the linear mech_HA sweep from current encoder to
+  target encoder — is also checked. Crossings happen even when both
+  endpoints sit outside the zone (e.g. cur `+0.5 h` → tgt `+11.5 h`
+  sweeps through the entire zone interior). Path violations on a
+  non-flip slew return `INVALID_OPERATION` ([`check_non_flip_ra_path`]).
+  Flip slews have one degree of freedom (canonical short or long way
+  around): [`flip_slew_ra_delta`] tries both and returns
+  `INVALID_OPERATION` only when both directions cross the zone.
 - For natural-side targets, `target_mech_HA = celestial_HA` (folded
   signed into `[−12, +12)`).
 - For flipped-side targets, `target_mech_HA = celestial_HA + 12 h`
   (folded).
 - Setting `binding_zone_min ≥ binding_zone_max` (an empty interval)
-  disables the check — used by BDD scenarios that pass hardcoded
-  celestial coords whose computed mech_HA depends on wallclock LST.
+  disables both the destination and path checks — used by BDD
+  scenarios that pass hardcoded celestial coords whose computed
+  mech_HA depends on wallclock LST.
 
-The check is **destination-only**, mirroring INDI EQMOD's
-`EncoderTarget` pattern. The slew *path* is not analysed; the slew
-direction is picked by sign-of-delta (or
-[`flip_slew_ra_delta`](#flip_slew_ra_delta) for flip slews) and is
-robust to the asymmetric zone because every reachable encoder
-direction stays on one side of it.
+Historical note: a narrower `(+6.95, +11.05)` zone was used before
+2026-05-17. That captured only the *outer* portion of the forbidden
+arc (CW descending past the pier from above), missing the inner
+ascent through which the OTA contacted the tripod during a
+`SetSideOfPier` from Park 3 in San Diego. The wider zone closes
+that gap; the path-aware long-way-also-cross check ensures the
+helper can't silently redirect a slew through the newly-covered
+inner half just because the short way was blocked.
 
 `Park` writes the target encoder ticks directly without consulting
-the binding-zone check — also mirroring EQMOD's privileged-park
+the forbidden-zone check — also mirroring EQMOD's privileged-park
 pattern. The operator's `park_ra_ticks` / `park_dec_ticks` are
-assumed to have been validated against the binding zone at the time
-of configuration.
+assumed to have been validated against the zone at the time of
+configuration.
 
 The Dec envelope (`dec_min_degrees` / `dec_max_degrees`, defaults
 `[−90, +90]°`) is independent — it bounds the celestial Dec the
@@ -817,20 +831,26 @@ RA axis stays in the counterweight-below-horizon half; the Dec axis
 crosses the *visible* celestial pole rather than the below-horizon
 one.
 
-**RA axis:** the counterweight binding zone at
-`mech_HA ∈ (+6.95, +11.05)` is one-sided and hemisphere-independent;
+**RA axis:** the counterweight-forbidden zone at
+`mech_HA ∈ (+0.95, +11.05)` is one-sided and hemisphere-independent;
 every other arc of the polar-axis circle is safe. The routing rule is
-therefore stated directly in terms of the binding zone rather than as
-a sign proxy:
+therefore stated directly in terms of the zone rather than as a sign
+proxy:
 
 - Compute the canonical short delta's mech_HA sweep
   (`[current_mech_HA, current_mech_HA + canonical_delta_ha]`).
 - If that sweep stays outside `(zone_min, zone_max)` (modulo 24 h —
-  the binding-zone copy at `k ∈ {-1, 0, +1}` is checked, enough to
-  cover any `|canonical_delta_ha| ≤ 12 h` path), use the canonical
-  direction.
-- Otherwise take the long way (`canonical ± cpr_ra`), which lands at
-  the same modular destination via the safe arc on the other side.
+  the zone copy at `k ∈ {-1, 0, +1}` is checked, enough to cover any
+  `|canonical_delta_ha| ≤ 12 h` path), use the canonical direction.
+- Otherwise try the long way (`canonical ± cpr_ra`), which lands at
+  the same modular destination via the opposite arc.
+- If the long way *also* crosses the zone, there is no safe RA path
+  between current and target and the slew is refused with
+  `INVALID_OPERATION`. (Hardware-revealed 2026-05-17: a
+  `SetSideOfPier` from Park 3 took the long way under the narrower
+  `(+6.95, +11.05)` zone, which permitted the path; under the wider
+  `(+0.95, +11.05)` zone both directions cross and the helper now
+  rejects the slew.)
 
 This handles the forward-flip case (pre-flip near meridian → post-flip
 wrap, canonical CCW already in the safe negative half), the flip-back
@@ -993,17 +1013,18 @@ Notes:
 - `tracking_rate` accepts `"sidereal"` only in MVP. Field is reserved
   for future expansion.
 - `binding_zone_min_hours` / `binding_zone_max_hours` define the
-  counterweight-binding interval in encoder `mech_HA` (signed hours
-  folded `[−12, +12)`). Slews / syncs whose chosen-side `mech_HA`
-  falls inside the interval are rejected with `INVALID_VALUE`.
-  Defaults `(6.95, 11.05)` for the GTi — the asymmetric one-sided
-  zone where the CW shaft binds against the pier from the east side
-  as it swings down toward east horizon past the
-  `mech_HA = +6 h` peak altitude. The negative-mech_HA mirror is
-  *not* a binding zone (CW points into the ground beneath the
-  pier). Setting `min ≥ max` disables the check (used by tests and
-  by operators whose binding zone is elsewhere). See
-  [§Safety envelope](#safety-envelope-counterweight-binding-zone).
+  counterweight-forbidden interval in encoder `mech_HA` (signed
+  hours folded `[−12, +12)`). Slews / syncs whose chosen-side
+  `mech_HA` falls inside the interval are rejected with
+  `INVALID_VALUE`; flip slews and non-flip slews additionally check
+  that their swept path doesn't cross the zone (`INVALID_OPERATION`
+  if so — see [§Safety envelope](#safety-envelope-counterweight-forbidden-zone)).
+  Defaults `(0.95, 11.05)` for the GTi — the one-sided arc where
+  the CW shaft rises more than 0.95 h above horizontal, peaking at
+  `mech_HA = +6 h`. The negative-mech_HA side is *not* forbidden
+  (CW points into the ground beneath the pier, not above the mount
+  head). Setting `min ≥ max` disables the check (used by tests and
+  by operators whose mount geometry differs).
 - `dec_min_degrees` / `dec_max_degrees` clip the celestial-Dec
   range the driver will accept on slew / sync. Defaults `[−90, +90]°`.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
@@ -1669,13 +1690,17 @@ In addition to the codec fixes:
   natural-side window (`ra_min_hours` / `ra_max_hours`); that's
   been replaced by the asymmetric binding-zone interval because
   the actual GEM hazard is one-sided.
-  Defaults: binding zone `(6.95, 11.05) h` of mech_HA — the
-  hardware-verified GTi binding region (the symmetric
-  `±6.99 h` natural-side bound from the 2026-05-13 test is
-  *subsumed* by the new asymmetric model: tracking past
-  `+6.95 h` would enter the zone and is refused, while reaching
-  `−12 h` for anti-meridian poses like Park 1 is no longer
-  blocked). `±90°` Dec.
+  Defaults: forbidden zone `(0.95, 11.05) h` of mech_HA — the
+  one-sided arc where the CW shaft rises more than 0.95 h above
+  horizontal on the GTi (the symmetric `±6.99 h` natural-side
+  bound from the 2026-05-13 test is *subsumed* by the new
+  asymmetric model: tracking past `+0.95 h` enters the zone and is
+  refused, while reaching `−12 h` for anti-meridian poses like
+  Park 1 is no longer blocked). A narrower `(6.95, 11.05)` was
+  used before 2026-05-17 but missed the ascending half of the
+  forbidden arc — see
+  [§Safety envelope](#safety-envelope-counterweight-forbidden-zone)
+  for the hardware session that triggered the widening. `±90°` Dec.
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
