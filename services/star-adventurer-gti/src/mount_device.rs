@@ -188,37 +188,44 @@ impl MountDevice {
     }
 
     /// Reject a slew / sync / destination-side prediction whose target
-    /// would fall outside the per-pier-side mechanical envelope for
-    /// the chosen pointing state.
+    /// would land inside the CW exclusion zone.
     ///
-    /// **Why:** the Star Adventurer GTi (like every GEM) has
-    /// mechanical limits — slewing past them with cable wraps or the
-    /// counterweight shaft against the pier stalls the motor against
-    /// a hard stop while the encoder counter continues to advance.
-    /// On a real-hardware ConformU run that drove the mount into the
-    /// counterweight-up region we heard the motor whine and saw the
-    /// axis stop physically for several seconds at a time.
+    /// **Why:** the Star Adventurer GTi has a mechanical safety
+    /// constraint — the counterweights must not rise more than 0.95 h
+    /// above horizontal at any point. The arc where the CW exceeds
+    /// that threshold is the configured CW exclusion zone (defaults
+    /// `(0.95, 11.05)` h of mech_HA). Slewing the OTA past it stalls
+    /// the motor against a hard stop while the encoder counter
+    /// continues to advance — on a real-hardware ConformU run that
+    /// drove the mount into the counterweight-up region we heard the
+    /// motor whine and saw the axis stop physically for several
+    /// seconds at a time. The 2026-05-17 San Diego session
+    /// additionally demonstrated OTA-vs-tripod contact when the
+    /// previously-narrower zone let the CW sweep through the
+    /// ascending half.
     ///
     /// The check is in **encoder `mech_HA` space** (signed hours
     /// folded to `[−12, +12)`). For a target on the natural pier
     /// side, `target_mech_HA = celestial_HA`. For a flipped target,
-    /// `target_mech_HA = celestial_HA + 12 h` folded. If the chosen-
-    /// side `mech_HA` falls inside the configured binding zone
-    /// `[binding_zone_min_hours, binding_zone_max_hours]`, the slew
-    /// is rejected with `INVALID_VALUE`.
+    /// `target_mech_HA = celestial_HA + 12 h` folded. The interval
+    /// `(binding_zone_min_hours, binding_zone_max_hours)` is **open**
+    /// — a target landing exactly on a zone boundary is permitted (and
+    /// matches the open-interval convention [`canonical_path_crosses_binding_zone`]
+    /// uses for path checks). An empty zone (`min >= max`) disables
+    /// the check, matching the same path-check convention.
     ///
-    /// Note: this is a *destination-only* check (matching INDI EQMOD's
-    /// `EncoderTarget`-style envelope). The slew path is not analysed;
-    /// the slew-direction logic in
-    /// [`flip_slew_ra_delta`](#flip_slew_ra_delta) and the per-axis
-    /// `ccw = current > target` rule in `execute_slew_with_explicit_side`
-    /// pick the safe direction.
+    /// Note: this is the *destination-only* leg of the safety model.
+    /// Path crossings are handled separately by [`check_non_flip_ra_path`]
+    /// (non-flip slews) and [`flip_slew_ra_delta`] (flip slews); a
+    /// target outside the zone with a sweep that crosses the zone is
+    /// caught there, not here. The combination — destination check
+    /// plus path check — is the safety floor.
     ///
     /// `flip_policy.flip_range_hours` is **not** consulted here — that
     /// rule lives in [`select_pier_side_for_target`] for pier-side
     /// preference only. Park 1 / Park 5 (anti-meridian poses with
     /// `mech_HA = ±12` on the chosen pier) are reachable via slew
-    /// because their mech_HA is outside the binding zone.
+    /// because their mech_HA is outside the CW exclusion zone.
     ///
     /// Both axes are validated together so a partial-failure slew
     /// can't issue motion on RA before discovering Dec is out of
@@ -240,12 +247,16 @@ impl MountDevice {
         };
         let zone_min = self.config.binding_zone_min_hours;
         let zone_max = self.config.binding_zone_max_hours;
-        if zone_min <= zone_max && (zone_min..=zone_max).contains(&target_mech_ha) {
+        // Open interval: target landing exactly on a boundary is OK.
+        // Disable on `min >= max` (empty zone), matching the path
+        // check's convention so destination and path checks agree on
+        // which configurations are "disabled."
+        if zone_min < zone_max && target_mech_ha > zone_min && target_mech_ha < zone_max {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "target mech_HA {target_mech_ha:.3} h is inside the counterweight \
-                     binding zone [{zone_min}, {zone_max}] h"
+                    "target mech_HA {target_mech_ha:.3} h is inside the CW exclusion zone \
+                     ({zone_min}, {zone_max}) h"
                 ),
             ));
         }
@@ -559,21 +570,35 @@ impl MountDevice {
             // correction here.
             let ra_delta_canonical =
                 fold_delta_to_canonical(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+            let binding_zone = (
+                self.config.binding_zone_min_hours,
+                self.config.binding_zone_max_hours,
+            );
             let ra_delta = if is_flip_slew {
                 // Flip slews steer the polar-axis sweep out of the
-                // counterweight binding zone — see
+                // CW exclusion zone — see
                 // [`flip_slew_ra_delta`] and the design doc's
                 // [§"Through-wrap slew routing"](../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
                 flip_slew_ra_delta(
                     ra_delta_canonical,
                     snap.ra.position_ticks,
                     params.cpr_ra,
-                    (
-                        self.config.binding_zone_min_hours,
-                        self.config.binding_zone_max_hours,
-                    ),
-                )
+                    binding_zone,
+                )?
             } else {
+                // Non-flip slews can't rewrite the direction the way
+                // flip slews can — the canonical short delta is the
+                // unique path between current and target on the chosen
+                // pier side. Refuse if that sweep enters the CW
+                // exclusion zone (e.g. cur mech_HA = +0.5 h → target +11.5 h
+                // would otherwise sweep the CW through the zone even
+                // though both endpoints sit outside it).
+                check_non_flip_ra_path(
+                    ra_delta_canonical,
+                    snap.ra.position_ticks,
+                    params.cpr_ra,
+                    binding_zone,
+                )?;
                 ra_delta_canonical
             };
             let dec_delta_canonical =
@@ -768,55 +793,109 @@ async fn watcher_should_abort(
 }
 
 /// Force a flip slew's RA delta to keep the polar-axis sweep out of
-/// the counterweight-binding zone `mech_HA ∈ (zone_min, zone_max)`
-/// (default `(+6.95, +11.05)` on the GTi), where the counterweight
-/// contacts the pier.
+/// the CW exclusion zone `mech_HA ∈ (zone_min, zone_max)`
+/// (default `(+0.95, +11.05)` on the GTi — the arc where the CW
+/// rises more than 0.95 h above horizontal).
 ///
-/// The mechanical binding zone is at positive `mech_HA` only and is a
+/// The CW exclusion zone is at positive `mech_HA` only and is a
 /// structural property of the mount head independent of observer
 /// latitude. Both forward flips (pre-flip → post-flip) and flip-backs
 /// (post-flip → pre-flip) need their RA paths constrained.
 ///
 /// Strategy: take the canonical short path unless its linear mech_HA
 /// sweep from `current_ticks` through `current_ticks + canonical_delta`
-/// crosses the binding zone (modulo the 24-hour wrap). If it would,
-/// take the long way around (`canonical ± cpr_i`) which lands at the
-/// same modular destination via the safe arc on the other side.
+/// crosses the CW exclusion zone (modulo the 24-hour wrap). If it would,
+/// try the long way around (`canonical ± cpr_i`) which lands at the
+/// same modular destination via the safe arc on the other side. If
+/// the long way *also* crosses the zone, there is no safe RA path
+/// between current and target and the slew is refused with
+/// `INVALID_OPERATION`.
 ///
 /// Previously a sign-blind heuristic (`|current| > cpr/4 ⇒ "safe is
 /// positive"`) was used. That mis-fired at Park 4 N
 /// (current ≈ -cpr/2, canonical ≈ -4k CCW just past the wrap): the
 /// heuristic flipped the small CCW step into a +cpr/2 + small CW full
-/// revolution that swept across mech_HA (+6.95, +11.05) and slammed
-/// the CW shaft into the pier (hardware validation 2026-05-16). The
-/// path-aware check uses the actual binding zone, so it preserves the
-/// safe canonical step when it doesn't cross.
+/// revolution that swept across the zone and slammed the CW shaft
+/// into the pier (hardware validation 2026-05-16). The path-aware
+/// check uses the actual CW exclusion zone, so it preserves the safe
+/// canonical step when it doesn't cross. The both-cross refusal was
+/// added after the 2026-05-17 session, where a `SetSideOfPier`
+/// from Park 3 produced a `canonical_delta = -cpr/2` whose long-way
+/// alternative `+cpr/2` swept the OTA through the tripod region with
+/// the narrow `(+6.95, +11.05)` zone permitting it. With the wider
+/// `(+0.95, +11.05)` zone both directions cross and the slew is now
+/// rejected.
 fn flip_slew_ra_delta(
     canonical_delta: i32,
     current_ticks: i32,
     cpr: u32,
     binding_zone_hours: (f64, f64),
-) -> i32 {
+) -> ASCOMResult<i32> {
     if cpr == 0 || canonical_delta == 0 {
-        return canonical_delta;
+        return Ok(canonical_delta);
     }
     let cpr_i = cpr as i32;
     let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
     let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
-        return canonical_delta;
+        return Ok(canonical_delta);
     }
-    if canonical_delta > 0 {
+    let long_way = if canonical_delta > 0 {
         canonical_delta - cpr_i
     } else {
         canonical_delta + cpr_i
+    };
+    let long_delta_ha = (long_way as f64) * 24.0 / (cpr as f64);
+    if !canonical_path_crosses_binding_zone(cur_ha, long_delta_ha, binding_zone_hours) {
+        return Ok(long_way);
     }
+    Err(ASCOMError::new(
+        ASCOMErrorCode::INVALID_OPERATION,
+        format!(
+            "no safe RA path from mech_HA {cur_ha:+.3} h: canonical short ({delta_ha:+.3} h) \
+             and long-way around ({long_delta_ha:+.3} h) both cross the CW exclusion zone \
+             ({zone_min:+.3}, {zone_max:+.3})",
+            zone_min = binding_zone_hours.0,
+            zone_max = binding_zone_hours.1,
+        ),
+    ))
+}
+
+/// Verify a non-flip RA slew's canonical sweep doesn't cross the
+/// CW exclusion zone. Flip slews have the option of taking the long way
+/// around via [`flip_slew_ra_delta`]; non-flip slews don't — the
+/// canonical short delta is the unique path between current and
+/// target on the chosen pier side, so if it crosses the zone the
+/// slew is refused.
+fn check_non_flip_ra_path(
+    canonical_delta: i32,
+    current_ticks: i32,
+    cpr: u32,
+    binding_zone_hours: (f64, f64),
+) -> ASCOMResult<()> {
+    if cpr == 0 || canonical_delta == 0 {
+        return Ok(());
+    }
+    let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
+    let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
+    if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
+        return Ok(());
+    }
+    Err(ASCOMError::new(
+        ASCOMErrorCode::INVALID_OPERATION,
+        format!(
+            "non-flip RA slew from mech_HA {cur_ha:+.3} h by {delta_ha:+.3} h crosses the \
+             CW exclusion zone ({zone_min:+.3}, {zone_max:+.3})",
+            zone_min = binding_zone_hours.0,
+            zone_max = binding_zone_hours.1,
+        ),
+    ))
 }
 
 /// Does the linear mech_HA sweep from `start_ha` by `delta_ha` enter
 /// `(zone_min, zone_max)` (modulo 24 h)? The sweep is the open
 /// interval `(min(start, start+delta), max(start, start+delta))`; the
-/// binding zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
+/// CW exclusion zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
 /// — enough to cover any `|delta_ha| ≤ 12` path. An empty zone
 /// (`zone_min ≥ zone_max`) is treated as no zone.
 fn canonical_path_crosses_binding_zone(
@@ -2977,7 +3056,7 @@ mod tests {
         let mut cfg = Config::default();
         // Same rationale as `fast_settle_device`: open the
         // mechanical-envelope check for tests that don't exercise it.
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
@@ -3282,7 +3361,7 @@ mod tests {
         // envelope all the way for these tests; the safety-gate
         // behaviour is covered separately by
         // [`fast_settle_connected_narrow_envelope`].
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
@@ -3299,9 +3378,9 @@ mod tests {
     }
 
     /// Like `fast_settle_connected`, but with a narrow safety
-    /// configuration (a small binding zone + tight Dec range) so the
+    /// configuration (a small CW exclusion zone + tight Dec range) so the
     /// safety-gate tests can land target coords that are clearly
-    /// inside the binding zone or outside the Dec band without first
+    /// inside the CW exclusion zone or outside the Dec band without first
     /// needing to push past the GTi default `(6.95, 11.05)` /
     /// `±90°`.
     async fn fast_settle_connected_narrow_envelope() -> MountDevice {
@@ -3310,7 +3389,7 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Narrow binding zone covering `mech_HA ∈ [0.5, 1.5] h` so a
+        // Narrow CW exclusion zone covering `mech_HA ∈ [0.5, 1.5] h` so a
         // target 1 h past meridian on the natural side is inside it,
         // and tight Dec band `[-5°, +5°]` so off-equator targets are
         // rejected.
@@ -3356,8 +3435,8 @@ mod tests {
         let err = d.slew_to_coordinates_async(target, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         assert!(
-            err.message.contains("binding zone"),
-            "error message must call out the binding zone: {}",
+            err.message.contains("CW exclusion zone"),
+            "error message must call out the CW exclusion zone: {}",
             err.message
         );
     }
@@ -3505,7 +3584,7 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
@@ -3587,7 +3666,7 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
@@ -3657,7 +3736,7 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
@@ -4094,7 +4173,7 @@ mod tests {
 
     fn device_with_path(path: PathBuf) -> MountDevice {
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
@@ -4457,7 +4536,7 @@ mod tests {
         if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let dir = tempfile::TempDir::new().unwrap();
@@ -4559,7 +4638,7 @@ mod tests {
             state.dec.position_ticks = -1;
         }
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
@@ -4589,7 +4668,7 @@ mod tests {
             state.ra.position_ticks = 50_000;
         }
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
@@ -4646,7 +4725,7 @@ mod tests {
         // `Park` from `home_pose: ap_park_3` drove the OTA to
         // meridian / celestial equator instead of NCP.
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
@@ -4671,7 +4750,7 @@ mod tests {
         // Config carries park values → driver should use them, not the
         // (zeroed) handshake fallback.
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.park_ra_ticks = Some(5000);
@@ -5163,7 +5242,7 @@ mod tests {
         // and `IsPulseGuiding` reports `false` consistent with the
         // lack of actual motion.
         let mut cfg = Config::default();
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         let manager = Arc::new(TransportManager::new(
@@ -5284,9 +5363,10 @@ mod tests {
 
     const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
 
-    /// Hardware-verified GTi counterweight binding zone in mech_HA hours
-    /// (matches `default_binding_zone_min/max_hours` in `config.rs`).
-    const GTI_BINDING_ZONE: (f64, f64) = (6.95, 11.05);
+    /// Hardware-verified GTi CW exclusion zone — the contiguous arc
+    /// where the CW shaft rises more than 0.95 h above horizontal.
+    /// Matches `default_binding_zone_min/max_hours` in `config.rs`.
+    const GTI_CW_EXCLUSION_ZONE: (f64, f64) = (0.95, 11.05);
 
     #[test]
     fn flip_slew_ra_delta_forward_flip_from_pre_flip_zero_uses_natural_ccw() {
@@ -5296,7 +5376,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = 0;
         let canonical = -(cpr as i32 / 2);
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert_eq!(issued, canonical, "natural CCW already in the safe half");
     }
 
@@ -5310,7 +5390,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = -75_600; // mech_HA = -0.5
         let canonical = 1_815_000_i32;
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert!(issued < 0, "must force CCW long way");
         assert_eq!(
             (issued - canonical).rem_euclid(cpr as i32),
@@ -5332,7 +5412,7 @@ mod tests {
         let cpr = GTI_CPR;
         let current = -(cpr as i32 / 2);
         let canonical = cpr as i32 / 4;
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert_eq!(
             issued, canonical,
             "flip-back from -cpr/2 must use natural CW"
@@ -5352,19 +5432,25 @@ mod tests {
         let current = cpr as i32 / 2;
         let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
         let canonical = fold_delta_to_canonical(canonical_raw, cpr); // +cpr/4
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert!(issued > 0, "post-flip wrap → safe arc must use CW");
         assert_eq!(issued, canonical, "canonical CW is already safe here");
     }
 
     #[test]
     fn flip_slew_ra_delta_handles_zero_cpr_defensively() {
-        assert_eq!(flip_slew_ra_delta(12_345, 0, 0, GTI_BINDING_ZONE), 12_345);
+        assert_eq!(
+            flip_slew_ra_delta(12_345, 0, 0, GTI_CW_EXCLUSION_ZONE).unwrap(),
+            12_345
+        );
     }
 
     #[test]
     fn flip_slew_ra_delta_zero_canonical_returns_zero() {
-        assert_eq!(flip_slew_ra_delta(0, 0, GTI_CPR, GTI_BINDING_ZONE), 0);
+        assert_eq!(
+            flip_slew_ra_delta(0, 0, GTI_CPR, GTI_CW_EXCLUSION_ZONE).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -5385,33 +5471,11 @@ mod tests {
         let cpr = GTI_CPR;
         let current = -1_810_272_i32;
         let canonical = -3_798_i32;
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
         assert_eq!(
             issued, canonical,
             "canonical CCW wrap-crossing must be preserved; old long-way CW \
-             would full-revolution through the binding zone"
-        );
-    }
-
-    #[test]
-    fn flip_slew_ra_delta_canonical_path_crossing_binding_zone_takes_long_way() {
-        // Current at mech_HA = +5 (just below the binding zone), target
-        // at mech_HA = +11.5 (just above it). Canonical short path
-        // would sweep mech_HA from +5 to +11.5, entering (+6.95, +11.05)
-        // around mech_HA = +7. Force the long way around through the
-        // safe negative half.
-        let cpr = GTI_CPR;
-        let current = (cpr as i32) * 5 / 24; // mech_HA = +5
-        let canonical = (cpr as i32) * 13 / 48; // +6.5 hours of mech_HA
-        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_BINDING_ZONE);
-        assert!(
-            issued < 0,
-            "canonical path enters (6.95, 11.05); must take CCW long way (got {issued})"
-        );
-        assert_eq!(
-            (issued - canonical).rem_euclid(cpr as i32),
-            0,
-            "same modular destination"
+             would full-revolution through the CW exclusion zone"
         );
     }
 
@@ -5430,11 +5494,116 @@ mod tests {
             (-1_810_272_i32, -3_798_i32),
         ] {
             assert_eq!(
-                flip_slew_ra_delta(canonical, current, cpr, empty_zone),
+                flip_slew_ra_delta(canonical, current, cpr, empty_zone).unwrap(),
                 canonical,
                 "empty zone must pass canonical through (current={current}, canonical={canonical})"
             );
         }
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_refuses_when_both_directions_cross_zone() {
+        // Park 3 → "NCP on East side" via SetSideOfPier(East):
+        // current at raw -cpr/4 (mech_HA = -6 h, Park 3 saddle west),
+        // target at raw +cpr/4 (mech_HA = +6 h, Park 3's flipped twin).
+        // Canonical fold of +cpr/2 lands on -cpr/2 → CCW short path
+        // sweeps mech_HA -6 → -12 (wrap) → +6, crossing the k=-1
+        // mirror of the wide zone. The long way (+cpr/2 CW) sweeps
+        // mech_HA -6 → 0 → +6, crossing the wide zone directly at
+        // (+0.95, +6). Both directions unsafe → refuse.
+        let cpr = GTI_CPR;
+        let current = -(cpr as i32 / 4); // mech_HA = -6
+        let canonical = -(cpr as i32 / 2); // -12 h CCW, canonical-fold boundary
+        let err = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE)
+            .expect_err("both cross");
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("both cross"),
+            "error must mention both-direction crossing; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn flip_slew_ra_delta_wide_zone_picks_long_way_for_zone_boundary_traversal() {
+        // Wide-zone variant of the existing
+        // `flip_slew_ra_delta_canonical_path_crossing_binding_zone_takes_long_way`
+        // success case — picks the long way around when canonical
+        // would cross and the long way is safe.
+        //
+        // From mech_HA = +11.1 (just outside the wide zone, descending
+        // edge) to +0.9 (just outside, ascending edge). Canonical
+        // short delta is -10.2 h CCW — sweeping straight through the
+        // entire wide zone (+0.95, +11.05). The long way is +13.8 h
+        // CW going around through the safe arc [+11.05, +24.95]
+        // (= [+11.05, +0.95 + 24]). Helper picks the long way
+        // successfully because the safe arc is wider than the long-way
+        // sweep.
+        //
+        // The margin here matters — wide-zone cases where canonical
+        // crosses but the long way is safe are *rare*. The zone is
+        // 10.1 h wide; the safe arc between zone replicas is only
+        // 13.9 h, so the long way only fits when both endpoints sit
+        // at least ~0.05 h outside the zone boundary. The
+        // `flip_slew_ra_delta_refuses_when_both_directions_cross_zone`
+        // test above covers the common both-cross case; this one pins
+        // the narrow boundary-traversal scenario where the long way
+        // just barely fits in the safe arc.
+        let cpr = GTI_CPR;
+        let cur_h = 11.1_f64;
+        let target_h = 0.9_f64;
+        let current = (cur_h * cpr as f64 / 24.0).round() as i32;
+        let target = (target_h * cpr as f64 / 24.0).round() as i32;
+        let canonical = fold_delta_to_canonical(target - current, cpr);
+        let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
+        assert!(
+            issued > 0,
+            "canonical CCW sweeps the entire zone; must force CW long way (got {issued})"
+        );
+        assert_eq!(
+            (issued - canonical).rem_euclid(cpr as i32),
+            0,
+            "same modular destination"
+        );
+    }
+
+    #[test]
+    fn check_non_flip_ra_path_refuses_when_canonical_sweep_crosses_zone() {
+        // Non-flip slew from mech_HA = +0.5 h to +11.5 h. Both
+        // endpoints sit outside the wide zone (+0.95, +11.05) but the
+        // canonical short sweep (+11 h CW) crosses the entire zone
+        // interior. Today's destination-only `check_within_safe_envelope`
+        // would let this through; the path-aware check refuses it.
+        let cpr = GTI_CPR;
+        let current = (cpr as i32) / 48; // mech_HA = +0.5
+        let canonical = (cpr as i32) * 11 / 24; // +11 h CW
+        let err = check_non_flip_ra_path(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE)
+            .expect_err("path crosses zone");
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("non-flip RA slew"),
+            "error must identify itself as non-flip path check; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn check_non_flip_ra_path_accepts_clean_sweep() {
+        // Non-flip slew that stays clear of the zone: current at
+        // mech_HA = -3 h, canonical -2 h CCW → sweep [-5, -3]. No
+        // overlap with the wide zone or its k=-1 mirror. Returns Ok.
+        let cpr = GTI_CPR;
+        let current = -(cpr as i32) / 8; // mech_HA = -3
+        let canonical = -(cpr as i32) / 12; // -2 h CCW
+        check_non_flip_ra_path(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE)
+            .expect("sweep [-5, -3] doesn't touch the wide zone");
+    }
+
+    #[test]
+    fn check_non_flip_ra_path_passes_through_for_zero_inputs() {
+        // Defensive degenerate cases (consistent with flip_slew_ra_delta).
+        check_non_flip_ra_path(12_345, 0, 0, GTI_CW_EXCLUSION_ZONE).unwrap();
+        check_non_flip_ra_path(0, 0, GTI_CPR, GTI_CW_EXCLUSION_ZONE).unwrap();
     }
 
     // ---------- flip_slew_dec_delta (Dec routing through the visible pole) ----------
@@ -5674,7 +5843,7 @@ mod tests {
             usb.polling_interval = Duration::from_millis(20);
         }
         cfg.mount.settle_after_slew = Duration::from_millis(0);
-        // Disable the binding-zone check for this test.
+        // Disable the CW-exclusion zone check for this test.
         cfg.mount.binding_zone_min_hours = 24.0;
         cfg.mount.binding_zone_max_hours = 0.0;
         cfg.mount.flip_policy.enabled = true;
