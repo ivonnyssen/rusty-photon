@@ -91,7 +91,7 @@ pub struct MountConfig {
     #[serde(default)]
     pub tracking_rate: TrackingRateName,
 
-    /// Counterweight-forbidden zone in encoder `mech_HA` (signed
+    /// CW exclusion zone in encoder `mech_HA` (signed
     /// hours, folded to `[−12, +12)`). Slews / syncs whose chosen
     /// pier side's `mech_HA` falls inside
     /// `(binding_zone_min_hours, binding_zone_max_hours)` are
@@ -105,7 +105,7 @@ pub struct MountConfig {
     /// `mech_HA` side: the CW shaft crosses horizontal at
     /// `mech_HA = +0.95`, peaks at `mech_HA = +6`, and crosses
     /// horizontal again at `mech_HA = +11.05`. The negative-mech_HA
-    /// mirror is *not* forbidden — the CW swings below horizontal
+    /// mirror is *not* a CW exclusion zone — the CW swings below horizontal
     /// into the ground beneath the pier rather than above the mount
     /// head.
     ///
@@ -119,7 +119,7 @@ pub struct MountConfig {
     ///
     /// Set `binding_zone_min_hours = binding_zone_max_hours` (or any
     /// non-overlapping pair) to disable the check entirely; only do
-    /// this for tests or for mounts whose forbidden arc is known to
+    /// this for tests or for mounts whose CW exclusion arc is known to
     /// be elsewhere. See the design doc's
     /// [§Per-pier safety envelopes](../../../docs/services/star-adventurer-gti.md#per-pier-safety-envelopes).
     #[serde(default = "default_binding_zone_min_hours")]
@@ -210,7 +210,7 @@ impl Default for FlipPolicy {
 
 /// Outer bound on `FlipPolicy::flip_range_hours`. Larger values would
 /// push the post-flip mechanical hour angle into the unverified
-/// mirror of the Phase 4 counterweight-up binding zone. See the plan
+/// mirror of the Phase 4 counterweight-up CW exclusion zone. See the plan
 /// `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
 pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
 

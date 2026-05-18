@@ -706,9 +706,9 @@ deferred to Phase 2.5 — see [§Deferred](#deferred-not-in-mvp)):
   `(0, 0.95]`. The upper bound matches the headroom past
   counterweight-horizontal on the pre-flip side (Phase 1.1 hardware
   verification); a larger value would push the post-flip `mech_HA`
-  into the unverified mirror of the binding zone.
+  into the unverified mirror of the CW exclusion zone.
 
-#### Safety envelope (counterweight-forbidden zone)
+#### Safety envelope (CW exclusion zone)
 
 Mechanical safety on the GTi is dominated by one specific hazard:
 **the counterweights must not rise more than 0.95 h (≈ 14°) above
@@ -748,7 +748,7 @@ zone derived from the 0.95 h rule and hardware-verified at lat
   mech_HA depends on wallclock LST.
 
 Historical note: a narrower `(+6.95, +11.05)` zone was used before
-2026-05-17. That captured only the *outer* portion of the forbidden
+2026-05-17. That captured only the *outer* portion of the exclusion
 arc (CW descending past the pier from above), missing the inner
 ascent through which the OTA contacted the tripod during a
 `SetSideOfPier` from Park 3 in San Diego. The wider zone closes
@@ -757,7 +757,7 @@ helper can't silently redirect a slew through the newly-covered
 inner half just because the short way was blocked.
 
 `Park` writes the target encoder ticks directly without consulting
-the forbidden-zone check — also mirroring EQMOD's privileged-park
+the exclusion-zone check — also mirroring EQMOD's privileged-park
 pattern. The operator's `park_ra_ticks` / `park_dec_ticks` are
 assumed to have been validated against the zone at the time of
 configuration.
@@ -775,12 +775,12 @@ dec)` share the same selector:
 1. If `flip_policy.enabled = false`, return the current `SideOfPier`.
 2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
 3. If the *current* side can reach the target without entering the
-   binding zone, stay on the current side (no unnecessary flip):
+   CW exclusion zone, stay on the current side (no unnecessary flip):
    - **Pre-flip side** (`pierWest` in the Northern Hemisphere,
      `pierEast` in the Southern): "covers" means `target_HA ∉
      binding_zone`. This is wider than the legacy
      `[ra_min_hours, ra_max_hours]` window — the whole sky except
-     the binding interval.
+     the CW exclusion zone.
    - **Post-flip side**: "covers" means `|target_HA| ≤
      flip_range_hours`. This is an *operational* preference (after
      a flip, the driver expects to flip back to natural side soon),
@@ -803,7 +803,7 @@ Park 1 / Park 5 anti-meridian poses are reachable via
 `SlewToCoordinatesAsync` because they live at `target_HA = ±12 h`
 on the natural / flipped pier respectively, and their corresponding
 `mech_HA` (folded `−12` for Park 1 on pierWest, `0` for Park 5 on
-pierEast) is outside the binding zone.
+pierEast) is outside the CW exclusion zone.
 
 #### `SetSideOfPier(side)`
 
@@ -831,7 +831,7 @@ RA axis stays in the counterweight-below-horizon half; the Dec axis
 crosses the *visible* celestial pole rather than the below-horizon
 one.
 
-**RA axis:** the counterweight-forbidden zone at
+**RA axis:** the CW exclusion zone at
 `mech_HA ∈ (+0.95, +11.05)` is one-sided and hemisphere-independent;
 every other arc of the polar-axis circle is safe. The routing rule is
 therefore stated directly in terms of the zone rather than as a sign
@@ -1013,15 +1013,15 @@ Notes:
 - `tracking_rate` accepts `"sidereal"` only in MVP. Field is reserved
   for future expansion.
 - `binding_zone_min_hours` / `binding_zone_max_hours` define the
-  counterweight-forbidden interval in encoder `mech_HA` (signed
+  CW exclusion interval in encoder `mech_HA` (signed
   hours folded `[−12, +12)`). Slews / syncs whose chosen-side
   `mech_HA` falls inside the interval are rejected with
   `INVALID_VALUE`; flip slews and non-flip slews additionally check
   that their swept path doesn't cross the zone (`INVALID_OPERATION`
-  if so — see [§Safety envelope](#safety-envelope-counterweight-forbidden-zone)).
+  if so — see [§Safety envelope](#safety-envelope-cw-exclusion-zone)).
   Defaults `(0.95, 11.05)` for the GTi — the one-sided arc where
   the CW shaft rises more than 0.95 h above horizontal, peaking at
-  `mech_HA = +6 h`. The negative-mech_HA side is *not* forbidden
+  `mech_HA = +6 h`. The negative-mech_HA side is *not* a CW exclusion zone
   (CW points into the ground beneath the pier, not above the mount
   head). Setting `min ≥ max` disables the check (used by tests and
   by operators whose mount geometry differs).
@@ -1516,7 +1516,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`. Re-enabled `[package.metadata.conformu]` so the full two-phase ConformU integration ran again — but the `conformance` phase, which `alpacaprotocol`-only manual runs hadn't exercised, surfaced three failures that PR #206's review hadn't caught; see Phase A8. |
 | **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
-| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric counterweight binding-zone safety envelope, binding-zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -1683,14 +1683,14 @@ In addition to the codec fixes:
   the CW binds against the pier) plus `dec_min_degrees` /
   `dec_max_degrees`. `SyncToCoordinates` and
   `SlewToCoordinatesAsync` reject targets whose chosen-side
-  `mech_HA` falls inside the binding zone with `INVALID_VALUE`
+  `mech_HA` falls inside the CW exclusion zone with `INVALID_VALUE`
   before any wire motion; `Park` writes the target encoder ticks
-  directly without the binding-zone check, matching INDI EQMOD's
+  directly without the CW-exclusion zone check, matching INDI EQMOD's
   privileged-park pattern. Pre-Phase-6 builds used a symmetric
   natural-side window (`ra_min_hours` / `ra_max_hours`); that's
-  been replaced by the asymmetric binding-zone interval because
+  been replaced by the asymmetric CW-exclusion zone interval because
   the actual GEM hazard is one-sided.
-  Defaults: forbidden zone `(0.95, 11.05) h` of mech_HA — the
+  Defaults: CW exclusion zone `(0.95, 11.05) h` of mech_HA — the
   one-sided arc where the CW shaft rises more than 0.95 h above
   horizontal on the GTi (the symmetric `±6.99 h` natural-side
   bound from the 2026-05-13 test is *subsumed* by the new
@@ -1698,8 +1698,8 @@ In addition to the codec fixes:
   refused, while reaching `−12 h` for anti-meridian poses like
   Park 1 is no longer blocked). A narrower `(6.95, 11.05)` was
   used before 2026-05-17 but missed the ascending half of the
-  forbidden arc — see
-  [§Safety envelope](#safety-envelope-counterweight-forbidden-zone)
+  CW exclusion arc — see
+  [§Safety envelope](#safety-envelope-cw-exclusion-zone)
   for the hardware session that triggered the widening. `±90°` Dec.
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
