@@ -373,6 +373,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn description_comes_from_config() {
+        let device = disconnected_device();
+        assert_eq!(
+            device.description().await.unwrap(),
+            "Pegasus Astro Falcon Rotator (firmware >= 1.3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_info_mentions_alpaca() {
+        let device = disconnected_device();
+        let info = device.driver_info().await.unwrap();
+        assert!(info.contains("Alpaca"), "got: {info}");
+    }
+
+    #[test]
+    fn debug_format_includes_struct_name() {
+        let device = disconnected_device();
+        let s = format!("{device:?}");
+        assert!(s.contains("FalconRotatorDevice"), "got: {s}");
+    }
+
     // ---- Disconnected guards: each method must short-circuit with NOT_CONNECTED.
 
     #[tokio::test]

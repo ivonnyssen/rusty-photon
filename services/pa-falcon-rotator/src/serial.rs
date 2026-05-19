@@ -18,12 +18,18 @@ use crate::error::{FalconRotatorError, Result};
 use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 
 /// Serial reader backed by `tokio-serial`, framing on LF.
+///
+/// The reader's body is excluded from coverage: every branch hits real
+/// `tokio-serial` I/O and is only exercised against live Falcon hardware
+/// (the BDD / unit suites drive [`MockSerialPortFactory`] instead). The
+/// peer drivers `qhy-focuser` and `ppba-driver` apply the same exclusion.
 pub struct TokioSerialReader {
     reader: BufReader<ReadHalf<SerialStream>>,
     buffer: String,
 }
 
 impl TokioSerialReader {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(reader: ReadHalf<SerialStream>) -> Self {
         Self {
             reader: BufReader::new(reader),
@@ -34,6 +40,7 @@ impl TokioSerialReader {
 
 #[async_trait]
 impl SerialReader for TokioSerialReader {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn read_line(&mut self) -> Result<Option<String>> {
         self.buffer.clear();
         match self.reader.read_line(&mut self.buffer).await {
@@ -52,11 +59,14 @@ impl SerialReader for TokioSerialReader {
 }
 
 /// Serial writer backed by `tokio-serial`. Appends the LF terminator.
+///
+/// Same coverage rationale as [`TokioSerialReader`] — real-hardware-only path.
 pub struct TokioSerialWriter {
     writer: WriteHalf<SerialStream>,
 }
 
 impl TokioSerialWriter {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(writer: WriteHalf<SerialStream>) -> Self {
         Self { writer }
     }
@@ -64,6 +74,7 @@ impl TokioSerialWriter {
 
 #[async_trait]
 impl SerialWriter for TokioSerialWriter {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn write_message(&mut self, message: &str) -> Result<()> {
         debug!("Serial write: {}", message);
         self.writer
@@ -94,6 +105,10 @@ impl TokioSerialPortFactory {
 
 #[async_trait]
 impl SerialPortFactory for TokioSerialPortFactory {
+    /// Coverage off: the success path requires a real serial device. The
+    /// open-failure path is covered by `test_open_nonexistent_port_returns_serial_port_error`
+    /// below, which exercises the `map_err` branch.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn open(&self, port: &str, baud_rate: u32, timeout: Duration) -> Result<SerialPair> {
         debug!(
             "Opening serial port {} at {} baud with {:?} timeout",

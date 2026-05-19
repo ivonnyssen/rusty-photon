@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Pegasus Falcon Rotator Driver CLI
 
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ struct Args {
     log_level: Level,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
         format!(
@@ -41,6 +43,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     })
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -66,6 +69,7 @@ async fn shutdown_signal() {
 }
 
 #[tokio::main]
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 

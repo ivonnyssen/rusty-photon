@@ -395,6 +395,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn static_name_comes_from_config() {
+        let device = disconnected_device();
+        assert_eq!(device.static_name(), "Pegasus Falcon Status");
+    }
+
+    #[tokio::test]
+    async fn unique_id_comes_from_config() {
+        let device = disconnected_device();
+        assert_eq!(device.unique_id(), "pa-falcon-rotator-status-001");
+    }
+
+    #[tokio::test]
+    async fn description_comes_from_config() {
+        let device = disconnected_device();
+        let desc = device.description().await.unwrap();
+        assert!(desc.contains("voltage"), "got: {desc}");
+        assert!(desc.contains("limit"), "got: {desc}");
+    }
+
+    #[tokio::test]
+    async fn driver_info_mentions_alpaca() {
+        let device = disconnected_device();
+        let info = device.driver_info().await.unwrap();
+        assert!(info.contains("Alpaca"), "got: {info}");
+    }
+
+    #[tokio::test]
+    async fn driver_version_matches_cargo_pkg_version() {
+        let device = disconnected_device();
+        assert_eq!(
+            device.driver_version().await.unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn debug_format_includes_struct_name() {
+        let device = disconnected_device();
+        let s = format!("{device:?}");
+        assert!(s.contains("FalconStatusSwitchDevice"), "got: {s}");
+    }
+
+    #[tokio::test]
+    async fn connected_reports_false_when_serial_unavailable() {
+        // disconnected_device wires the NoopFactory which never opens —
+        // serial_manager.is_available() stays false even though
+        // requested_connection has never been written. Exercises the
+        // `Ok(requested && serial_ok)` body even on the disconnected path.
+        let device = disconnected_device();
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[tokio::test]
     async fn can_write_returns_not_connected_when_disconnected() {
         let device = disconnected_device();
         let err = device.can_write(0).await.unwrap_err();

@@ -557,6 +557,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_derotation_rate_returns_sentinel() {
+        let (mut writer, mut reader) = fresh_pair().await;
+        assert_eq!(
+            round_trip(&mut writer, &mut reader, "DR:not_a_number").await,
+            UNKNOWN_COMMAND_RESPONSE
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_move_steps_returns_sentinel() {
+        let (mut writer, mut reader) = fresh_pair().await;
+        assert_eq!(
+            round_trip(&mut writer, &mut reader, "MS:not_a_number").await,
+            UNKNOWN_COMMAND_RESPONSE
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_reverse_value_returns_sentinel() {
+        // `FN:` accepts only "0" or "1" — anything else falls through to the
+        // unknown-command sentinel so a routing regression fails loudly.
+        let (mut writer, mut reader) = fresh_pair().await;
+        assert_eq!(
+            round_trip(&mut writer, &mut reader, "FN:maybe").await,
+            UNKNOWN_COMMAND_RESPONSE
+        );
+    }
+
+    #[tokio::test]
     async fn writer_trims_trailing_newline_from_caller() {
         // The real `TokioSerialWriter` appends `\n`. The mock writer should
         // recognise the command regardless of trailing LF/CR so tests that

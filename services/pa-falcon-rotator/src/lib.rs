@@ -149,6 +149,12 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Coverage off: `start` blocks on the long-running axum loop and the
+    /// `serve_tls` / `serve_plain` helpers — neither is reachable from a
+    /// `cargo test` shape that completes within the test's lifetime.
+    /// `tests/test_lib.rs` covers the bind contract (everything `build`
+    /// returns) but stops short of running this loop.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn start(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.tls {
             Some(ref tls_config) => {
@@ -171,6 +177,7 @@ impl BoundServer {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
