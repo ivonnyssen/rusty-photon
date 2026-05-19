@@ -3064,3 +3064,63 @@ async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
     assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 1);
     assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn pre_flip_side_for_latitude_picks_west_in_north_and_east_in_south() {
+    // The natural pier side is hemisphere-dependent: Northern observers
+    // have the counterweight on the West (Polaris-pointing axis tilts
+    // east of horizontal), Southern observers have the opposite. The
+    // helper is consulted from `execute_slew_with_explicit_side`,
+    // `destination_side_of_pier`, and the slew watcher's pickup loop,
+    // so both branches are load-bearing for the flip-policy logic.
+    assert_eq!(pre_flip_side_for_latitude(47.6), PierSide::West);
+    assert_eq!(pre_flip_side_for_latitude(0.0), PierSide::West);
+    assert_eq!(pre_flip_side_for_latitude(-33.0), PierSide::East);
+}
+
+#[tokio::test]
+async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
+    // `Device::set_connected(false)` calls `reset_for_disconnect` on
+    // the in-memory state. This test pins the contract directly: every
+    // session-scoped field returns to its `Default::default` value,
+    // and `at_park` plus `slew_settle_time` survive (mechanical state
+    // and operator-tuned settings persist across reconnects).
+    let mut s = DriverState {
+        tracking_requested: true,
+        at_park: true,
+        target_ra_hours: Some(12.0),
+        target_dec_degrees: Some(45.0),
+        slew_settle_time: Some(Duration::from_secs(7)),
+        slew_in_progress: true,
+        park_ra_ticks: Some(1_000),
+        park_dec_ticks: Some(-1_000),
+        target_pier_side: Some(PierSide::East),
+        guide_rate_ra_fraction: 0.25,
+        guide_rate_dec_fraction: 0.75,
+        pulse_guiding_ra: true,
+        pulse_guiding_dec: true,
+    };
+
+    s.reset_for_disconnect();
+
+    // Cleared.
+    assert!(!s.tracking_requested);
+    assert_eq!(s.target_ra_hours, None);
+    assert_eq!(s.target_dec_degrees, None);
+    assert!(!s.slew_in_progress);
+    assert_eq!(s.park_ra_ticks, None);
+    assert_eq!(s.park_dec_ticks, None);
+    assert!(!s.pulse_guiding_ra);
+    assert!(!s.pulse_guiding_dec);
+    // Guide rates re-initialise to the default (half-sidereal).
+    assert!((s.guide_rate_ra_fraction - 0.5).abs() < 1e-9);
+    assert!((s.guide_rate_dec_fraction - 0.5).abs() < 1e-9);
+
+    // Preserved — mechanical state and operator-tuned override.
+    assert!(s.at_park);
+    assert_eq!(s.slew_settle_time, Some(Duration::from_secs(7)));
+    // `target_pier_side` is not reset by `reset_for_disconnect`; it is
+    // overwritten by the next slew. Pin that behaviour so a future
+    // change has to be deliberate.
+    assert_eq!(s.target_pier_side, Some(PierSide::East));
+}
