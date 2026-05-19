@@ -302,14 +302,15 @@ with a real ASTAP install + a known-solvable FITS, then time two
 requests via `curl`:
 
 ```sh
-# With hints (M31 example)
+# With hints (M 101 example — matches the committed
+# tests/fixtures/m101_known.fits)
 time curl -s -X POST http://localhost:11131/api/v1/solve \
   -H 'content-type: application/json' \
   -d '{
-    "fits_path": "/path/to/m31_known.fits",
-    "ra_hint": 10.6847,
-    "dec_hint": 41.2689,
-    "fov_hint_deg": 1.5,
+    "fits_path": "/path/to/m101_known.fits",
+    "ra_hint": 210.8099,
+    "dec_hint": 54.3469,
+    "fov_hint_deg": 0.42,
     "search_radius_deg": 3.0,
     "timeout": "30s"
   }'
@@ -317,7 +318,7 @@ time curl -s -X POST http://localhost:11131/api/v1/solve \
 # Same FITS, no hints (blind solve)
 time curl -s -X POST http://localhost:11131/api/v1/solve \
   -H 'content-type: application/json' \
-  -d '{"fits_path": "/path/to/m31_known.fits", "timeout": "120s"}'
+  -d '{"fits_path": "/path/to/m101_known.fits", "timeout": "120s"}'
 ```
 
 The hinted call typically completes in 1–3 s; the blind call takes

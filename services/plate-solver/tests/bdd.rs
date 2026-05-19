@@ -58,8 +58,11 @@ bdd_infra::bdd_main! {
                 || sc.tags.iter().any(|t| t == "unix" || t == "@unix");
             let is_unix = cfg!(unix);
             // `@manual` gates scenarios that need an external fixture
-            // not committed to the repo (e.g., a real ASTAP-solvable
-            // m31 FITS). Run them by setting `RUN_MANUAL_BDD=1` and
+            // not committed to the repo. Currently no scenarios are
+            // tagged `@manual` (the M 101 happy-path was promoted in
+            // issue #233); the filter is kept for future scenarios
+            // that may rely on operator-staged inputs.
+            // Run such scenarios by setting `RUN_MANUAL_BDD=1` and
             // staging the fixture into `tests/fixtures/`.
             let is_manual = feat.tags.iter().any(|t| t == "manual" || t == "@manual")
                 || sc.tags.iter().any(|t| t == "manual" || t == "@manual");

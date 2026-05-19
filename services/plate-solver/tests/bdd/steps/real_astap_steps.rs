@@ -31,12 +31,12 @@ async fn given_wrapper_with_real_astap(world: &mut PlateSolverWorld) {
     world.service_handle = Some(handle);
 }
 
-#[given("the m31_known.fits fixture is on disk")]
-async fn given_m31_fixture(world: &mut PlateSolverWorld) {
-    let fixture_src = fixture_path("m31_known.fits");
+#[given("the m101_known.fits fixture is on disk")]
+async fn given_m101_fixture(world: &mut PlateSolverWorld) {
+    let fixture_src = fixture_path("m101_known.fits");
     let dir = world.temp_dir_path();
-    let dst = dir.join("m31_known.fits");
-    std::fs::copy(&fixture_src, &dst).expect("copy m31 fixture");
+    let dst = dir.join("m101_known.fits");
+    std::fs::copy(&fixture_src, &dst).expect("copy m101 fixture");
     world.fits_path = Some(dst);
 }
 
