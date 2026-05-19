@@ -227,10 +227,12 @@ enum CompletionDecision {
 ///   settle) × sidereal rate`). After the settle, the finalizer
 ///   runs under one write lock that also clears `slew_in_progress`.
 ///
-/// The polling-pause guard is held by value across the whole task
-/// so background polling resumes on every exit path (early return
-/// for abort, disconnect, blocked-axis, panic, or normal
-/// completion).
+/// The polling-pause guard is owned by an in-scope binding so every
+/// exit path releases it: the `Complete` branch drops it explicitly
+/// before the settle delay (so the background polling task can
+/// refresh the snapshot while we wait), and every other path —
+/// `Continue` looping, `Bail`, abort, disconnect, blocked-axis, retry
+/// exhaustion, panic — releases it via RAII drop on the way out.
 async fn run_completion_watcher<C, F>(
     state: Arc<RwLock<DriverState>>,
     transport: Arc<TransportManager>,
