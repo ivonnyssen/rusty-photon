@@ -311,7 +311,7 @@ Already in place on the PR #2 scaffold (added across the round-2 / round-3 revie
 * `Switch::max_switch → Ok(2)`.
 * `Switch::can_write(_) → Ok(false)` (with `ensure_connected!` + `validate_id`).
 * `Switch::state_change_complete(_) → Ok(true)` — sync device, no async to wait for (matches `ppba-driver` precedent, **not** the prior `NOT_IMPLEMENTED` sketch).
-* `Switch::set_switch / set_switch_value / set_switch_name → INVALID_OPERATION` — no writable switches; names are fixed in config. All three carry `ensure_connected!` + `validate_id`.
+* `Switch::set_switch / set_switch_value / set_switch_name → NOT_IMPLEMENTED` — no writable switches; names are fixed in config. All three carry `ensure_connected!` + `validate_id`. (Phase 3e originally pinned this to `INVALID_OPERATION`; Phase 3g's first ConformU run flagged it as the wrong wire code — "no writable switches" is a capability gap, not a state-dependent rejection — and the contract was retconned to `NOT_IMPLEMENTED`. The design doc and BDD scenario landed alongside the switch code change in the Phase 3g commit.)
 
 3e's actual job is to fill in the seven currently-`unimplemented!()` getter methods and thread them through the **existing** `ensure_connected!` + `validate_id` helpers (in that order — guard first, validation second):
 
@@ -325,7 +325,7 @@ Already in place on the PR #2 scaffold (added across the round-2 / round-3 revie
 * `Switch::get_switch(0)` — `get_switch_value(0).await.map(|v| v > 0.0)`.
 * `Switch::get_switch(1)` — `get_switch_value(1).await.map(|v| v > 0.5)`.
 
-The Switch V3 async surface (`can_async`, `set_async`, `set_async_value`, `cancel_async`) is intentionally left to the trait defaults (which return `NOT_IMPLEMENTED`) — only `state_change_complete` is explicitly overridden, because ConformU expects it to answer for sync devices.
+~~The Switch V3 async surface (`can_async`, `set_async`, `set_async_value`, `cancel_async`) is intentionally left to the trait defaults (which return `NOT_IMPLEMENTED`) — only `state_change_complete` is explicitly overridden, because ConformU expects it to answer for sync devices.~~ **Superseded in Phase 3g:** ConformU flagged the trait defaults — `can_async` returns `Ok(false)` regardless of id, and the three writers return `NOT_IMPLEMENTED` without running id validation, so an out-of-range id was reported as "did not throw an exception" / "NotImplementedException returned for a method that must function per spec". The four methods are now explicit overrides chaining `ensure_connected!` + `validate_id` before the trait-default body (`Ok(false)` for `can_async`; `Err(NOT_IMPLEMENTED)` for the three writers). The override pattern mirrors `set_switch` et al.
 
 BDD step bodies in `status_switch_steps.rs`:
 
@@ -352,14 +352,58 @@ Implementation in `services/pa-falcon-rotator/tests/test_lib.rs` (gated on `feat
 
 Implementation in `services/pa-falcon-rotator/tests/conformu_integration.rs`:
 
-* `#[ignore]` everywhere. Spawn the binary with `--features mock`, parse `bound_addr=`, run two ConformU passes:
-    - `cargo test ... -- --ignored --nocapture` invokes `conformu conformance http://127.0.0.1:<port>/api/v1/rotator/0` then `.../switch/0`.
-* Re-uses `bdd_infra::parse_bound_port` per `docs/skills/testing.md` §5.1.
+* Two `#[tokio::test] #[ignore]` tests — `conformu_compliance_tests_rotator`
+  and `conformu_compliance_tests_switch` — mirroring the ppba-driver
+  split (one per ASCOM class, the other device disabled in the JSON
+  config so ConformU targets a single device at `/0`).
+* Both acquire a `static CONFORMU_LOCK: Mutex<()>` to serialise the
+  binds because the ASCOM Alpaca discovery service binds to a fixed
+  UDP port (matches ppba-driver and qhy-focuser precedent).
+* The binary is launched via `bdd_infra::ServiceHandle::try_start(env!("CARGO_PKG_NAME"), ...)`,
+  which discovers the `target/debug/pa-falcon-rotator` binary, parses
+  `bound_addr=<host>:<port>` from stdout (`parse_bound_port` is the
+  underlying primitive — see [`docs/skills/testing.md` §5.1](../skills/testing.md#51-shared-infrastructure-bdd-infra-crate)),
+  and provides `handle.base_url` for `ConformUTestBuilder::new::<dyn Rotator>` /
+  `::<dyn Switch>`.
+* A shared `base_conformu_settings()` returns the standard boilerplate
+  (`SettingsCompatibilityVersion`, `TestProperties`, `TestMethods`, the
+  `Telescope*` / `Camera*` placeholders ConformU silently writes back
+  even when the device is unrelated). Each test overrides only the
+  keys relevant to its device class:
+    - Rotator test adds `RotatorTimeout: 30` (down from the default 60 —
+      the mock backend responds in microseconds, mirroring the
+      `FocuserTimeout: 30` precedent in `services/qhy-focuser/tests/conformu_integration.rs`).
+    - Switch test adds `SwitchEnableSet: false`, `SwitchReadDelay: 50`,
+      `SwitchWriteDelay: 100`, `SwitchExtendedNumberTestRange: 100`,
+      `SwitchAsyncTimeout: 10`, `SwitchTestOffsets: true` — same
+      values as `services/ppba-driver/tests/conformu_integration.rs`,
+      which cuts the Switch run from ~8 min to ~35 s on CI.
+* `handle.stop()` is called unconditionally after capturing the
+  ConformU result so the service gets a graceful SIGTERM (and writes
+  coverage `.profraw` data) even when the conformance run fails.
 
 `Cargo.toml`:
 
-* `[features] conformu = ["mock", "ascom-alpaca/test"]` already in 2a; add `[package.metadata.conformu] command = "cargo test -p pa-falcon-rotator --features conformu --test conformu_integration -- --ignored --nocapture"`.
+* `[features] conformu = ["mock", "ascom-alpaca/test"]` already in 2a; this
+  sub-phase adds `[package.metadata.conformu] command = "cargo test -p pa-falcon-rotator --features conformu --test conformu_integration -- --ignored --nocapture"`.
 * `.github/workflows/conformu.yml` discovers new entries dynamically via `cargo metadata` (per `docs/skills/pre-push.md`) — no workflow edit needed.
+
+Switch contract fixes surfaced by the first ConformU run:
+
+* `set_switch` / `set_switch_value` / `set_switch_name` now return
+  `NOT_IMPLEMENTED` (1024) instead of `INVALID_OPERATION` (1035).
+  ConformU reads "no writable switches" as a capability gap, not a
+  state-dependent rejection — see the [Switch layout](../services/falcon-rotator.md#write-surface-read-only-device)
+  doc section for the rationale. The design-doc Error Model table and
+  the `tests/features/status_switch.feature` scenario landed in the same
+  commit.
+* The four `ISwitchV3` async methods (`can_async`, `set_async`,
+  `set_async_value`, `cancel_async`) are now explicit overrides that run
+  `ensure_connected!` + `validate_id` before falling through to the
+  trait-default body. The trait defaults bypass id validation, which
+  ConformU flags as "did not throw an exception" for `CanAsync(id ≥ MaxSwitch)`
+  and "NotImplementedException returned where InvalidValueException is
+  required" for the three writers.
 
 ### 3h — README + workspace.md final updates
 

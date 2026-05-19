@@ -50,3 +50,6 @@ cargo-husky = { workspace = true }
 name = "bdd"
 harness = false
 required-features = ["mock"]
+
+[package.metadata.conformu]
+command = "cargo test -p pa-falcon-rotator --features conformu --test conformu_integration -- --ignored --nocapture"

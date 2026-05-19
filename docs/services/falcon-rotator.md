@@ -205,6 +205,14 @@ ASCOM `IObservingConditions` was considered for voltage and rejected: its standa
 
 `Min = 0`, `Max = 1023` for switch 0 assumes a 10-bit ADC on the Falcon's MCU. If hardware characterisation reveals a wider range (12-bit / 16-bit) the `Max` value is widened in a follow-up; the field is hard-coded rather than configurable to keep the ASCOM metadata stable across deployments.
 
+#### Write surface (read-only device)
+
+Because both switches are read-only, the write surface is a capability gap rather than a state-dependent rejection:
+
+- `SetSwitch`, `SetSwitchValue`, `SetSwitchName` return `NOT_IMPLEMENTED` (`0x400` / 1024) for any valid id. ConformU treats `INVALID_OPERATION` (`0x40B` / 1035) as the wrong code here — that code is for "the device is in a state where this operation isn't allowed", not for "this device fundamentally doesn't support this operation".
+- The ISwitchV3 async surface (`CanAsync`, `SetAsync`, `SetAsyncValue`, `CancelAsync`) is explicitly overridden so id validation runs before the trait defaults. `CanAsync(valid_id)` returns `false`; the three writers return `NOT_IMPLEMENTED`. Out-of-range ids return `INVALID_VALUE` (1025) on every async method.
+- Every write method still runs the `ensure_connected!` guard first, so a disconnected client always sees `NOT_CONNECTED` (1031) regardless of id or method.
+
 ### Scale calibration
 
 The voltage raw-to-volts conversion is **deliberately deferred**. The PDF gives no scale factor, and we have no schematic for the input divider. Two follow-up paths once hardware characterisation is in hand:
@@ -357,12 +365,13 @@ For each of `Move(delta)`, `MoveAbsolute(skyDeg)`, `MoveMechanical(mechDeg)`:
 
 ## Error Model
 
-Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: only the two error variants ASCOM clients actually distinguish on get their own codes; everything else collapses to `INVALID_OPERATION`.
+Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: only the error variants ASCOM clients actually distinguish on get their own codes; everything else collapses to `INVALID_OPERATION`.
 
 | Driver error variant | ASCOM error code | Triggering conditions |
 |---|---|---|
 | `NotConnected` | `NOT_CONNECTED` (`0x407`) | Any property/method called while `connected() == false` |
-| `InvalidValue(msg)` | `INVALID_VALUE` (`0x401`) | Client supplied `NaN` / non-finite angle to `Move*` / `Sync` |
+| `InvalidValue(msg)` | `INVALID_VALUE` (`0x401`) | Client supplied `NaN` / non-finite angle to `Move*` / `Sync`; switch id ≥ `MaxSwitch` on any Switch method |
+| n/a (Switch capability gap) | `NOT_IMPLEMENTED` (`0x400`) | `SetSwitch` / `SetSwitchValue` / `SetSwitchName` and the `SetAsync` / `SetAsyncValue` / `CancelAsync` writers on the read-only Status Switch device — see [Write surface](#write-surface-read-only-device) |
 | All others | `INVALID_OPERATION` (`0x40B`) | `ConnectionFailed` (handshake failure), `SerialPort`, `Timeout`, `Io`, `InvalidResponse`, `ParseError`, `Communication` |
 
 ## MVP Scope

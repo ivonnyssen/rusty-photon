@@ -44,11 +44,11 @@ Feature: Status Switch device
     And I read GetSwitchValue for id 1
     Then the switch value should be 1.0
 
-  Scenario Outline: SetSwitch on either switch is rejected with INVALID_OPERATION
+  Scenario Outline: SetSwitch on either switch is rejected with NOT_IMPLEMENTED
     Given a running pa-falcon-rotator service
     When I connect the status switch
     And I call SetSwitch on id <id> with true
-    Then the set should fail with code 1035
+    Then the set should fail with code 1024
 
     Examples:
       | id |
