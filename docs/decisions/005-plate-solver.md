@@ -422,11 +422,11 @@ below tracks which have been retired.
    The nightly `plate-solver-smoke` workflow runs the
    `@requires-astap` BDD smoke against real ASTAP on `macos-latest`
    with `xattr -d com.apple.quarantine` cleared per run. Failure
-   recovery → tracking issue. Happy-path m31 solve is `@manual`-tagged
-   pending a real solvable fixture (synthesizing one is hard;
-   committing a multi-MB binary is undesirable); the failure-mode
-   scenario (`solve_failed` on a synthetic degenerate FITS) is
-   exercised on every nightly run.
+   recovery → tracking issue. Both the happy-path (M 101 solve
+   against the committed `m101_known.fits` fixture — a 1024×1024
+   ~2 MB crop, see issue #233) and the failure-mode (`solve_failed`
+   on a synthetic degenerate FITS) scenarios are exercised on every
+   nightly run.
 2. **Windows x64 — end-to-end solve.** **Retired by Phase 6** —
    same workflow, `windows-latest` matrix leg.
 3. **Windows ARM64** — **decision: out of scope for v1.** No
@@ -435,13 +435,16 @@ below tracks which have been retired.
    investment. The `install-astap` action keeps the `Windows-ARM64`
    row for operators who *do* run on that hardware, but the wrapper
    isn't claimed to be supported there until a real user surfaces.
-4. **End-to-end solve timing** — **partially retired.** The nightly
-   smoke captures per-OS workflow log timing on the failure-mode
-   scenario, which exercises the wrapper's spawn / wait / exit
-   pipeline. Real solve-time trending against representative
-   2k–4k FITS frames is forward work tracked in Phase 7
-   (hint-plumbing verification) — that's where the `@manual` happy-path
-   gets exercised by an operator with a real fixture.
+4. **End-to-end solve timing** — **Retired by issue #233.** The
+   nightly smoke now captures per-OS workflow log timing on both
+   the failure-mode scenario (spawn / wait / exit pipeline) and the
+   happy-path scenario (full solve pipeline including `.wcs`
+   parsing). The committed `m101_known.fits` fixture is a 1024×1024
+   crop rather than the 2k–4k size originally sketched, but ASTAP
+   solves it deterministically in ~0.1 s without hints (4/4 quad
+   match against D05), which is the signal this OQ was after:
+   per-platform success-path timing alongside the failure-path
+   baseline.
 5. **LGPL-3.0 §4 / §6 review under BYO** — **Retired by Phase 8.**
    Conclusions: (a) subprocess execution doesn't engage §4
    (Combined Works) or §6 (Conveying Non-Source Forms) — those

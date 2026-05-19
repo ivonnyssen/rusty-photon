@@ -14,23 +14,22 @@ Feature: Real-ASTAP smoke (mock-honesty backstop)
   feature files'. The `@requires-astap` tag stays — it's the permanent
   cadence gate.
 
-  @manual
-  Scenario: Real ASTAP solves the m31 fixture within tolerance
-    # Tagged @manual because the m31_known.fits fixture (a real
-    # ASTAP-solvable star field) is not committed to the repo —
-    # generating one synthetically is hard (ASTAP needs real star
-    # positions) and committing a multi-MB binary doesn't fit. The
-    # scenario stays in the feature file as a documented contract;
-    # the bdd.rs filter excludes @manual unless RUN_MANUAL_BDD=1 is
-    # set. Hint-plumbing and timing data come from Phase 7's perf
-    # comparison, which an operator runs against their own real
-    # FITS.
+  Scenario: Real ASTAP solves the M 101 fixture within tolerance
+    # `m101_known.fits` is a 1024×1024 centered crop of a real NINA
+    # capture (FSQ106 + QHY600M, B filter, 120 s, 2025-05-20 session),
+    # downsized from ~117 MB to ~2 MB while keeping enough stars for
+    # ASTAP to solve without hints (88 stars, 4/4 quad match, ~0.1 s
+    # solve on the reference Linux box). The committed copy and its
+    # solved WCS agree to sub-arcsecond precision with the full
+    # frame; the assertion tolerance (0.01°) is far wider than the
+    # observed solve scatter, so the test is robust against version
+    # drift in ASTAP's quad-search ordering.
     Given the wrapper is running with the real ASTAP_BINARY as its solver
-    And the m31_known.fits fixture is on disk
+    And the m101_known.fits fixture is on disk
     When I POST to /api/v1/solve with that fits_path
     Then the response status is 200
-    And the response field "ra_center" is approximately 10.6848 within 0.01 degrees
-    And the response field "dec_center" is approximately 41.2690 within 0.01 degrees
+    And the response field "ra_center" is approximately 210.8099 within 0.01 degrees
+    And the response field "dec_center" is approximately 54.3469 within 0.01 degrees
     And the response field "solver" contains "astap" case-insensitively
 
   Scenario: Real ASTAP returns solve_failed on a degenerate FITS
