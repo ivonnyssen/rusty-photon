@@ -247,19 +247,31 @@ jobs:
       - name: Record platform result
         if: steps.rot.outputs.rotated == 'true'
         shell: bash
+        # Untrusted inputs (BANNER comes from upstream binary stdout)
+        # are passed via env so they become runtime bash variables
+        # rather than YAML-preprocessed source text. `jq -n --arg` then
+        # produces correctly-escaped JSON, so a banner containing `"`,
+        # `\`, `$(...)`, or newlines can't break the output or inject
+        # commands. CodeQL flagged the previous printf form on PR #273.
+        env:
+          ARCH_KEY: ${{ matrix.arch_key }}
+          ARCHIVE: ${{ matrix.archive }}
+          CURRENT_SHA: ${{ steps.current.outputs.sha }}
+          NEW_SHA: ${{ steps.new.outputs.sha }}
+          BANNER: ${{ steps.banner.outputs.version }}
+          PASSED: ${{ steps.verify.outputs.passed }}
         run: |
           set -euo pipefail
           mkdir -p result
-          {
-            printf '{\n'
-            printf '  "arch_key": "%s",\n'    "${{ matrix.arch_key }}"
-            printf '  "archive": "%s",\n'     "${{ matrix.archive }}"
-            printf '  "current_sha": "%s",\n' "${{ steps.current.outputs.sha }}"
-            printf '  "new_sha": "%s",\n'     "${{ steps.new.outputs.sha }}"
-            printf '  "banner": "%s",\n'      "${{ steps.banner.outputs.version }}"
-            printf '  "m101_passed": "%s"\n'  "${{ steps.verify.outputs.passed }}"
-            printf '}\n'
-          } > result/${{ matrix.arch_key }}.json
+          jq -n \
+            --arg arch_key    "$ARCH_KEY" \
+            --arg archive     "$ARCHIVE" \
+            --arg current_sha "$CURRENT_SHA" \
+            --arg new_sha     "$NEW_SHA" \
+            --arg banner      "$BANNER" \
+            --arg m101_passed "$PASSED" \
+            '{arch_key: $arch_key, archive: $archive, current_sha: $current_sha, new_sha: $new_sha, banner: $banner, m101_passed: $m101_passed}' \
+            > "result/${ARCH_KEY}.json"
 
       - uses: actions/upload-artifact@v7
         if: steps.rot.outputs.rotated == 'true'
@@ -412,6 +424,14 @@ jobs:
         if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ROWS contains the per-platform banner versions, which originate
+          # from upstream binary stdout (untrusted). Pass via env so it
+          # becomes a runtime bash variable; the heredoc below interpolates
+          # `${ROWS}` as plain text and bash's single-pass expansion rule
+          # prevents re-evaluation of any `$(...)` or backticks inside.
+          # CodeQL flagged the previous direct `${{ }}` interpolation on
+          # PR #273.
+          ROWS: ${{ steps.agg.outputs.rows }}
         shell: bash
         run: |
           set -euo pipefail
@@ -454,7 +474,7 @@ jobs:
 
           ## Per-platform results
 
-          ${{ steps.agg.outputs.rows }}
+          ${ROWS}
 
           ## Verification
 
