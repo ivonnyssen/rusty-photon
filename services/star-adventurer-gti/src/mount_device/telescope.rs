@@ -29,6 +29,7 @@ use crate::coordinates::{
 
 use super::inherent::validate_guide_rate;
 use super::park_persistence::write_park_to_config;
+use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::{clear_pulse_flag, spawn_park_completion_watcher, spawn_pulse_guide_watcher};
 use super::{pre_flip_side_for_latitude, MountDevice};
 
@@ -214,13 +215,11 @@ impl Telescope for MountDevice {
             // allowed — Park itself leaves tracking off, but a caller
             // re-asserting that should not error.
             self.ensure_unparked().await?;
-            // Compute the sidereal step period from the cached parameters.
             let params = self
                 .transport
                 .parameters()
                 .await
                 .ok_or(ASCOMError::NOT_CONNECTED)?;
-            let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
             // Per Sky-Watcher spec §2: "Motor must be at full stop
             // status before setting the motion mode." The RA axis
             // may already be running — from a prior tracking enable,
@@ -229,22 +228,7 @@ impl Telescope for MountDevice {
             // for the running flag to clear before re-issuing the
             // tracking-mode `:G`/`:I`/`:J` sequence.
             self.stop_and_wait(Axis::Ra).await?;
-            self.transport
-                .send(Command::SetMotionMode {
-                    axis: Axis::Ra,
-                    mode: MotionMode::TRACKING,
-                })
-                .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::SetStepPeriod {
-                    axis: Axis::Ra,
-                    period,
-                })
-                .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::StartMotion(Axis::Ra))
+            enable_sidereal_tracking_ra(&self.transport, &params)
                 .await
                 .map_err(Self::ascom)?;
         } else {
