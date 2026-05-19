@@ -17,6 +17,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 | [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
+| [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
 
 ### RP (Main Application)
 
@@ -71,6 +72,12 @@ See [docs/services/sky-survey-camera.md](docs/services/sky-survey-camera.md) for
 ASCOM Alpaca Telescope driver for the Sky-Watcher Star Adventurer GTi, an entry-level GoTo equatorial mount. Speaks the Sky-Watcher motor-controller protocol over USB-CDC serial (115200 baud) and UDP (192.168.4.1:11880 in mount-AP mode). Implements the MVP slice — connect/disconnect, RA/Dec reads, sync, async slew, sidereal tracking, software park, abort — leaving guiding, custom rates, and Alt/Az slew for follow-up. The shared codec lives in the `skywatcher-motor-protocol` workspace crate so other Sky-Watcher mounts can reuse it.
 
 See [docs/services/star-adventurer-gti.md](docs/services/star-adventurer-gti.md) for design documentation.
+
+### Pa Falcon Rotator
+
+ASCOM Alpaca Rotator + Switch driver for the Pegasus Astro Falcon Rotator (firmware ≥ 1.3). Exposes the rotator as `IRotatorV4` with sky/mechanical position separation (`Sync` is a driver-side offset; the wire-level `SD` command is never issued) and a second `ISwitchV3` device that surfaces the Falcon's raw input voltage and `FA.limit_detect` flag as two read-only switches. Communicates via 9600-baud USB-CDC serial; every property read maps to a live serial command (no cache, no background poller) so the device is always the authoritative source.
+
+See [docs/services/falcon-rotator.md](docs/services/falcon-rotator.md) for design documentation.
 
 ## Getting Started
 
@@ -222,3 +229,5 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sky-survey-camera
 [cov-star-adventurer-gti]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=star-adventurer-gti
 [cov-star-adventurer-gti-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=star-adventurer-gti
+[cov-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-falcon-rotator
+[cov-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-falcon-rotator

@@ -1,0 +1,22 @@
+{
+  "serial": {
+    "port": "/dev/tty.usbserial-FALCON",
+    "baud_rate": 9600,
+    "timeout": "2s"
+  },
+  "server": {
+    "port": 11118
+  },
+  "rotator": {
+    "name": "Pegasus Falcon Rotator",
+    "unique_id": "pa-falcon-rotator-001",
+    "description": "Pegasus Astro Falcon Rotator (firmware >= 1.3)",
+    "enabled": true
+  },
+  "switch": {
+    "name": "Pegasus Falcon Status",
+    "unique_id": "pa-falcon-rotator-status-001",
+    "description": "Pegasus Falcon Rotator status sensors (voltage + limit-hit)",
+    "enabled": true
+  }
+}

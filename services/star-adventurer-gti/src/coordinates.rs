@@ -402,8 +402,8 @@ pub fn dec_degrees_to_ticks(dec_degrees: f64, cpr: u32) -> i32 {
 /// is exactly on target.
 ///
 /// `projection` is the watcher's expected per-iteration duration —
-/// see [`crate::mount_device::spawn_slew_completion_watcher`]. On a
-/// per-`polling_interval` cadence the empirical observation is
+/// see the slew-completion watcher in `crate::mount_device::watchers`.
+/// On a per-`polling_interval` cadence the empirical observation is
 /// ~`polling_interval × 2` (one watcher sleep + one slew-settle
 /// + wire round-trips).
 pub fn pickup_target_ra_ticks(

@@ -12,6 +12,7 @@ members = [
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
+  "services/pa-falcon-rotator",
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",
