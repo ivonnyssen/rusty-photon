@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::telescope::PierSide;
-use skywatcher_motor_protocol::command::MotionMode;
 use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -32,12 +31,14 @@ use tracing::debug;
 use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, encoder_to_celestial, fold_to_canonical_band, local_sidereal_time_hours,
-    pickup_target_ra_ticks, sidereal_step_period, target_encoder_flipped,
+    pickup_target_ra_ticks, target_encoder_flipped,
 };
 use crate::error::StarAdvError;
 use crate::transport_manager::{MountSnapshot, TransportManager};
 
-use super::slew::{pickup_reslew_axis, stop_axis_and_wait, AXIS_STOP_TIMEOUT};
+use super::slew::{
+    enable_sidereal_tracking_ra, pickup_reslew_axis, stop_axis_and_wait, AXIS_STOP_TIMEOUT,
+};
 use super::{pre_flip_side_for_latitude, DriverState};
 
 /// Minimum wallclock duration the slew watcher will keep
@@ -557,10 +558,12 @@ async fn slew_completion_step(
 
     // Slew completed cleanly. Re-enable tracking if the user had
     // it on before the slew, then hand off to the helper's settle.
-    // Only mark `tracking_requested = true` if the `StartMotion`
-    // actually succeeds — otherwise `Tracking()` would lie about
-    // the wire state. The earlier mode/period sends are
-    // best-effort but failures are logged for diagnosis.
+    // [`enable_sidereal_tracking_ra`] short-circuits on the first
+    // failing send, so `tracking_requested = true` flips only when
+    // all three wire commands succeed — otherwise `Tracking()`
+    // would lie about the wire state. A single warn covers the
+    // failure path (the failing-send error includes which command
+    // failed).
     //
     // Re-check abort / disconnect before issuing the tracking
     // wire sequence — same race-window argument as the pickup
@@ -573,31 +576,14 @@ async fn slew_completion_step(
     }
     if tracking_was_on {
         if let Some(params) = transport.parameters().await {
-            let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-            if let Err(e) = transport
-                .send(Command::SetMotionMode {
-                    axis: Axis::Ra,
-                    mode: MotionMode::TRACKING,
-                })
-                .await
-            {
-                tracing::warn!("post-slew SetMotionMode TRACKING failed: {e}");
-            }
-            if let Err(e) = transport
-                .send(Command::SetStepPeriod {
-                    axis: Axis::Ra,
-                    period,
-                })
-                .await
-            {
-                tracing::warn!("post-slew SetStepPeriod failed: {e}");
-            }
-            match transport.send(Command::StartMotion(Axis::Ra)).await {
-                Ok(_) => {
+            match enable_sidereal_tracking_ra(&transport, &params).await {
+                Ok(()) => {
                     state.write().await.tracking_requested = true;
                 }
                 Err(e) => {
-                    tracing::warn!("post-slew StartMotion failed; tracking not re-enabled: {e}");
+                    tracing::warn!(
+                        "post-slew tracking restart failed; tracking not re-enabled: {e}"
+                    );
                 }
             }
         }
@@ -774,25 +760,8 @@ pub(super) fn spawn_pulse_guide_watcher(
             let still_want_restore = state.read().await.pulse_guiding_ra;
             if still_want_restore {
                 if let Some(params) = transport.parameters().await {
-                    let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-                    if let Err(e) = transport
-                        .send(Command::SetMotionMode {
-                            axis: Axis::Ra,
-                            mode: MotionMode::TRACKING,
-                        })
-                        .await
-                    {
-                        tracing::warn!("pulse-guide restore :G1 failed: {e}");
-                    } else if let Err(e) = transport
-                        .send(Command::SetStepPeriod {
-                            axis: Axis::Ra,
-                            period,
-                        })
-                        .await
-                    {
-                        tracing::warn!("pulse-guide restore :I1 failed: {e}");
-                    } else if let Err(e) = transport.send(Command::StartMotion(Axis::Ra)).await {
-                        tracing::warn!("pulse-guide restore :J1 failed: {e}");
+                    if let Err(e) = enable_sidereal_tracking_ra(&transport, &params).await {
+                        tracing::warn!("pulse-guide tracking restore failed: {e}");
                     }
                 }
             }

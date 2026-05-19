@@ -20,9 +20,9 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command, Response};
 
-use crate::coordinates::ra_ticks_to_mechanical_ha;
+use crate::coordinates::{ra_ticks_to_mechanical_ha, sidereal_step_period};
 use crate::error::StarAdvError;
-use crate::transport_manager::TransportManager;
+use crate::transport_manager::{MountParameters, TransportManager};
 
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
 /// after a `:K` (decelerate stop) before giving up. The firmware
@@ -121,6 +121,35 @@ pub(super) async fn stop_axis_and_wait(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Re-engage sidereal tracking on the RA axis. Issues the canonical
+/// three-step sequence: `:G1 TRACKING` → `:I1 sidereal_period` → `:J1`.
+///
+/// Caller is responsible for the prior `:K1` + stop-wait — `:G` returns
+/// `!2 MotorNotStopped` if the motor is still decelerating. Returns on
+/// first wire failure so the caller picks the policy:
+/// `set_tracking(true)` maps to `ASCOMError` and propagates; the slew /
+/// pulse-guide watchers log at `warn` and continue.
+pub(super) async fn enable_sidereal_tracking_ra(
+    transport: &TransportManager,
+    params: &MountParameters,
+) -> crate::error::Result<()> {
+    let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+    transport
+        .send(Command::SetMotionMode {
+            axis: Axis::Ra,
+            mode: MotionMode::TRACKING,
+        })
+        .await?;
+    transport
+        .send(Command::SetStepPeriod {
+            axis: Axis::Ra,
+            period,
+        })
+        .await?;
+    transport.send(Command::StartMotion(Axis::Ra)).await?;
+    Ok(())
 }
 
 /// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
