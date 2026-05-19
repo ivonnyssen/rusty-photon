@@ -227,15 +227,21 @@ impl Rotator for FalconRotatorDevice {
         // ASCOM `Move(delta)` is in sky coordinates: the new sky position is
         // (mech + offset) + delta, and the mechanical wire value is therefore
         // (mech + offset + delta) - offset = mech + delta.
-        let target_sky = normalise_deg(status.position_deg + offset + position);
-        let target_mech = normalise_deg(target_sky - offset);
+        let target_mech = normalise_deg(status.position_deg + position);
         // Set TargetPosition only after the MD command has been accepted —
         // a failed echo on the wire must NOT leave a stale target the
         // client could read back via TargetPosition (PR #241 round-5).
-        self.serial_manager
+        //
+        // Derive TargetPosition from the wire-quantised value that
+        // `move_mechanical` actually commanded so a near-boundary input
+        // (e.g. `359.999` → `MD:0.00`) doesn't leave a stored target the
+        // device was never told to reach.
+        let wire_mech = self
+            .serial_manager
             .move_mechanical(target_mech)
             .await
             .map_err(Self::to_ascom_error)?;
+        let target_sky = normalise_deg(wire_mech + offset);
         self.serial_manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -249,12 +255,13 @@ impl Rotator for FalconRotatorDevice {
             .to_ascom_error());
         }
         let offset = self.serial_manager.sync_offset().await;
-        let target_sky = normalise_deg(position);
         let target_mech = normalise_deg(position - offset);
-        self.serial_manager
+        let wire_mech = self
+            .serial_manager
             .move_mechanical(target_mech)
             .await
             .map_err(Self::to_ascom_error)?;
+        let target_sky = normalise_deg(wire_mech + offset);
         self.serial_manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -273,11 +280,12 @@ impl Rotator for FalconRotatorDevice {
         // in sky coordinates so subsequent TargetPosition reads stay frame-
         // consistent across the three Move variants.
         let offset = self.serial_manager.sync_offset().await;
-        let target_sky = normalise_deg(position + offset);
-        self.serial_manager
+        let wire_mech = self
+            .serial_manager
             .move_mechanical(normalise_deg(position))
             .await
             .map_err(Self::to_ascom_error)?;
+        let target_sky = normalise_deg(wire_mech + offset);
         self.serial_manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -566,6 +574,52 @@ mod mock_tests {
             let err = device.move_absolute(bad).await.unwrap_err();
             assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
         }
+    }
+
+    #[tokio::test]
+    async fn move_rejects_non_finite() {
+        // Move(delta) shares the finite-check shape of MoveAbsolute / Sync;
+        // pinning it here catches a regression that drops `is_finite()` on
+        // the relative-move path (PR #241 round-7 Copilot comment).
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let (device, _manager, _factory) = connected_device_with(factory);
+        device.set_connected(true).await.unwrap();
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = device.move_(bad).await.unwrap_err();
+            assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+        }
+    }
+
+    #[tokio::test]
+    async fn move_mechanical_rejects_non_finite() {
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let (device, _manager, _factory) = connected_device_with(factory);
+        device.set_connected(true).await.unwrap();
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = device.move_mechanical(bad).await.unwrap_err();
+            assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+        }
+    }
+
+    #[tokio::test]
+    async fn move_absolute_target_position_matches_wire_value_at_boundary() {
+        // 359.999 quantises to 360.00 then normalises to 0.00 on the wire.
+        // TargetPosition must follow the wire value so a client comparing
+        // it against Position after IsMoving=false doesn't see a stale
+        // 359.999 vs a fresh 0.00 — see PR #241 round-7 Copilot comment.
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let (device, _manager, _factory) = connected_device_with(factory);
+        device.set_connected(true).await.unwrap();
+
+        device.move_absolute(359.999).await.unwrap();
+
+        let target = device.target_position().await.unwrap();
+        assert!(
+            (target - 0.0).abs() < 1e-9,
+            "expected TargetPosition to track the wire-quantised value (0.0), got {target}"
+        );
     }
 
     #[tokio::test]

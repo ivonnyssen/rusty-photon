@@ -317,13 +317,20 @@ impl SerialManager {
 
     /// Move to a mechanical angle. The caller has already applied the sync
     /// offset; this method validates finiteness, quantises to the `MD:nn.nn`
-    /// wire precision, normalises into `[0, 360)`, and emits the command.
+    /// wire precision, normalises into `[0, 360)`, emits the command, and
+    /// returns the actual wire-quantised mechanical value that was sent.
     ///
     /// The quantise-before-normalise step matters because `format!("{:.2}",
     /// 359.999)` rounds up to `"360.00"`, which violates the documented
     /// `[0, 360)` wire range. Rounding first lets `normalise_deg` wrap that
     /// `360.0` back to `0.0` so the wire output stays in range.
-    pub async fn move_mechanical(&self, target_mech_deg: f64) -> Result<()> {
+    ///
+    /// The returned `f64` is the wire-quantised value. Callers that cache a
+    /// sky-coordinate `TargetPosition` should derive it from this value
+    /// rather than the raw input — otherwise `TargetPosition` can disagree
+    /// with the angle actually commanded when the input is near a wire
+    /// rounding boundary (e.g. `359.999` → `MD:0.00`).
+    pub async fn move_mechanical(&self, target_mech_deg: f64) -> Result<f64> {
         if !self.is_available() {
             return Err(FalconRotatorError::NotConnected);
         }
@@ -336,7 +343,7 @@ impl SerialManager {
         let cmd = Command::MoveDeg(wire_deg);
         let response = self.send_command_internal(&cmd).await?;
         validate_echo(&cmd, &response)?;
-        Ok(())
+        Ok(wire_deg)
     }
 
     /// Issue `FH`, validate the `FH:1` echo, and clear the stored target.
@@ -806,6 +813,30 @@ mod mock_tests {
 
         manager.move_mechanical(359.999).await.unwrap();
         assert_eq!(factory.command_log().await, vec!["MD:0.00".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_move_mechanical_returns_wire_quantised_value() {
+        // The returned f64 must equal what was actually written on the wire,
+        // not the raw input — callers that cache a sky-frame TargetPosition
+        // need this to derive a value the device was really commanded to
+        // reach (PR #241 round-7 / Copilot comment on rotator_device.rs:239).
+        let factory = Arc::new(MockSerialPortFactory::default());
+        let manager = manager_with(Arc::clone(&factory));
+        manager.connect().await.unwrap();
+        factory.clear_command_log().await;
+
+        let wire = manager.move_mechanical(359.999).await.unwrap();
+        assert!(
+            (wire - 0.0).abs() < 1e-9,
+            "expected wire-quantised 0.0, got {wire}"
+        );
+
+        let wire = manager.move_mechanical(123.456).await.unwrap();
+        assert!(
+            (wire - 123.46).abs() < 1e-9,
+            "expected wire-quantised 123.46, got {wire}"
+        );
     }
 
     #[tokio::test]

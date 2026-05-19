@@ -67,3 +67,27 @@ Feature: Movement
       | NaN       |
       | Infinity  |
       | -Infinity |
+
+  Scenario Outline: Move rejects non-finite deltas with INVALID_VALUE
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I call Move with <value>
+    Then the move should fail with code 1025
+
+    Examples:
+      | value     |
+      | NaN       |
+      | Infinity  |
+      | -Infinity |
+
+  Scenario Outline: MoveMechanical rejects non-finite angles with INVALID_VALUE
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I call MoveMechanical with <value>
+    Then the move should fail with code 1025
+
+    Examples:
+      | value     |
+      | NaN       |
+      | Infinity  |
+      | -Infinity |

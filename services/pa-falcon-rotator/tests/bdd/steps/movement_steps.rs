@@ -43,8 +43,42 @@ async fn move_absolute_neg_infinity(world: &mut FalconRotatorWorld) {
     capture_move_absolute(world, f64::NEG_INFINITY).await;
 }
 
+#[when("I call Move with Infinity")]
+async fn move_infinity(world: &mut FalconRotatorWorld) {
+    capture_move(world, f64::INFINITY).await;
+}
+
+#[when("I call Move with -Infinity")]
+async fn move_neg_infinity(world: &mut FalconRotatorWorld) {
+    capture_move(world, f64::NEG_INFINITY).await;
+}
+
+#[when("I call MoveMechanical with Infinity")]
+async fn move_mechanical_infinity(world: &mut FalconRotatorWorld) {
+    capture_move_mechanical(world, f64::INFINITY).await;
+}
+
+#[when("I call MoveMechanical with -Infinity")]
+async fn move_mechanical_neg_infinity(world: &mut FalconRotatorWorld) {
+    capture_move_mechanical(world, f64::NEG_INFINITY).await;
+}
+
 async fn capture_move_absolute(world: &mut FalconRotatorWorld, value: f64) {
     match world.rotator().move_absolute(value).await {
+        Ok(()) => world.last_error_code = None,
+        Err(e) => world.last_error_code = Some(e.code.raw()),
+    }
+}
+
+async fn capture_move(world: &mut FalconRotatorWorld, value: f64) {
+    match world.rotator().move_(value).await {
+        Ok(()) => world.last_error_code = None,
+        Err(e) => world.last_error_code = Some(e.code.raw()),
+    }
+}
+
+async fn capture_move_mechanical(world: &mut FalconRotatorWorld, value: f64) {
+    match world.rotator().move_mechanical(value).await {
         Ok(()) => world.last_error_code = None,
         Err(e) => world.last_error_code = Some(e.code.raw()),
     }
