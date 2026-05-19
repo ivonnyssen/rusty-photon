@@ -231,7 +231,17 @@ impl Device for PpbaSwitchDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.connected().await? == connected {
+        // Hold the write lock for the whole check-and-modify so two concurrent
+        // `Connected=true` requests against this device can't both observe
+        // `requested_connection == false`, both call `SerialManager::connect`
+        // (incrementing the shared refcount twice), and then both set the
+        // single per-device flag. Without the guard, a single later
+        // `set_connected(false)` would decrement the refcount only once and
+        // leave the port open — see issue #251.
+        let mut requested = self.requested_connection.write().await;
+        let serial_ok = self.serial_manager.is_available();
+        let already = *requested && serial_ok;
+        if already == connected {
             return Ok(());
         }
         match connected {
@@ -240,11 +250,11 @@ impl Device for PpbaSwitchDevice {
                     .connect()
                     .await
                     .map_err(Self::to_ascom_error)?;
-                *self.requested_connection.write().await = true;
+                *requested = true;
                 debug!("Switch device connected");
             }
             false => {
-                *self.requested_connection.write().await = false;
+                *requested = false;
                 self.serial_manager.disconnect().await;
                 debug!("Switch device disconnected");
             }
@@ -1091,5 +1101,77 @@ mod tests {
 
         let description = device.description().await.unwrap();
         assert!(!description.is_empty());
+    }
+
+    // ============================================================================
+    // Race Regression Test (Issue #251)
+    // ============================================================================
+
+    /// Wraps the standard mock factory and yields once inside `open()`. This
+    /// injects a tokio yield point inside `SerialManager::connect`, exposing
+    /// the window where concurrent `set_connected(true)` calls could double-
+    /// increment the per-device refcount before the lock-spanning fix.
+    struct YieldingMockSerialPortFactory {
+        inner: MockSerialPortFactory,
+    }
+
+    impl YieldingMockSerialPortFactory {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                inner: MockSerialPortFactory::new(responses),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SerialPortFactory for YieldingMockSerialPortFactory {
+        async fn open(
+            &self,
+            port: &str,
+            baud_rate: u32,
+            timeout: Duration,
+        ) -> crate::error::Result<SerialPair> {
+            tokio::task::yield_now().await;
+            self.inner.open(port, baud_rate, timeout).await
+        }
+
+        async fn port_exists(&self, port: &str) -> bool {
+            self.inner.port_exists(port).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_switch_concurrent_set_connected_does_not_leak_refcount() {
+        // Regression for issue #251: two concurrent `set_connected(true)`
+        // calls on the same device must not inflate the SerialManager refcount.
+        // The yielding factory forces a yield inside `connect()`, so the
+        // second future runs while the first is suspended mid-connect — the
+        // exact window the lock-spanning fix closes. Without the fix, both
+        // futures would call `SerialManager::connect` and a single later
+        // `set_connected(false)` would leave the port open.
+        let factory = Arc::new(YieldingMockSerialPortFactory::new(
+            standard_connection_responses(),
+        ));
+        let config = Config::default();
+        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
+        let device = Arc::new(PpbaSwitchDevice::new(
+            config.switch,
+            Arc::clone(&serial_manager),
+        ));
+
+        let d1 = Arc::clone(&device);
+        let d2 = Arc::clone(&device);
+        let (r1, r2) = tokio::join!(async move { d1.set_connected(true).await }, async move {
+            d2.set_connected(true).await
+        },);
+        r1.unwrap();
+        r2.unwrap();
+        assert!(serial_manager.is_available(), "port should be open");
+
+        device.set_connected(false).await.unwrap();
+        assert!(
+            !serial_manager.is_available(),
+            "single set_connected(false) must close the port"
+        );
     }
 }
