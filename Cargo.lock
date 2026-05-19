@@ -4316,6 +4316,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-shared-transport"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"

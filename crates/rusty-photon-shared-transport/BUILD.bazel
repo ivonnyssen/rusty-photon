@@ -1,0 +1,117 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+rust_library(
+    name = "rusty-photon-shared-transport",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rusty_photon_shared_transport",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rusty-photon-shared-transport_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":rusty-photon-shared-transport",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Shared helper module for the integration tests. Pulled into each
+# test target via `_COMMON_SRCS`; each test file declares `mod common;`.
+_COMMON_SRCS = ["tests/common/mod.rs"]
+
+rust_test(
+    name = "race",
+    srcs = ["tests/race.rs"] + _COMMON_SRCS,
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/race.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "rollback",
+    srcs = ["tests/rollback.rs"] + _COMMON_SRCS,
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/rollback.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "while_open",
+    srcs = ["tests/while_open.rs"] + _COMMON_SRCS,
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/while_open.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "idempotent",
+    srcs = ["tests/idempotent.rs"] + _COMMON_SRCS,
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/idempotent.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

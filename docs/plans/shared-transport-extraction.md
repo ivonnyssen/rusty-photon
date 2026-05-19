@@ -2,8 +2,10 @@
 
 ## Status
 
-**Active — design.** Phase 1 (this plan) lands first. Implementation is
-sequenced in five phases (A–E), one PR each, per the rollout below.
+**Phase A in flight.** The plan landed on `main` via PR #265. Phase A
+(the `crates/rusty-photon-shared-transport/` crate) is implemented on
+`worktree-serial-refactor` with 29 tests passing; no migration PRs yet.
+Phases B–E follow per the rollout below.
 
 ## Motivation
 
@@ -49,7 +51,7 @@ implementations of the same pattern.
 
 ## Goals
 
-* Extract a workspace crate `crates/shared-transport/` that owns the
+* Extract a workspace crate `crates/rusty-photon-shared-transport/` that owns the
   pieces that are genuinely shared:
     1. A frame-oriented transport trait (`FrameTransport` with
        `send_frame` / `recv_frame`) so serial and UDP transports
@@ -107,7 +109,7 @@ implementations of the same pattern.
 │   - constructs Hooks { handshake, teardown, while_open }             │
 └──────────────────────────────────────────────────────────────────────┘
                                   │
-╔══════════════════ crates/shared-transport ═══════════════════════════╗
+╔════════════ crates/rusty-photon-shared-transport ════════════════════╗
 ║ SharedTransport<C: Codec>                                            ║
 ║  - refcount + slot + open-state lock                                 ║
 ║  - acquire() → Session<C>  (close().await = primary release;         ║
@@ -117,12 +119,11 @@ implementations of the same pattern.
 ║                                                                      ║
 ║ Session<C: Codec>                                                    ║
 ║  - request(cmd) → Result<Response, SessionError<C::Error>>           ║
-║  - send(cmd)    → Result<(), SessionError<C::Error>>                 ║
 ║  - close(self).await → Result<(), TransportError>   (primary)        ║
 ║  - impl Drop  → detached best-effort cleanup (fallback)              ║
 ║                                                                      ║
 ║ WhileOpen<C: Codec>   (passed to while_open hook; not a Session)     ║
-║  - request / send / cancelled()                                      ║
+║  - request / cancelled()                                             ║
 ║  - does NOT participate in the external refcount                     ║
 ║                                                                      ║
 ║ Connection<C: Codec>   (internal, frame-level)                       ║
@@ -149,9 +150,9 @@ implementations of the same pattern.
   `recv_frame` and encode / decode in lockstep.
 * `SharedTransport<C>` — refcount, slot, open/close, while-open task
   lifecycle, explicit `close()` path with `Drop` fallback.
-* `Session<C>` — request / send / close API.
+* `Session<C>` — request / close API.
 * `WhileOpen<C>` — non-refcounted context passed to the while_open
-  hook; same request/send API as `Session`.
+  hook; same request API as `Session`.
 * `Hooks<C>` — handshake / teardown / while_open closures.
 * `SessionError<E>` — discriminates transport vs codec failures.
 
@@ -175,15 +176,17 @@ implementations of the same pattern.
 ### `Codec`
 
 ```rust
-pub trait Codec: Send + Sync + 'static {
+pub trait Codec: Send + Sync + Clone + 'static {
     type Command: Send + Sync;
     type Response: Send;
-    type Error: Send + Sync + 'static;
+    type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Encode a command into one whole frame's worth of bytes. Any
-    /// per-frame framing the protocol needs on the wire (terminator,
-    /// prefix, length header) is the responsibility of the
-    /// FrameTransport implementation, not the codec.
+    /// Encode a command into one whole frame's worth of bytes,
+    /// including any in-frame terminator the wire protocol requires
+    /// (qhy's `}`, the Sky-Watcher `\r`). The transport reads
+    /// frames in chunks defined by that same terminator and returns
+    /// the bytes verbatim — the codec sees the same bytes that
+    /// flowed on the wire.
     fn encode(&self, cmd: &Self::Command) -> Vec<u8>;
 
     /// Decode one whole response frame's bytes into a typed response.
@@ -211,13 +214,17 @@ pub trait Codec: Send + Sync + 'static {
 ```rust
 #[async_trait]
 pub trait FrameTransport: Send {
-    /// Send one complete frame. For serial: write bytes + the
-    /// protocol's framing terminator. For UDP: one `send` call (one
+    /// Send one complete frame. The bytes are written verbatim — the
+    /// caller (i.e. the [`Codec`]) includes any in-frame terminator
+    /// the wire protocol requires. For UDP: one `send` call (one
     /// datagram).
     async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
 
     /// Receive one complete frame's bytes into `buf` (overwriting it).
-    /// For serial: read-until-terminator, with the terminator stripped.
+    /// For serial: read-until-terminator; the terminator is
+    /// **included** in the result (qhy's `}`, the Sky-Watcher `\r`
+    /// are wire-protocol content, not pure framing delimiters, so
+    /// every codec we ship today wants to see them).
     /// For UDP: one `recv` call (one datagram); the whole datagram is
     /// the frame.
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError>;
@@ -231,7 +238,7 @@ pub trait TransportFactory: Send + Sync + 'static {
 
 Per-transport framing decisions live on the transport implementation:
 
-* `crates/shared-transport` provides a `SerialFrameTransport` helper
+* `crates/rusty-photon-shared-transport` provides a `SerialFrameTransport` helper
   that wraps any `AsyncRead + AsyncWrite + Unpin + Send` (e.g.
   `tokio_serial::SerialStream`) plus a configurable terminator byte
   and a max-frame-size guard. ppba/pa-falcon use LF; SAG-GTI's serial
@@ -241,7 +248,7 @@ Per-transport framing decisions live on the transport implementation:
   balanced-brace or length-prefix framing, it ships its own
   `FrameTransport` impl without changing anything cross-cutting.
 
-* `crates/shared-transport` provides a `UdpFrameTransport` that wraps
+* `crates/rusty-photon-shared-transport` provides a `UdpFrameTransport` that wraps
   `tokio::net::UdpSocket` with `connect()` set to the peer address.
   `send_frame` is one `send` call; `recv_frame` is one `recv` call
   into the supplied buffer. Datagram boundaries are preserved by
@@ -250,18 +257,29 @@ Per-transport framing decisions live on the transport implementation:
 ### `SessionError<E>`
 
 ```rust
-pub enum SessionError<E> {
+pub enum SessionError<E: std::error::Error + Send + Sync + 'static> {
     /// Wire-level I/O failure: factory open, broken pipe, read
     /// timeout, EOF, framing error before reaching `Codec::decode`.
     Transport(TransportError),
 
     /// Codec-level failure: malformed response, mismatched checksum,
-    /// stale-frame budget exhausted.
+    /// or a frame the codec couldn't translate into a typed response.
     Codec(E),
+
+    /// Read `Codec::max_skip` + 1 frames without one passing
+    /// `Codec::matches`. The device fell out of sync or the codec's
+    /// `matches` predicate is wrong.
+    SkipExhausted(usize),
 }
 
 impl<E> From<TransportError> for SessionError<E> { /* … */ }
 ```
+
+`SkipExhausted` is the third variant the implementation needed: when
+the connection-layer skip budget is exhausted, that's neither a
+transport failure (frames flowed fine) nor a codec failure (each
+decode succeeded). The variant carries the number of frames that
+were read.
 
 Each service maps `SessionError<C::Error>` into its existing
 service-wide error enum at the `Manager` public-API boundary (e.g.
@@ -277,9 +295,6 @@ pub struct Session<C: Codec> { /* Arc<SharedTransport<C>> + slot id */ }
 impl<C: Codec> Session<C> {
     pub async fn request(&self, cmd: C::Command)
         -> Result<C::Response, SessionError<C::Error>>;
-
-    pub async fn send(&self, cmd: C::Command)
-        -> Result<(), SessionError<C::Error>>;
 
     /// Primary teardown path. If this is the last live session,
     /// awaits while_open cancellation, runs `hooks.teardown`, closes
@@ -300,7 +315,7 @@ impl<C: Codec> Drop for Session<C> {
 }
 
 /// Non-refcounted context handed to the while_open hook. Same
-/// request/send API as Session, but its drop does NOT decrement the
+/// request API as Session, but its drop does NOT decrement the
 /// shared transport's external refcount — it's infrastructure, not a
 /// client. The Connection it wraps is shared via `Arc` with the
 /// primary `acquire()` path; both go through the same request
@@ -310,9 +325,6 @@ pub struct WhileOpen<C: Codec> { /* Arc<Connection<C>> + CancellationToken */ }
 impl<C: Codec> WhileOpen<C> {
     pub async fn request(&self, cmd: C::Command)
         -> Result<C::Response, SessionError<C::Error>>;
-
-    pub async fn send(&self, cmd: C::Command)
-        -> Result<(), SessionError<C::Error>>;
 
     /// Future that resolves when the surrounding SharedTransport
     /// starts teardown. Poll loops `tokio::select!` between this and
@@ -328,10 +340,11 @@ via `recv_frame` + `Codec::decode` until one passes `matches()` or
 the whole transaction. Transport errors surface as
 `SessionError::Transport`; codec errors as `SessionError::Codec`.
 
-`send` writes one frame and returns. The protocol must promise no
-response — otherwise the unread bytes desync the next `request`.
-Today every wire request has a wire response; `send` is forward-compat
-plumbing.
+Today every wire request has a wire response, so there is no
+fire-and-forget `send` on `Session` or `WhileOpen`. If a future
+protocol needs one, it gets designed against that protocol's
+real semantics (including whether `Codec::expects_response(&cmd)` is
+worth carrying for type-system enforcement).
 
 `close(self).await` is the documented primary teardown path. If you
 hold the last session, awaiting close means rollback completes before
@@ -400,73 +413,85 @@ impl<C: Codec> SharedTransport<C> {
 * `available: AtomicBool` — true between handshake-success and
   teardown-start. Distinct from `count > 0` because a connect-in-flight
   has `count == 1` but `available == false`.
-* `acquire_lock: Mutex<()>` — serializes `acquire()` and the async
-  cleanup that runs after the last `Session` drops. Acquires are
-  rare; this is not a hot path.
+* `acquire_lock: Mutex<()>` — serialises every open/close transition.
+  Held across the entire 0→1 path in `acquire`, and across the entire
+  release path in both `Session::close` and `Session::drop`'s spawned
+  cleanup. This is intentional: if release took `fetch_sub` *before*
+  the lock, a new `acquire` racing in could see `count == 0` and
+  start opening a fresh transport while the old one's slot was still
+  populated, leading to a double-open of the underlying serial port.
+  Acquires are rare; this is not a hot path.
 * `while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>`
   — present iff a while-open task is running.
 
 `acquire()`:
 1. Take `acquire_lock`.
 2. `let prev = count.fetch_add(1, SeqCst);`
-3. If `prev == 0`:
-    1. `factory.open()` → boxed `FrameTransport`.
-    2. Wrap in `Connection<C>` (codec, command-lock).
-    3. Run `hooks.handshake(&conn)`. On `Err`: clear slot,
-       `count.fetch_sub(1)`, return `SessionError`. (Connection drops,
-       transport closes.)
-    4. Store `Arc::new(conn)` in `slot`.
+3. If `prev == 0` (0→1 transition under a `RollbackGuard` that fires
+   on any `?` early-return *or* panic in steps 3.1–3.3):
+    1. `factory.open()` → boxed `FrameTransport`. (Guard active.)
+    2. Wrap in `Arc::new(Connection::new(transport, codec.clone()))`.
+       (Guard active.)
+    3. Run `hooks.handshake(&conn).await`. On `Err`: guard's `Drop`
+       fires `count.fetch_sub(1)`, the Arc<Connection> drops at
+       function exit, transport closes, return `SessionError::Codec`.
+       (Guard active.)
+    4. Store `connection.clone()` in `slot`. Disarm rollback guard.
     5. `available.store(true, SeqCst)`.
     6. If `hooks.while_open` is `Some`: construct a `WhileOpen<C>`
        wrapping `Arc<Connection<C>>` + a fresh `CancellationToken`
        (does **not** touch `count`), spawn the closure with it,
        store the `JoinHandle` + token in `while_open_state`.
-4. Return `Session<C>`. The session does NOT take `acquire_lock` for
-   its `Drop`; only the cleanup task does.
+4. Else (`prev > 0`, reuse path): clone the slot's `Arc<Connection<C>>`.
+5. Return `Session<C>`. `acquire_lock` releases at end of function.
 
 `Session::close(self).await` (**primary teardown path**):
-1. `let prev = count.fetch_sub(1, SeqCst);`
-2. If `prev > 1`: return `Ok(())` immediately (another session keeps
-   the transport open).
-3. If `prev == 1`: this is the last out — await the cleanup body
-   inline (NOT via `tokio::spawn`):
-    1. Take `acquire_lock`.
-    2. Re-check `count`: if a new `acquire()` raced in and took
-       `count` back to ≥1, release the lock and return `Ok(())`; the
-       new owner is the new opener.
-    3. `available.store(false, SeqCst)`.
-    4. If `while_open_state` is `Some`: fire the cancellation token,
-       await the `JoinHandle` with a bounded 5s timeout; on timeout
-       call `handle.abort()`. Panicking task is the same path (Err
-       resolves immediately).
-    5. Take the connection out of `slot`. Run `hooks.teardown(&conn)`.
-    6. Drop the connection — `FrameTransport` closes.
-    7. Return `Ok(())` (or `Err(TransportError)` if the close itself
-       errored, propagated through the `FrameTransport::Drop`).
+1. Drop the `Session`'s inner `Arc<Connection>` clone so the slot
+   isn't sharing with stale references.
+2. Call `transport.release_inline().await`:
+    1. Take `acquire_lock`. (Held for the entire body — see above.)
+    2. `let prev = count.fetch_sub(1, SeqCst);`
+    3. If `prev > 1`: release lock, return `Ok(())` (another session
+       keeps the transport open).
+    4. Otherwise (`prev == 1`, run cleanup):
+        1. `available.store(false, SeqCst)`.
+        2. If `while_open_state` is `Some`: fire the cancellation
+           token, await the `JoinHandle` with a bounded 5s timeout
+           (`Duration::from_secs(5)`); on timeout call
+           `handle.abort()`. Panicking task is the same path
+           (JoinHandle resolves to Err immediately; warning logged).
+        3. Take the connection out of `slot`. Run `hooks.teardown(&conn).await`.
+        4. Drop the connection — `FrameTransport` drops, the OS-level
+           conduit closes.
+        5. Return `Ok(())` (or `Err(TransportError)` if a future
+           hook surfaces one).
 
 `Session::drop` (**fallback / safety net**):
-1. `let prev = count.fetch_sub(1, SeqCst);`
-2. If `prev == 1`: schedule the same cleanup body as `close()` via
-   `tokio::spawn` on the current runtime. The spawn is fire-and-forget.
-3. Documented limitation: if no tokio runtime is current, or the
-   runtime is in shutdown, the spawned task may never complete and
-   teardown commands (e.g. SAG-GTI's halt sequence) may not run.
+1. If the `Session`'s `transport` field is still `Some` (i.e. `close`
+   wasn't called), `take()` it and call `release_detached(self)` on
+   the moved `Arc<SharedTransport<C>>`.
+2. `release_detached` spawns `release_inline()` on the current tokio
+   runtime as a fire-and-forget task. (`release_inline` is the same
+   body as for `close`, so the decrement + cleanup is identical.)
+3. Documented limitation: if no tokio runtime is current
+   (`Handle::try_current()` returns `Err`), the refcount is **not**
+   decremented and teardown is **not** run; a `warn!` is logged.
    Service migrations call `close().await` on the disconnect path;
    Drop catches programmer error, not the steady-state path.
 
 The `acquire_lock` makes the open/close transitions atomic with
 respect to each other. The fast path (acquire when `count > 0`) takes
 the lock, increments, and returns — microseconds. The lock is NOT
-held by `Session` during `request` / `send` — only by the
-acquire/cleanup boundary.
+held by `Session` during `request` — only by the
+acquire/release boundary.
 
 ### Error model
 
-`shared-transport` defines a small `TransportError` enum for
+`rusty-photon-shared-transport` defines a small `TransportError` enum for
 `TransportFactory::open` failures and for `FrameTransport::send_frame`
 / `recv_frame` failures (broken pipe, read timeout, EOF, framing
-error before reaching `Codec::decode`). `Session::request` / `send`
-return `Result<_, SessionError<C::Error>>` where `SessionError`
+error before reaching `Codec::decode`). `Session::request` returns
+`Result<_, SessionError<C::Error>>` where `SessionError`
 discriminates `Transport(TransportError)` from `Codec(C::Error)`. No
 implicit `From<TransportError>` bound is required on `C::Error`; the
 shared crate exposes the discriminated union and each service
@@ -692,12 +717,14 @@ handshake (`F#`, `FV`, `DR:0`, `FA`, `VS`) becomes the handshake
 closure. The two devices (`FalconRotatorDevice` and
 `FalconStatusSwitchDevice`) each hold their own session.
 
-Coordination: PR #241 is still `@wip` and not merged. The migration
-applies cleanly once #241 lands, since #241 already has the canonical
-lock-held shape. The migration PR for `pa-falcon-rotator` either
-rebases onto post-#241 main, or — if scheduling demands — we ship
-the migration of the three already-merged services first and migrate
-`pa-falcon-rotator` after #241 lands.
+Coordination: PR #241 (Phase 2 scaffold, `@wip`) lands as-is with
+the canonical lock-held shape; pa-falcon-rotator Phase 3a-3e then
+ships the protocol implementation against `serial_manager.rs` in the
+existing per-service shape. Phase D (below) then deletes
+`serial_manager.rs` and rewrites `set_connected` against
+`rusty-photon-shared-transport`. This trades some throwaway lifecycle code in
+Phase 3 for unblocking PR #241's timeline and keeping the Phase 3
+PRs focused on protocol correctness rather than lifecycle plumbing.
 
 ### `star-adventurer-gti`
 
@@ -773,32 +800,82 @@ directly; `SharedTransport` doesn't know they exist.
 Each phase is one PR, landing on `main` in order. Each PR is
 independently `cargo rail run --profile commit -q` green.
 
-### Phase A — Land `crates/shared-transport/`
+### Phase A — Land `crates/rusty-photon-shared-transport/`
 
-* `crates/shared-transport/Cargo.toml`, `src/lib.rs`,
+Status: **implemented on `worktree-serial-refactor`**, PR pending.
+
+* `crates/rusty-photon-shared-transport/Cargo.toml`, `BUILD.bazel`, `src/lib.rs`,
   `src/codec.rs`, `src/transport.rs`, `src/connection.rs`,
   `src/session.rs`, `src/shared.rs`, `src/error.rs`.
-* `crates/shared-transport/tests/race.rs` — concurrent acquire
-  test using an `AtomicU32`-backed stub `TransportFactory` and a
-  trivial `Codec`. Two concurrent `acquire()` → exactly one call
-  to factory.open().
-* `crates/shared-transport/tests/rollback.rs` — factory errors,
-  handshake errors, and post-handshake panics all leave count=0
-  and `is_available()==false`. Subsequent `acquire()` re-runs the
-  full open path (proved by the factory's call counter).
-* `crates/shared-transport/tests/while_open.rs` — `while_open`
-  task starts on first acquire, cancels on last release; the
-  spawned task can issue requests through its session and is
-  fully torn down before the next `acquire()` opens a fresh
-  transport.
-* `crates/shared-transport/tests/idempotent.rs` — two sequential
-  `acquire()`s share one open; first drop keeps it open, second
-  drop closes it.
+* `crates/rusty-photon-shared-transport/tests/common/mod.rs` — shared `EchoCodec`,
+  `ProgrammableFactory`, `EchoTransport`, `CountingHooks`, and
+  `WhileOpenHooks` (cooperative + stubborn variants) used by all
+  four integration test files.
+* `crates/rusty-photon-shared-transport/tests/race.rs` — concurrent acquire
+  test (3 tests): two and many concurrent `acquire()` → exactly
+  one factory.open() + exactly one handshake invocation.
+* `crates/rusty-photon-shared-transport/tests/rollback.rs` — 5 tests covering
+  factory error, recovered factory, handshake error, handshake
+  panic (`RollbackGuard` covers the unwind), and an alternating
+  failure/success sequence. All paths leave count=0 and
+  `is_available()==false`; subsequent `acquire()` re-runs the full
+  open path (proved by `cfg.opens()` and `cfg.dropped_count()`).
+* `crates/rusty-photon-shared-transport/tests/while_open.rs` — 5 tests: task
+  starts after handshake; exits when the last session closes;
+  persists across multiple sessions sharing one transport;
+  respawns after a close/reopen cycle; stubborn task is `abort()`-ed
+  after the 5s timeout (under `tokio::test(start_paused = true)`).
+* `crates/rusty-photon-shared-transport/tests/idempotent.rs` — 5 tests: two
+  sequential acquires share one open; close-then-reacquire runs
+  handshake again; `Drop` fallback decrements + runs teardown;
+  non-last `close()` returns fast (< 100ms) without teardown;
+  `is_available()` tracks lifecycle.
+* Workspace edits: `tokio-util` lifted to `workspace.dependencies`
+  (now shared by `sentinel` and `rusty-photon-shared-transport`);
+  `rusty-photon-shared-transport` added to workspace members and to
+  `workspace.dependencies` as a path dep.
 * No service migrations in this PR — purely additive.
 
-Verification: `cargo nextest run -p shared-transport --all-features --locked`
-green; `cargo clippy -p shared-transport --all-features --all-targets -- -D warnings`
-clean.
+Implementation choices not in the original plan but locked in
+during Phase A:
+
+* `Codec: Clone` added to the trait bound; `SharedTransport` stamps
+  a fresh codec onto each `Connection` on every 0→1 transition.
+  Cheap to satisfy (codecs are typically ZST or hold small config).
+* `Codec::Error` requires `std::error::Error + Send + Sync + 'static`
+  so it composes cleanly with `thiserror`-derived service error
+  enums.
+* `SessionError::SkipExhausted(usize)` added as a third variant —
+  the connection-layer skip budget is neither a transport failure
+  (frames flowed) nor a codec failure (each decode succeeded), and
+  the carried `usize` is the number of frames read before the
+  budget tripped.
+* `SerialFrameTransport::recv_frame` returns frames with the
+  terminator byte **included** — every codec we ship today wants
+  to see it (qhy's `}` is JSON-content, Sky-Watcher's `\r` is
+  validated by the existing `validate_response_frame` helper).
+  `send_frame` writes bytes verbatim; the codec is responsible for
+  including the terminator in encoded output. Symmetric and
+  matches UDP's "the datagram is the frame" model.
+* `acquire_lock` is held across the **full** `release_inline`
+  path (not just the cleanup body), so a racing new `acquire()`
+  cannot start opening a fresh transport while the old transport's
+  slot is still populated. The plan originally split this; the
+  implementation found the split allowed a double-open race.
+* Panic rollback uses a `RollbackGuard` whose `Drop` fires
+  `count.fetch_sub(1)` on any unwind through the 0→1 path —
+  covers handshake panics structurally, no `catch_unwind`.
+
+Verification:
+* `cargo nextest run -p rusty-photon-shared-transport --all-features --all-targets --locked`:
+  29/29 green.
+* `cargo clippy -p rusty-photon-shared-transport --all-features --all-targets --locked -- -D warnings`:
+  clean.
+* `cargo doc -p rusty-photon-shared-transport --all-features --no-deps`: clean.
+* `cargo fmt --all --check`: clean.
+* `cargo rail run --profile commit -q`: clean (rail's --merge-base
+  detection sees only `sentinel` as a "changed" existing crate;
+  `rusty-photon-shared-transport` runs explicitly).
 
 ### Phase B — Migrate `ppba-driver`
 
@@ -857,12 +934,14 @@ codec tests; remove the redundant ones.
 
 ### Phase D — Migrate `pa-falcon-rotator`
 
-Third because PR #241 has not yet merged. Phase D rebases onto
-post-#241 main and applies the same pattern (Hooks with
-`while_open: None`).
+Third because PR #241 (Phase 2 scaffold) and pa-falcon-rotator
+Phase 3a-3e (protocol implementation) need to land first. Phase D
+rebases onto post-Phase-3 main and applies the same pattern (Hooks
+with `while_open: None`), deleting the canonical-lock-shape
+`set_connected` and `serial_manager.rs` that Phase 3 ships.
 
-If PR #241 has not merged by the time Phase C lands, Phase D blocks
-on #241; the other phases ship independently.
+If Phase 3 has not landed by the time Phase C ships, Phase D blocks
+on it; the other phases ship independently.
 
 Removes / Adds: mirror Phases B and C structure.
 
@@ -892,7 +971,7 @@ Adds:
   wrapping the existing `skywatcher-motor-protocol` crate.
 * `services/star-adventurer-gti/src/transport/udp.rs` adapts to
   the shared `TransportFactory` and uses `UdpFrameTransport` from
-  `shared-transport` (one `recv` per frame; datagram boundaries
+  `rusty-photon-shared-transport` (one `recv` per frame; datagram boundaries
   preserved).
 * `services/star-adventurer-gti/src/manager.rs` — `MountManager`
   with `seed_*_position`, `parameters`, `snapshot`, `poll_axes_now`,
@@ -912,19 +991,38 @@ Tests:
 ### In the shared crate
 
 The race, rollback, while-open lifecycle, and idempotent-acquire
-tests in Phase A are written once with a generic `Codec` + an
-`AtomicU32`-backed stub `TransportFactory`. They prove:
+tests in Phase A are written once over a generic `Codec` (`EchoCodec`,
+treats `Vec<u8>` as both command and response) and an `AtomicU32`-backed
+stub `ProgrammableFactory` (controllable success/failure, per-transport
+drop-flag tracking). The integration tests are split across four files
+in `crates/rusty-photon-shared-transport/tests/`:
 
-* Two concurrent `acquire()` → exactly one `factory.open()` (race).
-* Factory error → count stays 0, `is_available()` stays false,
-  next acquire re-opens.
-* Handshake error → same as factory error; transport closes.
-* Panic in handshake → same as error (catch_unwind in handshake
-  driver, or `AbortOnDrop` semantics — TBD in Phase A).
-* `while_open` task spawns on first acquire, cancels on last
-  release, fully torn down before the next acquire reopens.
-* Sequential `acquire()` then drop, then acquire — one open,
-  one close, one re-open.
+* `race.rs` (3 tests) — two and many concurrent `acquire()` → exactly
+  one `factory.open()`; handshake also runs exactly once.
+* `rollback.rs` (5 tests) — factory error, recovery after factory
+  error, handshake error (transport drops), handshake panic
+  (`RollbackGuard` covers the unwind path), alternating
+  failure/success.
+* `while_open.rs` (5 tests) — task starts after handshake, exits on
+  last close, persists across multiple sessions, respawns after a
+  full close/reopen cycle, stubborn task gets `abort()`-ed after the
+  bounded 5s timeout (under `tokio::test(start_paused = true)`).
+* `idempotent.rs` (5 tests) — sequential reuse shares one open;
+  close-then-reacquire runs handshake again; `Drop` fallback path
+  decrements + closes; non-last close returns fast; `is_available()`
+  tracks lifecycle.
+
+Total: 29 integration tests + 11 inline tests in `transport.rs` and
+`error.rs` (framing/timeout/error-display behaviour on
+`SerialFrameTransport` and `UdpFrameTransport`).
+
+Panic-in-handshake is handled by a `RollbackGuard` whose `Drop` runs
+the count rollback whether the function exits via `?` *or* unwinds —
+not by `std::panic::catch_unwind`. The unwind continues past
+`acquire`, the spawning task sees the panic (test reads
+`JoinHandle::await` and asserts `Err`), and `count == 0`,
+`is_available() == false` are observable by subsequent acquires
+through the same `SharedTransport`.
 
 A `loom`-based test of the lock interleaving is **out of scope** for
 Phase A but listed as a follow-up if regressions appear.
@@ -945,10 +1043,10 @@ Phase A but listed as a follow-up if regressions appear.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Closure storage in `Hooks` is unfamiliar Rust; trait objects with `BoxFuture` add complexity. | Med | Concrete example in shared-crate tests; keep `Hooks` impl Send + Sync trivial; document patterns in `crates/shared-transport/README.md`. |
+| Closure storage in `Hooks` is unfamiliar Rust; trait objects with `BoxFuture` add complexity. | Med | Concrete example in shared-crate tests; keep `Hooks` impl Send + Sync trivial; document patterns in `crates/rusty-photon-shared-transport/README.md`. |
 | `Session::drop` fallback spawns a cleanup task and needs a tokio runtime; if the runtime is shutting down, teardown commands (e.g. SAG-GTI's halt sequence) may not run. | Med | Service migrations always call `close().await` on the disconnect path. Drop is for "caller forgot." Document the limitation in `Session::drop` rustdoc; the explicit-close-is-primary design (vs Drop-is-primary) makes this an "oops" path, not the steady-state path. |
 | Misbehaving `while_open` task ignores cancellation and times out; teardown then aborts the JoinHandle and proceeds while the task may still be running. | Low | Connection's request-arbitration lock is released when the connection drops, so an abort()-stuck task can't deadlock teardown. Tests in Phase A cover the panic/timeout paths explicitly. |
-| Stale cleanup races a new acquire (count goes 1 → 0 → 1 quickly). | Low | `acquire_lock` serializes cleanup against new acquire; cleanup re-checks `count` after taking the lock and bails if a new owner is already in. |
+| Stale cleanup races a new acquire (count goes 1 → 0 → 1 quickly). | Low | `acquire_lock` serializes cleanup against new acquire. The Phase A implementation takes the lock **before** `count.fetch_sub` (not after, as originally sketched) so a new acquire can't observe `count == 0` while the old slot is still populated — closing the only opening the test bench found for the race. |
 | qhy-focuser's `matches`/`max_skip` codec hooks add cost (one extra method call per response) to every service. | Low | Default impls are no-ops; hot path is identical to today. Bench in Phase A. |
 | Mock factory rewrites in Phases B–E touch many tests. | Med | The per-service `MockState` machinery stays; only the factory trait it implements changes (`SerialPortFactory` → `TransportFactory`, returning `Box<dyn FrameTransport>`). Migration is a rename + signature tweak per service. |
 | Phase E (SAG-GTI) is large; risk of subtle behavior change. | Med | Phase E lands last so the shared crate is well-exercised by the other three services first. Hardware smoke-test against the real mount before merging Phase E. |
@@ -956,23 +1054,9 @@ Phase A but listed as a follow-up if regressions appear.
 
 ## Open questions
 
-1. **Naming.** `shared-transport` vs `device-transport` vs `transport`?
-   `shared-transport` is the working name in this plan; bikeshed in
-   the Phase A PR if needed.
-2. **`Session::send` policy when the codec's protocol does have a
-   response.** Current proposal: `send` writes one frame and returns;
-   the caller is responsible for knowing the protocol guarantees no
-   reply. Alternative: the codec exposes a per-command
-   `expects_response()` method and `send` requires it to return
-   `false`. The alternative adds type-system enforcement at the cost
-   of a per-command method. Defer to Phase A.
-3. **Whether to land `pa-falcon-rotator` adoption inside PR #241
-   itself** (so the service is born with the new shape) or after
-   PR #241 merges as a separate migration PR. The author of #241
-   decides; either way works.
+None remaining.
 
-Resolved in this revision (originally listed; the Copilot review on
-PR #265 closed them):
+Resolved during the Copilot review on PR #265:
 
 * **`Hooks::teardown` fallibility** — settled as infallible at the
   type level (`-> BoxFuture<()>`), matching today's log-and-continue
@@ -990,6 +1074,39 @@ PR #265 closed them):
   datagram boundaries.
 * **Drop-only vs explicit-close teardown** — settled as explicit
   `Session::close().await` primary; Drop is the safety net.
+
+Resolved 2026-05-18 (the three questions originally deferred to
+Phase A):
+
+* **Crate naming.** `rusty-photon-shared-transport`. The
+  `rusty-photon-*` prefix matches the convention already in use for
+  workspace-wide infrastructure crates (`rusty-photon-i18n`,
+  `rusty-photon-i18n-derive`) — the `rp-*` prefix is reserved for
+  crates supporting the `rp` service specifically, and the
+  unprefixed slots (`bdd-infra`, `skywatcher-motor-protocol`) are
+  test infrastructure / external-protocol encodings. "Shared"
+  captures the refcounted multi-client value-add that distinguishes
+  the crate from a thin `tokio_serial` / `UdpSocket` wrapper.
+  `serial-transport` and unprefixed `shared-transport` were both
+  considered and rejected — the former misleads about UDP support
+  (`UdpFrameTransport` is a first-class adapter, exercised by
+  `star-adventurer-gti`'s `transport/udp.rs` today); the latter
+  breaks the existing workspace prefix convention.
+* **`Session::send` policy.** Dropped from the Phase A API surface
+  entirely. Today every wire request has a wire response, so a
+  fire-and-forget `send` would be forward-compat plumbing for a
+  use case that does not exist. When the first protocol with
+  response-less commands shows up, design `send` against that
+  protocol's real semantics — including whether
+  `Codec::expects_response(&cmd)` is worth carrying for
+  type-system enforcement.
+* **pa-falcon-rotator timing.** PR #241 (Phase 2 scaffold,
+  `@wip`) lands as-is. pa-falcon-rotator Phase 3a-3e ships the
+  protocol implementation against canonical-lock-shape
+  `serial_manager.rs`. Phase D then replaces the lifecycle
+  scaffolding with `rusty-photon-shared-transport`. Trades some throwaway
+  Phase 3 lifecycle code for unblocking PR #241's timeline and
+  keeping the Phase 3 PRs focused on protocol correctness.
 
 ## References
 
@@ -1018,4 +1135,4 @@ PR #265 closed them):
   `docs/services/falcon-rotator.md`,
   `docs/services/star-adventurer-gti.md` —
   per-service design docs. Each gets a small update in its
-  migration phase noting the move to `shared-transport`.
+  migration phase noting the move to `rusty-photon-shared-transport`.

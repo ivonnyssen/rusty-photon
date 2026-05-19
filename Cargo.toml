@@ -9,6 +9,7 @@ members = [
   "crates/rp-tls",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
+  "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
   "services/phd2-guider",
@@ -39,6 +40,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
 tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = "0.7"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 humantime = "2.3.0"
@@ -93,6 +95,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 ] }
 rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
+rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
 fluent-syntax = "0.12"
