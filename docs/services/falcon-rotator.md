@@ -205,6 +205,14 @@ ASCOM `IObservingConditions` was considered for voltage and rejected: its standa
 
 `Min = 0`, `Max = 1023` for switch 0 assumes a 10-bit ADC on the Falcon's MCU. If hardware characterisation reveals a wider range (12-bit / 16-bit) the `Max` value is widened in a follow-up; the field is hard-coded rather than configurable to keep the ASCOM metadata stable across deployments.
 
+#### Write surface (read-only device)
+
+Because both switches are read-only, the write surface is a capability gap rather than a state-dependent rejection:
+
+- `SetSwitch`, `SetSwitchValue`, `SetSwitchName` return `NOT_IMPLEMENTED` (`0x400` / 1024) for any valid id. ConformU treats `INVALID_OPERATION` (`0x40B` / 1035) as the wrong code here — that code is for "the device is in a state where this operation isn't allowed", not for "this device fundamentally doesn't support this operation".
+- The ISwitchV3 async surface (`CanAsync`, `SetAsync`, `SetAsyncValue`, `CancelAsync`) is explicitly overridden so id validation runs before the trait defaults. `CanAsync(valid_id)` returns `false`; the three writers return `NOT_IMPLEMENTED`. Out-of-range ids return `INVALID_VALUE` (1025) on every async method.
+- Every write method still runs the `ensure_connected!` guard first, so a disconnected client always sees `NOT_CONNECTED` (1031) regardless of id or method.
+
 ### Scale calibration
 
 The voltage raw-to-volts conversion is **deliberately deferred**. The PDF gives no scale factor, and we have no schematic for the input divider. Two follow-up paths once hardware characterisation is in hand:
@@ -316,6 +324,7 @@ services/pa-falcon-rotator/
 │   │   ├── reverse.feature
 │   │   ├── sync_offset.feature
 │   │   └── status_switch.feature
+│   ├── property_tests.rs         # proptest round-trip on FalconStatus wire format
 │   └── conformu_integration.rs   # ASCOM Rotator + Switch conformance (#[ignore])
 └── examples/
     ├── config-linux.json
@@ -356,12 +365,13 @@ For each of `Move(delta)`, `MoveAbsolute(skyDeg)`, `MoveMechanical(mechDeg)`:
 
 ## Error Model
 
-Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: only the two error variants ASCOM clients actually distinguish on get their own codes; everything else collapses to `INVALID_OPERATION`.
+Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: only the error variants ASCOM clients actually distinguish on get their own codes; everything else collapses to `INVALID_OPERATION`.
 
 | Driver error variant | ASCOM error code | Triggering conditions |
 |---|---|---|
 | `NotConnected` | `NOT_CONNECTED` (`0x407`) | Any property/method called while `connected() == false` |
-| `InvalidValue(msg)` | `INVALID_VALUE` (`0x401`) | Client supplied `NaN` / non-finite angle to `Move*` / `Sync` |
+| `InvalidValue(msg)` | `INVALID_VALUE` (`0x401`) | Client supplied `NaN` / non-finite angle to `Move*` / `Sync`; switch id ≥ `MaxSwitch` on any Switch method |
+| n/a (Switch capability gap) | `NOT_IMPLEMENTED` (`0x400`) | `SetSwitch` / `SetSwitchValue` / `SetSwitchName` and the `SetAsync` / `SetAsyncValue` / `CancelAsync` writers on the read-only Status Switch device — see [Write surface](#write-surface-read-only-device) |
 | All others | `INVALID_OPERATION` (`0x40B`) | `ConnectionFailed` (handshake failure), `SerialPort`, `Timeout`, `Io`, `InvalidResponse`, `ParseError`, `Communication` |
 
 ## MVP Scope
@@ -388,10 +398,10 @@ Deferred:
 
 Per [`docs/skills/testing.md`](../skills/testing.md):
 
-- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Scenarios drive the binary via Alpaca HTTP, using `MockSerialPortFactory` for stable responses. Use `@wip` on every scenario until Phase 3 makes them green.
+- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Scenarios run the `ServerBuilder` **in-process** on an ephemeral port and drive the registered devices through Alpaca HTTP clients (`AlpacaClient::get_devices`). The world holds an `Arc<MockSerialPortFactory>` shared with the SerialManager, which lets step bodies (a) seed mock state — reported mechanical position, voltage, `motor_reverse`, `limit_detect` — and (b) assert on the wire-level `command_log` for contracts like "F# is the first command" or "no SD was issued". The `tests/bdd.rs` entry point uses a plain `#[tokio::main]` rather than the `bdd_infra::bdd_main!` macro, because the macro is only needed for harnesses that spawn child processes via `ServiceHandle` (see [`testing.md` §5.2](../skills/testing.md#52-entry-point-structure)). Tag any in-flight scenario with `@wip` while its implementation lands; strip the tag in the same commit that turns the scenario green.
 - **Unit tests** (`#[cfg(test)]` in `src/`): protocol serialisation, `FA` response parsing (happy path + every failure mode in the [error table](#error-model)), config defaults, sync-offset arithmetic, normalisation rules.
-- **Property tests** (`proptest`): position normalisation is idempotent; round-trip `Move(delta)` → `Move(-delta)` returns to the original sky angle modulo floating-point error.
-- **Server tests** (`#[cfg(feature = "mock")]`): bootstrap a server on `127.0.0.1:0` and confirm the bound address parses correctly (the `bound_addr=` contract).
+- **Property tests** (`proptest`): `FalconStatus` wire-format round-trip — serialise a randomly-generated status with `format!`, parse the result with `parse_full_status`, and assert field-by-field equality. Pins the parser against any future format-string drift.
+- **Server tests** (`#[cfg(feature = "mock")]`, `tests/test_lib.rs`): bind the `ServerBuilder` on `127.0.0.1:0` with the mock factory and assert the management surface — `/management/v1/description` responds, `/management/v1/configureddevices` lists both Rotator and Switch when enabled, and disabling `switch` registers only the Rotator. Tests run sequentially behind a `SERVER_LOCK` `Mutex<()>` so re-runs against a left-over discovery binding don't race.
 - **ConformU** (`tests/conformu_integration.rs`, `#[ignore]`): run against the binary with the `mock` feature, mirroring `ppba-driver` / `qhy-focuser`. Registered under `[package.metadata.conformu]`.
 
 ## Follow-ups

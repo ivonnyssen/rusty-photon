@@ -16,17 +16,18 @@
 
 ## Branching strategy
 
-Sub-phases land as commits on dedicated PR branches:
+The whole driver lands on a **single feature branch** — sub-phases ship as individual commits, not as separate PRs:
 
-* **PR #1** (this PR) — `feature/falcon-rotator-driver`: design doc + this plan.
-* **PR #2** — `feature/pa-falcon-rotator-phase2`: BDD scaffold + service skeleton in one commit (the qhy/star precedent). Based on `main` after PR #1 merges.
-* **PR #3** — `feature/pa-falcon-rotator-protocol`: Phase 3a (`protocol.rs` + unit tests). No `@wip` removed.
-* **PR #4** — `feature/pa-falcon-rotator-plumbing`: Phase 3b–3c (`config`, `error`, `io`, `serial`, `mock`, `serial_manager`). No `@wip` removed.
-* **PR #5** — `feature/pa-falcon-rotator-rotator-device`: Phase 3d (Rotator trait impl). Removes `@wip` from `connection_lifecycle`, `metadata`, `position_reads`, `movement`, `halt`, `reverse`, `sync_offset`.
-* **PR #6** — `feature/pa-falcon-rotator-switch-device`: Phase 3e (Switch trait impl). Removes `@wip` from `status_switch`.
-* **PR #7** — `feature/pa-falcon-rotator-conformu`: Phase 3f–3h (`test_lib`, ConformU, README + workspace.md final-state updates).
+* **PR #1** (`feature/falcon-rotator-driver`, merged) — design doc + this plan.
+* **PR #2** (this PR — `feature/pa-falcon-rotator-phase2`) — everything from 2a onward. Each sub-phase below ends in its own commit so reviewers can step through the progression in `git log`, but they all merge to `main` in a single PR.
 
-Each PR rebases onto `main` after the previous merges; ordering is strict — every PR depends on the previous one compiling.
+The original plan split phases 3b–3h across PRs #3–#7 (`feature/pa-falcon-rotator-protocol`, `…-plumbing`, `…-rotator-device`, `…-switch-device`, `…-conformu`). That was abandoned at user request after Phase 3a landed: the seven-PR chain added rebase / review overhead without changing the shape of the work, and the per-sub-phase commit history on a single branch gives the same step-through visibility. **Do not open separate PRs for 3b–3h.**
+
+Sub-phase commit invariants on this branch:
+
+* Each sub-phase commit is independently green: `cargo rail run --profile commit -q` and `cargo fmt --check` clean.
+* `@wip` filtering keeps the BDD suite green between sub-phases — a scenario only loses its `@wip` tag in the commit that makes it pass.
+* The branch is therefore mergeable to `main` at any sub-phase boundary if priorities change; nothing in 3b–3h is structurally required for the prior sub-phases to be useful.
 
 ## Sub-phases
 
@@ -44,7 +45,7 @@ Files created:
 * `services/pa-falcon-rotator/src/io.rs` — `SerialReader`, `SerialWriter`, `SerialPortFactory` traits with `#[cfg_attr(test, mockall::automock)]`. `SerialPair` struct.
 * `services/pa-falcon-rotator/src/serial.rs` — `TokioSerialPortFactory` implementing `SerialPortFactory` via `tokio-serial`. Stubbed (`unimplemented!()`).
 * `services/pa-falcon-rotator/src/mock.rs` — `#[cfg(feature = "mock")] pub struct MockSerialPortFactory` with a small deterministic state machine: stored mechanical position, is-moving flag, motor-reverse flag, derotation flag, voltage_raw. Returns canned `FR_OK` for `F#`, `FV:1.3` for `FV`, etc. Stubbed body for now.
-* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `SyncDeg(f64)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers.
+* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers (replaced in §3a on this same PR — see Branching strategy).
 * `services/pa-falcon-rotator/src/serial_manager.rs` — `SerialManager` struct: `config`, `connection_count` (`AtomicU32`), `serial_available` (`AtomicBool`), `reader`/`writer` (`Mutex<Option<Box<dyn ...>>>`), `command_lock` (`Mutex<()>`), `sync_offset` (`Mutex<f64>`), `target_position` (`Mutex<Option<f64>>`), `last_limit_detected` (`Mutex<Option<bool>>`), `serial_factory`. Stubbed methods: `connect`, `disconnect`, `is_available`, `send_command`, `read_status` (issues `FA` + edge-checks `limit_detect`), `read_voltage`, `move_to`, `halt`, `sync`, `get_sync_offset`, `target_position`, `get_target_position`.
 * `services/pa-falcon-rotator/src/rotator_device.rs` — `FalconRotatorDevice` impl skeleton. `Device` trait stub. `Rotator` trait stub.
 * `services/pa-falcon-rotator/src/switch_device.rs` — `FalconStatusSwitchDevice` impl skeleton. `Device` trait stub. `Switch` trait stub.
@@ -97,19 +98,20 @@ Implementation:
 * `parse_full_status(&str) -> Result<FalconStatus>` — splits on `:`, validates `FR_OK` prefix, parses each field. Trims trailing `\n` / whitespace per the ppba pattern.
 * `parse_firmware_version(&str)`, `parse_position_deg(&str)`, `parse_position_steps(&str)`, `parse_voltage_raw(&str)`, `parse_is_running(&str)`, `parse_reverse(&str)` — one for every response shape.
 * `validate_ping_response(&str) -> Result<()>` — accepts `FR_OK` ± trailing whitespace.
-* `validate_echo(command, response)` — generic echo validator for `MD:`, `SD:`, `DR:`, `FH`, `FN:` shapes.
+* `validate_echo(command, response)` — generic echo validator for `MD:`, `MS:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).) Non-echo commands (`Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `IsRunning`) are rejected so a caller misrouting them fails loudly.
 
 Tests:
 
 * Inline `#[cfg(test)] mod tests` covering:
     - `parse_full_status` happy path: `FR_OK:4332:50.00:0:0:0:0` → expected `FalconStatus`.
-    - Every failure mode: wrong prefix, too-few-fields, bad float, bad bool. Each as a separate test fn.
-    - `parse_full_status` with trailing `\n`.
-    - `parse_full_status` with `limit_detect = 1`.
+    - Every failure mode: wrong prefix, too-few-fields, too-many-fields, bad steps, bad float, bad bool, empty input. Each as a separate test fn.
+    - Non-finite `position_deg` rejection: `NaN`, `+inf`, `-inf` (for both `parse_full_status` and the standalone `parse_position_deg`) — `f64::parse` accepts the textual forms, so an explicit `is_finite()` check protects ASCOM clients from non-finite positions.
+    - `parse_full_status` with trailing `\n` / CRLF.
+    - `parse_full_status` with `limit_detect = 1` and all-flags-high.
     - Each command's `to_command_string()` exact-string check.
-    - `validate_ping_response`: `FR_OK`, `FR_OK\n`, reject `INVALID`, reject empty.
-    - `validate_echo` for representative commands.
-* `tests/property_tests.rs`: serialize → parse round-trip on `FalconStatus` for random valid field values.
+    - `validate_ping_response`: `FR_OK`, `FR_OK\n`, `  FR_OK \r\n`, reject `INVALID`, reject empty.
+    - `validate_echo` for each echo-bearing shape (`MD`, `MS`, `DR:0`, `DR:<ms>`, `FH:1`, `FN:0`/`FN:1`) plus rejection of `Ping` / `FullStatus` / `IsRunning`.
+* `tests/property_tests.rs`: serialize → parse round-trip on `FalconStatus` for random valid field values. Degrees are generated as integer hundredths so the `{:.2}` write format and the `f64` parse compare exactly without epsilon. Bazel `rust_test` target named `property_tests` mirrors the bdd target's dev-deps wiring (`rules_rust` does not auto-discover `tests/*.rs`).
 
 Removes:
 
@@ -209,6 +211,38 @@ Removes:
 
 ### 3d — Rotator device (Phase 3 first BDD-greening sub-phase)
 
+**BDD harness pivot (landed in this sub-phase):** the Phase 2 scaffold targeted
+the subprocess-style harness (`bdd_infra::bdd_main!` + `ServiceHandle`),
+modelled on `qhy-focuser`. Phase 3d's feature scenarios verify wire-level
+contracts that aren't observable over Alpaca HTTP alone — "F# was the first
+command issued", "MD:284.80 was sent", "no FN command was sent", "no SD on
+the wire" — so the BDD entry point was switched to run the
+`ServerBuilder` in-process on an ephemeral port. The world holds an
+`Arc<MockSerialPortFactory>` shared with the SerialManager, which gives
+step bodies direct access to the wire command log and lets them seed mock
+state (mechanical position, voltage, motor_reverse, limit_detect) without
+plumbing those through Alpaca's API. The same client-side proxies
+(`Arc<dyn Rotator>` / `Arc<dyn Switch>` from `AlpacaClient::get_devices`)
+still drive the Alpaca HTTP surface, so the dispatch / serialisation
+path is exercised end-to-end. The harness sets `config.server.auth =
+None`, so the authentication layer is **not** covered by BDD; add a
+dedicated auth-enabled scenario if that becomes a regression risk.
+
+The pivot required:
+
+* Switching `tests/bdd.rs` from the `bdd_infra::bdd_main!` macro (Miri shim
+  for subprocess-spawning suites) to a plain `#[tokio::main] async fn main`
+  — see `docs/skills/testing.md` §5.2, which explicitly notes the macro is
+  needed only for harnesses that call `ServiceHandle::start`.
+* Marking the BDD test with `required-features = ["mock"]` in
+  `services/pa-falcon-rotator/Cargo.toml` because `tests/bdd/world.rs` now
+  imports `MockSerialPortFactory` (feature-gated in `src/lib.rs`).
+* Adding a read-only `MockSerialPortFactory::mech_position_deg()` getter
+  so the `MechanicalPosition should be unchanged` step compares the
+  Alpaca-reported value to the mock's current state, instead of hard-
+  coding the value from the prior `Given the rotator reports mechanical
+  position 142.30°` step.
+
 Implementation in `rotator_device.rs`:
 
 * `FalconRotatorDevice::new(config, serial_manager)`.
@@ -268,15 +302,21 @@ Removes:
 
 ### 3e — Status Switch device
 
-Implementation in `switch_device.rs`:
+Already in place on the PR #2 scaffold (added across the round-2 / round-3 review fixes), and **must be kept** when filling in the rest:
 
-* `FalconStatusSwitchDevice::new(config, serial_manager)`.
-* `Device` trait — same shape as Rotator's.
+* `FalconStatusSwitchDevice::new(config, serial_manager)` — constructor.
+* `Device` trait — full implementation (mirrors Rotator's shape).
+* `ensure_connected!` macro at the top of `switch_device.rs` — runs as the first line of every device-bound method, **before** id validation, returning `NOT_CONNECTED` (1031) if `connected() == false`. Mirrors `ppba-driver`'s precedent (see `services/ppba-driver/src/switch_device.rs:22-29`).
+* `validate_id(id)` helper — rejects ids outside `0..2` with `INVALID_VALUE`.
 * `Switch::max_switch → Ok(2)`.
-* `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`, others → `InvalidValue`.
-* `Switch::get_switch_description(0) → Ok("Raw ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`.
-* `Switch::can_write(_) → Ok(false)`.
-* `Switch::set_switch / set_switch_value → INVALID_OPERATION` (no writable switches).
+* `Switch::can_write(_) → Ok(false)` (with `ensure_connected!` + `validate_id`).
+* `Switch::state_change_complete(_) → Ok(true)` — sync device, no async to wait for (matches `ppba-driver` precedent, **not** the prior `NOT_IMPLEMENTED` sketch).
+* `Switch::set_switch / set_switch_value / set_switch_name → NOT_IMPLEMENTED` — no writable switches; names are fixed in config. All three carry `ensure_connected!` + `validate_id`. (Phase 3e originally pinned this to `INVALID_OPERATION`; Phase 3g's first ConformU run flagged it as the wrong wire code — "no writable switches" is a capability gap, not a state-dependent rejection — and the contract was retconned to `NOT_IMPLEMENTED`. The design doc and BDD scenario landed alongside the switch code change in the Phase 3g commit.)
+
+3e's actual job is to fill in the seven currently-`unimplemented!()` getter methods and thread them through the **existing** `ensure_connected!` + `validate_id` helpers (in that order — guard first, validation second):
+
+* `Switch::get_switch_name(0) → Ok("Input Voltage (raw)")`, `(1) → Ok("Limit Hit")`.
+* `Switch::get_switch_description(0) → Ok("Raw input-voltage ADC count from the Falcon's VS command; scale not yet calibrated")`, `(1) → Ok("Mirrors FA.limit_detect for the most recent status read")`. The word "voltage" in the id-0 description is load-bearing: `status_switch.feature` asserts `Then the switch description should mention "voltage"` (lowercase, substring) so the description must surface "voltage" rather than only the wire-command name `VS`.
 * `Switch::min_switch_value(0) → 0.0`, `(1) → 0.0`.
 * `Switch::max_switch_value(0) → 1023.0`, `(1) → 1.0`.
 * `Switch::switch_step(0) → 1.0`, `(1) → 1.0`.
@@ -284,7 +324,8 @@ Implementation in `switch_device.rs`:
 * `Switch::get_switch_value(1)` — `serial_manager.read_status().await.map(|s| if s.limit_detect { 1.0 } else { 0.0 })`.
 * `Switch::get_switch(0)` — `get_switch_value(0).await.map(|v| v > 0.0)`.
 * `Switch::get_switch(1)` — `get_switch_value(1).await.map(|v| v > 0.5)`.
-* `Switch::can_async / set_async_value / state_change_complete / cancel_async` — `NOT_IMPLEMENTED` (Switch V3 async ops are optional for read-only devices).
+
+~~The Switch V3 async surface (`can_async`, `set_async`, `set_async_value`, `cancel_async`) is intentionally left to the trait defaults (which return `NOT_IMPLEMENTED`) — only `state_change_complete` is explicitly overridden, because ConformU expects it to answer for sync devices.~~ **Superseded in Phase 3g:** ConformU flagged the trait defaults — `can_async` returns `Ok(false)` regardless of id, and the three writers return `NOT_IMPLEMENTED` without running id validation, so an out-of-range id was reported as "did not throw an exception" / "NotImplementedException returned for a method that must function per spec". The four methods are now explicit overrides chaining `ensure_connected!` + `validate_id` before the trait-default body (`Ok(false)` for `can_async`; `Err(NOT_IMPLEMENTED)` for the three writers). The override pattern mirrors `set_switch` et al.
 
 BDD step bodies in `status_switch_steps.rs`:
 
@@ -292,7 +333,7 @@ BDD step bodies in `status_switch_steps.rs`:
 
 Tests:
 
-* `switch_device::tests` — metadata strings, range bounds, write-rejection.
+* `switch_device::tests` keeps the existing `validate_id_*` and `*_returns_not_connected_when_disconnected` tests (they continue to drive the `NoopFactory` path so they need no MockSerialPortFactory state). The connected-device coverage for the seven getters lands as a sibling `#[cfg(all(test, feature = "mock"))] mod mock_tests` module — mirroring `serial_manager::mock_tests` — because the existing `tests` module's `disconnected_device()` helper uses `NoopFactory`, whose `open` panics, so it cannot drive `set_connected(true)` for the new per-id metadata / range / wire-command-issued / `INVALID_OPERATION`-when-connected assertions.
 
 Removes:
 
@@ -311,14 +352,58 @@ Implementation in `services/pa-falcon-rotator/tests/test_lib.rs` (gated on `feat
 
 Implementation in `services/pa-falcon-rotator/tests/conformu_integration.rs`:
 
-* `#[ignore]` everywhere. Spawn the binary with `--features mock`, parse `bound_addr=`, run two ConformU passes:
-    - `cargo test ... -- --ignored --nocapture` invokes `conformu conformance http://127.0.0.1:<port>/api/v1/rotator/0` then `.../switch/0`.
-* Re-uses `bdd_infra::parse_bound_port` per `docs/skills/testing.md` §5.1.
+* Two `#[tokio::test] #[ignore]` tests — `conformu_compliance_tests_rotator`
+  and `conformu_compliance_tests_switch` — mirroring the ppba-driver
+  split (one per ASCOM class, the other device disabled in the JSON
+  config so ConformU targets a single device at `/0`).
+* Both acquire a `static CONFORMU_LOCK: Mutex<()>` to serialise the
+  binds because the ASCOM Alpaca discovery service binds to a fixed
+  UDP port (matches ppba-driver and qhy-focuser precedent).
+* The binary is launched via `bdd_infra::ServiceHandle::try_start(env!("CARGO_PKG_NAME"), ...)`,
+  which discovers the `target/debug/pa-falcon-rotator` binary, parses
+  `bound_addr=<host>:<port>` from stdout (`parse_bound_port` is the
+  underlying primitive — see [`docs/skills/testing.md` §5.1](../../skills/testing.md#51-shared-infrastructure-bdd-infra-crate)),
+  and provides `handle.base_url` for `ConformUTestBuilder::new::<dyn Rotator>` /
+  `::<dyn Switch>`.
+* A shared `base_conformu_settings()` returns the standard boilerplate
+  (`SettingsCompatibilityVersion`, `TestProperties`, `TestMethods`, the
+  `Telescope*` / `Camera*` placeholders ConformU silently writes back
+  even when the device is unrelated). Each test overrides only the
+  keys relevant to its device class:
+    - Rotator test adds `RotatorTimeout: 30` (down from the default 60 —
+      the mock backend responds in microseconds, mirroring the
+      `FocuserTimeout: 30` precedent in `services/qhy-focuser/tests/conformu_integration.rs`).
+    - Switch test adds `SwitchEnableSet: false`, `SwitchReadDelay: 50`,
+      `SwitchWriteDelay: 100`, `SwitchExtendedNumberTestRange: 100`,
+      `SwitchAsyncTimeout: 10`, `SwitchTestOffsets: true` — same
+      values as `services/ppba-driver/tests/conformu_integration.rs`,
+      which cuts the Switch run from ~8 min to ~35 s on CI.
+* `handle.stop()` is called unconditionally after capturing the
+  ConformU result so the service gets a graceful SIGTERM (and writes
+  coverage `.profraw` data) even when the conformance run fails.
 
 `Cargo.toml`:
 
-* `[features] conformu = ["mock", "ascom-alpaca/test"]` already in 2a; add `[package.metadata.conformu] command = "cargo test -p pa-falcon-rotator --features conformu --test conformu_integration -- --ignored --nocapture"`.
+* `[features] conformu = ["mock", "ascom-alpaca/test"]` already in 2a; this
+  sub-phase adds `[package.metadata.conformu] command = "cargo test -p pa-falcon-rotator --features conformu --test conformu_integration -- --ignored --nocapture"`.
 * `.github/workflows/conformu.yml` discovers new entries dynamically via `cargo metadata` (per `docs/skills/pre-push.md`) — no workflow edit needed.
+
+Switch contract fixes surfaced by the first ConformU run:
+
+* `set_switch` / `set_switch_value` / `set_switch_name` now return
+  `NOT_IMPLEMENTED` (1024) instead of `INVALID_OPERATION` (1035).
+  ConformU reads "no writable switches" as a capability gap, not a
+  state-dependent rejection — see the [Switch layout](../../services/falcon-rotator.md#write-surface-read-only-device)
+  doc section for the rationale. The design-doc Error Model table and
+  the `tests/features/status_switch.feature` scenario landed in the same
+  commit.
+* The four `ISwitchV3` async methods (`can_async`, `set_async`,
+  `set_async_value`, `cancel_async`) are now explicit overrides that run
+  `ensure_connected!` + `validate_id` before falling through to the
+  trait-default body. The trait defaults bypass id validation, which
+  ConformU flags as "did not throw an exception" for `CanAsync(id ≥ MaxSwitch)`
+  and "NotImplementedException returned where InvalidValueException is
+  required" for the three writers.
 
 ### 3h — README + workspace.md final updates
 
@@ -337,11 +422,11 @@ Removes:
 
 `2a + 2b → 3a → 3b → 3c → 3d → 3e → 3f → 3g → 3h`.
 
-The only inter-PR gate is that each rebases onto the previous's `main`-merged state. Within Phase 3, sub-phases 3a–3c can technically land in one PR (no `@wip` removed, no behavioural diff visible to ASCOM clients) — splitting them is a reviewer ergonomics call, not a correctness one.
+All sub-phases ship as separate commits on the same branch (PR #2 — see [Branching strategy](#branching-strategy)). Ordering is strict in the commit stream — every sub-phase depends on the previous one compiling. Sub-phases 3a–3c are behaviourally invisible to ASCOM clients (no `@wip` removed); 3d / 3e are where the BDD scenarios start going green.
 
 ## Hardware validation
 
-After PR #6 (Switch device) merges, run the binary against the actual Falcon v1:
+After Phase 3e (Switch device) lands as a commit, run the binary against the actual Falcon v1:
 
 1. Plug the Falcon into a Linux box.
 2. `cargo run -p pa-falcon-rotator -- -c examples/config-linux.json`.
@@ -356,11 +441,11 @@ After PR #6 (Switch device) merges, run the binary against the actual Falcon v1:
     - `curl http://127.0.0.1:11118/api/v1/rotator/0/connected -d "Connected=false" -X PUT`
 4. Then run ConformU against real hardware: `conformu conformance http://127.0.0.1:11118/api/v1/rotator/0` and same against `/switch/0`. Both should pass with zero errors.
 
-This validation surfaces any discrepancies between the design doc's behavioural assumptions and real hardware. Capture findings as follow-up issues against the design doc rather than blocking PR #6 — the design is allowed to evolve once hardware truth is in.
+This validation surfaces any discrepancies between the design doc's behavioural assumptions and real hardware. Capture findings as follow-up issues against the design doc rather than blocking the PR — the design is allowed to evolve once hardware truth is in.
 
 ## Follow-ups (post-MVP)
 
-Tracked in the design doc's [`Follow-ups`](../services/falcon-rotator.md#follow-ups) section:
+Tracked in the design doc's [`Follow-ups`](../../services/falcon-rotator.md#follow-ups) section:
 
 1. Voltage scale calibration (raw ADC → volts).
 2. ADC width verification.
@@ -372,10 +457,10 @@ None of these block this implementation plan from being considered complete.
 
 ## References
 
-* [`docs/services/falcon-rotator.md`](../services/falcon-rotator.md) — the design contract this plan implements.
-* [`docs/skills/development-workflow.md`](../skills/development-workflow.md) — Phase 1/2/3 ordering.
-* [`docs/skills/testing.md`](../skills/testing.md) — BDD conventions (`@wip` usage §2.7, contract constants §2.5, `bdd_main!` §5.2).
-* [`docs/skills/pre-push.md`](../skills/pre-push.md) — quality-gate commands run between each sub-phase.
+* [`docs/services/falcon-rotator.md`](../../services/falcon-rotator.md) — the design contract this plan implements.
+* [`docs/skills/development-workflow.md`](../../skills/development-workflow.md) — Phase 1/2/3 ordering.
+* [`docs/skills/testing.md`](../../skills/testing.md) — BDD conventions (`@wip` usage §2.7, contract constants §2.5, `bdd_main!` §5.2).
+* [`docs/skills/pre-push.md`](../../skills/pre-push.md) — quality-gate commands run between each sub-phase.
 * `services/qhy-focuser/src/serial_manager.rs` — closest template for `SerialManager`.
 * `services/qhy-focuser/src/focuser_device.rs` — closest template for the ASCOM device trait wrapper pattern.
 * `services/ppba-driver/src/switch_device.rs` and `switches.rs` — template for `FalconStatusSwitchDevice`.

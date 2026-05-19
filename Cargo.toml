@@ -11,6 +11,7 @@ members = [
   "crates/rusty-photon-i18n-derive",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
+  "services/pa-falcon-rotator",
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-focuser",

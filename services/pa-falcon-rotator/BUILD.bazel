@@ -1,0 +1,143 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-tls:rp-tls",
+]
+
+rust_library(
+    name = "pa-falcon-rotator_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "pa_falcon_rotator",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "pa-falcon-rotator",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":pa-falcon-rotator_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "pa-falcon-rotator_unit_test",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    crate = ":pa-falcon-rotator_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Integration test targets: Cargo auto-discovers tests/*.rs as integration
+# binaries, rules_rust does not. Each Cargo integration test needs its own
+# rust_test entry here so `bazel test //...` runs them.
+rust_test(
+    name = "property_tests",
+    srcs = ["tests/property_tests.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/property_tests.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    deps = [":pa-falcon-rotator_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "test_lib",
+    srcs = ["tests/test_lib.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["mock"],
+    crate_root = "tests/test_lib.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":pa-falcon-rotator_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber tests run **in-process**: each scenario builds a `BoundServer`
+# on an ephemeral port and drives it via in-process Alpaca HTTP clients.
+# There is no child-process spawn, so unlike the ppba-driver / qhy-focuser
+# BUILDs there is no `pa-falcon-rotator_mock` binary target and no
+# `PA_FALCON_ROTATOR_BINARY` env entry — both would be unused runfile
+# wiring. `MockSerialPortFactory` is pulled in via the `_lib_mock`
+# dependency below.
+rust_library(
+    name = "pa-falcon-rotator_lib_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "pa_falcon_rotator",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = ["Cargo.toml"] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/pa-falcon-rotator",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — keep it aligned
+    # with the service name even though no `*_BINARY` env is read in-process.
+    rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    # Depend on the mock-feature library so `MockSerialPortFactory` (gated
+    # on `feature = "mock"`) is visible to the in-process BDD world. The
+    # Cargo test uses `required-features = ["mock"]` for the same reason.
+    deps = [":pa-falcon-rotator_lib_mock", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
