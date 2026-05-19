@@ -32,6 +32,13 @@ on:
   workflow_run:
     workflows: ["install-astap"]
     types: [completed]
+    # install-astap fires on pull_request too (per its paths filter on
+    # the action itself). Without a branches filter, this workflow —
+    # which holds write tokens — would react to those PR runs and
+    # could be tricked into opening auto-PRs from untrusted code.
+    # Restricting to main means only scheduled/push-to-main runs of
+    # install-astap propagate here. Per Copilot review on PR #273.
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -60,6 +67,12 @@ jobs:
           - { os: windows-latest,   arch_key: Windows-X64,  archive: astap_command-line_version_win64.zip,          subdir: windows_installer,   bin: astap_cli.exe }
     steps:
       - uses: actions/checkout@v5
+        with:
+          # workflow_run defaults to the trigger workflow's head_sha
+          # (could be a PR commit if install-astap was failing on a PR).
+          # Pin to main so the SHA extraction reads the same action.yml
+          # the auto-PR will eventually update. Per Copilot review.
+          ref: main
 
       - name: Extract current SHA pin from action.yml
         id: current
@@ -76,6 +89,13 @@ jobs:
               exit
             }
           ' .github/actions/install-astap/action.yml)
+          # Hard-fail if the parse didn't yield a 64-char hex SHA —
+          # otherwise an empty value would be silently treated as
+          # "rotated" against any real upstream SHA. Per Copilot review.
+          if [[ ! "$sha" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::Failed to extract a valid SHA-256 pin for $arch from action.yml (got '$sha'). The action's per-OS table may have changed shape."
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Pinned SHA: $sha"
 
@@ -289,13 +309,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
 
       - name: Pull archive and detect rotation
         id: war
         shell: bash
+        env:
+          ARCHIVE: astap_command-line_version_win11_aarch64.zip
         run: |
           set -euo pipefail
-          ARCHIVE="astap_command-line_version_win11_aarch64.zip"
           URL="https://sourceforge.net/projects/astap-program/files/windows_installer/${ARCHIVE}/download"
           curl -fsSL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$URL"
           new=$(sha256sum "$ARCHIVE" | awk '{print $1}')
@@ -308,22 +331,26 @@ jobs:
               exit
             }
           ' .github/actions/install-astap/action.yml)
+          # Hard-fail on empty/malformed extraction (same reason as detect job).
+          if [[ ! "$current" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::Failed to extract a valid SHA-256 pin for $ARCHIVE from action.yml (got '$current')."
+            exit 1
+          fi
           if [[ "$current" == "$new" ]]; then
             echo "rotated=false" >> "$GITHUB_OUTPUT"
             echo "No rotation for Windows-ARM64."
           else
             echo "rotated=true" >> "$GITHUB_OUTPUT"
             mkdir -p result
-            {
-              printf '{\n'
-              printf '  "arch_key": "Windows-ARM64",\n'
-              printf '  "archive": "%s",\n' "$ARCHIVE"
-              printf '  "current_sha": "%s",\n' "$current"
-              printf '  "new_sha": "%s",\n' "$new"
-              printf '  "banner": "cross-mirror SHA only (no runner, no verification)",\n'
-              printf '  "m101_passed": "skipped"\n'
-              printf '}\n'
-            } > result/Windows-ARM64.json
+            jq -n \
+              --arg arch_key    "Windows-ARM64" \
+              --arg archive     "$ARCHIVE" \
+              --arg current_sha "$current" \
+              --arg new_sha     "$new" \
+              --arg banner      "cross-mirror SHA only (no runner, no verification)" \
+              --arg m101_passed "skipped" \
+              '{arch_key: $arch_key, archive: $archive, current_sha: $current_sha, new_sha: $new_sha, banner: $banner, m101_passed: $m101_passed}' \
+              > result/Windows-ARM64.json
           fi
 
       - uses: actions/upload-artifact@v7
@@ -334,9 +361,14 @@ jobs:
 
   open-pr:
     needs: [detect, windows-arm64]
-    if: |
-      always() &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure')
+    # Default success() gate is implicit — open-pr runs only when both
+    # `detect` (every matrix leg) and `windows-arm64` succeeded. A
+    # detect-leg infra failure (download, unzip, banner-capture) skips
+    # this job; the next install-astap nightly will retrigger refresh.
+    # An M101 verification failure does NOT fail the leg — it surfaces
+    # via the artifact's m101_passed=false, and the file-issue branch
+    # below picks that up. Per Copilot review.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -421,6 +453,7 @@ jobs:
           git diff --no-color .github/actions/install-astap/action.yml
 
       - name: Push branch and open / update PR
+        id: push
         if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -495,15 +528,23 @@ jobs:
           EOF
           )
 
-          existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          # `gh pr list ... --jq '.[0].number'` yields the literal text
+          # "null" when no PR exists (jq -r prints null as the string
+          # "null"). Use `// empty` so the variable is genuinely empty
+          # when absent. Per Copilot review.
+          existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' || true)
           if [[ -n "$existing" ]]; then
             gh pr edit "$existing" --body "$body"
-            echo "Updated existing PR #$existing"
+            pr_url=$(gh pr view "$existing" --json url --jq .url)
+            echo "Updated existing PR #$existing — $pr_url"
           else
-            gh pr create --base main --head "$BRANCH" \
+            pr_url=$(gh pr create --base main --head "$BRANCH" \
               --title "chore(install-astap): auto-refresh SHA-256 pins" \
-              --body "$body"
+              --body "$body")
+            echo "Opened new PR — $pr_url"
           fi
+          # Surface PR URL to downstream tracker-comment step.
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       - name: File issue when M101 verification fails
         if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'false'
@@ -513,6 +554,7 @@ jobs:
         with:
           script: |
             const title = `astap: upstream rotated but new bytes fail M101 verification`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `Auto-refresh detected upstream SHA rotation, but the new ASTAP binary failed to solve the M101 fixture on at least one platform. Manual investigation required — do **not** merge a refresh PR until this is understood.`,
               ``,
@@ -527,43 +569,88 @@ jobs:
               `- \`.wcs\` sidecar format changed (CRVAL keys renamed, PLTSOLVD card removed)`,
               `- New binary requires a newer D05 database`,
               ``,
-              `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `Workflow run: ${runUrl}`,
             ].join("\n");
-            await github.rest.issues.create({
+            // Dedupe like install-astap.yml's notify-on-failure: search
+            // open AND closed so a maintainer who closed a previous
+            // instance gets a re-open + comment, not a fresh duplicate.
+            // Per Copilot review.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ["astap-refresh-blocked", "ci-flake"],
+              state: 'all',
+              labels: 'astap-refresh-blocked',
             });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              if (match.state === 'closed') {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: 'open',
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — see ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['astap-refresh-blocked', 'ci-flake'],
+              });
+            }
 
       - name: Comment on install-astap tracking issue
         if: steps.gate.outputs.rotated == 'true'
         uses: actions/github-script@v9
         env:
           ALL_PASSED: ${{ steps.agg.outputs.all_passed }}
+          # PR_URL is empty when verification failed (push step skipped);
+          # the JS branches on allPassed and only references PR_URL on
+          # the success path. Per Copilot review on PR #273.
+          PR_URL: ${{ steps.push.outputs.pr_url }}
         with:
           script: |
             const allPassed = process.env.ALL_PASSED === 'true';
-            // Search open AND closed so we stay coherent if a maintainer
-            // closes #266 manually between the smoke failure and this run.
+            const prUrl = process.env.PR_URL;
+            // Search open AND closed (state: 'all') so we stay coherent
+            // if a maintainer closed the tracking issue manually between
+            // the install-astap failure and this run. Reopen-then-comment
+            // mirrors install-astap.yml's own dedupe pattern.
+            // Per Copilot review.
             const tracker = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open',
+              state: 'all',
               labels: 'install-astap-nightly',
             });
             const issue = tracker.find(i => i.title === 'nightly: install-astap smoke failing (likely upstream SHA rotation)');
             if (!issue) {
-              console.log('No open install-astap tracking issue to comment on.');
+              console.log('No install-astap tracking issue (open or closed) to comment on.');
               return;
             }
+            if (issue.state === 'closed') {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'open',
+              });
+            }
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const msg = allPassed
-              ? `Auto-refresh workflow opened a PR with new SHAs (M101 verified on all runner-backed platforms). Review and merge to close this.`
-              : `Auto-refresh workflow detected rotation but M101 verification failed on at least one platform. See the new \`astap-refresh-blocked\` issue.`;
+              ? `Auto-refresh workflow opened ${prUrl} with new SHAs (M101 verified on all runner-backed platforms). Review and merge to close this.`
+              : `Auto-refresh workflow detected rotation but M101 verification failed on at least one platform. See the \`astap-refresh-blocked\` issue.`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: `${msg}\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              body: `${msg}\n\nRun: ${runUrl}`,
             });
