@@ -474,11 +474,12 @@ pub(super) fn spawn_slew_completion_watcher(
             }
 
             // Slew completed cleanly. Re-enable tracking if the user had
-            // it on before the slew, then apply the settle delay. Only
-            // mark tracking_requested=true if the StartMotion actually
-            // succeeds — otherwise Tracking() would lie about the wire
-            // state. The earlier mode/period sends are best-effort but
-            // failures are logged for diagnosis.
+            // it on before the slew, then apply the settle delay. The
+            // helper short-circuits on the first failing send, so
+            // `tracking_requested = true` flips only when all three wire
+            // commands succeed — otherwise Tracking() would lie about
+            // the wire state. A single warn covers the failure path
+            // (the failing-send error includes which command failed).
             //
             // Re-check abort / disconnect before issuing the tracking
             // wire sequence — same race-window argument as the pickup
