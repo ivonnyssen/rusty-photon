@@ -3124,3 +3124,95 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     // change has to be deliberate.
     assert_eq!(s.target_pier_side, Some(PierSide::East));
 }
+
+#[tokio::test]
+async fn slew_watcher_re_enables_tracking_after_completion() {
+    // Pins the post-slew tracking-restore branch of
+    // `spawn_slew_completion_watcher`: with tracking enabled before
+    // the slew, the watcher must re-issue `:G1 TRACKING + :I1 sidereal
+    // + :J1` after the dwell+settle, and set `tracking_requested` back
+    // to true. Without this test the entire `if tracking_was_on { ... }`
+    // block (a ~20-line section that includes the only success-path
+    // call to `state.write().tracking_requested = true`) is unexercised.
+    use crate::transport::mock::CapturingMockFactory;
+    let factory = CapturingMockFactory::new();
+    let mock = factory.mock.clone();
+    let mut cfg = Config::default();
+    if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+        usb.polling_interval = Duration::from_millis(20);
+    }
+    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    // Open the envelope so the test target lands inside.
+    cfg.mount.binding_zone_min_hours = 24.0;
+    cfg.mount.binding_zone_max_hours = 0.0;
+    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+
+    // Pre-arm: tracking on, so `execute_slew_with_explicit_side`
+    // snapshots `tracking_was_on = true` for the watcher to act on
+    // after the slew completes.
+    d.set_tracking(true).await.unwrap();
+    assert!(d.tracking().await.unwrap());
+
+    // Issue the slew. The slew planner clears `tracking_requested`
+    // immediately after `:K1` succeeds; the watcher restores it on the
+    // post-motion branch.
+    d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
+
+    // Wait for the watcher to complete. Loose deadline so a slow CI
+    // runner can't flake.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !d.slewing().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !d.slewing().await.unwrap(),
+        "slew watcher must clear slew_in_progress within 5s"
+    );
+
+    // The watcher's tracking restore lands here.
+    assert!(
+        d.tracking().await.unwrap(),
+        "post-slew watcher must restore tracking_requested = true"
+    );
+
+    // The wire log must show the post-slew restore sequence on RA.
+    // Three `:J1` are expected total: (1) the initial
+    // `set_tracking(true)`, (2) the slew's `:J1` for the RA axis
+    // motion, and (3) the watcher's `:J1` post-slew restart.
+    let log = mock.state.lock().await.command_log.clone();
+    let log_strs: Vec<String> = log
+        .iter()
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect();
+    let j1_count = log_strs.iter().filter(|s| s.contains(":J1")).count();
+    assert!(
+        j1_count >= 3,
+        "expected at least three :J1 frames (initial tracking, slew, watcher restore); \
+         got {j1_count}; log={log_strs:?}"
+    );
+}
+
+#[tokio::test]
+async fn azimuth_altitude_and_utc_date_return_well_defined_values_when_connected() {
+    // These three trait methods are pure derivations from the encoder
+    // snapshot (`azimuth`/`altitude` via `ra_dec_to_alt_az`) or the
+    // host clock (`utc_date`). No earlier test exercised them
+    // directly, so a freshly-connected device sitting on the home
+    // pose suffices to pin the contract: each returns a finite,
+    // monotonically-sensible value rather than NaN / pre-epoch.
+    let d = connected_device().await;
+    let az = d.azimuth().await.unwrap();
+    let alt = d.altitude().await.unwrap();
+    let utc = d.utc_date().await.unwrap();
+    assert!(az.is_finite(), "azimuth must be finite, got {az}");
+    assert!(alt.is_finite(), "altitude must be finite, got {alt}");
+    assert!(
+        utc > std::time::SystemTime::UNIX_EPOCH,
+        "utc_date must be after the epoch"
+    );
+}
