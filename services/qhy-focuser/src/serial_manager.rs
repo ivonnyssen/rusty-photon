@@ -80,26 +80,42 @@ impl SerialManager {
     ///
     /// Increments the connection reference count. If this is the first connection,
     /// opens the serial port, performs handshake, and starts polling.
+    ///
+    /// If open or handshake fails on the 0→1 transition, the refcount is rolled
+    /// back and any partial reader/writer is released, so a subsequent connect()
+    /// re-enters this first-connection path instead of short-circuiting through
+    /// the fast path (issue #258).
     pub async fn connect(&self) -> Result<()> {
         let count = self.connection_count.fetch_add(1, Ordering::SeqCst);
 
         if count == 0 {
             debug!("First device connecting, opening serial port");
 
-            let pair: SerialPair = self
+            let pair: SerialPair = match self
                 .serial_factory
                 .open(
                     &self.config.port,
                     self.config.baud_rate,
                     self.config.timeout,
                 )
-                .await?;
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    self.connection_count.fetch_sub(1, Ordering::SeqCst);
+                    return Err(e);
+                }
+            };
 
             *self.reader.lock().await = Some(pair.reader);
             *self.writer.lock().await = Some(pair.writer);
 
-            // Handshake: get version
-            self.perform_handshake().await?;
+            if let Err(e) = self.perform_handshake().await {
+                *self.reader.lock().await = None;
+                *self.writer.lock().await = None;
+                self.connection_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(e);
+            }
 
             self.serial_available.store(true, Ordering::SeqCst);
 
@@ -869,6 +885,179 @@ mod mock_tests {
         assert_eq!(state.position, Some(1000));
         assert!(!state.is_moving, "should detect move completion");
         assert_eq!(state.target_position, None);
+
+        manager.disconnect().await;
+    }
+
+    // ========================================================================
+    // Open/handshake failure rollback (issue #258)
+    // ========================================================================
+
+    use std::sync::atomic::AtomicI32;
+
+    /// Test-only factory that wraps [`MockSerialPortFactory`] and injects
+    /// failures into `open()` and/or the first `read_line()` of the next
+    /// reader, so the rollback path in [`SerialManager::connect`] can be
+    /// exercised end-to-end.
+    ///
+    /// Cloning the factory is shallow — all clones share the same counters,
+    /// so a test handle held alongside the manager's `Arc<dyn ...>` observes
+    /// the same state.
+    #[derive(Clone, Default)]
+    struct InjectableFactory {
+        inner: MockSerialPortFactory,
+        fail_opens_remaining: Arc<AtomicI32>,
+        fail_handshakes_remaining: Arc<AtomicI32>,
+        successful_opens: Arc<AtomicU32>,
+    }
+
+    impl InjectableFactory {
+        fn fail_next_open(self) -> Self {
+            self.fail_opens_remaining.fetch_add(1, Ordering::SeqCst);
+            self
+        }
+
+        fn fail_next_handshake(self) -> Self {
+            self.fail_handshakes_remaining
+                .fetch_add(1, Ordering::SeqCst);
+            self
+        }
+
+        fn successful_opens(&self) -> u32 {
+            self.successful_opens.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SerialPortFactory for InjectableFactory {
+        async fn open(&self, port: &str, baud_rate: u32, timeout: Duration) -> Result<SerialPair> {
+            if self.fail_opens_remaining.fetch_sub(1, Ordering::SeqCst) > 0 {
+                return Err(QhyFocuserError::Communication(
+                    "simulated open failure".to_string(),
+                ));
+            }
+            let pair = self.inner.open(port, baud_rate, timeout).await?;
+            self.successful_opens.fetch_add(1, Ordering::SeqCst);
+
+            let reader: Box<dyn SerialReader> = if self
+                .fail_handshakes_remaining
+                .fetch_sub(1, Ordering::SeqCst)
+                > 0
+            {
+                Box::new(HandshakeFailingReader {
+                    inner: pair.reader,
+                    fail_once: AtomicBool::new(true),
+                })
+            } else {
+                pair.reader
+            };
+
+            Ok(SerialPair {
+                reader,
+                writer: pair.writer,
+            })
+        }
+
+        async fn port_exists(&self, port: &str) -> bool {
+            self.inner.port_exists(port).await
+        }
+    }
+
+    struct HandshakeFailingReader {
+        inner: Box<dyn SerialReader>,
+        fail_once: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl SerialReader for HandshakeFailingReader {
+        async fn read_line(&mut self) -> Result<Option<String>> {
+            if self.fail_once.swap(false, Ordering::SeqCst) {
+                return Err(QhyFocuserError::Communication(
+                    "simulated handshake read failure".to_string(),
+                ));
+            }
+            self.inner.read_line().await
+        }
+    }
+
+    fn manager_with(factory: InjectableFactory) -> Arc<SerialManager> {
+        Arc::new(SerialManager::new(test_config(), Arc::new(factory)))
+    }
+
+    #[tokio::test]
+    async fn test_connect_open_failure_rolls_back_count() {
+        let factory = InjectableFactory::default().fail_next_open();
+        let manager = manager_with(factory.clone());
+
+        let err = manager.connect().await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("simulated open failure"),
+            "got: {err:?}"
+        );
+        assert!(!manager.is_available());
+
+        // Retry: factory's fail counter is exhausted, open succeeds.
+        // Without the rollback fix the refcount would still be 1 from the
+        // failed attempt, the fast path would short-circuit, and
+        // is_available would stay false forever.
+        manager.connect().await.unwrap();
+        assert!(manager.is_available());
+        assert_eq!(factory.successful_opens(), 1);
+
+        manager.disconnect().await;
+        assert!(!manager.is_available());
+    }
+
+    #[tokio::test]
+    async fn test_connect_handshake_failure_rolls_back_count_and_releases_port() {
+        let factory = InjectableFactory::default().fail_next_handshake();
+        let manager = manager_with(factory.clone());
+
+        let err = manager.connect().await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("simulated handshake read failure"),
+            "got: {err:?}"
+        );
+        assert!(!manager.is_available());
+        assert_eq!(
+            factory.successful_opens(),
+            1,
+            "open() was called once for the failed attempt"
+        );
+
+        // Retry: factory now succeeds end-to-end. The rollback fix means
+        // the next connect() re-enters the first-connection path and
+        // re-opens the port (reader/writer were released), proven by
+        // successful_opens advancing from 1 to 2.
+        manager.connect().await.unwrap();
+        assert!(manager.is_available());
+        assert_eq!(
+            factory.successful_opens(),
+            2,
+            "second connect() should re-open the port"
+        );
+
+        manager.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_connect_recovery_disconnect_returns_count_to_zero() {
+        let factory = InjectableFactory::default().fail_next_open();
+        let manager = manager_with(factory.clone());
+
+        let _ = manager.connect().await.unwrap_err();
+        manager.connect().await.unwrap();
+        assert!(manager.is_available());
+
+        manager.disconnect().await;
+        assert!(!manager.is_available());
+
+        // A subsequent connect should fully re-open the port — proves
+        // the refcount returned cleanly to 0 with no residual count from
+        // the initial failed attempt.
+        manager.connect().await.unwrap();
+        assert!(manager.is_available());
+        assert_eq!(factory.successful_opens(), 2);
 
         manager.disconnect().await;
     }
