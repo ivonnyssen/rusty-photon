@@ -16,12 +16,14 @@ copy-paste and copy-paste-with-fix, not through a shared abstraction.
 
 That convergence has cost us:
 
-* **Lock-holding race in `set_connected` (issue #257).** Fixed three
-  times — `pa-falcon-rotator` (PR #241 commit `8cd6e16`),
-  `qhy-focuser` (PR #256), `ppba-driver` (PR #255, in flight). Each fix
-  is structurally identical: hold the `requested_connection` write lock
-  across the entire check-and-modify. `ppba-driver` still has the
-  defect on `main`.
+* **Lock-holding race in `set_connected`** — tracked per-service:
+  issue #250 (`qhy-focuser`, fixed by PR #256), issue #251
+  (`ppba-driver`, fix in flight as PR #255), and the
+  `pa-falcon-rotator` Copilot review on PR #241 commit `8cd6e16`.
+  Each fix is structurally identical: hold the `requested_connection`
+  write lock across the entire check-and-modify. `ppba-driver` still
+  has the defect on `main`. Issue #257 (this work) is the umbrella
+  "extract a shared helper so this can't recur" issue.
 * **Refcount + reader/writer leak on partial-connect failure
   (issue #258).** `qhy-focuser`'s `connect()` bumps the refcount and
   installs reader/writer *before* the handshake; any handshake error
@@ -30,10 +32,13 @@ That convergence has cost us:
   `pa-falcon-rotator` and `star-adventurer-gti` already roll back
   correctly. This is the more dangerous bug class — a single-client
   wedge on any handshake timeout, not a multi-client race.
-* **Polling-task teardown leak** is the next bug class waiting to bite,
-  same shape: each service spawns a poll task on connect and is
-  responsible for stopping it on disconnect, with no shared mechanism
-  to enforce that the task's lifetime tracks the transport's.
+* **Polling-task teardown leak** — speculative, not observed in
+  production, but the same copy-paste shape that produced the first
+  two classes. Each service today spawns a poll task on connect and
+  is responsible for stopping it on disconnect, with no shared
+  mechanism enforcing that the task's lifetime tracks the transport's.
+  Listed here as preventive design pressure rather than as a defect
+  we can cite.
 
 The four `SerialManager` implementations now total roughly 1200 lines
 of lifecycle scaffolding that says the same thing. Three of those four
@@ -46,15 +51,22 @@ implementations of the same pattern.
 
 * Extract a workspace crate `crates/shared-transport/` that owns the
   pieces that are genuinely shared:
-    1. Byte-level transport (factory trait + `AsyncRead`/`AsyncWrite`
-       handles, with a UDP duplex adapter for Star Adventurer GTi).
-    2. Codec framing (encode + decode + terminator, with an optional
-       stale-frame predicate for protocols that need it).
+    1. A frame-oriented transport trait (`FrameTransport` with
+       `send_frame` / `recv_frame`) so serial and UDP transports
+       share an abstraction without losing datagram boundaries on
+       UDP. Framing decisions (read-until-terminator, fixed-length,
+       balanced-brace, one-datagram-per-frame) live inside each
+       per-transport implementation, not on the codec.
+    2. A `Codec` trait that operates on whole frames (encode command
+       → bytes; decode bytes → response), with an optional
+       stale-frame predicate for protocols that need it
+       (`qhy-focuser`).
     3. Request arbitration (today's `command_lock`).
     4. Refcounted lifecycle (today's `connection_count` +
        `serial_available` + slot).
-    5. A `Session<C>` Drop-safe handle that is the source of truth for
-       "this client is connected."
+    5. A `Session<C>` handle whose `close().await` is the documented
+       primary teardown path (synchronous from the caller's
+       perspective); `Drop` is a best-effort safety net.
     6. A `Hooks` surface for service-specific handshake, teardown,
        and *while-open* work (the natural home for poll tasks).
 * Make all three bug classes structurally impossible across the four
@@ -98,35 +110,50 @@ implementations of the same pattern.
 ╔══════════════════ crates/shared-transport ═══════════════════════════╗
 ║ SharedTransport<C: Codec>                                            ║
 ║  - refcount + slot + open-state lock                                 ║
-║  - acquire() → Session<C>  (Drop = release; last out closes)         ║
+║  - acquire() → Session<C>  (close().await = primary release;         ║
+║                              Drop = safety-net detached cleanup)     ║
 ║  - 0→1: open via factory → handshake → spawn while_open              ║
 ║  - 1→0: cancel while_open → teardown → close                         ║
 ║                                                                      ║
 ║ Session<C: Codec>                                                    ║
-║  - request(cmd) → C::Response   (write+read+decode, serialized)      ║
-║  - send(cmd) → ()               (write only; protocol must promise   ║
-║                                  no reply)                           ║
-║  - impl Drop                                                         ║
+║  - request(cmd) → Result<Response, SessionError<C::Error>>           ║
+║  - send(cmd)    → Result<(), SessionError<C::Error>>                 ║
+║  - close(self).await → Result<(), TransportError>   (primary)        ║
+║  - impl Drop  → detached best-effort cleanup (fallback)              ║
 ║                                                                      ║
-║ Connection<C: Codec>   (internal)                                    ║
-║  - owns boxed duplex transport + codec                               ║
+║ WhileOpen<C: Codec>   (passed to while_open hook; not a Session)     ║
+║  - request / send / cancelled()                                      ║
+║  - does NOT participate in the external refcount                     ║
+║                                                                      ║
+║ Connection<C: Codec>   (internal, frame-level)                       ║
+║  - owns Box<dyn FrameTransport> + codec                              ║
 ║  - holds the request-arbitration lock                                ║
 ║                                                                      ║
-║ trait Codec      { encode, decode, terminator, [matches, retries] }  ║
-║ trait TransportFactory { open() → Box<dyn DuplexTransport> }         ║
-║ trait DuplexTransport: AsyncRead + AsyncWrite + Unpin + Send         ║
+║ trait Codec          { encode, decode, [matches, max_skip] }         ║
+║ trait FrameTransport { send_frame, recv_frame }                      ║
+║ trait TransportFactory { open() → Box<dyn FrameTransport> }          ║
+║                                                                      ║
+║ enum SessionError<E> { Transport(TransportError), Codec(E) }         ║
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
 ### What lifts to the shared crate
 
-* `TransportFactory` trait + `DuplexTransport` blanket impl.
-* `Codec` trait.
-* `Connection<C>` — request arbitration, framed read, decode.
+* `FrameTransport` trait — `send_frame` / `recv_frame`, frame-oriented
+  so UDP and serial share an abstraction without losing datagram
+  boundaries.
+* `TransportFactory` trait — opens a boxed `FrameTransport`.
+* `Codec` trait — frame-level encode / decode, plus optional
+  stale-frame predicate.
+* `Connection<C>` — request arbitration; calls `send_frame` /
+  `recv_frame` and encode / decode in lockstep.
 * `SharedTransport<C>` — refcount, slot, open/close, while-open task
-  lifecycle.
-* `Session<C>` — request/send API, Drop-release.
+  lifecycle, explicit `close()` path with `Drop` fallback.
+* `Session<C>` — request / send / close API.
+* `WhileOpen<C>` — non-refcounted context passed to the while_open
+  hook; same request/send API as `Session`.
 * `Hooks<C>` — handshake / teardown / while_open closures.
+* `SessionError<E>` — discriminates transport vs codec failures.
 
 ### What stays per-service
 
@@ -153,22 +180,18 @@ pub trait Codec: Send + Sync + 'static {
     type Response: Send;
     type Error: Send + Sync + 'static;
 
-    /// Encode a command for the wire. Includes any framing the wire
-    /// expects on the request side (terminator, prefix, etc).
+    /// Encode a command into one whole frame's worth of bytes. Any
+    /// per-frame framing the protocol needs on the wire (terminator,
+    /// prefix, length header) is the responsibility of the
+    /// FrameTransport implementation, not the codec.
     fn encode(&self, cmd: &Self::Command) -> Vec<u8>;
 
-    /// Decode one response frame. The bytes passed do NOT include the
-    /// terminator (the connection strips it before calling).
+    /// Decode one whole response frame's bytes into a typed response.
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error>;
-
-    /// Byte that ends one response frame on the read side. Default
-    /// is LF (`b'\n'`) which covers ppba and pa-falcon. Star Adventurer
-    /// GTi overrides to CR (`b'\r'`); qhy-focuser overrides to `b'}'`.
-    fn terminator(&self) -> u8 { b'\n' }
 
     /// Return true iff `resp` is the response to `cmd`. Default is
     /// always-true (matches the immediately preceding request).
-    /// qhy-focuser overrides this to compare cmd_id↔idx, so that
+    /// qhy-focuser overrides this to compare cmd_id↔idx so that
     /// unsolicited mid-move frames don't satisfy a foreground request.
     fn matches(&self, cmd: &Self::Command, resp: &Self::Response) -> bool {
         let _ = (cmd, resp);
@@ -183,51 +206,137 @@ pub trait Codec: Send + Sync + 'static {
 }
 ```
 
-### `TransportFactory` + `DuplexTransport`
+### `FrameTransport` + `TransportFactory`
 
 ```rust
 #[async_trait]
-pub trait TransportFactory: Send + Sync + 'static {
-    async fn open(&self) -> Result<Box<dyn DuplexTransport>, TransportError>;
+pub trait FrameTransport: Send {
+    /// Send one complete frame. For serial: write bytes + the
+    /// protocol's framing terminator. For UDP: one `send` call (one
+    /// datagram).
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
+
+    /// Receive one complete frame's bytes into `buf` (overwriting it).
+    /// For serial: read-until-terminator, with the terminator stripped.
+    /// For UDP: one `recv` call (one datagram); the whole datagram is
+    /// the frame.
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError>;
 }
 
-pub trait DuplexTransport: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> DuplexTransport for T {}
+#[async_trait]
+pub trait TransportFactory: Send + Sync + 'static {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError>;
+}
 ```
 
-`tokio_serial::SerialStream` already implements both. The crate
-provides `UdpDuplex` — a thin adapter that wraps
-`tokio::net::UdpSocket` as `AsyncRead + AsyncWrite` so SAG-GTI's
-network factory can return one.
+Per-transport framing decisions live on the transport implementation:
 
-### `Session<C>`
+* `crates/shared-transport` provides a `SerialFrameTransport` helper
+  that wraps any `AsyncRead + AsyncWrite + Unpin + Send` (e.g.
+  `tokio_serial::SerialStream`) plus a configurable terminator byte
+  and a max-frame-size guard. ppba/pa-falcon use LF; SAG-GTI's serial
+  factory uses CR; qhy-focuser uses `b'}'` (qhy responses are flat
+  JSON objects — that assumption is documented at the qhy-focuser
+  layer, not lifted into the shared crate). If a future codec needs
+  balanced-brace or length-prefix framing, it ships its own
+  `FrameTransport` impl without changing anything cross-cutting.
+
+* `crates/shared-transport` provides a `UdpFrameTransport` that wraps
+  `tokio::net::UdpSocket` with `connect()` set to the peer address.
+  `send_frame` is one `send` call; `recv_frame` is one `recv` call
+  into the supplied buffer. Datagram boundaries are preserved by
+  construction.
+
+### `SessionError<E>`
+
+```rust
+pub enum SessionError<E> {
+    /// Wire-level I/O failure: factory open, broken pipe, read
+    /// timeout, EOF, framing error before reaching `Codec::decode`.
+    Transport(TransportError),
+
+    /// Codec-level failure: malformed response, mismatched checksum,
+    /// stale-frame budget exhausted.
+    Codec(E),
+}
+
+impl<E> From<TransportError> for SessionError<E> { /* … */ }
+```
+
+Each service maps `SessionError<C::Error>` into its existing
+service-wide error enum at the `Manager` public-API boundary (e.g.
+`QhyFocuserError::from(SessionError<QhyCodecError>)`). The shared
+crate's tests can assert on the variant directly to distinguish
+transport vs codec failures without parsing strings.
+
+### `Session<C>` and `WhileOpen<C>`
 
 ```rust
 pub struct Session<C: Codec> { /* Arc<SharedTransport<C>> + slot id */ }
 
 impl<C: Codec> Session<C> {
-    pub async fn request(&self, cmd: C::Command) -> Result<C::Response, C::Error>;
-    pub async fn send(&self, cmd: C::Command) -> Result<(), C::Error>;
+    pub async fn request(&self, cmd: C::Command)
+        -> Result<C::Response, SessionError<C::Error>>;
+
+    pub async fn send(&self, cmd: C::Command)
+        -> Result<(), SessionError<C::Error>>;
+
+    /// Primary teardown path. If this is the last live session,
+    /// awaits while_open cancellation, runs `hooks.teardown`, closes
+    /// the transport — all before returning. Callers see today's
+    /// observable behavior (rollback complete before the call
+    /// returns).
+    pub async fn close(self) -> Result<(), TransportError>;
 }
 
 impl<C: Codec> Drop for Session<C> {
-    fn drop(&mut self) {
-        // Decrement; if we were last, spawn an async cleanup task
-        // (acquire_lock-guarded) that cancels while_open, runs
-        // teardown, closes the transport.
-    }
+    /// Fallback only. Decrements the refcount synchronously; if this
+    /// is the last session, spawns an `acquire_lock`-guarded detached
+    /// cleanup task on the current tokio runtime. Best-effort: if the
+    /// runtime is shutting down or no runtime is available, teardown
+    /// commands (e.g. SAG-GTI's halt sequence) may not run. Document
+    /// in rustdoc: "for graceful teardown, call `close().await`."
+    fn drop(&mut self) { /* … */ }
+}
+
+/// Non-refcounted context handed to the while_open hook. Same
+/// request/send API as Session, but its drop does NOT decrement the
+/// shared transport's external refcount — it's infrastructure, not a
+/// client. The Connection it wraps is shared via `Arc` with the
+/// primary `acquire()` path; both go through the same request
+/// arbitration lock.
+pub struct WhileOpen<C: Codec> { /* Arc<Connection<C>> + CancellationToken */ }
+
+impl<C: Codec> WhileOpen<C> {
+    pub async fn request(&self, cmd: C::Command)
+        -> Result<C::Response, SessionError<C::Error>>;
+
+    pub async fn send(&self, cmd: C::Command)
+        -> Result<(), SessionError<C::Error>>;
+
+    /// Future that resolves when the surrounding SharedTransport
+    /// starts teardown. Poll loops `tokio::select!` between this and
+    /// their interval tick.
+    pub fn cancelled(&self) -> impl Future<Output = ()> + '_;
 }
 ```
 
-`request` writes the encoded command, reads frames until `decode`
-yields one for which `matches()` returns true (or `max_skip` is
-reached), and returns it. It holds the connection's command lock for
-the whole transaction.
+`request` writes one frame via `Connection::send_frame` (which calls
+`Codec::encode` + `FrameTransport::send_frame`), then reads frames
+via `recv_frame` + `Codec::decode` until one passes `matches()` or
+`max_skip` is exhausted. The connection's command lock is held for
+the whole transaction. Transport errors surface as
+`SessionError::Transport`; codec errors as `SessionError::Codec`.
 
-`send` writes and flushes, returns. The protocol must promise no
+`send` writes one frame and returns. The protocol must promise no
 response — otherwise the unread bytes desync the next `request`.
 Today every wire request has a wire response; `send` is forward-compat
 plumbing.
+
+`close(self).await` is the documented primary teardown path. If you
+hold the last session, awaiting close means rollback completes before
+your call returns — matching today's behavior. Drop is only the
+"oops I forgot" safety net.
 
 ### `SharedTransport<C>` + `Hooks<C>`
 
@@ -242,17 +351,24 @@ pub struct Hooks<C: Codec> {
 
     /// Runs on the 1→0 transition with the connection still open.
     /// Best-effort: errors are logged at warn!, not propagated.
+    /// Signature is infallible at the type level because no current
+    /// service propagates teardown errors (SAG-GTI's `Result<()>` is
+    /// log-and-continue today).
     pub teardown: Box<
         dyn Fn(&Connection<C>) -> BoxFuture<'_, ()>
             + Send + Sync,
     >,
 
-    /// Optional: spawned after handshake succeeds; receives its own
-    /// Session + a CancellationToken. The task must drop its Session
-    /// when the token fires. Awaited (with a bounded timeout) during
-    /// the 1→0 transition before teardown runs.
+    /// Optional: spawned after handshake succeeds; receives a
+    /// `WhileOpen<C>` context (NOT a Session — see API design above).
+    /// The closure cooperates with `WhileOpen::cancelled()` by
+    /// returning promptly when the token fires. Awaited with a
+    /// bounded timeout (5s) during the 1→0 transition; on timeout
+    /// the JoinHandle is `abort()`-ed and teardown proceeds
+    /// regardless. A panicking task is treated the same way (the
+    /// JoinHandle resolves to Err; teardown runs).
     pub while_open: Option<Box<
-        dyn Fn(Session<C>, CancellationToken) -> BoxFuture<'static, ()>
+        dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()>
             + Send + Sync,
     >>,
 }
@@ -266,7 +382,8 @@ impl<C: Codec> SharedTransport<C> {
         hooks: Hooks<C>,
     ) -> Arc<Self>;
 
-    pub async fn acquire(self: &Arc<Self>) -> Result<Session<C>, C::Error>;
+    pub async fn acquire(self: &Arc<Self>)
+        -> Result<Session<C>, SessionError<C::Error>>;
 
     /// Cheap, non-blocking. True between successful handshake and the
     /// start of teardown.
@@ -293,51 +410,76 @@ impl<C: Codec> SharedTransport<C> {
 1. Take `acquire_lock`.
 2. `let prev = count.fetch_add(1, SeqCst);`
 3. If `prev == 0`:
-    1. `factory.open()` → boxed duplex transport.
+    1. `factory.open()` → boxed `FrameTransport`.
     2. Wrap in `Connection<C>` (codec, command-lock).
     3. Run `hooks.handshake(&conn)`. On `Err`: clear slot,
-       `count.fetch_sub(1)`, return error. (Connection drops, transport
-       closes.)
+       `count.fetch_sub(1)`, return `SessionError`. (Connection drops,
+       transport closes.)
     4. Store `Arc::new(conn)` in `slot`.
     5. `available.store(true, SeqCst)`.
-    6. If `hooks.while_open` is `Some`: acquire an *internal* session
-       (does **not** affect `count`), spawn the closure, store handle
-       + cancellation token in `while_open_state`.
-4. Return `Session<C>` (whose `Drop` is wired to this `SharedTransport`).
+    6. If `hooks.while_open` is `Some`: construct a `WhileOpen<C>`
+       wrapping `Arc<Connection<C>>` + a fresh `CancellationToken`
+       (does **not** touch `count`), spawn the closure with it,
+       store the `JoinHandle` + token in `while_open_state`.
+4. Return `Session<C>`. The session does NOT take `acquire_lock` for
+   its `Drop`; only the cleanup task does.
 
-`Session::drop`:
+`Session::close(self).await` (**primary teardown path**):
 1. `let prev = count.fetch_sub(1, SeqCst);`
-2. If `prev == 1`: schedule async cleanup via `tokio::spawn`. (Drop is
-   sync; the spawn is fire-and-forget on the current runtime.)
+2. If `prev > 1`: return `Ok(())` immediately (another session keeps
+   the transport open).
+3. If `prev == 1`: this is the last out — await the cleanup body
+   inline (NOT via `tokio::spawn`):
+    1. Take `acquire_lock`.
+    2. Re-check `count`: if a new `acquire()` raced in and took
+       `count` back to ≥1, release the lock and return `Ok(())`; the
+       new owner is the new opener.
+    3. `available.store(false, SeqCst)`.
+    4. If `while_open_state` is `Some`: fire the cancellation token,
+       await the `JoinHandle` with a bounded 5s timeout; on timeout
+       call `handle.abort()`. Panicking task is the same path (Err
+       resolves immediately).
+    5. Take the connection out of `slot`. Run `hooks.teardown(&conn)`.
+    6. Drop the connection — `FrameTransport` closes.
+    7. Return `Ok(())` (or `Err(TransportError)` if the close itself
+       errored, propagated through the `FrameTransport::Drop`).
 
-Async cleanup:
-1. Take `acquire_lock`.
-2. Re-check `count`: if another `acquire()` already raced and took
-   `count` back to ≥1, abort cleanup (the new owner is the new
-   opener; this cleanup is stale).
-3. `available.store(false, SeqCst)`.
-4. If `while_open_state` is `Some`: fire the cancellation token,
-   await the join handle with a bounded timeout (5s), then drop the
-   internal session.
-5. Take the connection out of `slot`. Run `hooks.teardown(&conn)`.
-6. Drop the connection — transport closes.
+`Session::drop` (**fallback / safety net**):
+1. `let prev = count.fetch_sub(1, SeqCst);`
+2. If `prev == 1`: schedule the same cleanup body as `close()` via
+   `tokio::spawn` on the current runtime. The spawn is fire-and-forget.
+3. Documented limitation: if no tokio runtime is current, or the
+   runtime is in shutdown, the spawned task may never complete and
+   teardown commands (e.g. SAG-GTI's halt sequence) may not run.
+   Service migrations call `close().await` on the disconnect path;
+   Drop catches programmer error, not the steady-state path.
 
 The `acquire_lock` makes the open/close transitions atomic with
 respect to each other. The fast path (acquire when `count > 0`) takes
-the lock, increments, and returns — microseconds.
+the lock, increments, and returns — microseconds. The lock is NOT
+held by `Session` during `request` / `send` — only by the
+acquire/cleanup boundary.
 
 ### Error model
 
 `shared-transport` defines a small `TransportError` enum for
-`TransportFactory::open` failures and for connection-layer I/O. Codec
-errors are the codec's own `C::Error` type — `SharedTransport` is
-generic over it and propagates without wrapping. Each service maps its
-codec error + `TransportError` to its existing service-level
-`ASCOMResult` mapping (no change to current ASCOM error semantics).
+`TransportFactory::open` failures and for `FrameTransport::send_frame`
+/ `recv_frame` failures (broken pipe, read timeout, EOF, framing
+error before reaching `Codec::decode`). `Session::request` / `send`
+return `Result<_, SessionError<C::Error>>` where `SessionError`
+discriminates `Transport(TransportError)` from `Codec(C::Error)`. No
+implicit `From<TransportError>` bound is required on `C::Error`; the
+shared crate exposes the discriminated union and each service
+flattens it into its existing service-wide error enum at the
+`Manager` public-API boundary.
+
+`Session::close` returns `Result<(), TransportError>` — codec errors
+are not in scope for teardown (teardown is logging-only by hook
+contract).
 
 ## How the bug classes dissolve
 
-### Race (issue #257)
+### Race (issues #250 and #251)
 
 Today: two concurrent `set_connected(true)` on the same device can
 both observe `requested_connection == false`, both call
@@ -354,9 +496,17 @@ no second source to desync.
 async fn set_connected(&self, on: bool) -> ASCOMResult<()> {
     let mut s = self.session.write().await;
     match (on, s.is_some()) {
-        (true, false) => *s = Some(self.transport.acquire().await
-                                       .map_err(Self::to_ascom)?),
-        (false, true) => *s = None,        // Drop releases
+        (true, false) => {
+            *s = Some(
+                self.transport.acquire().await
+                    .map_err(Self::to_ascom)?
+            );
+        }
+        (false, true) => {
+            if let Some(session) = s.take() {
+                session.close().await.map_err(Self::to_ascom)?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -418,15 +568,21 @@ pub struct QhyCodec;
 impl Codec for QhyCodec {
     type Command = QhyCommand;     // existing
     type Response = QhyResponse;   // existing
-    type Error = QhyFocuserError;
+    type Error = QhyCodecError;    // new: parse/JSON errors only
     fn encode(&self, cmd: &QhyCommand) -> Vec<u8> { /* serde_json */ }
     fn decode(&self, bytes: &[u8]) -> Result<QhyResponse, _> { /* serde_json */ }
-    fn terminator(&self) -> u8 { b'}' }
     fn matches(&self, cmd: &QhyCommand, resp: &QhyResponse) -> bool {
         cmd.cmd_id() == resp.idx()
     }
     fn max_skip(&self) -> usize { 5 }    // unsolicited frames during move
 }
+
+// services/qhy-focuser/src/transport.rs — new
+// Builds a SerialFrameTransport with terminator b'}' (qhy responses
+// are flat JSON objects; documented assumption at this layer).
+// Implements TransportFactory.
+pub struct QhyTransportFactory { /* … */ }
+impl TransportFactory for QhyTransportFactory { /* … */ }
 
 // services/qhy-focuser/src/manager.rs — thin
 pub struct FocuserManager {
@@ -488,20 +644,24 @@ async fn set_connected(&self, on: bool) -> ASCOMResult<()> {
             self.manager.transport().acquire().await
                 .map_err(QhyFocuserError::into_ascom)?
         ),
-        (false, true) => *s = None,
+        (false, true) => {
+            if let Some(session) = s.take() {
+                session.close().await
+                    .map_err(QhyFocuserError::into_ascom)?;
+            }
+        }
         _ => {}
     }
     Ok(())
 }
 ```
 
-`poll_loop` (per-service) accepts the `Session`, the
-`CancellationToken`, and the `cached_state` Arc. It does the same
-`GetPosition` + `ReadTemperature` calls the current
+`poll_loop` (per-service) accepts the `WhileOpen<QhyCodec>` context.
+It does the same `GetPosition` + `ReadTemperature` calls the current
 `poll_position`/`poll_temperature` do, wrapped in
-`tokio::select! { _ = cancel.cancelled() => break, _ = interval.tick() => {} }`.
-The stale-frame retry budget is now part of the codec — `poll_loop`
-just calls `session.request(...).await`.
+`tokio::select! { _ = ctx.cancelled() => break, _ = interval.tick() => {} }`.
+The stale-frame retry budget is part of the codec — `poll_loop`
+just calls `ctx.request(...).await`.
 
 Net effect: `serial_manager.rs` shrinks from ~600 lines to a ~120-line
 `manager.rs` with the manager API; lifecycle scaffolding (~250 lines)
@@ -560,14 +720,24 @@ async fn set_connected(&self, on: bool) -> ASCOMResult<()> {
         (true, false) => {
             let session = self.manager.transport().acquire().await
                               .map_err(Self::ascom)?;
-            self.seed_home_pose_after_connect(&session).await
-                .map_err(Self::ascom)?;
-            self.load_park_target_after_connect(&session).await
-                .map_err(Self::ascom)?;
+            // Post-acquire fallible work. On error, close the
+            // session synchronously before propagating, preserving
+            // today's behavior where rollback completes before the
+            // ASCOM call returns.
+            if let Err(e) = self.seed_home_pose_after_connect(&session).await {
+                session.close().await.map_err(Self::ascom)?;
+                return Err(Self::ascom(e));
+            }
+            if let Err(e) = self.load_park_target_after_connect(&session).await {
+                session.close().await.map_err(Self::ascom)?;
+                return Err(Self::ascom(e));
+            }
             *s = Some(session);
         }
         (false, true) => {
-            *s = None;
+            if let Some(session) = s.take() {
+                session.close().await.map_err(Self::ascom)?;
+            }
             self.clear_session_state().await;
         }
         _ => {}
@@ -576,11 +746,14 @@ async fn set_connected(&self, on: bool) -> ASCOMResult<()> {
 }
 ```
 
-The explicit rollback code disappears: if either post-acquire call
-errors, `session` falls out of scope, `Drop` releases the transport,
-the underlying port closes. No more `tracing::warn!(...)` log noise
-for failed-rollback-disconnect either, because the rollback is
-structural now.
+The post-acquire rollback path stays explicit but becomes uniform:
+on any failure between `acquire()` and the final `*s = Some(...)`,
+call `session.close().await` synchronously and propagate. If the
+caller forgets and just lets `session` drop, the Drop fallback fires
+detached cleanup — best-effort, log-level halt commands only. The
+`tracing::warn!(...)` for failed-rollback-disconnect that exists
+today (`mount_device.rs:1085, 1091`) goes away because `close()`
+surfaces the error to the caller instead of swallowing it.
 
 The `PollPauseGuard` pattern stays inside SAG-GTI's `while_open`
 closure. The closure captures the guard's atomic; the poll body
@@ -703,21 +876,24 @@ Last because:
 
 1. Largest service (~3700 lines in `mount_device.rs` alone).
 2. Most BDD scenarios (~54).
-3. Dual transport (USB + UDP) needs the `UdpDuplex` adapter exercised.
+3. Dual transport (USB + UDP) needs the `UdpFrameTransport` adapter exercised.
 4. Post-acquire fallible work needs the structural-rollback story
    verified end to end.
 
 Removes:
 * `services/star-adventurer-gti/src/transport_manager.rs` — most of it.
-* The explicit rollback-on-error branches in `set_connected`
-  (`mount_device.rs:1083-1094`) — auto-released by Drop.
+* The `tracing::warn!(...)` log-on-rollback-disconnect-failure
+  branches in `set_connected` (`mount_device.rs:1085, 1091`).
+  Rollback now calls `session.close().await` and propagates errors;
+  no swallowed warnings.
 
 Adds:
 * `services/star-adventurer-gti/src/codec.rs` — `SkywatcherCodec`
   wrapping the existing `skywatcher-motor-protocol` crate.
 * `services/star-adventurer-gti/src/transport/udp.rs` adapts to
-  the shared `TransportFactory` and uses `UdpDuplex` from
-  `shared-transport`.
+  the shared `TransportFactory` and uses `UdpFrameTransport` from
+  `shared-transport` (one `recv` per frame; datagram boundaries
+  preserved).
 * `services/star-adventurer-gti/src/manager.rs` — `MountManager`
   with `seed_*_position`, `parameters`, `snapshot`, `poll_axes_now`,
   `pause_background_polling`.
@@ -770,10 +946,11 @@ Phase A but listed as a follow-up if regressions appear.
 | Risk | Severity | Mitigation |
 |---|---|---|
 | Closure storage in `Hooks` is unfamiliar Rust; trait objects with `BoxFuture` add complexity. | Med | Concrete example in shared-crate tests; keep `Hooks` impl Send + Sync trivial; document patterns in `crates/shared-transport/README.md`. |
-| Async drop spawning a cleanup task requires a running tokio runtime. | Med | All `Session` drops happen in async context today (every `set_connected(false)` is `async fn`). Document the assumption in `Session::drop` rustdoc; panic loudly if no runtime. |
+| `Session::drop` fallback spawns a cleanup task and needs a tokio runtime; if the runtime is shutting down, teardown commands (e.g. SAG-GTI's halt sequence) may not run. | Med | Service migrations always call `close().await` on the disconnect path. Drop is for "caller forgot." Document the limitation in `Session::drop` rustdoc; the explicit-close-is-primary design (vs Drop-is-primary) makes this an "oops" path, not the steady-state path. |
+| Misbehaving `while_open` task ignores cancellation and times out; teardown then aborts the JoinHandle and proceeds while the task may still be running. | Low | Connection's request-arbitration lock is released when the connection drops, so an abort()-stuck task can't deadlock teardown. Tests in Phase A cover the panic/timeout paths explicitly. |
 | Stale cleanup races a new acquire (count goes 1 → 0 → 1 quickly). | Low | `acquire_lock` serializes cleanup against new acquire; cleanup re-checks `count` after taking the lock and bails if a new owner is already in. |
 | qhy-focuser's `matches`/`max_skip` codec hooks add cost (one extra method call per response) to every service. | Low | Default impls are no-ops; hot path is identical to today. Bench in Phase A. |
-| Mock factory rewrites in Phases B–E touch many tests. | Med | The per-service `MockState` machinery stays; only the factory trait it implements changes. Migration is a rename + signature tweak per service. |
+| Mock factory rewrites in Phases B–E touch many tests. | Med | The per-service `MockState` machinery stays; only the factory trait it implements changes (`SerialPortFactory` → `TransportFactory`, returning `Box<dyn FrameTransport>`). Migration is a rename + signature tweak per service. |
 | Phase E (SAG-GTI) is large; risk of subtle behavior change. | Med | Phase E lands last so the shared crate is well-exercised by the other three services first. Hardware smoke-test against the real mount before merging Phase E. |
 | `pa-falcon-rotator` PR #241 may not merge in time. | Low | Phase D depends on #241; the other phases ship independently. |
 
@@ -783,42 +960,59 @@ Phase A but listed as a follow-up if regressions appear.
    `shared-transport` is the working name in this plan; bikeshed in
    the Phase A PR if needed.
 2. **`Session::send` policy when the codec's protocol does have a
-   response.** Current proposal: `send` writes and returns; the
-   protocol is responsible for guaranteeing no reply. Alternative:
-   the codec exposes a per-command `expects_response()` method and
-   `send` requires it to return `false`. The alternative adds
-   type-system enforcement at the cost of a per-command method.
-   Defer to Phase A.
-3. **Whether `Hooks::teardown` should be allowed to fail.** Today
-   `star-adventurer-gti::TransportManager::disconnect()` returns
-   `Result<()>` because of the best-effort `:L1`/`:L2`/`:K1` halt
-   sequence; the proposed `teardown` is infallible-by-design. The
-   current code logs at `warn!` on failure and continues — i.e. the
-   `Result<()>` was already best-effort. Treating teardown as
-   infallible at the signature level matches that intent. Confirm
-   in Phase A.
-4. **Whether to land `pa-falcon-rotator` adoption inside PR #241
+   response.** Current proposal: `send` writes one frame and returns;
+   the caller is responsible for knowing the protocol guarantees no
+   reply. Alternative: the codec exposes a per-command
+   `expects_response()` method and `send` requires it to return
+   `false`. The alternative adds type-system enforcement at the cost
+   of a per-command method. Defer to Phase A.
+3. **Whether to land `pa-falcon-rotator` adoption inside PR #241
    itself** (so the service is born with the new shape) or after
    PR #241 merges as a separate migration PR. The author of #241
    decides; either way works.
 
+Resolved in this revision (originally listed; the Copilot review on
+PR #265 closed them):
+
+* **`Hooks::teardown` fallibility** — settled as infallible at the
+  type level (`-> BoxFuture<()>`), matching today's log-and-continue
+  behavior in every service. Errors that need to reach the caller
+  surface through `Session::close()`'s `Result<(), TransportError>`,
+  not through the teardown hook.
+* **Error model** — settled as explicit
+  `SessionError<E> { Transport(TransportError), Codec(E) }`. No
+  implicit `From<TransportError>` bound on `C::Error`.
+* **Framing on `Codec` vs transport** — settled: framing lives on
+  the per-transport `FrameTransport` impl, not on `Codec`. Codec
+  operates on whole frames.
+* **`AsyncRead + AsyncWrite` vs frame-oriented transport** — settled
+  as `FrameTransport { send_frame, recv_frame }` to preserve UDP
+  datagram boundaries.
+* **Drop-only vs explicit-close teardown** — settled as explicit
+  `Session::close().await` primary; Drop is the safety net.
+
 ## References
 
 * Issue #257 — Extract shared connection-lifecycle helper for
-  serial-based ASCOM services (this work).
-* Issue #251 — `ppba-driver` `set_connected` race
-  (closed structurally by Phase B).
+  serial-based ASCOM services (umbrella, this work).
+* Issue #250 — `qhy-focuser` `set_connected` race (closed by PR
+  #256; matches the bug class this plan generalizes).
+* Issue #251 — `ppba-driver` `set_connected` race (closed
+  structurally by Phase B).
 * Issue #258 — `qhy-focuser` refcount leak on partial-connect
   failure (closed structurally by Phase C; PR #260 lands first as
   the interim inline fix).
 * PR #241 — `pa-falcon-rotator` Phase 2 (introduces the canonical
-  fix shape; Phase D depends on this merging).
+  lock-held fix shape in commit `8cd6e16`; Phase D depends on this
+  merging).
 * PR #255 — `ppba-driver` inline fix for #251 (superseded by
   Phase B if Phase A lands in time).
-* PR #256 — `qhy-focuser` `set_connected` race fix
+* PR #256 — `qhy-focuser` `set_connected` race fix for #250
   (canonical lock-held shape, merged).
 * PR #260 — `qhy-focuser` rollback fix for #258
   (interim; Phase C deletes the rollback code).
+* PR #265 — this plan; review thread settles five of the original
+  open questions (see "Resolved" list above).
 * `docs/services/qhy-focuser.md`,
   `docs/services/ppba-driver.md`,
   `docs/services/falcon-rotator.md`,
