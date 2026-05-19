@@ -108,7 +108,7 @@ jobs:
       # runner's _work directory and is overwritten next run.
       - name: Upload OmniSim logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnisim-logs-pi-nightly
           path: '**/bdd-infra-omnisim-logs/**'

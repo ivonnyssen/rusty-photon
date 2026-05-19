@@ -115,7 +115,7 @@ jobs:
       # re-guessed.
       - name: Upload OmniSim logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnisim-logs-ubuntu-stable
           path: '**/bdd-infra-omnisim-logs/**'
@@ -155,7 +155,7 @@ jobs:
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnisim-logs-macos-latest
           path: '**/bdd-infra-omnisim-logs/**'
@@ -241,7 +241,7 @@ jobs:
         run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnisim-logs-windows-bdd-${{ matrix.package }}
           path: '**/bdd-infra-omnisim-logs/**'
@@ -287,7 +287,7 @@ jobs:
           cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Upload OmniSim logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnisim-logs-coverage
           path: '**/bdd-infra-omnisim-logs/**'
