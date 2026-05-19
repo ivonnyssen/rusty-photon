@@ -18,7 +18,7 @@ belong in any single service design doc.
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
-| [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` (Phase 1 — design landed; implementation tracked in [`docs/plans/pa-falcon-rotator-implementation.md`](plans/pa-falcon-rotator-implementation.md)) |
+| [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
@@ -46,7 +46,7 @@ belong in any single service design doc.
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [i18n-cli-spike.md](plans/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de) |
 | [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
-| [pa-falcon-rotator-implementation.md](plans/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation) breakdown |
+| [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
 
 ## Shared Crates
 

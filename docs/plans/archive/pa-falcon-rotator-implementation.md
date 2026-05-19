@@ -45,7 +45,7 @@ Files created:
 * `services/pa-falcon-rotator/src/io.rs` — `SerialReader`, `SerialWriter`, `SerialPortFactory` traits with `#[cfg_attr(test, mockall::automock)]`. `SerialPair` struct.
 * `services/pa-falcon-rotator/src/serial.rs` — `TokioSerialPortFactory` implementing `SerialPortFactory` via `tokio-serial`. Stubbed (`unimplemented!()`).
 * `services/pa-falcon-rotator/src/mock.rs` — `#[cfg(feature = "mock")] pub struct MockSerialPortFactory` with a small deterministic state machine: stored mechanical position, is-moving flag, motor-reverse flag, derotation flag, voltage_raw. Returns canned `FR_OK` for `F#`, `FV:1.3` for `FV`, etc. Stubbed body for now.
-* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers (replaced in §3a on this same PR — see Branching strategy).
+* `services/pa-falcon-rotator/src/protocol.rs` — `Command` enum (variants for `Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `DerotationOff` / `DerotationRate(u32)`, `MoveDeg(f64)`, `MoveSteps(u32)`, `Halt`, `IsRunning`, `SetReverse(bool)`). Variants for `FF` (firmware reload) and `SD:<deg>` (device-side sync) are deliberately omitted — `SD` would change `MechanicalPosition` and break the ASCOM `Sync` contract (see [design doc](../../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd)). `to_command_string()` method. `FalconStatus` parsed struct (steps, deg, is_moving, limit_detect, do_derotation, motor_reverse). Stubbed parsers (replaced in §3a on this same PR — see Branching strategy).
 * `services/pa-falcon-rotator/src/serial_manager.rs` — `SerialManager` struct: `config`, `connection_count` (`AtomicU32`), `serial_available` (`AtomicBool`), `reader`/`writer` (`Mutex<Option<Box<dyn ...>>>`), `command_lock` (`Mutex<()>`), `sync_offset` (`Mutex<f64>`), `target_position` (`Mutex<Option<f64>>`), `last_limit_detected` (`Mutex<Option<bool>>`), `serial_factory`. Stubbed methods: `connect`, `disconnect`, `is_available`, `send_command`, `read_status` (issues `FA` + edge-checks `limit_detect`), `read_voltage`, `move_to`, `halt`, `sync`, `get_sync_offset`, `target_position`, `get_target_position`.
 * `services/pa-falcon-rotator/src/rotator_device.rs` — `FalconRotatorDevice` impl skeleton. `Device` trait stub. `Rotator` trait stub.
 * `services/pa-falcon-rotator/src/switch_device.rs` — `FalconStatusSwitchDevice` impl skeleton. `Device` trait stub. `Switch` trait stub.
@@ -98,7 +98,7 @@ Implementation:
 * `parse_full_status(&str) -> Result<FalconStatus>` — splits on `:`, validates `FR_OK` prefix, parses each field. Trims trailing `\n` / whitespace per the ppba pattern.
 * `parse_firmware_version(&str)`, `parse_position_deg(&str)`, `parse_position_steps(&str)`, `parse_voltage_raw(&str)`, `parse_is_running(&str)`, `parse_reverse(&str)` — one for every response shape.
 * `validate_ping_response(&str) -> Result<()>` — accepts `FR_OK` ± trailing whitespace.
-* `validate_echo(command, response)` — generic echo validator for `MD:`, `MS:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).) Non-echo commands (`Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `IsRunning`) are rejected so a caller misrouting them fails loudly.
+* `validate_echo(command, response)` — generic echo validator for `MD:`, `MS:`, `DR:`, `FH`, `FN:` shapes. (`SD:` is absent because the driver never issues `SD` — see the [design doc rationale](../../services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd).) Non-echo commands (`Ping`, `FullStatus`, `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `IsRunning`) are rejected so a caller misrouting them fails loudly.
 
 Tests:
 
@@ -362,7 +362,7 @@ Implementation in `services/pa-falcon-rotator/tests/conformu_integration.rs`:
 * The binary is launched via `bdd_infra::ServiceHandle::try_start(env!("CARGO_PKG_NAME"), ...)`,
   which discovers the `target/debug/pa-falcon-rotator` binary, parses
   `bound_addr=<host>:<port>` from stdout (`parse_bound_port` is the
-  underlying primitive — see [`docs/skills/testing.md` §5.1](../skills/testing.md#51-shared-infrastructure-bdd-infra-crate)),
+  underlying primitive — see [`docs/skills/testing.md` §5.1](../../skills/testing.md#51-shared-infrastructure-bdd-infra-crate)),
   and provides `handle.base_url` for `ConformUTestBuilder::new::<dyn Rotator>` /
   `::<dyn Switch>`.
 * A shared `base_conformu_settings()` returns the standard boilerplate
@@ -393,7 +393,7 @@ Switch contract fixes surfaced by the first ConformU run:
 * `set_switch` / `set_switch_value` / `set_switch_name` now return
   `NOT_IMPLEMENTED` (1024) instead of `INVALID_OPERATION` (1035).
   ConformU reads "no writable switches" as a capability gap, not a
-  state-dependent rejection — see the [Switch layout](../services/falcon-rotator.md#write-surface-read-only-device)
+  state-dependent rejection — see the [Switch layout](../../services/falcon-rotator.md#write-surface-read-only-device)
   doc section for the rationale. The design-doc Error Model table and
   the `tests/features/status_switch.feature` scenario landed in the same
   commit.
@@ -445,7 +445,7 @@ This validation surfaces any discrepancies between the design doc's behavioural 
 
 ## Follow-ups (post-MVP)
 
-Tracked in the design doc's [`Follow-ups`](../services/falcon-rotator.md#follow-ups) section:
+Tracked in the design doc's [`Follow-ups`](../../services/falcon-rotator.md#follow-ups) section:
 
 1. Voltage scale calibration (raw ADC → volts).
 2. ADC width verification.
@@ -457,10 +457,10 @@ None of these block this implementation plan from being considered complete.
 
 ## References
 
-* [`docs/services/falcon-rotator.md`](../services/falcon-rotator.md) — the design contract this plan implements.
-* [`docs/skills/development-workflow.md`](../skills/development-workflow.md) — Phase 1/2/3 ordering.
-* [`docs/skills/testing.md`](../skills/testing.md) — BDD conventions (`@wip` usage §2.7, contract constants §2.5, `bdd_main!` §5.2).
-* [`docs/skills/pre-push.md`](../skills/pre-push.md) — quality-gate commands run between each sub-phase.
+* [`docs/services/falcon-rotator.md`](../../services/falcon-rotator.md) — the design contract this plan implements.
+* [`docs/skills/development-workflow.md`](../../skills/development-workflow.md) — Phase 1/2/3 ordering.
+* [`docs/skills/testing.md`](../../skills/testing.md) — BDD conventions (`@wip` usage §2.7, contract constants §2.5, `bdd_main!` §5.2).
+* [`docs/skills/pre-push.md`](../../skills/pre-push.md) — quality-gate commands run between each sub-phase.
 * `services/qhy-focuser/src/serial_manager.rs` — closest template for `SerialManager`.
 * `services/qhy-focuser/src/focuser_device.rs` — closest template for the ASCOM device trait wrapper pattern.
 * `services/ppba-driver/src/switch_device.rs` and `switches.rs` — template for `FalconStatusSwitchDevice`.
