@@ -250,6 +250,18 @@ pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
     }
 }
 
+/// Hooks where the while-open closure panics during construction
+/// (before it can return a future). Verifies the rollback guard stays
+/// armed until after `slot` / `available` would be published — the
+/// failure mode flagged in Copilot's review of PR #269.
+pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        teardown: Box::new(|_| Box::pin(async {})),
+        while_open: Some(Box::new(|_ctx| panic!("while_open closure panic for test"))),
+    }
+}
+
 /// Hooks with a configurable while-open closure. The closure is given
 /// access to `started` (set once the task body begins) and `exited`
 /// (set when the task body returns).

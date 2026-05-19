@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use common::{
     build_with_factory_and_hooks, build_with_hooks, failing_handshake_hooks,
-    panicking_handshake_hooks, EchoCodec, FactoryConfig, ProgrammableFactory,
+    panicking_handshake_hooks, panicking_while_open_constructor_hooks, EchoCodec, FactoryConfig,
+    ProgrammableFactory,
 };
 use rusty_photon_shared_transport::{
     Hooks, SessionError, SharedTransport, TransportError, TransportFactory,
@@ -66,6 +67,25 @@ async fn handshake_error_rolls_back_refcount_and_closes_transport() {
     assert!(matches!(err2, SessionError::Codec(_)));
     assert_eq!(cfg.opens(), 2);
     assert_eq!(cfg.dropped_count().await, 2);
+}
+
+#[tokio::test]
+async fn while_open_constructor_panic_rolls_back_state_fully() {
+    // A panic in the while-open closure body (before it can return a
+    // future) must roll back the same way a handshake panic does:
+    // refcount returns to 0, `is_available()` stays false, and the
+    // opened transport is dropped so a fresh acquire goes through
+    // the full open path again. This guards the publish-ordering
+    // invariant flagged in Copilot's review of PR #269: slot /
+    // available must not be published before the user-supplied
+    // while-open closure has been called without panicking.
+    let (st, cfg) = build_with_hooks(panicking_while_open_constructor_hooks());
+    let st_for_task = st.clone();
+    let result = tokio::spawn(async move { st_for_task.acquire().await }).await;
+    assert!(result.is_err(), "expected panic, got {result:?}");
+    assert!(!st.is_available());
+    assert_eq!(cfg.opens(), 1);
+    assert_eq!(cfg.dropped_count().await, 1);
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Refcounted multi-client lifecycle scaffolding for duplex transports.
 //!
 //! This crate factors out the connect-handshake-share-teardown pattern that
@@ -26,9 +27,12 @@
 //! transport's, not any individual session's.
 //!
 //! Codec authors implement [`Codec`] to translate between protocol
-//! commands and on-wire frames. Frame I/O (terminator framing for serial,
-//! datagram boundaries for UDP) is the responsibility of the
-//! [`FrameTransport`] implementation, not the codec.
+//! commands and on-wire frames. Splitting the byte stream into frames —
+//! reading until a terminator on serial, taking one datagram on UDP — is
+//! the [`FrameTransport`] implementation's job; *emitting* any in-frame
+//! terminator the protocol carries on the wire (e.g. `\r` for
+//! Sky-Watcher, `}` for qhy-focuser's JSON) is the codec's
+//! responsibility in [`Codec::encode`].
 
 pub mod codec;
 pub mod connection;

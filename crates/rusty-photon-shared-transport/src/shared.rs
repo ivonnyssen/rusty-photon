@@ -120,23 +120,34 @@ impl<C: Codec> SharedTransport<C> {
                 .await
                 .map_err(SessionError::Codec)?;
 
-            // Past this point we own the open transport. Disarm the
-            // rollback before installing the slot — slot installation
-            // must not run twice if a subsequent step panics, which
-            // can't happen anyway because the remaining steps are
-            // infallible at the type level.
+            // Build the while-open future BEFORE publishing slot /
+            // available — a panic in the user-supplied closure body
+            // must roll back without leaving the slot populated. The
+            // future itself is `Send` and we keep it local until the
+            // publish phase below.
+            let while_open_pending = match self.hooks.while_open.as_ref() {
+                Some(while_open_fn) => {
+                    let cancel = CancellationToken::new();
+                    let ctx = WhileOpen::new(connection.clone(), cancel.clone());
+                    let fut = while_open_fn(ctx);
+                    Some((fut, cancel))
+                }
+                None => None,
+            };
+
+            // Publish phase: from here on every step is infallible
+            // (atomic store, async Mutex::lock without poisoning,
+            // tokio::spawn inside an established runtime). The
+            // rollback can safely be disarmed before these run.
+            rollback.armed = false;
             *self.slot.lock().await = Some(connection.clone());
             self.available.store(true, Ordering::SeqCst);
 
-            if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
-                let cancel = CancellationToken::new();
-                let ctx = WhileOpen::new(connection.clone(), cancel.clone());
-                let fut = while_open_fn(ctx);
+            if let Some((fut, cancel)) = while_open_pending {
                 let handle = tokio::spawn(fut);
                 *self.while_open_state.lock().await = Some((handle, cancel));
             }
 
-            rollback.armed = false;
             return Ok(Session::new(Arc::clone(self), connection));
         }
 

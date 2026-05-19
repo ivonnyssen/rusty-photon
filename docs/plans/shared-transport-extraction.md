@@ -3,9 +3,9 @@
 ## Status
 
 **Phase A in flight.** The plan landed on `main` via PR #265. Phase A
-(the `crates/rusty-photon-shared-transport/` crate) is implemented on
-`worktree-serial-refactor` with 29 tests passing; no migration PRs yet.
-Phases B–E follow per the rollout below.
+(the `crates/rusty-photon-shared-transport/` crate) is implemented in
+PR #269 with 31 tests passing; no migration PRs yet. Phases B–E follow
+per the rollout below.
 
 ## Motivation
 
@@ -802,7 +802,7 @@ independently `cargo rail run --profile commit -q` green.
 
 ### Phase A — Land `crates/rusty-photon-shared-transport/`
 
-Status: **implemented on `worktree-serial-refactor`**, PR pending.
+Status: **implemented in PR #269**, awaiting review.
 
 * `crates/rusty-photon-shared-transport/Cargo.toml`, `BUILD.bazel`, `src/lib.rs`,
   `src/codec.rs`, `src/transport.rs`, `src/connection.rs`,

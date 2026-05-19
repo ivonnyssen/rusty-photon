@@ -207,7 +207,7 @@ const _: fn() = || {
 
 // Silence unused: the Future bound via WaitForCancellationFuture isn't
 // referenced directly by name elsewhere — explicit import keeps the
-// pubilc API surface clear in docs.
+// public API surface clear in docs.
 const _: fn() = || {
     fn _assert_future<F: Future<Output = ()>>() {}
 };

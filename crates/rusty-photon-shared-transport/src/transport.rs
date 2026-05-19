@@ -129,6 +129,54 @@ where
         self.write_timeout = d;
         self
     }
+
+    /// Read into `buf` until the terminator is seen, EOF, or the
+    /// in-progress frame would exceed `max_frame_size`.
+    ///
+    /// The size check fires **during** the read by consuming the
+    /// `BufStream`'s buffered chunks incrementally rather than calling
+    /// `read_until` (which has no internal bound). A peer that streams
+    /// indefinitely without a terminator therefore errors out as soon
+    /// as the would-be frame crosses `max_frame_size`, instead of
+    /// growing `buf` unboundedly first.
+    async fn read_frame_bounded(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        loop {
+            let chunk = self.stream.fill_buf().await.map_err(TransportError::Io)?;
+            if chunk.is_empty() {
+                if buf.is_empty() {
+                    return Err(TransportError::Eof);
+                }
+                return Err(TransportError::Framing(format!(
+                    "stream ended without terminator after {} bytes",
+                    buf.len()
+                )));
+            }
+
+            let budget = self.max_frame_size - buf.len();
+            let scan_end = chunk.len().min(budget);
+            let terminator_pos = chunk[..scan_end].iter().position(|&b| b == self.terminator);
+
+            if let Some(pos) = terminator_pos {
+                let n = pos + 1;
+                buf.extend_from_slice(&chunk[..n]);
+                self.stream.consume(n);
+                return Ok(());
+            }
+
+            if scan_end < chunk.len() {
+                // Remaining budget exhausted with no terminator in
+                // sight — the frame is already over the limit.
+                return Err(TransportError::Framing(format!(
+                    "frame exceeded max size {} bytes without terminator",
+                    self.max_frame_size
+                )));
+            }
+
+            let consumed = chunk.len();
+            buf.extend_from_slice(chunk);
+            self.stream.consume(consumed);
+        }
+    }
 }
 
 #[async_trait]
@@ -150,26 +198,8 @@ where
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         buf.clear();
-        let read_op = self.stream.read_until(self.terminator, buf);
-        match timeout(self.read_timeout, read_op).await {
-            Ok(Ok(0)) => Err(TransportError::Eof),
-            Ok(Ok(_)) => {
-                if buf.last() != Some(&self.terminator) {
-                    return Err(TransportError::Framing(format!(
-                        "stream ended without terminator after {} bytes",
-                        buf.len()
-                    )));
-                }
-                if buf.len() > self.max_frame_size {
-                    return Err(TransportError::Framing(format!(
-                        "frame exceeded max size {} (got {})",
-                        self.max_frame_size,
-                        buf.len()
-                    )));
-                }
-                Ok(())
-            }
-            Ok(Err(e)) => Err(TransportError::Io(e)),
+        match timeout(self.read_timeout, self.read_frame_bounded(buf)).await {
+            Ok(result) => result,
             Err(_) => Err(TransportError::Timeout(self.read_timeout)),
         }
     }
@@ -314,6 +344,34 @@ mod tests {
         let mut buf = Vec::new();
         let err = transport.recv_frame(&mut buf).await.unwrap_err();
         assert!(matches!(err, TransportError::Framing(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_recv_frame_bounds_buf_under_runaway_writer() {
+        // A peer that streams indefinitely without a terminator must
+        // not be able to push `buf` past `max_frame_size`. Without the
+        // incremental bound this would grow `buf` to ~1 KiB before the
+        // post-check fired; with the bound, the error surfaces as soon
+        // as the would-be frame crosses the cap and `buf` never
+        // exceeds `max_frame_size`.
+        const CAP: usize = 16;
+        let (mut server, client) = duplex(1024);
+        let mut transport =
+            SerialFrameTransport::new(client, b'\n', CAP).with_read_timeout(Duration::from_secs(1));
+
+        tokio::spawn(async move {
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut server, &[b'A'; 1024]).await;
+        });
+
+        let mut buf = Vec::new();
+        let err = transport.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Framing(_)), "got {err:?}");
+        assert!(
+            buf.len() <= CAP,
+            "buf grew to {} bytes, exceeds max_frame_size {}",
+            buf.len(),
+            CAP
+        );
     }
 
     #[tokio::test]
