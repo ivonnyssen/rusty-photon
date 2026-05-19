@@ -868,7 +868,7 @@ during Phase A:
 
 Verification:
 * `cargo nextest run -p rusty-photon-shared-transport --all-features --all-targets --locked`:
-  29/29 green.
+  31/31 green.
 * `cargo clippy -p rusty-photon-shared-transport --all-features --all-targets --locked -- -D warnings`:
   clean.
 * `cargo doc -p rusty-photon-shared-transport --all-features --no-deps`: clean.
@@ -999,9 +999,10 @@ in `crates/rusty-photon-shared-transport/tests/`:
 
 * `race.rs` (3 tests) — two and many concurrent `acquire()` → exactly
   one `factory.open()`; handshake also runs exactly once.
-* `rollback.rs` (5 tests) — factory error, recovery after factory
+* `rollback.rs` (6 tests) — factory error, recovery after factory
   error, handshake error (transport drops), handshake panic
-  (`RollbackGuard` covers the unwind path), alternating
+  (`RollbackGuard` covers the unwind path), while-open closure panic
+  (rollback fires before slot/`available` publish), alternating
   failure/success.
 * `while_open.rs` (5 tests) — task starts after handshake, exits on
   last close, persists across multiple sessions, respawns after a
@@ -1012,7 +1013,7 @@ in `crates/rusty-photon-shared-transport/tests/`:
   decrements + closes; non-last close returns fast; `is_available()`
   tracks lifecycle.
 
-Total: 29 integration tests + 11 inline tests in `transport.rs` and
+Total: 19 integration tests + 12 inline tests in `transport.rs` and
 `error.rs` (framing/timeout/error-display behaviour on
 `SerialFrameTransport` and `UdpFrameTransport`).
 

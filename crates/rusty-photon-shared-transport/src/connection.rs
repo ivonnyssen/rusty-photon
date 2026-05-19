@@ -59,6 +59,6 @@ impl<C: Codec> Connection<C> {
             }
             let _ = skipped; // Tracing point if we ever want it.
         }
-        Err(SessionError::SkipExhausted(budget + 1))
+        Err(SessionError::SkipExhausted(budget.saturating_add(1)))
     }
 }

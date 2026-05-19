@@ -45,14 +45,18 @@ pub trait Codec: Send + Sync + Clone + 'static {
 
     /// Encode `cmd` into one whole frame's worth of bytes.
     ///
-    /// Whether the byte slice carries the protocol's framing terminator
-    /// (e.g. `\r`, `\n`, `}`) is up to the codec — for protocols where
-    /// the terminator is part of the wire payload (qhy's JSON `}`, the
-    /// Sky-Watcher `\r`) the codec includes it. For protocols where the
-    /// terminator is pure framing (LF-on-empty-line), the codec may
-    /// omit it and the transport implementation will not add it back —
-    /// the caller is responsible for matching the
-    /// [`crate::FrameTransport`] implementation's contract.
+    /// The returned slice is written **verbatim** by the
+    /// [`crate::FrameTransport`] — it does not insert, strip, or rewrite
+    /// any bytes. The codec is therefore responsible for emitting every
+    /// byte the protocol carries on the wire, including a framing
+    /// terminator if the chosen transport expects one:
+    ///
+    /// * For [`crate::SerialFrameTransport`] (terminator-delimited),
+    ///   `encode` **must** emit the configured terminator byte
+    ///   (e.g. `\r`, `\n`, `}`) at the end of every frame; otherwise
+    ///   the peer never sees a complete frame.
+    /// * For [`crate::UdpFrameTransport`] (datagram-bounded), no
+    ///   terminator is needed — each `send_frame` is one datagram.
     fn encode(&self, cmd: &Self::Command) -> Vec<u8>;
 
     /// Decode one whole response frame's bytes into a typed response.
