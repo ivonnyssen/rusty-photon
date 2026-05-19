@@ -22,20 +22,14 @@ struct AlpacaBoolResponse {
 }
 
 /// Client for an ASCOM Alpaca SafetyMonitor device
+#[derive(derive_more::Debug)]
 pub struct AlpacaSafetyMonitor {
     name: String,
     base_url: String,
+    #[debug(skip)]
     polling_interval: Duration,
+    #[debug(skip)]
     http: Arc<dyn HttpClient>,
-}
-
-impl std::fmt::Debug for AlpacaSafetyMonitor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AlpacaSafetyMonitor")
-            .field("name", &self.name)
-            .field("base_url", &self.base_url)
-            .finish()
-    }
 }
 
 impl AlpacaSafetyMonitor {

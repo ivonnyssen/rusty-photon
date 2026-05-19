@@ -6,7 +6,6 @@
 //! table; defaulted methods that the MVP does not implement are left to the
 //! ascom-alpaca trait's `NOT_IMPLEMENTED` default.
 
-use std::fmt;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -119,6 +118,7 @@ impl Default for DriverState {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct MountDevice {
     config: MountConfig,
     /// Optional config-file path. `Some` when the driver was started
@@ -127,18 +127,8 @@ pub struct MountDevice {
     config_file_path: Option<PathBuf>,
     requested_connection: Arc<RwLock<bool>>,
     state: Arc<RwLock<DriverState>>,
+    #[debug(skip)]
     transport: Arc<TransportManager>,
-}
-
-impl fmt::Debug for MountDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MountDevice")
-            .field("config", &self.config)
-            .field("config_file_path", &self.config_file_path)
-            .field("requested_connection", &self.requested_connection)
-            .field("state", &self.state)
-            .finish_non_exhaustive()
-    }
 }
 
 impl MountDevice {
@@ -4349,10 +4339,11 @@ mod tests {
 
     #[tokio::test]
     async fn debug_impl_includes_config_file_path() {
-        // Pins the manual `fmt::Debug` impl — adding a new field
-        // requires updating the closure. The path field landed in
-        // PR #221; the smoke test catches a future refactor that
-        // forgets to extend the Debug closure.
+        // Pins the `derive_more::Debug` derive — adding a new field
+        // that should appear in Debug requires keeping it un-`#[debug(skip)]`
+        // in the struct attributes. The path field landed in PR #221;
+        // the smoke test catches a future refactor that accidentally
+        // hides it.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         let d = device_with_path(path.clone());

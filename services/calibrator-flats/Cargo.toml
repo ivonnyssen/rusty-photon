@@ -29,6 +29,7 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
+derive_more = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }

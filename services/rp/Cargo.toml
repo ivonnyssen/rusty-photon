@@ -45,6 +45,7 @@ tempfile = { workspace = true }
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
+derive_more = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
 # Re-declared in dev-deps with the `mock` feature so unit tests in

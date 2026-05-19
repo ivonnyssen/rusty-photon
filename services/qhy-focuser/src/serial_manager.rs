@@ -42,17 +42,26 @@ pub struct CachedState {
 }
 
 /// Shared serial port manager for the QHY Q-Focuser
+#[derive(derive_more::Debug)]
 pub struct SerialManager {
     config: SerialConfig,
+    #[debug(skip)]
     speed: u8,
     connection_count: Arc<AtomicU32>,
     serial_available: Arc<AtomicBool>,
+    #[debug(skip)]
     cached_state: Arc<RwLock<CachedState>>,
+    #[debug(skip)]
     reader: Arc<Mutex<Option<Box<dyn SerialReader>>>>,
+    #[debug(skip)]
     writer: Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
+    #[debug(skip)]
     command_lock: Arc<Mutex<()>>,
+    #[debug(skip)]
     polling_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    #[debug(skip)]
     shutdown_tx: watch::Sender<bool>,
+    #[debug(skip)]
     serial_factory: Arc<dyn SerialPortFactory>,
 }
 
@@ -543,16 +552,6 @@ impl SerialManager {
                 }
             }
         }
-    }
-}
-
-impl std::fmt::Debug for SerialManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SerialManager")
-            .field("config", &self.config)
-            .field("connection_count", &self.connection_count)
-            .field("serial_available", &self.serial_available)
-            .finish_non_exhaustive()
     }
 }
 

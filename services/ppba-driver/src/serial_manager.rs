@@ -45,16 +45,24 @@ pub struct CachedState {
 ///
 /// Manages a single serial port connection that can be shared between multiple
 /// ASCOM devices. Uses reference counting to track how many devices are connected.
+#[derive(derive_more::Debug)]
 pub struct SerialManager {
     config: SerialConfig,
     connection_count: Arc<AtomicU32>,
     serial_available: Arc<AtomicBool>,
+    #[debug(skip)]
     cached_state: Arc<RwLock<CachedState>>,
+    #[debug(skip)]
     reader: Arc<Mutex<Option<Box<dyn SerialReader>>>>,
+    #[debug(skip)]
     writer: Arc<Mutex<Option<Box<dyn SerialWriter>>>>,
+    #[debug(skip)]
     command_lock: Arc<Mutex<()>>,
+    #[debug(skip)]
     polling_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    #[debug(skip)]
     shutdown_tx: watch::Sender<bool>,
+    #[debug(skip)]
     serial_factory: Arc<dyn SerialPortFactory>,
 }
 
@@ -441,16 +449,6 @@ impl SerialManager {
         let mut cached = self.cached_state.write().await;
         cached.usb_hub_enabled = enabled;
         debug!("USB hub state updated to {}", enabled);
-    }
-}
-
-impl std::fmt::Debug for SerialManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SerialManager")
-            .field("config", &self.config)
-            .field("connection_count", &self.connection_count)
-            .field("serial_available", &self.serial_available)
-            .finish_non_exhaustive()
     }
 }
 

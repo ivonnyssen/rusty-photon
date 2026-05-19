@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
 
 use async_trait::async_trait;
 use tracing::debug;
@@ -181,17 +180,11 @@ impl CloudflareApi for RealCloudflareApi {
 ///
 /// The zone ID is resolved once at construction time by looking up
 /// the zone matching the provided domain.
+#[derive(derive_more::Debug)]
 pub struct CloudflareDnsProvider {
+    #[debug(skip)]
     api: Box<dyn CloudflareApi>,
     zone_id: String,
-}
-
-impl Debug for CloudflareDnsProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CloudflareDnsProvider")
-            .field("zone_id", &self.zone_id)
-            .finish_non_exhaustive()
-    }
 }
 
 impl CloudflareDnsProvider {

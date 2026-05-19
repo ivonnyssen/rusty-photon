@@ -9,10 +9,10 @@
 //! * [`Hooks`] is the per-service plug for connect-side / disconnect-side
 //!   / while-open work.
 
-use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
+use derive_more::Debug;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use crate::codec::Codec;
@@ -26,6 +26,8 @@ use crate::BoxFuture;
 /// While at least one `Session` is alive the transport stays open and
 /// any [`Hooks::while_open`] task keeps running. Acquired exclusively
 /// through [`crate::SharedTransport::acquire`].
+#[derive(Debug)]
+#[debug("Session {{ closed: {}, .. }}", transport.is_none())]
 pub struct Session<C: Codec> {
     transport: Option<Arc<SharedTransport<C>>>,
     connection: Option<Arc<Connection<C>>>,
@@ -75,14 +77,6 @@ impl<C: Codec> Session<C> {
     }
 }
 
-impl<C: Codec> fmt::Debug for Session<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session")
-            .field("closed", &self.transport.is_none())
-            .finish_non_exhaustive()
-    }
-}
-
 impl<C: Codec> Drop for Session<C> {
     /// Detached cleanup safety net.
     ///
@@ -106,6 +100,8 @@ impl<C: Codec> Drop for Session<C> {
 /// path, so [`WhileOpen::request`] goes through the same request
 /// arbitration lock as the [`Session`]s' requests. Dropping a
 /// `WhileOpen` does **not** touch the external refcount.
+#[derive(Debug)]
+#[debug("WhileOpen {{ cancelled: {}, .. }}", cancel.is_cancelled())]
 pub struct WhileOpen<C: Codec> {
     connection: Arc<Connection<C>>,
     cancel: CancellationToken,
@@ -133,14 +129,6 @@ impl<C: Codec> WhileOpen<C> {
     /// Non-blocking; useful for `if ctx.is_cancelled() { break; }`.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
-    }
-}
-
-impl<C: Codec> fmt::Debug for WhileOpen<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WhileOpen")
-            .field("cancelled", &self.cancel.is_cancelled())
-            .finish_non_exhaustive()
     }
 }
 
