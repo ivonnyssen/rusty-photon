@@ -1,9 +1,9 @@
-//! Test helpers shared across `shared-transport` integration tests.
+//! Test helpers shared across `rusty-photon-shared-transport` integration tests.
 //!
 //! Each integration test file (`race.rs`, `rollback.rs`, etc.) declares
 //! `mod common;` to pull these in. Helpers here are deliberately minimal
-//! — just enough for the shared-transport lifecycle tests to construct
-//! a [`SharedTransport`] over a stub codec and a programmable factory.
+//! — just enough for the lifecycle tests to construct a [`SharedTransport`]
+//! over a stub codec and a programmable factory.
 
 #![allow(dead_code)]
 
