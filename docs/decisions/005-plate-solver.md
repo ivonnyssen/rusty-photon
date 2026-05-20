@@ -347,6 +347,29 @@ silent supply-chain drift.
 ASTAP releases an upstream update and the verify step starts
 failing):
 
+The
+[`refresh-astap-shas`](../../.github/workflows/refresh-astap-shas.yml)
+workflow automates steps 1–4 of this procedure. It triggers on an
+`install-astap` smoke failure (the canonical rotation signal) or
+manual dispatch. For each supported platform it downloads the
+upstream archive, detects whether the SHA differs from the pin, and
+— for rotated platforms — **verifies the new binary by solving the
+committed M101 fixture
+(`services/plate-solver/tests/fixtures/m101_known.fits`) to the
+known center within the same 0.01° tolerance the BDD scenario
+uses**. If every rotated platform's verification passes, it opens
+(or updates) a `chore(install-astap): auto-refresh SHA-256 pins`
+PR and comments on the open `install-astap-nightly` tracking
+issue with the PR link. If verification fails on any platform, it
+files an `astap-refresh-blocked` issue instead — that case means
+upstream shipped something broken and a human needs to look. The
+PR's own CI re-runs `install-astap` and `plate-solver-smoke` on
+the new pins before merge; the human step is review-and-merge of
+the auto-PR, plus the banner-version note (step 5 below). The
+manual steps below remain the fallback for D05 rotations (the
+workflow doesn't auto-refresh D05 yet) or when the auto-refresh
+itself is broken.
+
 1. Download each archive listed in the action's per-OS table from
    SourceForge.
 2. `sha256sum` each (or `shasum -a 256` on macOS).
