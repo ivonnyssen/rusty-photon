@@ -201,14 +201,21 @@ jobs:
         shell: bash
         run: |
           # Goal: prove the new ASTAP bytes can solve a known fixture to
-          # the expected coordinates. Three independent signals checked:
+          # the expected coordinates. Signals checked match what the
+          # wrapper's .wcs parser (services/plate-solver/src/runner/wcs.rs)
+          # actually requires — no stricter:
           #   1. ASTAP exit code (0 = solved)
-          #   2. .wcs sidecar present and PLTSOLVD=T
-          #   3. CRVAL1/CRVAL2 within 0.01° of M101 center
+          #   2. .wcs sidecar present
+          #   3. CRVAL1/CRVAL2 parseable AND within 0.01° of M101 center
           #      (RA 210.8099°, Dec 54.3469° — same tolerance and
           #      reference values the BDD scenario uses)
           # The companion degenerate fixture must NOT solve (verifies
           # ASTAP's failure signaling hasn't drifted).
+          #
+          # An earlier draft also gated on `PLTSOLVD=T`, but the wrapper
+          # itself doesn't require that card — gating on it here would
+          # produce false negatives if ASTAP renamed it while still
+          # producing a valid WCS. Per Copilot review on PR #273.
           #
           # On any failure: write passed=false and exit 0 so the
           # aggregator can decide the outcome. Do not fail this matrix
@@ -239,12 +246,16 @@ jobs:
           if [[ ! -f "$work/m101_known.wcs" ]]; then
             fail "M101 produced no .wcs sidecar"
           fi
-          if ! grep -q "PLTSOLVD=                    T" "$work/m101_known.wcs"; then
-            fail "M101 .wcs PLTSOLVD card is not T"
-          fi
 
           ra=$(grep -oE 'CRVAL1  =[^/]+' "$work/m101_known.wcs" | head -1 | awk -F= '{print $2+0}')
           dec=$(grep -oE 'CRVAL2  =[^/]+' "$work/m101_known.wcs" | head -1 | awk -F= '{print $2+0}')
+          # If ASTAP wrote a sidecar without CRVAL1/CRVAL2 (incomplete
+          # solve, format change), our awk yields "0" and the tolerance
+          # check below would catch it — but surface the missing key
+          # explicitly first so the failure message is clear.
+          if [[ -z "$ra" || -z "$dec" ]]; then
+            fail "M101 .wcs missing CRVAL1 or CRVAL2"
+          fi
 
           awk -v a="$ra"  -v b=210.8099 -v t=0.01 'BEGIN { d=a-b; if(d<0)d=-d; exit !(d<=t) }' \
             || fail "M101 RA $ra outside tolerance (expected 210.8099 +/- 0.01)"
