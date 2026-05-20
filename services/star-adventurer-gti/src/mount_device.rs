@@ -22,7 +22,6 @@
 //! - [`park_persistence`] — JSON config-file read/write for `SetPark`
 //!   and the boot-time writability probe.
 
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,6 +159,7 @@ impl DriverState {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct MountDevice {
     config: MountConfig,
     /// Optional config-file path. `Some` when the driver was started
@@ -168,18 +168,8 @@ pub struct MountDevice {
     config_file_path: Option<PathBuf>,
     requested_connection: Arc<RwLock<bool>>,
     state: Arc<RwLock<DriverState>>,
+    #[debug(skip)]
     transport: Arc<TransportManager>,
-}
-
-impl fmt::Debug for MountDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MountDevice")
-            .field("config", &self.config)
-            .field("config_file_path", &self.config_file_path)
-            .field("requested_connection", &self.requested_connection)
-            .field("state", &self.state)
-            .finish_non_exhaustive()
-    }
 }
 
 impl MountDevice {

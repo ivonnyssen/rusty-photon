@@ -23,13 +23,8 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-impl std::fmt::Debug for RpWorld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RpWorld").finish_non_exhaustive()
-    }
-}
-
-#[derive(Default, World)]
+#[derive(Default, World, derive_more::Debug)]
+#[debug("RpWorld {{ .. }}")]
 pub struct RpWorld {
     // --- Infrastructure handles ---
     /// Running OmniSim process

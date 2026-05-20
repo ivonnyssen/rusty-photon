@@ -1,0 +1,23 @@
+[package]
+name = "rusty-photon-shared-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP)"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+derive_more = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }

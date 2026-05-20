@@ -1330,10 +1330,11 @@ async fn park_returns_invariant_violation_when_in_memory_target_is_missing() {
 
 #[tokio::test]
 async fn debug_impl_includes_config_file_path() {
-    // Pins the manual `fmt::Debug` impl — adding a new field
-    // requires updating the closure. The path field landed in
-    // PR #221; the smoke test catches a future refactor that
-    // forgets to extend the Debug closure.
+    // Pins the `derive_more::Debug` derive — adding a new field
+    // that should appear in Debug requires keeping it un-`#[debug(skip)]`
+    // in the struct attributes. The path field landed in PR #221;
+    // the smoke test catches a future refactor that accidentally
+    // hides it.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let d = device_with_path(path.clone());

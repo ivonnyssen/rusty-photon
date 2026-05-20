@@ -11,21 +11,20 @@ use crate::notifier::{Notification, Notifier};
 const PUSHOVER_API_URL: &str = "https://api.pushover.net/1/messages.json";
 
 /// Pushover notification sender
+#[derive(derive_more::Debug)]
 pub struct PushoverNotifier {
+    /// Never appear in Debug output: these are secrets.
+    #[debug(skip)]
     api_token: String,
+    #[debug(skip)]
     user_key: String,
     default_title: String,
+    #[debug(skip)]
     default_priority: i8,
+    #[debug(skip)]
     default_sound: String,
+    #[debug(skip)]
     http: Arc<dyn HttpClient>,
-}
-
-impl std::fmt::Debug for PushoverNotifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PushoverNotifier")
-            .field("default_title", &self.default_title)
-            .finish()
-    }
 }
 
 impl PushoverNotifier {

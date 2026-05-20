@@ -8,7 +8,6 @@
 //! [Status Switch Device](../../../docs/services/falcon-rotator.md#status-switch-device)
 //! section for the contract.
 
-use std::fmt;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
@@ -77,19 +76,12 @@ fn validate_id(id: usize) -> ASCOMResult<()> {
 }
 
 /// Falcon Status Switch device for ASCOM Alpaca.
+#[derive(derive_more::Debug)]
 pub struct FalconStatusSwitchDevice {
     config: SwitchConfig,
     requested_connection: Arc<RwLock<bool>>,
+    #[debug(skip)]
     serial_manager: Arc<SerialManager>,
-}
-
-impl fmt::Debug for FalconStatusSwitchDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FalconStatusSwitchDevice")
-            .field("config", &self.config)
-            .field("requested_connection", &self.requested_connection)
-            .finish_non_exhaustive()
-    }
 }
 
 impl FalconStatusSwitchDevice {

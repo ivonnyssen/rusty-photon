@@ -5,7 +5,6 @@
 //! [Why no cache](../../../docs/services/falcon-rotator.md#why-no-cache)
 //! section for the rationale.
 
-use std::fmt;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Rotator};
@@ -38,19 +37,12 @@ macro_rules! ensure_connected {
 }
 
 /// Falcon Rotator device for ASCOM Alpaca.
+#[derive(derive_more::Debug)]
 pub struct FalconRotatorDevice {
     config: RotatorConfig,
     requested_connection: Arc<RwLock<bool>>,
+    #[debug(skip)]
     serial_manager: Arc<SerialManager>,
-}
-
-impl fmt::Debug for FalconRotatorDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FalconRotatorDevice")
-            .field("config", &self.config)
-            .field("requested_connection", &self.requested_connection)
-            .finish_non_exhaustive()
-    }
 }
 
 impl FalconRotatorDevice {

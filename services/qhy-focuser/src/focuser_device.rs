@@ -2,7 +2,6 @@
 //!
 //! Implements the ASCOM Alpaca Device and Focuser traits for the QHY Q-Focuser.
 
-use std::fmt;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
@@ -26,19 +25,12 @@ macro_rules! ensure_connected {
 }
 
 /// QHY Q-Focuser device for ASCOM Alpaca
+#[derive(derive_more::Debug)]
 pub struct QhyFocuserDevice {
     config: FocuserConfig,
     requested_connection: Arc<RwLock<bool>>,
+    #[debug(skip)]
     serial_manager: Arc<SerialManager>,
-}
-
-impl fmt::Debug for QhyFocuserDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QhyFocuserDevice")
-            .field("config", &self.config)
-            .field("requested_connection", &self.requested_connection)
-            .finish_non_exhaustive()
-    }
 }
 
 impl QhyFocuserDevice {

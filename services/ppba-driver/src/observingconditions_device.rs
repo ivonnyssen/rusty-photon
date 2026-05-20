@@ -3,7 +3,6 @@
 //! This module implements the ASCOM Alpaca ObservingConditions trait
 //! for the Pegasus Astro Pocket Powerbox Advance Gen2 environmental sensors.
 
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,19 +27,12 @@ macro_rules! ensure_connected {
 }
 
 /// PPBA ObservingConditions device for ASCOM Alpaca
+#[derive(derive_more::Debug)]
 pub struct PpbaObservingConditionsDevice {
     config: ObservingConditionsConfig,
     requested_connection: Arc<RwLock<bool>>,
+    #[debug(skip)]
     serial_manager: Arc<SerialManager>,
-}
-
-impl fmt::Debug for PpbaObservingConditionsDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PpbaObservingConditionsDevice")
-            .field("config", &self.config)
-            .field("requested_connection", &self.requested_connection)
-            .finish_non_exhaustive()
-    }
 }
 
 impl PpbaObservingConditionsDevice {

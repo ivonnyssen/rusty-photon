@@ -3,7 +3,6 @@
 //! This module implements the ASCOM Alpaca Device and Switch traits
 //! for the Pegasus Astro Pocket Powerbox Advance Gen2.
 
-use std::fmt;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
@@ -29,19 +28,12 @@ macro_rules! ensure_connected {
 }
 
 /// PPBA Switch device for ASCOM Alpaca
+#[derive(derive_more::Debug)]
 pub struct PpbaSwitchDevice {
     config: SwitchConfig,
     requested_connection: Arc<RwLock<bool>>,
+    #[debug(skip)]
     serial_manager: Arc<SerialManager>,
-}
-
-impl fmt::Debug for PpbaSwitchDevice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PpbaSwitchDevice")
-            .field("config", &self.config)
-            .field("requested_connection", &self.requested_connection)
-            .finish_non_exhaustive()
-    }
 }
 
 impl PpbaSwitchDevice {
