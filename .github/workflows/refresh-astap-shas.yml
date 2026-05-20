@@ -484,6 +484,23 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # actions/checkout@v5 with `ref: main` leaves origin's refspec
+          # as `+refs/heads/main:refs/remotes/origin/main` (single-branch
+          # fetch). A plain `git fetch origin $BRANCH` under that refspec
+          # only populates FETCH_HEAD; the remote-tracking ref
+          # `refs/remotes/origin/$BRANCH` is never created. Without that
+          # ref, `git push --force-with-lease` (with no explicit expected
+          # value) rejects with "(stale info)" the moment $BRANCH already
+          # exists on origin — i.e. on every run after the first
+          # successful one, until that branch is merged or deleted.
+          # Extend the refspec and fetch BEFORE the local branch is
+          # created: the lease's baseline is captured at branch-creation
+          # time, not push time, so fetching after `git checkout -B`
+          # is too late. `|| true` covers the very first refresh when
+          # $BRANCH doesn't exist on origin yet.
+          git remote set-branches --add origin "$BRANCH"
+          git fetch origin "$BRANCH" || true
+
           # Always derive the auto-refresh branch from main with the patched
           # action.yml in the worktree. -B creates or resets the local branch
           # to the current HEAD (pinned to main by the checkout step), so a
