@@ -131,11 +131,15 @@ That structure is the entire content of this plan.
   stays synchronous (callers still await responses); events are
   *additional*, not a replacement.
 - Fixing the upstream rmcp `StreamableHttpClientTransport`
-  silent-hang bug described in
-  [`MEMORY.md`'s macos BDD entry](../../.claude/memory/project_bdd_macos_slew_hang.md).
-  That work is parallel — once predictive deadlines fire in seconds
-  instead of minutes, the rmcp bug becomes much less reachable, but
-  filing it upstream is still worth doing. Tracked separately.
+  silent-hang bug — the client-side `StreamableHttpClient` worker
+  treats SSE stream termination as a logged warning and continues
+  running, so `peer.call_tool().await` never resolves when the
+  server-side session closes mid-call (the pending request id sits
+  in the responder pool with no one to fulfil it). See the PR #267
+  macOS hang investigation thread for the full trace. That work is
+  parallel — once predictive deadlines fire in seconds instead of
+  minutes, the rmcp bug becomes much less reachable, but filing it
+  upstream is still worth doing. Tracked separately.
 - Wrapping `crates/bdd-infra/src/rp_harness/mcp_client.rs::call_tool`
   in `tokio::time::timeout` for defensive purposes. That is a
   one-line test-infra change worth doing on its own merits; it does
@@ -206,6 +210,8 @@ have inconsistent shapes (`exposure_started` carries
 
 ```json
 {
+  "event_id": "f3a8b9c0-1d4e-4a2b-8f3a-2c7d9e1f4b6a",
+  "event_seq": 1247,
   "operation_id": "0bbc7e54-c2c2-4e3b-9a8d-7f43a3a8b2f1",
   "operation": "slew",
   "started_at": "2026-05-19T20:14:33.412Z",
@@ -215,19 +221,36 @@ have inconsistent shapes (`exposure_started` carries
 }
 ```
 
-`operation_id` is a fresh UUID per call, generated at the entry
-point of every blocking tool. It is the join key between
-`*_started`, `*_complete`, and `*_failed`. `predicted_duration_ms`
-and `max_duration_ms` are nullable in Phase 1 (the existing tool
-code doesn't know how to compute them yet); Phase 2 populates them.
-`details` is per-operation and unchanged from today's payload
-contents — only the envelope is new.
+Three identifiers, each with a distinct job:
 
-`*_complete` and `*_failed` mirror the envelope and add an
-`outcome` block:
+- `event_id` — the existing per-emission UUID from
+  `services/rp/src/events.rs:42-49`, kept unchanged. This is the
+  routing key for the plugin webhook ack/completion contract
+  (`POST /api/plugins/{event_id}/complete`); changing its meaning
+  would break the existing plugin protocol.
+- `event_seq` — a new monotonically increasing per-emission
+  counter (an `AtomicU64` on `EventBus`). Used as the SSE `id`
+  in Phase 3 so `Last-Event-ID` replay has total order.
+- `operation_id` — a fresh UUID per *call*, generated at the entry
+  point of every blocking tool. It is the correlation key joining
+  `*_started`, `*_complete`, and `*_failed` for the same call.
+  Multiple events share one `operation_id`; that's why it cannot
+  double as the SSE id.
+
+`predicted_duration_ms` and `max_duration_ms` are nullable in
+Phase 1 (the existing tool code doesn't know how to compute them
+yet); Phase 2 populates them. `details` is per-operation and
+unchanged from today's payload contents — only the envelope is
+new.
+
+`*_complete` and `*_failed` mirror the envelope (fresh `event_id`
+and `event_seq` per emission, same `operation_id` as the matching
+`*_started`) and add an `outcome` block:
 
 ```json
 {
+  "event_id": "9d2e1f3a-4b5c-4d6e-9f7a-8b1c2d3e4f5a",
+  "event_seq": 1248,
   "operation_id": "0bbc7e54-…",
   "operation": "slew",
   "started_at": "2026-05-19T20:14:33.412Z",
@@ -263,13 +286,17 @@ fire-and-forget POSTs. Phase 1 widens it:
 pub struct EventBus {
     plugins: Vec<EventPlugin>,
     broadcast: tokio::sync::broadcast::Sender<EventEnvelope>,
+    next_seq: std::sync::atomic::AtomicU64,
 }
 ```
 
 The broadcast sender is created with capacity (e.g. 256). Existing
 `emit(event_type, payload)` keeps its signature and now also
-publishes to the broadcast channel. The SSE endpoint Phase 3 adds
-subscribes here. Slow consumers that fall behind get a
+allocates a fresh `event_id` (UUID, unchanged from today), bumps
+`next_seq` to populate `event_seq`, builds the envelope, and
+publishes both to the plugin webhook list (today's path) and to
+the broadcast channel (Phase 3 subscribes here). Slow broadcast
+consumers that fall behind get a
 `broadcast::error::RecvError::Lagged(n)` they can log; the channel
 keeps running.
 
@@ -278,9 +305,10 @@ keeps running.
 - Every blocking MCP tool emits the start / complete / failed
   triple with the new envelope.
 - Each tool's BDD coverage adds at least one scenario asserting the
-  envelope shape — the `operation_id` UUID, the `started_at` /
-  `ended_at` timestamps, and that the same `operation_id` appears
-  on both the start and the matching end event.
+  envelope shape — fresh `event_id` and `event_seq` per emission
+  (monotonic across events), the `started_at` / `ended_at`
+  timestamps, and that the same `operation_id` appears on both the
+  start and the matching end event.
 - Existing webhook-plugin delivery still works (the
   `calibrator-flats` BDD remains green).
 
@@ -398,23 +426,39 @@ Connection: keep-alive
 retry: 3000
 
 event: exposure_started
-id: 0bbc7e54-…
-data: { "operation_id": "0bbc7e54-…", "operation": "exposure", … }
+id: 1247
+data: { "event_id": "f3a8b9c0-…", "event_seq": 1247, "operation_id": "0bbc7e54-…", "operation": "exposure", … }
 
 :keep-alive
 
 event: exposure_complete
-id: 4c1a3a40-…
-data: { … }
+id: 1248
+data: { "event_id": "9d2e1f3a-…", "event_seq": 1248, "operation_id": "0bbc7e54-…", "operation": "exposure", … }
 ```
 
-- SSE `id` is the `operation_id` so reconnecting clients can
-  request `Last-Event-ID`.
+- SSE `id` is the per-emission `event_seq` (monotonically
+  increasing across all events from the broadcast channel).
+  Reconnecting clients send their last seen `event_seq` in
+  `Last-Event-ID`; the server replays everything with
+  `event_seq > last_seen` that is still in the ring buffer
+  (Phase 3.2). `operation_id` lives inside the JSON payload as
+  the correlation key across an operation's lifecycle events
+  — *not* as the SSE id, because multiple lifecycle events share
+  one `operation_id` and `Last-Event-ID` requires a total order.
 - A 15-second `:keep-alive` comment line keeps middleboxes from
   closing the connection.
-- Backpressure: a slow consumer that lags more than the broadcast
-  channel capacity gets disconnected with a 4xx so it reconnects
-  fresh; we do not buffer indefinitely per-client.
+- Backpressure: once the SSE response headers are committed the
+  HTTP status is fixed, so we cannot switch to a 4xx mid-stream.
+  A consumer that lags more than the broadcast channel capacity
+  has its stream closed (server-initiated end-of-body). On the
+  next connect, if its `Last-Event-ID` is below the ring buffer's
+  oldest entry, the server replays what is still buffered and
+  emits a `stream_gap` SSE event so the client knows it lost
+  some history (Sentinel handles this by escalating any in-flight
+  `operation_id` it was tracking when the gap occurred). Repeat
+  offenders may be refused with `429 Too Many Requests` on the
+  *next* connect attempt, but this is policy, not the
+  in-stream mechanism.
 
 ### 3.2 Persistence buffer
 
@@ -643,9 +687,17 @@ notifier surface.
 
 - Event envelope: additive, not breaking. Existing webhook
   plugins receive the *same* `payload` they got before, now
-  wrapped in the new envelope. The `event_id` field today
-  (`services/rp/src/events.rs:42-49`) maps to `operation_id` going
-  forward; we keep both keys for one release cycle.
+  wrapped in the new envelope. The `event_id` field
+  (`services/rp/src/events.rs:42-49`) keeps its current meaning —
+  a unique id per emission, which is the routing key for the
+  plugin webhook ack/completion contract
+  (`POST /api/plugins/{event_id}/complete`, see
+  [`docs/services/rp.md` §Step 2: Completion](../services/rp.md#step-2-completion-callback-post-to-rp)).
+  The new `operation_id` is *additional*: a correlation id shared
+  across an operation's `*_started`, `*_complete`, and `*_failed`
+  events for the same call. The new `event_seq` is the SSE replay
+  key. No existing field changes meaning or semantics, so plugin
+  completion routing is unaffected.
 - Sentinel config: the `operation_watchdog` block is optional. An
   upgrade that doesn't add it preserves today's safety-monitor
   behaviour.
