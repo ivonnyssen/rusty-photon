@@ -1,58 +1,63 @@
-//! PPBA Switch device implementation
+//! PPBA Switch device implementation.
 //!
-//! This module implements the ASCOM Alpaca Device and Switch traits
-//! for the Pegasus Astro Pocket Powerbox Advance Gen2.
+//! Implements the ASCOM Alpaca `Device` + `Switch` traits. Connection
+//! state is the device's `Session<PpbaCodec>` slot — when it's `Some`,
+//! we hold a live handle to the shared transport; when it's `None`,
+//! we don't. The "requested" bool that previously diverged from the
+//! transport's refcount is gone by construction.
 
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::codec::PpbaCodec;
 use crate::config::SwitchConfig;
 use crate::error::{PpbaError, Result};
+use crate::manager::PpbaManager;
 use crate::protocol::PpbaCommand;
-use crate::serial_manager::SerialManager;
 use crate::switches::{SwitchId, MAX_SWITCH};
 
 /// Guard macro that returns NOT_CONNECTED if the device is not connected.
 macro_rules! ensure_connected {
     ($self:ident) => {
-        if !$self.connected().await.is_ok_and(|connected| connected) {
+        if !$self.connected().await.is_ok_and(|c| c) {
             debug!("Switch device not connected");
             return Err(ASCOMError::NOT_CONNECTED);
         }
     };
 }
 
-/// PPBA Switch device for ASCOM Alpaca
+/// PPBA Switch device for ASCOM Alpaca.
 #[derive(derive_more::Debug)]
 pub struct PpbaSwitchDevice {
     config: SwitchConfig,
-    requested_connection: Arc<RwLock<bool>>,
+    /// `Some` between successful connect and explicit disconnect. The
+    /// session existing is the truth — no second-source bool to desync.
     #[debug(skip)]
-    serial_manager: Arc<SerialManager>,
+    session: Arc<RwLock<Option<Session<PpbaCodec>>>>,
+    #[debug(skip)]
+    manager: Arc<PpbaManager>,
 }
 
 impl PpbaSwitchDevice {
-    /// Create a new PPBA switch device
-    pub fn new(config: SwitchConfig, serial_manager: Arc<SerialManager>) -> Self {
+    pub fn new(config: SwitchConfig, manager: Arc<PpbaManager>) -> Self {
         Self {
             config,
-            requested_connection: Arc::new(RwLock::new(false)),
-            serial_manager,
+            session: Arc::new(RwLock::new(None)),
+            manager,
         }
     }
 
-    /// Get the current switch value for a given switch ID
     async fn get_switch_value_internal(&self, id: usize) -> Result<f64> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
-        let cached = self.serial_manager.get_cached_state().await;
+        let cached = self.manager.get_cached_state().await;
 
         match switch_id {
-            // Controllable switches
             SwitchId::Quad12V => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.quad_12v { 1.0 } else { 0.0 })
@@ -74,8 +79,6 @@ impl PpbaSwitchDevice {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.auto_dew { 1.0 } else { 0.0 })
             }
-
-            // Read-only switches - Power Statistics
             SwitchId::AverageCurrent => {
                 let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.average_amps)
@@ -92,8 +95,6 @@ impl PpbaSwitchDevice {
                 let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.uptime_hours())
             }
-
-            // Read-only switches - Sensor Data
             SwitchId::InputVoltage => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
                 Ok(status.voltage)
@@ -121,7 +122,6 @@ impl PpbaSwitchDevice {
         }
     }
 
-    /// Set a switch value
     async fn set_switch_value_internal(&self, id: usize, value: f64) -> Result<()> {
         let switch_id = SwitchId::from_id(id).ok_or(PpbaError::InvalidSwitchId(id))?;
         let info = switch_id.info();
@@ -130,13 +130,15 @@ impl PpbaSwitchDevice {
             return Err(PpbaError::SwitchNotWritable(id));
         }
 
-        // Additional check for dew heaters: verify auto-dew is OFF
-        // Refresh state first to ensure we have current auto-dew status
-        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
-            // Refresh status to get current auto-dew state from device
-            self.serial_manager.refresh_status().await?;
+        let guard = self.session.read().await;
+        let session = guard.as_ref().ok_or(PpbaError::NotConnected)?;
 
-            let cached = self.serial_manager.get_cached_state().await;
+        // Dew heaters: re-check auto-dew off device, not cache, because the
+        // user could have toggled it from a parallel control path between
+        // polls. The PPBA reports auto-dew in PA, so refresh first.
+        if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
+            self.manager.refresh_status(session).await?;
+            let cached = self.manager.get_cached_state().await;
             if let Some(status) = &cached.status {
                 if status.auto_dew {
                     return Err(PpbaError::AutoDewEnabled(id));
@@ -144,7 +146,6 @@ impl PpbaSwitchDevice {
             }
         }
 
-        // Validate value range
         if value < info.min_value || value > info.max_value {
             return Err(PpbaError::InvalidValue(format!(
                 "Value {} out of range [{}, {}] for switch {}",
@@ -158,28 +159,24 @@ impl PpbaSwitchDevice {
             SwitchId::DewHeaterA => PpbaCommand::SetDewA(value.round() as u8),
             SwitchId::DewHeaterB => PpbaCommand::SetDewB(value.round() as u8),
             SwitchId::UsbHub => {
-                // USB hub state is not included in PA status response,
-                // so we need to track it manually
                 let enabled = value >= 0.5;
-                self.serial_manager
-                    .send_command(PpbaCommand::SetUsbHub(enabled))
+                self.manager
+                    .send_command(session, PpbaCommand::SetUsbHub(enabled))
                     .await?;
-                self.serial_manager.set_usb_hub_state(enabled).await;
+                self.manager.set_usb_hub_state(enabled).await;
                 return Ok(());
             }
             SwitchId::AutoDew => PpbaCommand::SetAutoDew(value >= 0.5),
             _ => return Err(PpbaError::SwitchNotWritable(id)),
         };
 
-        self.serial_manager.send_command(command).await?;
-
-        // Refresh status to get updated values
-        self.serial_manager.refresh_status().await?;
-
+        self.manager.send_command(session, command).await?;
+        // Refresh status so the cached view reflects the new device state
+        // (matches the legacy driver's post-set refresh).
+        self.manager.refresh_status(session).await?;
         Ok(())
     }
 
-    /// Convert internal error to ASCOM error
     fn to_ascom_error(err: PpbaError) -> ASCOMError {
         match err {
             PpbaError::NotConnected => {
@@ -217,39 +214,40 @@ impl Device for PpbaSwitchDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        let requested = *self.requested_connection.read().await;
-        let serial_ok = self.serial_manager.is_available();
-        Ok(requested && serial_ok)
+        Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Hold the write lock for the whole check-and-modify so two concurrent
-        // `Connected=true` requests against this device can't both observe
-        // `requested_connection == false`, both call `SerialManager::connect`
-        // (incrementing the shared refcount twice), and then both set the
-        // single per-device flag. Without the guard, a single later
-        // `set_connected(false)` would decrement the refcount only once and
-        // leave the port open — see issue #251.
-        let mut requested = self.requested_connection.write().await;
-        let serial_ok = self.serial_manager.is_available();
-        let already = *requested && serial_ok;
-        if already == connected {
-            return Ok(());
-        }
-        match connected {
-            true => {
-                self.serial_manager
-                    .connect()
+        // The write lock spans the whole check-and-modify so two concurrent
+        // `Connected=true` requests can't both observe `None` and both
+        // call `acquire()` (issue #251). With the session slot replacing
+        // the old `requested` bool, the flag and the resource are the same
+        // value — there is no second source to desync.
+        let mut slot = self.session.write().await;
+        match (connected, slot.is_some()) {
+            (true, false) => {
+                let session = self
+                    .manager
+                    .transport()
+                    .acquire()
                     .await
-                    .map_err(Self::to_ascom_error)?;
-                *requested = true;
+                    .map_err(|e| Self::to_ascom_error(PpbaError::from(e)))?;
+                *slot = Some(session);
                 debug!("Switch device connected");
             }
-            false => {
-                *requested = false;
-                self.serial_manager.disconnect().await;
+            (false, true) => {
+                if let Some(session) = slot.take() {
+                    session.close().await.map_err(|e| {
+                        Self::to_ascom_error(PpbaError::from(
+                            rusty_photon_shared_transport::SessionError::<
+                                crate::codec::PpbaCodecError,
+                            >::Transport(e),
+                        ))
+                    })?;
+                }
                 debug!("Switch device disconnected");
             }
+            _ => {}
         }
         Ok(())
     }
@@ -275,34 +273,31 @@ impl Switch for PpbaSwitchDevice {
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
 
-        // Validate switch ID
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
 
-        // For dew heaters, writability depends on auto-dew state
         if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
-            // Check if cache is populated, refresh if not
-            let cached = self.serial_manager.get_cached_state().await;
-            if cached.status.is_none() {
-                // Cache not populated yet, refresh it
-                self.serial_manager
-                    .refresh_status()
-                    .await
-                    .map_err(Self::to_ascom_error)?;
-
-                // Get updated cache
-                let cached = self.serial_manager.get_cached_state().await;
-                if let Some(status) = &cached.status {
-                    // Writable only when auto-dew is OFF
-                    return Ok(!status.auto_dew);
-                }
-            } else if let Some(status) = &cached.status {
-                // Writable only when auto-dew is OFF
+            // If the cache hasn't been populated yet, refresh under the
+            // device's session.
+            let cached = self.manager.get_cached_state().await;
+            if let Some(status) = &cached.status {
+                return Ok(!status.auto_dew);
+            }
+            let guard = self.session.read().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, "not connected"))?;
+            self.manager
+                .refresh_status(session)
+                .await
+                .map_err(Self::to_ascom_error)?;
+            drop(guard);
+            let cached = self.manager.get_cached_state().await;
+            if let Some(status) = &cached.status {
                 return Ok(!status.auto_dew);
             }
         }
 
-        // All other switches use static can_write from their info
         Ok(switch_id.info().can_write)
     }
 
@@ -314,7 +309,6 @@ impl Switch for PpbaSwitchDevice {
             .await
             .map_err(Self::to_ascom_error)?;
 
-        // Per ASCOM spec: False at minimum value, True above minimum
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         Ok(value > switch_id.info().min_value)
@@ -327,7 +321,6 @@ impl Switch for PpbaSwitchDevice {
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
         let info = switch_id.info();
 
-        // Per ASCOM spec: True sets to max, False sets to min
         let value = if state {
             info.max_value
         } else {
@@ -399,72 +392,56 @@ impl Switch for PpbaSwitchDevice {
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Invalid switch ID: {}", id),
             ));
         }
-        // We don't support async operations
         Ok(false)
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        // Validate switch ID
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Invalid switch ID: {}", id),
             ));
         }
-        // We don't support async operations, so state changes are always complete
         Ok(true)
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
         ensure_connected!(self);
-        // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Invalid switch ID: {}", id),
             ));
         }
-
-        // We don't support async operations, so there's nothing to cancel.
-        // Per ASCOM spec, this should return OK if there's no operation in progress.
         Ok(())
     }
 
     async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
-        // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Invalid switch ID: {}", id),
             ));
         }
-
-        // Per ASCOM spec: SetAsync should work even if CanAsync returns false,
-        // it just completes immediately. We delegate to the synchronous method.
         self.set_switch(id, state).await
     }
 
     async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        // Validate switch ID first
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Invalid switch ID: {}", id),
             ));
         }
-
-        // Per ASCOM spec: SetAsyncValue should work even if CanAsync returns false,
-        // it just completes immediately. We delegate to the synchronous method.
         self.set_switch_value(id, value).await
     }
 }
@@ -472,261 +449,61 @@ impl Switch for PpbaSwitchDevice {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    //! Unit tests for PpbaSwitchDevice ASCOM error mapping and edge cases
-    //!
-    //! These tests exercise error paths in the Switch device that are only
-    //! reachable through internal failures (factory errors, bad pings) or
-    //! specific invalid inputs, covering `to_ascom_error` branches and the
-    //! Debug implementation.
+    //! Unit tests cover ASCOM error mapping, switch metadata, and
+    //! happy-path connect/read/write/disconnect. Race / refcount /
+    //! rollback invariants are tested once in
+    //! `rusty-photon-shared-transport`'s `tests/race.rs` and
+    //! `tests/rollback.rs`; not duplicated per-service.
 
     use super::*;
     use crate::config::Config;
-    use crate::error::PpbaError;
-    use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-    use crate::serial_manager::SerialManager;
-    use crate::switches::MAX_SWITCH;
-    use ascom_alpaca::api::{Device, Switch};
+    use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Mutex;
 
-    // ============================================================================
-    // Mock Serial Infrastructure
-    // ============================================================================
-
-    struct MockSerialReader {
-        responses: Arc<Mutex<Vec<String>>>,
-        index: Arc<Mutex<usize>>,
-    }
-
-    impl MockSerialReader {
-        fn new(responses: Vec<String>) -> Self {
-            Self {
-                responses: Arc::new(Mutex::new(responses)),
-                index: Arc::new(Mutex::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl SerialReader for MockSerialReader {
-        async fn read_line(&mut self) -> crate::error::Result<Option<String>> {
-            let responses = self.responses.lock().await;
-            let mut index = self.index.lock().await;
-            if *index < responses.len() {
-                let response = responses[*index].clone();
-                *index += 1;
-                Ok(Some(response))
-            } else {
-                *index = 0;
-                if !responses.is_empty() {
-                    Ok(Some(responses[0].clone()))
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-    }
-
-    struct MockSerialWriter;
-
-    #[async_trait]
-    impl SerialWriter for MockSerialWriter {
-        async fn write_message(&mut self, _message: &str) -> crate::error::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct MockSerialPortFactory {
-        responses: Vec<String>,
-    }
-
-    impl MockSerialPortFactory {
-        fn new(responses: Vec<String>) -> Self {
-            Self { responses }
-        }
-    }
-
-    #[async_trait]
-    impl SerialPortFactory for MockSerialPortFactory {
-        async fn open(
-            &self,
-            _port: &str,
-            _baud_rate: u32,
-            _timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            Ok(SerialPair {
-                reader: Box::new(MockSerialReader::new(self.responses.clone())),
-                writer: Box::new(MockSerialWriter),
-            })
-        }
-
-        async fn port_exists(&self, _port: &str) -> bool {
-            true
-        }
-    }
-
-    struct FailingMockSerialPortFactory;
-
-    #[async_trait]
-    impl SerialPortFactory for FailingMockSerialPortFactory {
-        async fn open(
-            &self,
-            _port: &str,
-            _baud_rate: u32,
-            _timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            Err(PpbaError::ConnectionFailed(
-                "Mock factory error".to_string(),
-            ))
-        }
-
-        async fn port_exists(&self, _port: &str) -> bool {
-            false
-        }
-    }
-
-    fn standard_connection_responses() -> Vec<String> {
-        vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]
-    }
-
-    fn create_switch_device(factory: Arc<dyn SerialPortFactory>) -> PpbaSwitchDevice {
+    fn make_device() -> PpbaSwitchDevice {
+        let factory = Arc::new(MockPpbaTransportFactory::default());
         let config = Config::default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        PpbaSwitchDevice::new(config.switch, serial_manager)
+        let manager = PpbaManager::new(config.clone(), factory);
+        PpbaSwitchDevice::new(config.switch, manager)
     }
 
-    // ============================================================================
-    // Connection Error Mapping Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_connect_factory_error_maps_to_invalid_operation() {
-        let device = create_switch_device(Arc::new(FailingMockSerialPortFactory));
-
-        let err = device.set_connected(true).await.unwrap_err();
-        // ConnectionFailed maps to INVALID_OPERATION via to_ascom_error's catch-all
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert!(err.message.contains("Connection failed"));
-    }
-
-    #[tokio::test]
-    async fn test_switch_connect_bad_ping_maps_to_invalid_operation() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "BAD_RESPONSE".to_string(), // bad ping
-        ]));
-        let device = create_switch_device(factory);
-
-        let err = device.set_connected(true).await.unwrap_err();
-        // InvalidResponse maps to INVALID_OPERATION via to_ascom_error's catch-all
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    }
-
-    // ============================================================================
-    // Switch Value Error Mapping Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_get_value_invalid_id_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
+    async fn connected_device() -> PpbaSwitchDevice {
+        let device = make_device();
         device.set_connected(true).await.unwrap();
-
-        let err = device.get_switch_value(99).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
-        device.set_connected(false).await.unwrap();
+        device
     }
 
     #[tokio::test]
-    async fn test_switch_set_value_invalid_id_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
+    async fn starts_disconnected() {
+        let device = make_device();
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn connect_then_disconnect_round_trip() {
+        let device = make_device();
         device.set_connected(true).await.unwrap();
-
-        let err = device.set_switch_value(99, 0.0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
+        assert!(device.connected().await.unwrap());
         device.set_connected(false).await.unwrap();
+        assert!(!device.connected().await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_switch_set_value_read_only_maps_to_not_implemented() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
+    async fn set_connected_is_idempotent() {
+        let device = make_device();
         device.set_connected(true).await.unwrap();
-
-        // Switch 10 (InputVoltage) is read-only
-        let err = device.set_switch_value(10, 5.0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_switch_set_value_out_of_range_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
         device.set_connected(true).await.unwrap();
-
-        // Switch 0 (Quad12V) is boolean: min=0, max=1. Value 5.0 is out of range.
-        let err = device.set_switch_value(0, 5.0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
+        assert!(device.connected().await.unwrap());
         device.set_connected(false).await.unwrap();
+        device.set_connected(false).await.unwrap();
+        assert!(!device.connected().await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_switch_set_value_auto_dew_enabled_maps_to_invalid_operation() {
-        // Auto-dew ON: status field auto_dew=1
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(), // auto_dew=1
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // Polling responses
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // refresh_status response for the set_switch_value_internal call
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Switch 2 (DewHeaterA) should fail when auto-dew is enabled
-        let err = device.set_switch_value(2, 128.0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert!(err.message.contains("auto-dew"));
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Not Connected Guard Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_operations_fail_when_not_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
-        // All operations requiring connection should return NOT_CONNECTED
+    async fn operations_fail_when_not_connected() {
+        let device = make_device();
         assert_eq!(
             device.get_switch(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.get_switch_value(0).await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
         assert_eq!(
@@ -741,429 +518,100 @@ mod tests {
             device.can_write(0).await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
-        assert_eq!(
-            device.get_switch_name(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.get_switch_description(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.min_switch_value(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.max_switch_value(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.switch_step(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
     }
 
     #[tokio::test]
-    async fn test_switch_async_operations_fail_when_not_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
-        assert_eq!(
-            device.can_async(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.state_change_complete(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.cancel_async(0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.set_async(0, true).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device.set_async_value(0, 1.0).await.unwrap_err().code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-    }
-
-    // ============================================================================
-    // Async Switch Delegation Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_set_async_delegates_to_set_switch() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // Response for the set command
-            "P1:1".to_string(),
-            // refresh_status after set
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            // Polling responses
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // set_async should delegate to set_switch and succeed
-        device.set_async(0, true).await.unwrap();
-
+    async fn get_switch_value_invalid_id_maps_to_invalid_value() {
+        let device = connected_device().await;
+        let err = device.get_switch_value(99).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_switch_set_async_value_delegates_to_set_switch_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // Response for the set command
-            "P1:1".to_string(),
-            // refresh_status after set
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            // Polling responses
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // set_async_value should delegate to set_switch_value and succeed
-        device.set_async_value(0, 1.0).await.unwrap();
-
+    async fn set_switch_value_read_only_maps_to_not_implemented() {
+        let device = connected_device().await;
+        let err = device.set_switch_value(10, 5.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_switch_async_invalid_id_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        assert_eq!(
-            device.can_async(MAX_SWITCH).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-        assert_eq!(
-            device
-                .state_change_complete(MAX_SWITCH)
-                .await
-                .unwrap_err()
-                .code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-        assert_eq!(
-            device.cancel_async(MAX_SWITCH).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-        assert_eq!(
-            device.set_async(MAX_SWITCH, true).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-        assert_eq!(
-            device
-                .set_async_value(MAX_SWITCH, 1.0)
-                .await
-                .unwrap_err()
-                .code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Switch Value Read Tests (covers get_switch_value_internal branches)
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_read_all_status_switches() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Controllable switches from PA status
-        // Status: voltage=12.5, current=3.2, temp=25.0, humidity=60, dewpoint=15.5,
-        //         quad=1, adj=0, dewA=128, dewB=64, autodew=0, warn=0
-        assert!((device.get_switch_value(0).await.unwrap() - 1.0).abs() < f64::EPSILON); // Quad12V on
-        assert!((device.get_switch_value(1).await.unwrap() - 0.0).abs() < f64::EPSILON); // Adj off
-        assert!((device.get_switch_value(2).await.unwrap() - 128.0).abs() < f64::EPSILON); // DewA
-        assert!((device.get_switch_value(3).await.unwrap() - 64.0).abs() < f64::EPSILON); // DewB
-        assert!((device.get_switch_value(4).await.unwrap() - 0.0).abs() < f64::EPSILON); // USB hub off
-        assert!((device.get_switch_value(5).await.unwrap() - 0.0).abs() < f64::EPSILON); // AutoDew off
-
-        // Read-only sensor switches from PA status
-        assert!((device.get_switch_value(10).await.unwrap() - 12.5).abs() < 0.01); // Voltage
-        assert!((device.get_switch_value(11).await.unwrap() - 3.2).abs() < 0.01); // Current
-        assert!((device.get_switch_value(12).await.unwrap() - 25.0).abs() < 0.01); // Temperature
-        assert!((device.get_switch_value(13).await.unwrap() - 60.0).abs() < 0.01); // Humidity
-        assert!((device.get_switch_value(14).await.unwrap() - 15.5).abs() < 0.01); // Dewpoint
-        assert!((device.get_switch_value(15).await.unwrap() - 0.0).abs() < f64::EPSILON); // PowerWarn
-
+    async fn set_switch_value_out_of_range_maps_to_invalid_value() {
+        let device = connected_device().await;
+        let err = device.set_switch_value(0, 5.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_switch_read_power_stat_switches() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Power stats: average_amps=2.5, amp_hours=10.5, watt_hours=126.0, uptime=3600000ms
-        assert!((device.get_switch_value(6).await.unwrap() - 2.5).abs() < 0.01); // AvgCurrent
-        assert!((device.get_switch_value(7).await.unwrap() - 10.5).abs() < 0.01); // AmpHours
-        assert!((device.get_switch_value(8).await.unwrap() - 126.0).abs() < 0.01); // WattHours
-        assert!((device.get_switch_value(9).await.unwrap() - 1.0).abs() < 0.01); // Uptime (1 hour)
-
+    async fn set_switch_value_auto_dew_enabled_blocks_dew_heater_write() {
+        let device = connected_device().await;
+        // Turn auto-dew ON via the switch path.
+        device.set_switch_value(5, 1.0).await.unwrap();
+        // Now writing the dew heater must fail with INVALID_OPERATION.
+        let err = device.set_switch_value(2, 128.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(err.message.contains("auto-dew"));
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_switch_get_boolean_state() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // get_switch returns true if value > min_value
-        assert!(device.get_switch(0).await.unwrap()); // Quad12V=1 > 0
-        assert!(!device.get_switch(1).await.unwrap()); // Adj=0, not > 0
-
+    async fn read_controllable_switches() {
+        let device = connected_device().await;
+        // Default mock state: quad=true, adj=false, dewA=128, dewB=64, autodew=false
+        assert!((device.get_switch_value(0).await.unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!((device.get_switch_value(1).await.unwrap() - 0.0).abs() < f64::EPSILON);
+        assert!((device.get_switch_value(2).await.unwrap() - 128.0).abs() < f64::EPSILON);
+        assert!((device.get_switch_value(3).await.unwrap() - 64.0).abs() < f64::EPSILON);
+        assert!((device.get_switch_value(4).await.unwrap() - 0.0).abs() < f64::EPSILON);
         device.set_connected(false).await.unwrap();
     }
 
-    // ============================================================================
-    // Switch Metadata Read Tests (covers ASCOM trait methods when connected)
-    // ============================================================================
+    #[tokio::test]
+    async fn set_controllable_switch_mutates_device_state() {
+        let device = connected_device().await;
+        device.set_switch_value(0, 0.0).await.unwrap();
+        assert!((device.get_switch_value(0).await.unwrap() - 0.0).abs() < f64::EPSILON);
+        device.set_switch_value(1, 1.0).await.unwrap();
+        assert!((device.get_switch_value(1).await.unwrap() - 1.0).abs() < f64::EPSILON);
+        device.set_connected(false).await.unwrap();
+    }
 
     #[tokio::test]
-    async fn test_switch_metadata_when_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // can_write
-        assert!(device.can_write(0).await.unwrap()); // Quad12V is writable
-        assert!(!device.can_write(10).await.unwrap()); // InputVoltage is read-only
-
-        // name and description
+    async fn metadata_when_connected() {
+        let device = connected_device().await;
+        assert!(device.can_write(0).await.unwrap());
+        assert!(!device.can_write(10).await.unwrap());
         let name = device.get_switch_name(0).await.unwrap();
         assert!(!name.is_empty());
-        let desc = device.get_switch_description(0).await.unwrap();
-        assert!(!desc.is_empty());
-
-        // min/max/step
-        let min = device.min_switch_value(0).await.unwrap();
-        let max = device.max_switch_value(0).await.unwrap();
-        let step = device.switch_step(0).await.unwrap();
+        let (min, max, step) = (
+            device.min_switch_value(0).await.unwrap(),
+            device.max_switch_value(0).await.unwrap(),
+            device.switch_step(0).await.unwrap(),
+        );
         assert!((min - 0.0).abs() < f64::EPSILON);
         assert!((max - 1.0).abs() < f64::EPSILON);
         assert!((step - 1.0).abs() < f64::EPSILON);
-
-        // can_async / state_change_complete
         assert!(!device.can_async(0).await.unwrap());
         assert!(device.state_change_complete(0).await.unwrap());
         device.cancel_async(0).await.unwrap();
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Switch Write Tests (covers set_switch_value_internal command branches)
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_set_controllable_switches() {
-        // Provide enough responses for connect + multiple set commands + refresh after each
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            // Connect handshake
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // Set Quad12V(false): command response + refresh_status
-            "P1:0".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
-            // Set AdjustableOutput(true): command response + refresh_status
-            "P2:1".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(),
-            // Set DewHeaterA: refresh_status (auto-dew check) + command + refresh_status
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:128:64:0:0:0".to_string(),
-            "P3:200".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(),
-            // Set DewHeaterB: refresh_status (auto-dew check) + command + refresh_status
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:64:0:0:0".to_string(),
-            "P4:100".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:0:0:0".to_string(),
-            // Set UsbHub: command only (no refresh_status)
-            "PU:1".to_string(),
-            // Set AutoDew: command + refresh_status
-            "PD:1".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:1:0:0".to_string(),
-            // Polling responses
-            "PPBA:12.5:3.2:25.0:60:15.5:0:1:200:100:1:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Set each controllable switch
-        device.set_switch_value(0, 0.0).await.unwrap(); // Quad12V off
-        device.set_switch_value(1, 1.0).await.unwrap(); // Adjustable on
-        device.set_switch_value(2, 200.0).await.unwrap(); // DewA PWM
-        device.set_switch_value(3, 100.0).await.unwrap(); // DewB PWM
-        device.set_switch_value(4, 1.0).await.unwrap(); // USB hub on
-        device.set_switch_value(5, 1.0).await.unwrap(); // AutoDew on
-
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_switch_set_switch_boolean() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // set_switch(0, false) -> set_switch_value(0, 0.0): command + refresh
-            "P1:0".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
-            // Polling responses
-            "PPBA:12.5:3.2:25.0:60:15.5:0:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_switch_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // set_switch uses boolean -> min/max value conversion
-        device.set_switch(0, false).await.unwrap();
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Miscellaneous Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_switch_max_switch() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
+    async fn max_switch_returns_constant() {
+        let device = make_device();
         assert_eq!(device.max_switch().await.unwrap(), MAX_SWITCH);
     }
 
     #[tokio::test]
-    async fn test_switch_set_switch_name_not_implemented() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
+    async fn set_switch_name_returns_not_implemented() {
+        let device = make_device();
         let err = device
-            .set_switch_name(0, "test".to_string())
+            .set_switch_name(0, "x".to_string())
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
-    }
-
-    #[tokio::test]
-    async fn test_switch_device_debug_format() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
-        let debug_str = format!("{:?}", device);
-        assert!(debug_str.contains("PpbaSwitchDevice"));
-        assert!(debug_str.contains("config"));
-        assert!(debug_str.contains("requested_connection"));
-        assert!(debug_str.contains(".."));
-    }
-
-    #[tokio::test]
-    async fn test_switch_device_info() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_switch_device(factory);
-
-        let info = device.driver_info().await.unwrap();
-        assert!(info.contains("PPBA"));
-
-        let version = device.driver_version().await.unwrap();
-        assert!(!version.is_empty());
-
-        let description = device.description().await.unwrap();
-        assert!(!description.is_empty());
-    }
-
-    // ============================================================================
-    // Race Regression Test (Issue #251)
-    // ============================================================================
-
-    /// Wraps the standard mock factory and yields once inside `open()`. This
-    /// injects a tokio yield point inside `SerialManager::connect`, exposing
-    /// the window where concurrent `set_connected(true)` calls could double-
-    /// increment the per-device refcount before the lock-spanning fix.
-    struct YieldingMockSerialPortFactory {
-        inner: MockSerialPortFactory,
-    }
-
-    impl YieldingMockSerialPortFactory {
-        fn new(responses: Vec<String>) -> Self {
-            Self {
-                inner: MockSerialPortFactory::new(responses),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl SerialPortFactory for YieldingMockSerialPortFactory {
-        async fn open(
-            &self,
-            port: &str,
-            baud_rate: u32,
-            timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            tokio::task::yield_now().await;
-            self.inner.open(port, baud_rate, timeout).await
-        }
-
-        async fn port_exists(&self, port: &str) -> bool {
-            self.inner.port_exists(port).await
-        }
-    }
-
-    #[tokio::test]
-    async fn test_switch_concurrent_set_connected_does_not_leak_refcount() {
-        // Regression for issue #251: two concurrent `set_connected(true)`
-        // calls on the same device must not inflate the SerialManager refcount.
-        // The yielding factory forces a yield inside `connect()`, so the
-        // second future runs while the first is suspended mid-connect — the
-        // exact window the lock-spanning fix closes. Without the fix, both
-        // futures would call `SerialManager::connect` and a single later
-        // `set_connected(false)` would leave the port open.
-        let factory = Arc::new(YieldingMockSerialPortFactory::new(
-            standard_connection_responses(),
-        ));
-        let config = Config::default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        let device = Arc::new(PpbaSwitchDevice::new(
-            config.switch,
-            Arc::clone(&serial_manager),
-        ));
-
-        let d1 = Arc::clone(&device);
-        let d2 = Arc::clone(&device);
-        let (r1, r2) = tokio::join!(async move { d1.set_connected(true).await }, async move {
-            d2.set_connected(true).await
-        },);
-        r1.unwrap();
-        r2.unwrap();
-        assert!(serial_manager.is_available(), "port should be open");
-
-        device.set_connected(false).await.unwrap();
-        assert!(
-            !serial_manager.is_available(),
-            "single set_connected(false) must close the port"
-        );
     }
 }

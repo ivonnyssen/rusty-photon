@@ -1,29 +1,28 @@
-//! Mock serial port implementation for testing
+//! Mock PPBA transport for testing without real hardware.
 //!
-//! This module provides mock implementations of the serial I/O traits
-//! that simulate PPBA device responses, allowing the driver to be tested
-//! without real hardware.
+//! Provides a [`TransportFactory`] that hands out a [`FrameTransport`]
+//! backed by an in-memory PPBA state machine. Persists state across
+//! reconnects so tests can disconnect/reconnect and still observe their
+//! prior writes (matches the behaviour of real hardware that doesn't
+//! lose its settings when an ASCOM client cycles `Connected`).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::error::Result;
-use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-
-/// Shared state between mock reader and writer
+/// In-memory PPBA device state, plus a queue of responses each accepted
+/// command appended.
 #[derive(Debug, Default)]
 struct MockState {
-    /// Queue of responses to return
-    response_queue: Vec<String>,
-    /// Current device state for generating realistic responses
+    response_queue: VecDeque<Vec<u8>>,
     device_state: MockDeviceState,
 }
 
-/// Simulated device state
 #[derive(Debug, Clone)]
 struct MockDeviceState {
     quad_12v: bool,
@@ -52,7 +51,7 @@ impl Default for MockDeviceState {
             dew_a: 128,
             dew_b: 64,
             usb_hub: false,
-            auto_dew: false, // Default to OFF for ConformU compliance testing
+            auto_dew: false, // OFF by default so ConformU dew-heater writes pass.
             voltage: 12.5,
             current: 3.2,
             temperature: 25.0,
@@ -68,7 +67,6 @@ impl Default for MockDeviceState {
 }
 
 impl MockDeviceState {
-    /// Generate status response (PA command)
     fn status_response(&self) -> String {
         format!(
             "PPBA:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -87,7 +85,6 @@ impl MockDeviceState {
         )
     }
 
-    /// Generate power stats response (PS command)
     fn power_stats_response(&self) -> String {
         format!(
             "PS:{}:{}:{}:{}",
@@ -100,37 +97,37 @@ impl MockDeviceState {
 }
 
 impl MockState {
-    /// Process a command and queue the appropriate response
-    fn process_command(&mut self, command: &str) {
-        let command = command.trim();
-        debug!("Mock processing command: '{}' | Current state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
-               command, self.device_state.quad_12v, self.device_state.adjustable,
-               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
+    fn process_command(&mut self, command_bytes: &[u8]) {
+        let command = std::str::from_utf8(command_bytes)
+            .unwrap_or_default()
+            .trim();
+        debug!(
+            command,
+            quad_12v = self.device_state.quad_12v,
+            adjustable = self.device_state.adjustable,
+            dew_a = self.device_state.dew_a,
+            dew_b = self.device_state.dew_b,
+            auto_dew = self.device_state.auto_dew,
+            "mock processing command"
+        );
 
         let response = if command == "P#" {
-            // Ping
             "PPBA_OK".to_string()
         } else if command == "PA" {
-            // Status
             self.device_state.status_response()
         } else if command == "PS" {
-            // Power stats
             self.device_state.power_stats_response()
         } else if command == "PV" {
-            // Firmware version
             "1.0.0".to_string()
         } else if let Some(value) = command.strip_prefix("P1:") {
-            // Set quad 12V
             let state = value == "1";
             self.device_state.quad_12v = state;
             format!("P1:{}", if state { 1 } else { 0 })
         } else if let Some(value) = command.strip_prefix("P2:") {
-            // Set adjustable output
             let state = value == "1";
             self.device_state.adjustable = state;
             format!("P2:{}", if state { 1 } else { 0 })
         } else if let Some(value) = command.strip_prefix("P3:") {
-            // Set dew A PWM
             if let Ok(pwm) = value.parse::<u8>() {
                 self.device_state.dew_a = pwm;
                 format!("P3:{}", pwm)
@@ -138,7 +135,6 @@ impl MockState {
                 "ERR".to_string()
             }
         } else if let Some(value) = command.strip_prefix("P4:") {
-            // Set dew B PWM
             if let Ok(pwm) = value.parse::<u8>() {
                 self.device_state.dew_b = pwm;
                 format!("P4:{}", pwm)
@@ -146,115 +142,67 @@ impl MockState {
                 "ERR".to_string()
             }
         } else if let Some(value) = command.strip_prefix("PU:") {
-            // Set USB hub
             let state = value == "1";
             self.device_state.usb_hub = state;
             format!("PU:{}", if state { 1 } else { 0 })
         } else if let Some(value) = command.strip_prefix("PD:") {
-            // Set auto-dew
             let state = value == "1";
             self.device_state.auto_dew = state;
             format!("PD:{}", if state { 1 } else { 0 })
         } else {
-            debug!("Mock: unknown command '{}'", command);
+            debug!(command, "mock: unknown command");
             "ERR".to_string()
         };
 
-        debug!("Mock queuing response: '{}' | New state: quad_12v={}, adjustable={}, dew_a={}, dew_b={}, auto_dew={}",
-               response, self.device_state.quad_12v, self.device_state.adjustable,
-               self.device_state.dew_a, self.device_state.dew_b, self.device_state.auto_dew);
-        self.response_queue.push(response);
-    }
-
-    /// Get the next response from the queue
-    fn next_response(&mut self) -> Option<String> {
-        if self.response_queue.is_empty() {
-            None
-        } else {
-            Some(self.response_queue.remove(0))
-        }
+        let mut frame = response.into_bytes();
+        frame.push(b'\n');
+        self.response_queue.push_back(frame);
     }
 }
 
-/// Mock serial reader that returns command-appropriate responses
-pub struct MockSerialReader {
+/// One open mock transport. Shares state with the factory so persistent
+/// device settings survive a reconnect cycle.
+struct MockFrameTransport {
     state: Arc<Mutex<MockState>>,
 }
 
-impl MockSerialReader {
-    /// Create a new mock reader with shared state
-    fn new(state: Arc<Mutex<MockState>>) -> Self {
-        Self { state }
-    }
-}
-
 #[async_trait]
-impl SerialReader for MockSerialReader {
-    async fn read_line(&mut self) -> Result<Option<String>> {
-        let mut state = self.state.lock().await;
-        let queue_len = state.response_queue.len();
-        if let Some(response) = state.next_response() {
-            debug!(
-                "Mock serial read: '{}' (queue had {} items)",
-                response, queue_len
-            );
-            Ok(Some(response))
-        } else {
-            // No response queued - this shouldn't happen in normal operation
-            debug!("Mock serial read: NO RESPONSE QUEUED (queue empty)");
-            Ok(None)
-        }
-    }
-}
-
-/// Mock serial writer that processes commands and queues responses
-pub struct MockSerialWriter {
-    state: Arc<Mutex<MockState>>,
-}
-
-impl MockSerialWriter {
-    /// Create a new mock writer with shared state
-    fn new(state: Arc<Mutex<MockState>>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl SerialWriter for MockSerialWriter {
-    async fn write_message(&mut self, message: &str) -> Result<()> {
-        debug!("Mock serial write: {}", message);
-        let mut state = self.state.lock().await;
-        state.process_command(message);
+impl FrameTransport for MockFrameTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.state.lock().await.process_command(bytes);
         Ok(())
     }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        let frame = self.state.lock().await.response_queue.pop_front();
+        match frame {
+            Some(frame) => {
+                buf.clear();
+                buf.extend_from_slice(&frame);
+                Ok(())
+            }
+            None => Err(TransportError::Eof),
+        }
+    }
 }
 
-/// Mock serial port factory for testing
+/// Mock factory for the PPBA transport.
 ///
-/// Maintains persistent state across multiple open/close cycles to simulate
-/// real hardware behavior where device state persists even when disconnected.
+/// Maintains persistent device state across multiple open/close cycles so
+/// tests can power-cycle the connection without losing the simulated
+/// device's settings — matching the behaviour of real hardware.
 #[derive(Clone, Default)]
-pub struct MockSerialPortFactory {
-    /// Persistent state shared across all connections
-    persistent_state: Arc<Mutex<MockState>>,
+pub struct MockPpbaTransportFactory {
+    state: Arc<Mutex<MockState>>,
 }
 
 #[async_trait]
-impl SerialPortFactory for MockSerialPortFactory {
-    async fn open(&self, port: &str, baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
-        debug!("Mock serial port opened: {} at {} baud", port, baud_rate);
-
-        // Use persistent state instead of creating a new one
-        let state = Arc::clone(&self.persistent_state);
-
-        Ok(SerialPair {
-            reader: Box::new(MockSerialReader::new(Arc::clone(&state))),
-            writer: Box::new(MockSerialWriter::new(state)),
-        })
-    }
-
-    async fn port_exists(&self, _port: &str) -> bool {
-        true
+impl TransportFactory for MockPpbaTransportFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        debug!("mock PPBA transport opened");
+        Ok(Box::new(MockFrameTransport {
+            state: Arc::clone(&self.state),
+        }))
     }
 }
 
@@ -263,129 +211,82 @@ impl SerialPortFactory for MockSerialPortFactory {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_mock_ping_response() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("P#").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PPBA_OK".to_string()));
+    async fn open(factory: &MockPpbaTransportFactory) -> Box<dyn FrameTransport> {
+        factory.open().await.unwrap()
     }
 
     #[tokio::test]
-    async fn test_mock_status_response() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("PA").await.unwrap();
-        let response = reader.read_line().await.unwrap().unwrap();
-        assert!(response.starts_with("PPBA:"));
+    async fn ping_round_trip() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"P#\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"PPBA_OK\n");
     }
 
     #[tokio::test]
-    async fn test_mock_power_stats_response() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("PS").await.unwrap();
-        let response = reader.read_line().await.unwrap().unwrap();
-        assert!(response.starts_with("PS:"));
+    async fn status_round_trip() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"PA\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        assert!(buf.starts_with(b"PPBA:"));
+        assert!(buf.ends_with(b"\n"));
     }
 
     #[tokio::test]
-    async fn test_mock_set_quad_12v() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("P1:1").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("P1:1".to_string()));
-
-        writer.write_message("P1:0").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("P1:0".to_string()));
+    async fn power_stats_round_trip() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"PS\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        assert!(buf.starts_with(b"PS:"));
+        assert!(buf.ends_with(b"\n"));
     }
 
     #[tokio::test]
-    async fn test_mock_set_dew_heater() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
+    async fn set_command_echoes_and_mutates_state() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"P1:0\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"P1:0\n");
 
-        writer.write_message("P3:200").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("P3:200".to_string()));
-
-        writer.write_message("P4:150").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("P4:150".to_string()));
+        t.send_frame(b"PA\n").await.unwrap();
+        t.recv_frame(&mut buf).await.unwrap();
+        let text = std::str::from_utf8(&buf).unwrap().trim();
+        let parts: Vec<&str> = text.split(':').collect();
+        assert_eq!(parts[6], "0", "quad_12v should now be off: {text}");
     }
 
     #[tokio::test]
-    async fn test_mock_state_persists() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        // Turn off quad 12V
-        writer.write_message("P1:0").await.unwrap();
-        reader.read_line().await.unwrap();
-
-        // Check status reflects the change
-        writer.write_message("PA").await.unwrap();
-        let response = reader.read_line().await.unwrap().unwrap();
-
-        // Status should show quad_12v as 0 (off)
-        // Format: PPBA:voltage:current:temp:humidity:dewpoint:quad:adj:dewA:dewB:autodew:warn:pwradj
-        let parts: Vec<&str> = response.split(':').collect();
-        assert_eq!(parts[6], "0"); // quad_12v should be 0
+    async fn state_persists_across_reopens() {
+        let factory = MockPpbaTransportFactory::default();
+        {
+            let mut t = open(&factory).await;
+            t.send_frame(b"P1:0\n").await.unwrap();
+            let mut buf = Vec::new();
+            t.recv_frame(&mut buf).await.unwrap();
+        }
+        let mut t = open(&factory).await;
+        t.send_frame(b"PA\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        let text = std::str::from_utf8(&buf).unwrap().trim();
+        let parts: Vec<&str> = text.split(':').collect();
+        assert_eq!(parts[6], "0");
     }
 
     #[tokio::test]
-    async fn test_mock_factory_creates_working_pair() {
-        let factory = MockSerialPortFactory::default();
-        let mut pair = factory
-            .open("/dev/mock", 9600, Duration::from_secs(1))
-            .await
-            .unwrap();
-
-        pair.writer.write_message("P#").await.unwrap();
-        let response = pair.reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PPBA_OK".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_mock_usb_hub() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("PU:1").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PU:1".to_string()));
-
-        writer.write_message("PU:0").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PU:0".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_mock_auto_dew() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
-
-        writer.write_message("PD:0").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PD:0".to_string()));
-
-        writer.write_message("PD:1").await.unwrap();
-        let response = reader.read_line().await.unwrap();
-        assert_eq!(response, Some("PD:1".to_string()));
+    async fn empty_queue_returns_eof() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        let mut buf = Vec::new();
+        let err = t.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Eof));
     }
 }

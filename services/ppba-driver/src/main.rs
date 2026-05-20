@@ -10,7 +10,7 @@ use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
 use tracing::Level;
 
 #[cfg(feature = "mock")]
-use ppba_driver::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+use ppba_driver::{load_config, Config, MockPpbaTransportFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
 use ppba_driver::{load_config, Config, ServerBuilder};
 
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        let factory = std::sync::Arc::new(MockPpbaTransportFactory::default());
         ServerBuilder::new(config)
             .with_factory(factory)
             .build()
