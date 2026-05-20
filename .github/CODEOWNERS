@@ -1,0 +1,13 @@
+# Every path in this repo is owned by @ivonnyssen.
+#
+# Paired with the main_protection ruleset's require_code_owner_review +
+# required_approving_review_count: 1: PRs touching any file need an
+# approval from a code owner before they can merge. github-actions[bot]
+# is intentionally NOT a code owner, so an auto-generated PR (e.g. from
+# refresh-astap-shas) can't satisfy the merge gate by self-approving
+# even if its workflow has pull-request write permission.
+#
+# Admin role keeps bypass via bypass_actors on the ruleset, so own-PRs
+# aren't deadlocked by GitHub's no-self-approval rule.
+
+*  @ivonnyssen
