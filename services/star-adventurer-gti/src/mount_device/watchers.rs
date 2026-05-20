@@ -6,19 +6,19 @@
 //! pickup loop, post-slew tracking restore, `at_park = true`, axis
 //! restore after pulse), and clears the `slew_in_progress` /
 //! `pulse_guiding_<axis>` flag so the user-visible ASCOM state lines
-//! up with the wire state. All three share a top-of-loop shape:
+//! up with the wire state.
 //!
-//! 1. Sleep one `polling_interval` tick.
-//! 2. Bail if the operation was aborted externally
-//!    ([`watcher_should_abort`]) or the transport went away.
-//! 3. Read a fresh snapshot via [`watcher_poll_with_retry`]
-//!    (retries a handful of transient transport errors so a single
-//!    USB-CDC glitch doesn't take the watcher offline mid-slew, and
-//!    issues a best-effort `:L` on exhaustion).
-//! 4. Honour `blocked` reads with an instant-stop and bail.
-//! 5. When both axes have stopped, run the operation-specific
-//!    completion step, then drop the polling-pause guard and apply
-//!    the settle delay.
+//! The slew and park completion watchers share an identical outer
+//! loop — pause polling, sleep one tick, honour abort / disconnect /
+//! `:f` Blocked, skip while either axis is `running`, then run the
+//! per-operation completion step once both axes report stopped. That
+//! shared scaffold lives in [`run_completion_watcher`]; each spawner
+//! supplies an `on_axes_stopped` closure returning a
+//! [`CompletionDecision`] plus a [`FnOnce(&mut DriverState)`]
+//! finalizer that lands the per-operation state mutation under the
+//! same write lock that clears `slew_in_progress`. The pulse-guide
+//! watcher has a different shape (no polling loop, axis-targeted
+//! restore) and stays as a standalone spawner.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -181,16 +181,427 @@ pub(super) async fn clear_pulse_flag(state: &Arc<RwLock<DriverState>>, axis: Axi
     }
 }
 
+/// Decision returned by an `on_axes_stopped` closure after both
+/// axes report stopped. Drives the branching at the bottom of
+/// [`run_completion_watcher`]'s loop.
+enum CompletionDecision {
+    /// Stay in the polling loop — e.g. the slew dwell gate has not
+    /// elapsed yet, or a pickup re-slew was issued and the next
+    /// snapshot will tell us whether it converged.
+    Continue,
+    /// Bail out without running the settle delay or the finalizer.
+    /// Used when an in-flight abort, disconnect, or computation
+    /// error is detected after the snapshot was taken. The helper
+    /// clears `slew_in_progress` on the way out.
+    Bail,
+    /// Per-operation work is done. The helper drops the polling
+    /// guard, sleeps `settle`, then runs the finalizer under the
+    /// same write lock that clears `slew_in_progress`.
+    Complete,
+}
+
+/// Shared outer-loop scaffold for the slew and park completion
+/// watchers. Both watchers observe the same six top-of-loop steps:
+///
+/// 1. Sleep one `polling_interval` tick.
+/// 2. Bail if `slew_in_progress` was cleared externally (`AbortSlew`,
+///    `set_connected(false)`).
+/// 3. Bail if the transport became unavailable.
+/// 4. Snapshot via [`watcher_poll_with_retry`].
+/// 5. Honour `blocked` reads with `:L` on both axes + bail.
+/// 6. Skip iterations where either axis is still `running`.
+///
+/// Once both axes report stopped, the per-operation `on_axes_stopped`
+/// closure runs and returns a [`CompletionDecision`]:
+///
+/// - [`CompletionDecision::Continue`] — re-enter the loop (the slew
+///   watcher uses this for the dwell gate and for pickup re-slews).
+/// - [`CompletionDecision::Bail`] — clear `slew_in_progress` and exit
+///   without running the settle delay or the finalizer.
+/// - [`CompletionDecision::Complete`] — drop the polling guard
+///   *before* the settle delay so the background polling task can
+///   refresh the snapshot while we wait (an Alpaca client reading
+///   position data right after `Slewing` flips to `false` then sees
+///   a snapshot that reflects the current encoder state, not the
+///   watcher's last `poll_axes_now` from before the completion step;
+///   without this the reported RA lags by `(tracking_engagement +
+///   settle) × sidereal rate`). After the settle, the finalizer
+///   runs under one write lock that also clears `slew_in_progress`.
+///
+/// The polling-pause guard is owned by an in-scope binding so every
+/// exit path releases it: the `Complete` branch drops it explicitly
+/// before the settle delay (so the background polling task can
+/// refresh the snapshot while we wait), and every other path —
+/// `Continue` looping, `Bail`, abort, disconnect, blocked-axis, retry
+/// exhaustion, panic — releases it via RAII drop on the way out.
+async fn run_completion_watcher<C, F>(
+    state: Arc<RwLock<DriverState>>,
+    transport: Arc<TransportManager>,
+    polling_interval: Duration,
+    settle: Duration,
+    context: &'static str,
+    mut on_axes_stopped: C,
+    on_finalize: F,
+) where
+    C: AsyncFnMut(MountSnapshot) -> CompletionDecision,
+    F: FnOnce(&mut DriverState),
+{
+    // Pause the background polling task for the duration of the
+    // operation. With polling paused the watcher owns the wire:
+    // wire commands (pickup re-slews, post-slew tracking restart,
+    // blocked-axis `:L`) fire without contending with `:j` / `:f`
+    // polls for `command_lock`, and the watcher's own
+    // `poll_axes_now` reads give us mount state within one wire
+    // round-trip of any change — vs up to `polling_interval` of
+    // snapshot staleness under the always-on polling model.
+    let _poll_guard = transport.pause_background_polling();
+    loop {
+        tokio::time::sleep(polling_interval).await;
+
+        // External abort / disconnect path: AbortSlew clears
+        // `slew_in_progress` before issuing :L; set_connected(false)
+        // also clears it. Either way, bail before overwriting
+        // user-visible state.
+        if !state.read().await.slew_in_progress {
+            return;
+        }
+        // Belt-and-braces: if the transport became unavailable
+        // (mid-disconnect, handshake-failure rollback, ...), exit
+        // even if the flag-clear hasn't happened yet. This stops
+        // the watcher holding `Arc<TransportManager>` alive past
+        // its useful life.
+        if !transport.is_available() {
+            state.write().await.slew_in_progress = false;
+            return;
+        }
+
+        // Direct poll instead of reading the (now-paused) background
+        // snapshot. [`watcher_poll_with_retry`] tolerates a handful
+        // of transient transport errors so a single USB-CDC glitch
+        // doesn't take the watcher offline mid-operation; on retry
+        // exhaustion it also issues a best-effort `:L` on both
+        // axes so the motor isn't left commutating with no
+        // observer.
+        let snap = match watcher_poll_with_retry(&transport, context).await {
+            Ok(s) => s,
+            Err(_) => {
+                state.write().await.slew_in_progress = false;
+                return;
+            }
+        };
+        // Sky-Watcher spec §5 reports `Blocked` in the `:f` status
+        // when the motor is stepping but the encoder isn't
+        // advancing — typically the axis is against a hard stop.
+        // Issue `:L` on both axes to halt the runaway and bail out
+        // of the operation rather than letting the watcher
+        // poll-loop continue while the gearbox strains. Park-time
+        // blocked aborts deliberately skip `at_park = true` (the
+        // OTA isn't at the encoder-0 home pose, so subsequent
+        // `Unpark + slew` would compute a wrong delta) — which is
+        // enforced here by returning before the finalizer runs.
+        if snap.ra.blocked || snap.dec.blocked {
+            tracing::warn!(
+                ra_blocked = snap.ra.blocked,
+                dec_blocked = snap.dec.blocked,
+                context = context,
+                "axis reports Blocked — aborting via :L"
+            );
+            let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
+            let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+            state.write().await.slew_in_progress = false;
+            return;
+        }
+        if snap.ra.running || snap.dec.running {
+            continue;
+        }
+        match on_axes_stopped(snap).await {
+            CompletionDecision::Continue => continue,
+            CompletionDecision::Bail => {
+                state.write().await.slew_in_progress = false;
+                return;
+            }
+            CompletionDecision::Complete => {
+                // Resume background polling *now*, before the
+                // settle delay. From here on the watcher is just
+                // waiting for any firmware engagement (e.g. the
+                // ~160 ms post-slew tracking startup) and applying
+                // the settle margin. While we wait, the background
+                // polling task should refresh the snapshot at its
+                // regular cadence so an Alpaca client reading
+                // position state right after `Slewing` flips to
+                // `false` sees a snapshot that reflects the
+                // post-completion encoder state, not the watcher's
+                // last `poll_axes_now` from before the completion
+                // step. Without this, the snap is stale by the
+                // duration `(per-op completion work + settle)` and
+                // the reported RA lags by that × sidereal rate
+                // (~5-10″).
+                drop(_poll_guard);
+                tokio::time::sleep(settle).await;
+                let mut s = state.write().await;
+                on_finalize(&mut s);
+                s.slew_in_progress = false;
+                return;
+            }
+        }
+    }
+}
+
+/// Slew-watcher per-iteration completion step. Called by
+/// [`run_completion_watcher`] each time both axes report stopped.
+/// Returns:
+///
+/// - [`CompletionDecision::Continue`] while the [`MIN_SLEW_DWELL`]
+///   floor has not elapsed, or after a pickup re-slew has been
+///   issued.
+/// - [`CompletionDecision::Bail`] when an in-flight abort/disconnect
+///   or an LST computation failure is detected.
+/// - [`CompletionDecision::Complete`] once the pickup loop has
+///   converged (or the iteration limit reached, or no target coords
+///   are available) and any post-slew tracking restart has been
+///   issued.
+///
+/// `state`, `transport` and `config` are passed by value (the Arcs
+/// cloned, the config cloned cheaply) so the returned future owns
+/// them outright rather than borrowing from the caller's closure
+/// captures. This keeps the future `Send + 'static`-compatible
+/// inside the tokio task spawned by
+/// [`spawn_slew_completion_watcher`]; an `&Arc<…>` borrow tripped
+/// the HRTB inference on the spawn future's `Send` bound.
+#[allow(clippy::too_many_arguments)]
+async fn slew_completion_step(
+    state: Arc<RwLock<DriverState>>,
+    transport: Arc<TransportManager>,
+    config: MountConfig,
+    polling_interval: Duration,
+    started: std::time::Instant,
+    tracking_was_on: bool,
+    pickup_iterations: &mut u32,
+    last_pickup_at: &mut Option<std::time::Instant>,
+    snap: MountSnapshot,
+) -> CompletionDecision {
+    // Enforce a minimum slew dwell so external observers reliably
+    // catch `Slewing == true`. ConformU starts a slew via HTTP,
+    // then reads `Slewing` over a second HTTP call; the round-
+    // trip latency can be larger than the mock's full slew
+    // duration on a fast machine (the mock advances 100K
+    // ticks/poll, so a small slew completes in 1-2 polls). The
+    // de-facto Alpaca client poll cadence is on the order of
+    // 100 ms; two full seconds of guaranteed dwell is a safe
+    // floor for any reasonable client without meaningfully
+    // slowing real-mount operation (real slews take seconds).
+    //
+    // The dwell *must* gate the pickup loop, not run after it.
+    // The encoder is static while the watcher is observing
+    // (tracking is off until the post-slew re-enable below),
+    // so the apparent RA drifts at sidereal rate as LST
+    // advances. If the pickup loop ran during the dwell wait,
+    // it would re-detect that drift on every iteration and
+    // burn through `PICKUP_MAX_ITERATIONS` just waiting —
+    // potentially leaving a residual of one dwell-worth of
+    // sidereal drift (~30") at the moment tracking re-enables.
+    // Gating pickup behind the dwell means the loop sees a
+    // single accumulated residual once, corrects it, then
+    // hands off to tracking immediately.
+    if started.elapsed() < MIN_SLEW_DWELL {
+        return CompletionDecision::Continue;
+    }
+
+    // Both axes report stopped and the dwell has elapsed. Run
+    // the EQMOD pickup loop: if either residual exceeds 5",
+    // re-enter the goto sequence with a fresh delta computed
+    // for the current LST. Capped at `PICKUP_MAX_ITERATIONS`
+    // to match INDI's `GOTO_ITERATIVE_LIMIT`. On the GTi the
+    // loop converges in 1–2 iterations because the post-stop
+    // residual is bounded by the slew duration × sidereal
+    // rate (~15"/s of RA drift per second of slew).
+    if *pickup_iterations < PICKUP_MAX_ITERATIONS {
+        let (target_ra, target_dec, target_pier_side) = {
+            let s = state.read().await;
+            (s.target_ra_hours, s.target_dec_degrees, s.target_pier_side)
+        };
+        if let (Some(target_ra), Some(target_dec), Some(params)) =
+            (target_ra, target_dec, transport.parameters().await)
+        {
+            // ERFA refuses the host UTC if `eraCal2jd`
+            // rejects the year (below `IYMIN = -4799`). A
+            // leap-second-table-out-of-range clock returns
+            // `Ok` with a warning, not an error — see the
+            // `StarAdvError::Timekeeping` rustdoc — so the
+            // realistic failure here is an absurdly-far-
+            // past clock, not a future-shifted one. Match
+            // the `poll_axes_now` failure pattern: log,
+            // clear `slew_in_progress`, exit the watcher
+            // rather than aborting the tokio task.
+            let lst = match local_sidereal_time_hours(SystemTime::now(), config.site_longitude_deg)
+            {
+                Ok(lst) => lst,
+                Err(e) => {
+                    tracing::warn!("watcher LST computation failed: {e}");
+                    return CompletionDecision::Bail;
+                }
+            };
+            // Flip-aware: `encoder_to_celestial` applies the
+            // post-flip RA/Dec mapping when the Dec encoder is
+            // past the pole. Without it, the residual check
+            // would interpret a successful flip as a 12-hour
+            // RA residual and the pickup loop would try to undo
+            // the flip on its first iteration.
+            let (cur_ra, cur_dec) = encoder_to_celestial(
+                snap.ra.position_ticks,
+                snap.dec.position_ticks,
+                lst,
+                params.cpr_ra,
+                params.cpr_dec,
+                config.site_latitude_deg,
+            );
+            // RA residual is on a 24-hour circle; take the
+            // shorter arc. Convert hours → arc-seconds
+            // (15°/hour × 3600″/°).
+            let ra_circ =
+                ((target_ra - cur_ra).rem_euclid(24.0)).min((cur_ra - target_ra).rem_euclid(24.0));
+            let ra_residual_arcsec = ra_circ * 15.0 * 3600.0;
+            let dec_residual_arcsec = (target_dec - cur_dec).abs() * 3600.0;
+            if ra_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
+                || dec_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
+            {
+                // Re-check the abort / disconnect signals
+                // immediately before issuing any wire
+                // commands. The top-of-loop guard ran one
+                // `:f` round-trip + a few coordinate ops
+                // ago; in that window AbortSlew (which
+                // clears `slew_in_progress` and issues :L)
+                // or set_connected(false) (which closes the
+                // transport) may have raced ahead. Without
+                // this second guard the pickup loop would
+                // restart motion after the user aborted.
+                if watcher_should_abort(&state, &transport).await {
+                    return CompletionDecision::Bail;
+                }
+                // Pre-compensate the RA target for the LST drift
+                // that will accumulate before the next pickup
+                // iteration re-checks the residual. Without it
+                // pickup chases a moving target and the residual
+                // floor matches per-iteration sidereal drift
+                // (~6″ on USB, ~14″ on UDP). See
+                // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
+                // §"Experiment B".
+                //
+                // Adaptive: use the actually-observed time delta
+                // between consecutive pickup decisions; this
+                // self-tunes for the transport's wire latency
+                // (USB ≈ 400 ms/iter, UDP ≈ 950 ms/iter).
+                // First iteration has no prior data → fall back
+                // to `polling_interval × 2` (the USB-tuned heuristic).
+                let now = std::time::Instant::now();
+                let projection = match *last_pickup_at {
+                    Some(t) => now.duration_since(t),
+                    None => polling_interval * 2,
+                };
+                *last_pickup_at = Some(now);
+                // Flip-aware target-encoder computation. With a
+                // pre-flip target side, reuse `pickup_target_ra_ticks`
+                // for the same LST pre-compensation that pre-Phase-6
+                // builds relied on. With a post-flip target side,
+                // compute the projected target via
+                // `target_encoder_flipped` so the pickup re-slew
+                // lands on the flipped encoder (past-the-pole Dec
+                // and the mirror-band RA mech_HA) rather than
+                // undoing the flip back to the pre-flip side.
+                let pre_flip_side = pre_flip_side_for_latitude(config.site_latitude_deg);
+                let target_is_flipped = target_pier_side
+                    .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
+                    .is_some();
+                let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
+                    let lst_proj = lst + projection.as_secs_f64() / 3600.0;
+                    target_encoder_flipped(
+                        target_ra,
+                        target_dec,
+                        lst_proj,
+                        params.cpr_ra,
+                        params.cpr_dec,
+                    )
+                } else {
+                    let new_ra = pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
+                    let new_dec = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                    (new_ra, new_dec)
+                };
+                // Fold the deltas to canonical so the pickup
+                // re-slew takes the shortest path even if the
+                // current encoder snapshot landed outside
+                // `[−cpr/2, +cpr/2)` after a through-wrap
+                // flip — see [`fold_to_canonical_band`].
+                let ra_delta =
+                    fold_to_canonical_band(new_ra_ticks - snap.ra.position_ticks, params.cpr_ra);
+                let dec_delta =
+                    fold_to_canonical_band(new_dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+                *pickup_iterations += 1;
+                debug!(
+                    iteration = *pickup_iterations,
+                    ra_residual_arcsec,
+                    dec_residual_arcsec,
+                    projection_ms = projection.as_millis() as u64,
+                    ra_delta_ticks = ra_delta,
+                    "slew pickup iteration"
+                );
+                // The pickup re-slew goes through the same
+                // wire sequence as the original goto. `:L` +
+                // poll keeps the motor-not-stopped contract
+                // intact even if a previous send failed
+                // mid-sequence.
+                pickup_reslew_axis(&transport, Axis::Ra, ra_delta).await;
+                pickup_reslew_axis(&transport, Axis::Dec, dec_delta).await;
+                return CompletionDecision::Continue;
+            }
+        }
+    }
+
+    // Slew completed cleanly. Re-enable tracking if the user had
+    // it on before the slew, then hand off to the helper's settle.
+    // [`enable_sidereal_tracking_ra`] short-circuits on the first
+    // failing send, so `tracking_requested = true` flips only when
+    // all three wire commands succeed — otherwise `Tracking()`
+    // would lie about the wire state. A single warn covers the
+    // failure path (the failing-send error includes which command
+    // failed).
+    //
+    // Re-check abort / disconnect before issuing the tracking
+    // wire sequence — same race-window argument as the pickup
+    // loop's pre-wire guard. AbortSlew clearing `slew_in_progress`
+    // between the top-of-loop check and now must skip the
+    // tracking restart, or the user-visible state would say
+    // "aborted" while the wire is back to tracking.
+    if watcher_should_abort(&state, &transport).await {
+        return CompletionDecision::Bail;
+    }
+    if tracking_was_on {
+        if let Some(params) = transport.parameters().await {
+            match enable_sidereal_tracking_ra(&transport, &params).await {
+                Ok(()) => {
+                    state.write().await.tracking_requested = true;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "post-slew tracking restart failed; tracking not re-enabled: {e}"
+                    );
+                }
+            }
+        }
+    }
+    CompletionDecision::Complete
+}
+
 /// Spawn the slew-completion watcher.
 ///
-/// Polls the snapshot every `polling_interval`. When both axes report
-/// `running == false` (or the slew was aborted externally — in which
-/// case `slew_in_progress` is already cleared and the watcher exits
-/// immediately), runs the EQMOD-style iterative pickup loop to push
-/// any RA/Dec residual under [`PICKUP_TOLERANCE_ARCSEC`], optionally
-/// re-issues sidereal tracking on the RA axis (matching the design
-/// doc's "if Tracking was on" branch), waits `settle`, then clears
-/// `slew_in_progress`.
+/// Polls the snapshot every `polling_interval` via
+/// [`run_completion_watcher`]. When both axes report
+/// `running == false` (or the slew was aborted externally — in
+/// which case `slew_in_progress` is already cleared and the watcher
+/// exits immediately), runs the EQMOD-style iterative pickup loop
+/// to push any RA/Dec residual under [`PICKUP_TOLERANCE_ARCSEC`],
+/// optionally re-issues sidereal tracking on the RA axis (matching
+/// the design doc's "if Tracking was on" branch), waits `settle`,
+/// then clears `slew_in_progress`.
 ///
 /// `tracking_was_on` is captured at slew-issue time — the live
 /// `tracking_requested` flag is cleared by `slew_to_coordinates_async`
@@ -206,18 +617,6 @@ pub(super) fn spawn_slew_completion_watcher(
 ) {
     let started = std::time::Instant::now();
     tokio::spawn(async move {
-        // Pause the background polling task for the duration of the
-        // slew. With polling paused the watcher owns the wire: pickup
-        // commands fire without contending with `:j` / `:f` polls for
-        // `command_lock`, and the watcher's own `poll_axes_now` reads
-        // give us mount state within one wire round-trip of any
-        // change — vs up to `polling_interval` of snapshot staleness
-        // under the always-on polling model.
-        //
-        // `_poll_guard` is held by value so the polling task resumes
-        // automatically on every exit path (early-return for abort,
-        // disconnect, blocked-axis, panic, or normal completion).
-        let _poll_guard = transport.pause_background_polling();
         let mut pickup_iterations: u32 = 0;
         // Adaptive pickup-target projection: track the instant of each
         // prior pickup re-slew so the next iteration can project the
@@ -231,305 +630,58 @@ pub(super) fn spawn_slew_completion_watcher(
         // prior iteration is available makes the projection self-tune
         // per transport.
         let mut last_pickup_at: Option<std::time::Instant> = None;
-        loop {
-            tokio::time::sleep(polling_interval).await;
-
-            // External abort / disconnect path: AbortSlew clears
-            // `slew_in_progress` before issuing :L; set_connected(false)
-            // also clears it. Either way, bail before overwriting
-            // user-visible state.
-            if !state.read().await.slew_in_progress {
-                return;
-            }
-            // Belt-and-braces: if the transport became unavailable
-            // (mid-disconnect, handshake-failure rollback, ...), exit
-            // even if the flag-clear hasn't happened yet. This stops
-            // the watcher holding `Arc<TransportManager>` alive past
-            // its useful life.
-            if !transport.is_available() {
-                state.write().await.slew_in_progress = false;
-                return;
-            }
-
-            // Direct poll instead of reading the (now-paused) background
-            // snapshot. [`watcher_poll_with_retry`] tolerates a handful
-            // of transient transport errors so a single USB-CDC glitch
-            // doesn't take the watcher offline mid-slew; on retry
-            // exhaustion it also issues a best-effort `:L` on both
-            // axes so the motor isn't left commutating with no
-            // observer.
-            let snap = match watcher_poll_with_retry(&transport, "slew_watcher").await {
-                Ok(s) => s,
-                Err(_) => {
-                    state.write().await.slew_in_progress = false;
-                    return;
-                }
-            };
-            // Sky-Watcher spec §5 reports `Blocked` in the `:f`
-            // status when the motor is stepping but the encoder
-            // isn't advancing — typically the axis is against a
-            // hard stop. Issue `:L` on both axes to halt the
-            // runaway and bail out of the slew rather than letting
-            // the watcher poll-loop continue while the gearbox
-            // strains.
-            if snap.ra.blocked || snap.dec.blocked {
-                tracing::warn!(
-                    ra_blocked = snap.ra.blocked,
-                    dec_blocked = snap.dec.blocked,
-                    "axis reports Blocked — aborting slew via :L"
-                );
-                let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
-                let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
-                state.write().await.slew_in_progress = false;
-                return;
-            }
-            let still_moving = snap.ra.running || snap.dec.running;
-            if still_moving {
-                continue;
-            }
-
-            // Enforce a minimum slew dwell so external observers reliably
-            // catch `Slewing == true`. ConformU starts a slew via HTTP,
-            // then reads `Slewing` over a second HTTP call; the round-
-            // trip latency can be larger than the mock's full slew
-            // duration on a fast machine (the mock advances 100K
-            // ticks/poll, so a small slew completes in 1-2 polls). The
-            // de-facto Alpaca client poll cadence is on the order of
-            // 100 ms; two full seconds of guaranteed dwell is a safe
-            // floor for any reasonable client without meaningfully
-            // slowing real-mount operation (real slews take seconds).
-            //
-            // The dwell *must* gate the pickup loop, not run after it.
-            // The encoder is static while the watcher is observing
-            // (tracking is off until the post-slew re-enable below),
-            // so the apparent RA drifts at sidereal rate as LST
-            // advances. If the pickup loop ran during the dwell wait,
-            // it would re-detect that drift on every iteration and
-            // burn through `PICKUP_MAX_ITERATIONS` just waiting —
-            // potentially leaving a residual of one dwell-worth of
-            // sidereal drift (~30") at the moment tracking re-enables.
-            // Gating pickup behind the dwell means the loop sees a
-            // single accumulated residual once, corrects it, then
-            // hands off to tracking immediately.
-            if started.elapsed() < MIN_SLEW_DWELL {
-                continue;
-            }
-
-            // Both axes report stopped and the dwell has elapsed. Run
-            // the EQMOD pickup loop: if either residual exceeds 5",
-            // re-enter the goto sequence with a fresh delta computed
-            // for the current LST. Capped at `PICKUP_MAX_ITERATIONS`
-            // to match INDI's `GOTO_ITERATIVE_LIMIT`. On the GTi the
-            // loop converges in 1–2 iterations because the post-stop
-            // residual is bounded by the slew duration × sidereal
-            // rate (~15"/s of RA drift per second of slew).
-            if pickup_iterations < PICKUP_MAX_ITERATIONS {
-                let (target_ra, target_dec, target_pier_side) = {
-                    let s = state.read().await;
-                    (s.target_ra_hours, s.target_dec_degrees, s.target_pier_side)
-                };
-                if let (Some(target_ra), Some(target_dec), Some(params)) =
-                    (target_ra, target_dec, transport.parameters().await)
-                {
-                    // ERFA refuses the host UTC if `eraCal2jd`
-                    // rejects the year (below `IYMIN = -4799`). A
-                    // leap-second-table-out-of-range clock returns
-                    // `Ok` with a warning, not an error — see the
-                    // `StarAdvError::Timekeeping` rustdoc — so the
-                    // realistic failure here is an absurdly-far-
-                    // past clock, not a future-shifted one. Match
-                    // the `poll_axes_now` failure pattern: log,
-                    // clear `slew_in_progress`, exit the watcher
-                    // rather than aborting the tokio task.
-                    let lst = match local_sidereal_time_hours(
-                        SystemTime::now(),
-                        config.site_longitude_deg,
-                    ) {
-                        Ok(lst) => lst,
-                        Err(e) => {
-                            tracing::warn!("watcher LST computation failed: {e}");
-                            state.write().await.slew_in_progress = false;
-                            return;
-                        }
-                    };
-                    // Flip-aware: `encoder_to_celestial` applies the
-                    // post-flip RA/Dec mapping when the Dec encoder is
-                    // past the pole. Without it, the residual check
-                    // would interpret a successful flip as a 12-hour
-                    // RA residual and the pickup loop would try to undo
-                    // the flip on its first iteration.
-                    let (cur_ra, cur_dec) = encoder_to_celestial(
-                        snap.ra.position_ticks,
-                        snap.dec.position_ticks,
-                        lst,
-                        params.cpr_ra,
-                        params.cpr_dec,
-                        config.site_latitude_deg,
-                    );
-                    // RA residual is on a 24-hour circle; take the
-                    // shorter arc. Convert hours → arc-seconds
-                    // (15°/hour × 3600″/°).
-                    let ra_circ = ((target_ra - cur_ra).rem_euclid(24.0))
-                        .min((cur_ra - target_ra).rem_euclid(24.0));
-                    let ra_residual_arcsec = ra_circ * 15.0 * 3600.0;
-                    let dec_residual_arcsec = (target_dec - cur_dec).abs() * 3600.0;
-                    if ra_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
-                        || dec_residual_arcsec > PICKUP_TOLERANCE_ARCSEC
-                    {
-                        // Re-check the abort / disconnect signals
-                        // immediately before issuing any wire
-                        // commands. The top-of-loop guard ran one
-                        // `:f` round-trip + a few coordinate ops
-                        // ago; in that window AbortSlew (which
-                        // clears `slew_in_progress` and issues :L)
-                        // or set_connected(false) (which closes the
-                        // transport) may have raced ahead. Without
-                        // this second guard the pickup loop would
-                        // restart motion after the user aborted.
-                        if watcher_should_abort(&state, &transport).await {
-                            state.write().await.slew_in_progress = false;
-                            return;
-                        }
-                        // Pre-compensate the RA target for the LST drift
-                        // that will accumulate before the next pickup
-                        // iteration re-checks the residual. Without it
-                        // pickup chases a moving target and the residual
-                        // floor matches per-iteration sidereal drift
-                        // (~6″ on USB, ~14″ on UDP). See
-                        // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
-                        // §"Experiment B".
-                        //
-                        // Adaptive: use the actually-observed time delta
-                        // between consecutive pickup decisions; this
-                        // self-tunes for the transport's wire latency
-                        // (USB ≈ 400 ms/iter, UDP ≈ 950 ms/iter).
-                        // First iteration has no prior data → fall back
-                        // to `polling_interval × 2` (the USB-tuned heuristic).
-                        let now = std::time::Instant::now();
-                        let projection = match last_pickup_at {
-                            Some(t) => now.duration_since(t),
-                            None => polling_interval * 2,
-                        };
-                        last_pickup_at = Some(now);
-                        // Flip-aware target-encoder computation. With a
-                        // pre-flip target side, reuse `pickup_target_ra_ticks`
-                        // for the same LST pre-compensation that pre-Phase-6
-                        // builds relied on. With a post-flip target side,
-                        // compute the projected target via
-                        // `target_encoder_flipped` so the pickup re-slew
-                        // lands on the flipped encoder (past-the-pole Dec
-                        // and the mirror-band RA mech_HA) rather than
-                        // undoing the flip back to the pre-flip side.
-                        let pre_flip_side = pre_flip_side_for_latitude(config.site_latitude_deg);
-                        let target_is_flipped = target_pier_side
-                            .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
-                            .is_some();
-                        let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
-                            let lst_proj = lst + projection.as_secs_f64() / 3600.0;
-                            target_encoder_flipped(
-                                target_ra,
-                                target_dec,
-                                lst_proj,
-                                params.cpr_ra,
-                                params.cpr_dec,
-                            )
-                        } else {
-                            let new_ra =
-                                pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
-                            let new_dec = dec_degrees_to_ticks(target_dec, params.cpr_dec);
-                            (new_ra, new_dec)
-                        };
-                        // Fold the deltas to canonical so the pickup
-                        // re-slew takes the shortest path even if the
-                        // current encoder snapshot landed outside
-                        // `[−cpr/2, +cpr/2)` after a through-wrap
-                        // flip — see [`fold_to_canonical_band`].
-                        let ra_delta = fold_to_canonical_band(
-                            new_ra_ticks - snap.ra.position_ticks,
-                            params.cpr_ra,
-                        );
-                        let dec_delta = fold_to_canonical_band(
-                            new_dec_ticks - snap.dec.position_ticks,
-                            params.cpr_dec,
-                        );
-                        pickup_iterations += 1;
-                        debug!(
-                            iteration = pickup_iterations,
-                            ra_residual_arcsec,
-                            dec_residual_arcsec,
-                            projection_ms = projection.as_millis() as u64,
-                            ra_delta_ticks = ra_delta,
-                            "slew pickup iteration"
-                        );
-                        // The pickup re-slew goes through the same
-                        // wire sequence as the original goto. `:L` +
-                        // poll keeps the motor-not-stopped contract
-                        // intact even if a previous send failed
-                        // mid-sequence.
-                        pickup_reslew_axis(&transport, Axis::Ra, ra_delta).await;
-                        pickup_reslew_axis(&transport, Axis::Dec, dec_delta).await;
-                        continue;
-                    }
-                }
-            }
-
-            // Slew completed cleanly. Re-enable tracking if the user had
-            // it on before the slew, then apply the settle delay. The
-            // helper short-circuits on the first failing send, so
-            // `tracking_requested = true` flips only when all three wire
-            // commands succeed — otherwise Tracking() would lie about
-            // the wire state. A single warn covers the failure path
-            // (the failing-send error includes which command failed).
-            //
-            // Re-check abort / disconnect before issuing the tracking
-            // wire sequence — same race-window argument as the pickup
-            // loop's pre-wire guard. AbortSlew clearing `slew_in_progress`
-            // between the top-of-loop check and now must skip the
-            // tracking restart, or the user-visible state would say
-            // "aborted" while the wire is back to tracking.
-            if watcher_should_abort(&state, &transport).await {
-                state.write().await.slew_in_progress = false;
-                return;
-            }
-            if tracking_was_on {
-                if let Some(params) = transport.parameters().await {
-                    match enable_sidereal_tracking_ra(&transport, &params).await {
-                        Ok(()) => {
-                            state.write().await.tracking_requested = true;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "post-slew tracking restart failed; tracking not re-enabled: {e}"
-                            );
-                        }
-                    }
-                }
-            }
-            // Resume background polling *now*, before the settle delay.
-            // The pickup loop is done; from here on the watcher is just
-            // waiting for the firmware tracking to engage (~160 ms) and
-            // applying the settle margin. While we wait, the background
-            // polling task should refresh the snapshot at its regular
-            // cadence so an Alpaca client reading `RightAscension` right
-            // after `Slewing` flips to `false` sees a snapshot that
-            // reflects the encoder at its now-actively-tracking
-            // position, not the watcher's last `poll_axes_now` from
-            // before tracking restart. Without this, the snap is stale
-            // by the duration `(tracking_engagement + settle)` and the
-            // reported RA lags by that × sidereal rate (~5-10″).
-            drop(_poll_guard);
-            tokio::time::sleep(settle).await;
-            state.write().await.slew_in_progress = false;
-            return;
-        }
+        let helper_state = Arc::clone(&state);
+        let helper_transport = Arc::clone(&transport);
+        run_completion_watcher(
+            helper_state,
+            helper_transport,
+            polling_interval,
+            settle,
+            "slew_watcher",
+            // `async move` so the closure owns `state`, `transport`,
+            // `config`, `pickup_iterations` and `last_pickup_at`
+            // outright. The step takes its Arcs/config by value
+            // (cheap clones) so the returned future doesn't borrow
+            // from the closure's captures — the spawn future's
+            // `Send` HRTB would otherwise fail on an `&Arc<…>`
+            // borrow into the future.
+            async move |snap| {
+                slew_completion_step(
+                    Arc::clone(&state),
+                    Arc::clone(&transport),
+                    config.clone(),
+                    polling_interval,
+                    started,
+                    tracking_was_on,
+                    &mut pickup_iterations,
+                    &mut last_pickup_at,
+                    snap,
+                )
+                .await
+            },
+            // Slew has no extra state to mutate at finalize time —
+            // the helper clears `slew_in_progress` for us, and any
+            // tracking restart was already done by
+            // [`slew_completion_step`] under the polling-pause guard.
+            |_s| {},
+        )
+        .await;
     });
 }
 
 /// Spawn the park-completion watcher.
 ///
-/// Same shape as [`spawn_slew_completion_watcher`] but the post-motion
-/// branch sets `at_park = true` instead of re-issuing tracking. Park
+/// Same outer loop as [`spawn_slew_completion_watcher`] (provided
+/// by [`run_completion_watcher`]), but the per-axes-stopped step
+/// has no extra work to do, and the finalizer sets `at_park = true`
+/// in the same write lock that clears `slew_in_progress`. Park
 /// always leaves tracking off per the ASCOM spec.
+///
+/// A blocked-axis abort (handled inside [`run_completion_watcher`])
+/// does *not* set `at_park = true`: the OTA isn't at the encoder-0
+/// home pose, so the next `Unpark + slew` would compute a wrong
+/// delta. The helper enforces this by returning before the
+/// finalizer runs.
 pub(super) fn spawn_park_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     transport: Arc<TransportManager>,
@@ -537,67 +689,18 @@ pub(super) fn spawn_park_completion_watcher(
     settle: Duration,
 ) {
     tokio::spawn(async move {
-        // Same wire-ownership trick as the slew watcher: pause
-        // background polling and drive snapshot freshness from
-        // `poll_axes_now`. Park doesn't have a pickup loop so the
-        // win here is smaller, but the consistency is worth it
-        // and the background-polling pause also frees up the wire
-        // for the `:K` + `:L` abort sequence on a blocked-axis
-        // mechanical stop.
-        let _poll_guard = transport.pause_background_polling();
-        loop {
-            tokio::time::sleep(polling_interval).await;
-            // External abort / disconnect path: clears slew_in_progress.
-            if !state.read().await.slew_in_progress {
-                return;
-            }
-            // Bail if the transport became unavailable (disconnect race).
-            if !transport.is_available() {
-                state.write().await.slew_in_progress = false;
-                return;
-            }
-            // See [`watcher_poll_with_retry`] in the slew watcher above:
-            // tolerates transient transport errors, debug-logs every
-            // successful snapshot for post-mortems, and issues a
-            // best-effort `:L` on retry exhaustion so the motor halts
-            // even when the wire has gone away.
-            let snap = match watcher_poll_with_retry(&transport, "park_watcher").await {
-                Ok(s) => s,
-                Err(_) => {
-                    state.write().await.slew_in_progress = false;
-                    return;
-                }
-            };
-            // Park can also hit a mechanical stop — same `:L` + bail
-            // treatment as in the slew watcher. Do *not* set
-            // `at_park = true` on a blocked stop: the OTA isn't at
-            // the encoder-0 home pose, so the next `Unpark + slew`
-            // would compute a wrong delta.
-            if snap.ra.blocked || snap.dec.blocked {
-                tracing::warn!(
-                    ra_blocked = snap.ra.blocked,
-                    dec_blocked = snap.dec.blocked,
-                    "axis reports Blocked during park — aborting via :L"
-                );
-                let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
-                let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
-                state.write().await.slew_in_progress = false;
-                return;
-            }
-            if snap.ra.running || snap.dec.running {
-                continue;
-            }
-            // Resume background polling before the settle so an
-            // Alpaca client reading `AtPark`-related position data
-            // right after `Slewing` clears sees fresh snapshot data.
-            // See the matching note in `spawn_slew_completion_watcher`.
-            drop(_poll_guard);
-            tokio::time::sleep(settle).await;
-            let mut s = state.write().await;
-            s.at_park = true;
-            s.slew_in_progress = false;
-            return;
-        }
+        run_completion_watcher(
+            state,
+            transport,
+            polling_interval,
+            settle,
+            "park_watcher",
+            async |_snap| CompletionDecision::Complete,
+            |s| {
+                s.at_park = true;
+            },
+        )
+        .await;
     });
 }
 
