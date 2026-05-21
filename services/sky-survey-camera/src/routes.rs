@@ -105,10 +105,7 @@ async fn post_position(
                 Ok(v) => v,
                 Err(_) => return StatusCode::BAD_REQUEST.into_response(),
             };
-            let mut guard = state
-                .next_pointing_override
-                .lock()
-                .expect("next_pointing_override poisoned");
+            let mut guard = state.next_pointing_override.lock();
             *guard = Some(validated);
             StatusCode::NO_CONTENT.into_response()
         }

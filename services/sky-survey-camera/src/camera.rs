@@ -2,8 +2,9 @@ use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
@@ -214,13 +215,13 @@ async fn run_exposure(
     }
     match result {
         Ok(outcome) => {
-            *state.last_image.lock().expect("last_image poisoned") = Some(outcome);
-            *state.last_error.lock().expect("last_error poisoned") = None;
+            *state.last_image.lock() = Some(outcome);
+            *state.last_error.lock() = None;
             state.image_ready.store(true, Ordering::Release);
         }
         Err(err) => {
             warn!(error = %err, "exposure failed");
-            *state.last_error.lock().expect("last_error poisoned") = Some(err);
+            *state.last_error.lock() = Some(err);
             // image_ready stays false
         }
     }
@@ -246,7 +247,6 @@ async fn run_exposure_inner(
     let exposure_sleep = state
         .last_exposure_duration
         .lock()
-        .expect("last_exposure_duration poisoned")
         .map(|d| std::cmp::min(d, Duration::from_secs(5)));
     if let Some(d) = exposure_sleep {
         tokio::time::sleep(d).await;
@@ -409,18 +409,10 @@ impl Device for SkySurveyCamera {
                 .exposure_in_flight
                 .store(false, Ordering::Release);
             self.state.image_ready.store(false, Ordering::Release);
-            *self.state.last_image.lock().expect("last_image poisoned") = None;
-            *self.state.last_error.lock().expect("last_error poisoned") = None;
-            *self
-                .state
-                .last_exposure_start
-                .lock()
-                .expect("last_exposure_start poisoned") = None;
-            *self
-                .state
-                .last_exposure_duration
-                .lock()
-                .expect("last_exposure_duration poisoned") = None;
+            *self.state.last_image.lock() = None;
+            *self.state.last_error.lock() = None;
+            *self.state.last_exposure_start.lock() = None;
+            *self.state.last_exposure_duration.lock() = None;
         }
         Ok(())
     }
@@ -601,18 +593,10 @@ impl Camera for SkySurveyCamera {
         }
         // Reset readout state for the new exposure.
         self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock().expect("last_error poisoned") = None;
-        *self.state.last_image.lock().expect("last_image poisoned") = None;
-        *self
-            .state
-            .last_exposure_start
-            .lock()
-            .expect("last_exposure_start poisoned") = Some(SystemTime::now());
-        *self
-            .state
-            .last_exposure_duration
-            .lock()
-            .expect("last_exposure_duration poisoned") = Some(duration);
+        *self.state.last_error.lock() = None;
+        *self.state.last_image.lock() = None;
+        *self.state.last_exposure_start.lock() = Some(SystemTime::now());
+        *self.state.last_exposure_duration.lock() = Some(duration);
 
         // Bump the generation so any *previous* spawned task that
         // races to completion is ignored, and capture the new
@@ -630,11 +614,7 @@ impl Camera for SkySurveyCamera {
         // captured value is threaded into the spawned task as an
         // explicit parameter.
         let override_for_exposure = if light {
-            self.state
-                .next_pointing_override
-                .lock()
-                .expect("next_pointing_override poisoned")
-                .take()
+            self.state.next_pointing_override.lock().take()
         } else {
             None
         };
@@ -664,8 +644,8 @@ impl Camera for SkySurveyCamera {
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel);
         self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock().expect("last_error poisoned") = None;
-        *self.state.last_image.lock().expect("last_image poisoned") = None;
+        *self.state.last_error.lock() = None;
+        *self.state.last_image.lock() = None;
         Ok(())
     }
 
@@ -684,8 +664,8 @@ impl Camera for SkySurveyCamera {
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel);
         self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock().expect("last_error poisoned") = None;
-        *self.state.last_image.lock().expect("last_image poisoned") = None;
+        *self.state.last_error.lock() = None;
+        *self.state.last_image.lock() = None;
         Ok(())
     }
 
@@ -697,7 +677,6 @@ impl Camera for SkySurveyCamera {
         self.state
             .last_exposure_start
             .lock()
-            .expect("last_exposure_start poisoned")
             .ok_or_else(|| ASCOMError::invalid_operation("no exposure has started yet"))
     }
 
@@ -705,25 +684,18 @@ impl Camera for SkySurveyCamera {
         self.state
             .last_exposure_duration
             .lock()
-            .expect("last_exposure_duration poisoned")
             .ok_or_else(|| ASCOMError::invalid_operation("no exposure has started yet"))
     }
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
         // S4-S6: a stored fetch error becomes ASCOM UNSPECIFIED_ERROR.
-        if let Some(msg) = self
-            .state
-            .last_error
-            .lock()
-            .expect("last_error poisoned")
-            .clone()
-        {
+        if let Some(msg) = self.state.last_error.lock().clone() {
             return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
         }
         if !self.state.image_ready.load(Ordering::Acquire) {
             return Err(ASCOMError::invalid_operation("no image is ready"));
         }
-        let guard = self.state.last_image.lock().expect("last_image poisoned");
+        let guard = self.state.last_image.lock();
         let outcome = guard
             .as_ref()
             .expect("image_ready=true but no stored image");
@@ -743,13 +715,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
-        if self
-            .state
-            .last_error
-            .lock()
-            .expect("last_error poisoned")
-            .is_some()
-        {
+        if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
         if self.state.exposure_in_flight.load(Ordering::Acquire) {
@@ -997,8 +963,8 @@ mod tests {
         let cam = fake_camera();
         let when = SystemTime::now();
         let duration = Duration::from_millis(500);
-        *cam.state.last_exposure_start.lock().unwrap() = Some(when);
-        *cam.state.last_exposure_duration.lock().unwrap() = Some(duration);
+        *cam.state.last_exposure_start.lock() = Some(when);
+        *cam.state.last_exposure_duration.lock() = Some(duration);
         let returned_when = cam.last_exposure_start_time().await.unwrap();
         let returned_duration = cam.last_exposure_duration().await.unwrap();
         assert_eq!(returned_when, when);
@@ -1021,7 +987,7 @@ mod tests {
     #[tokio::test]
     async fn image_array_surfaces_stored_error_as_unspecified() {
         let cam = fake_camera();
-        *cam.state.last_error.lock().unwrap() = Some("survey returned status 500".into());
+        *cam.state.last_error.lock() = Some("survey returned status 500".into());
         let err = cam.image_array().await.unwrap_err();
         assert_eq!(err.code, UNSPECIFIED_ERROR);
     }
@@ -1029,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn image_array_returns_stored_image_when_ready() {
         let cam = fake_camera();
-        *cam.state.last_image.lock().unwrap() = Some(ExposureOutcome {
+        *cam.state.last_image.lock() = Some(ExposureOutcome {
             width: 4,
             height: 3,
             data: (0..12).collect(),
@@ -1062,7 +1028,7 @@ mod tests {
         // image_ready stays false because the generation check
         // triggered an early return.
         assert!(!cam.state.image_ready.load(Ordering::Acquire));
-        assert!(cam.state.last_image.lock().unwrap().is_none());
+        assert!(cam.state.last_image.lock().is_none());
         // exposure_in_flight is left untouched on cancellation
         // (Abort/Stop already cleared it from the caller side).
         assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
@@ -1075,7 +1041,7 @@ mod tests {
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Exposing);
         cam.state.exposure_in_flight.store(false, Ordering::Release);
-        *cam.state.last_error.lock().unwrap() = Some("boom".into());
+        *cam.state.last_error.lock() = Some("boom".into());
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Error);
     }
 
@@ -1168,7 +1134,7 @@ mod tests {
         let gen = cam.state.exposure_generation.load(Ordering::Acquire);
         run_exposure(Arc::clone(&cam.state), false, gen, None).await;
         assert!(cam.state.image_ready.load(Ordering::Acquire));
-        let img = cam.state.last_image.lock().unwrap();
+        let img = cam.state.last_image.lock();
         let outcome = img.as_ref().unwrap();
         // Default num_x/num_y match the sensor dimensions.
         assert_eq!(outcome.width, 640);
