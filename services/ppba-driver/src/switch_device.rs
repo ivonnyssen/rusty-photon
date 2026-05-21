@@ -176,27 +176,6 @@ impl PpbaSwitchDevice {
         self.manager.refresh_status(session).await?;
         Ok(())
     }
-
-    fn to_ascom_error(err: PpbaError) -> ASCOMError {
-        match err {
-            PpbaError::NotConnected => {
-                ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, err.to_string())
-            }
-            PpbaError::InvalidSwitchId(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
-            }
-            PpbaError::SwitchNotWritable(_) => {
-                ASCOMError::new(ASCOMErrorCode::NOT_IMPLEMENTED, err.to_string())
-            }
-            PpbaError::AutoDewEnabled(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_OPERATION, err.to_string())
-            }
-            PpbaError::InvalidValue(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
-            }
-            _ => ASCOMError::invalid_operation(err.to_string()),
-        }
-    }
 }
 
 #[async_trait]
@@ -226,24 +205,25 @@ impl Device for PpbaSwitchDevice {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
+                // `?` does SessionError → PpbaError via the manual
+                // .map_err, then PpbaError → ASCOMError via the From
+                // impl in error.rs.
                 let session = self
                     .manager
                     .transport()
                     .acquire()
                     .await
-                    .map_err(|e| Self::to_ascom_error(PpbaError::from(e)))?;
+                    .map_err(PpbaError::from)?;
                 *slot = Some(session);
                 debug!("Switch device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(|e| {
-                        Self::to_ascom_error(PpbaError::from(
-                            rusty_photon_shared_transport::SessionError::<
-                                crate::codec::PpbaCodecError,
-                            >::Transport(e),
-                        ))
-                    })?;
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for PpbaError` handles the
+                    // conversion, and the existing `From<PpbaError> for
+                    // ASCOMError` does the second hop on `?`.
+                    session.close().await.map_err(PpbaError::from)?;
                 }
                 debug!("Switch device disconnected");
             }
@@ -287,10 +267,7 @@ impl Switch for PpbaSwitchDevice {
             let session = guard
                 .as_ref()
                 .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, "not connected"))?;
-            self.manager
-                .refresh_status(session)
-                .await
-                .map_err(Self::to_ascom_error)?;
+            self.manager.refresh_status(session).await?;
             drop(guard);
             let cached = self.manager.get_cached_state().await;
             if let Some(status) = &cached.status {
@@ -304,10 +281,7 @@ impl Switch for PpbaSwitchDevice {
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
 
-        let value = self
-            .get_switch_value_internal(id)
-            .await
-            .map_err(Self::to_ascom_error)?;
+        let value = self.get_switch_value_internal(id).await?;
 
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
@@ -327,9 +301,8 @@ impl Switch for PpbaSwitchDevice {
             info.min_value
         };
 
-        self.set_switch_value_internal(id, value)
-            .await
-            .map_err(Self::to_ascom_error)
+        self.set_switch_value_internal(id, value).await?;
+        Ok(())
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
@@ -356,17 +329,14 @@ impl Switch for PpbaSwitchDevice {
     async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
 
-        self.get_switch_value_internal(id)
-            .await
-            .map_err(Self::to_ascom_error)
+        Ok(self.get_switch_value_internal(id).await?)
     }
 
     async fn set_switch_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
 
-        self.set_switch_value_internal(id, value)
-            .await
-            .map_err(Self::to_ascom_error)
+        self.set_switch_value_internal(id, value).await?;
+        Ok(())
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
@@ -457,7 +427,6 @@ mod tests {
 
     use super::*;
     use crate::config::Config;
-    use crate::error::PpbaError;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
@@ -643,8 +612,8 @@ mod tests {
     #[tokio::test]
     async fn set_connected_acquire_failure_maps_to_invalid_operation() {
         // The factory's open() returns TransportError::Open, which
-        // propagates as PpbaError::ConnectionFailed and falls to the
-        // to_ascom_error catch-all -> INVALID_OPERATION.
+        // propagates as PpbaError::ConnectionFailed and falls to
+        // PpbaError::to_ascom_error's catch-all -> INVALID_OPERATION.
         let device = make_device_with_failing_factory();
         let err = device.set_connected(true).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -657,21 +626,7 @@ mod tests {
         assert!(!device.connected().await.unwrap());
     }
 
-    #[test]
-    fn to_ascom_error_not_connected_maps_to_not_connected() {
-        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::NotConnected);
-        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
-    }
-
-    #[test]
-    fn to_ascom_error_communication_falls_to_invalid_operation() {
-        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::Communication("boom".to_string()));
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    }
-
-    #[test]
-    fn to_ascom_error_connection_failed_falls_to_invalid_operation() {
-        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::ConnectionFailed("nope".to_string()));
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    }
+    // PpbaError → ASCOMError mapping tests moved to error.rs once the
+    // canonical mapping landed there (centralised so both devices share
+    // the same classification).
 }

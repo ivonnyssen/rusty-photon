@@ -1,124 +1,84 @@
-//! Serial port implementation using tokio-serial
+//! Tokio-serial-backed [`TransportFactory`] for the QHY Q-Focuser.
 //!
-//! This module provides concrete implementations of the I/O traits
-//! using tokio-serial for actual hardware communication.
+//! Opens the configured serial port at the configured baud rate and wraps
+//! the resulting stream in a [`SerialFrameTransport`] with `b'}'` as the
+//! frame terminator (Q-Focuser responses are flat JSON objects terminated
+//! by the closing brace; the codec sees the brace as the last byte of
+//! each frame).
 
-use std::io::ErrorKind;
+use std::io;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use rusty_photon_shared_transport::{
+    FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
+};
+use tokio_serial::SerialPortBuilderExt;
 use tracing::debug;
 
-use crate::error::{QhyFocuserError, Result};
-use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
+/// Maximum size of a single Q-Focuser frame.
+///
+/// The longest reply is the temperature/voltage line which fits in about
+/// 60 bytes; 256 bytes gives the device plenty of headroom and bounds a
+/// misbehaving peer that streams without a terminator.
+const MAX_FRAME_SIZE: usize = 256;
 
-/// Serial reader using tokio-serial
-pub struct TokioSerialReader {
-    reader: BufReader<ReadHalf<SerialStream>>,
-    buffer: Vec<u8>,
+/// Real-hardware factory for the Q-Focuser serial transport.
+///
+/// Captures the per-call configuration (port path, baud rate, timeout)
+/// once at service-startup time so [`TransportFactory::open`] can be
+/// retried by [`rusty_photon_shared_transport::SharedTransport`] without
+/// the caller having to thread parameters through.
+#[derive(Debug, Clone)]
+pub struct QhyTransportFactory {
+    port: String,
+    baud_rate: u32,
+    timeout: Duration,
 }
 
-impl TokioSerialReader {
-    /// Create a new serial reader from a read half of a serial stream
-    pub fn new(reader: ReadHalf<SerialStream>) -> Self {
+impl QhyTransportFactory {
+    pub fn new(port: impl Into<String>, baud_rate: u32, timeout: Duration) -> Self {
         Self {
-            reader: BufReader::new(reader),
-            buffer: Vec::new(),
+            port: port.into(),
+            baud_rate,
+            timeout,
         }
     }
 }
 
 #[async_trait]
-impl SerialReader for TokioSerialReader {
-    async fn read_line(&mut self) -> Result<Option<String>> {
-        self.buffer.clear();
-        match self.reader.read_until(b'}', &mut self.buffer).await {
-            Ok(0) => Ok(None),
-            Ok(_) => {
-                let raw = String::from_utf8_lossy(&self.buffer);
-                // Trim any leading junk before the opening `{`
-                let trimmed = match raw.find('{') {
-                    Some(start) => &raw[start..],
-                    None => raw.trim(),
-                };
-                let line = trimmed.to_string();
-                debug!("Serial read: {}", line);
-                Ok(Some(line))
-            }
-            Err(e) if e.kind() == ErrorKind::TimedOut => Err(QhyFocuserError::Timeout(
-                "Serial read timed out".to_string(),
-            )),
-            Err(e) => Err(QhyFocuserError::Io(e)),
-        }
-    }
-}
-
-/// Serial writer using tokio-serial
-pub struct TokioSerialWriter {
-    writer: WriteHalf<SerialStream>,
-}
-
-impl TokioSerialWriter {
-    /// Create a new serial writer from a write half of a serial stream
-    pub fn new(writer: WriteHalf<SerialStream>) -> Self {
-        Self { writer }
-    }
-}
-
-#[async_trait]
-impl SerialWriter for TokioSerialWriter {
-    async fn write_message(&mut self, message: &str) -> Result<()> {
-        debug!("Serial write: {}", message);
-        self.writer
-            .write_all(message.as_bytes())
-            .await
-            .map_err(|e| QhyFocuserError::Communication(format!("Failed to write: {}", e)))?;
-        self.writer
-            .flush()
-            .await
-            .map_err(|e| QhyFocuserError::Communication(format!("Failed to flush: {}", e)))?;
-        Ok(())
-    }
-}
-
-/// Serial port factory using tokio-serial
-#[derive(Default, Clone)]
-pub struct TokioSerialPortFactory;
-
-impl TokioSerialPortFactory {
-    /// Create a new serial port factory
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl SerialPortFactory for TokioSerialPortFactory {
-    async fn open(&self, port: &str, baud_rate: u32, timeout: Duration) -> Result<SerialPair> {
+impl TransportFactory for QhyTransportFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
         debug!(
-            "Opening serial port {} at {} baud with {:?} timeout",
-            port, baud_rate, timeout
+            port = %self.port,
+            baud = self.baud_rate,
+            timeout = ?self.timeout,
+            "opening Q-Focuser serial transport"
         );
 
-        let stream = tokio_serial::new(port, baud_rate)
-            .timeout(timeout)
+        // Note: no `.timeout(self.timeout)` on the tokio-serial builder.
+        // `SerialFrameTransport`'s `with_read_timeout` /
+        // `with_write_timeout` already enforces the per-call deadline via
+        // `tokio::time::timeout`; adding a parallel port-level (termios
+        // `VTIME`) timeout creates two timers set to the same value with
+        // no obvious answer to "which fires first". The shared crate
+        // reclassifies `io::ErrorKind::TimedOut` from the wrapped stream
+        // back to `TransportError::Timeout`, so if a future runtime ever
+        // does need a port-level timeout the classification stays right
+        // — but reasoning is still simpler with a single source.
+        // Pass the `tokio_serial::Error` to `io::Error::other` directly
+        // (not its `.to_string()`) so the original error is preserved as
+        // the `io::Error` source — `TransportError::Open(io::Error)` then
+        // exposes the full cause chain via `Error::source()` traversal in
+        // logs / debug output.
+        let stream = tokio_serial::new(&self.port, self.baud_rate)
             .open_native_async()
-            .map_err(|e| QhyFocuserError::SerialPort(format!("Failed to open {}: {}", port, e)))?;
+            .map_err(|e| TransportError::Open(io::Error::other(e)))?;
 
-        debug!("Serial port {} opened successfully", port);
-
-        let (reader, writer) = tokio::io::split(stream);
-
-        Ok(SerialPair {
-            reader: Box::new(TokioSerialReader::new(reader)),
-            writer: Box::new(TokioSerialWriter::new(writer)),
-        })
-    }
-
-    async fn port_exists(&self, port: &str) -> bool {
-        std::path::Path::new(port).exists()
+        let transport = SerialFrameTransport::new(stream, b'}', MAX_FRAME_SIZE)
+            .with_read_timeout(self.timeout)
+            .with_write_timeout(self.timeout);
+        Ok(Box::new(transport))
     }
 }
 
@@ -127,51 +87,25 @@ impl SerialPortFactory for TokioSerialPortFactory {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_serial_port_factory_new() {
-        let factory = TokioSerialPortFactory::new();
-        let _ = factory;
-    }
-
-    #[test]
-    fn test_serial_port_factory_default() {
-        let factory = TokioSerialPortFactory;
-        let _ = factory;
-    }
-
-    #[tokio::test]
-    async fn test_port_exists_nonexistent() {
-        let factory = TokioSerialPortFactory::new();
-        assert!(!factory.port_exists("/dev/nonexistent_port_12345").await);
-    }
-
-    #[tokio::test]
-    async fn test_port_exists_existing_path() {
-        let factory = TokioSerialPortFactory::new();
-        // Use a path that exists on all platforms
-        let path = std::env::current_exe().unwrap();
-        assert!(factory.port_exists(path.to_str().unwrap()).await);
-    }
-
-    #[test]
-    fn test_serial_port_factory_clone() {
-        let factory = TokioSerialPortFactory::new();
-        let _cloned = factory.clone();
-    }
-
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses unsupported syscall flags under Miri
-    async fn test_open_nonexistent_port() {
-        let factory = TokioSerialPortFactory::new();
-        let result = factory
-            .open("/dev/nonexistent_port_12345", 9600, Duration::from_secs(1))
-            .await;
-        match result {
-            Err(QhyFocuserError::SerialPort(msg)) => {
-                assert!(msg.contains("/dev/nonexistent_port_12345"), "got: {}", msg);
+    async fn factory_open_nonexistent_port_returns_open_error() {
+        use std::error::Error;
+        let factory =
+            QhyTransportFactory::new("/dev/nonexistent_port_12345", 9600, Duration::from_secs(1));
+        match factory.open().await {
+            Err(TransportError::Open(io_err)) => {
+                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
+                // preserves the original `tokio_serial::Error` as the
+                // io::Error's source, so log/debug output traversing
+                // `Error::source()` recovers the underlying cause.
+                assert!(
+                    io_err.source().is_some() || io_err.get_ref().is_some(),
+                    "expected the underlying tokio_serial::Error to be preserved as source"
+                );
             }
-            Err(other) => panic!("Expected SerialPort error, got {:?}", other),
-            Ok(_) => panic!("Expected error opening nonexistent port"),
+            Err(other) => panic!("expected TransportError::Open, got {other:?}"),
+            Ok(_) => panic!("expected error opening nonexistent port"),
         }
     }
 }

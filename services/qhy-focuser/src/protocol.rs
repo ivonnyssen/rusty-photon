@@ -167,49 +167,54 @@ pub fn parse_response(response: &str, expected_cmd_id: u8) -> Result<Value> {
     Ok(value)
 }
 
-/// Parse a version response (cmd_id 1)
-pub fn parse_version_response(response: &str) -> Result<VersionResponse> {
-    let value = parse_response(response, 1)?;
+/// Read the `idx` field off an already-parsed JSON response value.
+pub fn extract_idx(value: &Value) -> Result<u8> {
+    let idx = value
+        .get("idx")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| QhyFocuserError::InvalidResponse("Missing 'idx' field".to_string()))?;
+    if idx > u8::MAX as u64 {
+        return Err(QhyFocuserError::InvalidResponse(format!(
+            "idx {idx} out of range"
+        )));
+    }
+    Ok(idx as u8)
+}
 
+/// Build a [`VersionResponse`] from an already-parsed JSON value.
+pub fn parse_version_value(value: &Value) -> VersionResponse {
     let firmware_version = value
         .get("firmware_version")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
-
     let board_version = value
         .get("board_version")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
-
-    Ok(VersionResponse {
+    VersionResponse {
         firmware_version,
         board_version,
-    })
+    }
 }
 
-/// Parse a temperature response (cmd_id 4)
+/// Build a [`TemperatureResponse`] from an already-parsed JSON value.
 ///
-/// Raw values from the device: temp values divided by 1000, voltage by 10
-pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse> {
-    let value = parse_response(response, 4)?;
-
+/// Raw values from the device: temp values divided by 1000, voltage by 10.
+pub fn parse_temperature_value(value: &Value) -> Result<TemperatureResponse> {
     let outer_temp_raw = value
         .get("o_t")
         .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'o_t' field".to_string()))?;
-
     let chip_temp_raw = value
         .get("c_t")
         .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'c_t' field".to_string()))?;
-
     let voltage_raw = value
         .get("c_r")
         .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'c_r' field".to_string()))?;
-
     Ok(TemperatureResponse {
         outer_temp: outer_temp_raw / 1000.0,
         chip_temp: chip_temp_raw / 1000.0,
@@ -217,16 +222,33 @@ pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse>
     })
 }
 
-/// Parse a position response (cmd_id 5)
-pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
-    let value = parse_response(response, 5)?;
-
+/// Build a [`PositionResponse`] from an already-parsed JSON value.
+pub fn parse_position_value(value: &Value) -> Result<PositionResponse> {
     let position = value
         .get("pos")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'pos' field".to_string()))?;
-
     Ok(PositionResponse { position })
+}
+
+/// Parse a version response (cmd_id 1)
+pub fn parse_version_response(response: &str) -> Result<VersionResponse> {
+    let value = parse_response(response, 1)?;
+    Ok(parse_version_value(&value))
+}
+
+/// Parse a temperature response (cmd_id 4)
+///
+/// Raw values from the device: temp values divided by 1000, voltage by 10
+pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse> {
+    let value = parse_response(response, 4)?;
+    parse_temperature_value(&value)
+}
+
+/// Parse a position response (cmd_id 5)
+pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
+    let value = parse_response(response, 5)?;
+    parse_position_value(&value)
 }
 
 #[cfg(test)]

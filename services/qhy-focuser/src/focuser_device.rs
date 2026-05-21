@@ -1,18 +1,26 @@
-//! QHY Q-Focuser device implementation
+//! QHY Q-Focuser device implementation.
 //!
-//! Implements the ASCOM Alpaca Device and Focuser traits for the QHY Q-Focuser.
+//! Implements the ASCOM Alpaca `Device` + `Focuser` traits. Connection
+//! state is the device's `Session<QhyCodec>` slot — when it's `Some`,
+//! we hold a live handle to the shared transport; when it's `None`,
+//! we don't. The "requested" bool that previously diverged from the
+//! transport's refcount is gone by construction (closes #250 for
+//! qhy-focuser structurally and removes the rollback bookkeeping from
+//! #258 since the shared-transport core owns it).
 
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::codec::QhyCodec;
 use crate::config::FocuserConfig;
 use crate::error::QhyFocuserError;
-use crate::serial_manager::SerialManager;
+use crate::manager::FocuserManager;
 
 /// Guard macro that returns NOT_CONNECTED if the device is not connected.
 macro_rules! ensure_connected {
@@ -24,28 +32,25 @@ macro_rules! ensure_connected {
     };
 }
 
-/// QHY Q-Focuser device for ASCOM Alpaca
+/// QHY Q-Focuser device for ASCOM Alpaca.
 #[derive(derive_more::Debug)]
 pub struct QhyFocuserDevice {
     config: FocuserConfig,
-    requested_connection: Arc<RwLock<bool>>,
+    /// `Some` between successful connect and explicit disconnect. The
+    /// session existing is the truth — no second-source bool to desync.
     #[debug(skip)]
-    serial_manager: Arc<SerialManager>,
+    session: Arc<RwLock<Option<Session<QhyCodec>>>>,
+    #[debug(skip)]
+    manager: Arc<FocuserManager>,
 }
 
 impl QhyFocuserDevice {
-    /// Create a new QHY Q-Focuser device
-    pub fn new(config: FocuserConfig, serial_manager: Arc<SerialManager>) -> Self {
+    pub fn new(config: FocuserConfig, manager: Arc<FocuserManager>) -> Self {
         Self {
             config,
-            requested_connection: Arc::new(RwLock::new(false)),
-            serial_manager,
+            session: Arc::new(RwLock::new(None)),
+            manager,
         }
-    }
-
-    /// Convert internal error to ASCOM error
-    fn to_ascom_error(err: QhyFocuserError) -> ASCOMError {
-        err.to_ascom_error()
     }
 }
 
@@ -64,38 +69,43 @@ impl Device for QhyFocuserDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        let requested = *self.requested_connection.read().await;
-        let serial_ok = self.serial_manager.is_available();
-        Ok(requested && serial_ok)
+        Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Hold the write lock across the whole check-and-modify so two
-        // concurrent `Connected=true` requests for this device don't both
-        // observe `requested_connection == false`, both call
-        // `SerialManager::connect` (incrementing the shared refcount twice),
-        // and then both set the single per-device flag — see issue #250 and
-        // the matching fix in PR #241 (pa-falcon-rotator commit 8cd6e16).
-        let mut requested = self.requested_connection.write().await;
-        let serial_ok = self.serial_manager.is_available();
-        let already = *requested && serial_ok;
-        if already == connected {
-            return Ok(());
-        }
-        match connected {
-            true => {
-                self.serial_manager
-                    .connect()
+        // The write lock spans the whole check-and-modify so two concurrent
+        // `Connected=true` requests can't both observe `None` and both call
+        // `acquire()` (issue #250). With the session slot replacing the old
+        // `requested_connection` bool, the flag and the resource are the
+        // same value — there is no second source to desync.
+        let mut slot = self.session.write().await;
+        match (connected, slot.is_some()) {
+            (true, false) => {
+                // `?` does SessionError → QhyFocuserError via the manual
+                // .map_err (the SessionError generic carries QhyCodecError),
+                // then QhyFocuserError → ASCOMError via the From impl in
+                // error.rs.
+                let session = self
+                    .manager
+                    .transport()
+                    .acquire()
                     .await
-                    .map_err(Self::to_ascom_error)?;
-                *requested = true;
+                    .map_err(QhyFocuserError::from)?;
+                *slot = Some(session);
                 debug!("Focuser device connected");
             }
-            false => {
-                *requested = false;
-                self.serial_manager.disconnect().await;
+            (false, true) => {
+                if let Some(session) = slot.take() {
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for QhyFocuserError` handles
+                    // the conversion, and the existing
+                    // `From<QhyFocuserError> for ASCOMError` does the
+                    // second hop on `?`.
+                    session.close().await.map_err(QhyFocuserError::from)?;
+                }
                 debug!("Focuser device disconnected");
             }
+            _ => {}
         }
         Ok(())
     }
@@ -118,18 +128,16 @@ impl Focuser for QhyFocuserDevice {
     async fn is_moving(&self) -> ASCOMResult<bool> {
         ensure_connected!(self);
 
-        // Actively refresh position to detect move completion
-        // rather than relying solely on background polling
-        let state = self.serial_manager.get_cached_state().await;
-        if state.is_moving {
-            self.serial_manager
-                .refresh_position()
-                .await
-                .map_err(Self::to_ascom_error)?;
+        // Actively refresh position so move-completion is observable
+        // without waiting up to one polling interval. Mirrors the legacy
+        // is_moving path.
+        let cached = self.manager.get_cached_state().await;
+        if cached.is_moving {
+            let guard = self.session.read().await;
+            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+            self.manager.refresh_position(session).await?;
         }
-
-        let state = self.serial_manager.get_cached_state().await;
-        Ok(state.is_moving)
+        Ok(self.manager.get_cached_state().await.is_moving)
     }
 
     async fn max_increment(&self) -> ASCOMResult<u32> {
@@ -142,7 +150,7 @@ impl Focuser for QhyFocuserDevice {
 
     async fn position(&self) -> ASCOMResult<i32> {
         ensure_connected!(self);
-        let state = self.serial_manager.get_cached_state().await;
+        let state = self.manager.get_cached_state().await;
         let position = state.position.ok_or_else(|| {
             ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -170,7 +178,7 @@ impl Focuser for QhyFocuserDevice {
 
     async fn temperature(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        let state = self.serial_manager.get_cached_state().await;
+        let state = self.manager.get_cached_state().await;
         state.outer_temp.ok_or_else(|| {
             ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -181,16 +189,15 @@ impl Focuser for QhyFocuserDevice {
 
     async fn halt(&self) -> ASCOMResult<()> {
         ensure_connected!(self);
-        self.serial_manager
-            .abort()
-            .await
-            .map_err(Self::to_ascom_error)
+        let guard = self.session.read().await;
+        let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+        self.manager.abort(session).await?;
+        Ok(())
     }
 
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
         ensure_connected!(self);
 
-        // Validate range
         if position < 0 || position > self.config.max_step as i32 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
@@ -201,9 +208,9 @@ impl Focuser for QhyFocuserDevice {
             ));
         }
 
-        self.serial_manager
-            .move_absolute(position as i64)
-            .await
-            .map_err(Self::to_ascom_error)
+        let guard = self.session.read().await;
+        let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+        self.manager.move_absolute(session, position as i64).await?;
+        Ok(())
     }
 }
