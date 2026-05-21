@@ -207,6 +207,17 @@ mod tests {
         assert_eq!(ascom_err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 
+    #[test]
+    fn from_qhy_focuser_error_forwards_to_to_ascom_error() {
+        // `?` and `Into::into` both route through this `From` impl. The
+        // device-layer call sites use `?` after a `.map_err(QhyFocuserError
+        // ::from)`, but those paths fire only on the error branch — which
+        // none of the happy-path BDD scenarios or manager tests reach. An
+        // explicit `.into()` test keeps the impl covered unconditionally.
+        let ascom: ASCOMError = QhyFocuserError::NotConnected.into();
+        assert_eq!(ascom.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
     // ============================================================================
     // From<TransportError> for QhyFocuserError — the device-layer disconnect
     // path relies on this to map Session::close()'s TransportError directly

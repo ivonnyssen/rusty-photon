@@ -379,6 +379,19 @@ mod tests {
         assert!(!manager.is_available());
     }
 
+    #[test]
+    fn session_err_to_warn_logs_without_panicking() {
+        // `session_err_to_warn` is only invoked from the poll loop's Err
+        // arms — which never fire in tests because the mock factory always
+        // succeeds. The function emits a `warn!` and returns nothing
+        // observable, so a direct call is the simplest way to keep the
+        // log-only helper covered.
+        session_err_to_warn(
+            "GetPosition",
+            SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
+        );
+    }
+
     // ========================================================================
     // move_absolute cache rollback on transport failure
     //
