@@ -166,22 +166,19 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeImageStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
-
-        let stats = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.stats_via_document(doc_id).await {
+        let stats = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.stats_via_document(doc_id).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.stats_via_path(path).await {
+            },
+            (None, Some(path)) => match self.stats_via_path(path).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
@@ -223,11 +220,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureBasicParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -246,16 +238,19 @@ impl McpHandler {
             max_area,
         };
 
-        let result = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.measure_via_document(doc_id, &resolved).await {
+        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.measure_via_document(doc_id, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.measure_via_path(path, &resolved).await {
+            },
+            (None, Some(path)) => match self.measure_via_path(path, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
@@ -285,11 +280,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<EstimateBackgroundParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
         if !params.k.is_finite() || params.k <= 0.0 {
             return Ok(tool_error!("invalid parameter: k must be > 0"));
         }
@@ -301,16 +291,19 @@ impl McpHandler {
             max_iters: params.max_iters as usize,
         };
 
-        let outcome = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.estimate_via_document(doc_id, &resolved).await {
+        let outcome = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.estimate_via_document(doc_id, &resolved).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.estimate_via_path(path, &resolved).await {
+            },
+            (None, Some(path)) => match self.estimate_via_path(path, &resolved).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
@@ -343,11 +336,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -366,16 +354,19 @@ impl McpHandler {
             max_area,
         };
 
-        let outcome = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.detect_via_document(doc_id, &resolved).await {
+        let outcome = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.detect_via_document(doc_id, &resolved).await {
                 Ok(o) => o,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.detect_via_path(path, &resolved).await {
+            },
+            (None, Some(path)) => match self.detect_via_path(path, &resolved).await {
                 Ok(o) => o,
                 Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
@@ -417,11 +408,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -446,16 +432,19 @@ impl McpHandler {
             stamp_half_size: params.stamp_half_size,
         };
 
-        let result = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.measure_stars_via_document(doc_id, &resolved).await {
+        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.measure_stars_via_document(doc_id, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.measure_stars_via_path(path, &resolved).await {
+            },
+            (None, Some(path)) => match self.measure_stars_via_path(path, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
@@ -483,11 +472,6 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeSnrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -506,16 +490,19 @@ impl McpHandler {
             max_area,
         };
 
-        let result = if let Some(doc_id) = params.document_id.as_deref() {
-            match self.snr_via_document(doc_id, &resolved).await {
+        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
+            (Some(doc_id), _) => match self.snr_via_document(doc_id, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        } else {
-            let path = params.image_path.as_deref().expect("checked above");
-            match self.snr_via_path(path, &resolved).await {
+            },
+            (None, Some(path)) => match self.snr_via_path(path, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (None, None) => {
+                return Ok(tool_error!(
+                    "missing required argument: provide either document_id or image_path"
+                ));
             }
         };
 
