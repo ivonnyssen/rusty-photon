@@ -1,5 +1,7 @@
 //! Error types for the PPBA Switch driver
 
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
+
 /// Errors that can occur when interacting with the PPBA device
 #[derive(Debug, thiserror::Error)]
 pub enum PpbaError {
@@ -40,6 +42,47 @@ pub enum PpbaError {
 
     #[error("Device communication error: {0}")]
     Communication(String),
+}
+
+impl PpbaError {
+    /// Map this error to the matching ASCOM error code + message.
+    ///
+    /// Centralised here so both `PpbaSwitchDevice` and
+    /// `PpbaObservingConditionsDevice` (and any future device on this
+    /// transport) get identical classification. The variants are the
+    /// union of what either device can emit; the switch-specific arms
+    /// (`InvalidSwitchId`, `SwitchNotWritable`, `AutoDewEnabled`) are
+    /// no-ops for the OC device's call paths but live here so the
+    /// mapping is closed.
+    pub fn to_ascom_error(self) -> ASCOMError {
+        match self {
+            PpbaError::NotConnected => {
+                ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, self.to_string())
+            }
+            PpbaError::InvalidSwitchId(_) => {
+                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, self.to_string())
+            }
+            PpbaError::SwitchNotWritable(_) => {
+                ASCOMError::new(ASCOMErrorCode::NOT_IMPLEMENTED, self.to_string())
+            }
+            PpbaError::AutoDewEnabled(_) => {
+                ASCOMError::new(ASCOMErrorCode::INVALID_OPERATION, self.to_string())
+            }
+            PpbaError::InvalidValue(_) => {
+                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, self.to_string())
+            }
+            _ => ASCOMError::invalid_operation(self.to_string()),
+        }
+    }
+}
+
+/// `?` and `Into::into` sugar for the same conversion as
+/// [`PpbaError::to_ascom_error`]. The method is kept as the explicit
+/// form; this impl lets idiomatic Rust call sites convert implicitly.
+impl From<PpbaError> for ASCOMError {
+    fn from(err: PpbaError) -> Self {
+        err.to_ascom_error()
+    }
 }
 
 /// Result type alias for PPBA operations
@@ -150,5 +193,61 @@ mod tests {
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("InvalidSwitchId"));
         assert!(debug_str.contains("5"));
+    }
+
+    // ============================================================================
+    // to_ascom_error / From<PpbaError> for ASCOMError: the canonical mapping
+    // both ASCOM devices share. The two impls are kept in lockstep — From
+    // forwards to to_ascom_error — so tests below exercise the method form
+    // and the From impl picks up the same coverage transitively.
+    // ============================================================================
+
+    #[test]
+    fn to_ascom_error_not_connected_maps_to_not_connected() {
+        let err = PpbaError::NotConnected.to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[test]
+    fn to_ascom_error_invalid_switch_id_maps_to_invalid_value() {
+        let err = PpbaError::InvalidSwitchId(99).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn to_ascom_error_switch_not_writable_maps_to_not_implemented() {
+        let err = PpbaError::SwitchNotWritable(10).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn to_ascom_error_auto_dew_enabled_maps_to_invalid_operation() {
+        let err = PpbaError::AutoDewEnabled(3).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn to_ascom_error_invalid_value_maps_to_invalid_value() {
+        let err = PpbaError::InvalidValue("oob".to_string()).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn to_ascom_error_communication_falls_to_invalid_operation() {
+        let err = PpbaError::Communication("boom".to_string()).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn to_ascom_error_connection_failed_falls_to_invalid_operation() {
+        let err = PpbaError::ConnectionFailed("nope".to_string()).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn from_ppba_error_forwards_to_to_ascom_error() {
+        // ? and Into::into both route through this From impl.
+        let ascom: ASCOMError = PpbaError::NotConnected.into();
+        assert_eq!(ascom.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 }

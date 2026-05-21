@@ -51,6 +51,16 @@ impl QhyFocuserError {
     }
 }
 
+/// `?` and `Into::into` sugar for the same conversion as
+/// [`QhyFocuserError::to_ascom_error`]. The method is kept as the
+/// explicit form; this impl lets idiomatic Rust call sites convert
+/// implicitly.
+impl From<QhyFocuserError> for ASCOMError {
+    fn from(err: QhyFocuserError) -> Self {
+        err.to_ascom_error()
+    }
+}
+
 /// Result type alias for QHY Q-Focuser operations
 pub type Result<T> = std::result::Result<T, QhyFocuserError>;
 

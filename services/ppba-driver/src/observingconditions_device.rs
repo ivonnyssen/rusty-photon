@@ -44,18 +44,6 @@ impl PpbaObservingConditionsDevice {
             manager,
         }
     }
-
-    fn to_ascom_error(err: PpbaError) -> ASCOMError {
-        match err {
-            PpbaError::NotConnected => {
-                ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, err.to_string())
-            }
-            PpbaError::InvalidValue(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
-            }
-            _ => ASCOMError::invalid_operation(err.to_string()),
-        }
-    }
 }
 
 #[async_trait]
@@ -80,23 +68,24 @@ impl Device for PpbaObservingConditionsDevice {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
+                // `?` does SessionError → PpbaError via the manual
+                // .map_err, then PpbaError → ASCOMError via the From
+                // impl in error.rs.
                 let session = self
                     .manager
                     .transport()
                     .acquire()
                     .await
-                    .map_err(|e| Self::to_ascom_error(PpbaError::from(e)))?;
+                    .map_err(PpbaError::from)?;
                 *slot = Some(session);
                 debug!("ObservingConditions device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
                     session.close().await.map_err(|e| {
-                        Self::to_ascom_error(PpbaError::from(
-                            rusty_photon_shared_transport::SessionError::<
-                                crate::codec::PpbaCodecError,
-                            >::Transport(e),
-                        ))
+                        PpbaError::from(rusty_photon_shared_transport::SessionError::<
+                            crate::codec::PpbaCodecError,
+                        >::Transport(e))
                     })?;
                 }
                 debug!("ObservingConditions device disconnected");
@@ -256,10 +245,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         let session = guard
             .as_ref()
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, "not connected"))?;
-        self.manager
-            .refresh_status(session)
-            .await
-            .map_err(Self::to_ascom_error)?;
+        self.manager.refresh_status(session).await?;
         debug!("ObservingConditions sensors refreshed");
         Ok(())
     }
@@ -432,25 +418,7 @@ mod tests {
         assert!(!device.connected().await.unwrap());
     }
 
-    #[test]
-    fn to_ascom_error_not_connected_maps_to_not_connected() {
-        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::NotConnected);
-        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
-    }
-
-    #[test]
-    fn to_ascom_error_invalid_value_maps_to_invalid_value() {
-        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::InvalidValue(
-            "bad".to_string(),
-        ));
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-    }
-
-    #[test]
-    fn to_ascom_error_communication_falls_to_invalid_operation() {
-        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::Communication(
-            "boom".to_string(),
-        ));
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    }
+    // PpbaError → ASCOMError mapping tests moved to error.rs once the
+    // canonical mapping landed there (centralised so both devices share
+    // the same classification).
 }
