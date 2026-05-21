@@ -106,10 +106,6 @@ impl FalconStatusSwitchDevice {
         }
     }
 
-    fn to_ascom_error(err: FalconRotatorError) -> ASCOMError {
-        err.to_ascom_error()
-    }
-
     /// Borrow the held session for one request. Returns `NotConnected` if
     /// the device's session slot is empty.
     async fn with_session<F, T>(&self, f: F) -> ASCOMResult<T>
@@ -117,11 +113,8 @@ impl FalconStatusSwitchDevice {
         F: AsyncFnOnce(&Session<FalconCodec>) -> Result<T, FalconRotatorError>,
     {
         let guard = self.session.read().await;
-        let session = guard
-            .as_ref()
-            .ok_or(FalconRotatorError::NotConnected)
-            .map_err(Self::to_ascom_error)?;
-        f(session).await.map_err(Self::to_ascom_error)
+        let session = guard.as_ref().ok_or(FalconRotatorError::NotConnected)?;
+        Ok(f(session).await?)
     }
 }
 
@@ -151,24 +144,27 @@ impl Device for FalconStatusSwitchDevice {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
+                // `?` does SessionError → FalconRotatorError via the
+                // .map_err (the SessionError generic carries
+                // FalconCodecError), then FalconRotatorError → ASCOMError
+                // via the From impl in error.rs.
                 let session = self
                     .manager
                     .transport()
                     .acquire()
                     .await
-                    .map_err(|e| Self::to_ascom_error(FalconRotatorError::from(e)))?;
+                    .map_err(FalconRotatorError::from)?;
                 *slot = Some(session);
                 debug!("Status Switch device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(|e| {
-                        Self::to_ascom_error(FalconRotatorError::from(
-                            rusty_photon_shared_transport::SessionError::<
-                                crate::codec::FalconCodecError,
-                            >::Transport(e),
-                        ))
-                    })?;
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for FalconRotatorError`
+                    // handles the conversion, and the existing
+                    // `From<FalconRotatorError> for ASCOMError` does the
+                    // second hop on `?`.
+                    session.close().await.map_err(FalconRotatorError::from)?;
                 }
                 // Only reset per-session driver state when this disconnect
                 // truly closed the transport. If the rotator device still

@@ -1,6 +1,7 @@
 //! Error types for the pa-falcon-rotator driver
 
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
+use rusty_photon_shared_transport::TransportError;
 
 /// Errors that can occur when interacting with the Pegasus Falcon Rotator
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +46,45 @@ impl FalconRotatorError {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, self.to_string())
             }
             _ => ASCOMError::invalid_operation(self.to_string()),
+        }
+    }
+}
+
+/// `?` and `Into::into` sugar for the same conversion as
+/// [`FalconRotatorError::to_ascom_error`]. The method is kept as the
+/// explicit form; this impl lets idiomatic Rust call sites convert
+/// implicitly.
+impl From<FalconRotatorError> for ASCOMError {
+    fn from(err: FalconRotatorError) -> Self {
+        err.to_ascom_error()
+    }
+}
+
+/// Direct conversion from a shared-transport [`TransportError`].
+///
+/// Lets the device layer write `.map_err(FalconRotatorError::from)?` on a
+/// `Session::close()` (which returns `Result<_, TransportError>`)
+/// instead of synthetically wrapping the `TransportError` in a
+/// `SessionError::Transport(...)` just to reuse the existing
+/// `From<SessionError<…>>` mapping. The codec-layer
+/// `From<SessionError<FalconCodecError>> for FalconRotatorError` impl
+/// also routes its transport arms through this conversion so a
+/// connect-time timeout surfaced through the handshake hook gets the
+/// same classification as a steady-state timeout.
+impl From<TransportError> for FalconRotatorError {
+    fn from(t: TransportError) -> Self {
+        match t {
+            TransportError::Open(e) => FalconRotatorError::ConnectionFailed(format!("open: {e}")),
+            TransportError::Io(e) => FalconRotatorError::Io(e),
+            TransportError::Timeout(d) => {
+                FalconRotatorError::Timeout(format!("transport timeout after {d:?}"))
+            }
+            TransportError::Eof => {
+                FalconRotatorError::Communication("Connection closed".to_string())
+            }
+            TransportError::Framing(s) => {
+                FalconRotatorError::Communication(format!("framing: {s}"))
+            }
         }
     }
 }
@@ -188,5 +228,60 @@ mod tests {
         let err = FalconRotatorError::Communication("dropped".to_string());
         let ascom_err = err.to_ascom_error();
         assert_eq!(ascom_err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn from_falcon_rotator_error_forwards_to_to_ascom_error() {
+        // `?` and `Into::into` both route through this `From` impl. The
+        // device-layer call sites use `?` after a `.map_err(FalconRotatorError
+        // ::from)`, but those paths fire only on the error branch — which
+        // none of the happy-path BDD scenarios or manager tests reach. An
+        // explicit `.into()` test keeps the impl covered unconditionally.
+        let ascom: ASCOMError = FalconRotatorError::NotConnected.into();
+        assert_eq!(ascom.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    // ============================================================================
+    // From<TransportError> for FalconRotatorError — the device-layer disconnect
+    // path relies on this to map Session::close()'s TransportError directly
+    // without synthesizing a SessionError. Test each TransportError variant
+    // routes to its expected FalconRotatorError arm.
+    // ============================================================================
+
+    #[test]
+    fn from_transport_error_open_maps_to_connection_failed() {
+        let err: FalconRotatorError = TransportError::Open(std::io::Error::other("busy")).into();
+        assert!(matches!(err, FalconRotatorError::ConnectionFailed(s) if s.contains("busy")));
+    }
+
+    #[test]
+    fn from_transport_error_io_preserves_io_kind() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err: FalconRotatorError = TransportError::Io(io_err).into();
+        match err {
+            FalconRotatorError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_transport_error_timeout_maps_to_timeout() {
+        let err: FalconRotatorError =
+            TransportError::Timeout(std::time::Duration::from_secs(2)).into();
+        assert!(matches!(err, FalconRotatorError::Timeout(s) if s.contains('2')));
+    }
+
+    #[test]
+    fn from_transport_error_eof_maps_to_communication() {
+        let err: FalconRotatorError = TransportError::Eof.into();
+        assert!(
+            matches!(err, FalconRotatorError::Communication(s) if s.contains("Connection closed"))
+        );
+    }
+
+    #[test]
+    fn from_transport_error_framing_maps_to_communication() {
+        let err: FalconRotatorError = TransportError::Framing("too big".to_string()).into();
+        assert!(matches!(err, FalconRotatorError::Communication(s) if s.contains("too big")));
     }
 }

@@ -51,11 +51,18 @@ pub enum FalconResponse {
 
 /// Codec-side error type.
 ///
-/// Carries the variants needed to flatten a full
+/// Carries enough variants to flatten a full
 /// [`SessionError<FalconCodecError>`] in handshake / poll-style contexts
 /// without losing the structural information the device-layer mapping
 /// (`From<SessionError<…>> for FalconRotatorError`) then re-expands into
 /// the right `FalconRotatorError` variant.
+///
+/// `Transport` carries the underlying [`TransportError`] structurally
+/// rather than as a string so a transport-level failure surfaced
+/// *through* the handshake hook (which returns
+/// `Result<_, FalconCodecError>`) can still be classified as `Open` /
+/// `Io` / `Timeout` / `Eof` / `Framing` by the device layer instead of
+/// collapsing to a generic `Communication` error at connect time.
 #[derive(Debug, Error)]
 pub enum FalconCodecError {
     #[error("invalid UTF-8 in response: {0}")]
@@ -64,8 +71,8 @@ pub enum FalconCodecError {
     InvalidResponse(String),
     #[error("parse error: {0}")]
     Parse(String),
-    #[error("transport error: {0}")]
-    Transport(String),
+    #[error(transparent)]
+    Transport(TransportError),
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
 }
@@ -87,7 +94,7 @@ impl FalconCodecError {
 impl From<SessionError<FalconCodecError>> for FalconCodecError {
     fn from(err: SessionError<FalconCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => Self::Transport(t.to_string()),
+            SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
             SessionError::SkipExhausted(n) => Self::SkipExhausted(n),
         }
@@ -183,28 +190,19 @@ impl Codec for FalconCodec {
 impl From<SessionError<FalconCodecError>> for FalconRotatorError {
     fn from(err: SessionError<FalconCodecError>) -> Self {
         match err {
-            SessionError::Transport(TransportError::Open(e)) => {
-                FalconRotatorError::ConnectionFailed(format!("open: {e}"))
-            }
-            SessionError::Transport(TransportError::Io(e)) => FalconRotatorError::Io(e),
-            SessionError::Transport(TransportError::Timeout(d)) => {
-                FalconRotatorError::Timeout(format!("transport timeout after {d:?}"))
-            }
-            SessionError::Transport(TransportError::Eof) => {
-                FalconRotatorError::Communication("Connection closed".to_string())
-            }
-            SessionError::Transport(TransportError::Framing(s)) => {
-                FalconRotatorError::Communication(format!("framing: {s}"))
-            }
+            // Both arms route through `From<TransportError> for
+            // FalconRotatorError` in error.rs so a timeout that surfaces
+            // *through* the handshake hook (codec arm) gets the same
+            // classification as one that surfaces on a steady-state
+            // request (transport arm).
+            SessionError::Transport(t) => t.into(),
+            SessionError::Codec(FalconCodecError::Transport(t)) => t.into(),
             SessionError::Codec(FalconCodecError::InvalidResponse(s)) => {
                 FalconRotatorError::InvalidResponse(s)
             }
             SessionError::Codec(FalconCodecError::Parse(s)) => FalconRotatorError::ParseError(s),
             SessionError::Codec(c @ FalconCodecError::Utf8(_)) => {
                 FalconRotatorError::InvalidResponse(c.to_string())
-            }
-            SessionError::Codec(FalconCodecError::Transport(s)) => {
-                FalconRotatorError::Communication(s)
             }
             SessionError::Codec(FalconCodecError::SkipExhausted(n)) => {
                 FalconRotatorError::Communication(format!(
@@ -424,10 +422,16 @@ mod tests {
     // ---- From<SessionError<FalconCodecError>> for FalconCodecError ------
 
     #[test]
-    fn session_to_codec_error_transport_becomes_transport_string() {
+    fn session_to_codec_error_transport_preserves_inner_variant() {
+        // The inner TransportError must survive the flatten so the
+        // device-layer mapping can still classify by variant rather than
+        // collapse to a stringy Communication error.
         let err: FalconCodecError =
             SessionError::<FalconCodecError>::Transport(TransportError::Eof).into();
-        assert!(matches!(err, FalconCodecError::Transport(_)));
+        assert!(matches!(
+            err,
+            FalconCodecError::Transport(TransportError::Eof)
+        ));
     }
 
     #[test]
@@ -528,11 +532,42 @@ mod tests {
     }
 
     #[test]
-    fn session_error_codec_transport_maps_to_communication() {
-        let err: SessionError<FalconCodecError> =
-            SessionError::Codec(FalconCodecError::Transport("wire died".to_string()));
+    fn session_error_codec_transport_timeout_routes_to_timeout() {
+        // A transport timeout surfaced *through* the handshake hook
+        // arrives at the device layer as
+        // SessionError::Codec(FalconCodecError::Transport(Timeout(...))).
+        // It must map to FalconRotatorError::Timeout — same classification
+        // a steady-state timeout (SessionError::Transport(Timeout(...)))
+        // would receive — so the ASCOM client doesn't see a generic
+        // Communication error for connect-time timeouts.
+        let err: SessionError<FalconCodecError> = SessionError::Codec(FalconCodecError::Transport(
+            TransportError::Timeout(std::time::Duration::from_secs(2)),
+        ));
         match FalconRotatorError::from(err) {
-            FalconRotatorError::Communication(s) => assert_eq!(s, "wire died"),
+            FalconRotatorError::Timeout(s) => {
+                assert!(s.contains("2s") || s.contains("2.0s"));
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_transport_open_routes_to_connection_failed() {
+        let err: SessionError<FalconCodecError> = SessionError::Codec(FalconCodecError::Transport(
+            TransportError::Open(std::io::Error::other("device busy")),
+        ));
+        match FalconRotatorError::from(err) {
+            FalconRotatorError::ConnectionFailed(s) => assert!(s.contains("device busy")),
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_transport_eof_routes_to_communication() {
+        let err: SessionError<FalconCodecError> =
+            SessionError::Codec(FalconCodecError::Transport(TransportError::Eof));
+        match FalconRotatorError::from(err) {
+            FalconRotatorError::Communication(s) => assert!(s.contains("Connection closed")),
             other => panic!("expected Communication, got {other:?}"),
         }
     }
