@@ -54,11 +54,23 @@ impl TransportFactory for UdpTransportFactory {
             "opening Sky-Watcher UDP transport"
         );
 
+        // `io::Error::new(e.kind(), ...)` instead of
+        // `io::Error::other(format!(...))` so the original
+        // `io::ErrorKind` (e.g. `AddrNotAvailable`, `PermissionDenied`,
+        // `AddrInUse`) survives downstream classification while the
+        // bind / connect address stays in the surfaced message. See
+        // Copilot review on PR #285.
         let socket = UdpSocket::bind(bind_addr).await.map_err(|e| {
-            TransportError::Open(io::Error::other(format!("UDP bind {bind_addr}: {e}")))
+            TransportError::Open(io::Error::new(
+                e.kind(),
+                format!("UDP bind {bind_addr}: {e}"),
+            ))
         })?;
         socket.connect(mount_addr).await.map_err(|e| {
-            TransportError::Open(io::Error::other(format!("UDP connect {mount_addr}: {e}")))
+            TransportError::Open(io::Error::new(
+                e.kind(),
+                format!("UDP connect {mount_addr}: {e}"),
+            ))
         })?;
 
         let transport = UdpFrameTransport::new(socket, MAX_FRAME_SIZE)
@@ -156,24 +168,16 @@ mod tests {
         assert!(matches!(err, TransportError::Timeout(_)), "got {err:?}");
     }
 
-    #[tokio::test]
-    async fn factory_open_bind_fails_on_non_local_subnet() {
-        // A bind address that doesn't belong to any local interface
-        // will fail at `UdpSocket::bind`. 198.51.100.1 is in the
-        // TEST-NET-2 documentation block (RFC 5737) — guaranteed
-        // never to be a local interface.
-        let factory = UdpTransportFactory::new(UdpConfig {
-            address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            port: 11_880,
-            bind_address: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
-            command_timeout: Duration::from_secs(1),
-            polling_interval: Duration::from_millis(200),
-        });
-        let result = factory.open().await;
-        match result {
-            Err(TransportError::Open(_)) => {}
-            Err(other) => panic!("expected TransportError::Open, got {other:?}"),
-            Ok(_) => panic!("expected bind to fail for non-local subnet"),
-        }
-    }
+    // The previous `factory_open_bind_fails_on_non_local_subnet` test
+    // (bind to 198.51.100.1, TEST-NET-2) was dropped: the
+    // bind-failure-surfaces-as-`TransportError::Open` contract is
+    // already exercised by the serial side's equivalent
+    // (`factory_open_nonexistent_port_returns_open_error`), and using
+    // a "guaranteed not on any local interface" address is host-dependent
+    // — it accepts under `net.ipv4.ip_nonlocal_bind=1`, `IP_FREEBIND`,
+    // and some container test runners. The mapping itself is a single
+    // `.map_err(...)` line above (`UdpSocket::bind` returns `io::Error`;
+    // we wrap it in `TransportError::Open` while preserving the kind),
+    // so a unit test of the mapping doesn't need a real bind to fire.
+    // See PR #285 review.
 }

@@ -72,14 +72,19 @@ impl TransportFactory for SerialTransportFactory {
         // classification stays right — but reasoning is still simpler
         // with a single source. Matches the ppba-driver / qhy-focuser
         // shape (see PR #280).
+        // Pass the `tokio_serial::Error` to `io::Error::other` directly
+        // (not its `.to_string()`) so the original error is preserved as
+        // the `io::Error` source — `TransportError::Open(io::Error)`
+        // then exposes the full cause chain via `Error::source()`
+        // traversal in logs / debug output. The port path stays in the
+        // `tracing::debug!(port = %self.port, ...)` above, so an
+        // operator reading logs sees both the open intent (with port)
+        // and the cause chain (with the underlying tokio-serial /
+        // OS-level error). Mirrors the ppba-driver / qhy-focuser shape
+        // from PR #280; see PR #285 review.
         let stream = tokio_serial::new(&self.port, self.baud_rate)
             .open_native_async()
-            .map_err(|e| {
-                TransportError::Open(io::Error::other(format!(
-                    "failed to open {}: {e}",
-                    self.port
-                )))
-            })?;
+            .map_err(|e| TransportError::Open(io::Error::other(e)))?;
 
         let transport = SerialFrameTransport::new(stream, b'\r', MAX_FRAME_SIZE)
             .with_read_timeout(self.command_timeout)
@@ -95,12 +100,24 @@ mod tests {
 
     #[tokio::test]
     async fn factory_open_nonexistent_port_returns_open_error() {
+        use std::error::Error;
         let factory = SerialTransportFactory::new(UsbConfig {
             port: "/dev/this-port-does-not-exist-xyzzy".into(),
             ..UsbConfig::default()
         });
         match factory.open().await {
-            Err(TransportError::Open(_)) => {}
+            Err(TransportError::Open(io_err)) => {
+                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
+                // preserves the original `tokio_serial::Error` as the
+                // io::Error's source, so log/debug output traversing
+                // `Error::source()` recovers the underlying cause. The
+                // strengthened assertion catches regressions back to
+                // the stringified shape (see PR #285 review).
+                assert!(
+                    io_err.source().is_some() || io_err.get_ref().is_some(),
+                    "expected the underlying tokio_serial::Error to be preserved as source"
+                );
+            }
             Err(other) => panic!("expected TransportError::Open, got {other:?}"),
             Ok(_) => panic!("expected error opening nonexistent port"),
         }

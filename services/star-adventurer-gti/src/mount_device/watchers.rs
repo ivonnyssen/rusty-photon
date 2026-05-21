@@ -274,7 +274,6 @@ async fn run_completion_watcher<C, F>(
     // round-trip of any change — vs up to `polling_interval` of
     // snapshot staleness under the always-on polling model.
     let _poll_guard = manager.pause_background_polling();
-    let mut completed = false;
     loop {
         tokio::time::sleep(polling_interval).await;
 
@@ -364,7 +363,6 @@ async fn run_completion_watcher<C, F>(
                 let mut s = state.write().await;
                 on_finalize(&mut s);
                 s.slew_in_progress = false;
-                completed = true;
                 break;
             }
         }
@@ -375,7 +373,6 @@ async fn run_completion_watcher<C, F>(
     if let Err(e) = session.close().await {
         tracing::warn!(context, error = %e, "watcher session close failed");
     }
-    let _ = completed; // suppress unused-variable warning if no path consumes it
 }
 
 /// Slew-watcher per-iteration completion step. Called by
