@@ -67,6 +67,13 @@ fn write_real_config(
         "astap_binary_path": binary.to_string_lossy(),
         "astap_db_directory": db.to_string_lossy(),
         "astap_extra_env": extra_env,
+        // The blind M 101 scenario solves the stripped fixture in
+        // ~48 s on Linux (and likely longer on slower matrix legs).
+        // The default 120 s max would silently clamp the scenario's
+        // per-request timeout — see `services/plate-solver/src/api.rs`
+        // for the `.min(state.max_solve_timeout)` call. 300 s gives
+        // Windows/macOS room.
+        "max_solve_timeout": "300s",
     })
     .to_string();
     let p = dir.join("config.json");

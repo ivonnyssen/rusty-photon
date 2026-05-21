@@ -7,6 +7,7 @@
 //! `astap_extra_env` state has been accumulated.
 
 use crate::world::{HttpResponse, PlateSolverWorld};
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use std::time::Instant;
 
@@ -142,6 +143,25 @@ async fn when_post_solve_with_hint(world: &mut PlateSolverWorld, field: String, 
     do_post(world, body).await;
 }
 
+#[when("I POST to /api/v1/solve with that fits_path and these hints:")]
+async fn when_post_solve_with_hint_table(world: &mut PlateSolverWorld, step: &Step) {
+    ensure_wrapper(world).await;
+    let table = step.table.as_ref().expect("expected a data table");
+    let mut body = serde_json::json!({
+        "fits_path": world.fits_path.as_ref().expect("fits_path"),
+    });
+    // Skip the header row (field | value).
+    for row in table.rows.iter().skip(1) {
+        let field = row.first().expect("hint row missing field").trim();
+        let value = row.get(1).expect("hint row missing value").trim();
+        let value_f: f64 = value
+            .parse()
+            .unwrap_or_else(|_| panic!("hint value not f64: {value}"));
+        body[field] = serde_json::Value::from(value_f);
+    }
+    do_post(world, body).await;
+}
+
 // ----- then: response assertions (shared across feature files) -----
 
 #[then(expr = "the response status is {int}")]
@@ -255,6 +275,41 @@ async fn then_argv_value_after_flag(world: &mut PlateSolverWorld, flag: String, 
         (value - expected).abs() < 1e-3,
         "argv value after {flag:?}: expected ~{expected}, got {value}"
     );
+}
+
+// Append "<label>,<elapsed_ms>" to the CSV file named by the
+// `PLATE_SOLVER_PERF_CSV` env var. When the env var is unset (the
+// local-dev default), the step is a no-op so BDD runs aren't burdened
+// with perf-trending side effects. The nightly workflow sets the var
+// per matrix leg and uploads the resulting CSV as an artifact (issue
+// #236). Writes a header row on first write so the CSV is
+// self-describing.
+#[then(expr = "I record the solve duration as {string}")]
+async fn then_record_solve_duration(world: &mut PlateSolverWorld, label: String) {
+    let Ok(path) = std::env::var("PLATE_SOLVER_PERF_CSV") else {
+        return;
+    };
+    let elapsed = world
+        .last_response_elapsed
+        .expect("no last_response_elapsed recorded — was there a When step?");
+    let elapsed_ms = elapsed.as_millis();
+    let path = std::path::PathBuf::from(path);
+    let needs_header = !path.exists();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).expect("create perf csv parent dir");
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    use std::io::Write;
+    if needs_header {
+        writeln!(file, "label,elapsed_ms").expect("write csv header");
+    }
+    writeln!(file, "{label},{elapsed_ms}").expect("write csv row");
 }
 
 // ----- helpers -----

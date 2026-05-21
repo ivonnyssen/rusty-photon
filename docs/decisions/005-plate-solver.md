@@ -463,16 +463,19 @@ below tracks which have been retired.
    investment. The `install-astap` action keeps the `Windows-ARM64`
    row for operators who *do* run on that hardware, but the wrapper
    isn't claimed to be supported there until a real user surfaces.
-4. **End-to-end solve timing** — **Retired by issue #233.** The
-   nightly smoke now captures per-OS workflow log timing on both
-   the failure-mode scenario (spawn / wait / exit pipeline) and the
-   happy-path scenario (full solve pipeline including `.wcs`
-   parsing). The committed `m101_known.fits` fixture is a 1024×1024
-   crop rather than the 2k–4k size originally sketched, but ASTAP
-   solves it deterministically in ~0.1 s without hints (4/4 quad
-   match against D05), which is the signal this OQ was after:
-   per-platform success-path timing alongside the failure-path
-   baseline.
+4. **End-to-end solve timing** — **Retired by issue #233** (full
+   solve pipeline), **extended by issue #236** (hinted-vs-blind
+   trending). The nightly smoke captures per-OS timing on the
+   failure-mode scenario (spawn / wait / exit pipeline) and on both
+   M 101 scenarios (full solve pipeline including `.wcs` parsing).
+   The committed `m101_known.fits` fixture is a 1024×1024 crop
+   rather than the 2k–4k size originally sketched; ASTAP solves it
+   deterministically in ~63 ms when the BDD scenario passes the
+   four hint flags, ~48 s when it doesn't (the fixture's FITS
+   pointing breadcrumbs were stripped in #236 so blind is truly
+   blind). Both numbers land in the `plate-solver-perf-<os>`
+   artifact per nightly run — per-platform success-path timing
+   alongside the failure-path baseline.
 5. **LGPL-3.0 §4 / §6 review under BYO** — **Retired by Phase 8.**
    Conclusions: (a) subprocess execution doesn't engage §4
    (Combined Works) or §6 (Conveying Non-Source Forms) — those

@@ -241,8 +241,17 @@ jobs:
             exit 0
           }
 
-          # Happy path
-          "$bin" -f "$work/m101_known.fits" -d "$db" -wcs
+          # Happy path. Explicit hints (ra/spd/fov/r) keep this fast
+          # (~0.06 s on Linux). Issue #236 stripped the M 101 fixture's
+          # FITS pointing breadcrumbs, so a hint-less invocation would
+          # walk ASTAP's full search spiral (~30–60 s). This workflow's
+          # job is binary-bytes-still-solve verification, not perf
+          # trending — hinted is sufficient and faster across the
+          # matrix. The values match the operator-curl recipe in
+          # docs/services/plate-solver.md and the hinted scenario in
+          # services/plate-solver/tests/features/real_astap_smoke.feature.
+          "$bin" -f "$work/m101_known.fits" -d "$db" -wcs \
+              -ra 14.0540 -spd 144.3469 -fov 0.42 -r 3.0
           rc=$?
           if [[ $rc -ne 0 ]]; then
             fail "M101 solve exited $rc"
