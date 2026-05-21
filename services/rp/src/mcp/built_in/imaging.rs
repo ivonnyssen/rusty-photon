@@ -220,6 +220,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureBasicParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -280,6 +285,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<EstimateBackgroundParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
         if !params.k.is_finite() || params.k <= 0.0 {
             return Ok(tool_error!("invalid parameter: k must be > 0"));
         }
@@ -336,6 +346,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -408,6 +423,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -472,6 +492,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeSnrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.document_id.is_none() && params.image_path.is_none() {
+            return Ok(tool_error!(
+                "missing required argument: provide either document_id or image_path"
+            ));
+        }
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
