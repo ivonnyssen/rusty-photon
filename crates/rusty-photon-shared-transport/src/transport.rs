@@ -78,6 +78,30 @@ pub trait TransportFactory: Send + Sync + 'static {
 /// without specifying timeouts.
 pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Classify an [`io::Error`] surfaced by a wrapped stream / socket into
+/// the right [`TransportError`] variant.
+///
+/// Maps [`io::ErrorKind::TimedOut`] to [`TransportError::Timeout`] so
+/// any underlying timeout (e.g. a port-level `VTIME` set on a serial
+/// driver, an OS recv timer, a future async runtime's deadline) is
+/// classified as a timeout — not collapsed into the generic
+/// [`TransportError::Io`] bucket that other I/O errors land in. The
+/// reported `Duration` is the transport's own configured timeout
+/// (`read_timeout` for reads, `write_timeout` for writes), since the
+/// underlying timer's actual duration isn't recoverable from
+/// `io::Error`; callers branch on the variant rather than the
+/// duration, so this is honest enough.
+///
+/// All other [`io::Error`] kinds (BrokenPipe, ConnectionReset, write
+/// errors, etc.) become [`TransportError::Io`] verbatim.
+fn classify_io_error(e: io::Error, on_timeout: Duration) -> TransportError {
+    if e.kind() == io::ErrorKind::TimedOut {
+        TransportError::Timeout(on_timeout)
+    } else {
+        TransportError::Io(e)
+    }
+}
+
 /// Generic serial-stream frame transport.
 ///
 /// Wraps any `AsyncRead + AsyncWrite + Unpin + Send` (most commonly
@@ -141,7 +165,11 @@ where
     /// growing `buf` unboundedly first.
     async fn read_frame_bounded(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         loop {
-            let chunk = self.stream.fill_buf().await.map_err(TransportError::Io)?;
+            let chunk = self
+                .stream
+                .fill_buf()
+                .await
+                .map_err(|e| classify_io_error(e, self.read_timeout))?;
             if chunk.is_empty() {
                 if buf.is_empty() {
                     return Err(TransportError::Eof);
@@ -191,7 +219,7 @@ where
         };
         match timeout(self.write_timeout, write_op).await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(TransportError::Io(e)),
+            Ok(Err(e)) => Err(classify_io_error(e, self.write_timeout)),
             Err(_) => Err(TransportError::Timeout(self.write_timeout)),
         }
     }
@@ -267,7 +295,7 @@ impl FrameTransport for UdpFrameTransport {
                 "udp send wrote {short} of {} bytes",
                 bytes.len()
             )))),
-            Ok(Err(e)) => Err(TransportError::Io(e)),
+            Ok(Err(e)) => Err(classify_io_error(e, self.write_timeout)),
             Err(_) => Err(TransportError::Timeout(self.write_timeout)),
         }
     }
@@ -282,7 +310,7 @@ impl FrameTransport for UdpFrameTransport {
             }
             Ok(Err(e)) => {
                 buf.clear();
-                Err(TransportError::Io(e))
+                Err(classify_io_error(e, self.read_timeout))
             }
             Err(_) => {
                 buf.clear();
@@ -440,5 +468,127 @@ mod tests {
         let mut buf = Vec::new();
         let err = transport.recv_frame(&mut buf).await.unwrap_err();
         assert!(matches!(err, TransportError::Timeout(_)), "got {err:?}");
+    }
+
+    // ============================================================================
+    // classify_io_error: TimedOut from a wrapped stream surfaces as Timeout,
+    // not Io. This is the structural guarantee that lets services build
+    // factories without worrying about which timeout layer fires first
+    // (port-level VTIME, async runtime deadline, OS recv timer, …) — every
+    // io::Error with kind TimedOut from the wrapped stream gets reclassified
+    // here. See PR #280 for the bug class this prevents.
+    // ============================================================================
+
+    /// Test-only AsyncRead/AsyncWrite that returns
+    /// `io::ErrorKind::TimedOut` on the next read or write, simulating
+    /// what a port-level (termios `VTIME`) timeout looks like through
+    /// tokio-serial's `AsyncRead` impl.
+    struct TimedOutStream {
+        fail_next_read: bool,
+        fail_next_write: bool,
+    }
+
+    impl tokio::io::AsyncRead for TimedOutStream {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            if self.fail_next_read {
+                self.fail_next_read = false;
+                std::task::Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "simulated port-level read timeout",
+                )))
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    impl tokio::io::AsyncWrite for TimedOutStream {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            if self.fail_next_write {
+                self.fail_next_write = false;
+                std::task::Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "simulated port-level write timeout",
+                )))
+            } else {
+                std::task::Poll::Ready(Ok(buf.len()))
+            }
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_io_error_maps_timed_out_to_timeout_variant() {
+        let e = io::Error::new(io::ErrorKind::TimedOut, "x");
+        let t = classify_io_error(e, Duration::from_secs(2));
+        assert!(matches!(t, TransportError::Timeout(d) if d == Duration::from_secs(2)));
+    }
+
+    #[tokio::test]
+    async fn classify_io_error_passes_through_non_timeout_kinds() {
+        let e = io::Error::new(io::ErrorKind::BrokenPipe, "broken");
+        let t = classify_io_error(e, Duration::from_secs(2));
+        match t {
+            TransportError::Io(inner) => assert_eq!(inner.kind(), io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_read_timed_out_io_surfaces_as_timeout() {
+        // Wrap a stream whose underlying read returns ErrorKind::TimedOut.
+        // Without the classification, this would surface as
+        // TransportError::Io(TimedOut) — and the legacy qhy-focuser /
+        // ppba-driver factories that set `.timeout(...)` on the
+        // tokio-serial builder relied on accidental termios behaviour
+        // for the kind, with no guarantee the variant ever lined up.
+        let stream = TimedOutStream {
+            fail_next_read: true,
+            fail_next_write: false,
+        };
+        let mut transport =
+            SerialFrameTransport::new(stream, b'\n', 32).with_read_timeout(Duration::from_secs(3));
+        let mut buf = Vec::new();
+        let err = transport.recv_frame(&mut buf).await.unwrap_err();
+        match err {
+            TransportError::Timeout(d) => assert_eq!(d, Duration::from_secs(3)),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_write_timed_out_io_surfaces_as_timeout() {
+        let stream = TimedOutStream {
+            fail_next_read: false,
+            fail_next_write: true,
+        };
+        let mut transport =
+            SerialFrameTransport::new(stream, b'\n', 32).with_write_timeout(Duration::from_secs(4));
+        let err = transport.send_frame(b"ping\n").await.unwrap_err();
+        match err {
+            TransportError::Timeout(d) => assert_eq!(d, Duration::from_secs(4)),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
     }
 }

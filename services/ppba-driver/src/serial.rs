@@ -55,12 +55,15 @@ impl TransportFactory for PpbaTransportFactory {
         );
 
         // Note: no `.timeout(self.timeout)` on the tokio-serial builder.
-        // That would set the port-level (termios `VTIME`) timeout, which
-        // surfaces as `io::ErrorKind::TimedOut` and is propagated by
-        // `SerialFrameTransport` as `TransportError::Io(TimedOut)` rather
-        // than `TransportError::Timeout(d)`. We rely on
-        // `with_read_timeout` / `with_write_timeout` instead so the
-        // single classified timeout fires and yields the right variant.
+        // `SerialFrameTransport`'s `with_read_timeout` /
+        // `with_write_timeout` already enforces the per-call deadline via
+        // `tokio::time::timeout`; adding a parallel port-level (termios
+        // `VTIME`) timeout creates two timers set to the same value with
+        // no obvious answer to "which fires first". The shared crate
+        // reclassifies `io::ErrorKind::TimedOut` from the wrapped stream
+        // back to `TransportError::Timeout`, so if a future runtime ever
+        // does need a port-level timeout the classification stays right
+        // — but reasoning is still simpler with a single source.
         let stream = tokio_serial::new(&self.port, self.baud_rate)
             .open_native_async()
             .map_err(|e| TransportError::Open(io::Error::other(e.to_string())))?;
