@@ -152,11 +152,16 @@ async fn when_post_solve_with_hint_table(world: &mut PlateSolverWorld, step: &St
     });
     // Skip the header row (field | value).
     for row in table.rows.iter().skip(1) {
-        let field = row.first().expect("hint row missing field").trim();
-        let value = row.get(1).expect("hint row missing value").trim();
+        assert_eq!(
+            row.len(),
+            2,
+            "hint row must be `field | value`, got {row:?}"
+        );
+        let field = row[0].trim();
+        let value = row[1].trim();
         let value_f: f64 = value
             .parse()
-            .unwrap_or_else(|_| panic!("hint value not f64: {value}"));
+            .unwrap_or_else(|_| panic!("hint value not f64 in row {row:?}: {value}"));
         body[field] = serde_json::Value::from(value_f);
     }
     do_post(world, body).await;
