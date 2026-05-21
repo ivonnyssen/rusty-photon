@@ -2,7 +2,9 @@ Feature: Cover control
   The cover responds to `open_cover` / `close_cover` by sending
   `[STRG<angle>] + [SMOV]`. ASCOM `CoverState` derives from the cached
   `[GMOV]` (motor) and `[GOPS]` (cover) values. `halt_cover` returns
-  `NOT_IMPLEMENTED` because the FP2 firmware exposes no abort opcode.
+  `MethodNotImplementedException` because the FP2 firmware exposes no
+  abort opcode — which is what the ASCOM ICoverCalibratorV2 spec
+  mandates "if cover movement cannot be interrupted".
 
   Scenario: Open cover succeeds and reports Open on the simulator
     Given a connected FP2 device

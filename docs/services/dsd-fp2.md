@@ -106,9 +106,14 @@ What is **not** in this crate (because the shared-transport crate owns it):
 - **Brightness range**: 12-bit, `0..=4096` (inclusive at both ends per the
   INDI reference driver).
 - **No halt-cover support**: the FP2 protocol does not expose a
-  cover-motion abort; once started, a move runs to completion. The driver
-  reports `NOT_IMPLEMENTED` for `HaltCover`, matching the CoverCalibrator
-  trait default.
+  cover-motion abort opcode; once started, a move runs to completion.
+  The driver therefore returns `MethodNotImplementedException`
+  (Alpaca error code 0x400) from `HaltCover` — which is what the
+  [ASCOM ICoverCalibratorV2 spec][cc-spec] explicitly mandates "if cover
+  movement cannot be interrupted". (See [Known limitations](#known-limitations)
+  for the ConformU divergence on this point.)
+
+  [cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 - **Heater**: optional dew-heater channel with a thermistor. Present if
   `[GHTT]` returns a value greater than `-40` °C. The driver reads this
   for diagnostics but does not expose it as an ASCOM Switch in the MVP
@@ -206,7 +211,7 @@ without any driver-specific code.
 | `max_brightness()`            | _(constant)_                            | `4096`                                                                                               |
 | `open_cover()`                | `[STRG0]` → `(OK)` ; `[SMOV]` → `(OK)`  | Asynchronous; `cover_state` reports `Moving` until polled `[GMOV]→(0)`.                              |
 | `close_cover()`               | `[STRG270]` → `(OK)` ; `[SMOV]` → `(OK)` | Same as above.                                                                                      |
-| `halt_cover()`                | — (default)                             | Returns `NOT_IMPLEMENTED`; the FP2 firmware exposes no halt opcode.                                  |
+| `halt_cover()`                | — (returns `MethodNotImplementedException`) | The FP2 firmware has no halt-motion opcode; per the ASCOM spec, `HaltCover` MUST throw `MethodNotImplementedException` when cover movement cannot be interrupted. |
 | `calibrator_on(brightness)`   | `[SLBR<NNNN>]` → `(OK)` ; `[SLON1]` → `(OK)` | Clamp `brightness` to `0..=4096`; pad to 4 digits. Sending brightness even when already on keeps the call idempotent. |
 | `calibrator_off()`            | `[SLON0]` → `(OK)`                      | Does not change brightness; subsequent `calibrator_on(brightness)` reuses the prior commanded value if any. |
 | `interface_version()`         | — (default)                             | Returns `2` (ICoverCalibratorV2).                                                                    |
@@ -389,6 +394,33 @@ as `qhy-focuser`'s in-process BDD).
 The service exposes a `conformu = ["mock", "ascom-alpaca/test"]` feature.
 `tests/conformu_integration.rs` launches the binary against a mock port
 and points ConformU at it. The same approach `qhy-focuser` uses.
+
+## Known Limitations
+
+### ConformU 4.3 flags spec-compliant `HaltCover` as an issue
+
+The driver returns `MethodNotImplementedException` from `HaltCover`,
+exactly as the [ASCOM ICoverCalibratorV2 spec][cc-spec] mandates "if
+cover movement cannot be interrupted". The FP2 firmware exposes no
+halt-motion opcode, so this is the spec-correct response.
+
+ConformU 4.3's `CoverCalibratorTester.TestHaltCover` (file
+`ConformU/Conform/CoverCalibratorTester.cs`) flags this as an issue
+anyway, because in its async-cover branch every exception type — including
+the spec-mandated `MethodNotImplementedException` — is treated as
+`Required.MustBeImplemented`. A ConformU run against this driver
+reports:
+
+> HaltCover  ISSUE  CoverStatus indicates that the device has cover capability and a NotImplementedException error was returned, this method must function per the ASCOM specification.
+
+The driver is intentionally not changed to silence this — the upstream
+divergence is filed at
+<https://github.com/ASCOMInitiative/ConformU/issues/30>. For that
+reason this service does **not** declare a `[package.metadata.conformu]`
+entry, so the rolling ConformU workflow does not include it. Re-enable
+once the upstream issue lands and the test passes cleanly.
+
+[cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 
 ## Future Work
 

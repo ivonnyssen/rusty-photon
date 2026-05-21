@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::api::{CoverCalibrator, Device};
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
@@ -151,6 +151,29 @@ impl CoverCalibrator for DsdFp2Device {
 
     async fn close_cover(&self) -> ASCOMResult<()> {
         execute_move(self, CLOSED_ANGLE).await
+    }
+
+    /// The FP2 firmware has no halt-motion opcode; once `[SMOV]` starts a
+    /// move it runs to completion. The ASCOM ICoverCalibratorV2 spec
+    /// requires `HaltCover` to throw `MethodNotImplementedException`
+    /// "if cover movement cannot be interrupted" — see
+    /// <https://ascom-standards.org/newdocs/covercalibrator.html>. We
+    /// honour that here.
+    ///
+    /// **Known ConformU divergence.** ConformU 4.3 flags this as an
+    /// "issue" anyway because `CoverCalibratorTester.TestHaltCover` does
+    /// not distinguish `MethodNotImplementedException` from other
+    /// exceptions in its async-cover branch (it treats every exception
+    /// as `Required.MustBeImplemented`). See
+    /// `docs/services/dsd-fp2.md` "Known limitations" for the upstream
+    /// bug report; the driver is intentionally spec-compliant.
+    async fn halt_cover(&self) -> ASCOMResult<()> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::NOT_IMPLEMENTED,
+            "HaltCover not implemented: FP2 firmware cannot interrupt an in-progress cover \
+             movement. Per ICoverCalibratorV2, HaltCover MUST throw MethodNotImplementedException \
+             when cover movement cannot be interrupted.",
+        ))
     }
 
     async fn calibrator_on(&self, brightness: u32) -> ASCOMResult<()> {
