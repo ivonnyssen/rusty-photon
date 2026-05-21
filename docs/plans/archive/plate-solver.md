@@ -10,10 +10,13 @@ Forward-work items called out by this plan are tracked as standalone
 issues:
 
 - #232 — Sentinel HTTP service supervision (Phase 5 deferred)
-- #233 — Committable m31 happy-path FITS fixture (Phase 6 deferred)
+- #233 — Committable m31 happy-path FITS fixture (Phase 6 deferred,
+  landed via committed M 101 fixture in PR #268)
 - #234 — Solve-time budget assertion in nightly (Phase 6 deferred)
 - #235 — Windows ARM64 verification (ADR-005 OQ 3, out of scope for v1)
-- #236 — Automated nightly hinted-vs-blind perf trending (Phase 7 deferred)
+- ~~#236 — Automated nightly hinted-vs-blind perf trending (Phase 7 deferred)~~
+  landed 2026-05-20; see Phase 7's "did not do" note for the
+  fixture-strip approach and the per-OS CSV artifact.
 
 The rp-side `plate_solve` MCP tool — listed by this plan's Phase 7 as
 forward work in the parent plan's Phase 6c-2 — has since landed
@@ -851,7 +854,11 @@ unattended. Reality:
 4. **The CI hinted-vs-blind perf comparison can't run unattended**
    because the m31 happy-path fixture is `@manual`-tagged (Phase 6
    forward work). Operators verify the speed advantage on their own
-   rig using the curl recipe documented in the design doc.
+   rig using the curl recipe documented in the design doc. *Update
+   2026-05-20:* this constraint lifted with the committed M 101
+   fixture (PR #268) + the fixture-strip in issue #236; the nightly
+   workflow now records both timings and uploads a per-OS CSV
+   artifact.
 
 What this phase delivered:
 
@@ -868,9 +875,14 @@ What this phase delivered:
 
 What this phase did **not** do (acknowledged forward work):
 
-- Automated nightly perf trending. Requires a committable solvable
-  FITS or a synthetic fixture-generation step that produces real
-  star data (hard). Operators verify locally per the runbook.
+- ~~Automated nightly perf trending.~~ Landed via issue #236
+  (2026-05-20): the M 101 fixture's FITS pointing breadcrumbs are
+  now stripped so a hint-less request produces a truly blind solve
+  (~48 s) that surfaces a real ~770× delta vs the hinted solve
+  (~63 ms) on the reference Linux box. The nightly
+  `plate-solver-smoke` workflow uploads a per-OS
+  `plate-solver-perf-<os>.csv` artifact per run. Regression
+  assertion on the absolute number stays with #234.
 - `rp`'s `plate_solve` MCP tool implementation that performs the
   hours→degrees conversion and sources `search_radius_deg` from rp
   config — that's Phase 6c-2 in the parent plan

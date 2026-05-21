@@ -321,11 +321,28 @@ time curl -s -X POST http://localhost:11131/api/v1/solve \
   -d '{"fits_path": "/path/to/m101_known.fits", "timeout": "120s"}'
 ```
 
-The hinted call typically completes in 1–3 s; the blind call takes
-10× to 100× longer (or hits the timeout). This is the speed
-advantage ADR-005 cites; if it disappears in practice, the wrapper
-isn't being invoked correctly or ASTAP's index database is
-mismatched to the FOV.
+Reference measurements on the committed `m101_known.fits` fixture
+(Linux x64 reference box, ASTAP CLI 2026.05.18, D05 database):
+
+- Hinted: **~63 ms**
+- Blind: **~48 s** (~770× slower)
+
+The committed fixture has its FITS pointing breadcrumbs (`RA`,
+`DEC`, `OBJCTRA`, `OBJCTDEC`, `OBJECT`) stripped — see issue #236 —
+so the "blind" measurement above truly walks ASTAP's search
+spiral. Operator-captured FITS that retain those header keys will
+behave very differently in blind mode: ASTAP reads the cards as a
+free hint and finishes in milliseconds, masking any hint-pipeline
+regression. To reproduce the spread above on your own captures,
+either supply the wrong start position via `ra_hint`/`dec_hint`
+or strip the pointing keys from a fixture copy.
+
+If the spread disappears entirely (hinted is not materially faster
+than blind on a header-less fixture), the wrapper isn't being
+invoked correctly or ASTAP's index database is mismatched to the
+FOV. The nightly `plate-solver-smoke` workflow trends both numbers
+automatically per OS — see issue #236 and the per-run
+`plate-solver-perf-<os>` CSV artifacts.
 
 ### Configuration Validation at Startup
 
