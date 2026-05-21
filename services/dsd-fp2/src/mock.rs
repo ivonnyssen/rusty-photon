@@ -335,6 +335,37 @@ mod tests {
         assert!(state.light_on().await);
     }
 
+    // ============================================================================
+    // Malformed-arg defensive branches. `Command::encode()` only ever emits
+    // well-formed bytes, so these arms can't fire from production today —
+    // they exist as a guard against a future encoding bug. Test them
+    // directly so a regression in `encode()` (or a hand-crafted bad command
+    // from a test) gets a clear diagnostic instead of silently being
+    // mis-interpreted by the mock.
+    // ============================================================================
+
+    #[tokio::test]
+    async fn strg_with_non_numeric_arg_returns_diagnostic() {
+        let state = MockState::default();
+        let resp = round_trip(&state, "[STRGfoo]").await;
+        assert_eq!(resp, "(MOCK_BAD_ARG)");
+    }
+
+    #[tokio::test]
+    async fn slon_with_invalid_arg_returns_diagnostic() {
+        let state = MockState::default();
+        // Production only ever sends "0" or "1"; anything else is a bug.
+        let resp = round_trip(&state, "[SLON2]").await;
+        assert_eq!(resp, "(MOCK_BAD_ARG)");
+    }
+
+    #[tokio::test]
+    async fn slbr_with_non_numeric_arg_returns_diagnostic() {
+        let state = MockState::default();
+        let resp = round_trip(&state, "[SLBRabcd]").await;
+        assert_eq!(resp, "(MOCK_BAD_ARG)");
+    }
+
     #[tokio::test]
     async fn factory_default_returns_open_transport() {
         let factory = MockTransportFactory::default();
