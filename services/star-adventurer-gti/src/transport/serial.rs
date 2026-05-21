@@ -60,8 +60,19 @@ impl TransportFactory for SerialTransportFactory {
             "opening Sky-Watcher serial transport"
         );
 
+        // Note: no `.timeout(self.command_timeout)` on the tokio-serial
+        // builder. `SerialFrameTransport`'s `with_read_timeout` /
+        // `with_write_timeout` already enforces the per-call deadline
+        // via `tokio::time::timeout`; adding a parallel port-level
+        // (termios `VTIME`) timeout creates two timers set to the same
+        // value with no obvious answer to "which fires first". The
+        // shared crate reclassifies `io::ErrorKind::TimedOut` from the
+        // wrapped stream back to `TransportError::Timeout`, so if a
+        // future runtime ever does need a port-level timeout the
+        // classification stays right — but reasoning is still simpler
+        // with a single source. Matches the ppba-driver / qhy-focuser
+        // shape (see PR #280).
         let stream = tokio_serial::new(&self.port, self.baud_rate)
-            .timeout(self.command_timeout)
             .open_native_async()
             .map_err(|e| {
                 TransportError::Open(io::Error::other(format!(

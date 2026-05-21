@@ -5,7 +5,11 @@
 //! stay focused on protocol dispatch. The methods fall into a few
 //! buckets:
 //!
-//! - **Error mapping**: [`MountDevice::ascom`].
+//! - **Error mapping**: [`MountDevice::ascom_session_err`],
+//!   [`MountDevice::ascom_transport_err`] (for the cross-crate types
+//!   the orphan rule blocks a direct `From`-impl for; everything else
+//!   converts via the `From<StarAdvError> for ASCOMError` impl in
+//!   [`crate::error`]).
 //! - **Validation**: [`MountDevice::validate_coordinates`],
 //!   [`MountDevice::check_within_safe_envelope`], and the free
 //!   [`validate_guide_rate`] used by `set_guide_rate_*`.
@@ -92,18 +96,18 @@ pub(super) fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<f64> {
 }
 
 impl MountDevice {
-    /// Map a [`StarAdvError`] to its ASCOM equivalent. Used by every
-    /// trait method that hits the transport / coordinate layer.
-    pub(super) fn ascom(e: StarAdvError) -> ASCOMError {
-        e.to_ascom_error()
-    }
-
     /// Map a `SessionError<SkywatcherCodecError>` (from
     /// `SharedTransport::acquire`) into the closest ASCOM error.
+    ///
+    /// Lives here rather than as a `From<…> for ASCOMError` impl
+    /// because the orphan rule blocks that conversion (both
+    /// `SessionError<_>` and `ASCOMError` are foreign types). Routes
+    /// through the two-step chain `SessionError` → [`StarAdvError`]
+    /// → [`ASCOMError`] (both individually `From`-convertible).
     pub(super) fn ascom_session_err(
         err: SessionError<crate::codec::SkywatcherCodecError>,
     ) -> ASCOMError {
-        StarAdvError::from(err).to_ascom_error()
+        StarAdvError::from(err).into()
     }
 
     /// Map a `TransportError` (from `Session::close`) into the closest
@@ -111,9 +115,12 @@ impl MountDevice {
     /// any failure here surfaces to the ASCOM caller rather than
     /// being swallowed by a `tracing::warn!` (the pre-migration
     /// pattern, removed by the Phase E migration).
+    ///
+    /// Like [`ascom_session_err`](Self::ascom_session_err), the orphan
+    /// rule rules out a direct `From<TransportError> for ASCOMError`;
+    /// route through [`StarAdvError`] instead.
     pub(super) fn ascom_transport_err(err: TransportError) -> ASCOMError {
-        StarAdvError::from(SessionError::<crate::codec::SkywatcherCodecError>::Transport(err))
-            .to_ascom_error()
+        StarAdvError::from(err).into()
     }
 
     /// Validate an RA value (hours, [0, 24)) and a Dec value (degrees,
@@ -256,10 +263,10 @@ impl MountDevice {
         let guard = self.session.read().await;
         let session = guard
             .as_ref()
-            .ok_or_else(|| Self::ascom(StarAdvError::NotConnected))?;
+            .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
         stop_axis_and_wait(&self.manager, session, axis, AXIS_STOP_TIMEOUT)
             .await
-            .map_err(Self::ascom)
+            .map_err(ASCOMError::from)
     }
 
     /// Block until the slew-completion watcher clears `slew_in_progress`,
@@ -323,7 +330,7 @@ impl MountDevice {
                         format!("park-config read task join error: {e}"),
                     )
                 })?;
-            result.map_err(Self::ascom)?
+            result.map_err(ASCOMError::from)?
         } else {
             (self.config.park_ra_ticks, self.config.park_dec_ticks)
         };
@@ -427,7 +434,7 @@ impl MountDevice {
                 },
             )
             .await
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         self.manager.seed_ra_position(ra_ticks).await;
         self.manager
             .send(
@@ -438,7 +445,7 @@ impl MountDevice {
                 },
             )
             .await
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         self.manager.seed_dec_position(dec_ticks).await;
         info!(
             seeded_ra_ticks = ra_ticks,
@@ -480,7 +487,7 @@ impl MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
         let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
         let (ra_ticks, dec_ticks) = if target_is_flipped {
@@ -587,16 +594,16 @@ impl MountDevice {
             let guard = self.session.read().await;
             let session = guard
                 .as_ref()
-                .ok_or_else(|| Self::ascom(StarAdvError::NotConnected))?;
+                .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
             self.stop_and_wait(Axis::Ra).await?;
             self.state.write().await.tracking_requested = false;
             issue_slew_axis(&self.manager, session, Axis::Ra, ra_delta)
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
             self.stop_and_wait(Axis::Dec).await?;
             issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
             Ok(())
         }
         .await;
@@ -622,7 +629,7 @@ impl MountDevice {
             tracking_was_on,
         )
         .await
-        .map_err(Self::ascom)?;
+        .map_err(ASCOMError::from)?;
         Ok(())
     }
 }

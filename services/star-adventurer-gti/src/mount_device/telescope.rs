@@ -115,7 +115,7 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (ra, _dec) = encoder_to_celestial(
             snap.ra.position_ticks,
             snap.dec.position_ticks,
@@ -140,7 +140,7 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (_ra, dec) = encoder_to_celestial(
             snap.ra.position_ticks,
             snap.dec.position_ticks,
@@ -160,7 +160,7 @@ impl Telescope for MountDevice {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (_alt, az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(az)
     }
@@ -169,14 +169,14 @@ impl Telescope for MountDevice {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (alt, _az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(alt)
     }
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
         local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)
+            .map_err(ASCOMError::from)
     }
 
     async fn slewing(&self) -> ASCOMResult<bool> {
@@ -232,12 +232,12 @@ impl Telescope for MountDevice {
             let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
             enable_sidereal_tracking_ra(&self.manager, session, &params)
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
         } else {
             // Decelerate to stop on RA.
             self.send(Command::StopMotion(Axis::Ra))
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
         }
         self.state.write().await.tracking_requested = tracking;
         Ok(())
@@ -317,7 +317,7 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
             snap.dec.position_ticks,
@@ -383,7 +383,7 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
             snap.dec.position_ticks,
@@ -478,7 +478,7 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         // Reject syncs that would set the encoder outside the
         // mount's safe mechanical envelope — a bad sync would let
         // the *next* tracking step push the OTA into a hard stop.
@@ -495,7 +495,7 @@ impl Telescope for MountDevice {
             ticks: ra_ticks,
         })
         .await
-        .map_err(Self::ascom)?;
+        .map_err(ASCOMError::from)?;
         // Publish the just-written RA position to the cached snapshot
         // so an immediate `RightAscension` read reflects the sync
         // without having to wait for the next background poll. Done
@@ -506,7 +506,7 @@ impl Telescope for MountDevice {
             ticks: dec_ticks,
         })
         .await
-        .map_err(Self::ascom)?;
+        .map_err(ASCOMError::from)?;
         self.manager.seed_dec_position(dec_ticks).await;
         // Per ASCOM ITelescopeV3, a successful Sync sets
         // TargetRightAscension / TargetDeclination to the synced
@@ -557,7 +557,7 @@ impl Telescope for MountDevice {
         // of 3-7 s, leaving 45-120 arc-second RA residuals. The
         // pickup loop closes the gap cleanly.
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
 
         // Phase 6: determine target pier side via the flip policy. With
         // `flip_policy.enabled = false` (the default), `chosen_side`
@@ -648,7 +648,7 @@ impl Telescope for MountDevice {
             if self.state.read().await.tracking_requested {
                 self.send(Command::StopMotion(Axis::Ra))
                     .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
                 self.state.write().await.tracking_requested = false;
             }
             // Slew both axes to the loaded park target.
@@ -690,7 +690,7 @@ impl Telescope for MountDevice {
                 };
                 self.send(Command::SetMotionMode { axis, mode })
                     .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
                 // No `:I` in Goto mode — the firmware computes slew speed
                 // internally. See the matching note in
                 // `slew_to_coordinates_async`.
@@ -699,10 +699,10 @@ impl Telescope for MountDevice {
                     ticks: target_ticks,
                 })
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
                 self.send(Command::StartMotion(axis))
                     .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
             }
             Ok(())
         }
@@ -729,7 +729,7 @@ impl Telescope for MountDevice {
             settle,
         )
         .await
-        .map_err(Self::ascom)?;
+        .map_err(ASCOMError::from)?;
         Ok(())
     }
 
@@ -796,7 +796,7 @@ impl Telescope for MountDevice {
                     format!("set_park write task join error: {e}"),
                 )
             })?
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         // Only mutate the in-memory target after the disk write
         // succeeds — otherwise a failed write would leave the live
         // park target out of sync with what's persisted.
@@ -1005,16 +1005,16 @@ impl Telescope for MountDevice {
             self.stop_and_wait(axis).await?;
             self.send(Command::SetMotionMode { axis, mode })
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
             self.send(Command::SetStepPeriod {
                 axis,
                 period: shifted_period,
             })
             .await
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
             self.send(Command::StartMotion(axis))
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
             Ok(())
         }
         .await;
@@ -1031,7 +1031,7 @@ impl Telescope for MountDevice {
             tracking_was_on,
         )
         .await
-        .map_err(Self::ascom)?;
+        .map_err(ASCOMError::from)?;
         debug!(?direction, ?duration, axis = ?axis, "pulse_guide spawned");
         Ok(())
     }

@@ -490,17 +490,17 @@ fn ascom_transport_err_helper_flattens_transport_error_into_ascom() {
 #[test]
 fn ascom_helper_maps_timekeeping_to_invalid_operation() {
     // Every LST-using trait method propagates ERFA failures via
-    // `local_sidereal_time_hours(...).map_err(Self::ascom)?`. A
-    // mount-level trait test would need a clock-injection seam
+    // `local_sidereal_time_hours(...).map_err(ASCOMError::from)?`.
+    // A mount-level trait test would need a clock-injection seam
     // (host `SystemTime` can not even represent ERFA's
     // `IYMIN = -4799` floor on Windows, where FILETIME starts in
     // 1601). Instead, exercise the conversion the trait methods
-    // actually use — `Self::ascom(Timekeeping(_))` — so the
+    // actually use — `ASCOMError::from(StarAdvError::Timekeeping(_))`
+    // via the `From<StarAdvError> for ASCOMError` impl — so the
     // propagation pattern has a runtime assertion in this file
     // alongside the trait code.
-    let err = MountDevice::ascom(StarAdvError::Timekeeping(
-        "ERFA Dtf2d rejected UTC -5000-01-01 (code -1)".into(),
-    ));
+    let err: ASCOMError =
+        StarAdvError::Timekeeping("ERFA Dtf2d rejected UTC -5000-01-01 (code -1)".into()).into();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     assert!(
         err.message.contains("timekeeping"),

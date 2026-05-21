@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, TransportFactory, WhileOpen,
+    Connection, Hooks, Session, SharedTransport, TransportFactory, WhileOpen,
 };
 use skywatcher_motor_protocol::{Axis, AxisStatus, Command, Response};
 use tokio::sync::RwLock;
@@ -194,8 +194,7 @@ impl MountManager {
             .request(command.clone())
             .await
             .map_err(StarAdvError::from)?;
-        decode_frame_for(&command, &bytes)
-            .map_err(|SkywatcherCodecError::Protocol(pe)| StarAdvError::Protocol(pe))
+        decode_frame_for(&command, &bytes).map_err(StarAdvError::from)
     }
 
     /// Synchronously round-trip `:f` + `:j` on both axes via the
@@ -393,22 +392,26 @@ async fn poll_loop(
 /// to the protocol crate's typed [`Response`]. Used inside `handshake`
 /// and `teardown` (which receive `&Connection<C>` per the `Hooks`
 /// contract, not a `Session`).
+///
+/// Transport-side failures flow through the dedicated
+/// [`SkywatcherCodecError::Transport`] variant rather than being
+/// stringified into [`ProtocolError::FrameError`]; the device layer's
+/// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
+/// routes the inner [`TransportError`] through the same
+/// `transport_to_staradv` helper a top-level
+/// `SessionError::Transport(_)` uses, so a connect-time timeout gets
+/// classified as `StarAdvError::Timeout` instead of collapsing to
+/// `Protocol(FrameError("transport timeout after 5s"))` and surfacing
+/// as the generic `INVALID_OPERATION`.
 async fn request_typed(
     conn: &Connection<SkywatcherCodec>,
     cmd: Command,
 ) -> std::result::Result<Response, SkywatcherCodecError> {
-    let bytes = conn.request(cmd.clone()).await.map_err(|e| match e {
-        SessionError::Codec(c) => c,
-        SessionError::Transport(t) => SkywatcherCodecError::Protocol(
-            skywatcher_motor_protocol::ProtocolError::FrameError(t.to_string()),
-        ),
-        SessionError::SkipExhausted(n) => {
-            SkywatcherCodecError::Protocol(skywatcher_motor_protocol::ProtocolError::FrameError(
-                format!("skipped {n} non-matching frame(s)"),
-            ))
-        }
-    })?;
-    decode_frame_for(&cmd, &bytes)
+    let bytes = conn
+        .request(cmd.clone())
+        .await
+        .map_err(SkywatcherCodecError::from)?;
+    decode_frame_for(&cmd, &bytes).map_err(SkywatcherCodecError::Protocol)
 }
 
 async fn poll_axis_via_ctx(
@@ -421,14 +424,14 @@ async fn poll_axis_via_ctx(
         .await
         .map_err(StarAdvError::from)?;
     let pos = decode_frame_for(&Command::InquirePosition(axis), &pos_bytes)
-        .map_err(|SkywatcherCodecError::Protocol(pe)| StarAdvError::Protocol(pe))?;
+        .map_err(StarAdvError::from)?;
     out.position_ticks = expect_position_runtime(pos)?;
     let status_bytes = ctx
         .request(Command::InquireStatus(axis))
         .await
         .map_err(StarAdvError::from)?;
     let status = decode_frame_for(&Command::InquireStatus(axis), &status_bytes)
-        .map_err(|SkywatcherCodecError::Protocol(pe)| StarAdvError::Protocol(pe))?;
+        .map_err(StarAdvError::from)?;
     let s = expect_status_runtime(status)?;
     out.running = s.running;
     out.goto = s.goto;
@@ -837,6 +840,118 @@ mod tests {
         assert!(
             forward.iter().any(|f| f.starts_with(b":K1")),
             "teardown should issue :K1; got {forward:?}"
+        );
+    }
+
+    // ========================================================================
+    // Handshake transport-error classification: a TransportError surfaced
+    // through the handshake hook (which returns Result<_, SkywatcherCodecError>)
+    // must reach the device layer with its variant preserved, so a
+    // connect-time timeout / EOF / open failure maps to the structured
+    // StarAdvError::Timeout / ConnectionFailed instead of collapsing to
+    // Protocol(FrameError("transport timeout after …")) and being routed
+    // through the generic INVALID_OPERATION arm. See PR #280 for the
+    // bug class.
+    // ========================================================================
+
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Transport whose first `recv_frame` returns the configured
+    /// `TransportError` variant (consumed once via the AtomicBool gate);
+    /// subsequent operations error with `Eof` so the test fails fast if
+    /// the manager unexpectedly retries.
+    struct FailingRecvTransport {
+        fail_with: std::sync::Mutex<Option<TransportError>>,
+        consumed: AtomicBool,
+    }
+
+    #[async_trait]
+    impl FrameTransport for FailingRecvTransport {
+        async fn send_frame(&mut self, _bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn recv_frame(
+            &mut self,
+            _buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            if !self.consumed.swap(true, Ordering::SeqCst) {
+                let mut slot = self.fail_with.lock().unwrap();
+                if let Some(err) = slot.take() {
+                    return Err(err);
+                }
+            }
+            Err(TransportError::Eof)
+        }
+    }
+
+    struct FailingRecvFactory {
+        fail_with: std::sync::Mutex<Option<TransportError>>,
+    }
+
+    #[async_trait]
+    impl TransportFactory for FailingRecvFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let err = self.fail_with.lock().unwrap().take();
+            Ok(Box::new(FailingRecvTransport {
+                fail_with: std::sync::Mutex::new(err),
+                consumed: AtomicBool::new(false),
+            }))
+        }
+    }
+
+    fn make_manager_with_failing_recv(err: TransportError) -> Arc<MountManager> {
+        let factory = Arc::new(FailingRecvFactory {
+            fail_with: std::sync::Mutex::new(Some(err)),
+        });
+        MountManager::new(Config::default(), factory)
+    }
+
+    #[tokio::test]
+    async fn handshake_timeout_surfaces_as_staradv_timeout_not_protocol() {
+        // A read timeout during the first handshake command (`:F1`)
+        // must propagate as `StarAdvError::Timeout`, not the generic
+        // `Protocol(FrameError("transport timeout after …"))` the
+        // pre-PR-280 string-collapse would produce.
+        let manager = make_manager_with_failing_recv(TransportError::Timeout(
+            std::time::Duration::from_secs(5),
+        ));
+        let err = manager
+            .transport()
+            .acquire()
+            .await
+            .expect_err("handshake timeout must surface as Err");
+        let mapped = StarAdvError::from(err);
+        match mapped {
+            StarAdvError::Timeout(s) => assert!(s.contains('5')),
+            other => panic!("expected StarAdvError::Timeout, got {other:?}"),
+        }
+        assert!(
+            !manager.is_available(),
+            "RollbackGuard should roll the refcount back on handshake failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_eof_surfaces_as_staradv_transport_connection_closed() {
+        // EOF mid-handshake → device-layer `Transport("connection closed")`,
+        // not `Protocol(FrameError("connection closed"))`.
+        let manager = make_manager_with_failing_recv(TransportError::Eof);
+        let err = manager
+            .transport()
+            .acquire()
+            .await
+            .expect_err("handshake EOF must surface as Err");
+        let mapped = StarAdvError::from(err);
+        match mapped {
+            StarAdvError::Transport(s) => assert!(s.contains("connection closed")),
+            other => panic!("expected StarAdvError::Transport, got {other:?}"),
+        }
+        assert!(
+            !manager.is_available(),
+            "RollbackGuard should roll the refcount back on handshake failure"
         );
     }
 }

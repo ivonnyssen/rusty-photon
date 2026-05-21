@@ -64,6 +64,19 @@ impl StarAdvError {
     }
 }
 
+/// `?` and `Into::into` sugar for the same conversion as
+/// [`StarAdvError::to_ascom_error`]. The method stays as the explicit
+/// form; this impl lets idiomatic Rust call sites convert implicitly,
+/// matching the [`PpbaError`]/[`QhyFocuserError`] shape.
+///
+/// [`PpbaError`]: ../../../services/ppba-driver/src/error.rs
+/// [`QhyFocuserError`]: ../../../services/qhy-focuser/src/error.rs
+impl From<StarAdvError> for ASCOMError {
+    fn from(err: StarAdvError) -> Self {
+        err.to_ascom_error()
+    }
+}
+
 /// Driver result alias.
 pub type Result<T> = std::result::Result<T, StarAdvError>;
 
