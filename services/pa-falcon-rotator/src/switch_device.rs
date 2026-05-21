@@ -7,18 +7,27 @@
 //! See the design doc's
 //! [Status Switch Device](../../../docs/services/falcon-rotator.md#status-switch-device)
 //! section for the contract.
+//!
+//! Connection state is the device's [`Session<FalconCodec>`] slot, the
+//! same shape as [`crate::rotator_device::FalconRotatorDevice`]. The two
+//! devices share a single [`FalconManager`] and therefore a single
+//! [`rusty_photon_shared_transport::SharedTransport`] — refcounting on
+//! that transport is what makes both devices' connect/disconnect calls
+//! cooperate on one open serial port.
 
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::codec::FalconCodec;
 use crate::config::SwitchConfig;
 use crate::error::FalconRotatorError;
-use crate::serial_manager::SerialManager;
+use crate::manager::FalconManager;
 
 /// Number of switches advertised by this device. The design doc pins this at 2
 /// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
@@ -29,10 +38,10 @@ const SWITCH_ID_VOLTAGE: usize = 0;
 /// Id 1: limit-hit flag (mirrors `FA.limit_detect`).
 const SWITCH_ID_LIMIT: usize = 1;
 
-/// Voltage-switch metadata pinned by the design doc's Switch layout table:
-/// `MaxSwitchValue = 1023` assumes a 10-bit ADC on the Falcon's MCU; widening
-/// it is a follow-up tracked in the design doc once hardware characterisation
-/// is in hand.
+/// Voltage-switch metadata pinned by the design doc's Switch layout
+/// table: `MaxSwitchValue = 1023` assumes a 10-bit ADC on the Falcon's
+/// MCU; widening it is a follow-up tracked in the design doc once
+/// hardware characterisation is in hand.
 const VOLTAGE_SWITCH_NAME: &str = "Input Voltage (raw)";
 const VOLTAGE_SWITCH_DESCRIPTION: &str =
     "Raw input-voltage ADC count from the Falcon's VS command; scale not yet calibrated";
@@ -47,11 +56,12 @@ const LIMIT_MIN_VALUE: f64 = 0.0;
 const LIMIT_MAX_VALUE: f64 = 1.0;
 const LIMIT_STEP: f64 = 1.0;
 
-/// Guard that returns `NOT_CONNECTED` if the device is not connected. Mirrors
-/// `ppba-driver`'s `ensure_connected!` macro: every device-bound Switch method
-/// runs this **before** id validation so a disconnected client always sees
-/// `NOT_CONNECTED` (1031) regardless of the id passed in, matching the design
-/// doc's [Error Model](../../../docs/services/falcon-rotator.md#error-model).
+/// Guard that returns `NOT_CONNECTED` if the device is not connected.
+/// Mirrors `ppba-driver`'s `ensure_connected!` macro: every device-bound
+/// Switch method runs this **before** id validation so a disconnected
+/// client always sees `NOT_CONNECTED` (1031) regardless of the id
+/// passed in, matching the design doc's
+/// [Error Model](../../../docs/services/falcon-rotator.md#error-model).
 macro_rules! ensure_connected {
     ($self:ident) => {
         if !$self.connected().await.is_ok_and(|connected| connected) {
@@ -61,8 +71,8 @@ macro_rules! ensure_connected {
     };
 }
 
-/// Reject switch ids outside `0..SWITCH_COUNT` with `INVALID_VALUE` per the
-/// ASCOM convention: id-range validation precedes operation-permission
+/// Reject switch ids outside `0..SWITCH_COUNT` with `INVALID_VALUE` per
+/// the ASCOM convention: id-range validation precedes operation-permission
 /// checks, so out-of-range ids never hit `INVALID_OPERATION` paths.
 fn validate_id(id: usize) -> ASCOMResult<()> {
     if id >= SWITCH_COUNT {
@@ -79,22 +89,32 @@ fn validate_id(id: usize) -> ASCOMResult<()> {
 #[derive(derive_more::Debug)]
 pub struct FalconStatusSwitchDevice {
     config: SwitchConfig,
-    requested_connection: Arc<RwLock<bool>>,
+    /// `Some` between successful acquire and explicit close. The session
+    /// existing is the truth — no second-source bool to desync.
     #[debug(skip)]
-    serial_manager: Arc<SerialManager>,
+    session: Arc<RwLock<Option<Session<FalconCodec>>>>,
+    #[debug(skip)]
+    manager: Arc<FalconManager>,
 }
 
 impl FalconStatusSwitchDevice {
-    pub fn new(config: SwitchConfig, serial_manager: Arc<SerialManager>) -> Self {
+    pub fn new(config: SwitchConfig, manager: Arc<FalconManager>) -> Self {
         Self {
             config,
-            requested_connection: Arc::new(RwLock::new(false)),
-            serial_manager,
+            session: Arc::new(RwLock::new(None)),
+            manager,
         }
     }
 
-    fn to_ascom_error(err: FalconRotatorError) -> ASCOMError {
-        err.to_ascom_error()
+    /// Borrow the held session for one request. Returns `NotConnected` if
+    /// the device's session slot is empty.
+    async fn with_session<F, T>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: AsyncFnOnce(&Session<FalconCodec>) -> Result<T, FalconRotatorError>,
+    {
+        let guard = self.session.read().await;
+        let session = guard.as_ref().ok_or(FalconRotatorError::NotConnected)?;
+        Ok(f(session).await?)
     }
 }
 
@@ -113,35 +133,49 @@ impl Device for FalconStatusSwitchDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        let requested = *self.requested_connection.read().await;
-        let serial_ok = self.serial_manager.is_available();
-        Ok(requested && serial_ok)
+        Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // Hold the write lock across the whole check-and-modify so two
         // concurrent `Connected=true` requests for this switch don't both
-        // increment the shared SerialManager refcount before either sets
-        // the per-device flag. Same fix shape as `FalconRotatorDevice` —
-        // see PR #241 round-5 review.
-        let mut requested = self.requested_connection.write().await;
-        let serial_ok = self.serial_manager.is_available();
-        let already = *requested && serial_ok;
-        if already == connected {
-            return Ok(());
-        }
-        match connected {
-            true => {
-                self.serial_manager
-                    .connect()
+        // observe `None` and both call `acquire()` (same fix shape as
+        // `FalconRotatorDevice` — PR #241 round-5).
+        let mut slot = self.session.write().await;
+        match (connected, slot.is_some()) {
+            (true, false) => {
+                // `?` does SessionError → FalconRotatorError via the
+                // .map_err (the SessionError generic carries
+                // FalconCodecError), then FalconRotatorError → ASCOMError
+                // via the From impl in error.rs.
+                let session = self
+                    .manager
+                    .transport()
+                    .acquire()
                     .await
-                    .map_err(Self::to_ascom_error)?;
-                *requested = true;
+                    .map_err(FalconRotatorError::from)?;
+                *slot = Some(session);
+                debug!("Status Switch device connected");
             }
-            false => {
-                *requested = false;
-                self.serial_manager.disconnect().await;
+            (false, true) => {
+                if let Some(session) = slot.take() {
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for FalconRotatorError`
+                    // handles the conversion, and the existing
+                    // `From<FalconRotatorError> for ASCOMError` does the
+                    // second hop on `?`.
+                    session.close().await.map_err(FalconRotatorError::from)?;
+                }
+                // Only reset per-session driver state when this disconnect
+                // truly closed the transport. If the rotator device still
+                // holds a session, the manager stays available and state
+                // should stay intact for it.
+                if !self.manager.is_available() {
+                    self.manager.clear_session_state().await;
+                }
+                debug!("Status Switch device disconnected");
             }
+            _ => {}
         }
         Ok(())
     }
@@ -192,10 +226,11 @@ impl Switch for FalconStatusSwitchDevice {
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
         validate_id(id)?;
-        // ASCOM rule: GetSwitch returns false at MinSwitchValue, true otherwise.
-        // For the voltage switch (Min = 0) that means "true iff raw > 0".
-        // For the limit-hit switch (Min = 0, Max = 1) the 0.5 threshold is
-        // the conventional midpoint test, matching the design doc's contract.
+        // ASCOM rule: GetSwitch returns false at MinSwitchValue, true
+        // otherwise. For the voltage switch (Min = 0) that means
+        // "true iff raw > 0". For the limit-hit switch (Min = 0, Max = 1)
+        // the 0.5 threshold is the conventional midpoint test, matching
+        // the design doc's contract.
         let value = self.get_switch_value(id).await?;
         let threshold = match id {
             SWITCH_ID_VOLTAGE => VOLTAGE_MIN_VALUE,
@@ -209,18 +244,20 @@ impl Switch for FalconStatusSwitchDevice {
         ensure_connected!(self);
         validate_id(id)?;
         match id {
-            SWITCH_ID_VOLTAGE => self
-                .serial_manager
-                .read_voltage_raw()
+            SWITCH_ID_VOLTAGE => {
+                self.with_session(async |session| {
+                    let v = self.manager.read_voltage_raw(session).await?;
+                    Ok(f64::from(v))
+                })
                 .await
-                .map(f64::from)
-                .map_err(Self::to_ascom_error),
-            SWITCH_ID_LIMIT => self
-                .serial_manager
-                .read_status()
+            }
+            SWITCH_ID_LIMIT => {
+                self.with_session(async |session| {
+                    let status = self.manager.read_status(session).await?;
+                    Ok(if status.limit_detect { 1.0 } else { 0.0 })
+                })
                 .await
-                .map(|s| if s.limit_detect { 1.0 } else { 0.0 })
-                .map_err(Self::to_ascom_error),
+            }
             _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
         }
     }
@@ -325,37 +362,24 @@ impl Switch for FalconStatusSwitchDevice {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::time::Duration;
-
-    use async_trait::async_trait;
-
     use super::*;
-    use crate::config::Config;
-    use crate::io::{SerialPair, SerialPortFactory};
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 
-    /// Test-only no-op factory: never used at runtime (the connection-guard
-    /// tests assert behaviour while disconnected, so `open` is never called).
+    /// Test-only no-op factory: never used at runtime (the
+    /// connection-guard tests assert behaviour while disconnected, so
+    /// `open` is never called).
     struct NoopFactory;
 
     #[async_trait]
-    impl SerialPortFactory for NoopFactory {
-        async fn open(
-            &self,
-            _port: &str,
-            _baud_rate: u32,
-            _timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            unimplemented!("test factory should never open a port")
-        }
-
-        async fn port_exists(&self, _port: &str) -> bool {
-            true
+    impl TransportFactory for NoopFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            unimplemented!("test factory should never open a transport")
         }
     }
 
     fn disconnected_device() -> FalconStatusSwitchDevice {
-        let config = Config::default();
-        let manager = Arc::new(SerialManager::new(config, Arc::new(NoopFactory)));
+        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
         FalconStatusSwitchDevice::new(SwitchConfig::default(), manager)
     }
 
@@ -430,11 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_reports_false_when_serial_unavailable() {
-        // disconnected_device wires the NoopFactory which never opens —
-        // serial_manager.is_available() stays false even though
-        // requested_connection has never been written. Exercises the
-        // `Ok(requested && serial_ok)` body even on the disconnected path.
+    async fn connected_reports_false_when_transport_unavailable() {
         let device = disconnected_device();
         assert!(!device.connected().await.unwrap());
     }
@@ -488,23 +508,19 @@ mod tests {
 }
 
 /// Connected-device tests for the seven Switch getters. Gated on
-/// `feature = "mock"` so the rich `MockSerialPortFactory` can stand in for
-/// the real Falcon — matching the qhy-focuser / serial_manager precedent.
+/// `feature = "mock"` so the rich
+/// [`MockFalconTransportFactory`](crate::mock::MockFalconTransportFactory)
+/// can stand in for the real Falcon.
 #[cfg(all(test, feature = "mock"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod mock_tests {
     use super::*;
-    use crate::config::Config;
-    use crate::io::SerialPortFactory;
-    use crate::mock::MockSerialPortFactory;
+    use crate::mock::MockFalconTransportFactory;
+    use rusty_photon_shared_transport::TransportFactory;
 
-    async fn connected_device() -> (FalconStatusSwitchDevice, Arc<MockSerialPortFactory>) {
-        let config = Config::default();
-        let factory = Arc::new(MockSerialPortFactory::default());
-        let manager = Arc::new(SerialManager::new(
-            config,
-            Arc::clone(&factory) as Arc<dyn SerialPortFactory>,
-        ));
+    async fn connected_device() -> (FalconStatusSwitchDevice, Arc<MockFalconTransportFactory>) {
+        let factory = Arc::new(MockFalconTransportFactory::default());
+        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
         let device = FalconStatusSwitchDevice::new(SwitchConfig::default(), manager);
         device.set_connected(true).await.unwrap();
         (device, factory)
@@ -627,7 +643,6 @@ mod mock_tests {
     #[tokio::test]
     async fn get_switch_value_id_1_is_zero_when_limit_clear() {
         let (device, _) = connected_device().await;
-        // limit_detect defaults to false in the mock.
         let value = device.get_switch_value(SWITCH_ID_LIMIT).await.unwrap();
         assert_eq!(value, 0.0);
     }

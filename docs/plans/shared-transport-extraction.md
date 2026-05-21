@@ -2,9 +2,9 @@
 
 ## Status
 
-**Phases A–B merged on `main`; Phase C implemented on
-`feature/phase-c-qhy-focuser-shared-transport` (PR #280), in review.
-Phases D–E (`pa-falcon-rotator`, `star-adventurer-gti`) remain.**
+**Phases A–C merged on `main`; Phase D implemented on
+`feature/phase-d-falcon-rotator-shared-transport` (PR #282), in
+review. Phase E (`star-adventurer-gti`) remains.**
 
 * Phase A — landed via PR #269 (the
   `crates/rusty-photon-shared-transport/` crate; 31 tests).
@@ -13,16 +13,24 @@ Phases D–E (`pa-falcon-rotator`, `star-adventurer-gti`) remain.**
   `Option<Session<PpbaCodec>>`; `serial_manager.rs` was deleted in
   favour of `PpbaManager` + `Hooks { handshake, while_open, … }`.
   Closed issue #251 structurally.
-* Phase C — implemented (PR #280, in review). `qhy-focuser` is
-  migrated; `QhyCodec` carries the JSON encode/decode + `cmd_id↔idx`
-  matching (`max_skip = 5` for unsolicited position frames),
-  `FocuserManager` wraps `SharedTransport<QhyCodec>` + the cached
-  state, and `QhyFocuserDevice::set_connected` is the
-  `RwLock<Option<Session<QhyCodec>>>` shape. Legacy
-  `serial_manager.rs` (~1063 lines) and `io.rs` are deleted. Closes
-  issue #258 structurally. Detailed verification lives in the
-  Phase C section below.
-* Phases D–E — not started; rollout below describes each.
+* Phase C — landed via PR #280. `qhy-focuser` is migrated; `QhyCodec`
+  carries the JSON encode/decode + `cmd_id↔idx` matching
+  (`max_skip = 5` for unsolicited position frames), `FocuserManager`
+  wraps `SharedTransport<QhyCodec>` + the cached state, and
+  `QhyFocuserDevice::set_connected` is the
+  `RwLock<Option<Session<QhyCodec>>>` shape. Legacy `serial_manager.rs`
+  (~1063 lines) and `io.rs` are deleted. Closes issue #258
+  structurally. Detailed verification lives in the Phase C section
+  below.
+* Phase D — implemented (PR #282, in review). `pa-falcon-rotator` is
+  migrated; the two devices (`FalconRotatorDevice`,
+  `FalconStatusSwitchDevice`) now each hold an
+  `Option<Session<FalconCodec>>` and the lifecycle code that previously
+  lived in `pa-falcon-rotator/src/serial_manager.rs` has been deleted
+  in favour of `FalconManager` + `Hooks { handshake,
+  while_open: None, … }` (no poll loop — Falcon is the no-cache
+  outlier).
+* Phase E — not started; rollout below describes it.
 
 ## Motivation
 
@@ -730,18 +738,22 @@ fix with the new shape.
 `pa-falcon-rotator` is the only service with no polling task (by
 design — every property read is a fresh wire round-trip). After
 migration its `Hooks` is `while_open: None`. The five-command
-handshake (`F#`, `FV`, `DR:0`, `FA`, `VS`) becomes the handshake
-closure. The two devices (`FalconRotatorDevice` and
-`FalconStatusSwitchDevice`) each hold their own session.
+handshake (`F#`, `FV`, `DR:0`, `FA`, `VS`) is the handshake closure;
+the only state seeded inside it is the `last_limit_detected: None`
+reset (the no-cache design has no `CachedState` to populate). The
+two devices (`FalconRotatorDevice` and `FalconStatusSwitchDevice`)
+each hold their own `Option<Session<FalconCodec>>` and route every
+protocol call through a small `with_session` helper.
 
-Coordination: PR #241 (Phase 2 scaffold, `@wip`) lands as-is with
-the canonical lock-held shape; pa-falcon-rotator Phase 3a-3e then
-ships the protocol implementation against `serial_manager.rs` in the
-existing per-service shape. Phase D (below) then deletes
-`serial_manager.rs` and rewrites `set_connected` against
-`rusty-photon-shared-transport`. This trades some throwaway lifecycle code in
-Phase 3 for unblocking PR #241's timeline and keeping the Phase 3
-PRs focused on protocol correctness rather than lifecycle plumbing.
+Migration history: PR #241 (Phase 2 scaffold, `@wip`) landed with the
+canonical lock-held shape; pa-falcon-rotator Phase 3a-3e then shipped
+the protocol implementation against `serial_manager.rs` in the
+existing per-service shape. Phase D (this work) deleted
+`serial_manager.rs` and rewrote `set_connected` against
+`rusty-photon-shared-transport`. This traded some throwaway lifecycle
+code in Phase 3 for unblocking PR #241's timeline and keeping the
+Phase 3 PRs focused on protocol correctness rather than lifecycle
+plumbing.
 
 ### `star-adventurer-gti`
 
@@ -938,7 +950,7 @@ test suite; per-service duplicates were dropped per the original plan.
 
 ### Phase C — Migrate `qhy-focuser`
 
-Status: **implemented** on `feature/phase-c-qhy-focuser-shared-transport`.
+Status: **landed via PR #280**.
 
 `qhy-focuser` migrated second because:
 
@@ -981,20 +993,60 @@ duplicates were dropped per the original plan.
 
 ### Phase D — Migrate `pa-falcon-rotator`
 
-Third because PR #241 (Phase 2 scaffold) and pa-falcon-rotator
-Phase 3a-3e (protocol implementation) need to land first. Phase D
-rebases onto post-Phase-3 main and applies the same pattern (Hooks
-with `while_open: None`), deleting the canonical-lock-shape
-`set_connected` and `serial_manager.rs` that Phase 3 ships.
+Status: **implemented** on `feature/phase-d-falcon-rotator-shared-transport`.
+Ships in parallel with Phase C (PR #280, qhy-focuser): pa-falcon-rotator
+Phase 3 (protocol implementation) had already merged before Phase D
+started, and the service is the simplest outstanding migration —
+a 5-command ASCII handshake, command-echo validation, no background
+poller, no `Codec::matches`/`max_skip` gymnastics (the protocol emits
+exactly one response per request).
 
-If Phase 3 has not landed by the time Phase C ships, Phase D blocks
-on it; the other phases ship independently.
+Removed:
+* `services/pa-falcon-rotator/src/serial_manager.rs` — entirely
+  (refcount, command_lock, connect_lock, handshake, the three pieces
+  of driver-side state, the per-command public surface).
+* `services/pa-falcon-rotator/src/io.rs` — replaced by the shared
+  `TransportFactory` trait.
 
-Removes / Adds: mirror Phases B and C structure.
+Added:
+* `services/pa-falcon-rotator/src/codec.rs` — `FalconCodec` with
+  `FalconResponse` (`Ack` / `Status(FalconStatus)` /
+  `FirmwareVersion(String)` / `PositionDeg(f64)` /
+  `PositionSteps(u32)` / `Voltage(u32)` / `IsRunning(bool)` /
+  `Echo(String)`) and `FalconCodecError`. `max_skip` defaults to 0
+  (Falcon emits no unsolicited frames); `matches` enforces
+  variant-shape pairing only — echo content validation stays in the
+  manager via `validate_echo`.
+* `services/pa-falcon-rotator/src/manager.rs` — `FalconManager` wraps
+  `Arc<SharedTransport<FalconCodec>>` plus the three pieces of
+  driver-side state (`sync_offset`, `target_position`,
+  `last_limit_detected`) and exposes session-borrowing helpers
+  (`read_status`, `read_voltage_raw`, `move_mechanical`, `halt`,
+  `set_reverse`, `sync`) that the device types call through their
+  held `&Session<FalconCodec>`. Constructs
+  `Hooks { handshake, teardown: |_| async {}, while_open: None }`.
+* `services/pa-falcon-rotator/src/serial.rs` — rewritten as
+  `FalconTransportFactory` building a `SerialFrameTransport`
+  (terminator `b'\n'`, max frame 256 bytes) over `tokio-serial`.
+* `services/pa-falcon-rotator/src/mock.rs` — `MockFalconTransportFactory`
+  implementing `TransportFactory` directly; the in-memory state
+  machine (mech_position_deg, voltage_raw, motor_reverse,
+  limit_detect, command_log) is preserved verbatim so existing BDD
+  step bodies keep working.
 
-Coordination: the migration of the two devices
-(`FalconRotatorDevice` + `FalconStatusSwitchDevice`) follows the
-ppba-driver shape.
+Coordination: both devices (`FalconRotatorDevice` +
+`FalconStatusSwitchDevice`) hold `Arc<FalconManager>` plus their own
+`session: RwLock<Option<Session<FalconCodec>>>`. The set_connected
+body matches the canonical `(on, s.is_some())` pattern shape from
+ppba-driver. The status switch's disconnect only clears driver-side
+state when `manager.is_available()` returns false — otherwise the
+rotator's session is still keeping the transport open and the state
+must stay intact for it.
+
+Tests: 279 unit + 65 BDD scenarios green. Race / rollback /
+while-open invariants are tested once in
+`rusty-photon-shared-transport`'s test suite; per-service duplicates
+were dropped per the original plan.
 
 ### Phase E — Migrate `star-adventurer-gti`
 
@@ -1178,6 +1230,7 @@ Phase A):
   (interim; Phase C deletes the rollback code).
 * PR #265 — this plan; review thread settles five of the original
   open questions (see "Resolved" list above).
+* PR #276 — Phase B (`ppba-driver` migration), merged.
 * `docs/services/qhy-focuser.md`,
   `docs/services/ppba-driver.md`,
   `docs/services/falcon-rotator.md`,
