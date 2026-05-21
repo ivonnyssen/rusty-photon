@@ -1,6 +1,7 @@
 //! Error types for the QHY Q-Focuser driver
 
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
+use rusty_photon_shared_transport::TransportError;
 
 /// Errors that can occur when interacting with the QHY Q-Focuser
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +48,39 @@ impl QhyFocuserError {
                 ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, self.to_string())
             }
             _ => ASCOMError::invalid_operation(self.to_string()),
+        }
+    }
+}
+
+/// `?` and `Into::into` sugar for the same conversion as
+/// [`QhyFocuserError::to_ascom_error`]. The method is kept as the
+/// explicit form; this impl lets idiomatic Rust call sites convert
+/// implicitly.
+impl From<QhyFocuserError> for ASCOMError {
+    fn from(err: QhyFocuserError) -> Self {
+        err.to_ascom_error()
+    }
+}
+
+/// Direct conversion from a shared-transport [`TransportError`].
+///
+/// Lets the device layer write `.map_err(QhyFocuserError::from)?` on a
+/// `Session::close()` (which returns `Result<_, TransportError>`)
+/// instead of synthetically wrapping the `TransportError` in a
+/// `SessionError::Transport(...)` just to reuse the existing
+/// `From<SessionError<…>>` mapping. The codec-layer
+/// `From<SessionError<QhyCodecError>> for QhyFocuserError` impl also
+/// routes its transport arms through this conversion.
+impl From<TransportError> for QhyFocuserError {
+    fn from(t: TransportError) -> Self {
+        match t {
+            TransportError::Open(e) => QhyFocuserError::ConnectionFailed(e.to_string()),
+            TransportError::Io(e) => QhyFocuserError::Io(e),
+            TransportError::Timeout(d) => {
+                QhyFocuserError::Timeout(format!("transport timeout after {d:?}"))
+            }
+            TransportError::Eof => QhyFocuserError::Communication("Connection closed".to_string()),
+            TransportError::Framing(s) => QhyFocuserError::Communication(format!("framing: {s}")),
         }
     }
 }
@@ -171,5 +205,60 @@ mod tests {
         let err = QhyFocuserError::MoveFailed("stalled".to_string());
         let ascom_err = err.to_ascom_error();
         assert_eq!(ascom_err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn from_qhy_focuser_error_forwards_to_to_ascom_error() {
+        // `?` and `Into::into` both route through this `From` impl. The
+        // device-layer call sites use `?` after a `.map_err(QhyFocuserError
+        // ::from)`, but those paths fire only on the error branch — which
+        // none of the happy-path BDD scenarios or manager tests reach. An
+        // explicit `.into()` test keeps the impl covered unconditionally.
+        let ascom: ASCOMError = QhyFocuserError::NotConnected.into();
+        assert_eq!(ascom.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    // ============================================================================
+    // From<TransportError> for QhyFocuserError — the device-layer disconnect
+    // path relies on this to map Session::close()'s TransportError directly
+    // without synthesizing a SessionError. Test each TransportError variant
+    // routes to its expected QhyFocuserError arm.
+    // ============================================================================
+
+    #[test]
+    fn from_transport_error_open_maps_to_connection_failed() {
+        let err: QhyFocuserError = TransportError::Open(std::io::Error::other("busy")).into();
+        assert!(matches!(err, QhyFocuserError::ConnectionFailed(s) if s.contains("busy")));
+    }
+
+    #[test]
+    fn from_transport_error_io_preserves_io_kind() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err: QhyFocuserError = TransportError::Io(io_err).into();
+        match err {
+            QhyFocuserError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_transport_error_timeout_maps_to_timeout() {
+        let err: QhyFocuserError =
+            TransportError::Timeout(std::time::Duration::from_secs(2)).into();
+        assert!(matches!(err, QhyFocuserError::Timeout(s) if s.contains('2')));
+    }
+
+    #[test]
+    fn from_transport_error_eof_maps_to_communication() {
+        let err: QhyFocuserError = TransportError::Eof.into();
+        assert!(
+            matches!(err, QhyFocuserError::Communication(s) if s.contains("Connection closed"))
+        );
+    }
+
+    #[test]
+    fn from_transport_error_framing_maps_to_communication() {
+        let err: QhyFocuserError = TransportError::Framing("too big".to_string()).into();
+        assert!(matches!(err, QhyFocuserError::Communication(s) if s.contains("too big")));
     }
 }

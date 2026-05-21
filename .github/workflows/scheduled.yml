@@ -169,3 +169,70 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
+
+  notify-on-failure:
+    # Open or update a tracking issue when the scheduled rolling run fails so
+    # nightly/beta toolchain breaks, Miri regressions, and dependency-update
+    # drift surface without depending on someone reading scheduled-workflow
+    # logs. Skipped on push, pull_request, and workflow_dispatch so manual
+    # debugging runs don't churn an issue.
+    needs: [nightly, discover-miri, miri, update, beta]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: rolling workflow failing`;
+            const body = [
+              `The nightly rolling workflow failed on at least one job.`,
+              ``,
+              `Likely causes: a Rust nightly or beta toolchain regression, a Miri`,
+              `finding (undefined behavior or isolation violation), or a transitive`,
+              `dependency update (\`cargo update\`) breaking the build against beta.`,
+              `Inspect the failed jobs in the linked run to see which one is red.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on schedule.`,
+              `It will be updated (rather than re-opened) on subsequent failures so the`,
+              `notification cadence stays low. Close it once the underlying issue is`,
+              `resolved; the next failure will reopen.`,
+            ].join("\n");
+            // Search both open AND closed so the body's "the next failure
+            // will reopen" promise is honored. Mirrors the install-astap.yml
+            // pattern.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              labels: "rolling-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              if (match.state === "closed") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: "open",
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["rolling-nightly", "ci-flake"],
+              });
+            }
