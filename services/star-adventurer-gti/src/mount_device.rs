@@ -27,10 +27,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::telescope::PierSide;
+use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 
+use crate::codec::SkywatcherCodec;
 use crate::config::MountConfig;
-use crate::transport_manager::TransportManager;
+use crate::manager::MountManager;
 
 mod device;
 mod inherent;
@@ -54,7 +56,7 @@ const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// AtPark flag, last target). The values that come from the wire (current
-/// RA/Dec, Slewing) are read through [`TransportManager`].
+/// RA/Dec, Slewing) are read through [`MountManager`].
 #[derive(Debug)]
 struct DriverState {
     tracking_requested: bool,
@@ -166,15 +168,21 @@ pub struct MountDevice {
     /// with `--config <path>`; `None` for `Config::default()` runs. Drives
     /// `CanSetPark` and is the destination for `SetPark` writes.
     config_file_path: Option<PathBuf>,
-    requested_connection: Arc<RwLock<bool>>,
+    /// Session held while connected. `Some` between successful
+    /// `set_connected(true)` and `set_connected(false)`. The slot
+    /// presence is the truth — no separate "requested" bool that can
+    /// desync from the shared transport's refcount. Replaces the
+    /// pre-migration `requested_connection: RwLock<bool>` flag.
+    #[debug(skip)]
+    session: Arc<RwLock<Option<Session<SkywatcherCodec>>>>,
     state: Arc<RwLock<DriverState>>,
     #[debug(skip)]
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
 }
 
 impl MountDevice {
-    pub fn new(config: MountConfig, transport: Arc<TransportManager>) -> Self {
-        Self::with_config_file_path(config, transport, None)
+    pub fn new(config: MountConfig, manager: Arc<MountManager>) -> Self {
+        Self::with_config_file_path(config, manager, None)
     }
 
     /// Construct with an optional config-file path. `Some(path)` enables
@@ -182,16 +190,30 @@ impl MountDevice {
     /// `CanSetPark = false` and `SetPark = NOT_IMPLEMENTED`.
     pub fn with_config_file_path(
         config: MountConfig,
-        transport: Arc<TransportManager>,
+        manager: Arc<MountManager>,
         config_file_path: Option<PathBuf>,
     ) -> Self {
         Self {
             config,
             config_file_path,
-            requested_connection: Arc::new(RwLock::new(false)),
+            session: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(DriverState::default())),
-            transport,
+            manager,
         }
+    }
+
+    /// Send one command through the device's session and return the
+    /// typed response. Returns [`crate::error::StarAdvError::NotConnected`]
+    /// when the session slot is empty.
+    pub(super) async fn send(
+        &self,
+        cmd: skywatcher_motor_protocol::Command,
+    ) -> crate::error::Result<skywatcher_motor_protocol::Response> {
+        let guard = self.session.read().await;
+        let session = guard
+            .as_ref()
+            .ok_or(crate::error::StarAdvError::NotConnected)?;
+        self.manager.send(session, cmd).await
     }
 }
 

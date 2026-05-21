@@ -22,8 +22,8 @@ use tokio::sync::RwLock;
 use crate::config::Config;
 use crate::coordinates::{fold_to_canonical_band, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
+use crate::manager::MountManager;
 use crate::transport::mock::MockTransportFactory;
-use crate::transport_manager::TransportManager;
 
 use super::park_persistence::{read_park_from_config, write_park_to_config};
 use super::slew::{
@@ -40,10 +40,7 @@ fn device() -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -106,10 +103,7 @@ async fn axis_rates_is_empty_for_every_axis() {
 #[tokio::test]
 async fn site_coordinates_pass_through_from_config() {
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let mut mount_cfg = cfg.mount.clone();
     mount_cfg.site_latitude_deg = 47.6062;
     mount_cfg.site_longitude_deg = -122.3321;
@@ -191,9 +185,9 @@ async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
     // inspect the exact wire frames the driver emitted.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -213,10 +207,10 @@ async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
     //   3. `:G1<mode>` (tracking-slow-CW)
     //   4. `:I1<period>` (sidereal step period)
     //   5. `:J1` (start motion)
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     d.set_tracking(true).await.unwrap();
 
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
     // Look only at setter / motion-start frames on the RA axis:
     // `:G1`, `:I1`, `:J1`, `:K1` (in order of appearance). The
@@ -345,10 +339,7 @@ fn fast_settle_device() -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -378,10 +369,7 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     cfg.mount.binding_zone_max_hours = 1.5;
     cfg.mount.dec_min_degrees = -5.0;
     cfg.mount.dec_max_degrees = 5.0;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d
@@ -462,19 +450,57 @@ async fn slew_async_refuses_while_disconnected() {
 }
 
 #[test]
+fn ascom_session_err_helper_flattens_session_error_into_ascom() {
+    // `MountDevice::ascom_session_err` wraps
+    // `SessionError<SkywatcherCodecError>` -> `StarAdvError`
+    // -> `ASCOMError` for the `set_connected(true)` acquire path.
+    // The two failure-mode branches the production code hits are
+    // factory-open (mapped to `INVALID_OPERATION` via
+    // `ConnectionFailed`) and codec/protocol errors (mapped to
+    // `INVALID_OPERATION` via `Protocol`).
+    use rusty_photon_shared_transport::{SessionError, TransportError};
+    let err = MountDevice::ascom_session_err(
+        SessionError::<crate::codec::SkywatcherCodecError>::Transport(TransportError::Open(
+            std::io::Error::other("port busy"),
+        )),
+    );
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("port busy"));
+
+    let err = MountDevice::ascom_session_err(SessionError::Codec(
+        crate::codec::SkywatcherCodecError::Protocol(
+            skywatcher_motor_protocol::ProtocolError::FrameError("malformed".into()),
+        ),
+    ));
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+#[test]
+fn ascom_transport_err_helper_flattens_transport_error_into_ascom() {
+    // `MountDevice::ascom_transport_err` is the disconnect-side
+    // mapping called from `set_connected(false)` when
+    // `session.close().await` fails. The Eof branch is the
+    // most-observable one (a half-open peer at teardown time).
+    use rusty_photon_shared_transport::TransportError;
+    let err = MountDevice::ascom_transport_err(TransportError::Eof);
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("connection closed"));
+}
+
+#[test]
 fn ascom_helper_maps_timekeeping_to_invalid_operation() {
     // Every LST-using trait method propagates ERFA failures via
-    // `local_sidereal_time_hours(...).map_err(Self::ascom)?`. A
-    // mount-level trait test would need a clock-injection seam
+    // `local_sidereal_time_hours(...).map_err(ASCOMError::from)?`.
+    // A mount-level trait test would need a clock-injection seam
     // (host `SystemTime` can not even represent ERFA's
     // `IYMIN = -4799` floor on Windows, where FILETIME starts in
     // 1601). Instead, exercise the conversion the trait methods
-    // actually use — `Self::ascom(Timekeeping(_))` — so the
+    // actually use — `ASCOMError::from(StarAdvError::Timekeeping(_))`
+    // via the `From<StarAdvError> for ASCOMError` impl — so the
     // propagation pattern has a runtime assertion in this file
     // alongside the trait code.
-    let err = MountDevice::ascom(StarAdvError::Timekeeping(
-        "ERFA Dtf2d rejected UTC -5000-01-01 (code -1)".into(),
-    ));
+    let err: ASCOMError =
+        StarAdvError::Timekeeping("ERFA Dtf2d rejected UTC -5000-01-01 (code -1)".into()).into();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     assert!(
         err.message.contains("timekeeping"),
@@ -559,7 +585,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     // the sequence.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -568,19 +594,19 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
     // Capture the log baseline so the assertion ignores the
     // handshake / pre-slew polling chatter.
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
 
     // Snapshot the log immediately — the watcher's pickup loop
     // may re-enter the sequence and add more frames; we only
     // care about the first-pass wire frames here.
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
 
     // Helper: extract setter / motion-start frames for `axis_byte`.
@@ -641,7 +667,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     // would always satisfy.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -650,7 +676,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -664,7 +690,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     let mock_clone = mock.clone();
     let injection = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(80)).await;
-        let mut s = mock_clone.state.lock().await;
+        let mut s = mock_clone.lock().await;
         s.ra.running = false;
         s.dec.running = false;
         // 1,000,000 ticks ≈ 99° on the GTi's default CPR
@@ -691,7 +717,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     // The initial slew always emits one :H1. A pickup iteration
     // emits a second. ≥ 2 proves the pickup loop fired at least
     // once in response to the forced residual.
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let h1_count = log.iter().filter(|f| f.starts_with(b":H1")).count();
     assert!(
         h1_count >= 2,
@@ -711,7 +737,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // encoder counter kept advancing.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -720,14 +746,14 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
     // Mark RA blocked. The next poll picks this up, the watcher
     // sees it, issues :L on both axes and exits early.
     {
-        let mut s = mock.state.lock().await;
+        let mut s = mock.lock().await;
         s.ra.blocked = true;
     }
     d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
@@ -752,7 +778,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // `:K` since issue #207 — `:L` is reserved for genuine
     // emergency stops like this blocked-axis abort and
     // `AbortSlew`.)
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let l1_count = log.iter().filter(|f| f.as_slice() == b":L1\r").count();
     let l2_count = log.iter().filter(|f| f.as_slice() == b":L2\r").count();
     assert!(
@@ -774,18 +800,18 @@ async fn park_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // computations would have a wrong delta.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
     {
-        let mut s = mock.state.lock().await;
+        let mut s = mock.lock().await;
         s.dec.blocked = true;
     }
     d.park().await.unwrap();
@@ -1007,120 +1033,136 @@ async fn sync_failure_does_not_clobber_target() {
     assert_eq!(d.target_declination().await.unwrap(), 20.0);
 }
 
-/// Transport that always reports `running = true` on `:f<axis>`
-/// and ignores `:K<axis>`. Other handshake commands get
-/// plausibly-shaped replies (CPR, TMR_Freq, etc.) so the
-/// manager can complete its connect() handshake. Used to drive
-/// `stop_axis_and_wait` into its timeout branch — real hardware
-/// never gets stuck like this, but the regular mock processes
-/// `:K` instantaneously, so without a deliberately-broken
-/// transport the timeout code path is unreachable from tests.
-struct StuckAxisTransport;
+/// Frame-transport that always reports `running = true` on `:f<axis>`
+/// and acks `:K<axis>` without changing state. Other handshake commands
+/// get plausibly-shaped replies (CPR, TMR_Freq, etc.) so the shared
+/// transport's handshake completes. Used to drive `stop_axis_and_wait`
+/// into its timeout branch — real hardware never gets stuck like this,
+/// but the regular mock processes `:K` instantaneously.
+struct StuckAxisFrameTransport {
+    pending: std::collections::VecDeque<Vec<u8>>,
+}
 
-#[async_trait]
-impl crate::transport::Transport for StuckAxisTransport {
-    async fn round_trip(
-        &self,
-        request: &[u8],
-        _timeout: Duration,
-    ) -> crate::error::Result<Vec<u8>> {
-        if request.len() < 2 {
-            return Ok(b"=\r".to_vec());
-        }
-        match request[1] {
-            // `:f<axis>` reply with running=1: nibble-1 bit-0 set.
-            // Layout per spec §5: [mode_nibble | motion_nibble | init_nibble].
-            // Mode nibble = 0 (Goto, CW, Slow); motion nibble = 1
-            // (Running, not Blocked); init nibble = 1 (Initialized).
-            b'f' => Ok(b"=011\r".to_vec()),
-            // Handshake inquiries: return a 6-hex u24 payload so
-            // the response decoder is happy. Value doesn't matter
-            // for the timeout test.
-            b'a' | b'b' | b'e' => Ok(b"=000080\r".to_vec()),
-            // High-speed-ratio: 2-hex u8 payload per real GTi.
-            b'g' => Ok(b"=01\r".to_vec()),
-            // `:j<axis>` returns a 6-hex biased position
-            // (0x800000 → encoder 0).
-            b'j' => Ok(b"=000080\r".to_vec()),
-            // Everything else (including `:F` initialize,
-            // `:K` decelerate-stop, and `:L` instant-stop) acks
-            // without side effects.
-            _ => Ok(b"=\r".to_vec()),
+impl StuckAxisFrameTransport {
+    fn new() -> Self {
+        Self {
+            pending: std::collections::VecDeque::new(),
         }
     }
-    async fn close(&self) -> crate::error::Result<()> {
+}
+
+#[async_trait]
+impl rusty_photon_shared_transport::FrameTransport for StuckAxisFrameTransport {
+    async fn send_frame(
+        &mut self,
+        bytes: &[u8],
+    ) -> std::result::Result<(), rusty_photon_shared_transport::TransportError> {
+        if bytes.len() < 3 || bytes[0] != b':' || bytes[bytes.len() - 1] != b'\r' {
+            return Err(rusty_photon_shared_transport::TransportError::Framing(
+                format!("malformed: {bytes:?}"),
+            ));
+        }
+        let reply: Vec<u8> = match bytes[1] {
+            // `:f<axis>` reply with running=1: nibble-1 bit-0 set.
+            b'f' => b"=011\r".to_vec(),
+            // Handshake inquiries: 6-hex u24 payload.
+            b'a' | b'b' | b'e' => b"=000080\r".to_vec(),
+            // High-speed-ratio: 2-hex u8 payload per real GTi.
+            b'g' => b"=01\r".to_vec(),
+            // `:j<axis>`: biased position (0x800000 → encoder 0).
+            b'j' => b"=000080\r".to_vec(),
+            // Everything else acks empty.
+            _ => b"=\r".to_vec(),
+        };
+        self.pending.push_back(reply);
         Ok(())
+    }
+
+    async fn recv_frame(
+        &mut self,
+        buf: &mut Vec<u8>,
+    ) -> std::result::Result<(), rusty_photon_shared_transport::TransportError> {
+        match self.pending.pop_front() {
+            Some(frame) => {
+                buf.clear();
+                buf.extend_from_slice(&frame);
+                Ok(())
+            }
+            None => Err(rusty_photon_shared_transport::TransportError::Eof),
+        }
     }
 }
 
 struct StuckAxisFactory;
 
 #[async_trait]
-impl crate::transport::TransportFactory for StuckAxisFactory {
+impl rusty_photon_shared_transport::TransportFactory for StuckAxisFactory {
     async fn open(
         &self,
-        _config: &Config,
-    ) -> crate::error::Result<Arc<dyn crate::transport::Transport>> {
-        Ok(Arc::new(StuckAxisTransport))
+    ) -> std::result::Result<
+        Box<dyn rusty_photon_shared_transport::FrameTransport>,
+        rusty_photon_shared_transport::TransportError,
+    > {
+        Ok(Box::new(StuckAxisFrameTransport::new()))
     }
 }
 
 #[tokio::test]
 async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
-    // The free-function helper is called from
-    // `MountDevice::stop_and_wait` (covered by the slew/park
-    // happy paths) and the pickup loop (covered by
-    // `slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance`).
-    // Its *timeout* branch is unreachable from those paths
-    // because the mock always responds to `:K` instantly; this
-    // test wires a deliberately-broken transport that ignores
-    // `:K` and always reports running, then asserts the helper
-    // returns the timeout error after `AXIS_STOP_TIMEOUT`.
-    let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
-    // No connect() — `stop_axis_and_wait` only needs `send` to
-    // route through the manager's transport; the test bypasses
-    // the handshake-required state by going straight to a
-    // freshly-built manager that holds the broken transport.
-    manager.connect().await.unwrap();
-    // Use a short timeout so the test doesn't take 2 s.
-    let err = stop_axis_and_wait(&manager, Axis::Ra, Duration::from_millis(300))
+    // The free-function helper's *timeout* branch is unreachable
+    // from the happy-path covered by the slew/park watcher tests
+    // because the regular mock acks `:K` instantly. This test
+    // wires a deliberately-broken transport that always reports
+    // `running = true` so the helper hits its timeout after the
+    // supplied duration.
+    let manager = MountManager::new(Config::default(), Arc::new(StuckAxisFactory));
+    let session = manager.transport().acquire().await.unwrap();
+    let err = stop_axis_and_wait(&manager, &session, Axis::Ra, Duration::from_millis(300))
         .await
         .unwrap_err();
     assert!(
         matches!(err, StarAdvError::Transport(ref msg) if msg.contains("did not stop")),
         "expected Transport(\"... did not stop ...\") error, got {err:?}"
     );
+    session.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
     // Direct unit test for the helper that gates the watcher's
-    // post-snapshot wire sends. The watcher uses it twice — once
-    // before the pickup re-slew, once before the tracking
-    // re-enable — to close the race window between the top-of-
-    // loop guard and the actual wire commands.
+    // post-snapshot wire sends. After the shared-transport
+    // migration the "is the user still connected?" signal is the
+    // device's session-slot presence rather than
+    // `manager.is_available()` (the watcher's own session keeps
+    // the transport open even after the user disconnects).
+    use rusty_photon_shared_transport::Session;
     let state = Arc::new(RwLock::new(DriverState::default()));
-    let manager = TransportManager::new(Config::default(), Arc::new(MockTransportFactory));
-    manager.connect().await.unwrap();
+    let manager = MountManager::new(Config::default(), Arc::new(MockTransportFactory));
+    let device_session = manager.transport().acquire().await.unwrap();
+    let session_slot: Arc<RwLock<Option<Session<crate::codec::SkywatcherCodec>>>> =
+        Arc::new(RwLock::new(Some(device_session)));
 
     // Default state has slew_in_progress=false → abort=true.
     assert!(
-        watcher_should_abort(&state, &manager).await,
+        watcher_should_abort(&state, &session_slot).await,
         "default DriverState has slew_in_progress=false → should abort"
     );
 
-    // With slew_in_progress=true and transport available → no abort.
+    // With slew_in_progress=true and the session slot populated → no abort.
     state.write().await.slew_in_progress = true;
     assert!(
-        !watcher_should_abort(&state, &manager).await,
-        "in-progress slew with live transport → should continue"
+        !watcher_should_abort(&state, &session_slot).await,
+        "in-progress slew with live device session → should continue"
     );
 
-    // Disconnect the transport → abort=true even if slew flag is on.
-    manager.disconnect().await.unwrap();
+    // Clear the device's session (user disconnect) → abort=true
+    // even if slew flag is on.
+    if let Some(s) = session_slot.write().await.take() {
+        s.close().await.unwrap();
+    }
     assert!(
-        watcher_should_abort(&state, &manager).await,
-        "disconnect mid-slew → should abort"
+        watcher_should_abort(&state, &session_slot).await,
+        "user disconnect mid-slew → should abort"
     );
 }
 
@@ -1129,25 +1171,15 @@ async fn pickup_reslew_axis_swallows_transport_errors() {
     // The watcher calls `pickup_reslew_axis` per axis from the
     // pickup loop. Its failure-logging branches fire when the
     // wrapped `stop_axis_and_wait` or `issue_slew_axis` returns
-    // an error — that happens when the transport is closed or
-    // the axis stays stuck. This test wires the `StuckAxisTransport`
-    // (always reports `running=true`) so the inner
-    // `stop_axis_and_wait` hits its timeout branch; the helper
-    // must log and return without panicking. A second invocation
-    // confirms the helper is idempotent on persistent failure.
-    let manager = TransportManager::new(Config::default(), Arc::new(StuckAxisFactory));
-    manager.connect().await.unwrap();
-    // Each call is best-effort and returns `()`. The internal
-    // timeout is `AXIS_STOP_TIMEOUT` (2 s) — overriding it would
-    // require threading a parameter through, which isn't worth
-    // it for a single test; this test runs in ~2 s, still well
-    // under the harness's default timeout.
-    pickup_reslew_axis(&manager, Axis::Ra, 1_000_000).await;
-    // A negative delta exercises the `ccw = true` branch in
-    // `issue_slew_axis`'s `MotionMode` construction — except
-    // here we never reach it because `stop_axis_and_wait` fails
-    // first. Still useful to verify no panic.
-    pickup_reslew_axis(&manager, Axis::Dec, -1_000_000).await;
+    // an error — that happens when the axis stays stuck. With
+    // the StuckAxis transport, the inner `stop_axis_and_wait`
+    // hits its timeout branch; the helper must log and return
+    // without panicking.
+    let manager = MountManager::new(Config::default(), Arc::new(StuckAxisFactory));
+    let session = manager.transport().acquire().await.unwrap();
+    pickup_reslew_axis(&manager, &session, Axis::Ra, 1_000_000).await;
+    pickup_reslew_axis(&manager, &session, Axis::Dec, -1_000_000).await;
+    session.close().await.unwrap();
 }
 
 // ---- SetPark / Park persistence ----
@@ -1157,10 +1189,7 @@ fn device_with_path(path: PathBuf) -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
 }
 
@@ -1472,12 +1501,12 @@ async fn set_connected_rolls_back_transport_when_park_load_fails() {
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
 
     // The transport must have been disconnected on rollback.
-    // `is_available()` is the underlying TransportManager flag,
+    // `is_available()` is the underlying MountManager flag,
     // which would be `true` if connect succeeded and no rollback
     // ran. Asserting it false here proves we balanced the
     // connect ref-count.
     assert!(
-        !d.transport.is_available(),
+        !d.manager.is_available(),
         "transport should be torn down after rollback"
     );
     // And the user-visible `connected()` getter agrees.
@@ -1513,7 +1542,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     // reflects the wire, then call SetPark.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -1524,7 +1553,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
     d.set_connected(true).await.unwrap();
 
@@ -1532,20 +1561,20 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     // `slew_to_coordinates_async` (which would set
     // `slew_in_progress` and trip the other guard).
     {
-        let mut s = mock.state.lock().await;
+        let mut s = mock.lock().await;
         s.ra.running = true;
         s.ra.initialized = true;
     }
     // Wait for the background poll to ingest the new wire state.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        if d.transport.snapshot().await.ra.running {
+        if d.manager.snapshot().await.ra.running {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        d.transport.snapshot().await.ra.running,
+        d.manager.snapshot().await.ra.running,
         "precondition: snapshot must reflect RA running=true"
     );
     // slew_in_progress flag is still false — only the wire
@@ -1571,8 +1600,8 @@ async fn set_park_persists_current_snapshot_and_updates_in_memory_target() {
     // Seed the snapshot directly — the polling loop won't overwrite
     // a stationary mock axis (`advance_one_step` bails on
     // `!running`), so these values stick.
-    d.transport.seed_ra_position(8000).await;
-    d.transport.seed_dec_position(-3000).await;
+    d.manager.seed_ra_position(8000).await;
+    d.manager.seed_dec_position(-3000).await;
 
     d.set_park().await.unwrap();
 
@@ -1616,7 +1645,7 @@ async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
     // Force the dec encoder to a 1-tick fresh-power-up artifact
     // before the manager opens the transport.
     {
-        let mut state = factory.mock.state.lock().await;
+        let mut state = factory.state.lock().await;
         state.dec.position_ticks = -1;
     }
     let mut cfg = Config::default();
@@ -1625,7 +1654,7 @@ async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ApPark3 N hemisphere with mock cpr = 0x375F00 = 3,628,800:
@@ -1646,7 +1675,7 @@ async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     {
-        let mut state = factory.mock.state.lock().await;
+        let mut state = factory.state.lock().await;
         state.ra.position_ticks = 50_000;
     }
     let mut cfg = Config::default();
@@ -1655,7 +1684,7 @@ async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // Seed skipped → park target falls back to the snapshot (the
@@ -1677,7 +1706,7 @@ async fn home_pose_seed_skips_just_above_fresh_power_up_tolerance() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     {
-        let mut state = factory.mock.state.lock().await;
+        let mut state = factory.state.lock().await;
         state.ra.position_ticks = 50;
     }
     let mut cfg = Config::default();
@@ -1685,7 +1714,7 @@ async fn home_pose_seed_skips_just_above_fresh_power_up_tolerance() {
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
@@ -1712,10 +1741,7 @@ async fn park_target_defaults_to_home_pose_encoder_when_home_pose_configured() {
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ApPark3 codebase convention: mech_HA = -6h, dec encoder = +90°
@@ -1737,10 +1763,7 @@ async fn park_target_prefers_config_values_over_handshake_capture() {
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.park_ra_ticks = Some(5000);
     cfg.mount.park_dec_ticks = Some(-7000);
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
@@ -1763,8 +1786,8 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
     seed_default_config(&path);
     let d = device_with_path(path.clone());
     d.set_connected(true).await.unwrap();
-    d.transport.seed_ra_position(8000).await;
-    d.transport.seed_dec_position(-3000).await;
+    d.manager.seed_ra_position(8000).await;
+    d.manager.seed_dec_position(-3000).await;
     d.set_park().await.unwrap();
 
     // Disconnect: in-memory park state is cleared.
@@ -1775,8 +1798,8 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
     // Reset the mock encoders so reconnect's handshake fallback
     // would be (0, 0) — proves the re-read picked up SetPark's
     // values rather than just re-reading handshake.
-    d.transport.seed_ra_position(0).await;
-    d.transport.seed_dec_position(0).await;
+    d.manager.seed_ra_position(0).await;
+    d.manager.seed_dec_position(0).await;
 
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
@@ -2039,17 +2062,17 @@ async fn pulse_guide_zero_duration_is_no_op() {
     // setter frames are emitted on the Dec axis.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     d.pulse_guide(GuideDirection::North, Duration::ZERO)
         .await
         .unwrap();
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
     let dec_setters: Vec<&&[u8]> = new_frames
         .iter()
@@ -2072,13 +2095,13 @@ async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
     // Step period is sidereal / 0.5 = 2 × sidereal.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     // Long enough duration that the watcher's post-sleep restore
     // doesn't fire during this test — we want to inspect the
     // pulse-start wire frames only.
@@ -2086,7 +2109,7 @@ async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
         .await
         .unwrap();
     // Immediately read the log; the watcher is asleep.
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
     let dec_setters: Vec<&&[u8]> = new_frames
         .iter()
@@ -2118,17 +2141,17 @@ async fn pulse_guide_south_issues_tracking_ccw_on_dec_axis() {
     // South → Dec axis, ccw=true → `:G211` (Tracking-Slow-CCW).
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     d.pulse_guide(GuideDirection::South, Duration::from_secs(30))
         .await
         .unwrap();
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
     let g2 = new_frames
         .iter()
@@ -2146,18 +2169,18 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     use crate::transport::mock::CapturingMockFactory;
     use skywatcher_motor_protocol::codec::decode_u24;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d.set_tracking(true).await.unwrap();
 
-    let baseline_len = mock.state.lock().await.command_log.len();
+    let baseline_len = mock.lock().await.command_log.len();
     d.pulse_guide(GuideDirection::East, Duration::from_secs(30))
         .await
         .unwrap();
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
     // First `:I1` after pulse_guide start: payload should be
     // 2 × P_sid (rate factor = 0.5 → period doubles).
@@ -2167,7 +2190,7 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
         .expect("expected :I1 frame with 6-hex payload");
     let payload: &[u8; 6] = (&i1[3..9]).try_into().unwrap();
     let actual_period = decode_u24(payload).unwrap();
-    let mock_state = mock.state.lock().await;
+    let mock_state = mock.lock().await;
     let p_sid = crate::coordinates::sidereal_step_period(mock_state.tmr_freq, mock_state.cpr_ra);
     let expected = 2 * p_sid;
     drop(mock_state);
@@ -2226,10 +2249,7 @@ async fn pulse_guide_rolls_back_flag_on_wire_failure() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(StuckAxisFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(StuckAxisFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let err = d
@@ -2307,9 +2327,9 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     // frame.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let cfg = Config::default();
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     assert!(!d.tracking().await.unwrap(), "precondition: tracking off");
@@ -2332,7 +2352,7 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     // restore). `:G110` is RA Tracking-Slow-CW; the watcher would
     // only emit a second one on the restore branch if
     // `tracking_was_on` was true at issue.
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let g110_count = log.iter().filter(|f| f.as_slice() == b":G110\r").count();
     assert_eq!(
         g110_count, 1,
@@ -2836,10 +2856,7 @@ async fn flip_enabled_device() -> MountDevice {
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
     cfg.mount.flip_policy.enabled = true;
-    let manager = Arc::new(TransportManager::new(
-        cfg.clone(),
-        Arc::new(MockTransportFactory),
-    ));
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -2939,34 +2956,50 @@ async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
 // exhaustion fires a best-effort `:L` on both axes so a runaway
 // motor doesn't continue commutating with no observer.
 
-use crate::transport::{Transport, TransportFactory};
 use async_trait::async_trait;
+use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Inject N consecutive transport failures and count `:L<axis>`
 /// frames that crossed the wire. Shared between the test and the
-/// inner [`FlakyTransport`] so the test can observe both knobs.
+/// inner [`FlakyFrameTransport`] so the test can observe both knobs.
 struct FlakyController {
     fail_remaining: AtomicU32,
     stop_calls_ra: AtomicU32,
     stop_calls_dec: AtomicU32,
 }
 
-/// Wraps [`crate::transport::mock::MockTransport`] and fails the
-/// first `fail_remaining` round-trips. Every `:L<axis>` frame is
-/// counted before the fail check so even a `:L` that lands during
-/// the failure window still registers (the retry-exhaustion path
-/// fires `:L` regardless of whether the transport is responsive).
-struct FlakyTransport {
-    inner: crate::transport::mock::MockTransport,
+/// Frame-transport that wraps the regular mock state machine and
+/// fails the first `fail_remaining` recv calls. Every `:L<axis>`
+/// frame the driver sends is counted on the send side, before the
+/// recv-side fail check, so a `:L` that lands during the failure
+/// window still registers (the retry-exhaustion path fires `:L`
+/// regardless of whether subsequent recvs are responsive).
+struct FlakyFrameTransport {
+    inner: crate::transport::mock::MockMountState,
     ctrl: Arc<FlakyController>,
+    /// `Some` after a successful send; pop on the next recv.
+    pending: std::collections::VecDeque<Vec<u8>>,
+}
+
+impl FlakyFrameTransport {
+    fn new(ctrl: Arc<FlakyController>) -> Self {
+        Self {
+            inner: crate::transport::mock::MockMountState::default(),
+            ctrl,
+            pending: std::collections::VecDeque::new(),
+        }
+    }
 }
 
 #[async_trait]
-impl Transport for FlakyTransport {
-    async fn round_trip(&self, request: &[u8], timeout: Duration) -> crate::error::Result<Vec<u8>> {
-        if request.len() >= 3 && request[1] == b'L' {
-            match request[2] {
+impl FrameTransport for FlakyFrameTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+        // Count `:L<axis>` frames *before* the fail check so the
+        // best-effort halt on retry exhaustion still registers
+        // even when the transport is failing recvs.
+        if bytes.len() >= 3 && bytes[1] == b'L' {
+            match bytes[2] {
                 b'1' => {
                     self.ctrl.stop_calls_ra.fetch_add(1, Ordering::SeqCst);
                 }
@@ -2976,15 +3009,72 @@ impl Transport for FlakyTransport {
                 _ => {}
             }
         }
-        if self.ctrl.fail_remaining.load(Ordering::SeqCst) > 0 {
-            self.ctrl.fail_remaining.fetch_sub(1, Ordering::SeqCst);
-            return Err(StarAdvError::Transport("flaky test eof".to_string()));
+        if bytes.len() < 3 || bytes[0] != b':' || bytes[bytes.len() - 1] != b'\r' {
+            return Err(TransportError::Framing(format!("malformed: {bytes:?}")));
         }
-        self.inner.round_trip(request, timeout).await
+        // Use the inner mock state-machine to produce the reply,
+        // but enqueue it on our own queue so we control delivery.
+        // The mock has its own `pending_replies` queue we drain.
+        // We do this by routing the command through the real mock
+        // factory's pending queue and stealing the reply.
+        // Simplest path: produce_reply via a fresh MockFrameTransport
+        // share would be heavy, so we mirror just what the test
+        // needs — defer to the inner state machine.
+        // Mock state's `process_command` writes to its own
+        // VecDeque; we capture it.
+        use crate::transport::mock as mockmod;
+        let _ = mockmod::MockMountState::default(); // type witness
+                                                    // Process directly by calling a small helper that mutates
+                                                    // `self.inner` and appends the reply to a local Vec.
+                                                    // Easiest: serialize the access through the inner mock by
+                                                    // pushing into a fresh MockFrameTransport state — but we
+                                                    // don't have a constructor that wraps an existing Arc<Mutex>.
+                                                    // Just implement the subset of commands the watcher tests
+                                                    // need: `:F<axis>`, `:a<axis>`, `:b<axis>`, `:g<axis>`,
+                                                    // `:e<axis>`, `:j<axis>`, `:f<axis>`, plus `:L<axis>` and
+                                                    // `:K<axis>` acks.
+        let cmd = bytes[1];
+        let axis = bytes[2];
+        let reply: Vec<u8> = match cmd {
+            b'F' | b'K' | b'L' => b"=\r".to_vec(),
+            b'a' | b'b' | b'e' => b"=005F37\r".to_vec(),
+            b'g' => b"=01\r".to_vec(),
+            b'j' => {
+                // Biased position 0 → 0x800000 → "000080".
+                let _ = axis;
+                b"=000080\r".to_vec()
+            }
+            b'f' => {
+                // running=0, init=1 — handshake-complete idle status.
+                let _ = axis;
+                b"=001\r".to_vec()
+            }
+            _ => b"=\r".to_vec(),
+        };
+        self.pending.push_back(reply);
+        // touch self.inner to silence unused-field warning
+        let _ = &self.inner;
+        Ok(())
     }
 
-    async fn close(&self) -> crate::error::Result<()> {
-        Ok(())
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> std::result::Result<(), TransportError> {
+        if self.ctrl.fail_remaining.load(Ordering::SeqCst) > 0 {
+            self.ctrl.fail_remaining.fetch_sub(1, Ordering::SeqCst);
+            // Drain the pending reply so a successful recv after
+            // the failure window sees the *next* command's reply,
+            // matching the real-hardware semantics where a dropped
+            // datagram doesn't queue up for later delivery.
+            let _ = self.pending.pop_front();
+            return Err(TransportError::Eof);
+        }
+        match self.pending.pop_front() {
+            Some(frame) => {
+                buf.clear();
+                buf.extend_from_slice(&frame);
+                Ok(())
+            }
+            None => Err(TransportError::Eof),
+        }
     }
 }
 
@@ -2994,33 +3084,34 @@ struct FlakyTransportFactory {
 
 #[async_trait]
 impl TransportFactory for FlakyTransportFactory {
-    async fn open(&self, _config: &Config) -> crate::error::Result<Arc<dyn Transport>> {
-        Ok(Arc::new(FlakyTransport {
-            inner: crate::transport::mock::MockTransport::new(),
-            ctrl: self.ctrl.clone(),
-        }))
+    async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+        Ok(Box::new(FlakyFrameTransport::new(self.ctrl.clone())))
     }
 }
 
-async fn flaky_manager() -> (Arc<TransportManager>, Arc<FlakyController>) {
+async fn flaky_manager() -> (
+    Arc<MountManager>,
+    Arc<FlakyController>,
+    rusty_photon_shared_transport::Session<crate::codec::SkywatcherCodec>,
+) {
     let ctrl = Arc::new(FlakyController {
         fail_remaining: AtomicU32::new(0),
         stop_calls_ra: AtomicU32::new(0),
         stop_calls_dec: AtomicU32::new(0),
     });
     let factory = Arc::new(FlakyTransportFactory { ctrl: ctrl.clone() });
-    let manager = Arc::new(TransportManager::new(Config::default(), factory));
-    // Connect with fail_remaining = 0 so the handshake completes,
+    let manager = MountManager::new(Config::default(), factory);
+    // Acquire with fail_remaining = 0 so the handshake completes,
     // then return the controller so the test can flip the failure
     // budget on without interfering with init.
-    manager.connect().await.unwrap();
-    (manager, ctrl)
+    let session = manager.transport().acquire().await.unwrap();
+    (manager, ctrl, session)
 }
 
 #[tokio::test]
 async fn watcher_poll_with_retry_returns_ok_on_first_success() {
-    let (manager, ctrl) = flaky_manager().await;
-    let snap = watcher_poll_with_retry(&manager, "test")
+    let (manager, ctrl, session) = flaky_manager().await;
+    let snap = watcher_poll_with_retry(&manager, &session, "test")
         .await
         .expect("happy-path poll should succeed");
     // No retries needed → no best-effort :L was issued.
@@ -3031,28 +3122,30 @@ async fn watcher_poll_with_retry_returns_ok_on_first_success() {
     // axes populated even if zero).
     let _ = snap.ra.position_ticks;
     let _ = snap.dec.position_ticks;
+    session.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn watcher_poll_with_retry_recovers_after_transient_error() {
-    let (manager, ctrl) = flaky_manager().await;
+    let (manager, ctrl, session) = flaky_manager().await;
     // Fail the next round-trip exactly once: the helper's second
     // attempt should land on a healthy transport and return Ok.
     ctrl.fail_remaining.store(1, Ordering::SeqCst);
-    watcher_poll_with_retry(&manager, "test")
+    watcher_poll_with_retry(&manager, &session, "test")
         .await
         .expect("retry should recover from a single transient error");
     // No retry-exhaustion path → no best-effort :L.
     assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
     assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+    session.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
-    let (manager, ctrl) = flaky_manager().await;
+    let (manager, ctrl, session) = flaky_manager().await;
     // Saturate the failure budget so every retry attempt errors.
     ctrl.fail_remaining.store(u32::MAX, Ordering::SeqCst);
-    let err = watcher_poll_with_retry(&manager, "test")
+    let err = watcher_poll_with_retry(&manager, &session, "test")
         .await
         .expect_err("retry budget should be exhausted");
     match err {
@@ -3064,6 +3157,7 @@ async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
     // in the flaky transport.
     assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 1);
     assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 1);
+    let _ = session.close().await; // may fail because of pending fails; tolerate
 }
 
 #[test]
@@ -3137,7 +3231,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     // call to `state.write().tracking_requested = true`) is unexercised.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
-    let mock = factory.mock.clone();
+    let mock = std::sync::Arc::clone(&factory.state);
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -3146,7 +3240,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     // Open the envelope so the test target lands inside.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    let manager = Arc::new(TransportManager::new(cfg.clone(), Arc::new(factory)));
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -3185,7 +3279,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     // Three `:J1` are expected total: (1) the initial
     // `set_tracking(true)`, (2) the slew's `:J1` for the RA axis
     // motion, and (3) the watcher's `:J1` post-slew restart.
-    let log = mock.state.lock().await.command_log.clone();
+    let log = mock.lock().await.command_log.clone();
     let log_strs: Vec<String> = log
         .iter()
         .map(|f| String::from_utf8_lossy(f).into_owned())
