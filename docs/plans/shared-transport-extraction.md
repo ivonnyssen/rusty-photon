@@ -2,10 +2,16 @@
 
 ## Status
 
-**Phase A in flight.** The plan landed on `main` via PR #265. Phase A
-(the `crates/rusty-photon-shared-transport/` crate) is implemented in
-PR #269 with 31 tests passing; no migration PRs yet. Phases B–E follow
-per the rollout below.
+**Phase B in flight.** Phase A landed via PR #269 (the
+`crates/rusty-photon-shared-transport/` crate; 31 tests). Phase B
+migrates `ppba-driver` to the shared crate — both ASCOM devices
+(`PpbaSwitchDevice`, `PpbaObservingConditionsDevice`) now hold an
+`Option<Session<PpbaCodec>>` and the lifecycle code that previously
+lived in `ppba-driver/src/serial_manager.rs` has been deleted in
+favour of `PpbaManager` + `Hooks { handshake, while_open, … }`. All 117
+unit tests + 145 BDD scenarios green. Issue #251 closes structurally
+with this migration. Phases C–E (qhy-focuser, pa-falcon-rotator,
+star-adventurer-gti) follow per the rollout below.
 
 ## Motivation
 
@@ -879,35 +885,45 @@ Verification:
 
 ### Phase B — Migrate `ppba-driver`
 
-`ppba-driver` first because:
+Status: **implemented** on `feature/phase-b-ppba-shared-transport`.
 
-1. It has the buggy `set_connected` shape on `main` (PR #255 fix is
-   in flight). Phase B replaces the inline body with the new shape,
-   closing #251 structurally.
-2. It exercises the multi-device-on-one-transport case end to end.
+`ppba-driver` migrated first because:
+
+1. It had the buggy `set_connected` shape on `main` (lock-held check-and-modify
+   was the in-flight fix tracked by issue #251). Phase B replaces that
+   inline body with the new "session-is-the-resource" shape, closing
+   #251 structurally — there is no separate "requested" bool that can
+   desync from the transport refcount.
+2. It exercises the multi-device-on-one-transport case end to end
+   (Switch + ObservingConditions both share one `Arc<PpbaManager>` and
+   each hold their own `Option<Session<PpbaCodec>>`).
 3. It's the simplest of the four protocols (3-command handshake,
    ASCII LF, command-echo validation).
 
-Removes:
-* `services/ppba-driver/src/serial_manager.rs` — most of it.
+Removed:
+* `services/ppba-driver/src/serial_manager.rs` — entirely.
 * `services/ppba-driver/src/io.rs` — replaced by shared
   `TransportFactory`.
 
-Adds:
-* `services/ppba-driver/src/codec.rs` — `PpbaCodec` impl.
-* Trims `serial_manager.rs` to a `PpbaManager` wrapper around
-  `Arc<SharedTransport<PpbaCodec>>` + `cached_state` +
-  protocol-specific public methods.
-* `mock.rs` factory adopts shared `TransportFactory`.
+Added:
+* `services/ppba-driver/src/codec.rs` — `PpbaCodec` with `PpbaResponse`
+  (`PingOk` / `Status(PpbaStatus)` / `PowerStats(PpbaPowerStats)` /
+  `Echo(String)`) and `PpbaCodecError`. `max_skip` defaults to 0
+  (PPBA does not emit unsolicited frames).
+* `services/ppba-driver/src/manager.rs` — `PpbaManager` wraps
+  `Arc<SharedTransport<PpbaCodec>>` + `Arc<RwLock<CachedState>>` and
+  exposes session-borrowing helpers (`send_command`,
+  `refresh_status`, `refresh_power_stats`) plus cache mutators
+  (`set_averaging_period`, `set_usb_hub_state`).
+* `services/ppba-driver/src/serial.rs` — `PpbaTransportFactory`
+  building a `SerialFrameTransport` over `tokio-serial`.
+* `services/ppba-driver/src/mock.rs` — `MockPpbaTransportFactory`
+  implementing `TransportFactory` directly (no more `SerialReader` /
+  `SerialWriter` split).
 
-Tests: existing unit + BDD scenarios stay green. Inline tests in
-`serial_manager.rs` that probed `connection_count` directly get
-rewritten to use the shared crate's `is_available()` (or get deleted
-where they overlap with the shared crate's race/rollback tests).
-
-Coordination with PR #255: if PR #255 lands first, Phase B simply
-replaces its fix with the migrated body. If Phase A lands before
-PR #255 ships, we close PR #255 and let Phase B be the fix for #251.
+Tests: 117 unit + 145 BDD scenarios pass. Race / rollback / while-open
+invariants are tested once in `rusty-photon-shared-transport`'s own
+test suite; per-service duplicates were dropped per the original plan.
 
 ### Phase C — Migrate `qhy-focuser`
 

@@ -7,6 +7,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-i18n:rusty-photon-i18n",
     "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
 ]
 
 # i18n-config (used by i18n-embed-fl's fl!() and fluent_language_loader!()) reads

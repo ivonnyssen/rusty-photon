@@ -214,10 +214,11 @@ ppba-driver/
 │   ├── error.rs                      # Error types
 │   ├── switch_device.rs              # ASCOM Switch implementation
 │   ├── observingconditions_device.rs # ASCOM ObservingConditions implementation
-│   ├── serial_manager.rs             # Ref-counted shared serial connection + polling
+│   ├── manager.rs                    # PpbaManager (cached state + hooks for SharedTransport)
+│   ├── codec.rs                      # PpbaCodec (Codec impl for rusty-photon-shared-transport)
 │   ├── protocol.rs                   # PPBA command/response handling
-│   ├── io.rs                         # I/O trait abstractions
-│   ├── serial.rs                     # tokio-serial implementations
+│   ├── serial.rs                     # PpbaTransportFactory (tokio-serial → SerialFrameTransport)
+│   ├── mock.rs                       # MockPpbaTransportFactory (feature-gated)
 │   ├── switches.rs                   # Switch definitions
 │   └── mean.rs                       # Sliding window sensor mean
 ├── tests/
@@ -252,9 +253,9 @@ ppba-driver/
 
 ### Key Design Decisions
 
-1. **I/O Trait Abstraction**: Serial I/O is abstracted behind traits (`SerialReader`, `SerialWriter`, `SerialPortFactory`) to enable testing without hardware.
+1. **Shared transport via `rusty-photon-shared-transport`**: refcounted lifecycle, command-lock arbitration, while-open poll task, and the connect/handshake/teardown sequence all live in the shared crate. `PpbaCodec` plugs in the `P#`/`PA`/`PS` framing and response parsing; `PpbaTransportFactory` opens a `SerialFrameTransport` over `tokio-serial`. Each ASCOM device holds `Option<Session<PpbaCodec>>` — the session existing is the canonical "Connected" state, so the previously-separate "requested" flag can't desync from the underlying transport (issue #251 cannot reoccur).
 
-2. **Background Polling**: Device status is polled periodically and cached. This provides fast reads while keeping the cached state reasonably current.
+2. **Background polling**: Once the transport is open, the shared crate's `while_open` hook runs the PPBA poll loop (PA + PS every `polling_interval`) into the shared `CachedState`. Reads are served from the cache; writes refresh on demand.
 
 3. **PWM Values**: Dew heaters use raw 0-255 PWM values matching the device protocol directly. ASCOM clients can use `SetSwitchValue()` with the PWM value.
 

@@ -26,6 +26,7 @@ ascom-alpaca = { workspace = true, features = [
   "switch",
   "observing_conditions",
 ] }
+rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }
