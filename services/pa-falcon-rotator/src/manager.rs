@@ -263,11 +263,6 @@ impl FalconManager {
         *self.target_position.lock().await = Some(sky_deg);
     }
 
-    /// Clear the stored target.
-    pub async fn clear_target_position(&self) {
-        *self.target_position.lock().await = None;
-    }
-
     /// Read the last-requested sky-coordinate target.
     pub async fn target_position(&self) -> Option<f64> {
         *self.target_position.lock().await
