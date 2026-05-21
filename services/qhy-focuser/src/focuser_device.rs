@@ -52,10 +52,6 @@ impl QhyFocuserDevice {
             manager,
         }
     }
-
-    fn to_ascom_error(err: QhyFocuserError) -> ASCOMError {
-        err.to_ascom_error()
-    }
 }
 
 #[async_trait]
@@ -90,18 +86,17 @@ impl Device for QhyFocuserDevice {
                     .transport()
                     .acquire()
                     .await
-                    .map_err(|e| Self::to_ascom_error(QhyFocuserError::from(e)))?;
+                    .map_err(|e| QhyFocuserError::from(e).to_ascom_error())?;
                 *slot = Some(session);
                 debug!("Focuser device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
                     session.close().await.map_err(|e| {
-                        Self::to_ascom_error(QhyFocuserError::from(
-                            rusty_photon_shared_transport::SessionError::<
-                                crate::codec::QhyCodecError,
-                            >::Transport(e),
-                        ))
+                        QhyFocuserError::from(rusty_photon_shared_transport::SessionError::<
+                            crate::codec::QhyCodecError,
+                        >::Transport(e))
+                        .to_ascom_error()
                     })?;
                 }
                 debug!("Focuser device disconnected");
@@ -139,7 +134,7 @@ impl Focuser for QhyFocuserDevice {
             self.manager
                 .refresh_position(session)
                 .await
-                .map_err(Self::to_ascom_error)?;
+                .map_err(QhyFocuserError::to_ascom_error)?;
         }
         Ok(self.manager.get_cached_state().await.is_moving)
     }
@@ -198,7 +193,7 @@ impl Focuser for QhyFocuserDevice {
         self.manager
             .abort(session)
             .await
-            .map_err(Self::to_ascom_error)
+            .map_err(QhyFocuserError::to_ascom_error)
     }
 
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
@@ -219,6 +214,6 @@ impl Focuser for QhyFocuserDevice {
         self.manager
             .move_absolute(session, position as i64)
             .await
-            .map_err(Self::to_ascom_error)
+            .map_err(QhyFocuserError::to_ascom_error)
     }
 }
