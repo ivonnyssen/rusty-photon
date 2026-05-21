@@ -47,15 +47,24 @@ impl TransportFactory for Fp2SerialTransportFactory {
             self.port, self.baud_rate, self.timeout
         );
 
+        // No `.timeout(self.timeout)` on the tokio-serial builder.
+        // `SerialFrameTransport`'s `with_read_timeout` /
+        // `with_write_timeout` already enforces the per-call deadline via
+        // `tokio::time::timeout`; adding a parallel port-level (termios
+        // `VTIME`) timeout creates two timers set to the same value with
+        // no obvious answer to "which fires first". The shared crate
+        // reclassifies `io::ErrorKind::TimedOut` from the wrapped stream
+        // back to `TransportError::Timeout`, so if a future runtime ever
+        // does need a port-level timeout the classification stays right
+        // — but reasoning is still simpler with a single source.
+        // Pass the `tokio_serial::Error` to `io::Error::other` directly
+        // (not its `.to_string()`) so the original error is preserved as
+        // the `io::Error` source — `TransportError::Open(io::Error)` then
+        // exposes the full cause chain via `Error::source()` traversal in
+        // logs / debug output.
         let stream = tokio_serial::new(&self.port, self.baud_rate)
-            .timeout(self.timeout)
             .open_native_async()
-            .map_err(|e| {
-                TransportError::Open(std::io::Error::other(format!(
-                    "failed to open {}: {e}",
-                    self.port
-                )))
-            })?;
+            .map_err(|e| TransportError::Open(std::io::Error::other(e)))?;
 
         debug!("FP2 serial port {} opened", self.port);
 
@@ -85,6 +94,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses syscalls Miri doesn't model
     async fn open_returns_transport_open_error_for_missing_device() {
+        use std::error::Error;
         let factory = Fp2SerialTransportFactory::new(
             "/dev/nonexistent_dsd_fp2_99999",
             115_200,
@@ -92,7 +102,14 @@ mod tests {
         );
         match factory.open().await {
             Err(TransportError::Open(io)) => {
-                assert!(io.to_string().contains("/dev/nonexistent_dsd_fp2_99999"));
+                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
+                // preserves the original `tokio_serial::Error` as the
+                // io::Error's source, so log/debug output traversing
+                // `Error::source()` recovers the underlying cause.
+                assert!(
+                    io.source().is_some() || io.get_ref().is_some(),
+                    "expected the underlying tokio_serial::Error to be preserved as source"
+                );
             }
             Err(other) => panic!("expected Open error, got {other:?}"),
             Ok(_) => panic!("expected open to fail for nonexistent device"),

@@ -23,7 +23,7 @@ use tracing::debug;
 use crate::codec::Fp2Codec;
 use crate::config::CoverCalibratorConfig;
 use crate::error::DsdFp2Error;
-use crate::manager::{flatten_session_error, FlatPanelManager};
+use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
 
 /// Deep Sky Dad FP2 as an ASCOM CoverCalibrator.
@@ -43,10 +43,6 @@ impl DsdFp2Device {
             manager,
             session: Arc::new(RwLock::new(None)),
         }
-    }
-
-    fn ascom_err(err: DsdFp2Error) -> ASCOMError {
-        err.to_ascom_error()
     }
 
     /// Hardware-clamped configurable maximum. ASCOM `MaxBrightness` and
@@ -87,21 +83,25 @@ impl Device for DsdFp2Device {
         }
         match connected {
             true => {
+                // `?` does SessionError<DsdFp2Error> → DsdFp2Error via the
+                // From impl in error.rs, then DsdFp2Error → ASCOMError via
+                // the second From impl on `?`.
                 let session = self
                     .manager
                     .transport()
                     .acquire()
                     .await
-                    .map_err(|e| Self::ascom_err(flatten_session_error(e)))?;
+                    .map_err(DsdFp2Error::from)?;
                 *slot = Some(session);
                 debug!("FP2 device connected");
             }
             false => {
                 if let Some(session) = slot.take() {
-                    session
-                        .close()
-                        .await
-                        .map_err(|e| Self::ascom_err(DsdFp2Error::Communication(e.to_string())))?;
+                    // `Session::close` returns `Result<_, TransportError>`;
+                    // `From<TransportError> for DsdFp2Error` handles the
+                    // first hop, and `From<DsdFp2Error> for ASCOMError`
+                    // does the second on `?`.
+                    session.close().await.map_err(DsdFp2Error::from)?;
                     debug!("FP2 device disconnected");
                 }
             }
@@ -193,22 +193,20 @@ impl CoverCalibrator for DsdFp2Device {
                 format!("brightness {brightness} exceeds configured max {effective_max}"),
             ));
         }
-        let value = FlatPanelManager::validate_brightness(brightness).map_err(Self::ascom_err)?;
+        let value = FlatPanelManager::validate_brightness(brightness)?;
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
 
         session
             .request(Command::SetBrightness(value))
             .await
-            .map_err(|e| Self::ascom_err(flatten_session_error(e)))?
-            .parse_ok()
-            .map_err(Self::ascom_err)?;
+            .map_err(DsdFp2Error::from)?
+            .parse_ok()?;
         session
             .request(Command::SetLight(true))
             .await
-            .map_err(|e| Self::ascom_err(flatten_session_error(e)))?
-            .parse_ok()
-            .map_err(Self::ascom_err)?;
+            .map_err(DsdFp2Error::from)?
+            .parse_ok()?;
 
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
@@ -223,9 +221,8 @@ impl CoverCalibrator for DsdFp2Device {
         session
             .request(Command::SetLight(false))
             .await
-            .map_err(|e| Self::ascom_err(flatten_session_error(e)))?
-            .parse_ok()
-            .map_err(Self::ascom_err)?;
+            .map_err(DsdFp2Error::from)?
+            .parse_ok()?;
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
         state.light_on = Some(false);
@@ -241,15 +238,13 @@ async fn execute_move(device: &DsdFp2Device, angle: u16) -> ASCOMResult<()> {
     session
         .request(Command::SetTarget(angle))
         .await
-        .map_err(|e| DsdFp2Device::ascom_err(flatten_session_error(e)))?
-        .parse_ok()
-        .map_err(DsdFp2Device::ascom_err)?;
+        .map_err(DsdFp2Error::from)?
+        .parse_ok()?;
     session
         .request(Command::StartMove)
         .await
-        .map_err(|e| DsdFp2Device::ascom_err(flatten_session_error(e)))?
-        .parse_ok()
-        .map_err(DsdFp2Device::ascom_err)?;
+        .map_err(DsdFp2Error::from)?
+        .parse_ok()?;
 
     // Mark motor as running locally so `cover_state` reports `Moving`
     // immediately, before the next poll observes it.

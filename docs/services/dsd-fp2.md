@@ -326,7 +326,7 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 | Module                | Description                                                                                  |
 |-----------------------|----------------------------------------------------------------------------------------------|
 | `config.rs`           | `Config`, `SerialConfig`, `ServerConfig`, `CoverCalibratorConfig` + defaults + JSON load     |
-| `error.rs`            | `DsdFp2Error` enum (`thiserror`) + `to_ascom_error()`                                       |
+| `error.rs`            | `DsdFp2Error` enum (`thiserror`) + `to_ascom_error()` + `From<TransportError>` / `From<SessionError<…>>` / `From<DsdFp2Error> for ASCOMError` |
 | `protocol.rs`         | `Command` enum + `RawResponse` body parsers                                                  |
 | `codec.rs`            | `Fp2Codec` — `rusty_photon_shared_transport::Codec` impl                                    |
 | `transport.rs`        | `Fp2SerialTransportFactory` — opens `tokio_serial::SerialStream`, wraps in `SerialFrameTransport` |
@@ -402,11 +402,14 @@ rejection) are covered by the in-process unit test
 - `device.rs`: `derive_cover_state` / `derive_calibrator_state`
   state-derivation tables (every cell in the CoverState/CalibratorState
   tables above).
-- `manager.rs`: brightness validation and the `SessionError` →
-  `DsdFp2Error` flattener; the shared-transport crate's own integration
-  suite covers refcount + handshake-rollback edge cases.
+- `manager.rs`: brightness validation; the shared-transport crate's
+  own integration suite covers refcount + handshake-rollback edge cases.
 - `error.rs`: `to_ascom_error()` round-trips per the table in
-  [Error Handling](#error-handling).
+  [Error Handling](#error-handling); `From<TransportError>` /
+  `From<SessionError<DsdFp2Error>>` flattening (centralised here so
+  `.map_err(DsdFp2Error::from)?` works at every call site);
+  `From<DsdFp2Error> for ASCOMError` so `?` chains land in
+  `ASCOMResult<_>` without explicit wrappers.
 
 ### ConformU
 
