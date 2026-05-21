@@ -71,17 +71,32 @@ macro_rules! ensure_connected {
     };
 }
 
-/// Reject switch ids outside `0..SWITCH_COUNT` with `INVALID_VALUE` per
-/// the ASCOM convention: id-range validation precedes operation-permission
-/// checks, so out-of-range ids never hit `INVALID_OPERATION` paths.
-fn validate_id(id: usize) -> ASCOMResult<()> {
-    if id >= SWITCH_COUNT {
-        Err(ASCOMError::new(
+/// Typed switch-id discriminant. Returned by [`parse_switch_id`]; every
+/// `Switch` trait method that takes a `usize` id parses it once at the
+/// boundary, then matches on this enum exhaustively. Replaces the
+/// previous untyped `validate_id` + `match id { _ => unreachable!(...) }`
+/// pattern so the compiler proves all id cases are handled.
+#[derive(Debug, Clone, Copy)]
+enum SwitchId {
+    /// Id 0: input voltage (raw ADC count from `VS`).
+    Voltage,
+    /// Id 1: limit-hit flag (mirrors `FA.limit_detect`).
+    Limit,
+}
+
+/// Parse a raw `usize` switch id from the ASCOM `Switch` trait into the
+/// typed [`SwitchId`] discriminant, or reject it with `INVALID_VALUE`
+/// per the ASCOM convention (id-range validation precedes
+/// operation-permission checks so out-of-range ids never hit
+/// `INVALID_OPERATION` paths).
+fn parse_switch_id(id: usize) -> ASCOMResult<SwitchId> {
+    match id {
+        SWITCH_ID_VOLTAGE => Ok(SwitchId::Voltage),
+        SWITCH_ID_LIMIT => Ok(SwitchId::Limit),
+        _ => Err(ASCOMError::new(
             ASCOMErrorCode::INVALID_VALUE,
             format!("Switch id {id} out of range (valid: 0..{SWITCH_COUNT})"),
-        ))
-    } else {
-        Ok(())
+        )),
     }
 }
 
@@ -197,104 +212,91 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Ok(false)
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        validate_id(id)?;
-        let name = match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_SWITCH_NAME,
-            SWITCH_ID_LIMIT => LIMIT_SWITCH_NAME,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        let name = match parse_switch_id(id)? {
+            SwitchId::Voltage => VOLTAGE_SWITCH_NAME,
+            SwitchId::Limit => LIMIT_SWITCH_NAME,
         };
         Ok(name.to_string())
     }
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        validate_id(id)?;
-        let description = match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_SWITCH_DESCRIPTION,
-            SWITCH_ID_LIMIT => LIMIT_SWITCH_DESCRIPTION,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        let description = match parse_switch_id(id)? {
+            SwitchId::Voltage => VOLTAGE_SWITCH_DESCRIPTION,
+            SwitchId::Limit => LIMIT_SWITCH_DESCRIPTION,
         };
         Ok(description.to_string())
     }
 
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        validate_id(id)?;
+        let switch = parse_switch_id(id)?;
         // ASCOM rule: GetSwitch returns false at MinSwitchValue, true
         // otherwise. For the voltage switch (Min = 0) that means
         // "true iff raw > 0". For the limit-hit switch (Min = 0, Max = 1)
         // the 0.5 threshold is the conventional midpoint test, matching
         // the design doc's contract.
         let value = self.get_switch_value(id).await?;
-        let threshold = match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_MIN_VALUE,
-            SWITCH_ID_LIMIT => 0.5,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        let threshold = match switch {
+            SwitchId::Voltage => VOLTAGE_MIN_VALUE,
+            SwitchId::Limit => 0.5,
         };
         Ok(value > threshold)
     }
 
     async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        validate_id(id)?;
-        match id {
-            SWITCH_ID_VOLTAGE => {
+        match parse_switch_id(id)? {
+            SwitchId::Voltage => {
                 self.with_session(async |session| {
                     let v = self.manager.read_voltage_raw(session).await?;
                     Ok(f64::from(v))
                 })
                 .await
             }
-            SWITCH_ID_LIMIT => {
+            SwitchId::Limit => {
                 self.with_session(async |session| {
                     let status = self.manager.read_status(session).await?;
                     Ok(if status.limit_detect { 1.0 } else { 0.0 })
                 })
                 .await
             }
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
         }
     }
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        validate_id(id)?;
-        Ok(match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_MIN_VALUE,
-            SWITCH_ID_LIMIT => LIMIT_MIN_VALUE,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        Ok(match parse_switch_id(id)? {
+            SwitchId::Voltage => VOLTAGE_MIN_VALUE,
+            SwitchId::Limit => LIMIT_MIN_VALUE,
         })
     }
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        validate_id(id)?;
-        Ok(match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_MAX_VALUE,
-            SWITCH_ID_LIMIT => LIMIT_MAX_VALUE,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        Ok(match parse_switch_id(id)? {
+            SwitchId::Voltage => VOLTAGE_MAX_VALUE,
+            SwitchId::Limit => LIMIT_MAX_VALUE,
         })
     }
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        validate_id(id)?;
-        Ok(match id {
-            SWITCH_ID_VOLTAGE => VOLTAGE_STEP,
-            SWITCH_ID_LIMIT => LIMIT_STEP,
-            _ => unreachable!("validate_id rejects ids >= SWITCH_COUNT"),
+        Ok(match parse_switch_id(id)? {
+            SwitchId::Voltage => VOLTAGE_STEP,
+            SwitchId::Limit => LIMIT_STEP,
         })
     }
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         // Read-only switches never change asynchronously.
         Ok(true)
     }
@@ -309,19 +311,19 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn set_switch(&self, id: usize, _state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_switch_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_switch_name(&self, id: usize, _name: String) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
@@ -330,31 +332,31 @@ impl Switch for FalconStatusSwitchDevice {
     // running id validation. ConformU flags both: it expects an
     // InvalidValueException when called with `id >= MaxSwitch` regardless
     // of whether the device supports the operation. Overriding here
-    // chains `ensure_connected!` + `validate_id` before the trait-default
+    // chains `ensure_connected!` + `parse_switch_id` before the trait-default
     // body so out-of-range ids return `INVALID_VALUE` (or `NOT_CONNECTED`
     // when disconnected, matching the rest of the surface).
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Ok(false)
     }
 
     async fn set_async(&self, id: usize, _state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_async_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
         ensure_connected!(self);
-        validate_id(id)?;
+        parse_switch_id(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 }
@@ -384,18 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_id_accepts_zero() {
-        validate_id(0).unwrap();
+    fn parse_switch_id_accepts_zero_as_voltage() {
+        assert!(matches!(parse_switch_id(0).unwrap(), SwitchId::Voltage));
     }
 
     #[test]
-    fn validate_id_accepts_one() {
-        validate_id(1).unwrap();
+    fn parse_switch_id_accepts_one_as_limit() {
+        assert!(matches!(parse_switch_id(1).unwrap(), SwitchId::Limit));
     }
 
     #[test]
-    fn validate_id_rejects_two() {
-        let err = validate_id(2).unwrap_err();
+    fn parse_switch_id_rejects_two() {
+        let err = parse_switch_id(2).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         assert!(
             err.message.contains("Switch id 2 out of range"),
@@ -405,8 +407,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_id_rejects_large_id() {
-        let err = validate_id(usize::MAX).unwrap_err();
+    fn parse_switch_id_rejects_large_id() {
+        let err = parse_switch_id(usize::MAX).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
