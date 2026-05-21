@@ -6,28 +6,33 @@
 //! for motion and an `ISwitchV3` for status (raw input voltage +
 //! limit-detect flag).
 //!
-//! See `docs/services/falcon-rotator.md` for the behavioural contract.
+//! See `docs/services/falcon-rotator.md` for the behavioural contract
+//! and `docs/plans/shared-transport-extraction.md` for the lifecycle
+//! scaffolding the service shares with `qhy-focuser`, `ppba-driver`, and
+//! `star-adventurer-gti` via
+//! [`rusty_photon_shared_transport::SharedTransport`].
 
+pub mod codec;
 pub mod config;
 pub mod error;
-pub mod io;
+pub mod manager;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub mod protocol;
 pub mod rotator_device;
 pub mod serial;
-pub mod serial_manager;
 pub mod switch_device;
 
+pub use codec::{FalconCodec, FalconCodecError, FalconResponse};
 pub use config::{load_config, Config, RotatorConfig, SerialConfig, ServerConfig, SwitchConfig};
 pub use error::{FalconRotatorError, Result};
-pub use io::SerialPortFactory;
+pub use manager::FalconManager;
 pub use rotator_device::FalconRotatorDevice;
-pub use serial_manager::SerialManager;
+pub use serial::FalconTransportFactory;
 pub use switch_device::FalconStatusSwitchDevice;
 
 #[cfg(feature = "mock")]
-pub use mock::MockSerialPortFactory;
+pub use mock::MockFalconTransportFactory;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -35,24 +40,27 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
-use serial::TokioSerialPortFactory;
+use rusty_photon_shared_transport::TransportFactory;
 use tokio::signal;
 use tracing::{debug, info};
 
 /// Builder for the ASCOM Alpaca server.
 ///
 /// Wires the Rotator and Status Switch devices through a single
-/// [`SerialManager`] so they share one physical serial connection.
+/// [`FalconManager`] so they share one
+/// [`rusty_photon_shared_transport::SharedTransport`] and therefore one
+/// physical serial connection.
 pub struct ServerBuilder {
     config: Config,
-    factory: Arc<dyn SerialPortFactory>,
+    factory: Arc<dyn TransportFactory>,
 }
 
 impl Default for ServerBuilder {
     fn default() -> Self {
+        let factory = FalconTransportFactory::from_config(&Config::default().serial);
         Self {
             config: Config::default(),
-            factory: Arc::new(TokioSerialPortFactory::new()),
+            factory: Arc::new(factory),
         }
     }
 }
@@ -63,11 +71,16 @@ impl ServerBuilder {
     }
 
     pub fn with_config(mut self, config: Config) -> Self {
+        // Rebuild the default factory from the new config so the
+        // builder's factory always reflects the configured serial port
+        // when the caller doesn't supply one explicitly.
+        let factory = FalconTransportFactory::from_config(&config.serial);
+        self.factory = Arc::new(factory);
         self.config = config;
         self
     }
 
-    pub fn with_factory(mut self, factory: Arc<dyn SerialPortFactory>) -> Self {
+    pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = factory;
         self
     }
@@ -77,20 +90,18 @@ impl ServerBuilder {
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
         server.discovery_port = self.config.server.discovery_port;
 
-        let serial_manager = Arc::new(SerialManager::new(self.config.clone(), self.factory));
+        let manager = FalconManager::new(self.factory);
 
         if self.config.rotator.enabled {
             let rotator_device =
-                FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&serial_manager));
+                FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&manager));
             server.devices.register(rotator_device);
             info!("Registered Rotator device: {}", self.config.rotator.name);
         }
 
         if self.config.switch.enabled {
-            let switch_device = FalconStatusSwitchDevice::new(
-                self.config.switch.clone(),
-                Arc::clone(&serial_manager),
-            );
+            let switch_device =
+                FalconStatusSwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
             server.devices.register(switch_device);
             info!(
                 "Registered Status Switch device: {}",

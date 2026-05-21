@@ -7,7 +7,7 @@ use clap::Parser;
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
-use pa_falcon_rotator::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+use pa_falcon_rotator::{load_config, Config, MockFalconTransportFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
 use pa_falcon_rotator::{load_config, Config, ServerBuilder};
 
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        let factory = std::sync::Arc::new(MockFalconTransportFactory::default());
         ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)
