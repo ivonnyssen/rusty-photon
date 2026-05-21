@@ -64,3 +64,69 @@ jobs:
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly sanitizer run fails so
+    # ASan/LSan findings surface without depending on someone reading
+    # scheduled-workflow logs. Skipped on push, pull_request, and
+    # workflow_dispatch so manual debugging runs don't churn an issue.
+    needs: sanitizers
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: safety sanitizers failing`;
+            const body = [
+              `The nightly safety workflow failed on at least one sanitizer.`,
+              ``,
+              `Likely causes: AddressSanitizer detected a memory error (use-after-free,`,
+              `buffer overflow, etc.) or LeakSanitizer detected a memory leak in newly`,
+              `added or recently changed unsafe code. Inspect the failed job in the`,
+              `linked run for the sanitizer report.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This issue is opened automatically when the workflow fails on schedule.`,
+              `It will be updated (rather than re-opened) on subsequent failures so the`,
+              `notification cadence stays low. Close it once the underlying issue is`,
+              `resolved; the next failure will reopen.`,
+            ].join("\n");
+            // Search both open AND closed so the body's "the next failure
+            // will reopen" promise is honored. Mirrors the install-astap.yml
+            // pattern.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              labels: "safety-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              if (match.state === "closed") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: match.number,
+                  state: "open",
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again: run ${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["safety-nightly", "ci-flake"],
+              });
+            }
