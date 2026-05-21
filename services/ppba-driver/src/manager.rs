@@ -116,6 +116,11 @@ impl PpbaManager {
     /// Devices use this on-demand (e.g. before validating an auto-dew
     /// write, or after a successful set command). The poll loop does the
     /// same thing internally while a session is alive.
+    ///
+    /// No analogous `refresh_power_stats` exists: the power-stats cache
+    /// is seeded by the handshake and kept fresh by the poll loop, and
+    /// no caller needs an on-demand PS refresh today. Add one back if a
+    /// future caller materialises.
     pub async fn refresh_status(&self, session: &Session<PpbaCodec>) -> Result<()> {
         let resp = session
             .request(PpbaCommand::Status)
@@ -128,22 +133,6 @@ impl PpbaManager {
         };
         let mut state = self.cached_state.write().await;
         apply_status(&mut state, &status);
-        Ok(())
-    }
-
-    /// Refresh the power-statistics (PS) cache via the caller's session.
-    pub async fn refresh_power_stats(&self, session: &Session<PpbaCodec>) -> Result<()> {
-        let resp = session
-            .request(PpbaCommand::PowerStats)
-            .await
-            .map_err(PpbaError::from)?;
-        let PpbaResponse::PowerStats(stats) = resp else {
-            return Err(PpbaError::InvalidResponse(
-                "PS command returned non-power-stats frame".to_string(),
-            ));
-        };
-        let mut state = self.cached_state.write().await;
-        state.power_stats = Some(stats);
         Ok(())
     }
 }

@@ -173,6 +173,7 @@ impl From<SessionError<PpbaCodecError>> for PpbaError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use rusty_photon_shared_transport::TransportError;
 
     #[test]
     fn encode_appends_newline_terminator() {
@@ -275,5 +276,166 @@ mod tests {
         let err: SessionError<PpbaCodecError> = SessionError::SkipExhausted(1);
         let ppba = PpbaError::from(err);
         assert!(matches!(ppba, PpbaError::Communication(_)));
+    }
+
+    // ============================================================================
+    // PpbaCodecError::from_protocol: tightens PpbaError variants into the codec
+    // error type for use inside Codec::decode's parser-error branches.
+    // ============================================================================
+
+    #[test]
+    fn from_protocol_invalid_response_passes_through() {
+        let err = PpbaCodecError::from_protocol(PpbaError::InvalidResponse("nope".to_string()));
+        assert!(matches!(err, PpbaCodecError::InvalidResponse(s) if s == "nope"));
+    }
+
+    #[test]
+    fn from_protocol_parse_error_passes_through() {
+        let err = PpbaCodecError::from_protocol(PpbaError::ParseError("bad".to_string()));
+        assert!(matches!(err, PpbaCodecError::Parse(s) if s == "bad"));
+    }
+
+    #[test]
+    fn from_protocol_other_variants_flatten_to_invalid_response() {
+        let err = PpbaCodecError::from_protocol(PpbaError::NotConnected);
+        match err {
+            PpbaCodecError::InvalidResponse(s) => assert!(s.contains("Not connected")),
+            other => panic!("expected InvalidResponse, got {other:?}"),
+        }
+    }
+
+    // ============================================================================
+    // From<SessionError<PpbaCodecError>> for PpbaCodecError: used in handshake
+    // and poll-loop contexts so `?` flattens transport-side failures into the
+    // codec error type without losing structural information.
+    // ============================================================================
+
+    #[test]
+    fn session_to_codec_error_transport_becomes_transport_string() {
+        let err: PpbaCodecError =
+            SessionError::<PpbaCodecError>::Transport(TransportError::Eof).into();
+        assert!(matches!(err, PpbaCodecError::Transport(_)));
+    }
+
+    #[test]
+    fn session_to_codec_error_codec_is_identity() {
+        let inner = PpbaCodecError::Parse("p".to_string());
+        let err: PpbaCodecError = SessionError::Codec(inner).into();
+        assert!(matches!(err, PpbaCodecError::Parse(s) if s == "p"));
+    }
+
+    #[test]
+    fn session_to_codec_error_skip_exhausted_passes_count() {
+        let err: PpbaCodecError = SessionError::<PpbaCodecError>::SkipExhausted(3).into();
+        assert!(matches!(err, PpbaCodecError::SkipExhausted(3)));
+    }
+
+    // ============================================================================
+    // From<SessionError<PpbaCodecError>> for PpbaError: the device-layer mapping
+    // that decides which ASCOMErrorCode each failure ultimately surfaces as.
+    // ============================================================================
+
+    #[test]
+    fn session_error_transport_open_maps_to_connection_failed() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Transport(TransportError::Open(std::io::Error::other("device busy")));
+        match PpbaError::from(err) {
+            PpbaError::ConnectionFailed(s) => assert!(s.contains("device busy")),
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_io_preserves_io_kind() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err: SessionError<PpbaCodecError> = SessionError::Transport(TransportError::Io(io_err));
+        match PpbaError::from(err) {
+            PpbaError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_timeout_maps_to_timeout() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Transport(TransportError::Timeout(std::time::Duration::from_secs(2)));
+        match PpbaError::from(err) {
+            PpbaError::Timeout(s) => assert!(s.contains("2s") || s.contains("2.0s")),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_eof_maps_to_communication() {
+        let err: SessionError<PpbaCodecError> = SessionError::Transport(TransportError::Eof);
+        match PpbaError::from(err) {
+            PpbaError::Communication(s) => assert!(s.contains("Connection closed")),
+            other => panic!("expected Communication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_framing_maps_to_communication() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Transport(TransportError::Framing("too big".to_string()));
+        match PpbaError::from(err) {
+            PpbaError::Communication(s) => assert!(s.contains("too big")),
+            other => panic!("expected Communication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_parse_maps_to_parse_error() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Codec(PpbaCodecError::Parse("nan".to_string()));
+        assert!(matches!(PpbaError::from(err), PpbaError::ParseError(s) if s == "nan"));
+    }
+
+    #[test]
+    fn session_error_codec_utf8_maps_to_invalid_response() {
+        // Build a real Utf8Error by decoding a non-literal byte slice; using
+        // a literal trips the `invalid_from_utf8` lint.
+        let bad: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
+        let utf8_err = std::str::from_utf8(&bad).unwrap_err();
+        let err: SessionError<PpbaCodecError> = SessionError::Codec(PpbaCodecError::Utf8(utf8_err));
+        assert!(matches!(
+            PpbaError::from(err),
+            PpbaError::InvalidResponse(_)
+        ));
+    }
+
+    #[test]
+    fn session_error_codec_transport_maps_to_communication() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Codec(PpbaCodecError::Transport("wire died".to_string()));
+        match PpbaError::from(err) {
+            PpbaError::Communication(s) => assert_eq!(s, "wire died"),
+            other => panic!("expected Communication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_skip_exhausted_maps_to_communication_with_count() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Codec(PpbaCodecError::SkipExhausted(7));
+        match PpbaError::from(err) {
+            PpbaError::Communication(s) => {
+                assert!(s.contains("non-matching") && s.contains("7"));
+            }
+            other => panic!("expected Communication, got {other:?}"),
+        }
+    }
+
+    // ============================================================================
+    // Codec::matches: FirmwareVersion echo accept.
+    // ============================================================================
+
+    #[test]
+    fn matches_firmware_version_accepts_any_echo() {
+        let cdc = PpbaCodec;
+        assert!(cdc.matches(
+            &PpbaCommand::FirmwareVersion,
+            &PpbaResponse::Echo("1.2.3".to_string())
+        ));
     }
 }

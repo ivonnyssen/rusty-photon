@@ -42,6 +42,18 @@ Feature: Switch Control
     When I try to set switch 2 value to 100.0
     Then the last error code should be INVALID_OPERATION
 
+  Scenario: Setting Dew Heater A PWM succeeds when auto-dew is off
+    Given a running PPBA server with the switch connected
+    When I wait for the switch data to be available
+    And I set switch 2 value to 200.0
+    Then switch 2 value should be 200.0
+
+  Scenario: Setting Dew Heater B PWM succeeds when auto-dew is off
+    Given a running PPBA server with the switch connected
+    When I wait for the switch data to be available
+    And I set switch 3 value to 100.0
+    Then switch 3 value should be 100.0
+
   Scenario: USB hub set uses special PU command path
     Given a running PPBA server with the switch connected
     When I wait for the switch data to be available

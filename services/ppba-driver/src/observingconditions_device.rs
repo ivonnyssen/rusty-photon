@@ -272,9 +272,33 @@ mod tests {
     use crate::config::Config;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+
+    /// Factory whose `open()` always fails. Used to exercise the
+    /// `set_connected(true)` acquire-failure mapping into ASCOM errors —
+    /// the BDD suite can't reach this path because its mock always
+    /// succeeds.
+    struct FailingPpbaTransportFactory;
+
+    #[async_trait]
+    impl TransportFactory for FailingPpbaTransportFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            Err(TransportError::Open(std::io::Error::other(
+                "mock factory error",
+            )))
+        }
+    }
 
     fn make_device() -> PpbaObservingConditionsDevice {
         let factory = Arc::new(MockPpbaTransportFactory::default());
+        let config = Config::default();
+        let manager = PpbaManager::new(config.clone(), factory);
+        PpbaObservingConditionsDevice::new(config.observingconditions, manager)
+    }
+
+    fn make_device_with_failing_factory() -> PpbaObservingConditionsDevice {
+        let factory = Arc::new(FailingPpbaTransportFactory);
         let config = Config::default();
         let manager = PpbaManager::new(config.clone(), factory);
         PpbaObservingConditionsDevice::new(config.observingconditions, manager)
@@ -393,5 +417,40 @@ mod tests {
         let device = connected_device().await;
         device.refresh().await.unwrap();
         device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_connected_acquire_failure_maps_to_invalid_operation() {
+        let device = make_device_with_failing_factory();
+        let err = device.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("mock factory error"),
+            "expected message to carry the underlying io error, got: {}",
+            err.message
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[test]
+    fn to_ascom_error_not_connected_maps_to_not_connected() {
+        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::NotConnected);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[test]
+    fn to_ascom_error_invalid_value_maps_to_invalid_value() {
+        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::InvalidValue(
+            "bad".to_string(),
+        ));
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn to_ascom_error_communication_falls_to_invalid_operation() {
+        let err = PpbaObservingConditionsDevice::to_ascom_error(PpbaError::Communication(
+            "boom".to_string(),
+        ));
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 }

@@ -457,11 +457,36 @@ mod tests {
 
     use super::*;
     use crate::config::Config;
+    use crate::error::PpbaError;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+
+    /// Factory whose `open()` always fails. Used to exercise the
+    /// `set_connected(true)` acquire-failure mapping into ASCOM errors —
+    /// the BDD suite can't reach this path because its mock always
+    /// succeeds.
+    struct FailingPpbaTransportFactory;
+
+    #[async_trait]
+    impl TransportFactory for FailingPpbaTransportFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            Err(TransportError::Open(std::io::Error::other(
+                "mock factory error",
+            )))
+        }
+    }
 
     fn make_device() -> PpbaSwitchDevice {
         let factory = Arc::new(MockPpbaTransportFactory::default());
+        let config = Config::default();
+        let manager = PpbaManager::new(config.clone(), factory);
+        PpbaSwitchDevice::new(config.switch, manager)
+    }
+
+    fn make_device_with_failing_factory() -> PpbaSwitchDevice {
+        let factory = Arc::new(FailingPpbaTransportFactory);
         let config = Config::default();
         let manager = PpbaManager::new(config.clone(), factory);
         PpbaSwitchDevice::new(config.switch, manager)
@@ -613,5 +638,40 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn set_connected_acquire_failure_maps_to_invalid_operation() {
+        // The factory's open() returns TransportError::Open, which
+        // propagates as PpbaError::ConnectionFailed and falls to the
+        // to_ascom_error catch-all -> INVALID_OPERATION.
+        let device = make_device_with_failing_factory();
+        let err = device.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("mock factory error"),
+            "expected message to carry the underlying io error, got: {}",
+            err.message
+        );
+        // No session got stored on failure — the device stays disconnected.
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[test]
+    fn to_ascom_error_not_connected_maps_to_not_connected() {
+        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::NotConnected);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[test]
+    fn to_ascom_error_communication_falls_to_invalid_operation() {
+        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::Communication("boom".to_string()));
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    }
+
+    #[test]
+    fn to_ascom_error_connection_failed_falls_to_invalid_operation() {
+        let err = PpbaSwitchDevice::to_ascom_error(PpbaError::ConnectionFailed("nope".to_string()));
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 }

@@ -13,7 +13,11 @@ pub mod config;
 pub mod error;
 pub mod manager;
 pub mod mean;
-#[cfg(feature = "mock")]
+// Compiled into the binary under `--features mock` (BDD + ConformU) and
+// also into the lib's `cargo test` build so each module's `#[cfg(test)]`
+// suite can drive the same canonical PPBA simulator. Production builds
+// don't compile it.
+#[cfg(any(feature = "mock", test))]
 pub mod mock;
 pub mod observingconditions_device;
 pub mod protocol;

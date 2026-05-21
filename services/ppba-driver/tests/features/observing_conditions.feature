@@ -191,6 +191,17 @@ Feature: Observing Conditions
     Given a running PPBA server with the OC device connected
     Then refreshing the OC device should succeed
 
+  Scenario: Background polling refreshes the sensor cache
+    # The test config sets polling_interval to 200ms. After a 500ms wait
+    # at least two poll cycles must have fired, so the most recent
+    # `last_update` cannot be older than one polling interval. If the
+    # poll loop were dead, time_since_last_update would grow without
+    # bound and this assertion would fail.
+    Given a running PPBA server with the OC device connected
+    When I wait for the OC data to be available
+    And I wait 500 milliseconds
+    Then time since last update for "temperature" should be less than 0.4 seconds
+
   Scenario: Cloud cover is not implemented
     Given a running PPBA server
     When I try to read cloud cover
