@@ -135,10 +135,15 @@ impl Device for FalconRotatorDevice {
                         ))
                     })?;
                 }
-                // Reset per-session driver state so a subsequent reconnect
-                // starts from a clean slate (sync_offset, target_position,
-                // limit-detect edge tracker).
-                self.manager.clear_session_state().await;
+                // Only reset per-session driver state when this disconnect
+                // truly closed the transport. If the status switch device
+                // still holds a session, the manager stays available and
+                // the shared state (sync_offset, target_position,
+                // limit-detect edge tracker) must stay intact for it.
+                // Mirrors the guard on `FalconStatusSwitchDevice::set_connected`.
+                if !self.manager.is_available() {
+                    self.manager.clear_session_state().await;
+                }
                 debug!("Rotator device disconnected");
             }
             _ => {}
@@ -677,13 +682,66 @@ mod mock_tests {
         device.set_connected(true).await.unwrap();
 
         // After reconnect, the sync offset must be reset by
-        // `clear_session_state`, so Position == MechanicalPosition.
+        // `clear_session_state` (the rotator was the only session holder,
+        // so its disconnect was the 1→0 transition that closed the
+        // transport). Position == MechanicalPosition confirms it.
         let pos = device.position().await.unwrap();
         let mech = device.mechanical_position().await.unwrap();
         assert!(
             (pos - mech).abs() < 1e-9,
             "expected sync_offset reset on reconnect: position={pos}, mechanical={mech}"
         );
+    }
+
+    #[tokio::test]
+    async fn rotator_disconnect_preserves_state_while_switch_still_connected() {
+        // Regression test for the bug Copilot flagged on PR #282: if the
+        // status switch is still holding a session, the rotator's
+        // disconnect must NOT clear shared driver state (sync_offset,
+        // target_position, limit-detect edge tracker) — the switch's
+        // `read_status` calls still rely on the edge tracker, and any
+        // `TargetPosition` reads via the manager would see stale `None`.
+        //
+        // The fix gates `clear_session_state` on `!manager.is_available()`
+        // so it only runs when this disconnect was the one that actually
+        // closed the transport.
+        use crate::switch_device::FalconStatusSwitchDevice;
+        use crate::SwitchConfig;
+        use rusty_photon_shared_transport::TransportFactory;
+
+        let factory = Arc::new(MockFalconTransportFactory::default());
+        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let rotator = FalconRotatorDevice::new(RotatorConfig::default(), Arc::clone(&manager));
+        let switch = FalconStatusSwitchDevice::new(SwitchConfig::default(), Arc::clone(&manager));
+
+        // Connect both devices; seed sync_offset via the rotator.
+        rotator.set_connected(true).await.unwrap();
+        switch.set_connected(true).await.unwrap();
+        factory.set_mech_position_deg(120.0).await;
+        rotator.sync(30.0).await.unwrap();
+        let offset_before = manager.sync_offset().await;
+        assert!(
+            (offset_before - 270.0).abs() < 1e-9,
+            "offset_before={offset_before}"
+        );
+
+        // Disconnect ONLY the rotator. The switch is still holding a
+        // session, so the transport remains available and the shared
+        // state must stay intact.
+        rotator.set_connected(false).await.unwrap();
+        assert!(
+            manager.is_available(),
+            "switch still holds a session — transport must stay open"
+        );
+        let offset_after = manager.sync_offset().await;
+        assert!(
+            (offset_after - offset_before).abs() < 1e-9,
+            "sync_offset must not be cleared while another device still holds a session; \
+             before={offset_before}, after={offset_after}"
+        );
+
+        // Cleanup.
+        switch.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]

@@ -1,9 +1,12 @@
 //! Tokio-serial-backed [`TransportFactory`] for the Falcon Rotator.
 //!
-//! Opens the configured serial port at 9600-8N1 and wraps the resulting
-//! stream in a [`SerialFrameTransport`] with `\n` as the frame terminator
-//! (Falcon replies are LF-terminated ASCII lines in both directions).
-//! Replaces the legacy `SerialReader` / `SerialWriter` / `SerialPortPair`
+//! Opens the configured serial port at the configured baud rate
+//! (default 9600 — see [`crate::config::SerialConfig`]). Framing is
+//! 8N1 (tokio-serial's default — the Falcon firmware doesn't speak
+//! anything else and the driver doesn't expose framing knobs), with
+//! `\n` as the line terminator in both directions. The stream is
+//! wrapped in a [`SerialFrameTransport`] with `b'\n'` framing, replacing
+//! the legacy `SerialReader` / `SerialWriter` / `SerialPortPair`
 //! abstraction — that layer now lives in
 //! [`rusty_photon_shared_transport`].
 

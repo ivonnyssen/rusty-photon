@@ -69,7 +69,13 @@ pub struct FalconManager {
 }
 
 impl FalconManager {
-    /// Build a manager from the service config and a transport factory.
+    /// Build a manager around `factory`.
+    ///
+    /// The Falcon driver has no cached state to seed and no poll interval
+    /// to capture, so unlike `PpbaManager` / `FocuserManager` this
+    /// constructor does **not** take a `Config` — the only per-call
+    /// configuration is the transport factory itself, which already owns
+    /// the port path / baud rate / timeout it was built from.
     pub fn new(factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         let last_limit_detected = Arc::new(Mutex::new(None));
         let last_for_hooks = Arc::clone(&last_limit_detected);
