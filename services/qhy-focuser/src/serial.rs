@@ -56,8 +56,14 @@ impl TransportFactory for QhyTransportFactory {
             "opening Q-Focuser serial transport"
         );
 
+        // Note: no `.timeout(self.timeout)` on the tokio-serial builder.
+        // That would set the port-level (termios `VTIME`) timeout, which
+        // surfaces as `io::ErrorKind::TimedOut` and is propagated by
+        // `SerialFrameTransport` as `TransportError::Io(TimedOut)` rather
+        // than `TransportError::Timeout(d)`. We rely on
+        // `with_read_timeout` / `with_write_timeout` instead so the
+        // single classified timeout fires and yields the right variant.
         let stream = tokio_serial::new(&self.port, self.baud_rate)
-            .timeout(self.timeout)
             .open_native_async()
             .map_err(|e| TransportError::Open(io::Error::other(e.to_string())))?;
 

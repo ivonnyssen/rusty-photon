@@ -2,25 +2,27 @@
 
 ## Status
 
-**Phase C in flight.** Phase A landed via PR #269 (the
-`crates/rusty-photon-shared-transport/` crate; 31 tests). Phase B
-migrated `ppba-driver` via PR #276; both ASCOM devices
-(`PpbaSwitchDevice`, `PpbaObservingConditionsDevice`) now hold an
-`Option<Session<PpbaCodec>>` and `ppba-driver/src/serial_manager.rs`
-was deleted in favour of `PpbaManager` + `Hooks { handshake,
-while_open, … }`. Issue #251 closed structurally with that migration.
-Phase C migrates `qhy-focuser` to the shared crate on
-`feature/phase-c-qhy-focuser-shared-transport`: `QhyCodec` carries the
-JSON encode/decode + `cmd_id↔idx` matching (with `max_skip = 5` for
-unsolicited position frames), `FocuserManager` wraps
-`SharedTransport<QhyCodec>` + the cached state, and
-`QhyFocuserDevice::set_connected` is the
-`RwLock<Option<Session<QhyCodec>>>` shape. The legacy
-`serial_manager.rs` (~1063 lines) and `io.rs` are deleted. Issue #258
-closes structurally with this migration. All 110 unit + integration
-tests + 37 BDD scenarios green; rail commit profile clean. Phases
-D–E (pa-falcon-rotator, star-adventurer-gti) follow per the rollout
-below.
+**Phases A–B merged on `main`; Phase C implemented on
+`feature/phase-c-qhy-focuser-shared-transport` (PR #280), in review.
+Phases D–E (`pa-falcon-rotator`, `star-adventurer-gti`) remain.**
+
+* Phase A — landed via PR #269 (the
+  `crates/rusty-photon-shared-transport/` crate; 31 tests).
+* Phase B — landed via PR #276 (`ppba-driver` migration). Both ASCOM
+  devices (`PpbaSwitchDevice`, `PpbaObservingConditionsDevice`) hold
+  `Option<Session<PpbaCodec>>`; `serial_manager.rs` was deleted in
+  favour of `PpbaManager` + `Hooks { handshake, while_open, … }`.
+  Closed issue #251 structurally.
+* Phase C — implemented (PR #280, in review). `qhy-focuser` is
+  migrated; `QhyCodec` carries the JSON encode/decode + `cmd_id↔idx`
+  matching (`max_skip = 5` for unsolicited position frames),
+  `FocuserManager` wraps `SharedTransport<QhyCodec>` + the cached
+  state, and `QhyFocuserDevice::set_connected` is the
+  `RwLock<Option<Session<QhyCodec>>>` shape. Legacy
+  `serial_manager.rs` (~1063 lines) and `io.rs` are deleted. Closes
+  issue #258 structurally. Detailed verification lives in the
+  Phase C section below.
+* Phases D–E — not started; rollout below describes each.
 
 ## Motivation
 
