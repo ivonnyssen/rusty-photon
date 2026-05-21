@@ -19,6 +19,7 @@ workspace = true
 [dependencies]
 ascom-alpaca = { workspace = true, features = ["server", "telescope", "client"] }
 skywatcher-motor-protocol = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }

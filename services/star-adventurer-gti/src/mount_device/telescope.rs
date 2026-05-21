@@ -108,14 +108,14 @@ impl Telescope for MountDevice {
 
     async fn right_ascension(&self) -> ASCOMResult<f64> {
         self.ensure_connected().await?;
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (ra, _dec) = encoder_to_celestial(
             snap.ra.position_ticks,
             snap.dec.position_ticks,
@@ -133,14 +133,14 @@ impl Telescope for MountDevice {
 
     async fn declination(&self) -> ASCOMResult<f64> {
         self.ensure_connected().await?;
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (_ra, dec) = encoder_to_celestial(
             snap.ra.position_ticks,
             snap.dec.position_ticks,
@@ -160,7 +160,7 @@ impl Telescope for MountDevice {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (_alt, az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(az)
     }
@@ -169,14 +169,14 @@ impl Telescope for MountDevice {
         let ra = self.right_ascension().await?;
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         let (alt, _az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
         Ok(alt)
     }
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
         local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)
+            .map_err(ASCOMError::from)
     }
 
     async fn slewing(&self) -> ASCOMResult<bool> {
@@ -190,7 +190,7 @@ impl Telescope for MountDevice {
         if self.state.read().await.slew_in_progress {
             return Ok(true);
         }
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let ra_slewing = snap.ra.running && snap.ra.goto;
         let dec_slewing = snap.dec.running && snap.dec.goto;
         Ok(ra_slewing || dec_slewing)
@@ -216,7 +216,7 @@ impl Telescope for MountDevice {
             // re-asserting that should not error.
             self.ensure_unparked().await?;
             let params = self
-                .transport
+                .manager
                 .parameters()
                 .await
                 .ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -228,15 +228,16 @@ impl Telescope for MountDevice {
             // for the running flag to clear before re-issuing the
             // tracking-mode `:G`/`:I`/`:J` sequence.
             self.stop_and_wait(Axis::Ra).await?;
-            enable_sidereal_tracking_ra(&self.transport, &params)
+            let guard = self.session.read().await;
+            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+            enable_sidereal_tracking_ra(&self.manager, session, &params)
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
         } else {
             // Decelerate to stop on RA.
-            self.transport
-                .send(Command::StopMotion(Axis::Ra))
+            self.send(Command::StopMotion(Axis::Ra))
                 .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
         }
         self.state.write().await.tracking_requested = tracking;
         Ok(())
@@ -282,9 +283,9 @@ impl Telescope for MountDevice {
 
     async fn side_of_pier(&self) -> ASCOMResult<PierSide> {
         self.ensure_connected().await?;
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -311,13 +312,13 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
-        let snap = self.transport.snapshot().await;
+            .map_err(ASCOMError::from)?;
+        let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
             snap.dec.position_ticks,
             params.cpr_dec,
@@ -377,13 +378,13 @@ impl Telescope for MountDevice {
         // same celestial direction while landing on the requested
         // pier side.
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
-        let snap = self.transport.snapshot().await;
+            .map_err(ASCOMError::from)?;
+        let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
             snap.dec.position_ticks,
             params.cpr_dec,
@@ -472,12 +473,12 @@ impl Telescope for MountDevice {
             s.pulse_guiding_dec = false;
         }
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         // Reject syncs that would set the encoder outside the
         // mount's safe mechanical envelope — a bad sync would let
         // the *next* tracking step push the OTA into a hard stop.
@@ -489,26 +490,24 @@ impl Telescope for MountDevice {
         let mech_ha = ra_to_mechanical_ha(ra, lst);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
-        self.transport
-            .send(Command::SetPosition {
-                axis: Axis::Ra,
-                ticks: ra_ticks,
-            })
-            .await
-            .map_err(Self::ascom)?;
+        self.send(Command::SetPosition {
+            axis: Axis::Ra,
+            ticks: ra_ticks,
+        })
+        .await
+        .map_err(ASCOMError::from)?;
         // Publish the just-written RA position to the cached snapshot
         // so an immediate `RightAscension` read reflects the sync
         // without having to wait for the next background poll. Done
         // only after the wire `:E` succeeds.
-        self.transport.seed_ra_position(ra_ticks).await;
-        self.transport
-            .send(Command::SetPosition {
-                axis: Axis::Dec,
-                ticks: dec_ticks,
-            })
-            .await
-            .map_err(Self::ascom)?;
-        self.transport.seed_dec_position(dec_ticks).await;
+        self.manager.seed_ra_position(ra_ticks).await;
+        self.send(Command::SetPosition {
+            axis: Axis::Dec,
+            ticks: dec_ticks,
+        })
+        .await
+        .map_err(ASCOMError::from)?;
+        self.manager.seed_dec_position(dec_ticks).await;
         // Per ASCOM ITelescopeV3, a successful Sync sets
         // TargetRightAscension / TargetDeclination to the synced
         // coordinates. ConformU asserts this. Only write the in-memory
@@ -541,7 +540,7 @@ impl Telescope for MountDevice {
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -558,7 +557,7 @@ impl Telescope for MountDevice {
         // of 3-7 s, leaving 45-120 arc-second RA residuals. The
         // pickup loop closes the gap cleanly.
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
 
         // Phase 6: determine target pier side via the flip policy. With
         // `flip_policy.enabled = false` (the default), `chosen_side`
@@ -566,7 +565,7 @@ impl Telescope for MountDevice {
         // reduces to the pre-Phase-6 pipeline. With it enabled, a
         // flip slew may be chosen — see the design doc's
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
             snap.dec.position_ticks,
             params.cpr_dec,
@@ -647,10 +646,9 @@ impl Telescope for MountDevice {
             // remains off after Park). The wire `:K1` is issued first
             // so the in-memory flag flip only follows a successful stop.
             if self.state.read().await.tracking_requested {
-                self.transport
-                    .send(Command::StopMotion(Axis::Ra))
+                self.send(Command::StopMotion(Axis::Ra))
                     .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
                 self.state.write().await.tracking_requested = false;
             }
             // Slew both axes to the loaded park target.
@@ -679,7 +677,7 @@ impl Telescope for MountDevice {
             // Same wire sequence as `slew_to_coordinates_async`:
             // `:K`-and-wait, `:G` with direction chosen from
             // `sign(target - current)`, `:S target`, `:J`.
-            let snap = self.transport.snapshot().await;
+            let snap = self.manager.snapshot().await;
             for (axis, current_ticks, target_ticks) in [
                 (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
                 (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
@@ -690,24 +688,21 @@ impl Telescope for MountDevice {
                     speed: Speed::Fast,
                     ccw: current_ticks > target_ticks,
                 };
-                self.transport
-                    .send(Command::SetMotionMode { axis, mode })
+                self.send(Command::SetMotionMode { axis, mode })
                     .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
                 // No `:I` in Goto mode — the firmware computes slew speed
                 // internally. See the matching note in
                 // `slew_to_coordinates_async`.
-                self.transport
-                    .send(Command::SetGotoTarget {
-                        axis,
-                        ticks: target_ticks,
-                    })
+                self.send(Command::SetGotoTarget {
+                    axis,
+                    ticks: target_ticks,
+                })
+                .await
+                .map_err(ASCOMError::from)?;
+                self.send(Command::StartMotion(axis))
                     .await
-                    .map_err(Self::ascom)?;
-                self.transport
-                    .send(Command::StartMotion(axis))
-                    .await
-                    .map_err(Self::ascom)?;
+                    .map_err(ASCOMError::from)?;
             }
             Ok(())
         }
@@ -717,7 +712,9 @@ impl Telescope for MountDevice {
             return Err(e);
         }
         // Hand off to the park watcher; it owns `slew_in_progress`
-        // from here and will clear it on completion.
+        // from here and will clear it on completion. The watcher
+        // acquires its own session so a user disconnect during park
+        // doesn't have to wait for completion.
         let settle = self
             .state
             .read()
@@ -726,10 +723,13 @@ impl Telescope for MountDevice {
             .unwrap_or(self.config.settle_after_slew);
         spawn_park_completion_watcher(
             Arc::clone(&self.state),
-            Arc::clone(&self.transport),
-            self.transport.polling_interval_for_watcher(),
+            Arc::clone(&self.manager),
+            Arc::clone(&self.session),
+            self.manager.polling_interval_for_watcher(),
             settle,
-        );
+        )
+        .await
+        .map_err(ASCOMError::from)?;
         Ok(())
     }
 
@@ -775,7 +775,7 @@ impl Telescope for MountDevice {
                 "SetPark refused while slew or park is in progress",
             ));
         }
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         if snap.ra.running || snap.dec.running {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -796,7 +796,7 @@ impl Telescope for MountDevice {
                     format!("set_park write task join error: {e}"),
                 )
             })?
-            .map_err(Self::ascom)?;
+            .map_err(ASCOMError::from)?;
         // Only mutate the in-memory target after the disk write
         // succeeds — otherwise a failed write would leave the live
         // park target out of sync with what's persisted.
@@ -843,10 +843,10 @@ impl Telescope for MountDevice {
         // hides bugs (a watcher race that leaves the manager with no
         // open transport, for instance) until BDD assertions on the
         // command log time out far downstream.
-        if let Err(e) = self.transport.send(Command::InstantStop(Axis::Ra)).await {
+        if let Err(e) = self.send(Command::InstantStop(Axis::Ra)).await {
             debug!("abort_slew :L1 send failed: {e}");
         }
-        if let Err(e) = self.transport.send(Command::InstantStop(Axis::Dec)).await {
+        if let Err(e) = self.send(Command::InstantStop(Axis::Dec)).await {
             debug!("abort_slew :L2 send failed: {e}");
         }
         Ok(())
@@ -942,7 +942,7 @@ impl Telescope for MountDevice {
         // `rate_factor ≥ sidereal_period / 0xFFFFFF ≈ 0.023`. Tiny
         // guide-rate fractions trip this; clients see `INVALID_VALUE`.
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -1003,21 +1003,18 @@ impl Telescope for MountDevice {
         };
         let wire_result: ASCOMResult<()> = async {
             self.stop_and_wait(axis).await?;
-            self.transport
-                .send(Command::SetMotionMode { axis, mode })
+            self.send(Command::SetMotionMode { axis, mode })
                 .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::SetStepPeriod {
-                    axis,
-                    period: shifted_period,
-                })
+                .map_err(ASCOMError::from)?;
+            self.send(Command::SetStepPeriod {
+                axis,
+                period: shifted_period,
+            })
+            .await
+            .map_err(ASCOMError::from)?;
+            self.send(Command::StartMotion(axis))
                 .await
-                .map_err(Self::ascom)?;
-            self.transport
-                .send(Command::StartMotion(axis))
-                .await
-                .map_err(Self::ascom)?;
+                .map_err(ASCOMError::from)?;
             Ok(())
         }
         .await;
@@ -1027,11 +1024,14 @@ impl Telescope for MountDevice {
         }
         spawn_pulse_guide_watcher(
             Arc::clone(&self.state),
-            Arc::clone(&self.transport),
+            Arc::clone(&self.manager),
+            Arc::clone(&self.session),
             axis,
             duration,
             tracking_was_on,
-        );
+        )
+        .await
+        .map_err(ASCOMError::from)?;
         debug!(?direction, ?duration, axis = ?axis, "pulse_guide spawned");
         Ok(())
     }

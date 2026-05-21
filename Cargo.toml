@@ -17,6 +17,7 @@ members = [
   "services/ppba-driver",
   "services/qhy-focuser",
   "services/calibrator-flats",
+  "services/dsd-fp2",
   "services/rp",
   "services/plate-solver",
   "services/sentinel",

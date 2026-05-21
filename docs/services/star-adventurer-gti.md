@@ -37,14 +37,23 @@ tracking rates, and polar-alignment helpers are explicitly deferred
                 │                │ commands       │
                 │                ▼                │
                 │   ┌──────────────────────────┐  │
-                │   │ TransportManager         │  │
-                │   │  (ref-counted, polls     │  │
-                │   │   axis status + posn)    │  │
+                │   │ MountManager             │  │
+                │   │  (Sky-Watcher handshake, │  │
+                │   │   parameters + snapshot, │  │
+                │   │   poll-pause guards)     │  │
+                │   └────────────┬─────────────┘  │
+                │                │ Session<SkywatcherCodec> + WhileOpen
+                │                ▼                │
+                │   ┌──────────────────────────┐  │
+                │   │ rusty-photon-shared-     │  │
+                │   │   transport              │  │
+                │   │  (refcount, slot,        │  │
+                │   │   open/close, hooks)     │  │
                 │   └────────────┬─────────────┘  │
                 │                │ bytes          │
                 │                ▼                │
                 │   ┌──────────────────────────┐  │
-                │   │ Transport (trait)        │  │
+                │   │ FrameTransport (trait)   │  │
                 │   │  ┌──────┐    ┌──────┐    │  │
                 │   │  │serial│    │ udp  │    │  │
                 │   │  └───┬──┘    └───┬──┘    │  │
@@ -93,6 +102,47 @@ The crate is intentionally not Sky-Watcher-mount-specific beyond the wire
 format: it does not know about RA/Dec, ASCOM, or any particular mount's
 gear ratios. A future `az-gti` service or any other mount that speaks this
 protocol could reuse the crate verbatim.
+
+### Shared transport (Phase E of issue #257)
+
+The connection lifecycle — refcounted multi-client open/close, handshake,
+background poll task, request arbitration lock — lives in the workspace
+crate `rusty-photon-shared-transport` (`crates/rusty-photon-shared-transport/`).
+The service plugs into it via:
+
+* **`SkywatcherCodec`** (`src/codec.rs`) — implements
+  [`rusty_photon_shared_transport::Codec`]. The codec's `Response`
+  type is the raw `Vec<u8>` frame; per-command typed decoding lives in
+  [`MountManager::send`] and the handshake hook, because the Sky-Watcher
+  protocol's success-body interpretation depends on the originating
+  command (a 6-hex-byte body decodes as `Response::U24` for `:a` but
+  as `Response::Position` for `:j`).
+* **`SerialTransportFactory`** / **`UdpTransportFactory`** (`src/transport/{serial,udp}.rs`)
+  — `TransportFactory` impls that hand back `Box<dyn FrameTransport>`s
+  configured with `\r` framing on serial or one-datagram-per-frame on
+  UDP. Selection at `ServerBuilder::build()` time picks one based on
+  `config.transport`. The same `UdpFrameTransport` adapter from the
+  shared crate preserves the mount's "exactly one frame per packet"
+  framing strictness.
+* **`MountManager`** (`src/manager.rs`) — thin wrapper around
+  `Arc<SharedTransport<SkywatcherCodec>>`, plus the mount-specific
+  parameter cache (`MountParameters`), background snapshot
+  (`MountSnapshot`), and `PollPauseGuard` ref-counted polling-task
+  pause. The handshake (`:F`/`:a`/`:b`/`:g`/`:e`/`:j`) and the
+  poll-loop (`:j`/`:f`) live in `Hooks` closures inside
+  `MountManager::new`; the teardown hook issues a best-effort halt
+  sequence (`:L1`, `:L2`, `:K1`) before the transport drops.
+
+The device's session lives in `MountDevice::session:
+RwLock<Option<Session<SkywatcherCodec>>>` — the slot's presence is the
+single source of truth for "the user is connected" (the pre-Phase-E
+`requested_connection` bool was removed). Watcher tasks (slew, park,
+pulse-guide) acquire their own sessions on spawn so the user's
+`set_connected(false)` returns immediately after closing the device's
+session — the watcher's session keeps the underlying transport open
+until it finishes naturally. Watchers peek at the device's session
+slot (briefly, no wire I/O under the read lock) to detect "user
+disconnected" and bail.
 
 ## Hardware Constraints
 
@@ -456,7 +506,7 @@ in this order of preference:
    used; in this mode `SetPark` is unreachable so these values do not
    change in-process.
 3. **Live-snapshot fallback** (per axis). The current encoder
-   reading from the [`TransportManager`] snapshot. Two cases:
+   reading from the [`MountManager`] snapshot. Two cases:
    - **Fresh power-up with `unpark_from_ap_position` set to a named
      park (`ap_park_1..ap_park_5`).** The driver runs
      [`seed_after_connect`](#unpark-from-ap-position) before loading
@@ -1280,12 +1330,20 @@ src/
                            MountConfig); humantime-serde for durations
   error.rs               — StarAdvError + ASCOM-error mapping
   transport/
-    mod.rs               — Transport trait (async send_frame + recv_frame)
-    serial.rs            — tokio-serial impl
-    udp.rs               — tokio UdpSocket impl (with bind-IP enforcement)
-    mock.rs              — feature("mock") in-memory state-machine impl
-  transport_manager.rs   — ref-counted shared transport, background polling,
-                           parameter cache (CPR, TMR_Freq, hsr per axis)
+    mod.rs               — module entry point for the per-transport factories
+    serial.rs            — SerialTransportFactory: tokio-serial → SerialFrameTransport
+    udp.rs               — UdpTransportFactory: tokio UdpSocket → UdpFrameTransport
+                           (with bind-IP enforcement for AP-mode reachability)
+    mock.rs              — feature("mock") MockTransportFactory +
+                           CapturingMockFactory wrapping an in-memory state machine
+  codec.rs               — SkywatcherCodec: implements the shared crate's `Codec`
+                           trait; `Response = Vec<u8>` (raw frame), typed decode
+                           lives in `MountManager::send` so it has the originating
+                           Command in scope
+  manager.rs             — MountManager: wraps Arc<SharedTransport<SkywatcherCodec>>;
+                           owns parameter cache (CPR, TMR_Freq, hsr per axis)
+                           and snapshot. Handshake + poll loop + teardown
+                           live in `Hooks` closures.
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
   mount_device.rs        — module entry point: `DriverState`,
@@ -1688,12 +1746,12 @@ In addition to the codec fixes:
      prior data) falls back to `polling_interval × 2`.
 
   3. **Pause background polling during the slew** — the watcher
-     acquires a [`TransportManager::pause_background_polling`]
+     acquires a [`MountManager::pause_background_polling`]
      RAII guard at the top of its spawn. While paused, the
      watcher owns the wire: pickup wire commands (`:K :G :I :H
      :M :J`) fire without contending with `:j` / `:f` polls for
-     the `command_lock`, and the watcher's
-     [`TransportManager::poll_axes_now`] drives the snapshot's
+     the shared-transport command lock, and the watcher's
+     [`MountManager::poll_axes_now`] drives the snapshot's
      freshness with one wire round-trip per loop iteration. The
      guard is dropped explicitly right after tracking restart,
      before the settle delay — so background polling resumes

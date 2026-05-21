@@ -1,0 +1,54 @@
+[package]
+name = "dsd-fp2"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca CoverCalibrator driver for the Deep Sky Dad Flat Panel 2 (FP2)"
+
+[features]
+default = []
+mock = []  # Enables mock hardware for testing without a real serial port
+# `conformu` enables `mock` because the integration test launches the binary
+# with a mock serial port (`/dev/mock`) driven from the test config. Keeping
+# them coupled means a single `--features conformu` flag is enough to build
+# and run the test.
+conformu = ["mock", "ascom-alpaca/test"]
+
+[lints]
+workspace = true
+
+# NOTE: no `[package.metadata.conformu]` entry — see `docs/services/dsd-fp2.md`
+# "Known limitations" for why dsd-fp2 is excluded from the rolling ConformU
+# matrix until the upstream `HaltCover` issue is resolved.
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "cover_calibrator", "client"] }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+humantime-serde = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+derive_more = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
+rp-tls = { workspace = true }
+rp-auth = { workspace = true }
+axum = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true }
+bdd-infra = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

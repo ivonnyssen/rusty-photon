@@ -80,21 +80,51 @@ jobs:
           # Their presence flips the bdd.rs filter to fire the
           # @requires-astap scenarios.
           RUST_LOG: plate_solver=debug
+          # The "I record the solve duration as ..." BDD step appends a
+          # row to this file. Issue #236: the M 101 fixture's pointing
+          # breadcrumbs are stripped, so the blind scenario walks the
+          # full ASTAP search spiral (~30–60 s) while the hinted
+          # scenario stays sub-second. The delta is the perf-trending
+          # signal; future regressions in ASTAP's `-r` optimization
+          # or in our argv-mapping will show up as the ratio collapsing.
+          PLATE_SOLVER_PERF_CSV: ${{ runner.temp }}/plate-solver-perf.csv
         run: |
           set -euo pipefail
           cargo test -p plate-solver --all-features --test bdd
 
-      - name: Log timing reference
-        # v1 just points at the BDD step output where per-scenario
-        # timing lives. Real per-platform median extraction and
-        # threshold-based assertions are forward work tracked in the
-        # plan's Phase 7 (alongside the hint-plumbing perf
-        # comparison). Once a baseline trend exists, a future step
-        # can parse the timing out and fail on regressions.
+      - name: Log per-scenario timing
+        # Echo the captured CSV into the job log so failures are
+        # diagnosable from the GH UI without downloading the artifact.
+        # The full machine-readable trend lives in the uploaded
+        # artifact below.
         if: always()
         shell: bash
         run: |
-          echo "::notice::Real-ASTAP smoke completed on ${{ matrix.os }} — see the BDD step above for per-scenario timing."
+          csv="${{ runner.temp }}/plate-solver-perf.csv"
+          if [[ -f "$csv" ]]; then
+            echo "::group::M 101 hinted-vs-blind timing (${{ matrix.os }})"
+            cat "$csv"
+            echo "::endgroup::"
+            while IFS=, read -r label elapsed_ms; do
+              [[ "$label" == "label" ]] && continue
+              echo "::notice::plate-solver perf [${{ matrix.os }}] $label = ${elapsed_ms} ms"
+            done < "$csv"
+          else
+            echo "::warning::No timing CSV at $csv — BDD did not record any solve durations."
+          fi
+
+      - name: Upload timing CSV artifact
+        # Per-OS artifact so a nightly run produces three CSVs the
+        # operator (or a future trend-aggregator) can download. v1
+        # ships the data; trend visualization + regression assertion
+        # are forward work (the assertion side is owned by #234).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plate-solver-perf-${{ matrix.os }}
+          path: ${{ runner.temp }}/plate-solver-perf.csv
+          if-no-files-found: warn
+          retention-days: 90
 
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so

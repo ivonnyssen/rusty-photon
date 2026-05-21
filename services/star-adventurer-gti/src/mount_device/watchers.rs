@@ -24,22 +24,37 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::telescope::PierSide;
+use rusty_photon_shared_transport::Session;
 use skywatcher_motor_protocol::{Axis, Command};
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::codec::SkywatcherCodec;
 use crate::config::MountConfig;
 use crate::coordinates::{
     dec_degrees_to_ticks, encoder_to_celestial, fold_to_canonical_band, local_sidereal_time_hours,
     pickup_target_ra_ticks, target_encoder_flipped,
 };
 use crate::error::StarAdvError;
-use crate::transport_manager::{MountSnapshot, TransportManager};
+use crate::manager::{MountManager, MountSnapshot};
 
 use super::slew::{
     enable_sidereal_tracking_ra, pickup_reslew_axis, stop_axis_and_wait, AXIS_STOP_TIMEOUT,
 };
 use super::{pre_flip_side_for_latitude, DriverState};
+
+/// Shared session slot the device holds. Watchers peek for `is_none()`
+/// to detect "user disconnected" — independent of their own session
+/// keeping the shared transport alive while in-flight work finishes.
+type SessionSlot = Arc<RwLock<Option<Session<SkywatcherCodec>>>>;
+
+/// Test whether the user's `set_connected(false)` has cleared the
+/// device's session. Held briefly (no wire I/O while the read lock is
+/// owned), so a concurrent `set_connected(false)` write only waits
+/// for this check to complete.
+async fn user_disconnected(slot: &SessionSlot) -> bool {
+    slot.read().await.is_none()
+}
 
 /// Minimum wallclock duration the slew watcher will keep
 /// `slew_in_progress` set, regardless of how fast the mount reports
@@ -97,12 +112,12 @@ const WATCHER_POLL_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 /// restart).
 pub(super) async fn watcher_should_abort(
     state: &Arc<RwLock<DriverState>>,
-    transport: &TransportManager,
+    session_slot: &SessionSlot,
 ) -> bool {
-    !state.read().await.slew_in_progress || !transport.is_available()
+    !state.read().await.slew_in_progress || user_disconnected(session_slot).await
 }
 
-/// Retrying wrapper around [`TransportManager::poll_axes_now`] used by
+/// Retrying wrapper around [`MountManager::poll_axes_now`] used by
 /// both the slew and park completion watchers. Tolerates up to
 /// [`WATCHER_POLL_RETRY_LIMIT`] consecutive transport errors so a
 /// single transient USB-CDC glitch (a brief renumeration, a stale
@@ -122,12 +137,13 @@ pub(super) async fn watcher_should_abort(
 /// are fire-and-forget — if they fail too, there's nothing useful
 /// the watcher can do beyond logging and bailing.
 pub(super) async fn watcher_poll_with_retry(
-    transport: &TransportManager,
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
     context: &'static str,
 ) -> crate::error::Result<MountSnapshot> {
     let mut last_err: Option<StarAdvError> = None;
     for attempt in 0..WATCHER_POLL_RETRY_LIMIT {
-        match transport.poll_axes_now().await {
+        match manager.poll_axes_now(session).await {
             Ok(snap) => {
                 debug!(
                     context = context,
@@ -161,8 +177,8 @@ pub(super) async fn watcher_poll_with_retry(
         context = context,
         "watcher poll_axes_now retries exhausted — best-effort :L on both axes before bailing"
     );
-    let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
-    let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+    let _ = manager.send(session, Command::InstantStop(Axis::Ra)).await;
+    let _ = manager.send(session, Command::InstantStop(Axis::Dec)).await;
     Err(last_err
         .unwrap_or_else(|| StarAdvError::Transport("watcher poll retries exhausted".to_string())))
 }
@@ -234,16 +250,19 @@ enum CompletionDecision {
 /// refresh the snapshot while we wait), and every other path —
 /// `Continue` looping, `Bail`, abort, disconnect, blocked-axis, retry
 /// exhaustion, panic — releases it via RAII drop on the way out.
+#[allow(clippy::too_many_arguments)]
 async fn run_completion_watcher<C, F>(
     state: Arc<RwLock<DriverState>>,
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
+    session: Session<SkywatcherCodec>,
+    session_slot: SessionSlot,
     polling_interval: Duration,
     settle: Duration,
     context: &'static str,
     mut on_axes_stopped: C,
     on_finalize: F,
 ) where
-    C: AsyncFnMut(MountSnapshot) -> CompletionDecision,
+    C: AsyncFnMut(MountSnapshot, &Session<SkywatcherCodec>) -> CompletionDecision,
     F: FnOnce(&mut DriverState),
 {
     // Pause the background polling task for the duration of the
@@ -254,7 +273,7 @@ async fn run_completion_watcher<C, F>(
     // `poll_axes_now` reads give us mount state within one wire
     // round-trip of any change — vs up to `polling_interval` of
     // snapshot staleness under the always-on polling model.
-    let _poll_guard = transport.pause_background_polling();
+    let _poll_guard = manager.pause_background_polling();
     loop {
         tokio::time::sleep(polling_interval).await;
 
@@ -263,30 +282,31 @@ async fn run_completion_watcher<C, F>(
         // also clears it. Either way, bail before overwriting
         // user-visible state.
         if !state.read().await.slew_in_progress {
-            return;
+            break;
         }
-        // Belt-and-braces: if the transport became unavailable
-        // (mid-disconnect, handshake-failure rollback, ...), exit
-        // even if the flag-clear hasn't happened yet. This stops
-        // the watcher holding `Arc<TransportManager>` alive past
-        // its useful life.
-        if !transport.is_available() {
+        // Belt-and-braces: if the user disconnected, exit even if
+        // the flag-clear hasn't happened yet. The watcher's own
+        // session still holds a refcount on the shared transport,
+        // so `manager.is_available()` would lie — we look at the
+        // device's session slot instead.
+        if user_disconnected(&session_slot).await {
             state.write().await.slew_in_progress = false;
-            return;
+            break;
         }
 
-        // Direct poll instead of reading the (now-paused) background
-        // snapshot. [`watcher_poll_with_retry`] tolerates a handful
-        // of transient transport errors so a single USB-CDC glitch
+        // Direct poll via the watcher's own session, instead of
+        // reading the (now-paused) background snapshot.
+        // [`watcher_poll_with_retry`] tolerates a handful of
+        // transient transport errors so a single USB-CDC glitch
         // doesn't take the watcher offline mid-operation; on retry
         // exhaustion it also issues a best-effort `:L` on both
         // axes so the motor isn't left commutating with no
         // observer.
-        let snap = match watcher_poll_with_retry(&transport, context).await {
+        let snap = match watcher_poll_with_retry(&manager, &session, context).await {
             Ok(s) => s,
             Err(_) => {
                 state.write().await.slew_in_progress = false;
-                return;
+                break;
             }
         };
         // Sky-Watcher spec §5 reports `Blocked` in the `:f` status
@@ -306,19 +326,21 @@ async fn run_completion_watcher<C, F>(
                 context = context,
                 "axis reports Blocked — aborting via :L"
             );
-            let _ = transport.send(Command::InstantStop(Axis::Ra)).await;
-            let _ = transport.send(Command::InstantStop(Axis::Dec)).await;
+            let _ = manager.send(&session, Command::InstantStop(Axis::Ra)).await;
+            let _ = manager
+                .send(&session, Command::InstantStop(Axis::Dec))
+                .await;
             state.write().await.slew_in_progress = false;
-            return;
+            break;
         }
         if snap.ra.running || snap.dec.running {
             continue;
         }
-        match on_axes_stopped(snap).await {
+        match on_axes_stopped(snap, &session).await {
             CompletionDecision::Continue => continue,
             CompletionDecision::Bail => {
                 state.write().await.slew_in_progress = false;
-                return;
+                break;
             }
             CompletionDecision::Complete => {
                 // Resume background polling *now*, before the
@@ -341,9 +363,15 @@ async fn run_completion_watcher<C, F>(
                 let mut s = state.write().await;
                 on_finalize(&mut s);
                 s.slew_in_progress = false;
-                return;
+                break;
             }
         }
+    }
+    // Close the watcher's session on every exit path. If the user has
+    // disconnected and this is the last session, the shared transport
+    // tears down (halt sequence + close) inside `close().await`.
+    if let Err(e) = session.close().await {
+        tracing::warn!(context, error = %e, "watcher session close failed");
     }
 }
 
@@ -371,7 +399,9 @@ async fn run_completion_watcher<C, F>(
 #[allow(clippy::too_many_arguments)]
 async fn slew_completion_step(
     state: Arc<RwLock<DriverState>>,
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
+    session_slot: SessionSlot,
+    session: &Session<SkywatcherCodec>,
     config: MountConfig,
     polling_interval: Duration,
     started: std::time::Instant,
@@ -421,7 +451,7 @@ async fn slew_completion_step(
             (s.target_ra_hours, s.target_dec_degrees, s.target_pier_side)
         };
         if let (Some(target_ra), Some(target_dec), Some(params)) =
-            (target_ra, target_dec, transport.parameters().await)
+            (target_ra, target_dec, manager.parameters().await)
         {
             // ERFA refuses the host UTC if `eraCal2jd`
             // rejects the year (below `IYMIN = -4799`). A
@@ -475,7 +505,7 @@ async fn slew_completion_step(
                 // transport) may have raced ahead. Without
                 // this second guard the pickup loop would
                 // restart motion after the user aborted.
-                if watcher_should_abort(&state, &transport).await {
+                if watcher_should_abort(&state, &session_slot).await {
                     return CompletionDecision::Bail;
                 }
                 // Pre-compensate the RA target for the LST drift
@@ -549,8 +579,8 @@ async fn slew_completion_step(
                 // poll keeps the motor-not-stopped contract
                 // intact even if a previous send failed
                 // mid-sequence.
-                pickup_reslew_axis(&transport, Axis::Ra, ra_delta).await;
-                pickup_reslew_axis(&transport, Axis::Dec, dec_delta).await;
+                pickup_reslew_axis(&manager, session, Axis::Ra, ra_delta).await;
+                pickup_reslew_axis(&manager, session, Axis::Dec, dec_delta).await;
                 return CompletionDecision::Continue;
             }
         }
@@ -571,12 +601,12 @@ async fn slew_completion_step(
     // between the top-of-loop check and now must skip the
     // tracking restart, or the user-visible state would say
     // "aborted" while the wire is back to tracking.
-    if watcher_should_abort(&state, &transport).await {
+    if watcher_should_abort(&state, &session_slot).await {
         return CompletionDecision::Bail;
     }
     if tracking_was_on {
-        if let Some(params) = transport.parameters().await {
-            match enable_sidereal_tracking_ra(&transport, &params).await {
+        if let Some(params) = manager.parameters().await {
+            match enable_sidereal_tracking_ra(&manager, session, &params).await {
                 Ok(()) => {
                     state.write().await.tracking_requested = true;
                 }
@@ -607,14 +637,27 @@ async fn slew_completion_step(
 /// `tracking_requested` flag is cleared by `slew_to_coordinates_async`
 /// so `tracking()` reports the wire state during the slew, hence we
 /// can't read it from `state` here.
-pub(super) fn spawn_slew_completion_watcher(
+pub(super) async fn spawn_slew_completion_watcher(
     state: Arc<RwLock<DriverState>>,
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
+    session_slot: SessionSlot,
     config: MountConfig,
     polling_interval: Duration,
     settle: Duration,
     tracking_was_on: bool,
-) {
+) -> crate::error::Result<()> {
+    // Acquire the watcher's own session BEFORE returning to the caller.
+    // The watcher's session keeps the shared transport alive until the
+    // watcher finishes, so the user's `set_connected(false)` can return
+    // quickly (it closes the device's session, decrementing the
+    // refcount to whatever active watchers hold). The user-disconnect
+    // signal is the device's `session_slot.read().await.is_none()`,
+    // independent of the refcount.
+    let session = manager
+        .transport()
+        .acquire()
+        .await
+        .map_err(StarAdvError::from)?;
     let started = std::time::Instant::now();
     tokio::spawn(async move {
         let mut pickup_iterations: u32 = 0;
@@ -631,24 +674,27 @@ pub(super) fn spawn_slew_completion_watcher(
         // per transport.
         let mut last_pickup_at: Option<std::time::Instant> = None;
         let helper_state = Arc::clone(&state);
-        let helper_transport = Arc::clone(&transport);
+        let helper_manager = Arc::clone(&manager);
+        let helper_slot = Arc::clone(&session_slot);
         run_completion_watcher(
             helper_state,
-            helper_transport,
+            helper_manager,
+            session,
+            helper_slot,
             polling_interval,
             settle,
             "slew_watcher",
-            // `async move` so the closure owns `state`, `transport`,
-            // `config`, `pickup_iterations` and `last_pickup_at`
-            // outright. The step takes its Arcs/config by value
-            // (cheap clones) so the returned future doesn't borrow
-            // from the closure's captures — the spawn future's
-            // `Send` HRTB would otherwise fail on an `&Arc<…>`
-            // borrow into the future.
-            async move |snap| {
+            // `async move` so the closure owns `state`, `manager`,
+            // `session_slot`, `config`, `pickup_iterations` and
+            // `last_pickup_at` outright. The step takes its
+            // Arcs/config by value (cheap clones) so the returned
+            // future doesn't borrow from the closure's captures.
+            async move |snap, watcher_session| {
                 slew_completion_step(
                     Arc::clone(&state),
-                    Arc::clone(&transport),
+                    Arc::clone(&manager),
+                    Arc::clone(&session_slot),
+                    watcher_session,
                     config.clone(),
                     polling_interval,
                     started,
@@ -667,6 +713,7 @@ pub(super) fn spawn_slew_completion_watcher(
         )
         .await;
     });
+    Ok(())
 }
 
 /// Spawn the park-completion watcher.
@@ -682,26 +729,35 @@ pub(super) fn spawn_slew_completion_watcher(
 /// home pose, so the next `Unpark + slew` would compute a wrong
 /// delta. The helper enforces this by returning before the
 /// finalizer runs.
-pub(super) fn spawn_park_completion_watcher(
+pub(super) async fn spawn_park_completion_watcher(
     state: Arc<RwLock<DriverState>>,
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
+    session_slot: SessionSlot,
     polling_interval: Duration,
     settle: Duration,
-) {
+) -> crate::error::Result<()> {
+    let session = manager
+        .transport()
+        .acquire()
+        .await
+        .map_err(StarAdvError::from)?;
     tokio::spawn(async move {
         run_completion_watcher(
             state,
-            transport,
+            manager,
+            session,
+            session_slot,
             polling_interval,
             settle,
             "park_watcher",
-            async |_snap| CompletionDecision::Complete,
+            async |_snap, _session| CompletionDecision::Complete,
             |s| {
                 s.at_park = true;
             },
         )
         .await;
     });
+    Ok(())
 }
 
 /// Spawn the PulseGuide watcher.
@@ -718,17 +774,28 @@ pub(super) fn spawn_park_completion_watcher(
 /// any axis-mutating call clears the flag before its own wire commands
 /// so the watcher steps aside). Errors during the restore are logged
 /// at `warn` and swallowed — matches [`pickup_reslew_axis`].
-pub(super) fn spawn_pulse_guide_watcher(
+pub(super) async fn spawn_pulse_guide_watcher(
     state: Arc<RwLock<DriverState>>,
-    transport: Arc<TransportManager>,
+    manager: Arc<MountManager>,
+    session_slot: SessionSlot,
     axis: Axis,
     duration: Duration,
     tracking_was_on_for_restore: bool,
-) {
+) -> crate::error::Result<()> {
+    // Acquire the watcher's own session up-front so the wait-for-`duration`
+    // sleep doesn't have to navigate a transport that might disconnect
+    // mid-pulse. The session keeps the shared transport alive until the
+    // watcher closes it; the user-disconnect signal is the device's
+    // `session_slot.read().await.is_none()`.
+    let session = manager
+        .transport()
+        .acquire()
+        .await
+        .map_err(StarAdvError::from)?;
     tokio::spawn(async move {
         tokio::time::sleep(duration).await;
         // Bail if the pulse was cancelled externally (another op
-        // cleared the flag), the transport dropped, or the mount
+        // cleared the flag), the user disconnected, or the mount
         // entered a state that takes ownership of the axis
         // (slew/park).
         let still_active = {
@@ -740,15 +807,21 @@ pub(super) fn spawn_pulse_guide_watcher(
             };
             active && !s.at_park && !s.slew_in_progress
         };
-        if !still_active || !transport.is_available() {
+        if !still_active || user_disconnected(&session_slot).await {
             clear_pulse_flag(&state, axis).await;
+            if let Err(e) = session.close().await {
+                tracing::warn!(error = %e, "pulse-guide watcher session close failed");
+            }
             return;
         }
         // Stop the axis. Any failure here means we can't safely restore
         // either, so log and bail.
-        if let Err(e) = stop_axis_and_wait(&transport, axis, AXIS_STOP_TIMEOUT).await {
+        if let Err(e) = stop_axis_and_wait(&manager, &session, axis, AXIS_STOP_TIMEOUT).await {
             tracing::warn!("pulse-guide restore stop {axis:?} failed: {e}");
             clear_pulse_flag(&state, axis).await;
+            if let Err(e) = session.close().await {
+                tracing::warn!(error = %e, "pulse-guide watcher session close failed");
+            }
             return;
         }
         // RA-only: re-issue sidereal tracking iff the user had it on
@@ -759,13 +832,17 @@ pub(super) fn spawn_pulse_guide_watcher(
             // stop above and here would otherwise be silently undone.
             let still_want_restore = state.read().await.pulse_guiding_ra;
             if still_want_restore {
-                if let Some(params) = transport.parameters().await {
-                    if let Err(e) = enable_sidereal_tracking_ra(&transport, &params).await {
+                if let Some(params) = manager.parameters().await {
+                    if let Err(e) = enable_sidereal_tracking_ra(&manager, &session, &params).await {
                         tracing::warn!("pulse-guide tracking restore failed: {e}");
                     }
                 }
             }
         }
         clear_pulse_flag(&state, axis).await;
+        if let Err(e) = session.close().await {
+            tracing::warn!(error = %e, "pulse-guide watcher session close failed");
+        }
     });
+    Ok(())
 }

@@ -17,12 +17,14 @@
 use std::time::Duration;
 
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use rusty_photon_shared_transport::Session;
 use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command, Response};
 
+use crate::codec::SkywatcherCodec;
 use crate::coordinates::{ra_ticks_to_mechanical_ha, sidereal_step_period};
 use crate::error::StarAdvError;
-use crate::transport_manager::{MountParameters, TransportManager};
+use crate::manager::{MountManager, MountParameters};
 
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
 /// after a `:K` (decelerate stop) before giving up. The firmware
@@ -56,7 +58,8 @@ const SLEW_BREAK_POINT_MAX: u32 = 3200;
 /// running flag to clear — `:G` returns `!2 MotorNotStopped` if the
 /// motor is still decelerating from a prior command.
 pub(super) async fn issue_slew_axis(
-    transport: &TransportManager,
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
     axis: Axis,
     delta: i32,
 ) -> crate::error::Result<()> {
@@ -67,25 +70,31 @@ pub(super) async fn issue_slew_axis(
         speed: Speed::Fast,
         ccw: delta < 0,
     };
-    transport
-        .send(Command::SetMotionMode { axis, mode })
+    manager
+        .send(session, Command::SetMotionMode { axis, mode })
         .await?;
-    transport
-        .send(Command::SetStepPeriod {
-            axis,
-            period: SLEW_STEP_PERIOD,
-        })
+    manager
+        .send(
+            session,
+            Command::SetStepPeriod {
+                axis,
+                period: SLEW_STEP_PERIOD,
+            },
+        )
         .await?;
-    transport
-        .send(Command::SetGotoTargetIncrement {
-            axis,
-            increment: magnitude,
-        })
+    manager
+        .send(
+            session,
+            Command::SetGotoTargetIncrement {
+                axis,
+                increment: magnitude,
+            },
+        )
         .await?;
-    transport
-        .send(Command::SetBreakPointIncrement { axis, breaks })
+    manager
+        .send(session, Command::SetBreakPointIncrement { axis, breaks })
         .await?;
-    transport.send(Command::StartMotion(axis)).await?;
+    manager.send(session, Command::StartMotion(axis)).await?;
     Ok(())
 }
 
@@ -100,15 +109,16 @@ pub(super) async fn issue_slew_axis(
 /// only an indirection for tests that want a much shorter bound to
 /// stay fast on a stuck-axis simulation.
 pub(super) async fn stop_axis_and_wait(
-    transport: &TransportManager,
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
     axis: Axis,
     timeout: Duration,
 ) -> crate::error::Result<()> {
-    transport.send(Command::StopMotion(axis)).await?;
+    manager.send(session, Command::StopMotion(axis)).await?;
     let deadline = std::time::Instant::now() + timeout;
     tokio::time::sleep(Duration::from_millis(100)).await;
     loop {
-        let resp = transport.send(Command::InquireStatus(axis)).await?;
+        let resp = manager.send(session, Command::InquireStatus(axis)).await?;
         if let Response::Status(s) = resp {
             if !s.running {
                 return Ok(());
@@ -132,23 +142,32 @@ pub(super) async fn stop_axis_and_wait(
 /// `set_tracking(true)` maps to `ASCOMError` and propagates; the slew /
 /// pulse-guide watchers log at `warn` and continue.
 pub(super) async fn enable_sidereal_tracking_ra(
-    transport: &TransportManager,
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
     params: &MountParameters,
 ) -> crate::error::Result<()> {
     let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
-    transport
-        .send(Command::SetMotionMode {
-            axis: Axis::Ra,
-            mode: MotionMode::TRACKING,
-        })
+    manager
+        .send(
+            session,
+            Command::SetMotionMode {
+                axis: Axis::Ra,
+                mode: MotionMode::TRACKING,
+            },
+        )
         .await?;
-    transport
-        .send(Command::SetStepPeriod {
-            axis: Axis::Ra,
-            period,
-        })
+    manager
+        .send(
+            session,
+            Command::SetStepPeriod {
+                axis: Axis::Ra,
+                period,
+            },
+        )
         .await?;
-    transport.send(Command::StartMotion(Axis::Ra)).await?;
+    manager
+        .send(session, Command::StartMotion(Axis::Ra))
+        .await?;
     Ok(())
 }
 
@@ -161,12 +180,17 @@ pub(super) async fn enable_sidereal_tracking_ra(
 /// next iteration. Wrapping the pair in this helper keeps the watcher
 /// body free of nested `if let Err` branches that codecov flags as
 /// uncovered for the rare-but-real failure paths.
-pub(super) async fn pickup_reslew_axis(transport: &TransportManager, axis: Axis, delta: i32) {
-    if let Err(e) = stop_axis_and_wait(transport, axis, AXIS_STOP_TIMEOUT).await {
+pub(super) async fn pickup_reslew_axis(
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
+    axis: Axis,
+    delta: i32,
+) {
+    if let Err(e) = stop_axis_and_wait(manager, session, axis, AXIS_STOP_TIMEOUT).await {
         tracing::warn!("pickup stop {axis:?} failed: {e}");
         return;
     }
-    if let Err(e) = issue_slew_axis(transport, axis, delta).await {
+    if let Err(e) = issue_slew_axis(manager, session, axis, delta).await {
         tracing::warn!("pickup re-slew {axis:?} failed: {e}");
     }
 }

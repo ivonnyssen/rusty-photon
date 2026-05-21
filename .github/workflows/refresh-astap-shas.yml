@@ -241,8 +241,28 @@ jobs:
             exit 0
           }
 
-          # Happy path
-          "$bin" -f "$work/m101_known.fits" -d "$db" -wcs
+          # Happy path. Explicit hints (ra/spd/fov/r) keep this fast
+          # (~0.06 s on Linux). Issue #236 stripped the M 101 fixture's
+          # FITS pointing breadcrumbs, so a hint-less invocation would
+          # walk ASTAP's full search spiral (~30–60 s). This workflow's
+          # job is binary-bytes-still-solve verification, not perf
+          # trending — hinted is sufficient and faster across the
+          # matrix.
+          #
+          # The values below are the ASTAP-CLI conversions of the
+          # operator-curl recipe in docs/services/plate-solver.md (and
+          # the hinted BDD scenario in
+          # services/plate-solver/tests/features/real_astap_smoke.feature),
+          # which both specify hints in wire-format degrees:
+          #   -ra  = ra_hint  / 15      → 210.8099 / 15 ≈ 14.0540 hours
+          #   -spd = 90 + dec_hint      → 90 + 54.3469 = 144.3469 deg
+          #   -fov = fov_hint_deg       → 0.42 (pass-through)
+          #   -r   = search_radius_deg  → 3.0 (pass-through)
+          # The wrapper does this conversion in
+          # services/plate-solver/src/runner/astap.rs::build_command;
+          # this workflow bypasses the wrapper, so it converts inline.
+          "$bin" -f "$work/m101_known.fits" -d "$db" -wcs \
+              -ra 14.0540 -spd 144.3469 -fov 0.42 -r 3.0
           rc=$?
           if [[ $rc -ne 0 ]]; then
             fail "M101 solve exited $rc"
