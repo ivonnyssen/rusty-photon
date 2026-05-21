@@ -1,120 +1,125 @@
 //! Cucumber `World` for the dsd-fp2 BDD suite.
 //!
-//! The world owns one `DsdFp2Device` plus the `MockTransportFactory`'s
-//! `MockState` handle so steps can both drive the device and inspect the
-//! simulator. Scenarios run in-process — no subprocess, no
-//! `bdd_infra::ServiceHandle`.
+//! Spawns the dsd-fp2 binary via [`bdd_infra::ServiceHandle`] and drives
+//! it through the typed ASCOM Alpaca `CoverCalibrator` client. Scenarios
+//! that need a particular precondition (e.g. cover-open before testing
+//! close) prime it through the client itself — there is no in-process
+//! handle to the `MockState` simulator.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
-use ascom_alpaca::ASCOMError;
+use ascom_alpaca::api::{CoverCalibrator, TypedDevice};
+use ascom_alpaca::{ASCOMError, Client as AlpacaClient};
+use bdd_infra::ServiceHandle;
 use cucumber::World;
-use dsd_fp2::{
-    Config, CoverCalibratorConfig, DsdFp2Device, FlatPanelManager, MockState, MockTransportFactory,
-    SerialConfig, ServerConfig,
-};
+use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
 pub struct Fp2World {
-    pub factory: Option<MockTransportFactory>,
-    pub manager: Option<Arc<FlatPanelManager>>,
-    pub device: Option<Arc<DsdFp2Device>>,
-    /// Stashed result of the last fallible call (`open_cover`, `calibrator_on`, …)
-    /// so subsequent Then steps can assert against it.
+    pub handle: Option<ServiceHandle>,
+    pub device: Option<Arc<dyn CoverCalibrator>>,
+    pub temp_dir: Option<TempDir>,
+    /// Stashed result of the last fallible call so a subsequent Then step
+    /// can assert against it.
     pub last_error: Option<ASCOMError>,
 }
 
 impl Fp2World {
-    /// Build the device with a fresh mock factory + manager.
-    pub fn build_with(&mut self, state: MockState) {
-        let factory = MockTransportFactory::with_state(state);
-        let config = Config {
-            serial: SerialConfig {
-                port: "/dev/mock".to_string(),
-                // Long polling interval keeps the poll task from racing
-                // assertions; tests trigger refreshes manually.
-                polling_interval: Duration::from_secs(3600),
-                ..Default::default()
+    /// Write a JSON config for the spawned binary. Uses `/dev/mock` (the
+    /// mock factory ignores the path), port 0 for OS-assigned, and a
+    /// 100 ms polling interval so wait-for loops converge quickly.
+    fn write_config(&mut self) -> String {
+        let config = serde_json::json!({
+            "serial": {
+                "port": "/dev/mock",
+                "baud_rate": 115200,
+                "polling_interval": "100ms",
+                "timeout": "2s"
             },
-            server: ServerConfig {
-                port: 0,
-                discovery_port: None,
-                tls: None,
-                auth: None,
+            "server": {
+                "port": 0,
+                "discovery_port": null
             },
-            cover_calibrator: CoverCalibratorConfig::default(),
-        };
-        let manager = FlatPanelManager::new(config, Arc::new(factory.clone()));
-        let device = Arc::new(DsdFp2Device::new(
-            CoverCalibratorConfig::default(),
-            manager.clone(),
-        ));
-        self.factory = Some(factory);
-        self.manager = Some(manager);
+            "cover_calibrator": {
+                "name": "Deep Sky Dad FP2",
+                "unique_id": "dsd-fp2-bdd",
+                "description": "BDD test instance",
+                "enabled": true,
+                "max_brightness": 4096
+            }
+        });
+
+        let dir = self
+            .temp_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        let config_path = dir.path().join("config.json");
+        std::fs::write(&config_path, config.to_string()).expect("failed to write config");
+        config_path.to_str().unwrap().to_string()
+    }
+
+    /// Spawn the dsd-fp2 binary and acquire a `CoverCalibrator` client.
+    pub async fn start(&mut self) {
+        let config_path = self.write_config();
+        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
+        let device = acquire_device(&handle).await;
         self.device = Some(device);
-        self.last_error = None;
+        self.handle = Some(handle);
     }
 
-    /// Construct with a default simulator (closed cover, light off).
-    pub fn build(&mut self) {
-        self.build_with(MockState::default());
+    pub fn device(&self) -> &Arc<dyn CoverCalibrator> {
+        self.device.as_ref().expect("device not acquired")
     }
 
-    pub fn device(&self) -> &DsdFp2Device {
-        self.device
-            .as_ref()
-            .expect("world.device not built")
-            .as_ref()
+    /// Poll the device until `cover_state` matches `expected`, panicking
+    /// after 5 s. Necessary because `open_cover` / `close_cover` return
+    /// before the while-open poll task observes the move completing.
+    pub async fn wait_for_cover_state(&self, expected: CoverStatus) {
+        for _ in 0..50 {
+            if self.device().cover_state().await.unwrap() == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!(
+            "cover_state did not reach {expected:?} within 5s (current: {:?})",
+            self.device().cover_state().await.unwrap()
+        );
     }
 
-    pub fn factory(&self) -> &MockTransportFactory {
-        self.factory.as_ref().expect("world.factory not built")
+    /// Poll the device until `calibrator_state` matches `expected`,
+    /// panicking after 5 s.
+    pub async fn wait_for_calibrator_state(&self, expected: CalibratorStatus) {
+        for _ in 0..50 {
+            if self.device().calibrator_state().await.unwrap() == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!(
+            "calibrator_state did not reach {expected:?} within 5s (current: {:?})",
+            self.device().calibrator_state().await.unwrap()
+        );
     }
+}
 
-    pub fn manager(&self) -> &Arc<FlatPanelManager> {
-        self.manager.as_ref().expect("world.manager not built")
+/// Poll the Alpaca management endpoint until a `CoverCalibrator` device is
+/// advertised. The freshly-spawned server may take a few hundred ms to
+/// finish binding and registering the device.
+async fn acquire_device(handle: &ServiceHandle) -> Arc<dyn CoverCalibrator> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+    let client = AlpacaClient::new_from_addr(addr);
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(mut devices) = client.get_devices().await {
+            if let Some(TypedDevice::CoverCalibrator(cc)) = devices.next() {
+                return cc;
+            }
+        }
     }
-
-    /// Drive one poll cycle synchronously, mirroring what the while-open
-    /// task would do, so scenarios that depend on cached state can `Then`
-    /// directly without sleeping.
-    ///
-    /// This **must** update every field that `device::derive_cover_state`
-    /// and `derive_calibrator_state` read — without it scenarios pass
-    /// only when tokio's `interval(d)` happens to fire its immediate
-    /// first tick between this call and the assertion (a race that holds
-    /// inconsistently across platforms; see PR #283 review).
-    pub async fn refresh_cache(&self) {
-        let snap = self.manager().snapshot();
-        let factory = self.factory();
-        let state = factory.state();
-        let motor_running = state.motor_running().await;
-        let cover_angle = state.cover_angle().await;
-        let light_on = state.light_on().await;
-        let brightness = state.brightness().await;
-
-        // Mirror the mock's `[GOPS]` mapping: 0 angle → 1 (open),
-        // 270 → 0 (closed), anything else → 255 (in-between). The mock's
-        // SMOV completes moves instantly, so motor_running is false here
-        // even right after open_cover/close_cover.
-        let cover_raw = if motor_running {
-            255
-        } else if cover_angle == 0 {
-            1
-        } else if cover_angle == 270 {
-            0
-        } else {
-            255
-        };
-
-        let mut s = snap.write().await;
-        s.motor_running = Some(motor_running);
-        s.cover_raw = Some(cover_raw);
-        s.light_on = Some(light_on);
-        s.brightness = Some(brightness);
-    }
+    panic!("dsd-fp2 did not become healthy within 30 seconds");
 }
 
 pub fn cover_status_from_str(s: &str) -> CoverStatus {

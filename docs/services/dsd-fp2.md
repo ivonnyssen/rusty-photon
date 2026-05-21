@@ -344,7 +344,8 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 - Cover open / close + state polling (`CoverState` ∈ {`Open`, `Closed`, `Moving`, `Unknown`, `Error`})
 - Calibrator on / off + brightness set (`CalibratorState` ∈ {`Off`, `Ready`, `Unknown`, `Error`})
 - Brightness read (cached) and `max_brightness = 4096`
-- Mock factory for ConformU and BDD
+- Mock factory for ConformU and BDD (consumed by both the spawned
+  binary and the in-process `manager.rs` mock tests)
 - Three BDD feature files: connection_lifecycle, cover_control, calibrator_control
 - Unit tests for protocol parsing and state derivation
 
@@ -371,19 +372,28 @@ Follows `docs/skills/testing.md`.
 
 Three feature files cover the MVP behaviour:
 
-- `connection_lifecycle.feature` — connect, disconnect, handshake failure,
-  status after disconnect.
+- `connection_lifecycle.feature` — connect, disconnect, status after
+  disconnect.
 - `cover_control.feature` — open, close, state transitions, errors when
-  disconnected, `HaltCover` returns `NOT_IMPLEMENTED`.
+  disconnected.
 - `calibrator_control.feature` — turn on at brightness, turn off,
   reject out-of-range brightness, state after disconnect.
 
-All scenarios run **in-process** against `MockTransportFactory`: the
-`World` builds the device, manager, and factory directly; `Session`
-mediates each wire call through `MockFrameTransport`. No subprocess is
-spawned, so `bdd_infra::bdd_main!` is not required. (`qhy-focuser`'s
-BDD suite *does* spawn its binary via that macro — the two suites
-differ on this axis.)
+Scenarios spawn the dsd-fp2 binary (built with `--features mock` so
+`MockTransportFactory` is wired in place of the real serial transport)
+via [`bdd_infra::ServiceHandle`] and drive it through the typed ASCOM
+Alpaca `CoverCalibrator` client — same pattern as `ppba-driver` and
+`qhy-focuser`. The `World` writes a temp config (`/dev/mock` port, OS-
+assigned server port, 100 ms polling interval) and the `bdd_infra::
+bdd_main!` macro handles the entry-point + Bazel-runfiles chdir.
+
+Scenarios that need the simulator in a non-default state (e.g. cover
+open before exercising `close_cover`) prime it through the client
+itself rather than poking `MockState` directly — the spawned binary
+gives tests no in-process handle. Scenarios that previously required
+bespoke simulator state (e.g. the non-FP2 firmware handshake
+rejection) are covered by the in-process unit test
+`manager::mock_tests::handshake_rejects_non_fp2_firmware`.
 
 ### Unit Tests
 

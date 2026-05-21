@@ -1,4 +1,5 @@
-use ascom_alpaca::api::CoverCalibrator;
+//! Step definitions for calibrator_control.feature.
+
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{then, when};
 
@@ -6,11 +7,7 @@ use crate::world::Fp2World;
 
 #[when(regex = r"^calibrator_on is called with brightness (\d+)$")]
 async fn calibrator_on_succeeds(world: &mut Fp2World, brightness: u32) {
-    world
-        .device()
-        .calibrator_on(brightness)
-        .await
-        .expect("calibrator_on should succeed");
+    world.device().calibrator_on(brightness).await.unwrap();
 }
 
 #[when(regex = r"^calibrator_on is called with brightness (\d+) and the call is captured$")]
@@ -20,11 +17,7 @@ async fn calibrator_on_capture(world: &mut Fp2World, brightness: u32) {
 
 #[when("calibrator_off is called")]
 async fn calibrator_off_succeeds(world: &mut Fp2World) {
-    world
-        .device()
-        .calibrator_off()
-        .await
-        .expect("calibrator_off should succeed");
+    world.device().calibrator_off().await.unwrap();
 }
 
 #[when("calibrator_off is called and the call is captured")]
@@ -34,29 +27,12 @@ async fn calibrator_off_capture(world: &mut Fp2World) {
 
 #[then(regex = r"^brightness should be (\d+)$")]
 async fn assert_brightness(world: &mut Fp2World, expected: u32) {
-    let actual = world.device().brightness().await.unwrap();
-    assert_eq!(actual, expected);
+    assert_eq!(world.device().brightness().await.unwrap(), expected);
 }
 
 #[then(regex = r"^max_brightness should be (\d+)$")]
 async fn assert_max_brightness(world: &mut Fp2World, expected: u32) {
-    let actual = world.device().max_brightness().await.unwrap();
-    assert_eq!(actual, expected);
-}
-
-#[then(regex = r"^the simulator brightness should be (\d+)$")]
-async fn assert_simulator_brightness(world: &mut Fp2World, expected: u16) {
-    assert_eq!(world.factory().state().brightness().await, expected);
-}
-
-#[then("the simulator light should be on")]
-async fn assert_simulator_light_on(world: &mut Fp2World) {
-    assert!(world.factory().state().light_on().await);
-}
-
-#[then("the simulator light should be off")]
-async fn assert_simulator_light_off(world: &mut Fp2World) {
-    assert!(!world.factory().state().light_on().await);
+    assert_eq!(world.device().max_brightness().await.unwrap(), expected);
 }
 
 #[then("the call should fail with an invalid-value error")]
