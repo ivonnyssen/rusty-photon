@@ -439,15 +439,22 @@ mod tests {
         }
     }
 
+    /// Build a manager whose poll loop is effectively disabled (300s
+    /// interval) so the InjectableFactory's armed failure is consumed
+    /// by the test's foreground request rather than by the poll task.
+    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_secs(300);
+        FocuserManager::new(config, factory)
+    }
+
     #[tokio::test]
     async fn move_absolute_rolls_cache_back_on_transport_failure() {
         // Slow the poll loop down so it can't fire and consume the
         // armed failure before move_absolute does.
         let factory = Arc::new(InjectableFactory::default());
         let fail_switch = factory.fail_next_send();
-        let mut config = Config::default();
-        config.serial.polling_interval = Duration::from_secs(300);
-        let manager = FocuserManager::new(config, factory);
+        let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
         // Arm: the next send (the AbsoluteMove issued by move_absolute)
@@ -477,5 +484,122 @@ mod tests {
         );
 
         session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_propagates_transport_failure_and_leaves_cache_unchanged() {
+        // abort's contract: on success, clear is_moving / target_position.
+        // On transport failure, propagate the error and leave the cache
+        // untouched (the device may still be moving — better to reflect
+        // that uncertainty than lie about completion).
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        // Put the cache into a "moving" state via a successful move.
+        manager.move_absolute(&session, 5000).await.unwrap();
+        assert!(manager.get_cached_state().await.is_moving);
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .abort(&session)
+            .await
+            .expect_err("abort should propagate the transport failure");
+        assert!(
+            matches!(err, QhyFocuserError::Communication(_)),
+            "expected Communication, got {err:?}"
+        );
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            state.is_moving,
+            "cache should NOT have been cleared on abort failure"
+        );
+        assert_eq!(state.target_position, Some(5000));
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_position_propagates_transport_failure() {
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .refresh_position(&session)
+            .await
+            .expect_err("refresh_position should propagate the transport failure");
+        assert!(
+            matches!(err, QhyFocuserError::Communication(_)),
+            "expected Communication, got {err:?}"
+        );
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_position_advances_position_but_stays_moving_when_target_unreached() {
+        // Covers the apply_position branch where is_moving=true and
+        // position != target — the function must update position but
+        // leave is_moving=true so ASCOM IsMoving keeps reporting `true`
+        // mid-move. The mock advances 1000 steps per GetPosition, so a
+        // 5000-step move's first refresh stays in flight.
+        let manager = make_manager();
+        let session = manager.transport().acquire().await.unwrap();
+
+        manager.move_absolute(&session, 5000).await.unwrap();
+        manager.refresh_position(&session).await.unwrap();
+
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.position, Some(1000));
+        assert!(state.is_moving);
+        assert_eq!(state.target_position, Some(5000));
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acquire_returns_err_and_keeps_cache_empty_when_handshake_send_fails() {
+        // Failing the first handshake send (GetVersion) must:
+        // - propagate Err from acquire(),
+        // - leave is_available() == false (the RollbackGuard fired),
+        // - leave the cache at Default::default() (no fields populated
+        //   from a partial handshake).
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .transport()
+            .acquire()
+            .await
+            .expect_err("handshake failure should propagate out of acquire");
+        // The send returned TransportError::Eof; that arrives at the
+        // device layer as SessionError::Codec(QhyCodecError::Transport(
+        // TransportError::Eof)), which transport_to_focuser maps to
+        // QhyFocuserError::Communication("Connection closed").
+        let mapped = QhyFocuserError::from(err);
+        assert!(
+            matches!(mapped, QhyFocuserError::Communication(_)),
+            "expected Communication, got {mapped:?}"
+        );
+
+        assert!(
+            !manager.is_available(),
+            "RollbackGuard should have rolled the refcount back"
+        );
+
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.firmware_version, None);
+        assert_eq!(state.board_version, None);
+        assert_eq!(state.position, None);
+        assert_eq!(state.outer_temp, None);
+        assert_eq!(state.chip_temp, None);
+        assert_eq!(state.voltage, None);
     }
 }

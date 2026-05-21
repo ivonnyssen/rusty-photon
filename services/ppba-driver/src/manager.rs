@@ -322,4 +322,155 @@ mod tests {
         session.close().await.unwrap();
         assert!(!manager.is_available());
     }
+
+    // ========================================================================
+    // Transport-failure error branches: send_command, refresh_status, and
+    // the acquire/handshake rollback path. Mirrors the InjectableFactory
+    // pattern used in qhy-focuser; the canonical race / refcount / rollback
+    // invariants remain tested once in rusty-photon-shared-transport.
+    // ========================================================================
+
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Wraps the canonical mock factory but gates `send_frame` behind a
+    /// shared atomic — flipping it makes the very next send return EOF.
+    /// Used to inject a wire-level failure after handshake has succeeded
+    /// (or, by arming the flag *before* acquire, during handshake).
+    #[derive(Default, Clone)]
+    struct InjectableFactory {
+        inner: MockPpbaTransportFactory,
+        fail_next_send: Arc<AtomicBool>,
+    }
+
+    impl InjectableFactory {
+        fn fail_next_send(&self) -> Arc<AtomicBool> {
+            Arc::clone(&self.fail_next_send)
+        }
+    }
+
+    #[async_trait]
+    impl TransportFactory for InjectableFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let inner = self.inner.open().await?;
+            Ok(Box::new(InjectableTransport {
+                inner,
+                fail_next_send: Arc::clone(&self.fail_next_send),
+            }))
+        }
+    }
+
+    struct InjectableTransport {
+        inner: Box<dyn FrameTransport>,
+        fail_next_send: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl FrameTransport for InjectableTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            if self.fail_next_send.swap(false, Ordering::SeqCst) {
+                return Err(TransportError::Eof);
+            }
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(
+            &mut self,
+            buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    /// Manager built with the InjectableFactory and a long poll interval
+    /// (300s) so the poll loop can't consume the armed failure before the
+    /// test's foreground request does.
+    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<PpbaManager> {
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_secs(300);
+        PpbaManager::new(config, factory)
+    }
+
+    #[tokio::test]
+    async fn send_command_propagates_transport_failure() {
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .send_command(&session, PpbaCommand::SetQuad12V(false))
+            .await
+            .expect_err("send_command should propagate the transport failure");
+        // TransportError::Eof routes through transport_to_ppba to
+        // PpbaError::Communication("Connection closed").
+        assert!(
+            matches!(err, PpbaError::Communication(_)),
+            "expected Communication, got {err:?}"
+        );
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_status_propagates_transport_failure() {
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .refresh_status(&session)
+            .await
+            .expect_err("refresh_status should propagate the transport failure");
+        assert!(
+            matches!(err, PpbaError::Communication(_)),
+            "expected Communication, got {err:?}"
+        );
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acquire_returns_err_and_keeps_cache_empty_when_handshake_send_fails() {
+        // Failing the first handshake send (Ping) must:
+        // - propagate Err from acquire(),
+        // - leave is_available() == false (the RollbackGuard fired),
+        // - leave the cache untouched (no PA / PS seeded from a partial
+        //   handshake).
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+
+        fail_switch.store(true, Ordering::SeqCst);
+        let err = manager
+            .transport()
+            .acquire()
+            .await
+            .expect_err("handshake failure should propagate out of acquire");
+        let mapped = PpbaError::from(err);
+        assert!(
+            matches!(mapped, PpbaError::Communication(_)),
+            "expected Communication, got {mapped:?}"
+        );
+
+        assert!(
+            !manager.is_available(),
+            "RollbackGuard should have rolled the refcount back"
+        );
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            state.status.is_none(),
+            "handshake should not have seeded status"
+        );
+        assert!(
+            state.power_stats.is_none(),
+            "handshake should not have seeded power stats"
+        );
+        assert!(state.last_update.is_none());
+    }
 }
