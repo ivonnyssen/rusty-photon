@@ -1,11 +1,12 @@
 //! BDD entry point for pa-falcon-rotator.
 //!
-//! Tests run in-process: each scenario builds a `BoundServer` on an ephemeral
-//! port, holds a shared `Arc<MockSerialPortFactory>` so steps can drive mock
-//! state and inspect the wire-level command log, and drives the Rotator /
-//! Switch trait surface via in-process Alpaca HTTP clients. The
-//! `bdd_infra::bdd_main!` macro is **not** used here — it's a Miri shim for
-//! BDD suites that spawn child processes via `ServiceHandle`, which we don't.
+//! Tests run in-process: each scenario builds a `BoundServer` on an
+//! ephemeral port, holds a shared `Arc<MockFalconTransportFactory>` so
+//! steps can drive mock state and inspect the wire-level command log,
+//! and drives the Rotator / Switch trait surface via in-process Alpaca
+//! HTTP clients. The `bdd_infra::bdd_main!` macro is **not** used here
+//! — it's a Miri shim for BDD suites that spawn child processes via
+//! `ServiceHandle`, which we don't.
 
 #[path = "bdd/world.rs"]
 mod world;
