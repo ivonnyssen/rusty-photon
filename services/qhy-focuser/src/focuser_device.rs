@@ -96,11 +96,12 @@ impl Device for QhyFocuserDevice {
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(|e| {
-                        QhyFocuserError::from(rusty_photon_shared_transport::SessionError::<
-                            crate::codec::QhyCodecError,
-                        >::Transport(e))
-                    })?;
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for QhyFocuserError` handles
+                    // the conversion, and the existing
+                    // `From<QhyFocuserError> for ASCOMError` does the
+                    // second hop on `?`.
+                    session.close().await.map_err(QhyFocuserError::from)?;
                 }
                 debug!("Focuser device disconnected");
             }

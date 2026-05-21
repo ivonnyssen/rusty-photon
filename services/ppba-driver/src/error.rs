@@ -1,6 +1,7 @@
 //! Error types for the PPBA Switch driver
 
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
+use rusty_photon_shared_transport::TransportError;
 
 /// Errors that can occur when interacting with the PPBA device
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +83,29 @@ impl PpbaError {
 impl From<PpbaError> for ASCOMError {
     fn from(err: PpbaError) -> Self {
         err.to_ascom_error()
+    }
+}
+
+/// Direct conversion from a shared-transport [`TransportError`].
+///
+/// Lets the device layer write `.map_err(PpbaError::from)?` on a
+/// `Session::close()` (which returns `Result<_, TransportError>`)
+/// instead of synthetically wrapping the `TransportError` in a
+/// `SessionError::Transport(...)` just to reuse the existing
+/// `From<SessionError<…>>` mapping. The codec-layer
+/// `From<SessionError<PpbaCodecError>> for PpbaError` impl also
+/// routes its transport arms through this conversion.
+impl From<TransportError> for PpbaError {
+    fn from(t: TransportError) -> Self {
+        match t {
+            TransportError::Open(e) => PpbaError::ConnectionFailed(e.to_string()),
+            TransportError::Io(e) => PpbaError::Io(e),
+            TransportError::Timeout(d) => {
+                PpbaError::Timeout(format!("transport timeout after {d:?}"))
+            }
+            TransportError::Eof => PpbaError::Communication("Connection closed".to_string()),
+            TransportError::Framing(s) => PpbaError::Communication(format!("framing: {s}")),
+        }
     }
 }
 
@@ -249,5 +273,46 @@ mod tests {
         // ? and Into::into both route through this From impl.
         let ascom: ASCOMError = PpbaError::NotConnected.into();
         assert_eq!(ascom.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    // ============================================================================
+    // From<TransportError> for PpbaError — the device-layer disconnect path
+    // relies on this to map Session::close()'s TransportError directly
+    // without synthesizing a SessionError. Test each TransportError variant
+    // routes to its expected PpbaError arm.
+    // ============================================================================
+
+    #[test]
+    fn from_transport_error_open_maps_to_connection_failed() {
+        let err: PpbaError = TransportError::Open(std::io::Error::other("busy")).into();
+        assert!(matches!(err, PpbaError::ConnectionFailed(s) if s.contains("busy")));
+    }
+
+    #[test]
+    fn from_transport_error_io_preserves_io_kind() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err: PpbaError = TransportError::Io(io_err).into();
+        match err {
+            PpbaError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_transport_error_timeout_maps_to_timeout() {
+        let err: PpbaError = TransportError::Timeout(std::time::Duration::from_secs(2)).into();
+        assert!(matches!(err, PpbaError::Timeout(s) if s.contains('2')));
+    }
+
+    #[test]
+    fn from_transport_error_eof_maps_to_communication() {
+        let err: PpbaError = TransportError::Eof.into();
+        assert!(matches!(err, PpbaError::Communication(s) if s.contains("Connection closed")));
+    }
+
+    #[test]
+    fn from_transport_error_framing_maps_to_communication() {
+        let err: PpbaError = TransportError::Framing("too big".to_string()).into();
+        assert!(matches!(err, PpbaError::Communication(s) if s.contains("too big")));
     }
 }

@@ -165,29 +165,16 @@ impl Codec for QhyCodec {
     }
 }
 
-/// Map a [`TransportError`] to the matching [`QhyFocuserError`] variant.
-///
-/// Shared by the top-level `SessionError::Transport(t)` arm and the
-/// nested `SessionError::Codec(QhyCodecError::Transport(t))` arm so a
-/// timeout that surfaces *through* the handshake hook is classified
-/// identically to one that surfaces on a steady-state request.
-fn transport_to_focuser(t: TransportError) -> QhyFocuserError {
-    match t {
-        TransportError::Open(e) => QhyFocuserError::ConnectionFailed(e.to_string()),
-        TransportError::Io(e) => QhyFocuserError::Io(e),
-        TransportError::Timeout(d) => {
-            QhyFocuserError::Timeout(format!("transport timeout after {d:?}"))
-        }
-        TransportError::Eof => QhyFocuserError::Communication("Connection closed".to_string()),
-        TransportError::Framing(s) => QhyFocuserError::Communication(format!("framing: {s}")),
-    }
-}
-
 impl From<SessionError<QhyCodecError>> for QhyFocuserError {
     fn from(err: SessionError<QhyCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => transport_to_focuser(t),
-            SessionError::Codec(QhyCodecError::Transport(t)) => transport_to_focuser(t),
+            // Both arms route through `From<TransportError> for
+            // QhyFocuserError` in error.rs so a timeout that surfaces
+            // *through* the handshake hook (codec arm) gets the same
+            // classification as one that surfaces on a steady-state
+            // request (transport arm).
+            SessionError::Transport(t) => t.into(),
+            SessionError::Codec(QhyCodecError::Transport(t)) => t.into(),
             SessionError::Codec(QhyCodecError::InvalidResponse(s)) => {
                 QhyFocuserError::InvalidResponse(s)
             }

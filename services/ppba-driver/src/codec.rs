@@ -140,27 +140,15 @@ impl Codec for PpbaCodec {
     }
 }
 
-/// Map a [`TransportError`] to the matching [`PpbaError`] variant.
-///
-/// Shared by the top-level `SessionError::Transport(t)` arm and the
-/// nested `SessionError::Codec(PpbaCodecError::Transport(t))` arm so a
-/// timeout that surfaces *through* the handshake hook is classified
-/// identically to one that surfaces on a steady-state request.
-fn transport_to_ppba(t: TransportError) -> PpbaError {
-    match t {
-        TransportError::Open(e) => PpbaError::ConnectionFailed(e.to_string()),
-        TransportError::Io(e) => PpbaError::Io(e),
-        TransportError::Timeout(d) => PpbaError::Timeout(format!("transport timeout after {d:?}")),
-        TransportError::Eof => PpbaError::Communication("Connection closed".to_string()),
-        TransportError::Framing(s) => PpbaError::Communication(format!("framing: {s}")),
-    }
-}
-
 impl From<SessionError<PpbaCodecError>> for PpbaError {
     fn from(err: SessionError<PpbaCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => transport_to_ppba(t),
-            SessionError::Codec(PpbaCodecError::Transport(t)) => transport_to_ppba(t),
+            // Both arms route through `From<TransportError> for PpbaError`
+            // in error.rs so a timeout that surfaces *through* the
+            // handshake hook (codec arm) gets the same classification as
+            // one that surfaces on a steady-state request (transport arm).
+            SessionError::Transport(t) => t.into(),
+            SessionError::Codec(PpbaCodecError::Transport(t)) => t.into(),
             SessionError::Codec(PpbaCodecError::InvalidResponse(s)) => {
                 PpbaError::InvalidResponse(s)
             }

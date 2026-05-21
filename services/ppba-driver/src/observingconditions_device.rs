@@ -82,11 +82,11 @@ impl Device for PpbaObservingConditionsDevice {
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(|e| {
-                        PpbaError::from(rusty_photon_shared_transport::SessionError::<
-                            crate::codec::PpbaCodecError,
-                        >::Transport(e))
-                    })?;
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for PpbaError` handles the
+                    // conversion, and the existing `From<PpbaError> for
+                    // ASCOMError` does the second hop on `?`.
+                    session.close().await.map_err(PpbaError::from)?;
                 }
                 debug!("ObservingConditions device disconnected");
             }
