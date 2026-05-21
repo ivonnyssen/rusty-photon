@@ -1,13 +1,13 @@
-//! Tests for lib.rs - server startup and device registration
+//! Tests for lib.rs — server startup and device registration.
 //!
-//! Tests verify that `ServerBuilder` correctly registers the focuser device
+//! Verifies that `ServerBuilder` correctly registers the focuser device
 //! based on configuration flags and starts the ASCOM Alpaca server.
 //!
-//! Requires the `mock` feature. All tests are skipped under Miri since it
-//! cannot call socket syscalls.
+//! Requires the `mock` feature. All tests are skipped under Miri since
+//! it cannot call socket syscalls.
 //!
-//! Tests run sequentially because the ASCOM Alpaca discovery service binds
-//! to a fixed address, so only one server can run at a time.
+//! Tests run sequentially because the ASCOM Alpaca discovery service
+//! binds to a fixed address, so only one server can run at a time.
 #![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
 
@@ -16,22 +16,22 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use qhy_focuser::config::{FocuserConfig, SerialConfig, ServerConfig};
-use qhy_focuser::io::{SerialPair, SerialPortFactory};
-use qhy_focuser::{Config, Result};
+use qhy_focuser::Config;
+use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
-/// Minimal serial port factory for server startup tests.
-struct StubSerialPortFactory;
+/// Minimal transport factory for server startup tests.
+///
+/// `open()` is never called — the device is never connected during these
+/// tests, which exercise only the bind + listener wiring in
+/// `ServerBuilder::build()`.
+struct StubTransportFactory;
 
 #[async_trait]
-impl SerialPortFactory for StubSerialPortFactory {
-    async fn open(&self, _port: &str, _baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
+impl TransportFactory for StubTransportFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
         unreachable!("open() should not be called during server startup tests")
-    }
-
-    async fn port_exists(&self, _port: &str) -> bool {
-        true
     }
 }
 
@@ -56,7 +56,7 @@ fn test_config(focuser_enabled: bool) -> Config {
 }
 
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
-    let factory: Arc<dyn SerialPortFactory> = Arc::new(StubSerialPortFactory);
+    let factory: Arc<dyn TransportFactory> = Arc::new(StubTransportFactory);
 
     let bound = qhy_focuser::ServerBuilder::new()
         .with_config(config)

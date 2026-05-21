@@ -363,12 +363,17 @@ PR and comments on the open `install-astap-nightly` tracking
 issue with the PR link. If verification fails on any platform, it
 files an `astap-refresh-blocked` issue instead — that case means
 upstream shipped something broken and a human needs to look. The
-PR's own CI re-runs `install-astap` and `plate-solver-smoke` on
-the new pins before merge; the human step is review-and-merge of
-the auto-PR, plus the banner-version note (step 5 below). The
-manual steps below remain the fallback for D05 rotations (the
-workflow doesn't auto-refresh D05 yet) or when the auto-refresh
-itself is broken.
+aggregator job's M101 verification (described above) is the only
+ASTAP validation that runs before merge — `pull_request`-triggered
+workflows do NOT run on the auto-PR because [GitHub Actions
+suppresses workflows triggered by `GITHUB_TOKEN`-authored
+events](https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow).
+A maintainer can close/reopen the auto-PR to wake the PR's CI for
+a redundant signal. The human step is review-and-merge of the
+auto-PR plus the banner-version note (step 5 below). The manual
+steps below remain the fallback for D05 rotations (the workflow
+doesn't auto-refresh D05 yet) or when the auto-refresh itself is
+broken.
 
 1. Download each archive listed in the action's per-OS table from
    SourceForge.

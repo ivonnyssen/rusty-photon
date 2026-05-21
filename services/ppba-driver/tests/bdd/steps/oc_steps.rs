@@ -153,6 +153,11 @@ async fn try_read_average_period(world: &mut PpbaWorld) {
     world.capture_result(result);
 }
 
+#[when(expr = "I wait {int} milliseconds")]
+async fn wait_milliseconds(_world: &mut PpbaWorld, millis: u64) {
+    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+}
+
 // ============================================================================
 // Then steps
 // ============================================================================

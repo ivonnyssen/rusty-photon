@@ -3,36 +3,42 @@
 //!
 //! ASCOM Alpaca driver for the Pegasus Astro Pocket Powerbox Advance Gen2 (PPBA).
 //!
-//! This driver exposes two ASCOM devices:
-//! - Switch device for power control and sensor monitoring
-//! - ObservingConditions device for environmental sensors
+//! Exposes two ASCOM devices over one shared serial transport managed by
+//! `rusty_photon_shared_transport::SharedTransport`:
+//! - Switch device (power control + sensor monitoring)
+//! - ObservingConditions device (environmental sensors)
 
+pub mod codec;
 pub mod config;
 pub mod error;
-pub mod io;
+pub mod manager;
 pub mod mean;
-#[cfg(feature = "mock")]
+// Compiled into the binary under `--features mock` (BDD + ConformU) and
+// also into the lib's `cargo test` build so each module's `#[cfg(test)]`
+// suite can drive the same canonical PPBA simulator. Production builds
+// don't compile it.
+#[cfg(any(feature = "mock", test))]
 pub mod mock;
 pub mod observingconditions_device;
 pub mod protocol;
 pub mod serial;
-pub mod serial_manager;
 pub mod switch_device;
 pub mod switches;
 
+pub use codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
 pub use config::{
     load_config, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig, ServerConfig,
     SwitchConfig,
 };
 pub use error::{PpbaError, Result};
-pub use io::SerialPortFactory;
+pub use manager::{CachedState, PpbaManager};
 pub use observingconditions_device::PpbaObservingConditionsDevice;
-pub use serial_manager::SerialManager;
+pub use serial::PpbaTransportFactory;
 pub use switch_device::PpbaSwitchDevice;
 pub use switches::{SwitchId, SwitchInfo, MAX_SWITCH};
 
 #[cfg(feature = "mock")]
-pub use mock::MockSerialPortFactory;
+pub use mock::MockPpbaTransportFactory;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,29 +46,27 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
-use serial::TokioSerialPortFactory;
+use rusty_photon_shared_transport::TransportFactory;
 use tokio::signal;
 use tracing::{debug, info};
 
 /// Builder for the ASCOM Alpaca server.
-///
-/// Configures devices and serial port factory, then binds the server.
-/// The returned [`BoundServer`] can be inspected (e.g. `listen_addr()`)
-/// before calling `start()`.
 pub struct ServerBuilder {
     config: Config,
-    factory: Arc<dyn SerialPortFactory>,
+    factory: Arc<dyn TransportFactory>,
 }
 
 impl ServerBuilder {
     pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            factory: Arc::new(TokioSerialPortFactory::new()),
-        }
+        let factory: Arc<dyn TransportFactory> = Arc::new(PpbaTransportFactory::new(
+            config.serial.port.clone(),
+            config.serial.baud_rate,
+            config.serial.timeout,
+        ));
+        Self { config, factory }
     }
 
-    pub fn with_factory(mut self, factory: Arc<dyn SerialPortFactory>) -> Self {
+    pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = factory;
         self
     }
@@ -72,11 +76,11 @@ impl ServerBuilder {
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
         server.discovery_port = self.config.server.discovery_port;
 
-        let serial_manager = Arc::new(SerialManager::new(self.config.clone(), self.factory));
+        let manager = PpbaManager::new(self.config.clone(), self.factory);
 
         if self.config.switch.enabled {
             let switch_device =
-                PpbaSwitchDevice::new(self.config.switch.clone(), Arc::clone(&serial_manager));
+                PpbaSwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
             server.devices.register(switch_device);
             info!("Registered Switch device: {}", self.config.switch.name);
         }
@@ -84,7 +88,7 @@ impl ServerBuilder {
         if self.config.observingconditions.enabled {
             let oc_device = PpbaObservingConditionsDevice::new(
                 self.config.observingconditions.clone(),
-                Arc::clone(&serial_manager),
+                Arc::clone(&manager),
             );
             server.devices.register(oc_device);
             info!(
@@ -98,7 +102,6 @@ impl ServerBuilder {
         let tls = self.config.server.tls.clone();
         let router = axum::Router::new().fallback_service(server.into_service());
 
-        // Layer authentication if configured
         let router = match &self.config.server.auth {
             Some(auth) => {
                 if self.config.server.tls.is_none() {
@@ -134,7 +137,6 @@ impl ServerBuilder {
     }
 }
 
-/// A fully bound ppba-driver server ready to accept connections.
 pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,

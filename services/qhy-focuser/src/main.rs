@@ -8,7 +8,7 @@ use clap::Parser;
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
-use qhy_focuser::{load_config, Config, MockSerialPortFactory, ServerBuilder};
+use qhy_focuser::{load_config, Config, MockQhyTransportFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
 use qhy_focuser::{load_config, Config, ServerBuilder};
 
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let bound = {
-        let factory = std::sync::Arc::new(MockSerialPortFactory::default());
+        let factory = std::sync::Arc::new(MockQhyTransportFactory::default());
         ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)

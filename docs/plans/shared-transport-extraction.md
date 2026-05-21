@@ -2,10 +2,27 @@
 
 ## Status
 
-**Phase A in flight.** The plan landed on `main` via PR #265. Phase A
-(the `crates/rusty-photon-shared-transport/` crate) is implemented in
-PR #269 with 31 tests passing; no migration PRs yet. Phases B–E follow
-per the rollout below.
+**Phases A–B merged on `main`; Phase C implemented on
+`feature/phase-c-qhy-focuser-shared-transport` (PR #280), in review.
+Phases D–E (`pa-falcon-rotator`, `star-adventurer-gti`) remain.**
+
+* Phase A — landed via PR #269 (the
+  `crates/rusty-photon-shared-transport/` crate; 31 tests).
+* Phase B — landed via PR #276 (`ppba-driver` migration). Both ASCOM
+  devices (`PpbaSwitchDevice`, `PpbaObservingConditionsDevice`) hold
+  `Option<Session<PpbaCodec>>`; `serial_manager.rs` was deleted in
+  favour of `PpbaManager` + `Hooks { handshake, while_open, … }`.
+  Closed issue #251 structurally.
+* Phase C — implemented (PR #280, in review). `qhy-focuser` is
+  migrated; `QhyCodec` carries the JSON encode/decode + `cmd_id↔idx`
+  matching (`max_skip = 5` for unsolicited position frames),
+  `FocuserManager` wraps `SharedTransport<QhyCodec>` + the cached
+  state, and `QhyFocuserDevice::set_connected` is the
+  `RwLock<Option<Session<QhyCodec>>>` shape. Legacy
+  `serial_manager.rs` (~1063 lines) and `io.rs` are deleted. Closes
+  issue #258 structurally. Detailed verification lives in the
+  Phase C section below.
+* Phases D–E — not started; rollout below describes each.
 
 ## Motivation
 
@@ -879,58 +896,88 @@ Verification:
 
 ### Phase B — Migrate `ppba-driver`
 
-`ppba-driver` first because:
+Status: **implemented** on `feature/phase-b-ppba-shared-transport`.
 
-1. It has the buggy `set_connected` shape on `main` (PR #255 fix is
-   in flight). Phase B replaces the inline body with the new shape,
-   closing #251 structurally.
-2. It exercises the multi-device-on-one-transport case end to end.
+`ppba-driver` migrated first because:
+
+1. It had the buggy `set_connected` shape on `main` (lock-held check-and-modify
+   was the in-flight fix tracked by issue #251). Phase B replaces that
+   inline body with the new "session-is-the-resource" shape, closing
+   #251 structurally — there is no separate "requested" bool that can
+   desync from the transport refcount.
+2. It exercises the multi-device-on-one-transport case end to end
+   (Switch + ObservingConditions both share one `Arc<PpbaManager>` and
+   each hold their own `Option<Session<PpbaCodec>>`).
 3. It's the simplest of the four protocols (3-command handshake,
    ASCII LF, command-echo validation).
 
-Removes:
-* `services/ppba-driver/src/serial_manager.rs` — most of it.
+Removed:
+* `services/ppba-driver/src/serial_manager.rs` — entirely.
 * `services/ppba-driver/src/io.rs` — replaced by shared
   `TransportFactory`.
 
-Adds:
-* `services/ppba-driver/src/codec.rs` — `PpbaCodec` impl.
-* Trims `serial_manager.rs` to a `PpbaManager` wrapper around
-  `Arc<SharedTransport<PpbaCodec>>` + `cached_state` +
-  protocol-specific public methods.
-* `mock.rs` factory adopts shared `TransportFactory`.
+Added:
+* `services/ppba-driver/src/codec.rs` — `PpbaCodec` with `PpbaResponse`
+  (`PingOk` / `Status(PpbaStatus)` / `PowerStats(PpbaPowerStats)` /
+  `Echo(String)`) and `PpbaCodecError`. `max_skip` defaults to 0
+  (PPBA does not emit unsolicited frames).
+* `services/ppba-driver/src/manager.rs` — `PpbaManager` wraps
+  `Arc<SharedTransport<PpbaCodec>>` + `Arc<RwLock<CachedState>>` and
+  exposes session-borrowing helpers (`send_command`,
+  `refresh_status`, `refresh_power_stats`) plus cache mutators
+  (`set_averaging_period`, `set_usb_hub_state`).
+* `services/ppba-driver/src/serial.rs` — `PpbaTransportFactory`
+  building a `SerialFrameTransport` over `tokio-serial`.
+* `services/ppba-driver/src/mock.rs` — `MockPpbaTransportFactory`
+  implementing `TransportFactory` directly (no more `SerialReader` /
+  `SerialWriter` split).
 
-Tests: existing unit + BDD scenarios stay green. Inline tests in
-`serial_manager.rs` that probed `connection_count` directly get
-rewritten to use the shared crate's `is_available()` (or get deleted
-where they overlap with the shared crate's race/rollback tests).
-
-Coordination with PR #255: if PR #255 lands first, Phase B simply
-replaces its fix with the migrated body. If Phase A lands before
-PR #255 ships, we close PR #255 and let Phase B be the fix for #251.
+Tests: 117 unit + 145 BDD scenarios pass. Race / rollback / while-open
+invariants are tested once in `rusty-photon-shared-transport`'s own
+test suite; per-service duplicates were dropped per the original plan.
 
 ### Phase C — Migrate `qhy-focuser`
 
-Second because:
+Status: **implemented** on `feature/phase-c-qhy-focuser-shared-transport`.
+
+`qhy-focuser` migrated second because:
 
 1. Its codec is the most demanding — JSON framing + cmd_id↔idx
    match + stale-frame skip. Migrating it validates that the
    `Codec::matches` + `max_skip` design generalizes.
-2. PR #260 (rollback fix for #258) should land first. Phase C then
-   deletes the rollback code PR #260 adds, since
+2. PR #260 (rollback fix for #258) landed first; Phase C deletes
+   the lifecycle rollback code PR #260 added, since
    `SharedTransport::acquire()` handles rollback structurally.
 
-Removes:
-* `services/qhy-focuser/src/serial_manager.rs` — most of it.
-* `services/qhy-focuser/src/io.rs` — replaced.
+Removed:
+* `services/qhy-focuser/src/serial_manager.rs` — entirely (~1063 lines).
+* `services/qhy-focuser/src/io.rs` — replaced by shared
+  `TransportFactory`.
 
-Adds:
-* `services/qhy-focuser/src/codec.rs`.
-* Trimmed `manager.rs`.
+Added:
+* `services/qhy-focuser/src/codec.rs` — `QhyCodec` with `QhyResponse`
+  (`Version` / `Position` / `Temperature` / `Ack { idx }`) and
+  `QhyCodecError`. `max_skip = 5` (the legacy
+  `MAX_RESPONSE_RETRIES`); `matches` compares `cmd.cmd_id() ==
+  resp.idx()`.
+* `services/qhy-focuser/src/manager.rs` — `FocuserManager` wraps
+  `Arc<SharedTransport<QhyCodec>>` + `Arc<RwLock<CachedState>>` and
+  exposes session-borrowing helpers (`move_absolute`, `abort`,
+  `refresh_position`) plus the `Hooks { handshake, teardown,
+  while_open }` constructor.
+* `services/qhy-focuser/src/serial.rs` rewritten as
+  `QhyTransportFactory` over `tokio-serial`, returning a
+  `SerialFrameTransport` with `b'}'` as the frame terminator.
+* `services/qhy-focuser/src/mock.rs` — `MockQhyTransportFactory`
+  implementing `TransportFactory` directly (no more
+  `SerialReader`/`SerialWriter` split); now compiled under
+  `cfg(any(feature = "mock", test))` so unit tests can drive the
+  canonical mock.
 
-Tests: existing BDD green. Inline `MockReader`-based unit tests for
-`read_response_for` in `serial_manager.rs` are subsumed by Phase A's
-codec tests; remove the redundant ones.
+Tests: 110 unit + integration tests + 37 BDD scenarios pass. Race /
+rollback / while-open invariants are tested once in
+`rusty-photon-shared-transport`'s own test suite; per-service inline
+duplicates were dropped per the original plan.
 
 ### Phase D — Migrate `pa-falcon-rotator`
 

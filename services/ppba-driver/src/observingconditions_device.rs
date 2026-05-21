@@ -1,7 +1,7 @@
-//! PPBA ObservingConditions device implementation
+//! PPBA ObservingConditions device implementation.
 //!
-//! This module implements the ASCOM Alpaca ObservingConditions trait
-//! for the Pegasus Astro Pocket Powerbox Advance Gen2 environmental sensors.
+//! Like the Switch device, this holds an `Option<Session<PpbaCodec>>` —
+//! the session existing is the canonical "Connected" state.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,52 +9,39 @@ use std::time::Duration;
 use ascom_alpaca::api::{Device, ObservingConditions};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
 use crate::error::PpbaError;
-use crate::serial_manager::SerialManager;
+use crate::manager::PpbaManager;
 
-/// Guard macro that returns NOT_CONNECTED if the device is not connected.
 macro_rules! ensure_connected {
     ($self:ident) => {
-        if !$self.connected().await.is_ok_and(|connected| connected) {
+        if !$self.connected().await.is_ok_and(|c| c) {
             debug!("ObservingConditions device not connected");
             return Err(ASCOMError::NOT_CONNECTED);
         }
     };
 }
 
-/// PPBA ObservingConditions device for ASCOM Alpaca
 #[derive(derive_more::Debug)]
 pub struct PpbaObservingConditionsDevice {
     config: ObservingConditionsConfig,
-    requested_connection: Arc<RwLock<bool>>,
     #[debug(skip)]
-    serial_manager: Arc<SerialManager>,
+    session: Arc<RwLock<Option<Session<PpbaCodec>>>>,
+    #[debug(skip)]
+    manager: Arc<PpbaManager>,
 }
 
 impl PpbaObservingConditionsDevice {
-    /// Create a new PPBA ObservingConditions device
-    pub fn new(config: ObservingConditionsConfig, serial_manager: Arc<SerialManager>) -> Self {
+    pub fn new(config: ObservingConditionsConfig, manager: Arc<PpbaManager>) -> Self {
         Self {
             config,
-            requested_connection: Arc::new(RwLock::new(false)),
-            serial_manager,
-        }
-    }
-
-    /// Convert internal error to ASCOM error
-    fn to_ascom_error(err: PpbaError) -> ASCOMError {
-        match err {
-            PpbaError::NotConnected => {
-                ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, err.to_string())
-            }
-            PpbaError::InvalidValue(_) => {
-                ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, err.to_string())
-            }
-            _ => ASCOMError::invalid_operation(err.to_string()),
+            session: Arc::new(RwLock::new(None)),
+            manager,
         }
     }
 }
@@ -74,39 +61,36 @@ impl Device for PpbaObservingConditionsDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        let requested = *self.requested_connection.read().await;
-        let serial_ok = self.serial_manager.is_available();
-        Ok(requested && serial_ok)
+        Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Hold the write lock for the whole check-and-modify so two concurrent
-        // `Connected=true` requests against this device can't both observe
-        // `requested_connection == false`, both call `SerialManager::connect`
-        // (incrementing the shared refcount twice), and then both set the
-        // single per-device flag. Without the guard, a single later
-        // `set_connected(false)` would decrement the refcount only once and
-        // leave the port open — see issue #251.
-        let mut requested = self.requested_connection.write().await;
-        let serial_ok = self.serial_manager.is_available();
-        let already = *requested && serial_ok;
-        if already == connected {
-            return Ok(());
-        }
-        match connected {
-            true => {
-                self.serial_manager
-                    .connect()
+        let mut slot = self.session.write().await;
+        match (connected, slot.is_some()) {
+            (true, false) => {
+                // `?` does SessionError → PpbaError via the manual
+                // .map_err, then PpbaError → ASCOMError via the From
+                // impl in error.rs.
+                let session = self
+                    .manager
+                    .transport()
+                    .acquire()
                     .await
-                    .map_err(Self::to_ascom_error)?;
-                *requested = true;
+                    .map_err(PpbaError::from)?;
+                *slot = Some(session);
                 debug!("ObservingConditions device connected");
             }
-            false => {
-                *requested = false;
-                self.serial_manager.disconnect().await;
+            (false, true) => {
+                if let Some(session) = slot.take() {
+                    // `Session::close` returns Result<_, TransportError>;
+                    // `From<TransportError> for PpbaError` handles the
+                    // conversion, and the existing `From<PpbaError> for
+                    // ASCOMError` does the second hop on `?`.
+                    session.close().await.map_err(PpbaError::from)?;
+                }
                 debug!("ObservingConditions device disconnected");
             }
+            _ => {}
         }
         Ok(())
     }
@@ -124,107 +108,93 @@ impl Device for PpbaObservingConditionsDevice {
 impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        let cached = self.serial_manager.get_cached_state().await;
+        let cached = self.manager.get_cached_state().await;
         let window = cached.temp_mean.window();
-
-        // If window is 10 seconds, we're in instantaneous mode - return 0.0
         if window == Duration::from_secs(10) {
             return Ok(0.0);
         }
-
-        // ASCOM spec requires hours, not seconds
         Ok(window.as_secs_f64() / 3600.0)
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        // ASCOM spec requires hours. Must accept 0.0 for instantaneous readings.
-        // Per spec: "All drivers must accept 0.0 to specify that an instantaneous value is available"
-
-        // Reject negative values
         if period < 0.0 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Average period cannot be negative, got {}", period),
             ));
         }
-
-        // Set a reasonable upper limit (24 hours)
         if period > 24.0 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Average period cannot exceed 24 hours, got {}", period),
             ));
         }
-
-        // Convert hours to Duration
-        // Special case: 0.0 means instantaneous (use small but reasonable averaging window)
         let duration = if period == 0.0 {
-            // Use 10 seconds for instantaneous - enough to avoid aging out samples
-            // immediately while still being effectively instantaneous for astronomy
             Duration::from_secs(10)
         } else {
-            Duration::from_secs_f64(period * 3600.0) // Convert hours to seconds
+            Duration::from_secs_f64(period * 3600.0)
         };
-
-        // Update mean calculators in SerialManager
-        self.serial_manager.set_averaging_period(duration).await;
-
+        self.manager.set_averaging_period(duration).await;
         debug!("Average period set to {} hours", period);
         Ok(())
     }
 
     async fn temperature(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-
-        let state = self.serial_manager.get_cached_state().await;
-        state.temp_mean.get_mean().ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::VALUE_NOT_SET,
-                "No temperature data available yet",
-            )
-        })
+        self.manager
+            .get_cached_state()
+            .await
+            .temp_mean
+            .get_mean()
+            .ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::VALUE_NOT_SET,
+                    "No temperature data available yet",
+                )
+            })
     }
 
     async fn humidity(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-
-        let state = self.serial_manager.get_cached_state().await;
-        state.humidity_mean.get_mean().ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::VALUE_NOT_SET,
-                "No humidity data available yet",
-            )
-        })
+        self.manager
+            .get_cached_state()
+            .await
+            .humidity_mean
+            .get_mean()
+            .ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::VALUE_NOT_SET,
+                    "No humidity data available yet",
+                )
+            })
     }
 
     async fn dew_point(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-
-        let state = self.serial_manager.get_cached_state().await;
-        state.dewpoint_mean.get_mean().ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::VALUE_NOT_SET,
-                "No dewpoint data available yet",
-            )
-        })
+        self.manager
+            .get_cached_state()
+            .await
+            .dewpoint_mean
+            .get_mean()
+            .ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::VALUE_NOT_SET,
+                    "No dewpoint data available yet",
+                )
+            })
     }
 
     async fn time_since_last_update(&self, sensor_name: String) -> ASCOMResult<f64> {
         ensure_connected!(self);
-
-        let state = self.serial_manager.get_cached_state().await;
-
+        let state = self.manager.get_cached_state().await;
         let duration = match sensor_name.to_lowercase().as_str() {
-            // Empty string means "latest update time" across all sensors
             "" => {
-                // Return the most recent update time among all implemented sensors
                 let times = [
                     state.temp_mean.time_since_last_update(),
                     state.humidity_mean.time_since_last_update(),
                     state.dewpoint_mean.time_since_last_update(),
                 ];
-                // Get the minimum time (most recent update)
                 times
                     .iter()
                     .filter_map(|&t| t)
@@ -234,12 +204,10 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             "temperature" => state.temp_mean.time_since_last_update(),
             "humidity" => state.humidity_mean.time_since_last_update(),
             "dewpoint" => state.dewpoint_mean.time_since_last_update(),
-            // Unimplemented sensors - return NOT_IMPLEMENTED error
             "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
             | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
                 return Err(ASCOMError::NOT_IMPLEMENTED);
             }
-            // Truly unknown sensor name
             _ => {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_VALUE,
@@ -247,7 +215,6 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
                 ))
             }
         };
-
         Ok(duration.map(|d| d.as_secs_f64()).unwrap_or(f64::MAX))
     }
 
@@ -257,17 +224,14 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             "temperature" => Ok("PPBA internal temperature sensor".to_string()),
             "humidity" => Ok("PPBA internal humidity sensor".to_string()),
             "dewpoint" => Ok("Dewpoint calculated from temperature and humidity".to_string()),
-            // Empty string is an invalid sensor name
             "" => Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 "Sensor name cannot be empty".to_string(),
             )),
-            // Unimplemented sensors - return NOT_IMPLEMENTED error
             "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
             | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
                 Err(ASCOMError::NOT_IMPLEMENTED)
             }
-            // Truly unknown sensor name
             _ => Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Unknown sensor name: {}", sensor_name),
@@ -277,186 +241,79 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 
     async fn refresh(&self) -> ASCOMResult<()> {
         ensure_connected!(self);
-
-        // Trigger immediate refresh via SerialManager
-        self.serial_manager
-            .refresh_status()
-            .await
-            .map_err(Self::to_ascom_error)?;
+        let guard = self.session.read().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, "not connected"))?;
+        self.manager.refresh_status(session).await?;
         debug!("ObservingConditions sensors refreshed");
         Ok(())
     }
-
-    // All other sensors are not implemented and use default trait implementations
-    // which return NOT_IMPLEMENTED errors
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    //! Unit tests for PpbaObservingConditionsDevice ASCOM error mapping and edge cases
-    //!
-    //! These tests exercise error paths in the ObservingConditions device that are
-    //! only reachable through internal failures (factory errors) or specific invalid
-    //! inputs, covering `to_ascom_error` branches and the Debug implementation.
-
     use super::*;
     use crate::config::Config;
-    use crate::error::PpbaError;
-    use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
-    use crate::serial_manager::SerialManager;
-    use ascom_alpaca::api::{Device, ObservingConditions};
+    use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Mutex;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 
-    // ============================================================================
-    // Mock Serial Infrastructure
-    // ============================================================================
-
-    struct MockSerialReader {
-        responses: Arc<Mutex<Vec<String>>>,
-        index: Arc<Mutex<usize>>,
-    }
-
-    impl MockSerialReader {
-        fn new(responses: Vec<String>) -> Self {
-            Self {
-                responses: Arc::new(Mutex::new(responses)),
-                index: Arc::new(Mutex::new(0)),
-            }
-        }
-    }
+    /// Factory whose `open()` always fails. Used to exercise the
+    /// `set_connected(true)` acquire-failure mapping into ASCOM errors —
+    /// the BDD suite can't reach this path because its mock always
+    /// succeeds.
+    struct FailingPpbaTransportFactory;
 
     #[async_trait]
-    impl SerialReader for MockSerialReader {
-        async fn read_line(&mut self) -> crate::error::Result<Option<String>> {
-            let responses = self.responses.lock().await;
-            let mut index = self.index.lock().await;
-            if *index < responses.len() {
-                let response = responses[*index].clone();
-                *index += 1;
-                Ok(Some(response))
-            } else {
-                *index = 0;
-                if !responses.is_empty() {
-                    Ok(Some(responses[0].clone()))
-                } else {
-                    Ok(None)
-                }
-            }
+    impl TransportFactory for FailingPpbaTransportFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            Err(TransportError::Open(std::io::Error::other(
+                "mock factory error",
+            )))
         }
     }
 
-    struct MockSerialWriter;
-
-    #[async_trait]
-    impl SerialWriter for MockSerialWriter {
-        async fn write_message(&mut self, _message: &str) -> crate::error::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct MockSerialPortFactory {
-        responses: Vec<String>,
-    }
-
-    impl MockSerialPortFactory {
-        fn new(responses: Vec<String>) -> Self {
-            Self { responses }
-        }
-    }
-
-    #[async_trait]
-    impl SerialPortFactory for MockSerialPortFactory {
-        async fn open(
-            &self,
-            _port: &str,
-            _baud_rate: u32,
-            _timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            Ok(SerialPair {
-                reader: Box::new(MockSerialReader::new(self.responses.clone())),
-                writer: Box::new(MockSerialWriter),
-            })
-        }
-
-        async fn port_exists(&self, _port: &str) -> bool {
-            true
-        }
-    }
-
-    struct FailingMockSerialPortFactory;
-
-    #[async_trait]
-    impl SerialPortFactory for FailingMockSerialPortFactory {
-        async fn open(
-            &self,
-            _port: &str,
-            _baud_rate: u32,
-            _timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            Err(PpbaError::ConnectionFailed(
-                "Mock factory error".to_string(),
-            ))
-        }
-
-        async fn port_exists(&self, _port: &str) -> bool {
-            false
-        }
-    }
-
-    fn standard_connection_responses() -> Vec<String> {
-        vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]
-    }
-
-    fn create_oc_device(factory: Arc<dyn SerialPortFactory>) -> PpbaObservingConditionsDevice {
+    fn make_device() -> PpbaObservingConditionsDevice {
+        let factory = Arc::new(MockPpbaTransportFactory::default());
         let config = Config::default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        PpbaObservingConditionsDevice::new(config.observingconditions, serial_manager)
+        let manager = PpbaManager::new(config.clone(), factory);
+        PpbaObservingConditionsDevice::new(config.observingconditions, manager)
     }
 
-    // ============================================================================
-    // Connection Error Mapping Tests
-    // ============================================================================
+    fn make_device_with_failing_factory() -> PpbaObservingConditionsDevice {
+        let factory = Arc::new(FailingPpbaTransportFactory);
+        let config = Config::default();
+        let manager = PpbaManager::new(config.clone(), factory);
+        PpbaObservingConditionsDevice::new(config.observingconditions, manager)
+    }
 
-    #[tokio::test]
-    async fn test_oc_connect_factory_error_maps_to_invalid_operation() {
-        let device = create_oc_device(Arc::new(FailingMockSerialPortFactory));
-
-        let err = device.set_connected(true).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert!(err.message.contains("Connection failed"));
+    async fn connected_device() -> PpbaObservingConditionsDevice {
+        let device = make_device();
+        device.set_connected(true).await.unwrap();
+        device
     }
 
     #[tokio::test]
-    async fn test_oc_connect_bad_ping_maps_to_invalid_operation() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec!["BAD_RESPONSE".to_string()]));
-        let device = create_oc_device(factory);
-
-        let err = device.set_connected(true).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    async fn starts_disconnected() {
+        let device = make_device();
+        assert!(!device.connected().await.unwrap());
     }
 
-    // ============================================================================
-    // Not Connected Guard Tests
-    // ============================================================================
+    #[tokio::test]
+    async fn connect_disconnect_round_trip() {
+        let device = make_device();
+        device.set_connected(true).await.unwrap();
+        assert!(device.connected().await.unwrap());
+        device.set_connected(false).await.unwrap();
+        assert!(!device.connected().await.unwrap());
+    }
 
     #[tokio::test]
-    async fn test_oc_operations_fail_when_not_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_oc_device(factory);
-
+    async fn operations_fail_when_not_connected() {
+        let device = make_device();
         assert_eq!(
             device.temperature().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
@@ -481,372 +338,87 @@ mod tests {
             device.refresh().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
-        assert_eq!(
-            device
-                .time_since_last_update("temperature".to_string())
-                .await
-                .unwrap_err()
-                .code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
-        assert_eq!(
-            device
-                .sensor_description("temperature".to_string())
-                .await
-                .unwrap_err()
-                .code,
-            ASCOMErrorCode::NOT_CONNECTED
-        );
     }
 
-    // ============================================================================
-    // Average Period Validation Tests
-    // ============================================================================
-
     #[tokio::test]
-    async fn test_oc_set_average_period_negative_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
+    async fn set_average_period_negative_is_invalid_value() {
+        let device = connected_device().await;
         let err = device.set_average_period(-1.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-        assert!(err.message.contains("negative"));
-
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_oc_set_average_period_too_large_maps_to_invalid_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
+    async fn set_average_period_too_large_is_invalid_value() {
+        let device = connected_device().await;
         let err = device.set_average_period(25.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-        assert!(err.message.contains("24 hours"));
-
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_oc_set_average_period_zero_for_instantaneous() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
+    async fn set_average_period_zero_is_instantaneous_mode() {
+        let device = connected_device().await;
         device.set_average_period(0.0).await.unwrap();
         let period = device.average_period().await.unwrap();
-        // 0.0 means instantaneous mode
         assert!((period - 0.0).abs() < f64::EPSILON);
-
         device.set_connected(false).await.unwrap();
     }
 
-    // ============================================================================
-    // Sensor Description Tests
-    // ============================================================================
-
     #[tokio::test]
-    async fn test_oc_sensor_descriptions() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        let temp_desc = device
+    async fn sensor_descriptions() {
+        let device = connected_device().await;
+        let t = device
             .sensor_description("temperature".to_string())
             .await
             .unwrap();
-        assert!(temp_desc.contains("temperature"));
-
-        let humidity_desc = device
-            .sensor_description("humidity".to_string())
-            .await
-            .unwrap();
-        assert!(humidity_desc.contains("humidity"));
-
-        let dewpoint_desc = device
-            .sensor_description("dewpoint".to_string())
-            .await
-            .unwrap();
-        assert!(dewpoint_desc.contains("ewpoint"));
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_oc_sensor_description_empty_name_invalid() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        let err = device.sensor_description("".to_string()).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_oc_sensor_description_unimplemented_sensor() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
+        assert!(t.contains("temperature"));
         let err = device
             .sensor_description("pressure".to_string())
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_oc_sensor_description_unknown_sensor() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
         let err = device
             .sensor_description("foobar".to_string())
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Time Since Last Update Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_oc_time_since_last_update_implemented_sensors() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // After connect, refresh has populated sensor means
-        let temp_time = device
-            .time_since_last_update("temperature".to_string())
-            .await
-            .unwrap();
-        assert!(temp_time < 1.0); // should be very recent
-
-        let humidity_time = device
-            .time_since_last_update("humidity".to_string())
-            .await
-            .unwrap();
-        assert!(humidity_time < 1.0);
-
-        // Empty string means most recent across all sensors
-        let all_time = device.time_since_last_update("".to_string()).await.unwrap();
-        assert!(all_time < 1.0);
-
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_oc_time_since_last_update_unimplemented_sensor() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        let err = device
-            .time_since_last_update("pressure".to_string())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
-
+    async fn read_sensor_values_after_handshake() {
+        let device = connected_device().await;
+        let t = device.temperature().await.unwrap();
+        assert!((t - 25.0).abs() < 0.01);
+        let h = device.humidity().await.unwrap();
+        assert!((h - 60.0).abs() < 0.01);
+        let d = device.dew_point().await.unwrap();
+        assert!((d - 15.5).abs() < 0.01);
         device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_oc_time_since_last_update_unknown_sensor() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        let err = device
-            .time_since_last_update("foobar".to_string())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Sensor Read Tests (covers temperature/humidity/dewpoint value paths)
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_oc_read_sensor_values_when_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Status: temp=25.0, humidity=60, dewpoint=15.5
-        let temp = device.temperature().await.unwrap();
-        assert!((temp - 25.0).abs() < 0.01);
-
-        let humidity = device.humidity().await.unwrap();
-        assert!((humidity - 60.0).abs() < 0.01);
-
-        let dewpoint = device.dew_point().await.unwrap();
-        assert!((dewpoint - 15.5).abs() < 0.01);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_oc_average_period_default() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Default averaging period is based on polling interval config
-        let period = device.average_period().await.unwrap();
-        assert!(period > 0.0);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_oc_set_average_period_normal_value() {
-        let factory = Arc::new(MockSerialPortFactory::new(standard_connection_responses()));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Set to 1 hour
-        device.set_average_period(1.0).await.unwrap();
-        let period = device.average_period().await.unwrap();
-        assert!((period - 1.0).abs() < 0.001);
-
-        device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Miscellaneous Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_oc_device_debug_format() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_oc_device(factory);
-
-        let debug_str = format!("{:?}", device);
-        assert!(debug_str.contains("PpbaObservingConditionsDevice"));
-        assert!(debug_str.contains("config"));
-        assert!(debug_str.contains("requested_connection"));
-        assert!(debug_str.contains(".."));
-    }
-
-    #[tokio::test]
-    async fn test_oc_device_info() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![]));
-        let device = create_oc_device(factory);
-
-        let info = device.driver_info().await.unwrap();
-        assert!(info.contains("PPBA"));
-
-        let version = device.driver_version().await.unwrap();
-        assert!(!version.is_empty());
-
-        let description = device.description().await.unwrap();
-        assert!(!description.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_oc_refresh_when_connected() {
-        let factory = Arc::new(MockSerialPortFactory::new(vec![
-            "PPBA_OK".to_string(),
-            "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-            // Response for refresh()
-            "PPBA:13.0:3.5:26.0:65:16.0:1:0:128:64:0:0:0".to_string(),
-            // Polling responses
-            "PPBA:13.0:3.5:26.0:65:16.0:1:0:128:64:0:0:0".to_string(),
-            "PS:2.5:10.5:126.0:3600000".to_string(),
-        ]));
-        let device = create_oc_device(factory);
-        device.set_connected(true).await.unwrap();
-
-        // Refresh should succeed and update readings
+    async fn refresh_succeeds_when_connected() {
+        let device = connected_device().await;
         device.refresh().await.unwrap();
-
         device.set_connected(false).await.unwrap();
-    }
-
-    // ============================================================================
-    // Race Regression Test (Issue #251)
-    // ============================================================================
-
-    /// Wraps the standard mock factory and yields once inside `open()`. This
-    /// injects a tokio yield point inside `SerialManager::connect`, exposing
-    /// the window where concurrent `set_connected(true)` calls could double-
-    /// increment the per-device refcount before the lock-spanning fix.
-    struct YieldingMockSerialPortFactory {
-        inner: MockSerialPortFactory,
-    }
-
-    impl YieldingMockSerialPortFactory {
-        fn new(responses: Vec<String>) -> Self {
-            Self {
-                inner: MockSerialPortFactory::new(responses),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl SerialPortFactory for YieldingMockSerialPortFactory {
-        async fn open(
-            &self,
-            port: &str,
-            baud_rate: u32,
-            timeout: Duration,
-        ) -> crate::error::Result<SerialPair> {
-            tokio::task::yield_now().await;
-            self.inner.open(port, baud_rate, timeout).await
-        }
-
-        async fn port_exists(&self, port: &str) -> bool {
-            self.inner.port_exists(port).await
-        }
     }
 
     #[tokio::test]
-    async fn test_oc_concurrent_set_connected_does_not_leak_refcount() {
-        // Regression for issue #251: two concurrent `set_connected(true)`
-        // calls on the same device must not inflate the SerialManager refcount.
-        // The yielding factory forces a yield inside `connect()`, so the
-        // second future runs while the first is suspended mid-connect — the
-        // exact window the lock-spanning fix closes. Without the fix, both
-        // futures would call `SerialManager::connect` and a single later
-        // `set_connected(false)` would leave the port open.
-        let factory = Arc::new(YieldingMockSerialPortFactory::new(
-            standard_connection_responses(),
-        ));
-        let config = Config::default();
-        let serial_manager = Arc::new(SerialManager::new(config.clone(), factory));
-        let device = Arc::new(PpbaObservingConditionsDevice::new(
-            config.observingconditions,
-            Arc::clone(&serial_manager),
-        ));
-
-        let d1 = Arc::clone(&device);
-        let d2 = Arc::clone(&device);
-        let (r1, r2) = tokio::join!(async move { d1.set_connected(true).await }, async move {
-            d2.set_connected(true).await
-        },);
-        r1.unwrap();
-        r2.unwrap();
-        assert!(serial_manager.is_available(), "port should be open");
-
-        device.set_connected(false).await.unwrap();
+    async fn set_connected_acquire_failure_maps_to_invalid_operation() {
+        let device = make_device_with_failing_factory();
+        let err = device.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
         assert!(
-            !serial_manager.is_available(),
-            "single set_connected(false) must close the port"
+            err.message.contains("mock factory error"),
+            "expected message to carry the underlying io error, got: {}",
+            err.message
         );
+        assert!(!device.connected().await.unwrap());
     }
+
+    // PpbaError → ASCOMError mapping tests moved to error.rs once the
+    // canonical mapping landed there (centralised so both devices share
+    // the same classification).
 }

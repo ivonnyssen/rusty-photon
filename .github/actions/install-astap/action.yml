@@ -56,31 +56,31 @@ runs:
             ARCHIVE="astap_command-line_version_Linux_amd64.zip"
             SUBDIR="linux_installer"
             BIN="astap_cli"
-            SHA256="9d25e3f92a39863fb7e5762eb46cc3fcd3eb0d6554fda89136606af38d1904a2"
+            SHA256="c123644a40465066ac99aacd6bcb9424a05344f6d3f24078ba76f803d91503e7"
             ;;
           Linux-ARM64)
             ARCHIVE="astap_command-line_version_Linux_aarch64.zip"
             SUBDIR="linux_installer"
             BIN="astap_cli"
-            SHA256="c5391a0561ca71b4dbf0663bd82793dacc9160e78bb0d9961c447b8a074ec76c"
+            SHA256="1e5b6bc088de05114aa1e246dcd3fb1a6f98646f0427b0262d89d0425e443d3e"
             ;;
           macOS-ARM64)
             ARCHIVE="astap_command-line_version_macOS_M1.zip"
             SUBDIR="macOS%20installer"
             BIN="astap_cli"
-            SHA256="0e8015112548dac31302bfeea2f607bce0306a7731e92121da001b7a11b8de0f"
+            SHA256="a1f889721df02936cc692609b4c18cc01b3873160afa2e0b5fed792f65c74d1b"
             ;;
           Windows-X64)
             ARCHIVE="astap_command-line_version_win64.zip"
             SUBDIR="windows_installer"
             BIN="astap_cli.exe"
-            SHA256="5e0e222668e19ce0b187c91ece1a63389ad2b822b7913a7e7136908fc91e75d2"
+            SHA256="324ca8c3ae924952263164537c5d110421e6917b30df930d15726972f74eeb94"
             ;;
           Windows-ARM64)
             ARCHIVE="astap_command-line_version_win11_aarch64.zip"
             SUBDIR="windows_installer"
             BIN="astap_cli.exe"
-            SHA256="4ac1298c07fbe9ededfbac260684fce45ab2c04425f11ac6aa2dd4c28951570d"
+            SHA256="0675893111f2b83001500e866772e9df5a096e3039425455eb9c2388caa04965"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"

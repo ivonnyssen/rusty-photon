@@ -3,27 +3,36 @@
 //!
 //! ASCOM Alpaca driver for the QHY Q-Focuser (EAF).
 //!
-//! This driver exposes an ASCOM Focuser device for controlling
-//! a QHY Q-Focuser stepper motor over USB serial.
+//! Exposes one ASCOM Focuser device over a shared serial transport
+//! managed by `rusty_photon_shared_transport::SharedTransport`. The
+//! per-service lifecycle scaffolding (refcount, slot, polling task,
+//! command-lock arbitration) lives in the shared crate; this service
+//! contributes the [`QhyCodec`], the [`FocuserManager`] hooks, and the
+//! ASCOM trait implementation.
 
+pub mod codec;
 pub mod config;
 pub mod error;
 pub mod focuser_device;
-pub mod io;
-#[cfg(feature = "mock")]
+pub mod manager;
+// Compiled into the binary under `--features mock` (BDD + ConformU) and
+// also into the lib's `cargo test` build so each module's `#[cfg(test)]`
+// suite can drive the same canonical mock simulator. Production builds
+// don't compile it.
+#[cfg(any(feature = "mock", test))]
 pub mod mock;
 pub mod protocol;
 pub mod serial;
-pub mod serial_manager;
 
+pub use codec::{QhyCodec, QhyCodecError, QhyResponse};
 pub use config::{load_config, Config, FocuserConfig, SerialConfig, ServerConfig};
 pub use error::{QhyFocuserError, Result};
 pub use focuser_device::QhyFocuserDevice;
-pub use io::SerialPortFactory;
-pub use serial_manager::SerialManager;
+pub use manager::{CachedState, FocuserManager};
+pub use serial::QhyTransportFactory;
 
 #[cfg(feature = "mock")]
-pub use mock::MockSerialPortFactory;
+pub use mock::MockQhyTransportFactory;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -31,27 +40,19 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
-use serial::TokioSerialPortFactory;
+use rusty_photon_shared_transport::TransportFactory;
 use tokio::signal;
 use tracing::{debug, info};
 
 /// Builder for the ASCOM Alpaca server.
 ///
-/// Configures the focuser device and serial port factory, then binds the server.
-/// The returned [`BoundServer`] can be inspected (e.g. `listen_addr()`)
-/// before calling `start()`.
+/// Configures the focuser device and transport factory, then binds the
+/// server. The returned [`BoundServer`] can be inspected (e.g.
+/// `listen_addr()`) before calling `start()`.
+#[derive(Default)]
 pub struct ServerBuilder {
     config: Config,
-    factory: Arc<dyn SerialPortFactory>,
-}
-
-impl Default for ServerBuilder {
-    fn default() -> Self {
-        Self {
-            config: Config::default(),
-            factory: Arc::new(TokioSerialPortFactory::new()),
-        }
-    }
+    factory: Option<Arc<dyn TransportFactory>>,
 }
 
 impl ServerBuilder {
@@ -64,8 +65,8 @@ impl ServerBuilder {
         self
     }
 
-    pub fn with_factory(mut self, factory: Arc<dyn SerialPortFactory>) -> Self {
-        self.factory = factory;
+    pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
+        self.factory = Some(factory);
         self
     }
 
@@ -74,11 +75,20 @@ impl ServerBuilder {
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
         server.discovery_port = self.config.server.discovery_port;
 
-        let serial_manager = Arc::new(SerialManager::new(self.config.clone(), self.factory));
+        // Default to the real-hardware factory when none was supplied.
+        let factory: Arc<dyn TransportFactory> = self.factory.unwrap_or_else(|| {
+            Arc::new(QhyTransportFactory::new(
+                self.config.serial.port.clone(),
+                self.config.serial.baud_rate,
+                self.config.serial.timeout,
+            ))
+        });
+
+        let manager = FocuserManager::new(self.config.clone(), factory);
 
         if self.config.focuser.enabled {
             let focuser_device =
-                QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&serial_manager));
+                QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
             server.devices.register(focuser_device);
             info!("Registered Focuser device: {}", self.config.focuser.name);
         }
@@ -110,6 +120,9 @@ impl ServerBuilder {
         .await?;
         let local_addr = listener.local_addr()?;
 
+        // This println is parsed by tests to discover the bound port. It
+        // must go to stdout (not tracing/stderr) so the subprocess output
+        // can be read.
         println!("Bound Alpaca server bound_addr={}", local_addr);
         info!("Bound Alpaca server bound_addr={}", local_addr);
 

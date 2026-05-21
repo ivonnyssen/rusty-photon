@@ -8,14 +8,38 @@ The Q-Focuser is a standalone USB serial device - it does **not** use the QHYCCD
 
 ## Architecture
 
-The service follows the same architecture as `ppba-driver`:
+The service is built on `rusty-photon-shared-transport`. The shared crate
+owns the refcount, slot, command-lock, and poll-task lifetime; this
+service contributes the protocol-specific pieces:
 
-- **Serial abstraction**: Trait-based I/O (`io.rs`, `serial.rs`) for testability
-- **Serial manager**: Reference-counted shared serial connection with background polling (`serial_manager.rs`)
-- **Protocol layer**: JSON command serialization and response parsing (`protocol.rs`)
-- **ASCOM device**: Implements `Device` + `Focuser` traits (`focuser_device.rs`)
-- **Mock mode**: Feature-gated mock serial implementation for testing without hardware (`mock.rs`)
-- **Server builder**: Configures and starts the ASCOM Alpaca server (`lib.rs`)
+- **Codec**: `QhyCodec` translates `Command` ↔ JSON bytes, dispatches
+  decoded responses by `idx`, and matches replies to requests via
+  `cmd_id == idx`. The codec sets `max_skip = 5` so the request layer
+  can discard up to five unsolicited position frames before erroring
+  (the device emits these mid-move). See `src/codec.rs`.
+- **Transport factory**: `QhyTransportFactory` opens a `tokio-serial`
+  stream and wraps it in a `SerialFrameTransport` with `b'}'` as the
+  frame terminator (responses are flat JSON objects terminated by the
+  closing brace). See `src/serial.rs`.
+- **Manager**: `FocuserManager` wraps `Arc<SharedTransport<QhyCodec>>`
+  plus the cached state, and constructs the
+  `Hooks { handshake, teardown, while_open }` that the shared transport
+  runs across the connection lifecycle. The handshake seeds firmware,
+  position, and temperature; the `while_open` poll loop refreshes
+  position + temperature on the configured interval. See `src/manager.rs`.
+- **Protocol layer**: JSON command serialization and value-level
+  response parsers (`src/protocol.rs`).
+- **ASCOM device**: `QhyFocuserDevice` holds an
+  `Arc<RwLock<Option<Session<QhyCodec>>>>` — the session existing **is**
+  the "Connected" state, so the `requested_connection` bool that the
+  legacy driver kept separately is gone by construction. Implements
+  `Device` + `Focuser` traits (`src/focuser_device.rs`).
+- **Mock mode**: `MockQhyTransportFactory` implements `TransportFactory`
+  directly and runs an in-memory Q-Focuser state machine. Feature-gated
+  on `mock` for binaries, and `#[cfg(any(feature = "mock", test))]` so
+  unit and BDD tests can both drive the canonical mock. See `src/mock.rs`.
+- **Server builder**: Configures the factory, builds the manager, and
+  starts the ASCOM Alpaca server (`src/lib.rs`).
 
 ## Hardware Constraints
 
@@ -107,23 +131,32 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 
 | Module | Description |
 |--------|-------------|
+| `codec.rs` | `QhyCodec` (frame ↔ typed response) + error mapping |
 | `config.rs` | Configuration types and loading |
 | `error.rs` | Error types with ASCOM error mapping |
 | `focuser_device.rs` | ASCOM Device + Focuser trait implementation |
-| `io.rs` | Serial I/O trait abstractions |
 | `lib.rs` | Module declarations, ServerBuilder |
 | `main.rs` | CLI entry point |
-| `mock.rs` | Mock serial implementation (feature-gated) |
-| `protocol.rs` | JSON command/response protocol |
-| `serial.rs` | tokio-serial implementation |
-| `serial_manager.rs` | Shared serial connection with polling |
+| `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
+| `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
+| `protocol.rs` | JSON command serialization + response parsers |
+| `serial.rs` | `QhyTransportFactory` over tokio-serial |
 
 ## Testing
 
-- **Unit tests**: Protocol serialization, config, error types, response parsing, serial manager (in `src/` as `#[cfg(test)]` modules)
-- **BDD tests** (cucumber-rs): Device connection lifecycle, metadata, readings, movement control, and background polling — all using mock serial infrastructure
-- **Server tests**: Server startup with mock feature (`test_lib.rs`, feature-gated)
-- **ConformU**: ASCOM Alpaca compliance testing (requires ConformU installation)
+- **Unit tests**: Protocol serialization, config, error types, response
+  parsing, codec encode/decode/matches, manager behaviour through the
+  mock transport factory (in `src/` as `#[cfg(test)]` modules). Race /
+  refcount / rollback / while-open lifecycle invariants are tested once
+  for everyone in `rusty-photon-shared-transport`'s own integration test
+  suite — they are not duplicated here.
+- **BDD tests** (cucumber-rs): Device connection lifecycle, metadata,
+  readings, movement control, and background polling — all using the
+  mock transport infrastructure
+- **Server tests**: Server startup with mock feature (`test_lib.rs`,
+  feature-gated)
+- **ConformU**: ASCOM Alpaca compliance testing (requires ConformU
+  installation)
 
 ```bash
 # Run all tests
@@ -144,19 +177,33 @@ cargo run -p qhy-focuser --features mock
 
 ## Connection Lifecycle
 
-1. ASCOM client calls `set_connected(true)`
-2. Serial manager opens port (first connection only, ref-counted)
-3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature
-4. Background polling starts: position + temperature at configured interval
-5. Move detection: polling compares position to target, clears `is_moving` when reached
-6. On disconnect: ref-count decremented, port closed when last device disconnects
+1. ASCOM client calls `set_connected(true)`.
+2. The device acquires a `Session<QhyCodec>` from `SharedTransport`. On
+   the 0→1 transition the shared transport opens the serial port via
+   `QhyTransportFactory`, runs the handshake hook, then spawns the
+   `while_open` poll task.
+3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature, all
+   issued through `Connection::request` so they go through the same
+   request-arbitration lock as steady-state commands.
+4. Background polling refreshes position + temperature at the configured
+   interval.
+5. Move detection: polling compares position to target and clears
+   `is_moving` when reached (`is_moving` also force-refreshes position
+   on the device's session so the ASCOM property doesn't have to wait
+   up to one polling interval).
+6. On disconnect, the device calls `Session::close().await`: the
+   shared transport cancels the poll task, runs the (currently noop)
+   teardown hook, and closes the underlying serial port.
 
-**Failure recovery.** If open (step 2) or handshake (step 3) fails, the
-ref-count is rolled back and any partial reader/writer is released. A
-subsequent `set_connected(true)` re-enters the first-connection path and
-re-attempts open + handshake from scratch — the device does not wedge on
-a transient failure (unplugged USB during handshake, slow-to-boot
-firmware, bad serial path, etc.).
+**Failure recovery.** If `factory.open()` or the handshake hook errors
+on the 0→1 transition, the shared transport's `RollbackGuard` rolls the
+refcount back, drops the connection (closing the underlying port), and
+returns `Err` from `acquire()`. A subsequent `set_connected(true)`
+re-enters the first-connection path and re-attempts open + handshake
+from scratch — the device does not wedge on a transient failure
+(unplugged USB during handshake, slow-to-boot firmware, bad serial
+path, etc.). This bug class is now eliminated structurally by the
+shared crate (issue #258 closes for qhy-focuser with this migration).
 
 ## References
 
