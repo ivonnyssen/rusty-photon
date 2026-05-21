@@ -3,11 +3,11 @@
 //! Verifies that `ServerBuilder` binds the ASCOM Alpaca server and registers
 //! the Rotator and Status Switch devices according to the config's
 //! `enabled` flags. The tests only exercise management endpoints — neither
-//! device is `set_connected(true)`, so the mock serial factory's `open`
-//! path is never reached.
+//! device is `set_connected(true)`, so the mock transport's `open` path
+//! is never reached.
 //!
-//! Gated on `feature = "mock"` because the test imports `MockSerialPortFactory`
-//! from the falcon-rotator crate.
+//! Gated on `feature = "mock"` because the test imports
+//! `MockFalconTransportFactory` from the falcon-rotator crate.
 //!
 //! Tests run sequentially via `SERVER_LOCK` to mirror the qhy-focuser /
 //! ppba-driver precedent — even though each test sets
@@ -18,7 +18,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use pa_falcon_rotator::{Config, MockSerialPortFactory, SerialPortFactory, ServerBuilder};
+use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
+use rusty_photon_shared_transport::TransportFactory;
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
@@ -37,7 +38,7 @@ fn test_config(switch_enabled: bool) -> Config {
 }
 
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
-    let factory: Arc<dyn SerialPortFactory> = Arc::new(MockSerialPortFactory::default());
+    let factory: Arc<dyn TransportFactory> = Arc::new(MockFalconTransportFactory::default());
 
     let bound = ServerBuilder::new()
         .with_config(config)

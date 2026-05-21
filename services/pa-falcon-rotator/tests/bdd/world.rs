@@ -1,16 +1,18 @@
 //! World struct for pa-falcon-rotator BDD tests
 //!
-//! Runs the ASCOM Alpaca server in-process on an ephemeral port so the test
-//! holds the same `Arc<MockSerialPortFactory>` the SerialManager uses. That
-//! gives every scenario direct access to mock device state (set the reported
-//! mechanical position, voltage, motor_reverse, limit_detect flag) and to the
-//! wire-level `command_log` (assert which commands were sent and in what
-//! order) — both of which the feature files exercise.
+//! Runs the ASCOM Alpaca server in-process on an ephemeral port so the
+//! test holds the same `Arc<MockFalconTransportFactory>` the FalconManager
+//! drives. That gives every scenario direct access to mock device state
+//! (set the reported mechanical position, voltage, motor_reverse,
+//! limit_detect flag) and to the wire-level `command_log` (assert which
+//! commands were sent and in what order) — both of which the feature
+//! files exercise.
 //!
-//! Devices are driven via Alpaca HTTP through the in-process client, so the
-//! real serialisation / dispatch path is still exercised. The harness sets
-//! `config.server.auth = None`, so authentication is **not** covered here —
-//! cover that separately if it becomes a regression risk.
+//! Devices are driven via Alpaca HTTP through the in-process client, so
+//! the real serialisation / dispatch path is still exercised. The
+//! harness sets `config.server.auth = None`, so authentication is
+//! **not** covered here — cover that separately if it becomes a
+//! regression risk.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,7 +21,8 @@ use std::time::Duration;
 use ascom_alpaca::api::{Rotator, Switch, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
 use cucumber::World;
-use pa_falcon_rotator::{Config, MockSerialPortFactory, SerialPortFactory, ServerBuilder};
+use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
+use rusty_photon_shared_transport::TransportFactory;
 use tokio::task::JoinHandle;
 
 // Several `*_result` fields below are still wired up by Phase 3e step bodies
@@ -32,9 +35,9 @@ pub struct FalconRotatorWorld {
     pub server_handle: Option<JoinHandle<()>>,
     /// Bound address of the in-process server (ephemeral port).
     pub server_addr: Option<SocketAddr>,
-    /// Mock factory shared with the SerialManager — drives device state and
-    /// records the wire-level command log.
-    pub mock: Option<Arc<MockSerialPortFactory>>,
+    /// Mock factory shared with the FalconManager — drives device state
+    /// and records the wire-level command log.
+    pub mock: Option<Arc<MockFalconTransportFactory>>,
     /// Alpaca HTTP client for the Rotator device.
     pub rotator: Option<Arc<dyn Rotator>>,
     /// Alpaca HTTP client for the Status Switch device.
@@ -76,7 +79,7 @@ impl FalconRotatorWorld {
             .expect("status switch not acquired")
     }
 
-    pub fn mock(&self) -> &Arc<MockSerialPortFactory> {
+    pub fn mock(&self) -> &Arc<MockFalconTransportFactory> {
         self.mock.as_ref().expect("mock not initialised")
     }
 
@@ -95,8 +98,8 @@ impl FalconRotatorWorld {
         config.server.tls = None;
         config.server.auth = None;
 
-        let mock = Arc::new(MockSerialPortFactory::default());
-        let factory: Arc<dyn SerialPortFactory> = Arc::clone(&mock) as _;
+        let mock = Arc::new(MockFalconTransportFactory::default());
+        let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
 
         let bound = ServerBuilder::new()
             .with_config(config)

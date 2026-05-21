@@ -1,25 +1,29 @@
-//! Mock serial port for testing without real hardware.
+//! Mock Falcon transport for testing without real hardware.
 //!
-//! Feature-gated under `mock`. The mock implements a deterministic state
-//! machine that responds to every Falcon command from the design-doc
+//! Feature-gated under `mock`. Provides a
+//! [`rusty_photon_shared_transport::TransportFactory`] that hands out an
+//! in-memory [`rusty_photon_shared_transport::FrameTransport`] backed by a
+//! deterministic state machine. The state machine responds to every
+//! Falcon command from the design-doc
 //! [Command Table](../../../docs/services/falcon-rotator.md#command-table)
-//! and tracks `is_moving` / position / reverse / derotation state across
-//! commands. Tests inspect `command_log` to assert wire traffic.
+//! and tracks `is_moving` / position / reverse / derotation across
+//! commands; tests inspect `command_log` to assert wire traffic.
 //!
-//! `FF` (firmware reload) is deliberately rejected with an error sentinel —
-//! the design doc forbids the driver from ever issuing it, and the mock
-//! refuses to silently accept it so a regression in protocol routing fails
-//! loudly rather than passing because the mock was permissive.
+//! `FF` (firmware reload) is deliberately rejected with an error sentinel
+//! — the design doc forbids the driver from ever issuing it, and the mock
+//! refuses to silently accept it so a routing regression fails loudly.
+//!
+//! State persists across `open()` cycles to mirror real hardware: the
+//! Falcon's EEPROM keeps its `motor_reverse` setting and the mechanical
+//! position survives a power-cycle.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 use tokio::sync::Mutex;
 use tracing::debug;
-
-use crate::error::Result;
-use crate::io::{SerialPair, SerialPortFactory, SerialReader, SerialWriter};
 
 /// Steps per degree (vendor product page).
 const STEPS_PER_DEGREE: f64 = 86.6;
@@ -30,10 +34,9 @@ const DEFAULT_VOLTAGE_RAW: u32 = 800;
 /// Default firmware version reported by `FV`.
 const DEFAULT_FIRMWARE_VERSION: &str = "1.3";
 
-/// Sentinel returned for commands the driver should never issue (e.g. `FF`)
-/// or that the mock does not understand. The driver itself doesn't parse this
-/// — it is a "loud" response that surfaces as `InvalidResponse` and trips a
-/// failing test.
+/// Sentinel returned for commands the driver should never issue (e.g.
+/// `FF`) or that the mock does not understand. Surfaces as
+/// `InvalidResponse` in the driver layer and trips a failing test.
 const UNKNOWN_COMMAND_RESPONSE: &str = "ERR:UNKNOWN";
 
 /// Simulated Falcon Rotator device state.
@@ -47,7 +50,7 @@ struct MockDeviceState {
     motor_reverse: bool,
     /// `true` after `DR:<ms>` where `ms > 0`; cleared by `DR:0`.
     do_derotation: bool,
-    /// Mirrors `FA.limit_detect`. Test hooks can set this directly.
+    /// Mirrors `FA.limit_detect`. Test hooks set this directly.
     limit_detect: bool,
     /// Raw ADC count returned by `VS`.
     voltage_raw: u32,
@@ -99,21 +102,22 @@ fn normalise_deg(deg: f64) -> f64 {
     ((deg % 360.0) + 360.0) % 360.0
 }
 
-/// Shared state between mock reader and writer for one open `SerialPair`.
+/// In-memory Falcon state plus a queue of pending response frames.
 #[derive(Debug, Default)]
 struct MockState {
-    response_queue: Vec<String>,
+    response_queue: VecDeque<Vec<u8>>,
     device_state: MockDeviceState,
     command_log: Vec<String>,
 }
 
 impl MockState {
-    fn process_command(&mut self, raw: &str) {
+    fn process_command(&mut self, command_bytes: &[u8]) {
+        let raw = std::str::from_utf8(command_bytes).unwrap_or_default();
         let command = raw.trim_end_matches(['\r', '\n']).trim();
         if command.is_empty() {
             return;
         }
-        debug!("Mock processing command: '{}'", command);
+        debug!(command, "mock processing command");
         self.command_log.push(command.to_string());
 
         let response = match command {
@@ -143,8 +147,10 @@ impl MockState {
             _ => UNKNOWN_COMMAND_RESPONSE.to_string(),
         };
 
-        debug!("Mock queuing response: '{}'", response);
-        self.response_queue.push(response);
+        debug!(response, "mock queuing response");
+        let mut frame = response.into_bytes();
+        frame.push(b'\n');
+        self.response_queue.push_back(frame);
     }
 
     fn process_derotation(&mut self, command: &str) -> String {
@@ -168,8 +174,8 @@ impl MockState {
             Ok(deg) if deg.is_finite() => {
                 self.device_state.mech_position_deg = normalise_deg(deg);
                 self.device_state.is_moving = true;
-                // Echo the command literally so the driver's `validate_echo`
-                // sees what it sent regardless of the mock's precision quirks.
+                // Echo the command literally so the driver's echo
+                // validation sees what it sent regardless of mock precision.
                 command.to_string()
             }
             _ => UNKNOWN_COMMAND_RESPONSE.to_string(),
@@ -203,93 +209,58 @@ impl MockState {
             _ => UNKNOWN_COMMAND_RESPONSE.to_string(),
         }
     }
-
-    fn next_response(&mut self) -> Option<String> {
-        if self.response_queue.is_empty() {
-            None
-        } else {
-            Some(self.response_queue.remove(0))
-        }
-    }
 }
 
-/// Mock serial reader that pops queued responses produced by the writer.
-pub struct MockSerialReader {
+/// One open mock transport. Shares state with the factory so persistent
+/// device settings (mechanical position, motor_reverse, …) survive across
+/// reconnect cycles.
+struct MockFalconFrameTransport {
     state: Arc<Mutex<MockState>>,
 }
 
-impl MockSerialReader {
-    fn new(state: Arc<Mutex<MockState>>) -> Self {
-        Self { state }
-    }
-}
-
 #[async_trait]
-impl SerialReader for MockSerialReader {
-    async fn read_line(&mut self) -> Result<Option<String>> {
-        let mut state = self.state.lock().await;
-        match state.next_response() {
-            Some(resp) => {
-                debug!("Mock serial read: '{}'", resp);
-                Ok(Some(resp))
-            }
-            None => {
-                debug!("Mock serial read: NO RESPONSE QUEUED");
-                Ok(None)
-            }
-        }
-    }
-}
-
-/// Mock serial writer that drives the state machine and queues responses.
-pub struct MockSerialWriter {
-    state: Arc<Mutex<MockState>>,
-}
-
-impl MockSerialWriter {
-    fn new(state: Arc<Mutex<MockState>>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl SerialWriter for MockSerialWriter {
-    async fn write_message(&mut self, message: &str) -> Result<()> {
-        debug!("Mock serial write: {}", message);
-        let mut state = self.state.lock().await;
-        state.process_command(message);
+impl FrameTransport for MockFalconFrameTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.state.lock().await.process_command(bytes);
         Ok(())
     }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        let frame = self.state.lock().await.response_queue.pop_front();
+        match frame {
+            Some(frame) => {
+                buf.clear();
+                buf.extend_from_slice(&frame);
+                Ok(())
+            }
+            None => Err(TransportError::Eof),
+        }
+    }
 }
 
-/// Mock serial port factory.
+/// Mock factory for the Falcon serial transport.
 ///
-/// Maintains persistent state across multiple `open` cycles so reconnect
-/// scenarios start from where the previous session left off — mirroring real
-/// hardware where the Falcon's EEPROM keeps its `motor_reverse` setting and
-/// the mechanical position survives a power cycle.
+/// Maintains persistent device state across multiple open/close cycles so
+/// reconnect scenarios start from where the previous session left off,
+/// matching real hardware where the Falcon's EEPROM keeps its
+/// `motor_reverse` setting and the mechanical position survives a power
+/// cycle.
 #[derive(Clone, Debug, Default)]
-pub struct MockSerialPortFactory {
+pub struct MockFalconTransportFactory {
     state: Arc<Mutex<MockState>>,
 }
 
 #[async_trait]
-impl SerialPortFactory for MockSerialPortFactory {
-    async fn open(&self, port: &str, baud_rate: u32, _timeout: Duration) -> Result<SerialPair> {
-        debug!("Mock serial port opened: {} at {} baud", port, baud_rate);
-        let state = Arc::clone(&self.state);
-        Ok(SerialPair {
-            reader: Box::new(MockSerialReader::new(Arc::clone(&state))),
-            writer: Box::new(MockSerialWriter::new(state)),
-        })
-    }
-
-    async fn port_exists(&self, _port: &str) -> bool {
-        true
+impl TransportFactory for MockFalconTransportFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        debug!("mock Falcon transport opened");
+        Ok(Box::new(MockFalconFrameTransport {
+            state: Arc::clone(&self.state),
+        }))
     }
 }
 
-impl MockSerialPortFactory {
+impl MockFalconTransportFactory {
     /// Seed the mock's mechanical position before opening a connection.
     pub async fn set_mech_position_deg(&self, value: f64) {
         self.state.lock().await.device_state.mech_position_deg = normalise_deg(value);
@@ -334,21 +305,15 @@ impl MockSerialPortFactory {
 mod tests {
     use super::*;
 
-    async fn fresh_pair() -> (MockSerialWriter, MockSerialReader) {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        (
-            MockSerialWriter::new(Arc::clone(&state)),
-            MockSerialReader::new(state),
-        )
+    async fn open(factory: &MockFalconTransportFactory) -> Box<dyn FrameTransport> {
+        factory.open().await.unwrap()
     }
 
-    async fn round_trip(
-        writer: &mut MockSerialWriter,
-        reader: &mut MockSerialReader,
-        cmd: &str,
-    ) -> String {
-        writer.write_message(cmd).await.unwrap();
-        reader.read_line().await.unwrap().unwrap()
+    async fn round_trip(transport: &mut Box<dyn FrameTransport>, command: &[u8]) -> Vec<u8> {
+        transport.send_frame(command).await.unwrap();
+        let mut buf = Vec::new();
+        transport.recv_frame(&mut buf).await.unwrap();
+        buf
     }
 
     // ---- Helpers ---------------------------------------------------------
@@ -373,239 +338,257 @@ mod tests {
 
     #[tokio::test]
     async fn ping_returns_fr_ok() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "F#").await, "FR_OK");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"F#\n").await;
+        assert_eq!(&resp, b"FR_OK\n");
     }
 
     #[tokio::test]
-    async fn firmware_version_returns_fv_one_three() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "FV").await, "FV:1.3");
+    async fn firmware_version_returns_default() {
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"FV\n").await;
+        assert_eq!(&resp, b"FV:1.3\n");
     }
 
     #[tokio::test]
     async fn full_status_default_shape() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "FA").await,
-            "FR_OK:0:0.00:0:0:0:0"
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"FA\n").await;
+        assert_eq!(&resp, b"FR_OK:0:0.00:0:0:0:0\n");
     }
 
     #[tokio::test]
     async fn move_deg_updates_position_and_flags_is_moving() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        let echo = round_trip(&mut writer, &mut reader, "MD:50.00").await;
-        assert_eq!(echo, "MD:50.00");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let echo = round_trip(&mut t, b"MD:50.00\n").await;
+        assert_eq!(&echo, b"MD:50.00\n");
 
         // First FA after the move sees is_moving=1
-        let first = round_trip(&mut writer, &mut reader, "FA").await;
+        let first = round_trip(&mut t, b"FA\n").await;
+        let first_text = std::str::from_utf8(&first).unwrap();
         assert!(
-            first.contains(":1:0:0:0"),
-            "expected moving flag set: {first}"
+            first_text.contains(":1:0:0:0"),
+            "expected moving flag set: {first_text}"
         );
         assert!(
-            first.contains(":50.00:"),
-            "expected position 50.00: {first}"
+            first_text.contains(":50.00:"),
+            "expected position 50.00: {first_text}"
         );
 
         // Second FA returns is_moving=0
-        let second = round_trip(&mut writer, &mut reader, "FA").await;
+        let second = round_trip(&mut t, b"FA\n").await;
+        let second_text = std::str::from_utf8(&second).unwrap();
         assert!(
-            second.contains(":0:0:0:0"),
-            "expected moving flag cleared on second poll: {second}"
+            second_text.contains(":0:0:0:0"),
+            "expected moving flag cleared on second poll: {second_text}"
         );
     }
 
     #[tokio::test]
     async fn move_steps_converts_via_steps_per_degree() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        // 8660 steps / 86.6 = 100°
-        let echo = round_trip(&mut writer, &mut reader, "MS:8660").await;
-        assert_eq!(echo, "MS:8660");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let echo = round_trip(&mut t, b"MS:8660\n").await;
+        assert_eq!(&echo, b"MS:8660\n");
 
         // Drain the is_moving=1 read first.
-        let _ = round_trip(&mut writer, &mut reader, "FA").await;
+        let _ = round_trip(&mut t, b"FA\n").await;
 
-        let pos = round_trip(&mut writer, &mut reader, "FD").await;
-        assert_eq!(pos, "FD:100.00");
+        let pos = round_trip(&mut t, b"FD\n").await;
+        assert_eq!(&pos, b"FD:100.00\n");
     }
 
     #[tokio::test]
     async fn halt_clears_is_moving_and_echoes_fh_one() {
-        let (mut writer, mut reader) = fresh_pair().await;
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
         // Kick a move so is_moving is set.
-        let _ = round_trip(&mut writer, &mut reader, "MD:90.00").await;
+        let _ = round_trip(&mut t, b"MD:90.00\n").await;
 
-        let echo = round_trip(&mut writer, &mut reader, "FH").await;
-        assert_eq!(echo, "FH:1");
+        let echo = round_trip(&mut t, b"FH\n").await;
+        assert_eq!(&echo, b"FH:1\n");
 
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
+        let status = round_trip(&mut t, b"FA\n").await;
+        let status_text = std::str::from_utf8(&status).unwrap();
         assert!(
-            status.contains(":0:0:0:0"),
-            "expected is_moving cleared after halt: {status}"
+            status_text.contains(":0:0:0:0"),
+            "expected is_moving cleared after halt: {status_text}"
         );
     }
 
     #[tokio::test]
     async fn is_running_reports_state() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "FR").await, "FR:0");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        assert_eq!(&round_trip(&mut t, b"FR\n").await, b"FR:0\n");
 
-        let _ = round_trip(&mut writer, &mut reader, "MD:10.00").await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "FR").await, "FR:1");
+        let _ = round_trip(&mut t, b"MD:10.00\n").await;
+        assert_eq!(&round_trip(&mut t, b"FR\n").await, b"FR:1\n");
     }
 
     #[tokio::test]
     async fn set_reverse_persists_state() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        let echo = round_trip(&mut writer, &mut reader, "FN:1").await;
-        assert_eq!(echo, "FN:1");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        assert_eq!(&round_trip(&mut t, b"FN:1\n").await, b"FN:1\n");
 
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
-        assert!(status.ends_with(":1"), "expected motor_reverse=1: {status}");
+        let status = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&status).unwrap();
+        assert!(
+            text.trim().ends_with(":1"),
+            "expected motor_reverse=1: {text}"
+        );
 
-        let echo = round_trip(&mut writer, &mut reader, "FN:0").await;
-        assert_eq!(echo, "FN:0");
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
-        assert!(status.ends_with(":0"), "expected motor_reverse=0: {status}");
+        assert_eq!(&round_trip(&mut t, b"FN:0\n").await, b"FN:0\n");
+        let status = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&status).unwrap();
+        assert!(
+            text.trim().ends_with(":0"),
+            "expected motor_reverse=0: {text}"
+        );
     }
 
     #[tokio::test]
     async fn derotation_off_then_on_toggles_flag() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "DR:0").await, "DR:0");
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        assert_eq!(&round_trip(&mut t, b"DR:0\n").await, b"DR:0\n");
+        let status = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&status).unwrap();
         assert!(
-            status.contains(":0:0:0"),
-            "expected derotation cleared: {status}"
+            text.contains(":0:0:0"),
+            "expected derotation cleared: {text}"
         );
 
-        assert_eq!(round_trip(&mut writer, &mut reader, "DR:25").await, "DR:25");
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
+        assert_eq!(&round_trip(&mut t, b"DR:25\n").await, b"DR:25\n");
+        let status = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&status).unwrap();
         // Field order: is_moving:limit:derot:reverse → the derot bit is third.
         assert!(
-            status.ends_with(":0:0:1:0"),
-            "expected derotation set: {status}"
+            text.trim().ends_with(":0:0:1:0"),
+            "expected derotation set: {text}"
         );
     }
 
     #[tokio::test]
     async fn voltage_returns_default_raw() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(round_trip(&mut writer, &mut reader, "VS").await, "VS:800");
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        assert_eq!(&round_trip(&mut t, b"VS\n").await, b"VS:800\n");
     }
 
     #[tokio::test]
     async fn position_deg_and_steps_track_each_other() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        let _ = round_trip(&mut writer, &mut reader, "MD:50.00").await;
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let _ = round_trip(&mut t, b"MD:50.00\n").await;
         // Drain is_moving=1.
-        let _ = round_trip(&mut writer, &mut reader, "FA").await;
+        let _ = round_trip(&mut t, b"FA\n").await;
 
-        let deg = round_trip(&mut writer, &mut reader, "FD").await;
-        let steps = round_trip(&mut writer, &mut reader, "FP").await;
-        assert_eq!(deg, "FD:50.00");
+        let deg = round_trip(&mut t, b"FD\n").await;
+        let steps = round_trip(&mut t, b"FP\n").await;
+        assert_eq!(&deg, b"FD:50.00\n");
         // 50 * 86.6 = 4330
-        assert_eq!(steps, "FP:4330");
+        assert_eq!(&steps, b"FP:4330\n");
     }
 
     #[tokio::test]
     async fn limit_detect_visible_when_set() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        state.lock().await.device_state.limit_detect = true;
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(state);
+        let factory = MockFalconTransportFactory::default();
+        factory.set_limit_detect(true).await;
+        let mut t = open(&factory).await;
 
-        let status = round_trip(&mut writer, &mut reader, "FA").await;
+        let status = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&status).unwrap();
         // Field order after FR_OK: steps:deg:moving:limit:derot:reverse
-        assert!(
-            status.contains(":0:1:0:0"),
-            "expected limit bit set: {status}"
-        );
+        assert!(text.contains(":0:1:0:0"), "expected limit bit set: {text}");
     }
 
     // ---- Defensive paths -------------------------------------------------
 
     #[tokio::test]
     async fn ff_returns_unknown_sentinel() {
-        let (mut writer, mut reader) = fresh_pair().await;
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
         // The design doc bans the driver from ever issuing FF. The mock
         // refuses to silently accept it so a routing regression fails loudly.
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "FF").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let resp = round_trip(&mut t, b"FF\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn unknown_command_returns_sentinel() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "XX").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"XX\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn malformed_move_deg_returns_sentinel() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "MD:not_a_float").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"MD:not_a_float\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn malformed_derotation_rate_returns_sentinel() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "DR:not_a_number").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"DR:not_a_number\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn malformed_move_steps_returns_sentinel() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "MS:not_a_number").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"MS:not_a_number\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn malformed_reverse_value_returns_sentinel() {
-        // `FN:` accepts only "0" or "1" — anything else falls through to the
-        // unknown-command sentinel so a routing regression fails loudly.
-        let (mut writer, mut reader) = fresh_pair().await;
-        assert_eq!(
-            round_trip(&mut writer, &mut reader, "FN:maybe").await,
-            UNKNOWN_COMMAND_RESPONSE
-        );
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"FN:maybe\n").await;
+        let text = std::str::from_utf8(&resp).unwrap().trim();
+        assert_eq!(text, UNKNOWN_COMMAND_RESPONSE);
     }
 
     #[tokio::test]
     async fn writer_trims_trailing_newline_from_caller() {
-        // The real `TokioSerialWriter` appends `\n`. The mock writer should
-        // recognise the command regardless of trailing LF/CR so tests that
-        // bypass the protocol layer and write raw bytes still work.
-        let (mut writer, mut reader) = fresh_pair().await;
-        writer.write_message("F#\r\n").await.unwrap();
-        assert_eq!(reader.read_line().await.unwrap().unwrap(), "FR_OK");
+        // `MockFalconFrameTransport::send_frame` writes verbatim, but
+        // `process_command` trims trailing CR/LF, so the mock should
+        // recognise the command regardless of trailing LF/CR/CRLF.
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"F#\r\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"FR_OK\n");
     }
 
     #[tokio::test]
     async fn command_log_records_every_command_in_order() {
-        let state = Arc::new(Mutex::new(MockState::default()));
-        let mut writer = MockSerialWriter::new(Arc::clone(&state));
-        let mut reader = MockSerialReader::new(Arc::clone(&state));
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
 
-        let _ = round_trip(&mut writer, &mut reader, "F#").await;
-        let _ = round_trip(&mut writer, &mut reader, "FA").await;
-        let _ = round_trip(&mut writer, &mut reader, "MD:45.00").await;
+        let _ = round_trip(&mut t, b"F#\n").await;
+        let _ = round_trip(&mut t, b"FA\n").await;
+        let _ = round_trip(&mut t, b"MD:45.00\n").await;
 
-        let log = state.lock().await.command_log.clone();
+        let log = factory.command_log().await;
         assert_eq!(
             log,
             vec!["F#".to_string(), "FA".to_string(), "MD:45.00".to_string()]
@@ -613,55 +596,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn factory_open_returns_working_pair() {
-        let factory = MockSerialPortFactory::default();
-        let mut pair = factory
-            .open("/dev/mock", 9600, Duration::from_secs(1))
-            .await
-            .unwrap();
-
-        pair.writer.write_message("F#").await.unwrap();
-        let resp = pair.reader.read_line().await.unwrap().unwrap();
-        assert_eq!(resp, "FR_OK");
-    }
-
-    #[tokio::test]
     async fn factory_state_persists_across_reopens() {
-        let factory = MockSerialPortFactory::default();
+        let factory = MockFalconTransportFactory::default();
 
-        // First "session": set reverse=1
-        let mut pair = factory
-            .open("/dev/mock", 9600, Duration::from_secs(1))
-            .await
-            .unwrap();
-        pair.writer.write_message("FN:1").await.unwrap();
-        let _ = pair.reader.read_line().await.unwrap();
-        drop(pair);
+        {
+            let mut t = open(&factory).await;
+            let _ = round_trip(&mut t, b"FN:1\n").await;
+        }
 
-        // Second "session": FA should still report reverse=1
-        let mut pair = factory
-            .open("/dev/mock", 9600, Duration::from_secs(1))
-            .await
-            .unwrap();
-        pair.writer.write_message("FA").await.unwrap();
-        let resp = pair.reader.read_line().await.unwrap().unwrap();
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&resp).unwrap();
         assert!(
-            resp.ends_with(":1"),
-            "expected motor_reverse to persist across reopen: {resp}"
+            text.trim().ends_with(":1"),
+            "expected motor_reverse to persist across reopen: {text}"
         );
     }
 
     #[tokio::test]
-    async fn factory_port_exists_always_true() {
-        let factory = MockSerialPortFactory::default();
-        assert!(factory.port_exists("/dev/whatever").await);
+    async fn empty_queue_returns_eof() {
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let mut buf = Vec::new();
+        let err = t.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Eof));
     }
 
     #[tokio::test]
     async fn empty_command_is_ignored() {
-        let (mut writer, mut reader) = fresh_pair().await;
-        writer.write_message("\n").await.unwrap();
-        // No response queued for an empty command.
-        assert!(reader.read_line().await.unwrap().is_none());
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"\n").await.unwrap();
+        // No response queued for an empty command — recv yields EOF.
+        let mut buf = Vec::new();
+        let err = t.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Eof));
+    }
+
+    #[tokio::test]
+    async fn clear_command_log_resets_to_empty() {
+        let factory = MockFalconTransportFactory::default();
+        let mut t = open(&factory).await;
+        let _ = round_trip(&mut t, b"F#\n").await;
+        assert_eq!(factory.command_log().await.len(), 1);
+        factory.clear_command_log().await;
+        assert!(factory.command_log().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_voltage_raw_round_trip_through_vs() {
+        let factory = MockFalconTransportFactory::default();
+        factory.set_voltage_raw(812).await;
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"VS\n").await;
+        assert_eq!(&resp, b"VS:812\n");
+    }
+
+    #[tokio::test]
+    async fn set_mech_position_deg_seeds_full_status() {
+        let factory = MockFalconTransportFactory::default();
+        factory.set_mech_position_deg(123.45).await;
+        let mut t = open(&factory).await;
+        let resp = round_trip(&mut t, b"FA\n").await;
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.contains(":123.45:"), "got: {text}");
     }
 }
