@@ -15,7 +15,7 @@
 
 use std::str::Utf8Error;
 
-use rusty_photon_shared_transport::{Codec, SessionError};
+use rusty_photon_shared_transport::{Codec, SessionError, TransportError};
 use thiserror::Error;
 
 use crate::error::PpbaError;
@@ -42,6 +42,13 @@ pub enum PpbaResponse {
 /// in handshake / poll-loop contexts so `?` works without losing
 /// information that the device-layer `From<SessionError<…>> for PpbaError`
 /// then re-expands into the right `PpbaError` variant.
+///
+/// `Transport` carries the underlying [`TransportError`] structurally
+/// rather than as a string so a transport-level failure surfaced
+/// *through* the handshake hook (which returns `Result<_, PpbaCodecError>`)
+/// can still be classified as `Open` / `Io` / `Timeout` / `Eof` /
+/// `Framing` by the device layer instead of collapsing to a generic
+/// `Communication` error.
 #[derive(Debug, Error)]
 pub enum PpbaCodecError {
     #[error("invalid UTF-8 in response: {0}")]
@@ -50,8 +57,8 @@ pub enum PpbaCodecError {
     InvalidResponse(String),
     #[error("parse error: {0}")]
     Parse(String),
-    #[error("transport error: {0}")]
-    Transport(String),
+    #[error(transparent)]
+    Transport(TransportError),
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
 }
@@ -69,7 +76,7 @@ impl PpbaCodecError {
 impl From<SessionError<PpbaCodecError>> for PpbaCodecError {
     fn from(err: SessionError<PpbaCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => Self::Transport(t.to_string()),
+            SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
             SessionError::SkipExhausted(n) => Self::SkipExhausted(n),
         }
@@ -135,21 +142,13 @@ impl Codec for PpbaCodec {
 
 impl From<SessionError<PpbaCodecError>> for PpbaError {
     fn from(err: SessionError<PpbaCodecError>) -> Self {
-        use rusty_photon_shared_transport::TransportError;
         match err {
-            SessionError::Transport(TransportError::Open(e)) => {
-                PpbaError::ConnectionFailed(e.to_string())
-            }
-            SessionError::Transport(TransportError::Io(e)) => PpbaError::Io(e),
-            SessionError::Transport(TransportError::Timeout(d)) => {
-                PpbaError::Timeout(format!("transport timeout after {d:?}"))
-            }
-            SessionError::Transport(TransportError::Eof) => {
-                PpbaError::Communication("Connection closed".to_string())
-            }
-            SessionError::Transport(TransportError::Framing(s)) => {
-                PpbaError::Communication(format!("framing: {s}"))
-            }
+            // Both arms route through `From<TransportError> for PpbaError`
+            // in error.rs so a timeout that surfaces *through* the
+            // handshake hook (codec arm) gets the same classification as
+            // one that surfaces on a steady-state request (transport arm).
+            SessionError::Transport(t) => t.into(),
+            SessionError::Codec(PpbaCodecError::Transport(t)) => t.into(),
             SessionError::Codec(PpbaCodecError::InvalidResponse(s)) => {
                 PpbaError::InvalidResponse(s)
             }
@@ -157,7 +156,6 @@ impl From<SessionError<PpbaCodecError>> for PpbaError {
             SessionError::Codec(c @ PpbaCodecError::Utf8(_)) => {
                 PpbaError::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(PpbaCodecError::Transport(s)) => PpbaError::Communication(s),
             SessionError::Codec(PpbaCodecError::SkipExhausted(n)) => PpbaError::Communication(
                 format!("device returned non-matching response ({n} frame(s) read)"),
             ),
@@ -311,10 +309,16 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn session_to_codec_error_transport_becomes_transport_string() {
+    fn session_to_codec_error_transport_preserves_inner_variant() {
+        // The inner TransportError must survive the flatten so the
+        // device-layer mapping can classify by variant rather than
+        // collapse to a stringy Communication error.
         let err: PpbaCodecError =
             SessionError::<PpbaCodecError>::Transport(TransportError::Eof).into();
-        assert!(matches!(err, PpbaCodecError::Transport(_)));
+        assert!(matches!(
+            err,
+            PpbaCodecError::Transport(TransportError::Eof)
+        ));
     }
 
     #[test]
@@ -405,13 +409,42 @@ mod tests {
     }
 
     #[test]
-    fn session_error_codec_transport_maps_to_communication() {
-        let err: SessionError<PpbaCodecError> =
-            SessionError::Codec(PpbaCodecError::Transport("wire died".to_string()));
+    fn session_error_codec_transport_timeout_routes_to_timeout() {
+        // A transport timeout surfaced *through* the handshake hook
+        // arrives at the device layer as
+        // SessionError::Codec(PpbaCodecError::Transport(Timeout(...))).
+        // It must map to PpbaError::Timeout — same classification a
+        // steady-state timeout (SessionError::Transport(Timeout(...)))
+        // would receive — so the ASCOM client doesn't see a generic
+        // Communication error for connect-time timeouts.
+        let err: SessionError<PpbaCodecError> = SessionError::Codec(PpbaCodecError::Transport(
+            TransportError::Timeout(std::time::Duration::from_secs(2)),
+        ));
         match PpbaError::from(err) {
-            PpbaError::Communication(s) => assert_eq!(s, "wire died"),
-            other => panic!("expected Communication, got {other:?}"),
+            PpbaError::Timeout(s) => assert!(s.contains('2')),
+            other => panic!("expected Timeout, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn session_error_codec_transport_open_routes_to_connection_failed() {
+        let err: SessionError<PpbaCodecError> = SessionError::Codec(PpbaCodecError::Transport(
+            TransportError::Open(std::io::Error::other("device busy")),
+        ));
+        match PpbaError::from(err) {
+            PpbaError::ConnectionFailed(s) => assert!(s.contains("device busy")),
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_transport_eof_routes_to_communication() {
+        let err: SessionError<PpbaCodecError> =
+            SessionError::Codec(PpbaCodecError::Transport(TransportError::Eof));
+        assert!(matches!(
+            PpbaError::from(err),
+            PpbaError::Communication(s) if s.contains("Connection closed")
+        ));
     }
 
     #[test]
