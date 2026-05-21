@@ -51,7 +51,11 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> Result<BoundServer, std::io::Error> {
-        let config = self.config.expect("ServerBuilder: config is required");
+        let config = self.config.ok_or_else(|| {
+            std::io::Error::other(
+                "ServerBuilder::build: config is required \u{2014} call .with_config(...) first",
+            )
+        })?;
         config
             .validate()
             .map_err(|e| std::io::Error::other(e.to_string()))?;

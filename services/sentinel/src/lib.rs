@@ -265,7 +265,7 @@ impl Sentinel {
             let dashboard_tls = self.dashboard_tls;
             let dashboard_auth = self.dashboard_auth;
 
-            let addr = listener.local_addr().unwrap();
+            let addr = listener.local_addr()?;
             let scheme = if dashboard_tls.is_some() {
                 "https"
             } else {

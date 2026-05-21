@@ -49,7 +49,12 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> Result<BoundServer> {
-        let config = self.config.expect("config is required");
+        let config = self.config.ok_or_else(|| {
+            crate::error::RpError::Config(
+                "ServerBuilder::build: config is required \u{2014} call .with_config(...) first"
+                    .to_string(),
+            )
+        })?;
         let bind_addr = format!("{}:{}", config.server.bind_address, config.server.port);
 
         debug!("initializing equipment registry");

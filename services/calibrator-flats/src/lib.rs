@@ -45,7 +45,12 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> Result<BoundServer> {
-        let plan = self.plan.expect("flat plan is required");
+        let plan = self.plan.ok_or_else(|| {
+            crate::error::CalibratorFlatsError::Config(
+                "ServerBuilder::build: flat plan is required \u{2014} call .with_plan(...) first"
+                    .to_string(),
+            )
+        })?;
         let bind_addr = format!("{}:{}", self.bind_address, self.port);
 
         let router = routes::build_router(plan);

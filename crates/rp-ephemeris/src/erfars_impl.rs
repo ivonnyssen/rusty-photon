@@ -36,10 +36,16 @@ pub(crate) struct TimeJds {
 }
 
 /// Convert a `DateTime<Utc>` to the ERFA JD-pair time scales we need.
+///
 /// chrono validates calendar inputs, so `Dtf2d` should never fail
-/// here for any value the caller could construct; if it does, the
-/// leapsecond table is out of date and we surface that as a panic so
-/// the operator notices.
+/// here for any value the caller could construct on a sane host
+/// clock. If it does — typically the operator's clock is set to a
+/// year ERFA's leapsecond table doesn't cover — we log
+/// `tracing::error!` and return a NaN-filled [`TimeJds`]. NaN flows
+/// through the downstream float math and surfaces in the dashboard
+/// as `NaN` values (or in the alpaca client as a NaN coord), which
+/// is preferable to a service crash. Operators should treat the
+/// logged error as a clock-config issue.
 pub(crate) fn time_jds(time: DateTime<Utc>) -> TimeJds {
     let year = time.year();
     let month = time.month() as i32;
@@ -48,12 +54,47 @@ pub(crate) fn time_jds(time: DateTime<Utc>) -> TimeJds {
     let mm = time.minute() as i32;
     let seconds = time.second() as f64 + time.nanosecond() as f64 * 1e-9;
 
-    let (utc1, utc2) = Dtf2d(true, year, month, day, hh, mm, seconds)
-        .expect("chrono-validated DateTime<Utc> rejected by ERFA Dtf2d")
-        .0;
-    let (tai1, tai2) = Utctai(utc1, utc2)
-        .expect("ERFA Utctai failed (leapsecond table out of range?)")
-        .0;
+    let (utc1, utc2) = match Dtf2d(true, year, month, day, hh, mm, seconds) {
+        Ok((pair, _status)) => pair,
+        Err(e) => {
+            tracing::error!(
+                ?time,
+                error = ?e,
+                "ERFA Dtf2d rejected a chrono-validated DateTime<Utc>; host clock is \
+                 outside ERFA's calendar range. Returning NaN time JDs; downstream \
+                 computations will surface NaN until the host clock is corrected."
+            );
+            return TimeJds {
+                utc1: f64::NAN,
+                utc2: f64::NAN,
+                tt1: f64::NAN,
+                tt2: f64::NAN,
+                ut11: f64::NAN,
+                ut12: f64::NAN,
+            };
+        }
+    };
+    let (tai1, tai2) = match Utctai(utc1, utc2) {
+        Ok((pair, _status)) => pair,
+        Err(e) => {
+            tracing::error!(
+                ?time,
+                error = ?e,
+                "ERFA Utctai failed (leapsecond table likely out of range for this \
+                 host clock). Returning NaN time JDs; downstream computations will \
+                 surface NaN until the host clock is corrected or the leapsecond \
+                 table refreshed."
+            );
+            return TimeJds {
+                utc1: f64::NAN,
+                utc2: f64::NAN,
+                tt1: f64::NAN,
+                tt2: f64::NAN,
+                ut11: f64::NAN,
+                ut12: f64::NAN,
+            };
+        }
+    };
     let (tt1, tt2) = Taitt(tai1, tai2);
     // ΔUT1 = 0; UT1 ≈ UTC. UTC pair doubles as the UT1 pair.
     TimeJds {
@@ -109,8 +150,31 @@ pub(crate) fn alt_az_at(
 /// Geocentric astrometric Sun coordinates from `Epv00`. The Sun
 /// direction from Earth is the negative of the Earth's heliocentric
 /// position (BCRS ≈ ICRS to milliarcsec).
+///
+/// Returns a NaN-filled [`IcrsCoord`] on ERFA failure (e.g. host
+/// clock outside `Epv00`'s validity range, typically before 1900 or
+/// after 2100). Logs `tracing::error!` at the failure site so the
+/// operator sees the misconfiguration; the NaN flows through the
+/// subsequent alt/az computation and surfaces as NaN coords in the
+/// dashboard rather than a service crash.
 pub(crate) fn sun_icrs(jds: &TimeJds) -> IcrsCoord {
-    let ((pvh, _pvb), _warn) = Epv00(jds.tt1, jds.tt2).expect("ERFA Epv00 out of range");
+    let ((pvh, _pvb), _warn) = match Epv00(jds.tt1, jds.tt2) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(
+                tt1 = jds.tt1,
+                tt2 = jds.tt2,
+                error = ?e,
+                "ERFA Epv00 failed (host clock likely outside the ephemeris validity \
+                 window). Returning NaN sun coordinates; downstream computations will \
+                 surface NaN until the host clock is corrected."
+            );
+            return IcrsCoord {
+                ra_hours: f64::NAN,
+                dec_degrees: f64::NAN,
+            };
+        }
+    };
     let x = -pvh[0];
     let y = -pvh[1];
     let z = -pvh[2];
