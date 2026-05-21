@@ -80,6 +80,17 @@ impl MockState {
     pub async fn light_on(&self) -> bool {
         self.inner.lock().await.light_on
     }
+
+    /// Read the current cover angle as observed by the simulator.
+    /// 0 = open, 270 = closed, anything in between = mid-motion.
+    pub async fn cover_angle(&self) -> u16 {
+        self.inner.lock().await.cover_angle
+    }
+
+    /// Read the current motor-running flag as observed by the simulator.
+    pub async fn motor_running(&self) -> bool {
+        self.inner.lock().await.motor_running
+    }
 }
 
 /// Factory producing in-process `FrameTransport`s backed by a shared [`MockState`].

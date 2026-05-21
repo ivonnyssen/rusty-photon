@@ -77,24 +77,43 @@ impl Fp2World {
         self.manager.as_ref().expect("world.manager not built")
     }
 
-    /// Drive one poll cycle by issuing the same read commands the
-    /// while-open task would, but synchronously, so scenarios that
-    /// depend on cached state can `Then` directly without sleeping.
+    /// Drive one poll cycle synchronously, mirroring what the while-open
+    /// task would do, so scenarios that depend on cached state can `Then`
+    /// directly without sleeping.
+    ///
+    /// This **must** update every field that `device::derive_cover_state`
+    /// and `derive_calibrator_state` read — without it scenarios pass
+    /// only when tokio's `interval(d)` happens to fire its immediate
+    /// first tick between this call and the assertion (a race that holds
+    /// inconsistently across platforms; see PR #283 review).
     pub async fn refresh_cache(&self) {
         let snap = self.manager().snapshot();
         let factory = self.factory();
         let state = factory.state();
-        // Read the simulator state directly and update the cached snapshot.
+        let motor_running = state.motor_running().await;
+        let cover_angle = state.cover_angle().await;
+        let light_on = state.light_on().await;
+        let brightness = state.brightness().await;
+
+        // Mirror the mock's `[GOPS]` mapping: 0 angle → 1 (open),
+        // 270 → 0 (closed), anything else → 255 (in-between). The mock's
+        // SMOV completes moves instantly, so motor_running is false here
+        // even right after open_cover/close_cover.
+        let cover_raw = if motor_running {
+            255
+        } else if cover_angle == 0 {
+            1
+        } else if cover_angle == 270 {
+            0
+        } else {
+            255
+        };
+
         let mut s = snap.write().await;
-        // Use the simulator's observable accessors plus a direct lock read
-        // for the cover angle — the device itself doesn't expose this.
-        s.light_on = Some(state.light_on().await);
-        s.brightness = Some(state.brightness().await);
-        // For motor/cover, fall through to the simulator's command path
-        // (it's already exercised by unit tests; here we just hard-code
-        // the post-move steady state since our mock completes moves
-        // instantly).
-        s.motor_running = Some(false);
+        s.motor_running = Some(motor_running);
+        s.cover_raw = Some(cover_raw);
+        s.light_on = Some(light_on);
+        s.brightness = Some(brightness);
     }
 }
 

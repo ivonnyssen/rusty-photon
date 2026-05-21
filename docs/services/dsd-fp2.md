@@ -131,12 +131,15 @@ The FP2 uses **bracketed ASCII** at **115200 8N1**.
   No terminator is added.
 - **Response framing**: `(VALUE)` — opening `(`, ASCII payload, closing `)`.
   Read until `)`. Timeout: 3 s per request.
-- **Flush** the serial buffers before each command (the INDI reference
-  driver does this with `tcflush(TCIOFLUSH)`; we replicate by clearing
-  any pending bytes before write).
-- Commands are serialised: only one outstanding `(send, recv)` pair at a
-  time, gated by a `command_lock` mutex in `SerialManager`. This matches
-  the `qhy-focuser` and `ppba-driver` pattern.
+- **Frame ordering**: every `Session::request` and every poll-task
+  request goes through the per-`Connection<Fp2Codec>` request lock in
+  `rusty-photon-shared-transport` (the `Connection.transport` Mutex).
+  Encode → `send_frame` → `recv_frame` → decode runs end-to-end while the
+  lock is held, so foreground writes and the while-open poll cannot
+  interleave bytes on the wire. The driver does not pre-drain the read
+  buffer — `SerialFrameTransport` consumes one terminator-delimited
+  frame per `recv_frame` call, and any leading bytes before the next
+  `(` are tolerated by `RawResponse::from_frame`.
 
 ### Command Set
 
@@ -307,7 +310,7 @@ are converted to `ASCOMError` for protocol boundaries:
 | Internal error               | ASCOM error code                       |
 |------------------------------|-----------------------------------------|
 | `NotConnected`               | `NOT_CONNECTED`                        |
-| `InvalidBrightness(u32)`     | `INVALID_VALUE`                        |
+| `InvalidValue(String)`       | `INVALID_VALUE`                        |
 | `Timeout(_)`                 | `UNSPECIFIED` with `Operation timed out` message |
 | `Communication(_)`           | `UNSPECIFIED`                          |
 | `MalformedResponse(_)`       | `UNSPECIFIED`                          |
@@ -375,17 +378,23 @@ Three feature files cover the MVP behaviour:
 - `calibrator_control.feature` — turn on at brightness, turn off,
   reject out-of-range brightness, state after disconnect.
 
-All scenarios run against the in-process `MockSerialPortFactory` (no
-subprocess spawn, no `bdd_infra::bdd_main!` macro required — same approach
-as `qhy-focuser`'s in-process BDD).
+All scenarios run **in-process** against `MockTransportFactory`: the
+`World` builds the device, manager, and factory directly; `Session`
+mediates each wire call through `MockFrameTransport`. No subprocess is
+spawned, so `bdd_infra::bdd_main!` is not required. (`qhy-focuser`'s
+BDD suite *does* spawn its binary via that macro — the two suites
+differ on this axis.)
 
 ### Unit Tests
 
 - `protocol.rs`: encode/decode every command and response variant;
   malformed input handling (missing `)`, junk before `(`, empty body).
-- `serial_manager.rs`: state-derivation rules (every cell in the
-  CoverState/CalibratorState tables above), refcount edge cases (zero
-  disconnect, failed handshake rollback).
+- `device.rs`: `derive_cover_state` / `derive_calibrator_state`
+  state-derivation tables (every cell in the CoverState/CalibratorState
+  tables above).
+- `manager.rs`: brightness validation and the `SessionError` →
+  `DsdFp2Error` flattener; the shared-transport crate's own integration
+  suite covers refcount + handshake-rollback edge cases.
 - `error.rs`: `to_ascom_error()` round-trips per the table in
   [Error Handling](#error-handling).
 

@@ -1,8 +1,10 @@
 //! BDD entry point for the dsd-fp2 driver.
 //!
-//! Scenarios run in-process against the mock `TransportFactory`; no
-//! subprocess spawn, so `bdd_infra::bdd_main!` is unnecessary (same
-//! pattern as the qhy-focuser BDD suite for in-process tests).
+//! Scenarios run **in-process** against the `MockTransportFactory`: the
+//! `World` constructs the device, manager, and factory directly and the
+//! `Session` mediates wire calls through `MockFrameTransport`. No
+//! subprocess is spawned, so `bdd_infra::bdd_main!` is not needed
+//! (unlike `qhy-focuser`'s BDD suite, which launches the binary).
 
 #[path = "bdd/world.rs"]
 mod world;

@@ -48,6 +48,12 @@ impl DsdFp2Device {
     fn ascom_err(err: DsdFp2Error) -> ASCOMError {
         err.to_ascom_error()
     }
+
+    /// Hardware-clamped configurable maximum. ASCOM `MaxBrightness` and
+    /// `calibrator_on`'s validation share this so they can't disagree.
+    fn effective_max_brightness(&self) -> u32 {
+        self.config.max_brightness.min(MAX_BRIGHTNESS as u32)
+    }
 }
 
 #[async_trait]
@@ -142,7 +148,7 @@ impl CoverCalibrator for DsdFp2Device {
     }
 
     async fn max_brightness(&self) -> ASCOMResult<u32> {
-        Ok(self.config.max_brightness.min(MAX_BRIGHTNESS as u32))
+        Ok(self.effective_max_brightness())
     }
 
     async fn open_cover(&self) -> ASCOMResult<()> {
@@ -177,6 +183,16 @@ impl CoverCalibrator for DsdFp2Device {
     }
 
     async fn calibrator_on(&self, brightness: u32) -> ASCOMResult<()> {
+        // Validate against the effective max (the lower of the config cap
+        // and the hardware ceiling) so the value MaxBrightness advertises
+        // and the value calibrator_on accepts agree.
+        let effective_max = self.effective_max_brightness();
+        if brightness > effective_max {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("brightness {brightness} exceeds configured max {effective_max}"),
+            ));
+        }
         let value = FlatPanelManager::validate_brightness(brightness).map_err(Self::ascom_err)?;
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -333,6 +349,17 @@ mod mock_tests {
         (device, factory)
     }
 
+    fn make_device_with_cap(cap: u32) -> (DsdFp2Device, MockTransportFactory) {
+        let factory = MockTransportFactory::default();
+        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let cc_config = CoverCalibratorConfig {
+            max_brightness: cap,
+            ..CoverCalibratorConfig::default()
+        };
+        let device = DsdFp2Device::new(cc_config, manager);
+        (device, factory)
+    }
+
     #[tokio::test]
     async fn device_starts_disconnected() {
         let (device, _) = make_device();
@@ -446,6 +473,25 @@ mod mock_tests {
             device.max_brightness().await.unwrap(),
             MAX_BRIGHTNESS as u32
         );
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_rejects_brightness_above_configured_cap() {
+        let (device, _) = make_device_with_cap(2048);
+        device.set_connected(true).await.unwrap();
+        // MaxBrightness must agree with what calibrator_on accepts.
+        assert_eq!(device.max_brightness().await.unwrap(), 2048);
+
+        // 2048 is at the cap — allowed.
+        device.calibrator_on(2048).await.unwrap();
+
+        // 2049 is above the configured cap but below the hardware ceiling
+        // — must be rejected with INVALID_VALUE so the MaxBrightness
+        // promise isn't violated.
+        let err = device.calibrator_on(2049).await.unwrap_err();
+        assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+
+        device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]

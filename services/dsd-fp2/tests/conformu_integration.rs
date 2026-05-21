@@ -78,7 +78,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         "serial": {
             "port": "/dev/mock",
             "baud_rate": 115200,
-            "polling_interval": "60s",
+            "polling_interval": "500ms",
             "timeout": "3s"
         },
         "server": {
