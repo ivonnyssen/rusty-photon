@@ -21,7 +21,7 @@
 
 use std::str::Utf8Error;
 
-use rusty_photon_shared_transport::{Codec, SessionError};
+use rusty_photon_shared_transport::{Codec, SessionError, TransportError};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -65,6 +65,13 @@ impl QhyResponse {
 /// information that the device-layer
 /// `From<SessionError<…>> for QhyFocuserError` then re-expands into the
 /// right [`QhyFocuserError`] variant.
+///
+/// `Transport` carries the underlying [`TransportError`] structurally
+/// rather than as a string so a transport-level failure surfaced
+/// *through* the handshake hook (which returns `Result<_, QhyCodecError>`)
+/// can still be classified as `Open` / `Io` / `Timeout` / `Eof` /
+/// `Framing` by the device layer instead of collapsing to a generic
+/// `Communication` error.
 #[derive(Debug, Error)]
 pub enum QhyCodecError {
     #[error("invalid UTF-8 in response: {0}")]
@@ -73,8 +80,8 @@ pub enum QhyCodecError {
     InvalidResponse(String),
     #[error("parse error: {0}")]
     Parse(String),
-    #[error("transport error: {0}")]
-    Transport(String),
+    #[error(transparent)]
+    Transport(TransportError),
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
 }
@@ -92,7 +99,7 @@ impl QhyCodecError {
 impl From<SessionError<QhyCodecError>> for QhyCodecError {
     fn from(err: SessionError<QhyCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => Self::Transport(t.to_string()),
+            SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
             SessionError::SkipExhausted(n) => Self::SkipExhausted(n),
         }
@@ -158,23 +165,29 @@ impl Codec for QhyCodec {
     }
 }
 
+/// Map a [`TransportError`] to the matching [`QhyFocuserError`] variant.
+///
+/// Shared by the top-level `SessionError::Transport(t)` arm and the
+/// nested `SessionError::Codec(QhyCodecError::Transport(t))` arm so a
+/// timeout that surfaces *through* the handshake hook is classified
+/// identically to one that surfaces on a steady-state request.
+fn transport_to_focuser(t: TransportError) -> QhyFocuserError {
+    match t {
+        TransportError::Open(e) => QhyFocuserError::ConnectionFailed(e.to_string()),
+        TransportError::Io(e) => QhyFocuserError::Io(e),
+        TransportError::Timeout(d) => {
+            QhyFocuserError::Timeout(format!("transport timeout after {d:?}"))
+        }
+        TransportError::Eof => QhyFocuserError::Communication("Connection closed".to_string()),
+        TransportError::Framing(s) => QhyFocuserError::Communication(format!("framing: {s}")),
+    }
+}
+
 impl From<SessionError<QhyCodecError>> for QhyFocuserError {
     fn from(err: SessionError<QhyCodecError>) -> Self {
-        use rusty_photon_shared_transport::TransportError;
         match err {
-            SessionError::Transport(TransportError::Open(e)) => {
-                QhyFocuserError::ConnectionFailed(e.to_string())
-            }
-            SessionError::Transport(TransportError::Io(e)) => QhyFocuserError::Io(e),
-            SessionError::Transport(TransportError::Timeout(d)) => {
-                QhyFocuserError::Timeout(format!("transport timeout after {d:?}"))
-            }
-            SessionError::Transport(TransportError::Eof) => {
-                QhyFocuserError::Communication("Connection closed".to_string())
-            }
-            SessionError::Transport(TransportError::Framing(s)) => {
-                QhyFocuserError::Communication(format!("framing: {s}"))
-            }
+            SessionError::Transport(t) => transport_to_focuser(t),
+            SessionError::Codec(QhyCodecError::Transport(t)) => transport_to_focuser(t),
             SessionError::Codec(QhyCodecError::InvalidResponse(s)) => {
                 QhyFocuserError::InvalidResponse(s)
             }
@@ -182,7 +195,6 @@ impl From<SessionError<QhyCodecError>> for QhyFocuserError {
             SessionError::Codec(c @ QhyCodecError::Utf8(_)) => {
                 QhyFocuserError::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(QhyCodecError::Transport(s)) => QhyFocuserError::Communication(s),
             SessionError::Codec(QhyCodecError::SkipExhausted(n)) => QhyFocuserError::Communication(
                 format!("device returned non-matching response ({n} frame(s) read)"),
             ),
@@ -367,10 +379,13 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn session_to_codec_error_transport_becomes_transport_string() {
+    fn session_to_codec_error_transport_preserves_inner_variant() {
+        // The inner TransportError must survive the flatten so the
+        // device-layer mapping can still classify by variant rather than
+        // collapse to a stringy Communication error.
         let err: QhyCodecError =
             SessionError::<QhyCodecError>::Transport(TransportError::Eof).into();
-        assert!(matches!(err, QhyCodecError::Transport(_)));
+        assert!(matches!(err, QhyCodecError::Transport(TransportError::Eof)));
     }
 
     #[test]
@@ -467,12 +482,41 @@ mod tests {
     }
 
     #[test]
-    fn session_error_codec_transport_maps_to_communication() {
+    fn session_error_codec_transport_timeout_routes_to_timeout() {
+        // A transport timeout surfaced *through* the handshake hook
+        // arrives at the device layer as
+        // SessionError::Codec(QhyCodecError::Transport(Timeout(...))).
+        // It must map to QhyFocuserError::Timeout — same classification
+        // a steady-state timeout (SessionError::Transport(Timeout(...)))
+        // would receive — so the ASCOM client doesn't see a generic
+        // Communication error for connect-time timeouts.
+        let err: SessionError<QhyCodecError> = SessionError::Codec(QhyCodecError::Transport(
+            TransportError::Timeout(std::time::Duration::from_secs(2)),
+        ));
+        match QhyFocuserError::from(err) {
+            QhyFocuserError::Timeout(s) => assert!(s.contains('2')),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_transport_open_routes_to_connection_failed() {
+        let err: SessionError<QhyCodecError> = SessionError::Codec(QhyCodecError::Transport(
+            TransportError::Open(std::io::Error::other("busy")),
+        ));
+        match QhyFocuserError::from(err) {
+            QhyFocuserError::ConnectionFailed(s) => assert!(s.contains("busy")),
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_codec_transport_eof_routes_to_communication() {
         let err: SessionError<QhyCodecError> =
-            SessionError::Codec(QhyCodecError::Transport("wire died".into()));
+            SessionError::Codec(QhyCodecError::Transport(TransportError::Eof));
         assert!(matches!(
             QhyFocuserError::from(err),
-            QhyFocuserError::Communication(s) if s == "wire died"
+            QhyFocuserError::Communication(s) if s.contains("Connection closed")
         ));
     }
 

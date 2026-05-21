@@ -91,6 +91,10 @@ impl FocuserManager {
     /// Issue an absolute-move command over the device's session and
     /// update the cached `is_moving` / `target_position`. The poll loop
     /// clears these once the device reports the target reached.
+    ///
+    /// On transport failure the cache is rolled back to its pre-move
+    /// state so a transient wire failure doesn't wedge ASCOM `IsMoving`
+    /// at `true` against a target the device never received.
     pub async fn move_absolute(&self, session: &Session<QhyCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read
         // can't observe `is_moving == false` while the move is in flight.
@@ -99,10 +103,15 @@ impl FocuserManager {
             state.target_position = Some(position);
             state.is_moving = true;
         }
-        session
-            .request(Command::AbsoluteMove { position })
-            .await
-            .map_err(QhyFocuserError::from)?;
+        if let Err(e) = session.request(Command::AbsoluteMove { position }).await {
+            // Roll back so the cache reflects "no move in progress" —
+            // matches the device's actual state when the wire request
+            // failed before the firmware accepted the target.
+            let mut state = self.cached_state.write().await;
+            state.is_moving = false;
+            state.target_position = None;
+            return Err(QhyFocuserError::from(e));
+        }
         debug!(position, "absolute-move command sent");
         Ok(())
     }
@@ -368,5 +377,105 @@ mod tests {
         assert!(manager.is_available());
         session.close().await.unwrap();
         assert!(!manager.is_available());
+    }
+
+    // ========================================================================
+    // move_absolute cache rollback on transport failure
+    //
+    // Verifies that a transient transport failure during AbsoluteMove
+    // doesn't leave the cache stuck at `is_moving = true` with an
+    // unreachable target (poll would never clear it).
+    // ========================================================================
+
+    use async_trait::async_trait;
+    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Wraps the canonical mock factory but gates `send_frame` behind a
+    /// shared atomic — flipping it makes the very next send return EOF.
+    /// Used to inject a wire-level failure after handshake has succeeded.
+    #[derive(Default, Clone)]
+    struct InjectableFactory {
+        inner: MockQhyTransportFactory,
+        fail_next_send: Arc<AtomicBool>,
+    }
+
+    impl InjectableFactory {
+        fn fail_next_send(&self) -> Arc<AtomicBool> {
+            Arc::clone(&self.fail_next_send)
+        }
+    }
+
+    #[async_trait]
+    impl TransportFactory for InjectableFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let inner = self.inner.open().await?;
+            Ok(Box::new(InjectableTransport {
+                inner,
+                fail_next_send: Arc::clone(&self.fail_next_send),
+            }))
+        }
+    }
+
+    struct InjectableTransport {
+        inner: Box<dyn FrameTransport>,
+        fail_next_send: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl FrameTransport for InjectableTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            if self.fail_next_send.swap(false, Ordering::SeqCst) {
+                return Err(TransportError::Eof);
+            }
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(
+            &mut self,
+            buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    #[tokio::test]
+    async fn move_absolute_rolls_cache_back_on_transport_failure() {
+        // Slow the poll loop down so it can't fire and consume the
+        // armed failure before move_absolute does.
+        let factory = Arc::new(InjectableFactory::default());
+        let fail_switch = factory.fail_next_send();
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_secs(300);
+        let manager = FocuserManager::new(config, factory);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // Arm: the next send (the AbsoluteMove issued by move_absolute)
+        // will return EOF from the transport.
+        fail_switch.store(true, Ordering::SeqCst);
+
+        let err = manager
+            .move_absolute(&session, 5000)
+            .await
+            .expect_err("move_absolute should propagate the transport failure");
+        assert!(
+            matches!(err, QhyFocuserError::Communication(_)),
+            "expected Communication (Eof maps to it), got {err:?}"
+        );
+
+        // The whole point of this test: the cache must reflect "no move
+        // in progress" so a polling refresh / ASCOM IsMoving read sees
+        // the truth.
+        let state = manager.get_cached_state().await;
+        assert!(
+            !state.is_moving,
+            "cache should be rolled back to is_moving=false"
+        );
+        assert_eq!(
+            state.target_position, None,
+            "target_position should be rolled back"
+        );
+
+        session.close().await.unwrap();
     }
 }
