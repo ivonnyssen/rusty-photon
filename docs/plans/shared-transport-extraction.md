@@ -2,16 +2,20 @@
 
 ## Status
 
-**Phase B in flight.** Phase A landed via PR #269 (the
+**Phase E in flight.** Phase A landed via PR #269 (the
 `crates/rusty-photon-shared-transport/` crate; 31 tests). Phase B
-migrates `ppba-driver` to the shared crate — both ASCOM devices
-(`PpbaSwitchDevice`, `PpbaObservingConditionsDevice`) now hold an
-`Option<Session<PpbaCodec>>` and the lifecycle code that previously
-lived in `ppba-driver/src/serial_manager.rs` has been deleted in
-favour of `PpbaManager` + `Hooks { handshake, while_open, … }`. All 117
-unit tests + 145 BDD scenarios green. Issue #251 closes structurally
-with this migration. Phases C–E (qhy-focuser, pa-falcon-rotator,
-star-adventurer-gti) follow per the rollout below.
+landed via PR #276 (ppba-driver migration). Phase E migrates
+`star-adventurer-gti`: the legacy `services/star-adventurer-gti/src/transport_manager.rs`
+is replaced by `manager.rs` (the thin `MountManager` wrapping
+`Arc<SharedTransport<SkywatcherCodec>>`) and a new `codec.rs`
+(`SkywatcherCodec` whose `Response = Vec<u8>`; typed decode happens
+in `MountManager::send` where the originating `Command` is in scope).
+The per-transport `serial.rs` / `udp.rs` / `mock.rs` modules are
+factory-only now and return `Box<dyn FrameTransport>`. Watcher tasks
+acquire their own sessions so user-disconnect returns immediately;
+they peek at the device's session slot to detect bail-out conditions.
+All 308 unit tests + 126 BDD scenarios green. Phases C and D
+(qhy-focuser, pa-falcon-rotator) follow per the rollout below.
 
 ## Motivation
 
@@ -967,40 +971,85 @@ ppba-driver shape.
 
 ### Phase E — Migrate `star-adventurer-gti`
 
-Last because:
+Status: **implemented** on `feature/phase-e-sag-shared-transport`.
+
+Coordinated last because:
 
 1. Largest service (~3700 lines in `mount_device.rs` alone).
-2. Most BDD scenarios (~54).
-3. Dual transport (USB + UDP) needs the `UdpFrameTransport` adapter exercised.
-4. Post-acquire fallible work needs the structural-rollback story
-   verified end to end.
+2. Most BDD scenarios (126 in this branch, up from the ~54 the
+   plan originally cited as the per-Phase B count).
+3. Dual transport (USB + UDP) exercised the `UdpFrameTransport`
+   adapter for the first time.
+4. Post-acquire fallible work (`seed_home_pose_after_connect`
+   then `load_park_target_after_connect`) verified the
+   structural-rollback story end to end.
+5. Long-running watcher tasks (slew completion, park completion,
+   pulse-guide) exercised the "watcher acquires its own session"
+   pattern — the user-disconnect signal is the device's session
+   slot's `is_none()`, distinct from the shared transport's
+   refcount (which the watcher's own session keeps positive
+   until completion).
 
-Removes:
-* `services/star-adventurer-gti/src/transport_manager.rs` — most of it.
-* The `tracing::warn!(...)` log-on-rollback-disconnect-failure
-  branches in `set_connected` (`mount_device.rs:1085, 1091`).
-  Rollback now calls `session.close().await` and propagates errors;
-  no swallowed warnings.
+Removed:
+* `services/star-adventurer-gti/src/transport_manager.rs` — entire file.
+* The pre-Phase-E `requested_connection: RwLock<bool>` on `MountDevice`
+  — the `session: RwLock<Option<Session<SkywatcherCodec>>>` slot is now
+  the single source of truth for "the user is connected".
+* The two `tracing::warn!(...)` log-on-rollback-disconnect-failure
+  branches in the legacy `set_connected`. Rollback now calls
+  `session.close().await` and propagates errors; no swallowed
+  warnings.
+* The legacy `Transport` trait (`crate::transport::Transport`) and
+  the per-service `TransportFactory` trait — both replaced by
+  the shared crate's `FrameTransport` + `TransportFactory`.
+* The `MockTransport` wrapper struct (the legacy mock factory's
+  inner `Arc<MockTransport>`-of-`Arc<Mutex<MockMountState>>`).
+  `CapturingMockFactory` now holds the `Arc<Mutex<MockMountState>>`
+  directly; the `/debug/v1/mock-state` HTTP router (lib.rs) is
+  unchanged.
 
-Adds:
-* `services/star-adventurer-gti/src/codec.rs` — `SkywatcherCodec`
-  wrapping the existing `skywatcher-motor-protocol` crate.
-* `services/star-adventurer-gti/src/transport/udp.rs` adapts to
-  the shared `TransportFactory` and uses `UdpFrameTransport` from
-  `rusty-photon-shared-transport` (one `recv` per frame; datagram boundaries
-  preserved).
+Added:
+* `services/star-adventurer-gti/src/codec.rs` — `SkywatcherCodec`.
+  `Response = Vec<u8>` (raw frame); the typed decode (`Response::U24`
+  vs `Response::Position` for `:a` vs `:j` etc.) lives in
+  `MountManager::send` where the originating `Command` is in scope.
+  `From<SessionError<SkywatcherCodecError>> for StarAdvError` flattens
+  the discriminated-union error into the existing service-wide enum.
 * `services/star-adventurer-gti/src/manager.rs` — `MountManager`
   with `seed_*_position`, `parameters`, `snapshot`, `poll_axes_now`,
-  `pause_background_polling`.
+  `pause_background_polling`. Handshake + poll loop + teardown live
+  in `Hooks` closures inside `MountManager::new`.
+* `services/star-adventurer-gti/src/transport/serial.rs` and
+  `services/star-adventurer-gti/src/transport/udp.rs` — slim
+  `TransportFactory` impls returning `Box<dyn FrameTransport>`.
+  Serial uses `\r` framing; UDP uses one-datagram-per-frame
+  via `UdpFrameTransport`.
+* `services/star-adventurer-gti/src/transport/mock.rs` — keeps the
+  in-memory `MockMountState` state machine + `MockTransportFactory`
+  / `CapturingMockFactory`, ported onto the shared crate's
+  `FrameTransport` (`send_frame` processes the request, enqueues a
+  reply; `recv_frame` drains the queue).
 
 Tests:
-* Existing BDD (54 scenarios) green. Most are protocol-level and
-  don't touch the transport-manager API.
-* The `/debug/v1/mock-state` HTTP router stays — it's per-service
-  test plumbing, untouched by this migration.
+* 126 BDD scenarios green (up from the 54 the plan originally
+  cited as a rough count). All are protocol-level and don't
+  touch the manager API surface directly.
+* 308 unit tests green (`cargo nextest run -p star-adventurer-gti
+  --all-features --all-targets --locked`).
 * `transport_manager.rs` unit tests that probed internals
-  (`connection_count`, `serial_available`) get rewritten or
-  deleted.
+  (`connection_count`, `serial_available`) deleted; their
+  invariants are covered once for everyone in
+  `rusty-photon-shared-transport`'s own test suite.
+* The `StuckAxisTransport` and `FlakyTransport` helpers in
+  `mount_device/tests.rs` were rewritten as
+  `FrameTransport`-based factories with their own
+  `pending_replies` queues.
+
+Verification:
+* `cargo rail run --profile commit -q` clean.
+* `cargo clippy -p star-adventurer-gti --all-features --all-targets
+  --locked -- -D warnings` clean.
+* `cargo fmt --all --check` clean.
 
 ## Test strategy
 

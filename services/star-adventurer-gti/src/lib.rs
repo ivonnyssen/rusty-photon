@@ -4,29 +4,30 @@
 //! See [`docs/services/star-adventurer-gti.md`](../../../docs/services/star-adventurer-gti.md)
 //! for the design contract this crate implements.
 
+pub mod codec;
 pub mod config;
 pub mod coordinates;
 pub mod error;
+pub mod manager;
 pub mod mount_device;
 pub mod transport;
-pub mod transport_manager;
 
 pub use config::{
     load_config, Config, FlipPolicy, HomePose, MountConfig, ServerConfig, TrackingRateName,
     TransportConfig, UdpConfig, UsbConfig, MAX_FLIP_RANGE_HOURS,
 };
 pub use error::{Result, StarAdvError};
+pub use manager::{MountManager, MountParameters, MountSnapshot, PollPauseGuard};
 pub use mount_device::{
     canonicalise_config_path, probe_park_file_writability, warn_if_park_path_unwritable,
     MountDevice,
 };
+pub use rusty_photon_shared_transport::TransportFactory;
 pub use transport::serial::SerialTransportFactory;
 pub use transport::udp::UdpTransportFactory;
-pub use transport::{Transport, TransportFactory};
-pub use transport_manager::TransportManager;
 
 #[cfg(feature = "mock")]
-pub use transport::mock::{MockMountState, MockTransport, MockTransportFactory};
+pub use transport::mock::{MockMountState, MockTransportFactory};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -114,20 +115,22 @@ impl ServerBuilder {
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
         server.discovery_port = self.config.server.discovery_port;
 
-        // Default to a config-driven factory if none was injected. Phase 3
-        // fills in the per-factory `connect()` bodies; until then the
-        // server still binds and serves metadata, but `Connected = true`
-        // returns NOT_IMPLEMENTED.
-        let factory = self
-            .factory
-            .unwrap_or_else(|| -> Arc<dyn TransportFactory> {
-                match self.config.transport {
-                    config::TransportConfig::Usb(_) => Arc::new(SerialTransportFactory),
-                    config::TransportConfig::Udp(_) => Arc::new(UdpTransportFactory),
+        // Default to a config-driven factory if none was injected.
+        // BDD tests inject `MockTransportFactory`; production picks
+        // serial vs UDP from the transport block.
+        let factory: Arc<dyn TransportFactory> = match self.factory {
+            Some(f) => f,
+            None => match &self.config.transport {
+                config::TransportConfig::Usb(usb) => {
+                    Arc::new(SerialTransportFactory::new(usb.clone()))
                 }
-            });
+                config::TransportConfig::Udp(udp) => {
+                    Arc::new(UdpTransportFactory::new(udp.clone()))
+                }
+            },
+        };
 
-        let manager = Arc::new(TransportManager::new(self.config.clone(), factory));
+        let manager = MountManager::new(self.config.clone(), factory);
 
         if self.config.mount.enabled {
             let device = MountDevice::with_config_file_path(

@@ -118,13 +118,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "mock")]
     let builder = {
-        // CapturingMockFactory holds a pre-built MockTransport whose
-        // state Arc is shared with every clone the factory hands out.
-        // Reuse that same state for the /debug/v1/mock-commands
-        // endpoint so tools like BDD harnesses can inspect the wire
-        // command log over HTTP.
+        // CapturingMockFactory shares its `MockMountState` Arc with
+        // every transport it hands out. Reuse that same state for the
+        // /debug/v1/mock-commands endpoint so tools like BDD harnesses
+        // can inspect the wire command log over HTTP.
         let factory = CapturingMockFactory::new();
-        let state = Arc::clone(&factory.mock.state);
+        let state = Arc::clone(&factory.state);
         let factory: Arc<dyn TransportFactory> = Arc::new(factory);
         builder
             .with_transport_factory(factory)

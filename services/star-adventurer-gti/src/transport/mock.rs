@@ -1,29 +1,25 @@
-//! Feature-gated in-memory mock transport.
+//! Feature-gated in-memory mock transport for the Sky-Watcher protocol.
 //!
 //! Simulates the motor controller as a small state machine: accepts
 //! `:cmd<axis><payload>\r` frames, maintains per-axis state (position,
 //! motion mode, running flag, initialised flag, tracking), and emits
-//! well-formed `=...\r` / `!XX\r` replies. Phase 2 wires it through
-//! [`crate::ServerBuilder::with_transport_factory`] for the BDD `tests/bdd.rs`
-//! harness. Phase 3 will additionally use it from a server-startup
-//! integration test (`tests/test_lib.rs`) and the ConformU integration
-//! target — neither file exists yet.
+//! well-formed `=...\r` / `!XX\r` replies. Plugs into the shared
+//! transport via [`MockTransportFactory`] (and [`CapturingMockFactory`]
+//! for tests that need a long-lived state handle), implementing the
+//! shared crate's [`TransportFactory`] / [`FrameTransport`] traits in
+//! place of the legacy `Transport`-based mock.
 //!
-//! The mock is deliberately not exposed unless the `mock` feature is on so a
-//! production build cannot accidentally pick it up.
+//! The mock is deliberately not exposed unless the `mock` feature is on
+//! so a production build cannot accidentally pick it up.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 use skywatcher_motor_protocol::codec::{
     decode_position, decode_u24, decode_u8, encode_position, encode_u24,
 };
 use tokio::sync::Mutex;
-
-use crate::config::Config;
-use crate::error::{Result, StarAdvError};
-use crate::transport::{Transport, TransportFactory};
 
 /// Per-axis simulator state.
 #[derive(Debug, Clone, Copy, Default)]
@@ -161,7 +157,10 @@ fn nibble_to_hex(n: u8) -> u8 {
     }
 }
 
-/// In-memory mock state machine.
+/// In-memory mock state machine. Lives behind an `Arc<Mutex<…>>` and
+/// is shared between the [`MockTransportFactory`] (which clones the
+/// `Arc` into each opened `FrameTransport`) and the test handle that
+/// pre-seeds or introspects state.
 #[derive(Debug)]
 pub struct MockMountState {
     pub ra: AxisSimState,
@@ -183,6 +182,10 @@ pub struct MockMountState {
     /// Every command frame received, in arrival order. Tests assert against
     /// this to verify the driver issued the expected wire commands.
     pub command_log: Vec<Vec<u8>>,
+    /// Pending replies the next `recv_frame` call should drain. Every
+    /// processed command appends one frame; the [`FrameTransport`] impl
+    /// pulls from the front to deliver replies in order.
+    pending_replies: std::collections::VecDeque<Vec<u8>>,
 }
 
 impl Default for MockMountState {
@@ -202,6 +205,7 @@ impl Default for MockMountState {
             high_speed_ratio_dec: 32,
             motor_board_version: 0x0003_300C,
             command_log: Vec::new(),
+            pending_replies: std::collections::VecDeque::new(),
         }
     }
 }
@@ -230,85 +234,45 @@ impl MockMountState {
             _ => None,
         }
     }
-}
 
-/// Mock transport. Cheap to clone via the inner `Arc<Mutex<_>>`.
-#[derive(Debug, Default, Clone)]
-pub struct MockTransport {
-    pub state: Arc<Mutex<MockMountState>>,
-}
-
-impl MockTransport {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Build an `=<payload>\r` success reply. Empty payload → `=\r`.
-fn ack_with(payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 2);
-    out.push(b'=');
-    out.extend_from_slice(payload);
-    out.push(b'\r');
-    out
-}
-
-/// Build an `!XX\r` mount-error reply.
-fn err_reply(code: u8) -> Vec<u8> {
-    use skywatcher_motor_protocol::codec::encode_u8;
-    let bytes = encode_u8(code);
-    vec![b'!', bytes[0], bytes[1], b'\r']
-}
-
-#[async_trait]
-impl Transport for MockTransport {
-    async fn round_trip(&self, request: &[u8], _timeout: Duration) -> Result<Vec<u8>> {
-        // Frame validation: must be `:cmd<axis><payload?>\r`. Anything else
-        // is the driver's bug — surface it as a transport error so tests
-        // catch it.
-        if request.len() < 3 || request[0] != b':' || request[request.len() - 1] != b'\r' {
-            return Err(StarAdvError::Transport(format!(
-                "mock received malformed frame: {request:?}"
-            )));
-        }
+    /// Apply a `:cmd<axis><payload?>\r` request frame to the simulator,
+    /// updating state and pushing the reply onto [`pending_replies`].
+    fn process_command(&mut self, request: &[u8]) {
+        self.command_log.push(request.to_vec());
         let cmd = request[1];
         let axis = request[2];
         let payload = &request[3..request.len() - 1];
-
-        let mut state = self.state.lock().await;
-        state.command_log.push(request.to_vec());
 
         // Inquiries (lowercase letters)
         let reply = match cmd {
             b'a' => {
                 // CPR per axis (24-bit unsigned)
-                state
-                    .cpr(axis)
+                self.cpr(axis)
                     .map(|cpr| ack_with(&encode_u24(cpr)))
                     .unwrap_or_else(|| err_reply(0))
             }
             b'b' => {
                 // TMR_Freq, axis 1 only.
                 if axis == b'1' {
-                    ack_with(&encode_u24(state.tmr_freq))
+                    ack_with(&encode_u24(self.tmr_freq))
                 } else {
                     err_reply(0)
                 }
             }
-            b'g' => state
+            b'g' => self
                 .high_speed_ratio(axis)
                 .map(|hsr| ack_with(&encode_u24(hsr)))
                 .unwrap_or_else(|| err_reply(0)),
             b'e' => {
                 // Motor board version, returned for either axis.
                 if axis == b'1' || axis == b'2' {
-                    ack_with(&encode_u24(state.motor_board_version))
+                    ack_with(&encode_u24(self.motor_board_version))
                 } else {
                     err_reply(0)
                 }
             }
             b'j' => {
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     // Polling-driven motion: every `:j` advances one step.
                     ax.advance_one_step();
                     let pos = ax.position_ticks;
@@ -321,7 +285,7 @@ impl Transport for MockTransport {
                 // `:f` is a status-read; it must NOT advance motion, or
                 // tests that pre-seed `running=true` see the simulator
                 // immediately clear it on the first poll.
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     let bytes = ax.encode_status();
                     ack_with(&bytes)
                 } else {
@@ -330,7 +294,7 @@ impl Transport for MockTransport {
             }
             // Setters (uppercase letters)
             b'F' => {
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.initialized = true;
                     ack_with(&[])
                 } else {
@@ -345,15 +309,21 @@ impl Transport for MockTransport {
                 // `skywatcher_motor_protocol::MotionMode`.
                 let bytes: [u8; 2] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)), // CommandLengthError
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 let mode_byte = match decode_u8(bytes) {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(3)), // InvalidCharacter
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(3));
+                        return;
+                    }
                 };
                 let db1 = (mode_byte >> 4) & 0x0F;
                 let db2 = mode_byte & 0x0F;
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     // DB1 bit 0: 1=Tracking, 0=Goto.
                     ax.goto = (db1 & 0x1) == 0;
                     // DB1 bit 1: speed selector — meaning inverts
@@ -377,13 +347,19 @@ impl Transport for MockTransport {
                 // Set goto target absolute: 6-byte signed/biased payload.
                 let bytes: &[u8; 6] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 let ticks = match decode_position(bytes) {
                     Ok(t) => t,
-                    Err(_) => return Ok(err_reply(3)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(3));
+                        return;
+                    }
                 };
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.goto_target_ticks = ticks;
                     ack_with(&[])
                 } else {
@@ -398,13 +374,19 @@ impl Transport for MockTransport {
                 // current encoder position.
                 let bytes: &[u8; 6] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 let increment = match decode_u24(bytes) {
                     Ok(t) => t,
-                    Err(_) => return Ok(err_reply(3)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(3));
+                        return;
+                    }
                 };
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     let sign: i32 = if ax.ccw { -1 } else { 1 };
                     ax.goto_target_ticks =
                         ax.position_ticks + sign.saturating_mul(increment as i32);
@@ -421,10 +403,14 @@ impl Transport for MockTransport {
                 // without overshoot.
                 let bytes: &[u8; 6] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 if decode_u24(bytes).is_err() {
-                    return Ok(err_reply(3));
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 }
                 if axis == b'1' || axis == b'2' {
                     ack_with(&[])
@@ -436,13 +422,19 @@ impl Transport for MockTransport {
                 // Set step period: 6-byte u24 payload.
                 let bytes: &[u8; 6] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 let period = match decode_u24(bytes) {
                     Ok(p) => p,
-                    Err(_) => return Ok(err_reply(3)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(3));
+                        return;
+                    }
                 };
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.step_period = period;
                     ack_with(&[])
                 } else {
@@ -453,13 +445,19 @@ impl Transport for MockTransport {
                 // Sync: write encoder position. 6-byte signed/biased payload.
                 let bytes: &[u8; 6] = match payload.try_into() {
                     Ok(b) => b,
-                    Err(_) => return Ok(err_reply(1)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(1));
+                        return;
+                    }
                 };
                 let ticks = match decode_position(bytes) {
                     Ok(t) => t,
-                    Err(_) => return Ok(err_reply(3)),
+                    Err(_) => {
+                        self.pending_replies.push_back(err_reply(3));
+                        return;
+                    }
                 };
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.position_ticks = ticks;
                     ack_with(&[])
                 } else {
@@ -467,9 +465,10 @@ impl Transport for MockTransport {
                 }
             }
             b'J' => {
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     if !ax.initialized {
-                        return Ok(err_reply(4)); // NotInitialized
+                        self.pending_replies.push_back(err_reply(4));
+                        return;
                     }
                     ax.running = true;
                     ack_with(&[])
@@ -478,7 +477,7 @@ impl Transport for MockTransport {
                 }
             }
             b'K' => {
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.running = false;
                     ack_with(&[])
                 } else {
@@ -486,7 +485,7 @@ impl Transport for MockTransport {
                 }
             }
             b'L' => {
-                if let Some(ax) = state.axis_mut(axis) {
+                if let Some(ax) = self.axis_mut(axis) {
                     ax.running = false;
                     ack_with(&[])
                 } else {
@@ -496,62 +495,98 @@ impl Transport for MockTransport {
             _ => err_reply(0), // UnknownCommand
         };
 
-        Ok(reply)
-    }
-
-    async fn close(&self) -> Result<()> {
-        Ok(())
+        self.pending_replies.push_back(reply);
     }
 }
 
-/// [`TransportFactory`] that emits a fresh [`MockTransport`] on every open.
-/// Phase 2's BDD harness, `tests/test_lib.rs`, and the `conformu`
-/// integration target all use this so they never touch real I/O.
+/// Build an `=<payload>\r` success reply. Empty payload → `=\r`.
+fn ack_with(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 2);
+    out.push(b'=');
+    out.extend_from_slice(payload);
+    out.push(b'\r');
+    out
+}
+
+/// Build an `!XX\r` mount-error reply.
+fn err_reply(code: u8) -> Vec<u8> {
+    use skywatcher_motor_protocol::codec::encode_u8;
+    let bytes = encode_u8(code);
+    vec![b'!', bytes[0], bytes[1], b'\r']
+}
+
+/// One open mock transport. Shares state with the factory so persistent
+/// device settings survive a reconnect cycle.
+struct MockFrameTransport {
+    state: Arc<Mutex<MockMountState>>,
+}
+
+#[async_trait]
+impl FrameTransport for MockFrameTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if bytes.len() < 3 || bytes[0] != b':' || bytes[bytes.len() - 1] != b'\r' {
+            return Err(TransportError::Framing(format!(
+                "mock received malformed request frame: {bytes:?}"
+            )));
+        }
+        self.state.lock().await.process_command(bytes);
+        Ok(())
+    }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        let frame = self.state.lock().await.pending_replies.pop_front();
+        match frame {
+            Some(frame) => {
+                buf.clear();
+                buf.extend_from_slice(&frame);
+                Ok(())
+            }
+            None => Err(TransportError::Eof),
+        }
+    }
+}
+
+/// [`TransportFactory`] that emits a fresh [`FrameTransport`] backed by
+/// its own [`MockMountState`] on every open. Each new connection gets a
+/// brand-new state machine — matches the BDD harness's expectation that
+/// a server restart equals a power cycle.
 #[derive(Debug, Default)]
 pub struct MockTransportFactory;
 
 #[async_trait]
 impl TransportFactory for MockTransportFactory {
-    async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
-        Ok(Arc::new(MockTransport::new()))
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        Ok(Box::new(MockFrameTransport {
+            state: Arc::new(Mutex::new(MockMountState::default())),
+        }))
     }
 }
 
-/// [`TransportFactory`] that returns a clone of a pre-built
-/// [`MockTransport`] on every `open` call. The clones share the same
-/// `Arc<Mutex<MockMountState>>`, so a test holding the original handle
-/// can introspect the live `command_log` after the manager has issued
-/// commands through its own clone.
+/// [`TransportFactory`] that returns a fresh [`FrameTransport`] backed
+/// by a shared [`MockMountState`] on every open call. The test holds
+/// the original `Arc<Mutex<MockMountState>>` and can introspect /
+/// pre-seed the same state the driver mutates through the transport.
 ///
 /// Used by the unit tests that need to assert on the exact wire frames
 /// the driver emitted (e.g. "tracking issues `:G1` then `:I1` then
 /// `:J1` in that order").
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CapturingMockFactory {
-    pub mock: MockTransport,
+    pub state: Arc<Mutex<MockMountState>>,
 }
 
 impl CapturingMockFactory {
     pub fn new() -> Self {
-        Self {
-            mock: MockTransport::new(),
-        }
-    }
-}
-
-impl Default for CapturingMockFactory {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 
 #[async_trait]
 impl TransportFactory for CapturingMockFactory {
-    async fn open(&self, _config: &Config) -> Result<Arc<dyn Transport>> {
-        // Clone shares the inner Arc<Mutex<MockMountState>>, so the
-        // outer handle held by the test sees every mutation the
-        // manager makes through this returned Arc.
-        Ok(Arc::new(self.mock.clone()))
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        Ok(Box::new(MockFrameTransport {
+            state: Arc::clone(&self.state),
+        }))
     }
 }
 
@@ -559,9 +594,10 @@ impl TransportFactory for CapturingMockFactory {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
 
-    fn d() -> Duration {
-        Duration::from_millis(100)
+    async fn open(factory: &MockTransportFactory) -> Box<dyn FrameTransport> {
+        factory.open().await.unwrap()
     }
 
     #[test]
@@ -572,25 +608,19 @@ mod tests {
         // out-of-range values. The fix saturates the position at the
         // 24-bit signed encoder boundary inside `advance_one_step`
         // itself, matching how real GTi firmware behaves.
-        use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
         let mut s = AxisSimState {
             running: true,
             goto: false, // tracking
             ccw: false,
-            // Start one step shy of the upper boundary.
             position_ticks: POSITION_MAX - 4,
             ..Default::default()
         };
-        // Tracking-mode chunk is +8 ticks per step; after one call
-        // we'd be at POSITION_MAX + 4 without clamping.
         s.advance_one_step();
         assert_eq!(s.position_ticks, POSITION_MAX);
-        // Further steps stay clamped.
         s.advance_one_step();
         s.advance_one_step();
         assert_eq!(s.position_ticks, POSITION_MAX);
 
-        // Symmetric: CCW direction clamps at the lower boundary.
         let mut s = AxisSimState {
             running: true,
             goto: false,
@@ -619,10 +649,6 @@ mod tests {
 
     #[test]
     fn mock_mount_state_default_seeds_documented_gti_values() {
-        // Anchored to the GTi probe table in
-        // docs/references/skywatcher-motor-controller-command-set.md.
-        // If the GTi firmware ever returns different values, the probe
-        // table — and these constants — are what gets updated.
         let s = MockMountState::default();
         assert_eq!(s.cpr_ra, 0x0037_5F00);
         assert_eq!(s.cpr_dec, 0x0037_5F00);
@@ -632,112 +658,128 @@ mod tests {
         assert_eq!(s.high_speed_ratio_dec, 32);
     }
 
-    #[tokio::test]
-    async fn mock_transport_close_is_a_noop() {
-        // Idempotent close lets the ref-counted TransportManager call this
-        // freely on every disconnect path.
-        let t = MockTransport::new();
-        t.close().await.expect("first close");
-        t.close().await.expect("second close");
+    async fn round_trip(t: &mut Box<dyn FrameTransport>, req: &[u8]) -> Vec<u8> {
+        t.send_frame(req).await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        buf
     }
 
     #[tokio::test]
     async fn round_trip_initialize_acks_and_marks_axis_initialized() {
-        let t = MockTransport::new();
-        let reply = t.round_trip(b":F1\r", d()).await.unwrap();
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut t = factory.open().await.unwrap();
+        let reply = round_trip(&mut t, b":F1\r").await;
         assert_eq!(reply, b"=\r");
-        assert!(t.state.lock().await.ra.initialized);
+        assert!(state.lock().await.ra.initialized);
     }
 
     #[tokio::test]
     async fn round_trip_inquire_cpr_returns_seeded_value() {
-        let t = MockTransport::new();
-        let reply = t.round_trip(b":a1\r", d()).await.unwrap();
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":a1\r").await;
         // GTi default CPR 0x375F00 → encode_u24 → "005F37"
         assert_eq!(reply, b"=005F37\r");
     }
 
     #[tokio::test]
     async fn round_trip_inquire_position_returns_biased_value() {
-        let t = MockTransport::new();
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
         // Initial position 0 → bias 0x800000 → "000080"
-        let reply = t.round_trip(b":j1\r", d()).await.unwrap();
+        let reply = round_trip(&mut t, b":j1\r").await;
         assert_eq!(reply, b"=000080\r");
     }
 
     #[tokio::test]
     async fn round_trip_set_motion_mode_then_status_reflects_it() {
-        let t = MockTransport::new();
-        t.round_trip(b":F1\r", d()).await.unwrap();
-        // Goto-Fast-CW per Sky-Watcher spec §5: DB1=0 (Goto + Fast),
-        // DB2=0 (CW) → wire "00". The old codec sent "30" thinking
-        // that was Goto-Fast-Forward; per the spec "30" is actually
-        // Tracking-Fast-CW which silently runs the mount past the
-        // `:S` target.
-        let reply = t.round_trip(b":G100\r", d()).await.unwrap();
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut t = factory.open().await.unwrap();
+        round_trip(&mut t, b":F1\r").await;
+        let reply = round_trip(&mut t, b":G100\r").await;
         assert_eq!(reply, b"=\r");
-        let state = t.state.lock().await;
-        assert!(state.ra.goto);
-        assert!(state.ra.fast);
-        assert!(!state.ra.ccw);
-        assert!(state.ra.initialized);
+        let s = state.lock().await;
+        assert!(s.ra.goto);
+        assert!(s.ra.fast);
+        assert!(!s.ra.ccw);
+        assert!(s.ra.initialized);
     }
 
     #[tokio::test]
     async fn start_motion_before_initialize_returns_not_initialized() {
-        let t = MockTransport::new();
-        let reply = t.round_trip(b":J1\r", d()).await.unwrap();
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":J1\r").await;
         assert_eq!(reply, b"!04\r");
     }
 
     #[tokio::test]
     async fn slew_lifecycle_advances_position_to_target_then_stops() {
-        let t = MockTransport::new();
-        t.round_trip(b":F1\r", d()).await.unwrap();
-        // Goto-Slow-CW per Sky-Watcher spec §5: DB1 bit-1 set (Slow
-        // in Goto), bit-0 clear (Goto) → DB1 = 2. DB2 = 0 (CW). Wire
-        // "20".
-        t.round_trip(b":G120\r", d()).await.unwrap();
-        // Target encoder ticks = 200 → bias 0x800000+200 = 0x8000C8 → "C80080"
-        t.round_trip(b":S1C80080\r", d()).await.unwrap();
-        t.round_trip(b":J1\r", d()).await.unwrap();
-        // Motion advances on `:j` (not `:f` — `:f` is a status read
-        // and must not have side effects, so seeded `running=true`
-        // states are preserved). With slow chunk=100, two `:j` polls
-        // reach 200.
-        t.round_trip(b":j1\r", d()).await.unwrap();
-        t.round_trip(b":j1\r", d()).await.unwrap();
-        let state = t.state.lock().await;
-        assert_eq!(state.ra.position_ticks, 200);
-        assert!(!state.ra.running);
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut t = factory.open().await.unwrap();
+        round_trip(&mut t, b":F1\r").await;
+        round_trip(&mut t, b":G120\r").await;
+        round_trip(&mut t, b":S1C80080\r").await;
+        round_trip(&mut t, b":J1\r").await;
+        round_trip(&mut t, b":j1\r").await;
+        round_trip(&mut t, b":j1\r").await;
+        let s = state.lock().await;
+        assert_eq!(s.ra.position_ticks, 200);
+        assert!(!s.ra.running);
     }
 
     #[tokio::test]
-    async fn round_trip_logs_every_request() {
-        let t = MockTransport::new();
-        t.round_trip(b":F1\r", d()).await.unwrap();
-        t.round_trip(b":F2\r", d()).await.unwrap();
-        let log = &t.state.lock().await.command_log;
+    async fn capturing_factory_logs_every_request() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut t = factory.open().await.unwrap();
+        round_trip(&mut t, b":F1\r").await;
+        round_trip(&mut t, b":F2\r").await;
+        let log = &state.lock().await.command_log;
         assert_eq!(log.len(), 2);
         assert_eq!(log[0], b":F1\r");
         assert_eq!(log[1], b":F2\r");
     }
 
     #[tokio::test]
-    async fn round_trip_rejects_malformed_frames() {
-        let t = MockTransport::new();
-        // No leading `:`
-        assert!(t.round_trip(b"F1\r", d()).await.is_err());
-        // No trailing `\r`
-        assert!(t.round_trip(b":F1", d()).await.is_err());
-        // Too short
-        assert!(t.round_trip(b":\r", d()).await.is_err());
+    async fn send_frame_rejects_malformed_request() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let err = t.send_frame(b"F1\r").await.unwrap_err();
+        assert!(matches!(err, TransportError::Framing(_)));
     }
 
     #[tokio::test]
     async fn unknown_command_letter_returns_unknown_command_error() {
-        let t = MockTransport::new();
-        let reply = t.round_trip(b":Z1\r", d()).await.unwrap();
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":Z1\r").await;
         assert_eq!(reply, b"!00\r");
+    }
+
+    #[tokio::test]
+    async fn capturing_factory_shares_state_across_opens() {
+        // Two opens on the same CapturingMockFactory must both see the
+        // same MockMountState — mutations from the first transport
+        // become visible to the second open's reads.
+        let factory = CapturingMockFactory::new();
+        {
+            let mut t = factory.open().await.unwrap();
+            round_trip(&mut t, b":F1\r").await;
+        }
+        let state = Arc::clone(&factory.state);
+        assert!(state.lock().await.ra.initialized);
+        let mut t2 = factory.open().await.unwrap();
+        // `:F1` was already issued; ask `:f1` and we should see the
+        // initialized bit set in nibble 2 of the status payload.
+        // Default-after-`:F1` layout: n0=1 (Tracking, goto=false →
+        // bit-0 set), n1=0 (not running), n2=1 (initialized) →
+        // `=101\r`.
+        let reply = round_trip(&mut t2, b":f1\r").await;
+        assert_eq!(reply, b"=101\r");
     }
 }

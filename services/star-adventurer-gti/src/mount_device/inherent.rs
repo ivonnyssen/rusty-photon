@@ -27,9 +27,11 @@ use std::time::{Duration, SystemTime};
 use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use rusty_photon_shared_transport::{Session, SessionError, TransportError};
 use skywatcher_motor_protocol::{Axis, Command};
 use tracing::{debug, info};
 
+use crate::codec::SkywatcherCodec;
 use crate::coordinates::{
     dec_degrees_to_ticks, fold_ha, fold_to_canonical_band, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
@@ -94,6 +96,24 @@ impl MountDevice {
     /// trait method that hits the transport / coordinate layer.
     pub(super) fn ascom(e: StarAdvError) -> ASCOMError {
         e.to_ascom_error()
+    }
+
+    /// Map a `SessionError<SkywatcherCodecError>` (from
+    /// `SharedTransport::acquire`) into the closest ASCOM error.
+    pub(super) fn ascom_session_err(
+        err: SessionError<crate::codec::SkywatcherCodecError>,
+    ) -> ASCOMError {
+        StarAdvError::from(err).to_ascom_error()
+    }
+
+    /// Map a `TransportError` (from `Session::close`) into the closest
+    /// ASCOM error. The shared-transport teardown is best-effort —
+    /// any failure here surfaces to the ASCOM caller rather than
+    /// being swallowed by a `tracing::warn!` (the pre-migration
+    /// pattern, removed by the Phase E migration).
+    pub(super) fn ascom_transport_err(err: TransportError) -> ASCOMError {
+        StarAdvError::from(SessionError::<crate::codec::SkywatcherCodecError>::Transport(err))
+            .to_ascom_error()
     }
 
     /// Validate an RA value (hours, [0, 24)) and a Dec value (degrees,
@@ -233,7 +253,11 @@ impl MountDevice {
     /// call `stop_axis_and_wait` directly (no `MountDevice` to wrap
     /// the error).
     pub(super) async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
-        stop_axis_and_wait(&self.transport, axis, AXIS_STOP_TIMEOUT)
+        let guard = self.session.read().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| Self::ascom(StarAdvError::NotConnected))?;
+        stop_axis_and_wait(&self.manager, session, axis, AXIS_STOP_TIMEOUT)
             .await
             .map_err(Self::ascom)
     }
@@ -250,7 +274,7 @@ impl MountDevice {
     /// well above any realistic real-mount slew but finite — a stuck
     /// watcher must not block an Alpaca request forever.
     pub(super) async fn await_slew_complete(&self) -> ASCOMResult<()> {
-        let poll = self.transport.polling_interval_for_watcher();
+        let poll = self.manager.polling_interval_for_watcher();
         let deadline = std::time::Instant::now() + SYNC_SLEW_TIMEOUT;
         while std::time::Instant::now() < deadline {
             if !self.slewing().await? {
@@ -286,7 +310,10 @@ impl MountDevice {
     /// malformed JSON, lost transport mid-load) can be rolled back by the
     /// caller without leaking the connection ref-count. See the design
     /// doc's §"Park lifecycle" for the resolution rules.
-    pub(super) async fn load_park_target_after_connect(&self) -> ASCOMResult<()> {
+    pub(super) async fn load_park_target_after_connect(
+        &self,
+        _session: &Session<SkywatcherCodec>,
+    ) -> ASCOMResult<()> {
         let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
             let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
                 .await
@@ -307,7 +334,7 @@ impl MountDevice {
         // post-seed encoder state. Using the pre-seed handshake reading
         // would default the park target to firmware-zero (mech_HA = 0h,
         // mech_dec = 0°) — not the home_pose the operator powered up at.
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         let ra_target = config_ra.unwrap_or(snap.ra.position_ticks);
         let dec_target = config_dec.unwrap_or(snap.dec.position_ticks);
         {
@@ -354,7 +381,10 @@ impl MountDevice {
     /// mid-session after a slew is safe (the non-zero-encoder guard
     /// catches it — a real slew lands tens of thousands of ticks away
     /// from zero, well outside the tolerance).
-    pub(super) async fn seed_home_pose_after_connect(&self) -> ASCOMResult<()> {
+    pub(super) async fn seed_home_pose_after_connect(
+        &self,
+        session: &Session<SkywatcherCodec>,
+    ) -> ASCOMResult<()> {
         let Some(home_pose) = self.config.home_pose else {
             // No pose configured — trust the firmware encoder as-is.
             // This is the codebase's historical (pre-Phase-6) behaviour
@@ -362,11 +392,11 @@ impl MountDevice {
             return Ok(());
         };
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let snap = self.transport.snapshot().await;
+        let snap = self.manager.snapshot().await;
         info!(
             pre_seed_ra_ticks = snap.ra.position_ticks,
             pre_seed_dec_ticks = snap.dec.position_ticks,
@@ -388,22 +418,28 @@ impl MountDevice {
         let dec_deg = home_pose.codebase_dec_encoder_degrees(self.config.site_latitude_deg);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
-        self.transport
-            .send(Command::SetPosition {
-                axis: Axis::Ra,
-                ticks: ra_ticks,
-            })
+        self.manager
+            .send(
+                session,
+                Command::SetPosition {
+                    axis: Axis::Ra,
+                    ticks: ra_ticks,
+                },
+            )
             .await
             .map_err(Self::ascom)?;
-        self.transport.seed_ra_position(ra_ticks).await;
-        self.transport
-            .send(Command::SetPosition {
-                axis: Axis::Dec,
-                ticks: dec_ticks,
-            })
+        self.manager.seed_ra_position(ra_ticks).await;
+        self.manager
+            .send(
+                session,
+                Command::SetPosition {
+                    axis: Axis::Dec,
+                    ticks: dec_ticks,
+                },
+            )
             .await
             .map_err(Self::ascom)?;
-        self.transport.seed_dec_position(dec_ticks).await;
+        self.manager.seed_dec_position(dec_ticks).await;
         info!(
             seeded_ra_ticks = ra_ticks,
             seeded_dec_ticks = dec_ticks,
@@ -439,7 +475,7 @@ impl MountDevice {
         chosen_side: PierSide,
     ) -> ASCOMResult<()> {
         let params = self
-            .transport
+            .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -481,7 +517,7 @@ impl MountDevice {
         // From here on, any error path must clear `slew_in_progress`
         // — otherwise the driver gets stuck reporting Slewing forever.
         let result: ASCOMResult<()> = async {
-            let snap = self.transport.snapshot().await;
+            let snap = self.manager.snapshot().await;
             let current_side = side_of_pier_calc(
                 snap.dec.position_ticks,
                 params.cpr_dec,
@@ -548,13 +584,17 @@ impl MountDevice {
             // mirror that into the in-memory `tracking_requested`
             // flag only after the stop has actually succeeded so the
             // state never gets ahead of the wire on transport failures.
+            let guard = self.session.read().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| Self::ascom(StarAdvError::NotConnected))?;
             self.stop_and_wait(Axis::Ra).await?;
             self.state.write().await.tracking_requested = false;
-            issue_slew_axis(&self.transport, Axis::Ra, ra_delta)
+            issue_slew_axis(&self.manager, session, Axis::Ra, ra_delta)
                 .await
                 .map_err(Self::ascom)?;
             self.stop_and_wait(Axis::Dec).await?;
-            issue_slew_axis(&self.transport, Axis::Dec, dec_delta)
+            issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
                 .await
                 .map_err(Self::ascom)?;
             Ok(())
@@ -565,19 +605,24 @@ impl MountDevice {
             return Err(e);
         }
 
-        // Hand off to the completion watcher.
+        // Hand off to the completion watcher. The watcher acquires its
+        // own session so the user's disconnect path doesn't have to
+        // wait for slews to finish — see `spawn_slew_completion_watcher`.
         let settle = {
             let s = self.state.read().await;
             s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
         };
         spawn_slew_completion_watcher(
             Arc::clone(&self.state),
-            Arc::clone(&self.transport),
+            Arc::clone(&self.manager),
+            Arc::clone(&self.session),
             self.config.clone(),
-            self.transport.polling_interval_for_watcher(),
+            self.manager.polling_interval_for_watcher(),
             settle,
             tracking_was_on,
-        );
+        )
+        .await
+        .map_err(Self::ascom)?;
         Ok(())
     }
 }

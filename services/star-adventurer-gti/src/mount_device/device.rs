@@ -1,10 +1,11 @@
 //! ASCOM `IDevice` trait implementation for [`MountDevice`].
 //!
 //! Mostly trivial getters that pass through to [`MountConfig`]; the
-//! interesting method is `set_connected` which drives the
-//! `TransportManager` ref-count and, on a 0→1 transition, runs the
-//! post-connect hooks (`seed_home_pose_after_connect` then
-//! `load_park_target_after_connect`) with rollback-on-error.
+//! interesting method is `set_connected` which drives the shared
+//! transport's session refcount and, on a 0→1 transition, runs the
+//! post-acquire fallible hooks (`seed_home_pose_after_connect` then
+//! `load_park_target_after_connect`) with structural rollback via
+//! `session.close().await` on any error.
 
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
@@ -28,53 +29,59 @@ impl Device for MountDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        let requested = *self.requested_connection.read().await;
-        Ok(requested && self.transport.is_available())
+        Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        let mut req = self.requested_connection.write().await;
-        if *req == connected {
-            return Ok(());
-        }
-        if connected {
-            self.transport.connect().await.map_err(Self::ascom)?;
-            // Post-connect work that can fail (config-file read, parameter
-            // cache lookup, encoder seed) runs in functions that the
-            // caller can roll back on any error — otherwise the transport
-            // ref-count would stay incremented while `*req` remained
-            // false, leaking a connection. Per the Copilot review on
-            // PR #221 (comment 3238682044).
-            //
-            // Order matters: `seed_home_pose_after_connect` runs FIRST so
-            // the snapshot reflects the home_pose's logical encoder values
-            // before `load_park_target_after_connect` picks its default
-            // park target from the snapshot. Otherwise the handshake's
-            // pre-seed reading (firmware-zero on a fresh power-up) would
-            // become the park fallback and `Park` would drive the mount
-            // to mech_HA = 0h / mech_dec = 0° instead of the home pose.
-            if let Err(e) = self.seed_home_pose_after_connect().await {
-                if let Err(disc_err) = self.transport.disconnect().await {
-                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+        // Holding the session write lock for the entire check-and-modify
+        // ensures two concurrent `Connected=true` requests can't both
+        // observe `None` and both call `acquire()`. The session slot
+        // replacing the old `requested_connection` bool means the flag
+        // and the resource are the same value — there is no second
+        // source to desync from the shared transport's refcount.
+        let mut slot = self.session.write().await;
+        match (connected, slot.is_some()) {
+            (true, false) => {
+                let session = self
+                    .manager
+                    .transport()
+                    .acquire()
+                    .await
+                    .map_err(Self::ascom_session_err)?;
+                // Post-acquire fallible work. Order matters:
+                // `seed_home_pose_after_connect` runs FIRST so the
+                // snapshot reflects the home_pose's logical encoder
+                // values before `load_park_target_after_connect`
+                // picks its default park target from the snapshot.
+                // Otherwise the handshake's pre-seed reading (firmware
+                // zero on a fresh power-up) would become the park
+                // fallback. On any failure, `session.close().await`
+                // synchronously closes — propagating its result so
+                // the user sees a real error instead of a swallowed
+                // warning (the pre-migration "rollback-disconnect
+                // failed" log branch is gone).
+                if let Err(e) = self.seed_home_pose_after_connect(&session).await {
+                    session.close().await.map_err(Self::ascom_transport_err)?;
+                    return Err(e);
                 }
-                return Err(e);
-            }
-            if let Err(e) = self.load_park_target_after_connect().await {
-                if let Err(disc_err) = self.transport.disconnect().await {
-                    tracing::warn!("disconnect during set_connected rollback failed: {disc_err}");
+                if let Err(e) = self.load_park_target_after_connect(&session).await {
+                    session.close().await.map_err(Self::ascom_transport_err)?;
+                    return Err(e);
                 }
-                return Err(e);
+                *slot = Some(session);
             }
-            *req = true;
-        } else {
-            self.transport.disconnect().await.map_err(Self::ascom)?;
-            *req = false;
-            // Disconnect resets the per-session client state but leaves
-            // mechanical state (`at_park`) intact — the mount's encoder
-            // doesn't move just because we closed the socket. See
-            // [`super::DriverState::reset_for_disconnect`] for the field-
-            // by-field rationale.
-            self.state.write().await.reset_for_disconnect();
+            (false, true) => {
+                if let Some(session) = slot.take() {
+                    session.close().await.map_err(Self::ascom_transport_err)?;
+                }
+                // Disconnect resets the per-session client state but leaves
+                // mechanical state (`at_park`) intact — the mount's encoder
+                // doesn't move just because we closed the socket. See
+                // [`super::DriverState::reset_for_disconnect`] for the field-
+                // by-field rationale.
+                self.state.write().await.reset_for_disconnect();
+            }
+            _ => {}
         }
         debug!(connected, "set_connected");
         Ok(())

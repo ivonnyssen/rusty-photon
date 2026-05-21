@@ -4,7 +4,7 @@
 //! (hours and degrees). Bridging the two requires:
 //!
 //! * Counts-per-revolution (per axis, queried at handshake — see
-//!   [`MountParameters`](crate::transport_manager::MountParameters)).
+//!   [`MountParameters`](crate::manager::MountParameters)).
 //! * The sync offset (added on read, subtracted on write — set by
 //!   `SyncToCoordinates`).
 //! * Local apparent sidereal time (computed from host UTC + site
