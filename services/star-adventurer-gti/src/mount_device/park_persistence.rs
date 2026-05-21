@@ -129,15 +129,20 @@ pub(super) fn read_park_from_config(
 ///
 /// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
 ///   falls back to the handshake-captured value).
-/// - A JSON integer in the `i32` range → `Ok(Some(n))`.
-/// - Anything else (string, float, boolean, array/object, i64 outside
-///   `i32` range) → `Err(StarAdvError::Config)`. Loud failure on
-///   operator typo is the whole reason this helper exists — silently
-///   falling back to handshake would mask the misconfiguration.
+/// - A JSON integer in the signed-24-bit encoder range
+///   `[POSITION_MIN, POSITION_MAX]` → `Ok(Some(n))`.
+/// - Anything else (string, float, boolean, array/object, integer
+///   outside the i24 encoder range) → `Err(StarAdvError::Config)`.
+///   Loud failure on operator typo is the whole reason this helper
+///   exists — silently falling back to handshake would mask the
+///   misconfiguration, and silently accepting an out-of-range value
+///   would only defer the failure to `MountManager::send`'s
+///   pre-encode validation at the first park attempt.
 fn extract_park_tick(
     value: Option<&serde_json::Value>,
     key: &'static str,
 ) -> crate::error::Result<Option<i32>> {
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
     match value {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(v) => {
@@ -146,11 +151,18 @@ fn extract_park_tick(
                     "`{key}` must be an integer (encoder ticks), got {v}"
                 ))
             })?;
-            i32::try_from(n).map(Some).map_err(|_| {
+            let ticks = i32::try_from(n).map_err(|_| {
                 StarAdvError::Config(format!(
                     "`{key}` value {n} is outside the i32 encoder-tick range"
                 ))
-            })
+            })?;
+            if !(POSITION_MIN..=POSITION_MAX).contains(&ticks) {
+                return Err(StarAdvError::Config(format!(
+                    "`{key}` value {ticks} is outside the signed-24-bit encoder \
+                     range [{POSITION_MIN}, {POSITION_MAX}]"
+                )));
+            }
+            Ok(Some(ticks))
         }
     }
 }

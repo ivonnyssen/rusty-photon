@@ -185,11 +185,22 @@ impl MountManager {
     /// Send one command on the caller's session, return one typed
     /// response. Does *not* update the snapshot — the background
     /// poller (and `poll_axes_now`) own that responsibility.
+    ///
+    /// Pre-validates command variants whose
+    /// [`skywatcher_motor_protocol::Command::encode`] is fallible
+    /// (currently [`Command::SetPosition`] / [`Command::SetGotoTarget`],
+    /// both of which call `encode_position` on an `i32` tick value that
+    /// must fit in signed-24-bit range). The validation lives here so
+    /// every send path on the service shares one check and the codec's
+    /// `encode` is reached only with already-valid inputs. A
+    /// validation failure returns [`StarAdvError::InvalidValue`]
+    /// without touching the wire.
     pub async fn send(
         &self,
         session: &Session<SkywatcherCodec>,
         command: Command,
     ) -> Result<Response> {
+        validate_command_args(&command)?;
         let bytes = session
             .request(command.clone())
             .await
@@ -505,6 +516,36 @@ fn expect_status_runtime(r: Response) -> Result<AxisStatus> {
         other => Err(StarAdvError::Transport(format!(
             "expected Status, got {other:?}"
         ))),
+    }
+}
+
+/// Pre-validate any [`Command`] variant whose
+/// [`Command::encode`](skywatcher_motor_protocol::Command::encode) is
+/// fallible, so the codec layer never reaches the encode-error path.
+///
+/// Today the only fallible variants are [`Command::SetPosition`] and
+/// [`Command::SetGotoTarget`], both of which call
+/// [`encode_position`](skywatcher_motor_protocol::codec::encode_position)
+/// on an `i32` tick value that must fit in signed-24-bit range
+/// (`[POSITION_MIN, POSITION_MAX]` ≈ ±2²³ ≈ ±8.4M). For the GTi's CPR
+/// of ~3.6M, any in-range RA/Dec produces ticks well inside that
+/// envelope; this check is the safety net for misconfigured park
+/// targets, a future bug in coordinate-conversion math, or a different
+/// CPR firmware variant.
+fn validate_command_args(cmd: &Command) -> Result<()> {
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+    let (axis, ticks, kind) = match cmd {
+        Command::SetPosition { axis, ticks } => (*axis, *ticks, "SetPosition"),
+        Command::SetGotoTarget { axis, ticks } => (*axis, *ticks, "SetGotoTarget"),
+        _ => return Ok(()),
+    };
+    if (POSITION_MIN..=POSITION_MAX).contains(&ticks) {
+        Ok(())
+    } else {
+        Err(StarAdvError::InvalidValue(format!(
+            "{kind} {{ axis: {axis:?}, ticks: {ticks} }} is outside the signed-24-bit \
+             encoder range [{POSITION_MIN}, {POSITION_MAX}]"
+        )))
     }
 }
 
@@ -953,5 +994,105 @@ mod tests {
             !manager.is_available(),
             "RollbackGuard should roll the refcount back on handshake failure"
         );
+    }
+
+    // ========================================================================
+    // Pre-encode validation: SetPosition / SetGotoTarget commands whose
+    // `ticks` falls outside the signed-24-bit encoder range must be rejected
+    // at `MountManager::send` with a structured `InvalidValue` error, *not*
+    // reach the codec's `encode` (where the prior `.expect(...)` would have
+    // panicked). See PR #285 Copilot review on codec.rs.
+    // ========================================================================
+
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+
+    #[tokio::test]
+    async fn send_set_position_with_in_range_ticks_succeeds() {
+        // Sanity: the validation is permissive at the boundaries —
+        // POSITION_MAX is accepted (and the mock factory acks any
+        // `:E` write, so the round-trip completes).
+        let manager = manager();
+        let session = manager.transport().acquire().await.unwrap();
+        let resp = manager
+            .send(
+                &session,
+                Command::SetPosition {
+                    axis: Axis::Ra,
+                    ticks: POSITION_MAX,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(resp, Response::Ack));
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_set_position_with_overflow_ticks_returns_invalid_value_without_touching_wire() {
+        // `POSITION_MAX + 1` is just past the encoder's signed-24-bit
+        // ceiling. `MountManager::send` rejects it before calling
+        // `Codec::encode`, so the wire is never touched and the
+        // codec's encode-error path is unreachable in practice.
+        let manager = manager();
+        let session = manager.transport().acquire().await.unwrap();
+        let err = manager
+            .send(
+                &session,
+                Command::SetPosition {
+                    axis: Axis::Ra,
+                    ticks: POSITION_MAX + 1,
+                },
+            )
+            .await
+            .expect_err("out-of-range ticks must be rejected before wire");
+        match err {
+            StarAdvError::InvalidValue(s) => {
+                assert!(s.contains("SetPosition"));
+                assert!(s.contains("signed-24-bit"));
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_set_goto_target_with_underflow_ticks_returns_invalid_value() {
+        // Mirror for the other fallible variant. `POSITION_MIN - 1`
+        // is the i24 floor's underflow.
+        let manager = manager();
+        let session = manager.transport().acquire().await.unwrap();
+        let err = manager
+            .send(
+                &session,
+                Command::SetGotoTarget {
+                    axis: Axis::Dec,
+                    ticks: POSITION_MIN - 1,
+                },
+            )
+            .await
+            .expect_err("out-of-range ticks must be rejected before wire");
+        match err {
+            StarAdvError::InvalidValue(s) => {
+                assert!(s.contains("SetGotoTarget"));
+                assert!(s.contains("signed-24-bit"));
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        session.close().await.unwrap();
+    }
+
+    #[test]
+    fn validate_command_args_passes_non_position_commands_through() {
+        // The validator only touches the two fallible-encode variants;
+        // every other command shape (Initialize, Status reads,
+        // StopMotion, …) must pass through untouched.
+        for cmd in [
+            Command::Initialize(Axis::Ra),
+            Command::InquirePosition(Axis::Dec),
+            Command::StopMotion(Axis::Ra),
+            Command::InquireCpr(Axis::Dec),
+        ] {
+            assert!(validate_command_args(&cmd).is_ok(), "rejected {cmd:?}");
+        }
     }
 }

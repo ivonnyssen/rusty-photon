@@ -105,15 +105,34 @@ impl Codec for SkywatcherCodec {
     type Error = SkywatcherCodecError;
 
     fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
-        // `Command::encode` only fails on out-of-range numeric arguments —
-        // every command construction in this crate is checked at the
-        // type level (positions go through `encode_position`, etc.), so
-        // an encode error here is a driver bug rather than a runtime
-        // condition. Surfacing the panic immediately is preferable to
-        // a `SessionError::Codec` that the caller would have to
-        // interpret as "wire problem."
-        cmd.encode()
-            .expect("command encoding must succeed for typed commands")
+        // `Command::encode` only fails on out-of-range numeric arguments
+        // (currently the `i32` ticks fed to `encode_position` inside
+        // `SetPosition` / `SetGotoTarget`).
+        // [`crate::MountManager::send`] validates those variants before
+        // they ever reach the codec, so this branch should be
+        // unreachable in well-formed call paths.
+        //
+        // Defensive fallback: if a future call site bypasses the
+        // manager and constructs an unencodable command, log loudly and
+        // return an empty frame. The transport writes 0 bytes, the
+        // peer never replies, and `Session::request` surfaces a
+        // `Transport(Timeout)` to the ASCOM caller. Misleading vs the
+        // real cause (a programming bug), but never a service crash —
+        // see the trailing log line for the bug-report hint.
+        match cmd.encode() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!(
+                    command = ?cmd,
+                    error = %e,
+                    "SkywatcherCodec::encode failed unexpectedly; returning empty frame so the \
+                     downstream request surfaces as Transport(Timeout) rather than panicking. \
+                     This indicates a Command was constructed without MountManager::send's \
+                     range validation \u{2014} file a bug."
+                );
+                Vec::new()
+            }
+        }
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
