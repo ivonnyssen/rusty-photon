@@ -167,7 +167,11 @@ state) that are exercised here only as a fallback / liveness ping.
 
 The handshake on connect issues `[GFRM]`. A non-empty response identifying
 "DeepSkyDad.FP2" succeeds; anything else fails the connection with a
-clear error. The firmware string is cached for `driver_info()`.
+clear error. The board / version strings are stashed in `CachedState`
+(`firmware_board` / `firmware_version`) for diagnostics and future
+heater-Switch use; ASCOM `driver_info()` returns a static driver
+identity string and does not include them, per the convention that
+`driver_info` describes the *driver*, not the connected hardware.
 
 ## ASCOM CoverCalibrator Mapping
 
@@ -185,7 +189,11 @@ calibration light source. The mapping is:
 | `0`      | `1`      | `Open`                |
 | `0`      | other    | `Unknown`             |
 | —        | —        | `Unknown` (disconnected) |
-| parse err| —        | `Error`               |
+
+Codec-layer parse failures don't surface as `CoverState::Error`; they
+propagate as `DsdFp2Error::MalformedResponse` through the request's
+`Result` path, and the cached value the derivation reads from is simply
+not refreshed for that tick.
 
 ### CalibratorState Derivation
 
@@ -195,9 +203,11 @@ calibration light source. The mapping is:
 |----------|-------------------|
 | `0`      | `Off`             |
 | `1`      | `Ready`           |
-| other    | `Unknown`         |
 | —        | `Unknown` (disconnected) |
-| parse err| `Error`           |
+
+Same parse-failure note as above: a malformed `[GLON]` response
+propagates as `DsdFp2Error::MalformedResponse`, not as
+`CalibratorState::Error`.
 
 The FP2's EL panel reaches commanded brightness in well under a poll
 interval, so we never report `NotReady`. The default
@@ -211,7 +221,7 @@ without any driver-specific code.
 | `cover_state()`               | _(cached)_                              | Derived from cached `[GMOV]` + `[GOPS]`                                                              |
 | `calibrator_state()`          | _(cached)_                              | Derived from cached `[GLON]`                                                                         |
 | `brightness()`                | _(cached)_                              | Cached `[GLBR]`                                                                                      |
-| `max_brightness()`            | _(constant)_                            | `4096`                                                                                               |
+| `max_brightness()`            | _(cached)_                              | `min(config.max_brightness, MAX_BRIGHTNESS = 4096)` — the effective cap, advertised to ASCOM clients. |
 | `open_cover()`                | `[STRG0]` → `(OK)` ; `[SMOV]` → `(OK)`  | Asynchronous; `cover_state` reports `Moving` until polled `[GMOV]→(0)`.                              |
 | `close_cover()`               | `[STRG270]` → `(OK)` ; `[SMOV]` → `(OK)` | Same as above.                                                                                      |
 | `halt_cover()`                | — (returns `MethodNotImplementedException`) | The FP2 firmware has no halt-motion opcode; per the ASCOM spec, `HaltCover` MUST throw `MethodNotImplementedException` when cover movement cannot be interrupted. |
@@ -223,10 +233,14 @@ without any driver-specific code.
 
 ### Validation
 
-- `calibrator_on(brightness)`: a brightness over `MaxBrightness` (4096) is
-  rejected with `ASCOMError::INVALID_VALUE`. Zero is accepted and forwarded
-  unchanged (the device treats `[SLBR0000]` + `[SLON1]` as "on at zero",
-  which is what the spec calls for).
+- `calibrator_on(brightness)`: validated against the effective max
+  (`min(config.max_brightness, MAX_BRIGHTNESS = 4096)`) so the value
+  `max_brightness()` advertises and the value `calibrator_on` accepts
+  agree even when the config caps below the hardware ceiling. Brightness
+  above the effective cap is rejected with `ASCOMError::INVALID_VALUE`.
+  Zero is accepted and forwarded unchanged (the device treats
+  `[SLBR0000]` + `[SLON1]` as "on at zero", which is what the spec calls
+  for).
 - All writes (open/close, calibrator on/off, brightness changes) require
   `connected == true`; otherwise the driver returns `ASCOMError::NOT_CONNECTED`.
 
@@ -307,15 +321,16 @@ shuffle the FP2 onto a different `ttyACM*`.
 All driver errors flow through `DsdFp2Error` (defined in `error.rs`) and
 are converted to `ASCOMError` for protocol boundaries:
 
-| Internal error               | ASCOM error code                       |
-|------------------------------|-----------------------------------------|
-| `NotConnected`               | `NOT_CONNECTED`                        |
-| `InvalidValue(String)`       | `INVALID_VALUE`                        |
-| `Timeout(_)`                 | `UNSPECIFIED` with `Operation timed out` message |
-| `Communication(_)`           | `UNSPECIFIED`                          |
-| `MalformedResponse(_)`       | `UNSPECIFIED`                          |
-| `Io(_)`                      | `UNSPECIFIED`                          |
-| `HandshakeFailed(_)`         | `NOT_CONNECTED` (connect path)        |
+| Internal error               | ASCOM error code     |
+|------------------------------|----------------------|
+| `NotConnected`               | `NOT_CONNECTED`      |
+| `HandshakeFailed(_)`         | `NOT_CONNECTED`      |
+| `InvalidValue(String)`       | `INVALID_VALUE`      |
+| `Timeout(_)`                 | `INVALID_OPERATION`  |
+| `Communication(_)`           | `INVALID_OPERATION`  |
+| `MalformedResponse(_)`       | `INVALID_OPERATION`  |
+| `Io(_)`                      | `INVALID_OPERATION`  |
+| `SerialPort(_)`              | `INVALID_OPERATION`  |
 
 `debug!` is used for the per-operation breadcrumbs; only the
 once-per-lifecycle messages (server bound, port opened, port closed) use

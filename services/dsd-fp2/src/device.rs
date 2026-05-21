@@ -434,15 +434,16 @@ mod mock_tests {
         let (device, _) = make_device();
         device.set_connected(true).await.unwrap();
 
-        // Default is open; close it.
+        // Default is closed (mock `cover_angle = 270`). Close again to
+        // exercise the wire path even though it's a no-op for the cover
+        // angle; the manager's snapshot is still directly poked to
+        // Moving.
         device.close_cover().await.unwrap();
-        // After close, the manager's snapshot was directly poked to Moving;
-        // since our mock completes moves instantly inside `[SMOV]`, the
-        // motor is no longer running on the device side. But our local
-        // optimistic write set motor_running = Some(true). The next poll
-        // would correct this; for now we just verify the call succeeded
-        // and the cover snapshot updates on subsequent reads through the
-        // session.
+        // After close, our local optimistic write set motor_running =
+        // Some(true). Our mock completes moves instantly inside `[SMOV]`,
+        // so the motor is no longer running on the device side; the next
+        // poll would correct the cache. For now we just verify the call
+        // succeeded and exercise the open path too.
         device.open_cover().await.unwrap();
         device.set_connected(false).await.unwrap();
     }

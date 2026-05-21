@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn from_frame_rejects_missing_brackets() {
+    fn from_frame_rejects_missing_parens() {
         assert!(matches!(
             RawResponse::from_frame("OK"),
             Err(DsdFp2Error::MalformedResponse(_))
