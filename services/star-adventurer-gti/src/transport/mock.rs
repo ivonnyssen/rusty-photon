@@ -753,6 +753,111 @@ mod tests {
         assert!(matches!(err, TransportError::Framing(_)));
     }
 
+    /// Test matrix for the per-command CommandLengthError (`!01\r`) +
+    /// InvalidCharacter (`!03\r`) branches in `process_command`. Real
+    /// drivers never emit malformed payloads, so these branches are
+    /// only reachable from direct `send_frame` calls with bogus
+    /// frames. Exercising them here keeps the mock's defensive
+    /// per-command parser logic from rotting silently.
+    #[tokio::test]
+    async fn set_motion_mode_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        // `:G1\r` is missing the 2-hex mode byte → CommandLengthError.
+        let reply = round_trip(&mut t, b":G1\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_motion_mode_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        // Two-byte payload but neither is a hex digit → InvalidCharacter.
+        let reply = round_trip(&mut t, b":G1ZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
+    #[tokio::test]
+    async fn set_goto_target_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        // `:S1ABC\r` is 3 hex chars; needs 6 → CommandLengthError.
+        let reply = round_trip(&mut t, b":S1ABC\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_goto_target_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":S1ZZZZZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
+    #[tokio::test]
+    async fn set_goto_increment_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":H1ABC\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_goto_increment_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":H1ZZZZZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoint_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":M1ABC\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoint_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":M1ZZZZZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
+    #[tokio::test]
+    async fn set_step_period_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":I1ABC\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_step_period_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":I1ZZZZZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
+    #[tokio::test]
+    async fn set_position_rejects_short_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":E1ABC\r").await;
+        assert_eq!(reply, b"!01\r");
+    }
+
+    #[tokio::test]
+    async fn set_position_rejects_non_hex_payload() {
+        let factory = MockTransportFactory;
+        let mut t = open(&factory).await;
+        let reply = round_trip(&mut t, b":E1ZZZZZZ\r").await;
+        assert_eq!(reply, b"!03\r");
+    }
+
     #[tokio::test]
     async fn unknown_command_letter_returns_unknown_command_error() {
         let factory = MockTransportFactory;

@@ -450,6 +450,44 @@ async fn slew_async_refuses_while_disconnected() {
 }
 
 #[test]
+fn ascom_session_err_helper_flattens_session_error_into_ascom() {
+    // `MountDevice::ascom_session_err` wraps
+    // `SessionError<SkywatcherCodecError>` -> `StarAdvError`
+    // -> `ASCOMError` for the `set_connected(true)` acquire path.
+    // The two failure-mode branches the production code hits are
+    // factory-open (mapped to `INVALID_OPERATION` via
+    // `ConnectionFailed`) and codec/protocol errors (mapped to
+    // `INVALID_OPERATION` via `Protocol`).
+    use rusty_photon_shared_transport::{SessionError, TransportError};
+    let err = MountDevice::ascom_session_err(
+        SessionError::<crate::codec::SkywatcherCodecError>::Transport(TransportError::Open(
+            std::io::Error::other("port busy"),
+        )),
+    );
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("port busy"));
+
+    let err = MountDevice::ascom_session_err(SessionError::Codec(
+        crate::codec::SkywatcherCodecError::Protocol(
+            skywatcher_motor_protocol::ProtocolError::FrameError("malformed".into()),
+        ),
+    ));
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+#[test]
+fn ascom_transport_err_helper_flattens_transport_error_into_ascom() {
+    // `MountDevice::ascom_transport_err` is the disconnect-side
+    // mapping called from `set_connected(false)` when
+    // `session.close().await` fails. The Eof branch is the
+    // most-observable one (a half-open peer at teardown time).
+    use rusty_photon_shared_transport::TransportError;
+    let err = MountDevice::ascom_transport_err(TransportError::Eof);
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("connection closed"));
+}
+
+#[test]
 fn ascom_helper_maps_timekeeping_to_invalid_operation() {
     // Every LST-using trait method propagates ERFA failures via
     // `local_sidereal_time_hours(...).map_err(Self::ascom)?`. A

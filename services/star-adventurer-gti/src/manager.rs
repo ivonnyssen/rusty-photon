@@ -727,6 +727,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_timeout_returns_configured_value() {
+        // `command_timeout` is a public accessor used by hand-rolled
+        // callers (the BDD harness sometimes reaches for it). Verify
+        // it round-trips the configured value across both transports.
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.command_timeout = Duration::from_millis(123);
+        }
+        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        assert_eq!(m.command_timeout(), Duration::from_millis(123));
+
+        let cfg = Config {
+            transport: TransportConfig::Udp(crate::config::UdpConfig {
+                command_timeout: Duration::from_millis(456),
+                ..crate::config::UdpConfig::default()
+            }),
+            ..Config::default()
+        };
+        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        assert_eq!(m.command_timeout(), Duration::from_millis(456));
+    }
+
+    #[test]
+    fn expect_ack_rejects_non_ack_responses() {
+        // The `expect_*` helpers underpin the handshake's contract
+        // that the mount returns the right response shape per query;
+        // wrong-shape replies must bubble out as a codec/protocol
+        // error rather than silently being mis-decoded.
+        assert!(matches!(expect_ack(Response::Ack), Ok(()),));
+        let err = expect_ack(Response::U24(0)).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+        let err = expect_ack(Response::Position(0)).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+    }
+
+    #[test]
+    fn expect_u24_rejects_non_u24_responses() {
+        assert_eq!(expect_u24(Response::U24(42)).unwrap(), 42);
+        let err = expect_u24(Response::Ack).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+        let err = expect_u24(Response::Position(0)).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+    }
+
+    #[test]
+    fn expect_position_rejects_non_position_responses() {
+        assert_eq!(expect_position(Response::Position(-7)).unwrap(), -7);
+        let err = expect_position(Response::Ack).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+        let err = expect_position(Response::U24(0)).unwrap_err();
+        assert!(matches!(err, SkywatcherCodecError::Protocol(_)));
+    }
+
+    #[test]
+    fn expect_position_runtime_rejects_non_position() {
+        assert_eq!(expect_position_runtime(Response::Position(42)).unwrap(), 42);
+        let err = expect_position_runtime(Response::Ack).unwrap_err();
+        assert!(matches!(err, StarAdvError::Transport(_)));
+    }
+
+    #[test]
+    fn expect_status_runtime_rejects_non_status() {
+        // Construct a default AxisStatus so we can ensure the round-trip
+        // works on the happy path before exercising the error branch.
+        let status = AxisStatus {
+            running: false,
+            goto: false,
+            ccw: false,
+            fast: false,
+            blocked: false,
+            initialized: true,
+            level_switch_on: false,
+        };
+        let s = expect_status_runtime(Response::Status(status)).unwrap();
+        assert!(s.initialized);
+        let err = expect_status_runtime(Response::Ack).unwrap_err();
+        assert!(matches!(err, StarAdvError::Transport(_)));
+    }
+
+    #[tokio::test]
     async fn teardown_sends_halt_sequence() {
         // After session.close, the teardown hook should have issued
         // :L1, :L2, :K1 in order. Use CapturingMockFactory to inspect.

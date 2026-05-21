@@ -330,4 +330,43 @@ mod tests {
             other => panic!("expected Transport, got {other:?}"),
         }
     }
+
+    #[test]
+    fn session_error_transport_io_preserves_io_kind() {
+        // The Io branch routes the inner `io::Error` through
+        // `StarAdvError::Io(_)` so the kind survives the conversion
+        // — important for callers that pattern-match
+        // `ErrorKind::BrokenPipe` etc.
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err: SessionError<SkywatcherCodecError> =
+            SessionError::Transport(TransportError::Io(io_err));
+        match StarAdvError::from(err) {
+            StarAdvError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_framing_maps_to_transport_with_prefix() {
+        // The Framing branch flattens the wire-side framing error
+        // string into `StarAdvError::Transport(...)` with a "framing: "
+        // prefix so logs can tell it apart from other transport faults.
+        let err: SessionError<SkywatcherCodecError> =
+            SessionError::Transport(TransportError::Framing("too big".to_string()));
+        match StarAdvError::from(err) {
+            StarAdvError::Transport(s) => {
+                assert!(s.starts_with("framing:") && s.contains("too big"));
+            }
+            other => panic!("expected Transport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_error_transport_eof_maps_to_connection_closed() {
+        let err: SessionError<SkywatcherCodecError> = SessionError::Transport(TransportError::Eof);
+        match StarAdvError::from(err) {
+            StarAdvError::Transport(s) => assert!(s.contains("connection closed")),
+            other => panic!("expected Transport, got {other:?}"),
+        }
+    }
 }
