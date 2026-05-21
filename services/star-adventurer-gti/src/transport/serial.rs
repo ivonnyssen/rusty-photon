@@ -63,7 +63,12 @@ impl TransportFactory for SerialTransportFactory {
         let stream = tokio_serial::new(&self.port, self.baud_rate)
             .timeout(self.command_timeout)
             .open_native_async()
-            .map_err(|e| TransportError::Open(io::Error::other(e.to_string())))?;
+            .map_err(|e| {
+                TransportError::Open(io::Error::other(format!(
+                    "failed to open {}: {e}",
+                    self.port
+                )))
+            })?;
 
         let transport = SerialFrameTransport::new(stream, b'\r', MAX_FRAME_SIZE)
             .with_read_timeout(self.command_timeout)

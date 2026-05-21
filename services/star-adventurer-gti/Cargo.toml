@@ -22,7 +22,6 @@ skywatcher-motor-protocol = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
-tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 humantime-serde = { workspace = true }
