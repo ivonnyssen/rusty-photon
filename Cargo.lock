@@ -3048,6 +3048,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",

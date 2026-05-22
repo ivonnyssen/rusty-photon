@@ -112,8 +112,10 @@ impl FalconRotatorWorld {
         let server_handle = tokio::spawn(async move {
             // BoundServer::start returns `Result<(), Box<dyn Error>>`; the
             // error type is `!Send` so we collapse it to `()` here before
-            // letting the spawn machinery see the output.
-            if bound.start().await.is_err() {
+            // letting the spawn machinery see the output. The shutdown
+            // future never resolves; the test tears the task down by
+            // aborting the JoinHandle in `World::shutdown`.
+            if bound.start(std::future::pending::<()>()).await.is_err() {
                 // tear-down on shutdown is normal; nothing to log.
             }
         });
