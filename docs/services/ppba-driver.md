@@ -209,7 +209,7 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
 ppba-driver/
 ├── src/
 │   ├── lib.rs                        # Crate root, ServerBuilder
-│   ├── main.rs                       # CLI entry point
+│   ├── main.rs                       # CLI entry point; lifecycle owned by rusty-photon-service-lifecycle::ServiceRunner
 │   ├── config.rs                     # Configuration types
 │   ├── error.rs                      # Error types
 │   ├── switch_device.rs              # ASCOM Switch implementation

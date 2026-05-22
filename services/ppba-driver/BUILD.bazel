@@ -7,6 +7,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-i18n:rusty-photon-i18n",
     "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
     "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
 ]
 
