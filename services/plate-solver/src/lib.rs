@@ -15,6 +15,7 @@ pub use error::{AppError, ErrorCode, ErrorResponse};
 pub use runner::astap::AstapCliRunner;
 pub use runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest};
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -114,35 +115,16 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Run the server until shutdown. Listens for SIGTERM (Unix) or
-    /// CTRL_BREAK_EVENT (Windows) and shuts down gracefully.
-    pub async fn start(self) -> Result<(), std::io::Error> {
+    /// Run the server until `shutdown` resolves. The runner
+    /// ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns signal
+    /// installation; this method just threads the shutdown future into
+    /// `axum::serve(...).with_graceful_shutdown(...)`.
+    pub async fn start(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<(), std::io::Error> {
         axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown)
             .await
     }
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        match (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::interrupt()),
-        ) {
-            (Ok(mut sigterm), Ok(mut sigint)) => {
-                tokio::select! {
-                    _ = sigterm.recv() => tracing::debug!("SIGTERM received, shutting down"),
-                    _ = sigint.recv() => tracing::debug!("SIGINT received, shutting down"),
-                }
-                return;
-            }
-            _ => {
-                tracing::warn!("failed to install SIGTERM/SIGINT handlers; falling back to Ctrl-C");
-            }
-        }
-    }
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::debug!("CTRL_C received, shutting down");
 }

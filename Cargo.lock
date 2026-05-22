@@ -3237,6 +3237,7 @@ dependencies = [
  "libc",
  "mockall",
  "reqwest 0.13.3",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
