@@ -6,7 +6,12 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::{net::IpAddr, path::Path, path::PathBuf, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::Path,
+    path::PathBuf,
+    time::Duration,
+};
 use thiserror::Error;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,7 +46,7 @@ pub struct Config {
 }
 
 fn default_bind_address() -> IpAddr {
-    "127.0.0.1".parse().expect("static literal")
+    IpAddr::V4(Ipv4Addr::LOCALHOST)
 }
 fn default_port() -> u16 {
     11131
@@ -154,6 +159,7 @@ fn validate_db_directory(path: &Path) -> Result<(), ConfigError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::fs;

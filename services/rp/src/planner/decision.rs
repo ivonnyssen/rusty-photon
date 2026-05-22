@@ -141,16 +141,22 @@ pub fn next_target(
     // hour-angle from the current LST; pick the target with the
     // smallest |HA|.
     let lst = eph.sidereal_time(site, now).lst_hours;
-    let chosen = survivors
-        .into_iter()
-        .min_by(|a, b| {
-            let ha_a = signed_hour_angle(lst, a.ra_hours);
-            let ha_b = signed_hour_angle(lst, b.ra_hours);
-            ha_a.abs()
-                .partial_cmp(&ha_b.abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .expect("survivors non-empty by construction");
+    let Some(chosen) = survivors.into_iter().min_by(|a, b| {
+        let ha_a = signed_hour_angle(lst, a.ra_hours);
+        let ha_b = signed_hour_angle(lst, b.ra_hours);
+        ha_a.abs()
+            .partial_cmp(&ha_b.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) else {
+        // Unreachable: the empty-survivors branch returns above. If a
+        // future refactor invalidates that invariant we fall back to
+        // the same "nothing above min altitude" outcome rather than
+        // panicking.
+        return NextTargetRecommendation {
+            target: None,
+            reason: NextTargetReason::AllBelowMinAltitude,
+        };
+    };
 
     NextTargetRecommendation {
         target: Some(chosen.clone()),
@@ -231,6 +237,7 @@ pub fn parse_targets_from_value(v: &Value) -> Vec<PlannerTarget> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use chrono::TimeZone;

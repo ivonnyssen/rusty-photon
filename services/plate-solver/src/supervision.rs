@@ -185,6 +185,7 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

@@ -51,7 +51,11 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> Result<BoundServer, std::io::Error> {
-        let config = self.config.expect("ServerBuilder: config is required");
+        let config = self.config.ok_or_else(|| {
+            std::io::Error::other(
+                "ServerBuilder::build: config is required \u{2014} call .with_config(...) first",
+            )
+        })?;
         config
             .validate()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -123,16 +127,22 @@ async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-        tokio::select! {
-            _ = sigterm.recv() => tracing::debug!("SIGTERM received, shutting down"),
-            _ = sigint.recv() => tracing::debug!("SIGINT received, shutting down"),
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(mut sigterm), Ok(mut sigint)) => {
+                tokio::select! {
+                    _ = sigterm.recv() => tracing::debug!("SIGTERM received, shutting down"),
+                    _ = sigint.recv() => tracing::debug!("SIGINT received, shutting down"),
+                }
+                return;
+            }
+            _ => {
+                tracing::warn!("failed to install SIGTERM/SIGINT handlers; falling back to Ctrl-C");
+            }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::debug!("CTRL_C received, shutting down");
-    }
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::debug!("CTRL_C received, shutting down");
 }

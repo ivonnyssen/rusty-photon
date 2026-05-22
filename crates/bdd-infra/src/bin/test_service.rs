@@ -7,6 +7,8 @@
 //! If the config file contains the text "fail", exits immediately
 //! with code 1 (simulates a service that fails to start).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(idx) = args.iter().position(|a| a == "--config") {

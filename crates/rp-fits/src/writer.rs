@@ -437,6 +437,7 @@ fn pad_to_block(out: &mut Vec<u8>, fill: u8) {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::io::Cursor;

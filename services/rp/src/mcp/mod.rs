@@ -70,6 +70,7 @@ pub mod handler;
 pub mod internals;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests;
 
 pub use handler::McpHandler;

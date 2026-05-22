@@ -5,6 +5,8 @@
 //! triggers a fresh open. Hooks fire exactly once per
 //! connect/disconnect cycle.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 mod common;
 
 use std::sync::atomic::Ordering;

@@ -58,10 +58,21 @@ impl EventBus {
 
                 tokio::spawn(async move {
                     debug!(plugin = %name, event = %event_type, url = %url, "emitting event to plugin");
-                    let client = reqwest::Client::builder()
+                    let client = match reqwest::Client::builder()
                         .timeout(std::time::Duration::from_secs(5))
                         .build()
-                        .unwrap();
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin = %name,
+                                event = %event_type,
+                                error = %e,
+                                "skipping event delivery: reqwest client build failed (likely TLS init); subsequent events will retry"
+                            );
+                            return;
+                        }
+                    };
                     match client.post(&url).json(&body).send().await {
                         Ok(resp) => {
                             debug!(plugin = %name, event = %event_type, status = %resp.status(), "event delivered");

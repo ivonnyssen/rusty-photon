@@ -5,6 +5,8 @@
 //! and drive it through the typed ASCOM Alpaca `CoverCalibrator` client.
 //! Matches the pattern used by `ppba-driver` and `qhy-focuser`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[path = "bdd/world.rs"]
 mod world;
 

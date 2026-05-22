@@ -9,6 +9,8 @@
 //!
 //! Run: `cargo run --example check_autofocus_fixtures -p rp`
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use std::path::PathBuf;
 
 use ndarray::Array2;

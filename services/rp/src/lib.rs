@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::signal;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use rp_tls::config::TlsConfig;
 
@@ -49,7 +49,12 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> Result<BoundServer> {
-        let config = self.config.expect("config is required");
+        let config = self.config.ok_or_else(|| {
+            crate::error::RpError::Config(
+                "ServerBuilder::build: config is required \u{2014} call .with_config(...) first"
+                    .to_string(),
+            )
+        })?;
         let bind_addr = format!("{}:{}", config.server.bind_address, config.server.port);
 
         debug!("initializing equipment registry");
@@ -237,17 +242,23 @@ impl BoundServer {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            warn!("failed to wait for Ctrl+C: {e}");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]

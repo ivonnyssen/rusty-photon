@@ -95,6 +95,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 pub(crate) mod test_support {
     pub const MINIMAL_CONFIG_JSON: &str = r#"{
         "session": {"data_directory": "/tmp/rp-test"},
@@ -105,6 +106,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::test_support::MINIMAL_CONFIG_JSON;
     use super::*;

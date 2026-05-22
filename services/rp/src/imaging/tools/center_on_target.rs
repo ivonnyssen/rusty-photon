@@ -285,14 +285,11 @@ where
         iterations.push(record);
 
         if matches!(action, IterationAction::Converged) {
-            let final_record = iterations
-                .last()
-                .expect("just pushed the converged record above");
             return Ok(CenterOnTargetResult {
                 final_error_arcsec: residual_arcsec,
                 attempts: iterations.len(),
-                final_ra: final_record.solved_ra,
-                final_dec: final_record.solved_dec,
+                final_ra: outcome.ra_center_deg,
+                final_dec: outcome.dec_center_deg,
                 iterations,
             });
         }
@@ -307,6 +304,7 @@ where
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

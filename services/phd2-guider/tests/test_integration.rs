@@ -6,6 +6,8 @@
 //!
 //! Some tests use the mock_phd2 binary and can run without PHD2 installed.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[cfg_attr(miri, allow(unused_imports))]
 use phd2_guider::{
     get_default_phd2_path, load_config, Phd2Client, Phd2Config, Phd2Event, Phd2ProcessManager,

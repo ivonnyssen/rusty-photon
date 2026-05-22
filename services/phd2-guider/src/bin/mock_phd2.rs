@@ -22,6 +22,8 @@
 //!   MOCK_PHD2_PORT:12345
 //! This allows tests to discover the port when using auto-assign (port 0).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};

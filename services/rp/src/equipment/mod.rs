@@ -21,6 +21,7 @@ pub mod focuser;
 pub mod mount;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 pub(crate) mod test_support;
 
 pub use camera::CameraEntry;

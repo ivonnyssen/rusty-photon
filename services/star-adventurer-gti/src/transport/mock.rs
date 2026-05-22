@@ -12,6 +12,8 @@
 //! The mock is deliberately not exposed unless the `mock` feature is on
 //! so a production build cannot accidentally pick it up.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -592,6 +594,7 @@ impl TransportFactory for CapturingMockFactory {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};

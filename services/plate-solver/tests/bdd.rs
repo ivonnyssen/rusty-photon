@@ -17,6 +17,8 @@
 //! matching `services/rp/tests/bdd.rs`'s pattern (cucumber-rs may
 //! strip the leading sigil depending on parser version).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[path = "bdd/world.rs"]
 mod world;
 

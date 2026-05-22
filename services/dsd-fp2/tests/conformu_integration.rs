@@ -7,6 +7,7 @@
 
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use ascom_alpaca::api::CoverCalibrator;
 use ascom_alpaca::test::ConformUTestBuilder;

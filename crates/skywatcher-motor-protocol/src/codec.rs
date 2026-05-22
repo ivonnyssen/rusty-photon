@@ -178,6 +178,7 @@ pub fn validate_response_frame(frame: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

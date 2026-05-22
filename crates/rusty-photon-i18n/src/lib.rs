@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use fluent_langneg::{negotiate_languages, NegotiationStrategy};
 use i18n_embed::{I18nAssets, LanguageLoader};
-use unic_langid::LanguageIdentifier;
+use unic_langid::{langid, LanguageIdentifier};
 
 pub use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 pub use i18n_embed_fl::fl;
@@ -99,7 +99,11 @@ fn parse_locale(s: &str) -> LanguageIdentifier {
 }
 
 fn en() -> LanguageIdentifier {
-    "en".parse().expect("en is a valid langid")
+    // Parsed at compile time via `unic_langid::langid!` so this is
+    // panic-free at runtime *and* guaranteed to yield the English
+    // identifier (rather than `LanguageIdentifier::default()`, which
+    // is "und" and would silently defeat the documented fallback).
+    langid!("en")
 }
 
 /// Negotiate which embedded locale(s) to load, falling back to `en`.
@@ -249,6 +253,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

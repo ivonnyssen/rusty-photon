@@ -7,6 +7,7 @@
 //! `StartExposure` / `ImageArray` end-to-end without touching NASA.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use ascom_alpaca::api::Camera;
 use ascom_alpaca::test::run_conformu_tests;

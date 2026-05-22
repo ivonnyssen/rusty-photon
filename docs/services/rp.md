@@ -2477,44 +2477,21 @@ above any rounding noise on either side.
 
 ### The `Ephemeris` Trait
 
-`rp-ephemeris` exposes a single trait — the seam between the
-math layer and everything that consumes positions, times, and
-twilight windows:
+The math layer lives in the `rp-ephemeris` crate. Its design — the
+`Ephemeris` trait surface, the `ErfarsEphemeris` ERFA wrapping,
+the in-process posture, panic safety and NaN-degradation
+guarantees, derived helpers, and time-scale treatment — is
+documented in [`docs/crates/rp-ephemeris.md`](../crates/rp-ephemeris.md).
 
-```text
-sidereal_time(site, time) -> LocalSiderealTime
-alt_az(site, target_icrs, time) -> AltAz
-transit(site, target_icrs, date) -> Option<UtcTime>
-rise_set(site, target_icrs, date, min_alt_deg) -> Option<RiseSet>
-meridian_flip(site, target_icrs, time, side_of_pier) -> Option<DurationToFlip>
-sun_position(site, time) -> SunInfo
-twilight(site, date, kind) -> TwilightWindow
-moon_position(site, time) -> MoonInfo
-moon_separation(target_icrs, time) -> AngleDeg
-```
+For `rp`'s purposes, the relevant guarantees are:
 
-All methods are pure functions; the trait surface contains zero
-`unsafe` and no FFI types.
-
-The shipped implementation, `ErfarsEphemeris`, wraps the
-[`erfars`](https://crates.io/crates/erfars) crate (Rust FFI for ERFA
-— the BSD-licensed clean-room derivative of IAU SOFA used by Astropy
-and LSST/Rubin), in-process. ERFA is pure computation: no I/O, no
-file parsing, scalar-only inputs, ~25 years of heavy production use
-in safety-critical astronomy software. Isolating it as an
-rp-managed service (the posture used for ASTAP, see
-[Plate Solver](#plate-solver)) would route every primitive call
-through HTTP — a single `get_next_target` invocation can issue 20+
-ephemeris calls — for safety we don't actually need. The trait wall
-makes service-extraction a mechanical follow-up if a real
-ERFA-related crash is ever observed in production.
-
-Operations not in ERFA's surface (rise/set, twilight, transit,
-meridian-flip ETA) are small root-finders inside `rp-ephemeris`
-that close over the ERFA-supplied positions.
-
-ΔUT1 is treated as zero (UT1 ≈ UTC, error ≤ 0.9 s = ≤ 13″ of LST)
-— well inside what plate-solving will refine on a real frame.
+- All trait methods are pure functions returning owned values; no
+  `unsafe`, no FFI types in the surface.
+- ERFA failures (host-clock misconfiguration, upstream wrapper
+  inconsistency) degrade to NaN coords / `None` windows with an
+  `error`-level log — they never crash the rp orchestrator.
+- ΔUT1 is treated as zero (≤ 0.9 s = ≤ 13″ of LST error) — well
+  inside what plate-solving refines on a real frame.
 
 ### Catalog (`rp-catalog`)
 

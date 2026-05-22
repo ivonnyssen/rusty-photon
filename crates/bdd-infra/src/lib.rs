@@ -1,4 +1,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// bdd-infra is consumed only by other crates' integration/BDD test harnesses.
+// It's test infrastructure dressed up as a library — apply the same panic
+// allowances as the tests it supports, rather than treating it as production.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 //! Shared BDD test infrastructure for rusty-photon services.
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service
@@ -491,6 +495,7 @@ fn send_sigterm(pid: u32) {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::process::Stdio;

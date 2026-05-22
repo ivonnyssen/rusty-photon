@@ -1,4 +1,5 @@
 #![cfg(feature = "conformu")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use ascom_alpaca::api::SafetyMonitor;
 use ascom_alpaca::test::run_conformu_tests;

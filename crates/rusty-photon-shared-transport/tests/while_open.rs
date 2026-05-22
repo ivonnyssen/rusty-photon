@@ -7,6 +7,8 @@
 //! 0→1 transition, sees a cancellation signal on the 1→0 transition,
 //! and is joined (with a bounded timeout + abort) before teardown runs.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 mod common;
 
 use std::sync::atomic::Ordering;

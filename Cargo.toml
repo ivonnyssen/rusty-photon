@@ -39,6 +39,21 @@ description = "Rusty Photon - An astrophotography application"
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
+# Panic-free production code: deny the three most common ways to panic from
+# otherwise-recoverable situations. Tests are expected to use `.unwrap()` per
+# docs/skills/testing.md, so they opt back in *scoped to the test code only*:
+#   - Inline `#[cfg(test)] mod tests { ... }` in `src/`: add
+#     `#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]`
+#     as an attribute on the `mod` item itself (not at the crate root, so the
+#     allow never leaks into the production-cfg compile of `src/`).
+#   - Top-level integration test entry files under `tests/`: add
+#     `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]`
+#     at the top. BDD submodules pulled in via `#[path] mod` inherit it.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
 tokio = { version = "1.52.3", features = ["full"] }
@@ -65,6 +80,7 @@ rmpfit = "1.0"
 thiserror = "2.0.18"
 base64 = "0.22.1"
 mockall = "0.14.0"
+parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
 axum = "0.8"
@@ -119,7 +135,7 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 # that requires `fluent-langneg ^0.14`.
 fluent-langneg = "0.13"
 sys-locale = "0.3"
-unic-langid = "0.9"
+unic-langid = { version = "0.9", features = ["macros"] }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"

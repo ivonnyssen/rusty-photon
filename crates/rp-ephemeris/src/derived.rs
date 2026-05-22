@@ -1,7 +1,7 @@
 //! Operations not in ERFA's surface — small root-finders over the
 //! ERFA-supplied positions in `erfars_impl`.
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 
 use crate::erfars_impl::{alt_az_at, lst_hours, time_jds};
 use crate::site::Site;
@@ -57,8 +57,15 @@ where
 /// refined by one Newton step against the actual computed LST at the
 /// candidate time.
 pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTime<Utc>> {
-    let start = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0)?).and_utc();
+    let start = date.and_time(NaiveTime::MIN).and_utc();
     let lst0 = lst_hours(site, &time_jds(start));
+    // NaN propagates through `rem_euclid` but `as i64` saturates NaN
+    // to 0, which would silently collapse the computation to "start".
+    // Surface the failure as `None` instead so callers see the
+    // upstream time-conversion problem.
+    if !lst0.is_finite() {
+        return None;
+    }
     let delta_sidereal = (target.ra_hours - lst0).rem_euclid(24.0);
     let delta_solar = delta_sidereal * SIDEREAL_TO_SOLAR;
     let candidate = start + Duration::milliseconds((delta_solar * 3_600_000.0) as i64);
@@ -66,6 +73,9 @@ pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option
     // One Newton iteration: re-evaluate LST at the candidate, take
     // the residual mod 24 (signed: residual > 12h means we overshot).
     let lst1 = lst_hours(site, &time_jds(candidate));
+    if !lst1.is_finite() {
+        return None;
+    }
     let mut residual = (target.ra_hours - lst1).rem_euclid(24.0);
     if residual > 12.0 {
         residual -= 24.0;
@@ -124,6 +134,9 @@ pub(crate) fn meridian_flip(
     time: DateTime<Utc>,
 ) -> Option<Duration> {
     let lst = lst_hours(site, &time_jds(time));
+    if !lst.is_finite() {
+        return None;
+    }
     let ha = (lst - target.ra_hours).rem_euclid(24.0);
     // ha ∈ [0, 24). HA = 0 means the target is on the meridian *right
     // now* — the flip is due now, not in another full sidereal day.
@@ -149,10 +162,11 @@ pub(crate) fn twilight(
     // Approximate local solar noon: noon UTC shifted by 4 minutes per
     // degree of longitude (240 s = 240_000 ms / deg). longitude_degrees
     // is positive east, so local solar noon is *earlier* in UTC for
-    // eastern longitudes.
-    let noon_utc =
-        NaiveDateTime::new(date, NaiveTime::from_hms_opt(12, 0, 0).expect("hms valid")).and_utc();
-    let solar_noon = noon_utc - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
+    // eastern longitudes. Built via `NaiveDate::and_time(NaiveTime::MIN)`
+    // (infallible) + a 12-hour Duration so there's no `from_hms_opt`
+    // Option-unwrap to dodge for the panic-deny lint.
+    let solar_noon = date.and_time(NaiveTime::MIN).and_utc() + Duration::hours(12)
+        - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
     let midnight = solar_noon + Duration::hours(12);
     let next_noon = solar_noon + Duration::hours(24);
 
@@ -168,11 +182,12 @@ pub(crate) fn twilight(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::erfars_impl::ErfarsEphemeris;
     use crate::Ephemeris;
-    use chrono::TimeZone;
+    use chrono::{NaiveDateTime, TimeZone};
 
     fn site_seattle() -> Site {
         Site::new(47.6062, -122.3321).unwrap()

@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::extract::State;
+use axum::http::header::{HeaderValue, WWW_AUTHENTICATE};
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -68,15 +69,18 @@ async fn auth_middleware(
 }
 
 fn unauthorized_response() -> Response {
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("www-authenticate", "Basic realm=\"Rusty Photon\"")
-        .body(Body::empty())
-        .unwrap()
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response.headers_mut().insert(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"Rusty Photon\""),
+    );
+    response
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use axum::routing::get;

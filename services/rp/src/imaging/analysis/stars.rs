@@ -217,6 +217,7 @@ fn connected_components_4(mask: ArrayView2<bool>) -> Vec<Vec<(usize, usize)>> {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::f64::consts::E;

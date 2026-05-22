@@ -54,17 +54,24 @@ async fn run_with_reload(config_path: &std::path::Path) -> Result<(), Box<dyn st
         || {
             Box::pin(async {
                 let ctrl_c = async {
-                    tokio::signal::ctrl_c()
-                        .await
-                        .expect("failed to install Ctrl+C handler");
+                    if let Err(e) = tokio::signal::ctrl_c().await {
+                        tracing::warn!("failed to wait for Ctrl+C: {e}");
+                        std::future::pending::<()>().await;
+                    }
                 };
 
                 #[cfg(unix)]
                 let terminate = async {
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .expect("failed to install SIGTERM handler")
-                        .recv()
-                        .await;
+                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    {
+                        Ok(mut sig) => {
+                            sig.recv().await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to install SIGTERM handler: {e}");
+                            std::future::pending::<()>().await;
+                        }
+                    }
                 };
 
                 #[cfg(not(unix))]
@@ -82,10 +89,15 @@ async fn run_with_reload(config_path: &std::path::Path) -> Result<(), Box<dyn st
             #[cfg(unix)]
             {
                 Box::pin(async {
-                    let mut sig =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                            .expect("Failed to register SIGHUP handler");
-                    sig.recv().await;
+                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                        Ok(mut sig) => {
+                            sig.recv().await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to install SIGHUP handler: {e}");
+                            std::future::pending::<()>().await;
+                        }
+                    }
                 })
             }
             // Windows console mode has no reload signal — only Ctrl+C for shutdown.

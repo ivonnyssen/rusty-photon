@@ -226,6 +226,7 @@ fn expect_u24_payload(payload: &[u8]) -> Result<&[u8; 6]> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::command::MotionMode;

@@ -205,7 +205,7 @@ impl ImageCache {
     /// that id. Evicts LRU entries until both budgets are satisfied.
     pub fn insert(&self, document_id: String, image: CachedImage) {
         let nbytes = image.nbytes();
-        let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(prev) = inner.images.remove(&document_id) {
             inner.bytes = inner.bytes.saturating_sub(prev.nbytes());
@@ -231,7 +231,7 @@ impl ImageCache {
     /// if present, marking it most-recently-used. `None` on miss — for
     /// disk fallback use [`resolve`](Self::resolve).
     pub fn get(&self, document_id: &str) -> Option<Arc<CachedImage>> {
-        let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let image = inner.images.get(document_id).cloned()?;
         inner.order.retain(|k| k != document_id);
         inner.order.push_back(document_id.to_string());
@@ -446,7 +446,7 @@ impl ImageCache {
     /// cache mutex, then run eviction so the budget stays honored after
     /// document growth.
     fn adjust_bytes(&self, delta: i64) {
-        let mut inner = self.inner.lock().expect("ImageCache mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if delta >= 0 {
             inner.bytes = inner.bytes.saturating_add(delta as usize);
         } else {
@@ -460,7 +460,7 @@ impl ImageCache {
     pub fn len(&self) -> usize {
         self.inner
             .lock()
-            .expect("ImageCache mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .images
             .len()
     }
@@ -473,14 +473,14 @@ impl ImageCache {
     /// Total bytes currently held.
     #[cfg(test)]
     pub fn bytes(&self) -> usize {
-        self.inner.lock().expect("ImageCache mutex poisoned").bytes
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).bytes
     }
 
     fn evict_locked(&self, inner: &mut CacheInner) {
-        while (inner.bytes > self.max_bytes || inner.images.len() > self.max_images)
-            && !inner.order.is_empty()
-        {
-            let key = inner.order.pop_front().expect("non-empty checked above");
+        while inner.bytes > self.max_bytes || inner.images.len() > self.max_images {
+            let Some(key) = inner.order.pop_front() else {
+                break;
+            };
             if let Some(evicted) = inner.images.remove(&key) {
                 inner.bytes = inner.bytes.saturating_sub(evicted.nbytes());
                 debug!(
@@ -632,6 +632,7 @@ fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use ndarray::Array2;

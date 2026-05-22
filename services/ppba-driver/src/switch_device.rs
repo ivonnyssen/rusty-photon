@@ -418,6 +418,7 @@ impl Switch for PpbaSwitchDevice {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     //! Unit tests cover ASCOM error mapping, switch metadata, and
     //! happy-path connect/read/write/disconnect. Race / refcount /

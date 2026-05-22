@@ -1,5 +1,7 @@
 //! Integration tests for ServiceHandle using the test_service binary.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use bdd_infra::ServiceHandle;
 use std::sync::Once;
 

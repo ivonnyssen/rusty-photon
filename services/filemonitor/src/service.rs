@@ -32,7 +32,10 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run_service() -> Result<(), Box<dyn std::error::Error>> {
-    let (config_path, log_level) = SERVICE_CONFIG.get().expect("Service config not set");
+    let (config_path, log_level) = SERVICE_CONFIG.get().ok_or(
+        "service config not initialised; run() must call SERVICE_CONFIG.set() before \
+         service_dispatcher::start()",
+    )?;
 
     tracing_subscriber::fmt().with_max_level(*log_level).init();
 
