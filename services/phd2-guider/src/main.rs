@@ -232,7 +232,10 @@ async fn run_monitor(
     info!("Connecting to PHD2...");
     client.connect().await?;
 
+    #[cfg(unix)]
     info!("Monitoring PHD2 events (press Ctrl+C or send SIGTERM to stop)...");
+    #[cfg(not(unix))]
+    info!("Monitoring PHD2 events (press Ctrl+C to stop)...");
 
     let mut receiver = client.subscribe();
     let token = shutdown.token();

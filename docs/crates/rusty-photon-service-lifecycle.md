@@ -189,7 +189,11 @@ enabled, `run` / `run_with_reload` take a different path:
    path. **The user closure does not know whether it is running under
    SCM or under console-mode signals** — that is the whole point of
    the abstraction.
-6. On the closure's return, report `ServiceState::Stopped`.
+6. On the closure's return, report `ServiceState::Stopped`. The
+   `exit_code` field reflects the closure's outcome: `Win32(0)` on
+   `Ok(())`, `ServiceSpecific(1)` on `Err`. Reporting `0` on every
+   stop would let crashes look like clean shutdowns in `services.msc`
+   and any supervisor reading SCM's stop record.
 
 When `scm_mode(false)` (or the `scm` feature is off, or the target
 is not Windows), the runner falls through to the OS-signal path

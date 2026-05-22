@@ -320,11 +320,24 @@ mod scm {
             BoxedRunFn::WithReload(f) => rt.block_on(f(shutdown, reload)),
         };
 
+        // Surface the closure's outcome to SCM. Reporting Win32(0) on
+        // every stop made failures look like clean shutdowns to ops
+        // tooling (services.msc, supervisors). On Err we report a
+        // service-specific non-zero code so the SCM stop record
+        // matches reality; the closure's error is also logged by
+        // service_main() and returned from run_service() for parity
+        // with the console path.
+        let exit_code = if result.is_ok() {
+            ServiceExitCode::Win32(0)
+        } else {
+            ServiceExitCode::ServiceSpecific(1)
+        };
+
         status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(0),
+            exit_code,
             checkpoint: 0,
             wait_hint: std::time::Duration::default(),
             process_id: None,
