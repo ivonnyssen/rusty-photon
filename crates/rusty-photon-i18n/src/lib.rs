@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use fluent_langneg::{negotiate_languages, NegotiationStrategy};
 use i18n_embed::{I18nAssets, LanguageLoader};
-use unic_langid::LanguageIdentifier;
+use unic_langid::{langid, LanguageIdentifier};
 
 pub use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 pub use i18n_embed_fl::fl;
@@ -99,11 +99,11 @@ fn parse_locale(s: &str) -> LanguageIdentifier {
 }
 
 fn en() -> LanguageIdentifier {
-    // "en" is the simplest possible BCP-47 tag; unic-langid 0.9 accepts
-    // it without normalization. The `unwrap_or_default` here is a
-    // safety net for the impossible parse failure — the compile-time
-    // fluent default bundle still resolves through `fl!()` either way.
-    "en".parse().unwrap_or_default()
+    // Parsed at compile time via `unic_langid::langid!` so this is
+    // panic-free at runtime *and* guaranteed to yield the English
+    // identifier (rather than `LanguageIdentifier::default()`, which
+    // is "und" and would silently defeat the documented fallback).
+    langid!("en")
 }
 
 /// Negotiate which embedded locale(s) to load, falling back to `en`.

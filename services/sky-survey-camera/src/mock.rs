@@ -12,6 +12,12 @@
 //! timeouts — `health_check` and `fetch` both complete in
 //! microseconds.
 
+// `pub mod mock` in lib.rs is `#[cfg(feature = "mock")]`-gated, so this
+// module is test-helper infrastructure that never ships in production
+// builds. Treat it like the BDD harness code rather than production
+// source for the workspace's panic-deny lints.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use crate::survey::{SurveyClient, SurveyError, SurveyRequest};
 
 /// Synthetic [`SurveyClient`] that fabricates FITS bytes locally.

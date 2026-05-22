@@ -135,7 +135,7 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 # that requires `fluent-langneg ^0.14`.
 fluent-langneg = "0.13"
 sys-locale = "0.3"
-unic-langid = "0.9"
+unic-langid = { version = "0.9", features = ["macros"] }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
