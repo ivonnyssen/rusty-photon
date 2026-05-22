@@ -10,6 +10,7 @@ bodies are `todo!()` pending Phase 1 implementation. Awaiting PR #289
 **Date:** 2026-05-22
 **Branch:** `worktree-issue-294`
 **Issue:** [#294 — look over all services and simplify/unify the signal handler installation](https://github.com/ivonnyssen/rusty-photon/issues/294)
+**Also fixes:** [#287 — outer `shutdown_signal` race cancels inner graceful shutdown](https://github.com/ivonnyssen/rusty-photon/issues/287)
 **Closest precedent:** [`docs/plans/shared-transport-extraction.md`](shared-transport-extraction.md) (multi-phase workspace-wide infra crate adopted by N services)
 **Crate design doc:** [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
 **Skill doc (to be written in Phase 3):** `docs/skills/service-lifecycle.md`
@@ -62,6 +63,28 @@ is buggy; one is special. The diversity is an artifact of building
 these services over time, not a principled difference in what they
 need.
 
+### Coupled bug: issue #287
+
+The five shared-transport ASCOM services (`dsd-fp2`, `qhy-focuser`,
+`ppba-driver`, `pa-falcon-rotator`, `star-adventurer-gti`) compound
+the duplication problem with an actual bug: each installs the signal
+handler **twice** — an outer `shutdown_signal()` in `main.rs` racing
+against `bound.start()`, plus an inner `shutdown_signal()`
+constructed inside `BoundServer::start()` and passed to
+`rp_tls::server::serve_plain` / `serve_tls`'s
+`with_graceful_shutdown(...)`. When a signal fires, the outer
+`select!` drops `bound.start()` mid-flight, which means axum's
+inner graceful-shutdown drain never gets to flush in-flight requests
+or run `Drop` impls promptly. Observable symptoms: spurious
+connection-aborted log lines on the client side; possible loss of
+`llvm-cov` profraw data.
+
+This bug is structurally caused by the duplication this plan removes,
+so it gets fixed as part of the same migration. Verified that the
+other six services do *not* have the outer race — they only have the
+single inner installation and just `bound.start().await?` in `main`.
+The fix is scoped to the five shared-transport services.
+
 The crate design itself —
 [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
 — covers scope, public API, behavior, and usage examples. This plan
@@ -76,14 +99,19 @@ unified one.
    `Notify`-and-closures.
 2. **One no-panic signal-install path** (the PR #289 pattern) in one
    place, used by every service.
-3. **Filemonitor's reload-on-SIGHUP and Windows Service mode work
+3. **One signal-handler installation per service** — the
+   `ServiceRunner` installs handlers once and produces a `Shutdown`
+   handle that flows everywhere that needs it; nothing inside a
+   service constructs its own. Closes #287.
+4. **Filemonitor's reload-on-SIGHUP and Windows Service mode work
    under the same abstraction** as everyone else — no special-case
    shape inside filemonitor.
-4. **Adding SCM mode to a second service in the future** is a ~3-line
+5. **Adding SCM mode to a second service in the future** is a ~3-line
    change to that service's `main.rs` plus a `Cargo.toml` feature
    flip, not a copy of `service.rs`.
-5. **Migration is reviewable**: one commit per service, behavior-
-   preserving except for the phd2-guider SIGTERM bug fix.
+6. **Migration is reviewable**: one commit per service, behavior-
+   preserving except for the phd2-guider SIGTERM bug fix and the
+   #287 fix in the five shared-transport services.
 
 ## Non-goals (of the migration)
 
@@ -95,11 +123,14 @@ unified one.
 * **Forcing SCM adoption.** The crate *supports* SCM via an opt-in
   cargo feature; only `filemonitor` enables it in Phase 1. Other
   services may opt in later on their own timelines.
-* **Rewriting `BoundServer` / `ServerBuilder` across services.** The
-  unified shutdown handle is passed *into* the existing
-  `tokio::select!` shape (or to
-  `axum::serve(...).with_graceful_shutdown(...)` for axum services).
-  Server types keep their current API.
+* **Wholesale rewriting of `BoundServer` / `ServerBuilder` across
+  services.** The unified shutdown handle is passed *into* the
+  existing server shape rather than reshaping it. The only API
+  change is a narrow one — `BoundServer::start(self)` →
+  `BoundServer::start(self, shutdown: impl Future<Output = ()> + Send)`
+  in the five shared-transport services, so axum's
+  `with_graceful_shutdown` consumes the unified source instead of
+  installing its own. Required to fix #287.
 
 ## Migration decisions resolved
 
@@ -188,14 +219,16 @@ mode and SCM mode) before any other service touches the crate.
 
 ## Phase 2 — remaining service migrations
 
-One commit per service, ordered by complexity / risk (lowest first):
+One commit per service, ordered by complexity / risk (lowest first).
+The five shared-transport services additionally fix #287; see
+"Shared-transport variant" below for the extra steps they need.
 
-1. `dsd-fp2` — has the duplicate-function quirk; collapses to one
-   call site, easiest validation.
-2. `pa-falcon-rotator`
-3. `ppba-driver`
-4. `qhy-focuser`
-5. `star-adventurer-gti`
+1. `dsd-fp2` (shared-transport; fixes #287) — has the duplicate-
+   function quirk; collapses to one call site, easiest validation.
+2. `pa-falcon-rotator` (shared-transport; fixes #287)
+3. `ppba-driver` (shared-transport; fixes #287)
+4. `qhy-focuser` (shared-transport; fixes #287)
+5. `star-adventurer-gti` (shared-transport; fixes #287)
 6. `sky-survey-camera`
 7. `rp`
 8. `calibrator-flats` (axum-style)
@@ -203,9 +236,11 @@ One commit per service, ordered by complexity / risk (lowest first):
    handler)
 10. `sentinel` (drops the hand-rolled `tokio::spawn` + token plumbing;
     sources `shutdown.token()` directly into the engine)
-11. `phd2-guider` (gains SIGTERM as a side fix — the only behavioral
-    change in the entire migration; add a regression test asserting
-    clean shutdown within bounded time on SIGTERM)
+11. `phd2-guider` (gains SIGTERM as a side fix — a small behavioral
+    change; add a regression test asserting clean shutdown within
+    bounded time on SIGTERM)
+
+### Standard migration (all services)
 
 Each commit:
 
@@ -214,6 +249,32 @@ Each commit:
 * Deletes the now-unused `use tokio::signal` / helper imports.
 * Updates the service's `docs/services/<name>.md` if shutdown is
   documented there (most aren't).
+
+### Shared-transport variant (services 1–5 — fixes #287)
+
+In addition to the standard migration, each shared-transport service
+performs three extra mechanical changes to eliminate the
+double-installation race:
+
+* **`lib.rs`** — `BoundServer::start(self)` →
+  `BoundServer::start(self, shutdown: impl Future<Output = ()> + Send)`.
+  The inner `serve_plain` / `serve_tls` call passes `shutdown`
+  through to `with_graceful_shutdown(...)` instead of constructing
+  a fresh `shutdown_signal()`. Delete the per-service
+  `async fn shutdown_signal()` in `lib.rs` entirely.
+* **`main.rs`** — drop the outer `tokio::select!`. The call becomes
+  `bound.start(shutdown.cancelled()).await?` — one signal source,
+  no race. The `info!("Shutting down")` log line moves into the
+  `ServiceRunner` (already logs at `info!` level on shutdown), so
+  it still fires once per shutdown event.
+* **Existing SIGTERM tests** in `services/*/tests/test_lib.rs`
+  continue to pass; add at least one regression assertion (per
+  service or shared) that an in-flight request started just before
+  SIGTERM is allowed to complete before the process exits.
+
+`rp_tls::server::serve_plain` and `serve_tls` already accept a
+shutdown future as their third parameter — no `rp-tls` API change
+needed.
 
 ## Phase 3 — workspace docs polish
 
@@ -253,16 +314,15 @@ call site.
 
 | Service | Path | Pattern | Reload | SCM |
 |---|---|---|---|---|
-| `dsd-fp2` | `services/dsd-fp2/src/main.rs:44` | OLD (`.expect`) | — | — |
-| `dsd-fp2` | `services/dsd-fp2/src/lib.rs:168` | OLD (`.expect`) — second copy | — | — |
-| `pa-falcon-rotator` | `services/pa-falcon-rotator/src/main.rs:47` | OLD | — | — |
-| `ppba-driver` | `services/ppba-driver/src/main.rs:168` | OLD | — | — |
-| `qhy-focuser` | `services/qhy-focuser/src/main.rs:46` | OLD | — | — |
-| `star-adventurer-gti` | `services/star-adventurer-gti/src/main.rs:52` | OLD | — | — |
-| `sky-survey-camera` | `services/sky-survey-camera/src/lib.rs` | OLD | — | — |
-| `rp` | `services/rp/src/lib.rs` | OLD | — | — |
+| `dsd-fp2` | `services/dsd-fp2/src/main.rs:44` + `lib.rs:168` | OLD (`.expect`) — both copies; **also #287 outer race** | — | — |
+| `pa-falcon-rotator` | `services/pa-falcon-rotator/src/main.rs:47` + `lib.rs` | OLD; **also #287** | — | — |
+| `ppba-driver` | `services/ppba-driver/src/main.rs:168` + `lib.rs` | OLD; **also #287** | — | — |
+| `qhy-focuser` | `services/qhy-focuser/src/main.rs:46` + `lib.rs` | OLD; **also #287** | — | — |
+| `star-adventurer-gti` | `services/star-adventurer-gti/src/main.rs:52` + `lib.rs` | OLD; **also #287** | — | — |
+| `sky-survey-camera` | `services/sky-survey-camera/src/lib.rs:141` | OLD (single install) | — | — |
+| `rp` | `services/rp/src/lib.rs:243` | OLD (single install) | — | — |
 | `phd2-guider` | `services/phd2-guider/src/main.rs:269` | BUGGY (Ctrl+C only) | — | — |
 | `sentinel` | `services/sentinel/src/lib.rs:234` | NEW + `CancellationToken` | — | — |
-| `calibrator-flats` | `services/calibrator-flats/src/lib.rs:99` | NEW + axum graceful | — | — |
-| `plate-solver` | `services/plate-solver/src/lib.rs:122` | NEW + SIGTERM/SIGINT pair | — | — |
+| `calibrator-flats` | `services/calibrator-flats/src/lib.rs:104` | NEW + axum graceful | — | — |
+| `plate-solver` | `services/plate-solver/src/lib.rs:126` | NEW + SIGTERM/SIGINT pair | — | — |
 | `filemonitor` | `services/filemonitor/src/main.rs:51` (console) + `service.rs` (SCM) | OLD (Phase 1 deletes) | **SIGHUP** | **windows-service** |

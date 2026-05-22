@@ -142,6 +142,16 @@ already takes a `CancellationToken` through its engine and cancels it
 from a hand-rolled signal task. After the migration, that task goes
 away and sentinel's engine receives `shutdown.token()` directly.
 
+**Do not install a second signal handler downstream.** If a server
+inside your service already takes a shutdown future (e.g. axum's
+`with_graceful_shutdown`, or `BoundServer::start` after the #294
+migration), pass `shutdown.cancelled()` *into* it rather than racing
+it externally with `tokio::select!`. Racing two independent signal
+sources lets one drop the other mid-flight — that's the bug
+[#287](https://github.com/ivonnyssen/rusty-photon/issues/287) and
+the underlying motivation for funneling everything through a single
+`Shutdown` handle.
+
 ### SCM mode (`#[cfg(all(windows, feature = "scm"))]`)
 
 When `scm_mode(true)` is set on Windows with the `scm` feature
@@ -189,7 +199,12 @@ one place in main where `async` enters.
 
 ### ASCOM Alpaca driver, console only
 
-The common case (10 of 12 services after migration):
+The common case (10 of 12 services after migration). The server
+consumes `shutdown.cancelled()` directly — there is no outer
+`tokio::select!`. This avoids the double-installation race described
+in [issue #287](https://github.com/ivonnyssen/rusty-photon/issues/287)
+by making axum's `with_graceful_shutdown` (inside `BoundServer::start`)
+fire on the same source as the OS-signal watcher.
 
 ```rust
 use rusty_photon_service_lifecycle::ServiceRunner;
@@ -204,14 +219,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()
             .await?;
 
-        tokio::select! {
-            res = bound.start() => res?,
-            _ = shutdown.cancelled() => tracing::debug!("shutdown requested"),
-        }
+        // `BoundServer::start` accepts the shutdown future and threads
+        // it into axum's `with_graceful_shutdown`. When the signal fires,
+        // axum drains in-flight requests before returning.
+        bound.start(shutdown.cancelled()).await?;
         Ok(())
     })
 }
 ```
+
+For services where the server still does its own
+`tokio::select!` internally (e.g. the engine in `sentinel`),
+pass `shutdown.token()` instead — see the next example.
 
 ### Axum service (graceful shutdown drains in-flight requests)
 
