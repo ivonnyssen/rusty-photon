@@ -3,15 +3,18 @@ use tokio::sync::Notify;
 
 /// Reload notifier.
 ///
-/// Wakes once per reload event. Driven by `SIGHUP` on Unix, by
+/// Wakes one waiter per reload event. Driven by `SIGHUP` on Unix, by
 /// `ServiceControl::ParamChange` in Windows SCM mode, and never on Windows
 /// console mode. Enable by calling [`crate::ServiceRunner::with_reload`]
 /// before [`crate::ServiceRunner::run_with_reload`].
 ///
-/// Cloning shares the underlying [`Notify`] so multiple consumers can
-/// receive the same reload event; today the only consumer pattern is a
-/// single `run_server_loop`-style coordinator awaiting on it inside
-/// `tokio::select!`.
+/// **Single-consumer.** The underlying [`Notify::notify_one`] wakes a single
+/// waiter per event, so two tasks both awaiting [`Self::recv`] will *not*
+/// both rebuild on the same reload — one wins. The intended pattern is one
+/// coordinator (e.g. `run_server_loop`) racing `recv()` against shutdown in
+/// a `tokio::select!`. Cloning is supported (`Notify` lives behind an `Arc`)
+/// but exists for handing the signal into a single nested scope, not for
+/// fan-out.
 #[derive(Clone, Debug)]
 pub struct ReloadSignal {
     notify: Arc<Notify>,

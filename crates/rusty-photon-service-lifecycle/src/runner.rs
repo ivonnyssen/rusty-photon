@@ -95,7 +95,7 @@ impl ServiceRunner {
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult> + Send,
+        Fut: Future<Output = ServiceResult>,
     {
         let _ = (self, run_fn);
         // Phase 1 implementation: see docs/plans/service-lifecycle-unification.md
@@ -104,7 +104,7 @@ impl ServiceRunner {
         // 2. build tokio::runtime::Builder::new_multi_thread() runtime
         // 3. spawn signal watcher task that cancels a CancellationToken
         // 4. block_on(run_fn(Shutdown::from_token(token)))
-        todo!("Phase 1 implementation")
+        Err("ServiceRunner::run is stubbed — Phase 1 implementation lands in the next commit on PR #295".into())
     }
 
     /// Like [`Self::run`] but also passes a [`ReloadSignal`]. Requires
@@ -112,11 +112,11 @@ impl ServiceRunner {
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult> + Send,
+        Fut: Future<Output = ServiceResult>,
     {
         let _ = (self, run_fn);
         // Phase 1 implementation: same as run(), plus a SIGHUP / SCM ParamChange
         // watcher that calls reload.notify() per event.
-        todo!("Phase 1 implementation")
+        Err("ServiceRunner::run_with_reload is stubbed — Phase 1 implementation lands in the next commit on PR #295".into())
     }
 }

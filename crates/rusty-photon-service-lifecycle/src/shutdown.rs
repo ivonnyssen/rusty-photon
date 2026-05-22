@@ -1,3 +1,4 @@
+use std::future::Future;
 use tokio_util::sync::CancellationToken;
 
 /// Cooperative shutdown handle.
@@ -28,11 +29,15 @@ impl Shutdown {
 
     /// Future that resolves when shutdown has been requested.
     ///
-    /// Use in `tokio::select!` to race the shutdown signal against your
-    /// service's main work, or pass to
-    /// `axum::serve(...).with_graceful_shutdown(...)`.
-    pub async fn cancelled(&self) {
-        self.token.cancelled().await;
+    /// The returned future is owned (`'static + Send`) — it can be passed
+    /// to APIs that move it (e.g. `axum::serve(...).with_graceful_shutdown(...)`
+    /// or `BoundServer::start`) without borrowing `self`. Call multiple times
+    /// to get multiple independent futures observing the same cancellation.
+    pub fn cancelled(&self) -> impl Future<Output = ()> + Send + 'static {
+        let token = self.token.clone();
+        async move {
+            token.cancelled().await;
+        }
     }
 
     /// Returns `true` if shutdown has already been requested.

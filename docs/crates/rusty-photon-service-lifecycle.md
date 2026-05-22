@@ -56,18 +56,21 @@ ServiceRunner::run(self, |Shutdown| async)              -> Result<(), Box<dyn Er
 ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> Result<(), Box<dyn Error>>
 
 Shutdown::token()        -> CancellationToken
-Shutdown::cancelled()    -> impl Future<Output = ()>
+Shutdown::cancelled()    -> impl Future<Output = ()> + Send + 'static
 Shutdown::is_cancelled() -> bool
 
-ReloadSignal::recv()     -> impl Future<Output = ()>
+ReloadSignal::recv()     -> impl Future<Output = ()> + '_
 ```
 
 The closure passed to `run` / `run_with_reload` is `FnOnce(...) -> Fut`
-where `Fut: Future<Output = Result<(), Box<dyn Error>>> + Send` and
-the closure itself is `Send + 'static`. The `Send + 'static` bound is
-required by the SCM dispatch path, which stashes the closure across
-the `extern "system" fn` boundary; the console path inherits the
-same constraint for API uniformity.
+where `Fut: Future<Output = Result<(), Box<dyn Error>>>` and the
+closure itself is `Send + 'static`. The `Send + 'static` on the
+closure is required by the SCM dispatch path, which stashes the
+closure across the `extern "system" fn` boundary; the console path
+inherits the same constraint for API uniformity. The returned future
+`Fut` does **not** need to be `Send` — `Runtime::block_on` polls it on
+the calling thread, so error types and intermediate state inside the
+closure body stay non-`Send`-friendly without extra bounds.
 
 ## Behavior
 
@@ -164,7 +167,7 @@ enabled, `run` / `run_with_reload` take a different path:
 3. Inside `ffi_main`, register a control handler translating:
    - `ServiceControl::Stop` → `token.cancel()`
    - `ServiceControl::ParamChange` (only when `with_reload`) →
-     `reload.notify_one()`
+     `reload.notify()`
    - `ServiceControl::Interrogate` → `NoError`
    - everything else → `NotImplemented`
 4. Report `ServiceState::Running` to SCM.
@@ -366,8 +369,7 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` otherwise). SCM mode is
   manually validated via filemonitor's existing Windows install/run
   procedure on each release.
-- **No `coverage(off)` exclusions.** Per workspace policy
-  ([`feedback_coverage_exclusion`](../../README.md)), production
+- **No `coverage(off)` exclusions.** Per workspace policy, production
   code is covered or it isn't shipped. The dead-code arms in the
   no-panic signal-install path (`std::future::pending` fallbacks)
   are deliberately impossible to provoke in a unit test — they fire
