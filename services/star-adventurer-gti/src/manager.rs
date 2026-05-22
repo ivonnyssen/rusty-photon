@@ -487,8 +487,8 @@ async fn poll_loop(
 /// [`SkywatcherCodecError::Transport`] variant rather than being
 /// stringified into [`ProtocolError::FrameError`]; the device layer's
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
-/// routes the inner [`TransportError`] through the same
-/// `transport_to_staradv` helper a top-level
+/// routes the inner [`TransportError`] through the canonical
+/// `From<TransportError> for StarAdvError` impl a top-level
 /// `SessionError::Transport(_)` uses, so a connect-time timeout gets
 /// classified as `StarAdvError::Timeout` instead of collapsing to
 /// `Protocol(FrameError("transport timeout after 5s"))` and surfacing

@@ -91,8 +91,8 @@ pub enum SkywatcherCodecError {
 /// codec error type so `?` works without losing the structured
 /// transport-error variant. The device-layer
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
-/// re-expands the [`Transport`] arm via the same
-/// [`transport_to_staradv`] helper used for top-level
+/// re-expands the [`Transport`] arm via the canonical
+/// `From<TransportError> for StarAdvError` impl used for top-level
 /// [`SessionError::Transport`].
 impl From<SessionError<SkywatcherCodecError>> for SkywatcherCodecError {
     fn from(err: SessionError<SkywatcherCodecError>) -> Self {
@@ -241,37 +241,32 @@ pub fn decode_frame_for(cmd: &Command, frame: &[u8]) -> Result<Response, Protoco
 }
 
 /// Single classification point for a [`TransportError`] into
-/// [`StarAdvError`]. Both the top-level [`SessionError::Transport`] arm
-/// and the nested [`SessionError::Codec`] of
-/// [`SkywatcherCodecError::Transport`] arm route through this helper so
-/// a connect-time transport failure (surfaced through the handshake
-/// hook as `Codec(Transport(_))`) gets the *same* `Timeout` /
+/// [`StarAdvError`]. Every other transport-arm in this module
+/// (`From<SkywatcherCodecError>::Transport(_)`, `From<SessionError<…>>
+/// ::Transport(_)`) delegates here via `.into()`, so a connect-time
+/// transport failure (surfaced through the handshake hook as
+/// `Codec(Transport(_))`) gets the *same* `Timeout` /
 /// `ConnectionFailed` / `Transport` classification a steady-state
-/// failure (surfaced as top-level `Transport(_)`) would. Without this,
-/// a connect-time timeout would land as `INVALID_OPERATION` instead of
-/// the structured ASCOM timeout the client expects.
-fn transport_to_staradv(t: TransportError) -> StarAdvError {
-    match t {
-        TransportError::Open(e) => StarAdvError::ConnectionFailed(e.to_string()),
-        TransportError::Io(e) => StarAdvError::Io(e),
-        TransportError::Timeout(d) => {
-            StarAdvError::Timeout(format!("transport timeout after {d:?}"))
-        }
-        TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
-        TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
-    }
-}
-
-/// Direct conversion from a shared-transport [`TransportError`].
+/// failure (surfaced as top-level `Transport(_)`) would. Without this
+/// single point, a connect-time timeout would land as
+/// `INVALID_OPERATION` instead of the structured ASCOM timeout the
+/// client expects.
 ///
-/// Lets the device layer write `.map_err(StarAdvError::from)?` on a
-/// `Session::close()` (which returns `Result<_, TransportError>`)
-/// instead of wrapping the [`TransportError`] in a
-/// [`SessionError::Transport`] just to reuse the existing
-/// `From<SessionError<…>>` mapping.
+/// Also used directly via `.map_err(StarAdvError::from)?` on a
+/// `Session::close()` (which returns `Result<_, TransportError>`) —
+/// no need to wrap the [`TransportError`] in a
+/// [`SessionError::Transport`] just to reuse the mapping.
 impl From<TransportError> for StarAdvError {
     fn from(t: TransportError) -> Self {
-        transport_to_staradv(t)
+        match t {
+            TransportError::Open(e) => StarAdvError::ConnectionFailed(e.to_string()),
+            TransportError::Io(e) => StarAdvError::Io(e),
+            TransportError::Timeout(d) => {
+                StarAdvError::Timeout(format!("transport timeout after {d:?}"))
+            }
+            TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
+            TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
+        }
     }
 }
 
@@ -283,13 +278,14 @@ impl From<TransportError> for StarAdvError {
 impl From<SkywatcherCodecError> for StarAdvError {
     fn from(err: SkywatcherCodecError) -> Self {
         match err {
-            // Transport-arm routing goes through `transport_to_staradv` so
-            // a timeout surfaced *through* the handshake hook (Codec arm
-            // in the outer `From<SessionError<…>>`) gets the same
+            // Transport-arm routing delegates to the canonical
+            // `From<TransportError> for StarAdvError` so a timeout
+            // surfaced *through* the handshake hook (Codec arm in the
+            // outer `From<SessionError<…>>`) gets the same
             // classification as one that surfaces on a steady-state
             // request (top-level Transport arm). See PR #280 for the
             // bug class.
-            SkywatcherCodecError::Transport(t) => transport_to_staradv(t),
+            SkywatcherCodecError::Transport(t) => t.into(),
             SkywatcherCodecError::Protocol(pe) => StarAdvError::Protocol(pe),
             SkywatcherCodecError::SkipExhausted(n) => StarAdvError::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",
@@ -310,7 +306,7 @@ impl From<SkywatcherCodecError> for StarAdvError {
 impl From<SessionError<SkywatcherCodecError>> for StarAdvError {
     fn from(err: SessionError<SkywatcherCodecError>) -> Self {
         match err {
-            SessionError::Transport(t) => transport_to_staradv(t),
+            SessionError::Transport(t) => t.into(),
             SessionError::Codec(c) => c.into(),
             SessionError::SkipExhausted(n) => StarAdvError::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",
