@@ -1,7 +1,7 @@
 //! Operations not in ERFA's surface — small root-finders over the
 //! ERFA-supplied positions in `erfars_impl`.
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 
 use crate::erfars_impl::{alt_az_at, lst_hours, time_jds};
 use crate::site::Site;
@@ -57,7 +57,7 @@ where
 /// refined by one Newton step against the actual computed LST at the
 /// candidate time.
 pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTime<Utc>> {
-    let start = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0)?).and_utc();
+    let start = date.and_time(NaiveTime::MIN).and_utc();
     let lst0 = lst_hours(site, &time_jds(start));
     // NaN propagates through `rem_euclid` but `as i64` saturates NaN
     // to 0, which would silently collapse the computation to "start".
@@ -162,17 +162,11 @@ pub(crate) fn twilight(
     // Approximate local solar noon: noon UTC shifted by 4 minutes per
     // degree of longitude (240 s = 240_000 ms / deg). longitude_degrees
     // is positive east, so local solar noon is *earlier* in UTC for
-    // eastern longitudes.
-    let Some(noon_naive) = NaiveTime::from_hms_opt(12, 0, 0) else {
-        // (12, 0, 0) is structurally always a valid HMS; this arm is
-        // only here to keep production code panic-free.
-        return TwilightWindow {
-            begin_utc: None,
-            end_utc: None,
-        };
-    };
-    let noon_utc = NaiveDateTime::new(date, noon_naive).and_utc();
-    let solar_noon = noon_utc - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
+    // eastern longitudes. Built via `NaiveDate::and_time(NaiveTime::MIN)`
+    // (infallible) + a 12-hour Duration so there's no `from_hms_opt`
+    // Option-unwrap to dodge for the panic-deny lint.
+    let solar_noon = date.and_time(NaiveTime::MIN).and_utc() + Duration::hours(12)
+        - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
     let midnight = solar_noon + Duration::hours(12);
     let next_noon = solar_noon + Duration::hours(24);
 
@@ -193,7 +187,7 @@ mod tests {
     use super::*;
     use crate::erfars_impl::ErfarsEphemeris;
     use crate::Ephemeris;
-    use chrono::TimeZone;
+    use chrono::{NaiveDateTime, TimeZone};
 
     fn site_seattle() -> Site {
         Site::new(47.6062, -122.3321).unwrap()
