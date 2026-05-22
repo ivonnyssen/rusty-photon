@@ -301,8 +301,8 @@ fn build_hooks(
 /// [`MountType`] whitelist *before* any mount-specific
 /// initialisation (`:F1` / `:F2`) goes on the wire. If the device on the
 /// other end isn't a Sky-Watcher motor controller (wrong serial port,
-/// foreign USB-CDC peripheral, etc.), the handshake aborts after sending
-/// exactly one frame (`:e1\r`) and surfaces
+/// foreign USB-CDC peripheral, wrong UDP host, etc.), the handshake
+/// aborts after sending exactly one frame (`:e1\r`) and surfaces
 /// [`SkywatcherCodecError::WrongDevice`] carrying the port label and a
 /// human-readable reason. See [issue #254][issue] for the hardware session
 /// that motivated this and the operator-facing diagnostic shape.
@@ -321,8 +321,7 @@ async fn handshake(
     // Step 1: identify the device. `:e1` is the first (and, on a
     // wrong-device handshake, the *only*) frame on the wire.
     //
-    // The two "frame-shaped" error sources are deliberately routed
-    // differently — easy to confuse from the variant names alone:
+    // Error routing:
     //
     // - `SkywatcherCodecError::Transport(TransportError::*)` —
     //   *transport-layer* failures (`Timeout`, `Eof`, `Io`, `Open`,
@@ -332,43 +331,22 @@ async fn handshake(
     //   survive into the operator-facing ASCOM error.
     //
     // - `SkywatcherCodecError::Protocol(ProtocolError::*)` —
-    //   *codec-layer* response-frame failures (`FrameError` for
-    //   missing `=` prefix / missing `\r`, `PayloadError` for
-    //   wrong-shape body, `HexError` for non-hex payload bytes),
-    //   plus the `Ok(other)` case where the device sent a
-    //   structurally valid but type-wrong reply (e.g. a
-    //   `Response::Status` `:f`-shaped frame instead of the U24
-    //   motor-board-version we asked for). All converted to
-    //   `WrongDevice` so the operator sees an actionable diagnostic
-    //   instead of a cryptic codec error.
-    let board = match request_typed(conn, Command::InquireMotorBoardVersion(Axis::Ra)).await {
-        Ok(Response::U24(v)) => v,
-        Ok(other) => {
-            return Err(SkywatcherCodecError::wrong_device(
-                port_label.as_ref(),
-                format!("expected motor-board-version U24, got {other:?}"),
-            ));
-        }
-        Err(SkywatcherCodecError::Protocol(pe)) => {
-            // Covers every `ProtocolError` shape: `FrameError` (missing
-            // `=` prefix / `\r`), `PayloadError` (wrong-shape body),
-            // `HexError` (non-hex payload), and `MountError` (the device
-            // replied with a structurally-valid `!X\r` error frame —
-            // valid but not what a Sky-Watcher motor controller should
-            // send for `:e1`, which is part of the protocol's standard
-            // command set). "Unexpected" reads correctly across all
-            // four; the per-error stringification (`{pe}`) carries the
-            // specific cause for log triage.
-            return Err(SkywatcherCodecError::wrong_device(
-                port_label.as_ref(),
-                format!("unexpected `:e1` reply: {pe}"),
-            ));
-        }
-        // Transport / SkipExhausted / pre-existing WrongDevice variants
-        // bubble through unchanged — those classifications are already
-        // correct for their respective failure modes.
-        Err(other) => return Err(other),
-    };
+    //   *codec-layer* response failures (`FrameError`, `PayloadError`,
+    //   `HexError`, plus `MountError` for a structurally-valid `!X\r`
+    //   reply). All converted to `WrongDevice`.
+    //
+    // The handshake uses the same `expect_u24` shape as the U24
+    // inquiries below (`:a`, `:b`, `:g`) — `Response::decode` for
+    // `Command::InquireMotorBoardVersion` only constructs
+    // `Response::U24` on success, so the non-U24 case `expect_u24`
+    // would catch is structurally unreachable; mapping a Protocol error
+    // once on the outer call covers every failure mode.
+    let board = expect_u24(
+        request_typed(conn, Command::InquireMotorBoardVersion(Axis::Ra))
+            .await
+            .map_err(|e| wrong_device_for_e1(e, &port_label))?,
+    )
+    .map_err(|e| wrong_device_for_e1(e, &port_label))?;
     let mount_type = MountType::from_motor_board_version(board).map_err(|byte| {
         SkywatcherCodecError::wrong_device(
             port_label.as_ref(),
@@ -554,6 +532,28 @@ async fn poll_axis_via_session(
     out.goto = s.goto;
     out.blocked = s.blocked;
     Ok(())
+}
+
+/// Convert any [`SkywatcherCodecError::Protocol`] arising from the
+/// `:e1` round-trip into a [`SkywatcherCodecError::WrongDevice`]
+/// carrying the configured port label and a human-readable reason.
+/// Transport / `SkipExhausted` / pre-existing `WrongDevice` variants
+/// pass through unchanged — those classifications are already correct
+/// for their respective failure modes.
+///
+/// Used twice in the handshake — once on the `request_typed` result
+/// (catches `FrameError` / `PayloadError` / `HexError` from the
+/// codec's response decode, plus `MountError` from a `!X\r` reply)
+/// and once on the `expect_u24` result (catches the
+/// structurally-unreachable-in-practice non-U24 response case, where
+/// `expect_u24` synthesises a `FrameError("expected U24, got X")`).
+fn wrong_device_for_e1(err: SkywatcherCodecError, port_label: &str) -> SkywatcherCodecError {
+    match err {
+        SkywatcherCodecError::Protocol(pe) => {
+            SkywatcherCodecError::wrong_device(port_label, format!("unexpected `:e1` reply: {pe}"))
+        }
+        other => other,
+    }
 }
 
 fn expect_ack(r: Response) -> std::result::Result<(), SkywatcherCodecError> {
@@ -1271,14 +1271,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_rejects_unexpected_e1_response_kind_as_wrong_device() {
-        // Build a transport whose first `recv_frame` returns a malformed
-        // `:e1` reply: a 3-hex-byte status payload (`=100\r`), which the
-        // codec accepts structurally (it's a well-formed `=...\r`) but
-        // which `Response::decode` cannot turn into a U24 motor-board
-        // version. The driver must surface this as `WrongDevice`, not as
-        // a `Protocol(FrameError(...))` that would map to a generic
-        // `INVALID_OPERATION` with no port hint.
+    async fn handshake_rejects_e1_with_wrong_payload_length_as_wrong_device() {
+        // Build a transport whose first `recv_frame` returns an `=...\r`
+        // frame that is structurally valid (the codec accepts it) but
+        // whose payload is the wrong length for the `:e1` U24 decoder:
+        // 3 hex bytes instead of the required 6. `Response::decode`
+        // surfaces this as `Err(ProtocolError::PayloadError(...))`. The
+        // driver must reclassify it as `WrongDevice` so the operator
+        // sees an actionable diagnostic instead of a generic
+        // `INVALID_OPERATION` codec error.
         struct FakeTransport {
             served: AtomicBool,
         }
@@ -1435,9 +1436,9 @@ mod tests {
     #[tokio::test]
     async fn wrong_device_diagnostic_quotes_the_configured_port() {
         // The diagnostic is a smell-test for an operator who just pointed
-        // the driver at the wrong serial port — the message must name
-        // *their* configured port, not a hardcoded default, so the
-        // verify-the-port hint is actionable.
+        // the driver at the wrong transport target (serial port or UDP
+        // host) — the message must name *their* configured port, not a
+        // hardcoded default, so the verify-the-port hint is actionable.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
         state.lock().await.motor_board_version = 0x0099_0000;
@@ -1460,7 +1461,11 @@ mod tests {
             "wrong-device hint missing: {msg}"
         );
         assert!(
-            msg.contains("wrong serial port"),
+            msg.contains("wrong device"),
+            "wrong-device hypothesis missing: {msg}"
+        );
+        assert!(
+            msg.contains("transport endpoint"),
             "verify-the-port hint missing: {msg}"
         );
     }

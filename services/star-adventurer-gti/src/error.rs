@@ -55,14 +55,16 @@ pub enum StarAdvError {
     /// The most likely cause is that the configured transport target
     /// (serial port or UDP host) points at a different device — a power
     /// box, focuser, or unrelated USB-CDC peripheral sharing the host's
-    /// USB bus. See [issue #254][issue].
+    /// USB bus on the serial path, or the wrong host / wrong network on
+    /// the UDP path. See [issue #254][issue].
     ///
     /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
     #[error(
         "handshake to {port} returned unexpected data ({reason}); this device may not be a \
-         Sky-Watcher motor controller. Common cause: wrong serial port (e.g. pointing at a \
-         power box, focuser, or other device sharing the host's USB bus). Verify that {port} \
-         is the GTi serial endpoint."
+         Sky-Watcher motor controller. Common cause: the configured transport target points \
+         at the wrong device (e.g. wrong serial port to a focuser / power box / other \
+         USB-CDC peripheral, or wrong UDP host). Verify that {port} is the GTi's transport \
+         endpoint."
     )]
     WrongDevice { port: String, reason: String },
 }
@@ -148,7 +150,27 @@ mod tests {
         assert!(msg.contains("/dev/ttyUSB1"), "msg: {msg}");
         assert!(msg.contains("unknown mount-type byte 0xFF"), "msg: {msg}");
         assert!(msg.contains("Sky-Watcher"), "msg: {msg}");
-        assert!(msg.contains("wrong serial port"), "msg: {msg}");
+        assert!(msg.contains("wrong device"), "msg: {msg}");
+        assert!(msg.contains("transport endpoint"), "msg: {msg}");
+    }
+
+    #[test]
+    fn wrong_device_display_works_for_udp_target() {
+        // The transport-agnostic wording must also fit a UDP
+        // misconfiguration (the GTi has built-in WiFi AP at
+        // `192.168.4.1:11880`). The label that lands in {port} is
+        // produced by `TransportConfig::port_label()` and looks like
+        // `192.168.4.1:11880` for v4 / `[fe80::1]:11880` for v6 —
+        // neither contains the substring "serial", so the message
+        // must not be locked to serial-specific phrasing.
+        let err = StarAdvError::WrongDevice {
+            port: "192.168.4.1:11880".into(),
+            reason: "unknown mount-type byte 0xFF".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("192.168.4.1:11880"), "msg: {msg}");
+        assert!(msg.contains("wrong UDP host"), "msg: {msg}");
+        assert!(msg.contains("transport endpoint"), "msg: {msg}");
     }
 
     #[test]
