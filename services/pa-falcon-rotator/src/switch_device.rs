@@ -71,9 +71,9 @@ macro_rules! ensure_connected {
     };
 }
 
-/// Typed switch-id discriminant. Returned by [`parse_switch_id`]; every
-/// `Switch` trait method that takes a `usize` id parses it once at the
-/// boundary, then matches on this enum exhaustively. Replaces the
+/// Typed switch-id discriminant. Constructed via [`SwitchId::try_from`];
+/// every `Switch` trait method that takes a `usize` id parses it once at
+/// the boundary, then matches on this enum exhaustively. Replaces the
 /// previous untyped `validate_id` + `match id { _ => unreachable!(...) }`
 /// pattern so the compiler proves all id cases are handled.
 #[derive(Debug, Clone, Copy)]
@@ -84,19 +84,22 @@ enum SwitchId {
     Limit,
 }
 
-/// Parse a raw `usize` switch id from the ASCOM `Switch` trait into the
-/// typed [`SwitchId`] discriminant, or reject it with `INVALID_VALUE`
-/// per the ASCOM convention (id-range validation precedes
-/// operation-permission checks so out-of-range ids never hit
-/// `INVALID_OPERATION` paths).
-fn parse_switch_id(id: usize) -> ASCOMResult<SwitchId> {
-    match id {
-        SWITCH_ID_VOLTAGE => Ok(SwitchId::Voltage),
-        SWITCH_ID_LIMIT => Ok(SwitchId::Limit),
-        _ => Err(ASCOMError::new(
-            ASCOMErrorCode::INVALID_VALUE,
-            format!("Switch id {id} out of range (valid: 0..{SWITCH_COUNT})"),
-        )),
+impl TryFrom<usize> for SwitchId {
+    type Error = ASCOMError;
+
+    /// Parse a raw `usize` switch id from the ASCOM `Switch` trait into
+    /// the typed discriminant, or reject it with `INVALID_VALUE` per the
+    /// ASCOM convention (id-range validation precedes operation-permission
+    /// checks so out-of-range ids never hit `INVALID_OPERATION` paths).
+    fn try_from(id: usize) -> ASCOMResult<Self> {
+        match id {
+            SWITCH_ID_VOLTAGE => Ok(SwitchId::Voltage),
+            SWITCH_ID_LIMIT => Ok(SwitchId::Limit),
+            _ => Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!("Switch id {id} out of range (valid: 0..{SWITCH_COUNT})"),
+            )),
+        }
     }
 }
 
@@ -212,13 +215,13 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn can_write(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Ok(false)
     }
 
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        let name = match parse_switch_id(id)? {
+        let name = match SwitchId::try_from(id)? {
             SwitchId::Voltage => VOLTAGE_SWITCH_NAME,
             SwitchId::Limit => LIMIT_SWITCH_NAME,
         };
@@ -227,7 +230,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn get_switch_description(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
-        let description = match parse_switch_id(id)? {
+        let description = match SwitchId::try_from(id)? {
             SwitchId::Voltage => VOLTAGE_SWITCH_DESCRIPTION,
             SwitchId::Limit => LIMIT_SWITCH_DESCRIPTION,
         };
@@ -236,7 +239,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn get_switch(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        let switch = parse_switch_id(id)?;
+        let switch = SwitchId::try_from(id)?;
         // ASCOM rule: GetSwitch returns false at MinSwitchValue, true
         // otherwise. For the voltage switch (Min = 0) that means
         // "true iff raw > 0". For the limit-hit switch (Min = 0, Max = 1)
@@ -252,7 +255,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn get_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        match parse_switch_id(id)? {
+        match SwitchId::try_from(id)? {
             SwitchId::Voltage => {
                 self.with_session(async |session| {
                     let v = self.manager.read_voltage_raw(session).await?;
@@ -272,7 +275,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn min_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        Ok(match parse_switch_id(id)? {
+        Ok(match SwitchId::try_from(id)? {
             SwitchId::Voltage => VOLTAGE_MIN_VALUE,
             SwitchId::Limit => LIMIT_MIN_VALUE,
         })
@@ -280,7 +283,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn max_switch_value(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        Ok(match parse_switch_id(id)? {
+        Ok(match SwitchId::try_from(id)? {
             SwitchId::Voltage => VOLTAGE_MAX_VALUE,
             SwitchId::Limit => LIMIT_MAX_VALUE,
         })
@@ -288,7 +291,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn switch_step(&self, id: usize) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        Ok(match parse_switch_id(id)? {
+        Ok(match SwitchId::try_from(id)? {
             SwitchId::Voltage => VOLTAGE_STEP,
             SwitchId::Limit => LIMIT_STEP,
         })
@@ -296,7 +299,7 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         // Read-only switches never change asynchronously.
         Ok(true)
     }
@@ -311,19 +314,19 @@ impl Switch for FalconStatusSwitchDevice {
 
     async fn set_switch(&self, id: usize, _state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_switch_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_switch_name(&self, id: usize, _name: String) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
@@ -332,31 +335,31 @@ impl Switch for FalconStatusSwitchDevice {
     // running id validation. ConformU flags both: it expects an
     // InvalidValueException when called with `id >= MaxSwitch` regardless
     // of whether the device supports the operation. Overriding here
-    // chains `ensure_connected!` + `parse_switch_id` before the trait-default
+    // chains `ensure_connected!` + `SwitchId::try_from` before the trait-default
     // body so out-of-range ids return `INVALID_VALUE` (or `NOT_CONNECTED`
     // when disconnected, matching the rest of the surface).
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Ok(false)
     }
 
     async fn set_async(&self, id: usize, _state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_async_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
         ensure_connected!(self);
-        parse_switch_id(id)?;
+        SwitchId::try_from(id)?;
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 }
@@ -386,18 +389,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_switch_id_accepts_zero_as_voltage() {
-        assert!(matches!(parse_switch_id(0).unwrap(), SwitchId::Voltage));
+    fn switch_id_try_from_accepts_zero_as_voltage() {
+        assert!(matches!(SwitchId::try_from(0).unwrap(), SwitchId::Voltage));
     }
 
     #[test]
-    fn parse_switch_id_accepts_one_as_limit() {
-        assert!(matches!(parse_switch_id(1).unwrap(), SwitchId::Limit));
+    fn switch_id_try_from_accepts_one_as_limit() {
+        assert!(matches!(SwitchId::try_from(1).unwrap(), SwitchId::Limit));
     }
 
     #[test]
-    fn parse_switch_id_rejects_two() {
-        let err = parse_switch_id(2).unwrap_err();
+    fn switch_id_try_from_rejects_two() {
+        let err = SwitchId::try_from(2).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         assert!(
             err.message.contains("Switch id 2 out of range"),
@@ -407,8 +410,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_switch_id_rejects_large_id() {
-        let err = parse_switch_id(usize::MAX).unwrap_err();
+    fn switch_id_try_from_rejects_large_id() {
+        let err = SwitchId::try_from(usize::MAX).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
