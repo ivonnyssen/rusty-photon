@@ -6,9 +6,8 @@
 //! for motion and an `ISwitchV3` for status (raw input voltage +
 //! limit-detect flag).
 //!
-//! See `docs/services/falcon-rotator.md` for the behavioural contract
-//! and `docs/plans/shared-transport-extraction.md` for the lifecycle
-//! scaffolding the service shares with `qhy-focuser`, `ppba-driver`, and
+//! See `docs/services/falcon-rotator.md` for the behavioural contract.
+//! Lifecycle scaffolding is shared with `qhy-focuser`, `ppba-driver`, and
 //! `star-adventurer-gti` via
 //! [`rusty_photon_shared_transport::SharedTransport`].
 

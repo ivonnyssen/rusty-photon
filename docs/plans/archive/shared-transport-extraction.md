@@ -2,9 +2,18 @@
 
 ## Status
 
-**Phases A–D merged on `main`; Phase E implemented on
-`feature/phase-e-sag-shared-transport`, in review. Phase D landed
-via PR #282 (`pa-falcon-rotator` migration).**
+**Status: COMPLETE (archived 2026-05-22).** All five phases shipped to
+`main`. The
+[`crates/rusty-photon-shared-transport/`](../../../crates/rusty-photon-shared-transport/)
+crate is the canonical refcounted multi-client lifecycle scaffolding;
+four services (`qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`,
+`star-adventurer-gti`) migrated off their per-service
+`serial_manager.rs` shape, and
+[`services/dsd-fp2/`](../../../services/dsd-fp2/) was built on the
+shared crate from inception (PR #283). The three bug classes the plan
+called out — `set_connected` race, refcount leak on partial-connect
+failure, polling-task teardown leak — are now structurally impossible
+in any service using the crate.
 
 * Phase A — landed via PR #269 (the
   `crates/rusty-photon-shared-transport/` crate; 31 tests).
@@ -31,9 +40,8 @@ via PR #282 (`pa-falcon-rotator` migration).**
   has been deleted in favour of `FalconManager` +
   `Hooks { handshake, while_open: None, … }` (no poll loop — Falcon
   is the no-cache outlier).
-* Phase E — implemented on `feature/phase-e-sag-shared-transport`,
-  in review. `star-adventurer-gti` migrated; the legacy
-  `services/star-adventurer-gti/src/transport_manager.rs` is replaced
+* Phase E — landed via PR #285 (`star-adventurer-gti` migration). The
+  legacy `services/star-adventurer-gti/src/transport_manager.rs` is replaced
   by `manager.rs` (the thin `MountManager` wrapping
   `Arc<SharedTransport<SkywatcherCodec>>`) and a new `codec.rs`
   (`SkywatcherCodec` whose `Response = Vec<u8>`; typed decode happens
@@ -844,7 +852,7 @@ independently `cargo rail run --profile commit -q` green.
 
 ### Phase A — Land `crates/rusty-photon-shared-transport/`
 
-Status: **implemented in PR #269**, awaiting review.
+Status: **landed via PR #269**.
 
 * `crates/rusty-photon-shared-transport/Cargo.toml`, `BUILD.bazel`, `src/lib.rs`,
   `src/codec.rs`, `src/transport.rs`, `src/connection.rs`,
@@ -921,7 +929,7 @@ Verification:
 
 ### Phase B — Migrate `ppba-driver`
 
-Status: **implemented** on `feature/phase-b-ppba-shared-transport`.
+Status: **landed via PR #276**.
 
 `ppba-driver` migrated first because:
 
@@ -1006,8 +1014,8 @@ duplicates were dropped per the original plan.
 
 ### Phase D — Migrate `pa-falcon-rotator`
 
-Status: **implemented** on `feature/phase-d-falcon-rotator-shared-transport`.
-Ships in parallel with Phase C (PR #280, qhy-focuser): pa-falcon-rotator
+Status: **landed via PR #282**. Shipped in parallel with Phase C
+(PR #280, qhy-focuser): pa-falcon-rotator
 Phase 3 (protocol implementation) had already merged before Phase D
 started, and the service is the simplest outstanding migration —
 a 5-command ASCII handshake, command-echo validation, no background
@@ -1063,7 +1071,7 @@ were dropped per the original plan.
 
 ### Phase E — Migrate `star-adventurer-gti`
 
-Status: **implemented** on `feature/phase-e-sag-shared-transport`.
+Status: **landed via PR #285**.
 
 Coordinated last because:
 
