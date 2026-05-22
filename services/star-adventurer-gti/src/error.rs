@@ -59,7 +59,7 @@ pub enum StarAdvError {
     ///
     /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
     #[error(
-        "handshake to {port} returned malformed data ({reason}); this device may not be a \
+        "handshake to {port} returned unexpected data ({reason}); this device may not be a \
          Sky-Watcher motor controller. Common cause: wrong serial port (e.g. pointing at a \
          power box, focuser, or other device sharing the host's USB bus). Verify that {port} \
          is the GTi serial endpoint."

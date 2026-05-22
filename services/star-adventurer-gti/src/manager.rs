@@ -350,9 +350,18 @@ async fn handshake(
             ));
         }
         Err(SkywatcherCodecError::Protocol(pe)) => {
+            // Covers every `ProtocolError` shape: `FrameError` (missing
+            // `=` prefix / `\r`), `PayloadError` (wrong-shape body),
+            // `HexError` (non-hex payload), and `MountError` (the device
+            // replied with a structurally-valid `!X\r` error frame —
+            // valid but not what a Sky-Watcher motor controller should
+            // send for `:e1`, which is part of the protocol's standard
+            // command set). "Unexpected" reads correctly across all
+            // four; the per-error stringification (`{pe}`) carries the
+            // specific cause for log triage.
             return Err(SkywatcherCodecError::wrong_device(
                 port_label.as_ref(),
-                format!("malformed `:e1` reply: {pe}"),
+                format!("unexpected `:e1` reply: {pe}"),
             ));
         }
         // Transport / SkipExhausted / pre-existing WrongDevice variants
@@ -1322,8 +1331,8 @@ mod tests {
                 // payload check rejected the shape. Both end up in
                 // `WrongDevice` per the handshake hook's branching.
                 assert!(
-                    reason.contains("malformed") || reason.contains("expected motor-board"),
-                    "reason should describe the malformed-:e1 cause; got {reason:?}"
+                    reason.contains("unexpected") || reason.contains("expected motor-board"),
+                    "reason should describe the unexpected-:e1 cause; got {reason:?}"
                 );
             }
             other => panic!("expected WrongDevice, got {other:?}"),
@@ -1331,6 +1340,95 @@ mod tests {
         assert!(
             !m.is_available(),
             "RollbackGuard should roll the refcount back on wrong-device failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_mount_error_reply_to_e1_as_wrong_device() {
+        // A device that speaks `:`/`!` framing but doesn't recognise
+        // `:e` replies `!0\r` (UnknownCommand). The frame is
+        // structurally valid (it is decodable as
+        // `ProtocolError::MountError(UnknownCommand)`), so this is a
+        // distinct path from the malformed-framing case in
+        // `handshake_rejects_unexpected_e1_response_kind_as_wrong_device`.
+        // Still wrong-device — a real Sky-Watcher controller supports
+        // `:e` from the protocol spec — but the diagnostic shouldn't
+        // call this "malformed"; it's an unexpected (but well-formed)
+        // reply.
+        struct MountErrorTransport {
+            served: AtomicBool,
+        }
+
+        #[async_trait]
+        impl FrameTransport for MountErrorTransport {
+            async fn send_frame(
+                &mut self,
+                _bytes: &[u8],
+            ) -> std::result::Result<(), TransportError> {
+                Ok(())
+            }
+            async fn recv_frame(
+                &mut self,
+                buf: &mut Vec<u8>,
+            ) -> std::result::Result<(), TransportError> {
+                if !self.served.swap(true, Ordering::SeqCst) {
+                    buf.clear();
+                    buf.extend_from_slice(b"!0\r");
+                    Ok(())
+                } else {
+                    Err(TransportError::Eof)
+                }
+            }
+        }
+
+        struct MountErrorFactory;
+
+        #[async_trait]
+        impl TransportFactory for MountErrorFactory {
+            async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+                Ok(Box::new(MountErrorTransport {
+                    served: AtomicBool::new(false),
+                }))
+            }
+        }
+
+        let m = MountManager::new(Config::default(), Arc::new(MountErrorFactory));
+        let err = m
+            .transport()
+            .acquire()
+            .await
+            .expect_err("a `!0\\r` reply to `:e1` must reject as wrong-device");
+        let mapped = StarAdvError::from(err);
+        match mapped {
+            StarAdvError::WrongDevice { port, reason } => {
+                assert_eq!(port, "/dev/ttyACM0");
+                // The reason carries the underlying ProtocolError
+                // stringification — `MountError(UnknownCommand)` formats
+                // as "mount error: UnknownCommand" per its `thiserror`
+                // attribute. The wrapper prefix is "unexpected", NOT
+                // "malformed" — a `!X\r` frame is well-formed; it's the
+                // *content* that's wrong for our query.
+                assert!(
+                    reason.contains("unexpected"),
+                    "reason should use the broader 'unexpected' wording, not 'malformed'; got {reason:?}"
+                );
+                assert!(
+                    reason.contains("mount error") || reason.contains("UnknownCommand"),
+                    "reason should quote the underlying ProtocolError; got {reason:?}"
+                );
+            }
+            other => panic!("expected WrongDevice, got {other:?}"),
+        }
+        // And the top-level Display string must not contradict — it
+        // says "unexpected data", not "malformed data".
+        let staradv = StarAdvError::WrongDevice {
+            port: "/dev/ttyACM0".into(),
+            reason: "unexpected `:e1` reply: mount error: UnknownCommand".into(),
+        };
+        assert!(
+            staradv.to_string().contains("returned unexpected data"),
+            "WrongDevice Display must say 'unexpected', not 'malformed'; got: {}",
+            staradv
         );
     }
 
