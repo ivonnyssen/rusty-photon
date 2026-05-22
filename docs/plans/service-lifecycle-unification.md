@@ -315,10 +315,17 @@ needed.
   services started under systemd `Type=notify`. Additive on the
   runner; postpone until there's an asker.
 
-## Current state inventory (reference)
+## Pre-Phase 1 baseline inventory (reference)
 
-Reflects the codebase with PR #289 applied; one row per shutdown
-call site.
+**Frozen snapshot.** This is the codebase at the PR #289 baseline
+that motivated the unification — *not* a live status board. Track
+per-phase progress in the [Outcomes](#outcomes) section above;
+filemonitor in particular has moved off this row (Phase 1 deleted
+`service.rs` and migrated `run_server_loop` to the runner). The
+table stays unchanged to preserve the divergence picture that
+justified the design.
+
+One row per shutdown call site:
 
 | Service | Path | Pattern | Reload | SCM |
 |---|---|---|---|---|
