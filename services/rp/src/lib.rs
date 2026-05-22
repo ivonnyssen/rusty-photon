@@ -12,11 +12,11 @@ pub mod routes;
 pub mod session;
 pub mod tls_cmd;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::signal;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use rp_tls::config::TlsConfig;
 
@@ -214,58 +214,23 @@ impl BoundServer {
         self.local_addr
     }
 
-    pub async fn start(self) -> Result<()> {
+    pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         match self.tls {
             Some(ref tls_config) => {
                 info!("rp service started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await
-                .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown)
+                    .await
+                    .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
             }
             None => {
                 info!("rp service started on {}", self.local_addr);
                 axum::serve(self.listener, self.router)
-                    .with_graceful_shutdown(shutdown_signal())
+                    .with_graceful_shutdown(shutdown)
                     .await?;
             }
         }
 
         debug!("rp service shut down");
         Ok(())
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
     }
 }
