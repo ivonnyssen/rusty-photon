@@ -136,7 +136,7 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 | `error.rs` | Error types with ASCOM error mapping |
 | `focuser_device.rs` | ASCOM Device + Focuser trait implementation |
 | `lib.rs` | Module declarations, ServerBuilder |
-| `main.rs` | CLI entry point |
+| `main.rs` | CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner` |
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
 | `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
 | `protocol.rs` | JSON command serialization + response parsers |
