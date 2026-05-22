@@ -15,23 +15,33 @@ use tokio::sync::Notify;
 /// a `tokio::select!`. Cloning is supported (`Notify` lives behind an `Arc`)
 /// but exists for handing the signal into a single nested scope, not for
 /// fan-out.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ReloadSignal {
     notify: Arc<Notify>,
 }
 
 impl ReloadSignal {
-    #[allow(dead_code)] // wired up by the runner in Phase 1 impl
-    pub(crate) fn new() -> Self {
+    /// Construct a fresh, un-fired reload signal.
+    ///
+    /// The canonical producer is [`crate::ServiceRunner::run_with_reload`],
+    /// which constructs one and hands it to the user closure. Callers rarely
+    /// need this directly; it exists for integration tests that drive a
+    /// service's run loop with synthetic reload events, and for callers
+    /// that want a reload source not tied to OS signals (e.g. a file
+    /// watcher feeding the same primitive).
+    pub fn new() -> Self {
         Self {
             notify: Arc::new(Notify::new()),
         }
     }
 
-    /// Wakes one waiter. Used internally by the SIGHUP watcher / SCM
-    /// control handler; not part of the public-consumer API.
-    #[allow(dead_code)] // wired up by the runner in Phase 1 impl
-    pub(crate) fn notify(&self) {
+    /// Wake one waiter.
+    ///
+    /// Called by the runner's SIGHUP watcher and SCM control handler.
+    /// Exposed publicly so tests and non-signal-driven reload sources can
+    /// fire events through the same primitive consumers `await` on
+    /// [`Self::recv`]; see [`Self::new`] for the canonical-producer note.
+    pub fn notify(&self) {
         self.notify.notify_one();
     }
 

@@ -1295,14 +1295,15 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
- "windows-service",
 ]
 
 [[package]]
@@ -4389,6 +4390,7 @@ dependencies = [
 name = "rusty-photon-service-lifecycle"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "tokio",
  "tokio-util",
  "tracing",

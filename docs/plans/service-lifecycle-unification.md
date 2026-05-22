@@ -1,11 +1,11 @@
 # Plan: unified service lifecycle (issue #294)
 
-**Status: DESIGN.** Crate scaffolded at
-`crates/rusty-photon-service-lifecycle/` with `Shutdown`,
-`ReloadSignal`, and `ServiceRunner` public API stubbed; runner method
-bodies are `todo!()` pending Phase 1 implementation. Awaiting PR #289
-(`chore: drop production panics across the workspace`) to merge into
-`main`; this plan rebases on the post-#289 baseline.
+**Status: PHASE 1 LANDED.** The crate at
+`crates/rusty-photon-service-lifecycle/` ships the full runner (console
+signal path + SCM dispatch behind the `scm` feature), and `filemonitor`
+is migrated onto it (services/filemonitor/src/service.rs deleted,
+run_server_loop now takes `(CancellationToken, ReloadSignal)`). Phases 2
+and 3 cover the remaining ten services and the workspace skill doc.
 
 **Date:** 2026-05-22
 **Branch:** `worktree-issue-294`
@@ -19,10 +19,18 @@ bodies are `todo!()` pending Phase 1 implementation. Awaiting PR #289
 
 *(Filled in as phases ship.)*
 
-- **Phase 0** (design + scaffolding): in progress. Crate skeleton
-  landed on `worktree-issue-294`; runner method bodies are `todo!()`.
-  Crate design doc at `docs/crates/rusty-photon-service-lifecycle.md`.
-- **Phase 1** (crate implementation + filemonitor migration): pending.
+- **Phase 0** (design + scaffolding): landed. Crate skeleton + public
+  API + design docs on PR #295. Copilot review fed back as a
+  follow-up commit (`Shutdown::cancelled()` now returns `'static`,
+  `Fut: Send` dropped, `todo!()` swapped for structured `Err`, etc.).
+- **Phase 1** (crate implementation + filemonitor migration): landed.
+  Runner builds its own multi-thread tokio runtime; no-panic
+  signal-install path for SIGINT/SIGTERM/SIGHUP; SCM dispatch path
+  gated by `#[cfg(all(windows, feature = "scm"))]` with type-erased
+  closure stash; filemonitor migrated and its `service.rs` deleted.
+  Unit tests cover runner contract (invokes once, propagates err,
+  requires `.with_reload()`); Unix integration tests use
+  `libc::raise(SIGTERM)` / `SIGHUP` to drive end-to-end.
 - **Phase 2** (10 service migrations + phd2-guider SIGTERM fix): pending.
 - **Phase 3** (skill doc + workspace docs polish): pending.
 
@@ -153,7 +161,7 @@ migration-specific decisions live here.
   commit**, not as a separate prior PR. The fix falls out of adopting
   the runner; isolating it would be paperwork without value.
 
-## Phase 0 — design + scaffolding *(in progress)*
+## Phase 0 — design + scaffolding *(landed)*
 
 * Crate design doc at
   [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md).
@@ -165,10 +173,10 @@ migration-specific decisions live here.
 * Workspace `Cargo.toml` updated: added the crate to `members` and to
   `[workspace.dependencies]`.
 
-## Phase 1 — crate implementation + filemonitor migration
+## Phase 1 — crate implementation + filemonitor migration *(landed)*
 
-Single PR. Proves the design end-to-end (both signal-driven console
-mode and SCM mode) before any other service touches the crate.
+Proves the design end-to-end (both signal-driven console mode and SCM
+mode) before any other service touches the crate. Landed on PR #295.
 
 ### Crate implementation
 

@@ -209,7 +209,18 @@ sudo systemctl enable --now filemonitor
 The service runs as a dedicated `filemonitor` system user, created automatically during package installation.
 
 #### macOS / Windows
-Service integration for macOS (launchd) and Windows (Windows Service) is not yet implemented. The MSI installer places the binary but does not register it as a Windows Service.
+**Runtime support:** The filemonitor binary accepts a hidden `--service`
+flag and, when invoked with it under the Windows Service Control Manager,
+dispatches via the shared `rusty-photon-service-lifecycle` crate (see
+[`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)).
+SCM `Stop` is translated to graceful shutdown; `ParamChange` is translated
+to a reload signal that re-reads the config file without restarting the
+process. SIGHUP on Unix triggers the same reload path.
+
+**Installer-side registration:** Not yet implemented for macOS (launchd)
+or Windows (Windows Service). The MSI installer places the binary but
+does not invoke `sc create` / similar; service registration is a manual
+step today.
 
 ### Monorepo Structure
 

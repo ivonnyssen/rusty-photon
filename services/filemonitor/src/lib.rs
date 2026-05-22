@@ -1,17 +1,17 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,16 +355,16 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
 pub async fn run_server_loop(
     config_path: &Path,
-    mut stop: impl FnMut() -> Pin<Box<dyn Future<Output = ()>>>,
-    mut reload: impl FnMut() -> Pin<Box<dyn Future<Output = ()>>>,
+    shutdown: CancellationToken,
+    reload: ReloadSignal,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let config = load_config(config_path)?;
         info!("Starting filemonitor server on port {}", config.server.port);
         tokio::select! {
             result = start_server(config) => return result,
-            _ = stop() => { info!("Received stop signal"); break; }
-            _ = reload() => { info!("Reloading configuration"); continue; }
+            () = shutdown.cancelled() => { info!("Received stop signal"); break; }
+            () = reload.recv() => { info!("Reloading configuration"); continue; }
         }
     }
     Ok(())

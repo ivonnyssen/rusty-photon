@@ -45,13 +45,16 @@ Out of scope:
 
 ## Public API
 
-Three types. Both [`Shutdown`] and [`ReloadSignal`] are constructed
-only by the runner; users never call their constructors.
+Three types. [`Shutdown`] is constructed only by the runner.
+[`ReloadSignal`] has a public constructor so integration tests can
+drive a service's run loop with synthetic reload events, and so
+non-signal-driven reload sources (e.g. a file-watcher) can share the
+same primitive — but the canonical producer remains the runner.
 
 ```text
 ServiceRunner::new(name)                       -> ServiceRunner
 ServiceRunner::with_reload(self)               -> ServiceRunner
-ServiceRunner::scm_mode(self, enable)          -> ServiceRunner   // cfg(feature = "scm")
+ServiceRunner::scm_mode(self, enable)          -> ServiceRunner   // no-op unless cfg(all(windows, feature = "scm"))
 ServiceRunner::run(self, |Shutdown| async)              -> Result<(), Box<dyn Error>>
 ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> Result<(), Box<dyn Error>>
 
@@ -59,7 +62,9 @@ Shutdown::token()        -> CancellationToken
 Shutdown::cancelled()    -> impl Future<Output = ()> + Send + 'static
 Shutdown::is_cancelled() -> bool
 
-ReloadSignal::recv()     -> impl Future<Output = ()> + '_
+ReloadSignal::new()      -> ReloadSignal      // for tests / alt sources
+ReloadSignal::notify(&self)                   // wake one waiter
+ReloadSignal::recv(&self) -> impl Future<Output = ()> + '_
 ```
 
 The closure passed to `run` / `run_with_reload` is `FnOnce(...) -> Fut`
@@ -352,16 +357,22 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   and [`ReloadSignal`]) are trivial enough that their tests focus on
   contract — `cancelled()` resolves when any clone cancels, `recv()`
   resolves on `notify()`, `is_cancelled()` flips after `cancel()`.
-- **Signal-install integration test** — spawn the signal-watcher
-  task and send `SIGTERM` to the current process (via the `nix`
-  crate's `kill(getpid(), SIGTERM)`), assert the token transitions
-  to `is_cancelled()`. Tests in this set are serialized via a
-  `std::sync::Mutex` because only one signal handler can be installed
-  per process at a time.
+- **Signal-install integration tests** drive the full
+  `ServiceRunner::run` / `run_with_reload` path on Unix: spawn a
+  task that `libc::raise`s `SIGTERM` (or `SIGHUP` followed by
+  `SIGTERM`) after a brief delay, then assert that
+  `shutdown.cancelled()` resolves (and that `reload.recv()` fires
+  at least once for the SIGHUP variant). Tokio's signal handlers
+  are reference-counted, but raising signals to self affects the
+  whole process, so the test module serializes runs via a
+  `std::sync::Mutex<()>`. `libc` is a `cfg(unix)` dev-dependency
+  to avoid pulling in `nix` solely for these tests.
 - **Runner contract** — `ServiceRunner::run` invokes the closure
   exactly once, propagates its `Result`, and returns `Ok(())` when
-  the closure returns `Ok(())`. The runner builds and tears down a
-  fresh runtime per call.
+  the closure returns `Ok(())`. `run_with_reload` without a prior
+  `.with_reload()` returns a descriptive error rather than running
+  the closure. The runner builds and tears down a fresh runtime
+  per call.
 - **SCM mode** — `scm_mode(false)` is a no-op and falls through to
   the OS-signal path on Windows. The full SCM dispatch is *not*
   exercised in CI: `windows_service::service_dispatcher::start` only

@@ -25,3 +25,7 @@ scm = ["dep:windows-service"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+# Signal-install integration tests self-raise SIGTERM / SIGHUP via libc::raise.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

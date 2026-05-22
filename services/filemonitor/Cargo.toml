@@ -30,9 +30,8 @@ tracing-subscriber = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-windows-service = "0.8"
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+tokio-util = { workspace = true }
 
 [package.metadata.conformu]
 command = "cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture"
