@@ -274,5 +274,8 @@ changed.
 - [AGENTS.md](../AGENTS.md) — Rule 1 (read docs before working), Rule 2 (update docs when behavior changes)
 - [Testing skill](testing.md) — BDD conventions, step definitions, World struct patterns
 - [Pre-push skill](pre-push.md) — Running CI quality gates
+- [Service-lifecycle skill](service-lifecycle.md) — Standard `main.rs`
+  shape, `ServiceRunner` API, shutdown / reload / SCM. Read when
+  scaffolding a new long-running service binary.
 - [rp design doc](../services/rp.md) — Reference example of a comprehensive design doc
 - `services/rp/tests/features/` — Reference example of BDD feature files derived from a design doc

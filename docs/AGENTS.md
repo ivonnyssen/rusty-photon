@@ -4,6 +4,7 @@
    a. Read the design document for any service you are modifying (docs/services/<service>.md). For instance, filemonitor's design document is located in docs/services/filemonitor.md.
    b. Read the skill document for the type of task you are performing (docs/skills/). Specifically:
       - Developing a new feature or service: read docs/skills/development-workflow.md
+      - Scaffolding a new long-running service binary, or touching a service's main.rs / shutdown handling: also read docs/skills/service-lifecycle.md
       - Writing or modifying tests: read docs/skills/testing.md
       - Pushing code or running CI checks: read docs/skills/pre-push.md
 

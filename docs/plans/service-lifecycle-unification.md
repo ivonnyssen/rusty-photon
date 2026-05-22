@@ -1,11 +1,14 @@
 # Plan: unified service lifecycle (issue #294)
 
-**Status: PHASE 1 LANDED.** The crate at
+**Status: ALL PHASES LANDED.** The crate at
 `crates/rusty-photon-service-lifecycle/` ships the full runner (console
-signal path + SCM dispatch behind the `scm` feature), and `filemonitor`
-is migrated onto it (services/filemonitor/src/service.rs deleted,
-run_server_loop now takes `(CancellationToken, ReloadSignal)`). Phases 2
-and 3 cover the remaining ten services and the workspace skill doc.
+signal path + SCM dispatch behind the `scm` feature). All twelve
+long-running services have been migrated, including the five shared-
+transport ASCOM services that additionally closed the #287 outer-race
+bug, and `phd2-guider` which gained SIGTERM handling as a side fix.
+The `docs/skills/service-lifecycle.md` skill doc is published and
+referenced from the workspace skill index. Issue #294 closes with
+PR #295; issue #287 closes as a side fix in the same PR.
 
 **Date:** 2026-05-22
 **Branch:** `worktree-issue-294`
@@ -13,11 +16,9 @@ and 3 cover the remaining ten services and the workspace skill doc.
 **Also fixes:** [#287 — outer `shutdown_signal` race cancels inner graceful shutdown](https://github.com/ivonnyssen/rusty-photon/issues/287)
 **Closest precedent:** [`docs/plans/shared-transport-extraction.md`](shared-transport-extraction.md) (multi-phase workspace-wide infra crate adopted by N services)
 **Crate design doc:** [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
-**Skill doc (to be written in Phase 3):** `docs/skills/service-lifecycle.md`
+**Skill doc:** [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
 
 ## Outcomes
-
-*(Filled in as phases ship.)*
 
 - **Phase 0** (design + scaffolding): landed. Crate skeleton + public
   API + design docs on PR #295. Copilot review fed back as a
@@ -31,8 +32,26 @@ and 3 cover the remaining ten services and the workspace skill doc.
   Unit tests cover runner contract (invokes once, propagates err,
   requires `.with_reload()`); Unix integration tests use
   `libc::raise(SIGTERM)` / `SIGHUP` to drive end-to-end.
-- **Phase 2** (10 service migrations + phd2-guider SIGTERM fix): pending.
-- **Phase 3** (skill doc + workspace docs polish): pending.
+- **Phase 2** (11 service migrations + phd2-guider SIGTERM fix):
+  landed. Eleven commits on PR #295, one per service, in the order
+  enumerated below. The five shared-transport services (`dsd-fp2`,
+  `pa-falcon-rotator`, `ppba-driver`, `qhy-focuser`,
+  `star-adventurer-gti`) additionally close issue #287 by threading
+  the runner's `Shutdown` through `BoundServer::start(shutdown)`
+  instead of installing a second signal handler internally. The
+  `phd2-guider` migration adds a Unix-only regression test
+  (`test_monitor_shuts_down_on_sigterm`) that spawns the binary in
+  monitor mode, sends `libc::SIGTERM`, and asserts the process exits
+  within 2s — the bounded-time clean-shutdown assertion called out
+  in the plan. Per-service builds + tests + clippy + fmt clean at
+  each commit; full `cargo rail run --profile commit -q` clean at
+  PR head.
+- **Phase 3** (skill doc + workspace docs polish): landed. Added
+  [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
+  covering the standard pattern, runner API, reload, SCM mode, and
+  common pitfalls. Cross-references from
+  [`docs/skills/development-workflow.md`](../skills/development-workflow.md)
+  (read-this-when-scaffolding-a-service list) and `CLAUDE.md` rule 1.b.
 
 ## Background
 
