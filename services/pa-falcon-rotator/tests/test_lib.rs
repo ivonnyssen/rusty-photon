@@ -15,6 +15,7 @@
 //! that default from racing.
 #![cfg(feature = "mock")]
 #![allow(clippy::await_holding_lock)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use std::sync::{Arc, Mutex};
 

@@ -9,6 +9,7 @@
 //!
 //! [`Session::close`]: crate::Session::close
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,10 +155,19 @@ impl<C: Codec> SharedTransport<C> {
         // Reuse path: another caller already opened the transport. Clone
         // the slot's Arc.
         let slot = self.slot.lock().await;
-        let connection = slot
-            .as_ref()
-            .expect("count > 0 but slot empty — invariant violated")
-            .clone();
+        let Some(connection) = slot.as_ref().cloned() else {
+            // Impossible by construction: the 0→1 path populates `slot`
+            // before releasing `acquire_lock`, so any subsequent
+            // `acquire()` that sees `count > 0` must observe `Some` here.
+            // Roll back our pre-emptive `fetch_add` and surface an I/O
+            // error rather than panicking so we satisfy the workspace's
+            // no-panic policy.
+            drop(slot);
+            self.count.fetch_sub(1, Ordering::SeqCst);
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("transport refcount > 0 but slot empty"),
+            )));
+        };
         Ok(Session::new(Arc::clone(self), connection))
     }
 

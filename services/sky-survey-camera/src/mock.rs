@@ -146,10 +146,9 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
     // The assert at function entry caps each axis at 8192, so the
     // multiplication and the `* 2` for u16 byte sizing both stay
     // comfortably under `usize::MAX`. `checked_mul` is
-    // belt-and-suspenders in case the constant ever grows.
-    let pixels = (width as usize)
-        .checked_mul(height as usize)
-        .expect("width * height overflows usize");
+    // belt-and-suspenders in case the constant ever grows; saturate
+    // to 0 on the impossible overflow so we don't panic.
+    let pixels = (width as usize).checked_mul(height as usize).unwrap_or(0);
     let mut bytes = header.into_bytes();
     bytes.reserve(pixels * 2);
     for i in 0..pixels {
@@ -163,6 +162,7 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::fits::parse_primary_hdu;

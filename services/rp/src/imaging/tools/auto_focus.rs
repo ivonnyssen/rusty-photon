@@ -364,8 +364,15 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
 
     let fit = fit_parabola(&valid_samples)?;
     let best_position = fit.vertex_position();
-    let grid_min = *grid.first().expect("grid non-empty by construction");
-    let grid_max = *grid.last().expect("grid non-empty by construction");
+    // `valid_samples` was filtered from `grid`, and we just returned
+    // above unless `valid_samples.len() >= min_fit_points >= 1`, so
+    // `grid` is non-empty here. Pattern-match the `Option`s instead of
+    // panicking to satisfy the workspace's no-panic policy.
+    let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
+        return Err(AutoFocusError::MonotonicCurve(
+            "grid is empty despite having valid samples".into(),
+        ));
+    };
     if best_position < grid_min || best_position > grid_max {
         return Err(AutoFocusError::MonotonicCurve(format!(
             "fitted vertex {} is outside sampled grid [{}, {}]",
@@ -391,6 +398,7 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

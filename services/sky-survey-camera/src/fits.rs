@@ -36,6 +36,7 @@ pub fn parse_primary_hdu(bytes: &[u8]) -> Result<FitsImage, FitsError> {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use rp_fits::writer::{write_i32_image, write_u16_image, write_u8_image};

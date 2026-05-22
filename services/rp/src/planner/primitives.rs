@@ -203,6 +203,7 @@ pub fn get_local_sidereal_time(site: &Site, time: DateTime<Utc>) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

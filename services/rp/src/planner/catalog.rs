@@ -56,6 +56,7 @@ pub fn resolve(name: &str) -> ResolveOutcome {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

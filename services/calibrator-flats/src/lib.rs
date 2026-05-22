@@ -8,7 +8,7 @@ pub mod workflow;
 use std::net::SocketAddr;
 
 use tokio::signal;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::FlatPlan;
 use crate::error::Result;
@@ -103,17 +103,23 @@ impl BoundServer {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            warn!("failed to wait for Ctrl+C: {e}");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]

@@ -8,6 +8,8 @@
 //! window in `set_connected` let two callers both think they were the
 //! first.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 mod common;
 
 use std::sync::Arc;

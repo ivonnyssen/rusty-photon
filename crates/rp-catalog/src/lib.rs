@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, error};
 
 const MESSIER_CSV: &str = include_str!("data/messier.csv");
 const NGC_CSV: &str = include_str!("data/ngc.csv");
@@ -93,12 +93,21 @@ fn normalize(name: &str) -> String {
 
 impl Catalog {
     /// Process-wide singleton catalog, lazily initialized on first call.
-    /// The embedded data is committed and known-good; if parsing fails
-    /// the binary panics at first use, which is the correct posture for
-    /// a programmer error.
+    /// The embedded data is committed and proven-parseable by the
+    /// `loads_with_expected_size` test, so the error branch below is
+    /// defensive: it logs the parse failure and yields an empty catalog
+    /// (every `resolve()` returns `NotFound`) rather than panicking at
+    /// first use of the service.
     pub fn embedded() -> &'static Catalog {
         static SINGLETON: OnceLock<Catalog> = OnceLock::new();
-        SINGLETON.get_or_init(|| Self::load_embedded().expect("embedded catalog data malformed"))
+        SINGLETON.get_or_init(|| {
+            Self::load_embedded().unwrap_or_else(|e| {
+                error!("embedded catalog failed to parse: {e}; serving empty catalog");
+                Catalog {
+                    by_normalized_name: HashMap::new(),
+                }
+            })
+        })
     }
 
     /// Build a catalog from the embedded CSVs without using the
@@ -256,6 +265,7 @@ fn levenshtein(a: &str, b: &str, cap: usize) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

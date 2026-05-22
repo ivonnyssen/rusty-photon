@@ -696,9 +696,11 @@ impl Camera for SkySurveyCamera {
             return Err(ASCOMError::invalid_operation("no image is ready"));
         }
         let guard = self.state.last_image.lock();
-        let outcome = guard
-            .as_ref()
-            .expect("image_ready=true but no stored image");
+        let Some(outcome) = guard.as_ref() else {
+            return Err(ASCOMError::invalid_operation(
+                "image_ready=true but no stored image",
+            ));
+        };
         // ASCOM ImageArray indexing is `[x][y]` (column-major from a
         // ndarray perspective), so the first axis must be NumX and the
         // second NumY. The FITS data is laid out row-major (rows of
@@ -791,6 +793,7 @@ impl Camera for SkySurveyCamera {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::config::{DeviceConfig, OpticsConfig, PointingConfig, ServerConfig, SurveyConfig};

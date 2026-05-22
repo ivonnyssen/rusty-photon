@@ -1,5 +1,7 @@
 //! BDD test entry point for sky-survey-camera service.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[path = "bdd/world.rs"]
 mod world;
 

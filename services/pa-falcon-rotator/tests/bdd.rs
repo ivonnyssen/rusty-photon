@@ -8,6 +8,8 @@
 //! — it's a Miri shim for BDD suites that spawn child processes via
 //! `ServiceHandle`, which we don't.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[path = "bdd/world.rs"]
 mod world;
 

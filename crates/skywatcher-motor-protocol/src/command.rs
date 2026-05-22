@@ -148,10 +148,11 @@ impl MotionMode {
 
 fn nibble_to_hex(n: u8) -> u8 {
     debug_assert!(n < 16, "nibble must be 0..=15, got {n:#x}");
-    match n & 0x0F {
-        0..=9 => b'0' + n,
-        10..=15 => b'A' + (n - 10),
-        _ => unreachable!(),
+    let lo = n & 0x0F;
+    if lo < 10 {
+        b'0' + lo
+    } else {
+        b'A' + (lo - 10)
     }
 }
 
@@ -294,6 +295,7 @@ impl Command {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

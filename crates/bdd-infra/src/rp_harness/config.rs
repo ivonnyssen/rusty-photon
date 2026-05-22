@@ -385,6 +385,7 @@ pub fn build_calibrator_flats_config(filters: &[(String, u32)]) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

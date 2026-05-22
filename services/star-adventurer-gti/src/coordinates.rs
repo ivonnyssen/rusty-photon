@@ -549,6 +549,7 @@ pub fn fold_to_canonical_band(value: i32, cpr: u32) -> i32 {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

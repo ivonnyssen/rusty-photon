@@ -551,6 +551,7 @@ fn validate_command_args(cmd: &Command) -> Result<()> {
 
 #[cfg(all(test, feature = "mock"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are

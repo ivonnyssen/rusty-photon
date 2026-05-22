@@ -82,6 +82,7 @@ impl MountErrorCode {
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

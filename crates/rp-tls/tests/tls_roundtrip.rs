@@ -1,5 +1,7 @@
 //! Integration test: verify HTTPS roundtrip with generated certs.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use std::net::SocketAddr;
 
 use axum::{routing::get, Router};

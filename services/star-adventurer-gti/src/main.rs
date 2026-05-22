@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::{debug, info, Level};
+use tracing::{debug, info, warn, Level};
 
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
@@ -51,17 +51,23 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            warn!("failed to wait for Ctrl+C: {e}");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -191,6 +197,7 @@ fn apply_cli_overrides(config: &mut Config, args: &Args) -> Result<(), Box<dyn s
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use star_adventurer_gti::TransportConfig;

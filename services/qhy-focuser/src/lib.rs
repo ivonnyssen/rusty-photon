@@ -42,7 +42,7 @@ use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
 use rusty_photon_shared_transport::TransportFactory;
 use tokio::signal;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Builder for the ASCOM Alpaca server.
 ///
@@ -172,17 +172,23 @@ impl BoundServer {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            warn!("failed to wait for Ctrl+C: {e}");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]

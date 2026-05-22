@@ -99,7 +99,11 @@ fn parse_locale(s: &str) -> LanguageIdentifier {
 }
 
 fn en() -> LanguageIdentifier {
-    "en".parse().expect("en is a valid langid")
+    // "en" is the simplest possible BCP-47 tag; unic-langid 0.9 accepts
+    // it without normalization. The `unwrap_or_default` here is a
+    // safety net for the impossible parse failure — the compile-time
+    // fluent default bundle still resolves through `fl!()` either way.
+    "en".parse().unwrap_or_default()
 }
 
 /// Negotiate which embedded locale(s) to load, falling back to `en`.
@@ -249,6 +253,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

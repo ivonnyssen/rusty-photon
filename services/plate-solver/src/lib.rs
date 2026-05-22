@@ -127,16 +127,22 @@ async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-        tokio::select! {
-            _ = sigterm.recv() => tracing::debug!("SIGTERM received, shutting down"),
-            _ = sigint.recv() => tracing::debug!("SIGINT received, shutting down"),
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(mut sigterm), Ok(mut sigint)) => {
+                tokio::select! {
+                    _ = sigterm.recv() => tracing::debug!("SIGTERM received, shutting down"),
+                    _ = sigint.recv() => tracing::debug!("SIGINT received, shutting down"),
+                }
+                return;
+            }
+            _ => {
+                tracing::warn!("failed to install SIGTERM/SIGINT handlers; falling back to Ctrl-C");
+            }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::debug!("CTRL_C received, shutting down");
-    }
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::debug!("CTRL_C received, shutting down");
 }

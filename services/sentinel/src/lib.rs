@@ -235,17 +235,23 @@ impl Sentinel {
         let cancel_for_signal = cancel.clone();
         tokio::spawn(async move {
             let ctrl_c = async {
-                tokio::signal::ctrl_c()
-                    .await
-                    .expect("Failed to listen for ctrl-c");
+                if let Err(e) = tokio::signal::ctrl_c().await {
+                    tracing::warn!("failed to wait for Ctrl+C: {e}");
+                    std::future::pending::<()>().await;
+                }
             };
 
             #[cfg(unix)]
             let terminate = async {
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("Failed to install SIGTERM handler")
-                    .recv()
-                    .await;
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(mut sig) => {
+                        sig.recv().await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to install SIGTERM handler: {e}");
+                        std::future::pending::<()>().await;
+                    }
+                }
             };
 
             #[cfg(not(unix))]
@@ -329,6 +335,7 @@ impl Sentinel {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::config::MonitorConfig;

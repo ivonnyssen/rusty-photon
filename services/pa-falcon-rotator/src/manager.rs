@@ -364,6 +364,7 @@ async fn handshake(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 
@@ -423,6 +424,7 @@ mod tests {
 /// `rusty-photon-shared-transport`'s own test suite — not duplicated here.
 #[cfg(all(test, feature = "mock"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod mock_tests {
     use super::*;
     use crate::mock::MockFalconTransportFactory;

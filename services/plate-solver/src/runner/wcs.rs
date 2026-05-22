@@ -67,10 +67,12 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     // fitsrs's `Fits::next()` always produces `HDU::Primary` on the
     // first iteration (other variants only come from `new_xtension`,
     // which fires from the second iteration onward), so the else arm
-    // here is API-unreachable — keep it as a hard panic rather than a
-    // typed error path that downstream code would have to consider.
+    // is API-unreachable — surface it as `Malformed` rather than
+    // panicking should the upstream contract ever change.
     let HDU::Primary(primary) = hdu else {
-        unreachable!("fitsrs returns HDU::Primary for the first HDU");
+        return Err(WcsParseError::Malformed(
+            "expected primary HDU on first iteration".into(),
+        ));
     };
     let header = primary.get_header();
 
@@ -245,6 +247,7 @@ fn coerce_float(key: &'static str, value: &Value) -> Result<f64, WcsParseError> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

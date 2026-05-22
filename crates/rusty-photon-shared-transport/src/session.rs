@@ -10,6 +10,7 @@
 //!   / while-open work.
 
 use std::future::Future;
+use std::io;
 use std::sync::Arc;
 
 use derive_more::Debug;
@@ -47,10 +48,16 @@ impl<C: Codec> Session<C> {
     /// lock makes this call safe to run concurrently from multiple
     /// `Session`s (and the while-open task) sharing the same transport.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
-        let connection = self
-            .connection
-            .as_ref()
-            .expect("session.request after close/drop");
+        // `connection` only becomes `None` inside `close` (which consumes
+        // `self`) or `drop` (which destructs `self`). Neither path can
+        // race a live `&self` call to `request`, so this branch is
+        // unreachable in well-typed code — handled as an I/O error
+        // instead of a panic to satisfy the workspace's no-panic policy.
+        let Some(connection) = self.connection.as_ref() else {
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("session.request after close/drop"),
+            )));
+        };
         connection.request(cmd).await
     }
 
@@ -64,10 +71,15 @@ impl<C: Codec> Session<C> {
     /// On a non-last session, decrements the refcount and returns
     /// `Ok(())` immediately.
     pub async fn close(mut self) -> Result<(), TransportError> {
-        let transport = self
-            .transport
-            .take()
-            .expect("session.close after close/drop");
+        // `close` consumes `self`, so this branch only fires if the
+        // field was never populated — which `Session::new` always does.
+        // Unreachable by construction; surfaced as an I/O error rather
+        // than a panic to satisfy the workspace's no-panic policy.
+        let Some(transport) = self.transport.take() else {
+            return Err(TransportError::Io(io::Error::other(
+                "session.close after close/drop",
+            )));
+        };
         // Drop our connection clone before the cleanup runs so the
         // refcount on the inner Arc<Connection<C>> reaches 1 (only the
         // slot's clone remains) by the time `run_cleanup` takes the

@@ -15,6 +15,8 @@
 //! the env var automatically; Bazel sets it explicitly via the
 //! BUILD.bazel `env` attribute).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use plate_solver::supervision::{spawn_with_deadline, SpawnOutcome, GRACE_PERIOD};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

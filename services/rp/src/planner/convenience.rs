@@ -69,7 +69,10 @@ pub fn target_status_view(
 /// `reason` field carries the structured discriminant so a planner
 /// plugin can branch without parsing free-form text.
 pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
-    let reason = serde_json::to_value(rec.reason).expect("NextTargetReason serialises infallibly");
+    // `NextTargetReason` is a plain enum so this never errors in
+    // practice; fall back to `Value::Null` rather than panicking if
+    // serde ever rejects the variant.
+    let reason = serde_json::to_value(rec.reason).unwrap_or(serde_json::Value::Null);
     let target = rec.target.map(|t| {
         json!({
             "name": t.name,
@@ -118,6 +121,7 @@ pub fn meridian_status_view(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::planner::decision::{NextTargetReason, PlannerTarget};

@@ -6,6 +6,8 @@
 //! scenario *Reject invalid configuration sources* in
 //! `tests/features/configuration.feature`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 #[cfg(not(miri))]
 use filemonitor::{Config, DeviceConfig, FileConfig, ParsingConfig, ServerConfig};
 #[cfg(not(miri))]

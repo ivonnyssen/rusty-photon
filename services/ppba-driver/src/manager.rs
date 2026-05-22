@@ -247,6 +247,7 @@ fn apply_status(state: &mut CachedState, status: &PpbaStatus) {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are

@@ -7,6 +7,8 @@
 //! decoder that's silently lossy at the high end of the encoder range only
 //! shows up here.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
 use proptest::prelude::*;
 use skywatcher_motor_protocol::codec::{
     decode_position, decode_u24, encode_position, encode_u24, POSITION_MAX, POSITION_MIN,
