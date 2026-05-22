@@ -70,6 +70,41 @@ pub enum SkywatcherCodecError {
     /// quote the count for log triage.
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
+    /// The connect handshake's `:e1` identity probe came back with a
+    /// reply that isn't a Sky-Watcher motor-board-version. Surfaces in
+    /// any of the following situations (all routed through
+    /// `wrong_device_for_e1` in `manager.rs`):
+    ///
+    /// - [`ProtocolError::FrameError`] — missing `=` prefix, missing
+    ///   `\r` terminator, embedded `\r`, structurally invalid.
+    /// - [`ProtocolError::PayloadError`] — `=...\r` arrived but with
+    ///   the wrong body length / shape for the U24 motor-board-version
+    ///   payload (e.g. a 3-hex-byte status-shaped body).
+    /// - [`ProtocolError::HexError`] — payload bytes that aren't ASCII
+    ///   hex digits.
+    /// - [`ProtocolError::MountError`] — device replied with a
+    ///   structurally-valid `!X\r` error frame. A real Sky-Watcher
+    ///   controller supports `:e` per the protocol spec, so a mount-side
+    ///   error to `:e1` indicates an incompatible device.
+    /// - Mount-type byte outside the
+    ///   [`skywatcher_motor_protocol::MountType`] whitelist (post-decode
+    ///   check; reply was structurally valid but the high byte of the
+    ///   U24 isn't a known Sky-Watcher mount family).
+    ///
+    /// Carried through this error type so the handshake hook can stop
+    /// the connect sequence before issuing any device-specific command
+    /// (`:F`, `:a`, `:b`, `:g`, …) and the device-layer mapping can
+    /// route the structured context (port label + reason) into
+    /// [`StarAdvError::WrongDevice`] for an operator-friendly diagnostic.
+    /// See [issue #254][issue].
+    ///
+    /// [`ProtocolError::FrameError`]: skywatcher_motor_protocol::ProtocolError::FrameError
+    /// [`ProtocolError::PayloadError`]: skywatcher_motor_protocol::ProtocolError::PayloadError
+    /// [`ProtocolError::HexError`]: skywatcher_motor_protocol::ProtocolError::HexError
+    /// [`ProtocolError::MountError`]: skywatcher_motor_protocol::ProtocolError::MountError
+    /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+    #[error("wrong device on {port}: {reason}")]
+    WrongDevice { port: String, reason: String },
 }
 
 /// Flatten a [`SessionError`] arising inside a handshake / teardown
@@ -77,8 +112,8 @@ pub enum SkywatcherCodecError {
 /// codec error type so `?` works without losing the structured
 /// transport-error variant. The device-layer
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
-/// re-expands the [`Transport`] arm via the same
-/// [`transport_to_staradv`] helper used for top-level
+/// re-expands the [`Transport`] arm via the canonical
+/// `From<TransportError> for StarAdvError` impl used for top-level
 /// [`SessionError::Transport`].
 impl From<SessionError<SkywatcherCodecError>> for SkywatcherCodecError {
     fn from(err: SessionError<SkywatcherCodecError>) -> Self {
@@ -86,6 +121,20 @@ impl From<SessionError<SkywatcherCodecError>> for SkywatcherCodecError {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
             SessionError::SkipExhausted(n) => Self::SkipExhausted(n),
+        }
+    }
+}
+
+impl SkywatcherCodecError {
+    /// Build a [`SkywatcherCodecError::WrongDevice`] from a port label and
+    /// a free-form reason. Lives on the codec error so the handshake hook
+    /// can construct it without reaching into either the `StarAdvError`
+    /// type (one layer above the hook's return-type constraint) or the
+    /// protocol crate (one layer below it).
+    pub fn wrong_device(port: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::WrongDevice {
+            port: port.into(),
+            reason: reason.into(),
         }
     }
 }
@@ -213,57 +262,73 @@ pub fn decode_frame_for(cmd: &Command, frame: &[u8]) -> Result<Response, Protoco
 }
 
 /// Single classification point for a [`TransportError`] into
-/// [`StarAdvError`]. Both the top-level [`SessionError::Transport`] arm
-/// and the nested [`SessionError::Codec`] of
-/// [`SkywatcherCodecError::Transport`] arm route through this helper so
-/// a connect-time transport failure (surfaced through the handshake
-/// hook as `Codec(Transport(_))`) gets the *same* `Timeout` /
+/// [`StarAdvError`]. Every other transport-arm in this module
+/// (`From<SkywatcherCodecError>::Transport(_)`, `From<SessionError<…>>
+/// ::Transport(_)`) delegates here via `.into()`, so a connect-time
+/// transport failure (surfaced through the handshake hook as
+/// `Codec(Transport(_))`) gets the *same* `Timeout` /
 /// `ConnectionFailed` / `Transport` classification a steady-state
-/// failure (surfaced as top-level `Transport(_)`) would. Without this,
-/// a connect-time timeout would land as `INVALID_OPERATION` instead of
-/// the structured ASCOM timeout the client expects.
-fn transport_to_staradv(t: TransportError) -> StarAdvError {
-    match t {
-        TransportError::Open(e) => StarAdvError::ConnectionFailed(e.to_string()),
-        TransportError::Io(e) => StarAdvError::Io(e),
-        TransportError::Timeout(d) => {
-            StarAdvError::Timeout(format!("transport timeout after {d:?}"))
+/// failure (surfaced as top-level `Transport(_)`) would. Without this
+/// single point, a connect-time timeout would land as
+/// `INVALID_OPERATION` instead of the structured ASCOM timeout the
+/// client expects.
+///
+/// Also used directly via `.map_err(StarAdvError::from)?` on a
+/// `Session::close()` (which returns `Result<_, TransportError>`) —
+/// no need to wrap the [`TransportError`] in a
+/// [`SessionError::Transport`] just to reuse the mapping.
+impl From<TransportError> for StarAdvError {
+    fn from(t: TransportError) -> Self {
+        match t {
+            TransportError::Open(e) => StarAdvError::ConnectionFailed(e.to_string()),
+            TransportError::Io(e) => StarAdvError::Io(e),
+            TransportError::Timeout(d) => {
+                StarAdvError::Timeout(format!("transport timeout after {d:?}"))
+            }
+            TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
+            TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
         }
-        TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
-        TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
     }
 }
 
-/// Direct conversion from a shared-transport [`TransportError`].
-///
-/// Lets the device layer write `.map_err(StarAdvError::from)?` on a
-/// `Session::close()` (which returns `Result<_, TransportError>`)
-/// instead of wrapping the [`TransportError`] in a
-/// [`SessionError::Transport`] just to reuse the existing
-/// `From<SessionError<…>>` mapping.
-impl From<TransportError> for StarAdvError {
-    fn from(t: TransportError) -> Self {
-        transport_to_staradv(t)
+/// Per-variant classification for the codec's own error type. The
+/// `From<SessionError<…>> for StarAdvError` impl below delegates the
+/// `SessionError::Codec(_)` arm here so each error layer owns its own
+/// variants: adding a new `SkywatcherCodecError` variant updates one
+/// match arm instead of two.
+impl From<SkywatcherCodecError> for StarAdvError {
+    fn from(err: SkywatcherCodecError) -> Self {
+        match err {
+            // Transport-arm routing delegates to the canonical
+            // `From<TransportError> for StarAdvError` so a timeout
+            // surfaced *through* the handshake hook (Codec arm in the
+            // outer `From<SessionError<…>>`) gets the same
+            // classification as one that surfaces on a steady-state
+            // request (top-level Transport arm). See PR #280 for the
+            // bug class.
+            SkywatcherCodecError::Transport(t) => t.into(),
+            SkywatcherCodecError::Protocol(pe) => StarAdvError::Protocol(pe),
+            SkywatcherCodecError::SkipExhausted(n) => StarAdvError::Transport(format!(
+                "device returned non-matching response ({n} frame{s} read)",
+                s = if n == 1 { "" } else { "s" }
+            )),
+            // WrongDevice carries port-label context the handshake hook
+            // captured (see `MountManager::new` in manager.rs); preserve
+            // it as the structured `StarAdvError::WrongDevice` so the
+            // operator-facing message lands intact in ASCOM's
+            // `INVALID_OPERATION` reply.
+            SkywatcherCodecError::WrongDevice { port, reason } => {
+                StarAdvError::WrongDevice { port, reason }
+            }
+        }
     }
 }
 
 impl From<SessionError<SkywatcherCodecError>> for StarAdvError {
     fn from(err: SessionError<SkywatcherCodecError>) -> Self {
         match err {
-            // Both transport arms route through `transport_to_staradv`
-            // in error.rs so a timeout that surfaces *through* the
-            // handshake hook (Codec arm) gets the same classification
-            // as one that surfaces on a steady-state request
-            // (Transport arm). See PR #280 for the bug class.
-            SessionError::Transport(t) => transport_to_staradv(t),
-            SessionError::Codec(SkywatcherCodecError::Transport(t)) => transport_to_staradv(t),
-            SessionError::Codec(SkywatcherCodecError::Protocol(pe)) => StarAdvError::Protocol(pe),
-            SessionError::Codec(SkywatcherCodecError::SkipExhausted(n)) => {
-                StarAdvError::Transport(format!(
-                    "device returned non-matching response ({n} frame{s} read)",
-                    s = if n == 1 { "" } else { "s" }
-                ))
-            }
+            SessionError::Transport(t) => t.into(),
+            SessionError::Codec(c) => c.into(),
             SessionError::SkipExhausted(n) => StarAdvError::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",
                 s = if n == 1 { "" } else { "s" }
@@ -564,6 +629,64 @@ mod tests {
                 assert!(s.contains("non-matching") && s.contains('7'));
             }
             other => panic!("expected Transport, got {other:?}"),
+        }
+    }
+
+    // ============================================================================
+    // From<SkywatcherCodecError> for StarAdvError — the standalone per-variant
+    // classification the outer `From<SessionError<…>>` delegates to. Tests here
+    // cover the impl directly so a regression in the codec→staradv arm wouldn't
+    // be masked by the outer impl's `SessionError::Codec(c) => c.into()`
+    // delegation.
+    // ============================================================================
+
+    #[test]
+    fn codec_error_transport_timeout_routes_to_timeout() {
+        let err: StarAdvError = SkywatcherCodecError::Transport(TransportError::Timeout(
+            std::time::Duration::from_secs(3),
+        ))
+        .into();
+        match err {
+            StarAdvError::Timeout(s) => assert!(s.contains('3')),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codec_error_protocol_passes_through() {
+        let err: StarAdvError =
+            SkywatcherCodecError::Protocol(ProtocolError::FrameError("bad".into())).into();
+        assert!(matches!(err, StarAdvError::Protocol(_)));
+    }
+
+    #[test]
+    fn codec_error_skip_exhausted_maps_to_transport_with_count() {
+        let err: StarAdvError = SkywatcherCodecError::SkipExhausted(2).into();
+        match err {
+            StarAdvError::Transport(s) => {
+                assert!(s.contains("non-matching") && s.contains('2'));
+            }
+            other => panic!("expected Transport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codec_error_wrong_device_preserves_port_and_reason() {
+        // The whole point of routing WrongDevice through structured
+        // fields instead of stringifying is that the operator-facing
+        // diagnostic survives intact — verify the per-variant impl
+        // doesn't lose either field.
+        let err: StarAdvError = SkywatcherCodecError::WrongDevice {
+            port: "/dev/ttyACM7".into(),
+            reason: "mount-type byte 0xFF unknown".into(),
+        }
+        .into();
+        match err {
+            StarAdvError::WrongDevice { port, reason } => {
+                assert_eq!(port, "/dev/ttyACM7");
+                assert!(reason.contains("0xFF"));
+            }
+            other => panic!("expected WrongDevice, got {other:?}"),
         }
     }
 

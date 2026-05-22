@@ -3037,7 +3037,13 @@ impl FrameTransport for FlakyFrameTransport {
         let axis = bytes[2];
         let reply: Vec<u8> = match cmd {
             b'F' | b'K' | b'L' => b"=\r".to_vec(),
-            b'a' | b'b' | b'e' => b"=005F37\r".to_vec(),
+            b'a' | b'b' => b"=005F37\r".to_vec(),
+            // `:e` returns the documented GTi motor-board-version
+            // (`0x0003_300C`, high byte `0x03` = EQ family) so the
+            // `:e1`-first handshake's mount-type whitelist (issue #254)
+            // accepts it. The wire encoding is little-byte-first hex
+            // (`0x0003_300C` → bytes `0x0C, 0x30, 0x03` → "0C3003").
+            b'e' => b"=0C3003\r".to_vec(),
             b'g' => b"=01\r".to_vec(),
             b'j' => {
                 // Biased position 0 → 0x800000 → "000080".

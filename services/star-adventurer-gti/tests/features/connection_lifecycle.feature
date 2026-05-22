@@ -15,10 +15,14 @@ Feature: Connection lifecycle
     Then the device should be connected
 
   Scenario: Connect runs the initialisation handshake in order
+    The :e1 motor-board-version inquiry runs first so the driver can refuse
+    to send mount-specific init commands to a device that isn't a Sky-Watcher
+    motor controller. See issue #254.
     Given a running star-adventurer service
     When I connect the device
     Then the mount should have received commands in order:
       | command |
+      | :e1     |
       | :F1     |
       | :F2     |
       | :a1     |
@@ -26,7 +30,6 @@ Feature: Connection lifecycle
       | :b1     |
       | :g1     |
       | :g2     |
-      | :e1     |
       | :j1     |
       | :j2     |
 

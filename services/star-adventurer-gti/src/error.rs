@@ -49,31 +49,41 @@ pub enum StarAdvError {
     /// site stays a total function.
     #[error("timekeeping error: {0}")]
     Timekeeping(String),
+
+    /// The connect handshake's first wire query (`:e1`) returned a reply
+    /// that doesn't look like a Sky-Watcher motor-board-version response.
+    /// The most likely cause is that the configured transport target
+    /// (serial port or UDP host) points at a different device — a power
+    /// box, focuser, or unrelated USB-CDC peripheral sharing the host's
+    /// USB bus on the serial path, or the wrong host / wrong network on
+    /// the UDP path. See [issue #254][issue].
+    ///
+    /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+    #[error(
+        "handshake to {port} returned unexpected data ({reason}); this device may not be a \
+         Sky-Watcher motor controller. Common cause: the configured transport target points \
+         at the wrong device (e.g. wrong serial port to a focuser / power box / other \
+         USB-CDC peripheral, or wrong UDP host). Verify that {port} is the GTi's transport \
+         endpoint."
+    )]
+    WrongDevice { port: String, reason: String },
 }
 
-impl StarAdvError {
-    /// Map a driver error to the closest ASCOM error code.
-    pub fn to_ascom_error(self) -> ASCOMError {
-        let msg = self.to_string();
-        match self {
-            Self::NotConnected => ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, msg),
-            Self::InvalidValue(_) => ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, msg),
-            Self::Parked => ASCOMError::new(ASCOMErrorCode::INVALID_WHILE_PARKED, msg),
-            _ => ASCOMError::invalid_operation(msg),
-        }
-    }
-}
-
-/// `?` and `Into::into` sugar for the same conversion as
-/// [`StarAdvError::to_ascom_error`]. The method stays as the explicit
-/// form; this impl lets idiomatic Rust call sites convert implicitly,
-/// matching the [`PpbaError`]/[`QhyFocuserError`] shape.
+/// Map a driver error to the closest ASCOM error code.
 ///
-/// [`PpbaError`]: ../../../services/ppba-driver/src/error.rs
-/// [`QhyFocuserError`]: ../../../services/qhy-focuser/src/error.rs
+/// This is the single point of truth for the [`StarAdvError`] →
+/// [`ASCOMError`] conversion; call sites use `.into()` /
+/// `ASCOMError::from(err)` to invoke it. Inline-matched here so there's no
+/// detour through an intermediate named helper.
 impl From<StarAdvError> for ASCOMError {
     fn from(err: StarAdvError) -> Self {
-        err.to_ascom_error()
+        let msg = err.to_string();
+        match err {
+            StarAdvError::NotConnected => ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, msg),
+            StarAdvError::InvalidValue(_) => ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, msg),
+            StarAdvError::Parked => ASCOMError::new(ASCOMErrorCode::INVALID_WHILE_PARKED, msg),
+            _ => ASCOMError::invalid_operation(msg),
+        }
     }
 }
 
@@ -88,19 +98,19 @@ mod tests {
 
     #[test]
     fn not_connected_maps_to_ascom_not_connected() {
-        let err = StarAdvError::NotConnected.to_ascom_error();
+        let err: ASCOMError = StarAdvError::NotConnected.into();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     #[test]
     fn invalid_value_maps_to_ascom_invalid_value() {
-        let err = StarAdvError::InvalidValue("ra out of range".to_string()).to_ascom_error();
+        let err: ASCOMError = StarAdvError::InvalidValue("ra out of range".to_string()).into();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
     #[test]
     fn parked_maps_to_ascom_invalid_while_parked() {
-        let err = StarAdvError::Parked.to_ascom_error();
+        let err: ASCOMError = StarAdvError::Parked.into();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
     }
 
@@ -113,10 +123,54 @@ mod tests {
             StarAdvError::InvalidOperation("double connect".into()),
             StarAdvError::Config("missing".into()),
             StarAdvError::Timekeeping("ERFA Utctai returned -1".into()),
+            StarAdvError::WrongDevice {
+                port: "/dev/ttyUSB1".into(),
+                reason: "test reason".into(),
+            },
         ] {
-            let mapped = err.to_ascom_error();
+            let mapped: ASCOMError = err.into();
             assert_eq!(mapped.code, ASCOMErrorCode::INVALID_OPERATION);
         }
+    }
+
+    #[test]
+    fn wrong_device_display_quotes_port_and_suggests_cause() {
+        // The operator-facing message must name the port (twice — once
+        // in the diagnostic head, once in the verify-the-port trailer)
+        // and call out the wrong-device hypothesis. The handshake hook
+        // in `manager.rs` constructs this variant only after the `:e1`
+        // reply fails framing or whitelist, so the message correctly
+        // implies "we tried to identify the device and it wasn't a
+        // Sky-Watcher".
+        let err = StarAdvError::WrongDevice {
+            port: "/dev/ttyUSB1".into(),
+            reason: "unknown mount-type byte 0xFF".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("/dev/ttyUSB1"), "msg: {msg}");
+        assert!(msg.contains("unknown mount-type byte 0xFF"), "msg: {msg}");
+        assert!(msg.contains("Sky-Watcher"), "msg: {msg}");
+        assert!(msg.contains("wrong device"), "msg: {msg}");
+        assert!(msg.contains("transport endpoint"), "msg: {msg}");
+    }
+
+    #[test]
+    fn wrong_device_display_works_for_udp_target() {
+        // The transport-agnostic wording must also fit a UDP
+        // misconfiguration (the GTi has built-in WiFi AP at
+        // `192.168.4.1:11880`). The label that lands in {port} is
+        // produced by `TransportConfig::port_label()` and looks like
+        // `192.168.4.1:11880` for v4 / `[fe80::1]:11880` for v6 —
+        // neither contains the substring "serial", so the message
+        // must not be locked to serial-specific phrasing.
+        let err = StarAdvError::WrongDevice {
+            port: "192.168.4.1:11880".into(),
+            reason: "unknown mount-type byte 0xFF".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("192.168.4.1:11880"), "msg: {msg}");
+        assert!(msg.contains("wrong UDP host"), "msg: {msg}");
+        assert!(msg.contains("transport endpoint"), "msg: {msg}");
     }
 
     #[test]
