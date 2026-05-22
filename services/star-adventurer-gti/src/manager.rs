@@ -1327,13 +1327,18 @@ mod tests {
         match mapped {
             StarAdvError::WrongDevice { port, reason } => {
                 assert_eq!(port, "/dev/ttyACM0");
-                // Either route is acceptable: the response decoded as a
-                // non-U24 variant (`Response::Status` here), or the
-                // payload check rejected the shape. Both end up in
-                // `WrongDevice` per the handshake hook's branching.
+                // The path is unambiguous: `Response::decode` for
+                // `InquireMotorBoardVersion` returns
+                // `Err(ProtocolError::PayloadError("expected 6-hex-byte
+                // u24 payload, got 3 bytes"))` for the `=100\r` reply,
+                // which `wrong_device_for_e1` reclassifies as
+                // `WrongDevice` with reason `"unexpected `:e1` reply:
+                // payload error: ..."`. There is no "non-U24 success
+                // reply" branch — that path was structurally
+                // unreachable and was removed in the 5ccfcd1 refactor.
                 assert!(
-                    reason.contains("unexpected") || reason.contains("expected motor-board"),
-                    "reason should describe the unexpected-:e1 cause; got {reason:?}"
+                    reason.contains("unexpected") && reason.contains("payload error"),
+                    "reason should describe the PayloadError → WrongDevice path; got {reason:?}"
                 );
             }
             other => panic!("expected WrongDevice, got {other:?}"),
@@ -1350,8 +1355,8 @@ mod tests {
         // `:e` replies `!0\r` (UnknownCommand). The frame is
         // structurally valid (it is decodable as
         // `ProtocolError::MountError(UnknownCommand)`), so this is a
-        // distinct path from the malformed-framing case in
-        // `handshake_rejects_unexpected_e1_response_kind_as_wrong_device`.
+        // distinct path from the wrong-payload-length case in
+        // `handshake_rejects_e1_with_wrong_payload_length_as_wrong_device`.
         // Still wrong-device — a real Sky-Watcher controller supports
         // `:e` from the protocol spec — but the diagnostic shouldn't
         // call this "malformed"; it's an unexpected (but well-formed)

@@ -71,16 +71,37 @@ pub enum SkywatcherCodecError {
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
     /// The connect handshake's `:e1` identity probe came back with a
-    /// reply that is not a Sky-Watcher motor-board-version frame — either
-    /// the frame is malformed or the mount-type byte is outside the
-    /// [`skywatcher_motor_protocol::MountType`] whitelist. Carried
-    /// through this error type so the handshake hook can stop the
-    /// connect sequence before issuing any device-specific command (`:F`,
-    /// `:a`, `:b`, `:g`, …) and the device-layer mapping can route the
-    /// structured context (port label + reason) into
+    /// reply that isn't a Sky-Watcher motor-board-version. Surfaces in
+    /// any of the following situations (all routed through
+    /// `wrong_device_for_e1` in `manager.rs`):
+    ///
+    /// - [`ProtocolError::FrameError`] — missing `=` prefix, missing
+    ///   `\r` terminator, embedded `\r`, structurally invalid.
+    /// - [`ProtocolError::PayloadError`] — `=...\r` arrived but with
+    ///   the wrong body length / shape for the U24 motor-board-version
+    ///   payload (e.g. a 3-hex-byte status-shaped body).
+    /// - [`ProtocolError::HexError`] — payload bytes that aren't ASCII
+    ///   hex digits.
+    /// - [`ProtocolError::MountError`] — device replied with a
+    ///   structurally-valid `!X\r` error frame. A real Sky-Watcher
+    ///   controller supports `:e` per the protocol spec, so a mount-side
+    ///   error to `:e1` indicates an incompatible device.
+    /// - Mount-type byte outside the
+    ///   [`skywatcher_motor_protocol::MountType`] whitelist (post-decode
+    ///   check; reply was structurally valid but the high byte of the
+    ///   U24 isn't a known Sky-Watcher mount family).
+    ///
+    /// Carried through this error type so the handshake hook can stop
+    /// the connect sequence before issuing any device-specific command
+    /// (`:F`, `:a`, `:b`, `:g`, …) and the device-layer mapping can
+    /// route the structured context (port label + reason) into
     /// [`StarAdvError::WrongDevice`] for an operator-friendly diagnostic.
     /// See [issue #254][issue].
     ///
+    /// [`ProtocolError::FrameError`]: skywatcher_motor_protocol::ProtocolError::FrameError
+    /// [`ProtocolError::PayloadError`]: skywatcher_motor_protocol::ProtocolError::PayloadError
+    /// [`ProtocolError::HexError`]: skywatcher_motor_protocol::ProtocolError::HexError
+    /// [`ProtocolError::MountError`]: skywatcher_motor_protocol::ProtocolError::MountError
     /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
     #[error("wrong device on {port}: {reason}")]
     WrongDevice { port: String, reason: String },
