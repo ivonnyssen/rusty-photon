@@ -92,7 +92,7 @@ impl ServiceRunner {
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult>,
+        Fut: Future<Output = ServiceResult> + 'static,
     {
         #[cfg(all(windows, feature = "scm"))]
         if self.scm_mode {
@@ -110,7 +110,7 @@ impl ServiceRunner {
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult>,
+        Fut: Future<Output = ServiceResult> + 'static,
     {
         if !self.reload {
             return Err(

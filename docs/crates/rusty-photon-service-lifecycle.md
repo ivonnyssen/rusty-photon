@@ -68,14 +68,22 @@ ReloadSignal::recv(&self) -> impl Future<Output = ()> + '_
 ```
 
 The closure passed to `run` / `run_with_reload` is `FnOnce(...) -> Fut`
-where `Fut: Future<Output = Result<(), Box<dyn Error>>>` and the
-closure itself is `Send + 'static`. The `Send + 'static` on the
-closure is required by the SCM dispatch path, which stashes the
-closure across the `extern "system" fn` boundary; the console path
-inherits the same constraint for API uniformity. The returned future
-`Fut` does **not** need to be `Send` — `Runtime::block_on` polls it on
-the calling thread, so error types and intermediate state inside the
-closure body stay non-`Send`-friendly without extra bounds.
+where `Fut: Future<Output = Result<(), Box<dyn Error>>> + 'static`
+and the closure itself is `Send + 'static`. Bounds explained:
+
+* `F: Send + 'static` — the SCM dispatch path stashes the closure in
+  a `OnceLock` and re-enters it from the `extern "system" fn` service
+  entry point, which requires both bounds. The console path inherits
+  them for API uniformity.
+* `Fut: 'static` — the SCM path type-erases the future into
+  `Pin<Box<dyn Future<Output = ServiceResult>>>`, which is implicitly
+  `+ 'static`. Most async fn bodies satisfy this naturally because
+  they own their captures via `move` semantics; the only futures that
+  fail are those that borrow non-`'static` data.
+* `Fut: Send` is **not** required. `Runtime::block_on` polls the
+  future on the calling thread, so error types and intermediate state
+  inside the closure body stay non-`Send`-friendly without extra
+  bounds.
 
 ## Behavior
 
