@@ -29,6 +29,7 @@ pub use transport::udp::UdpTransportFactory;
 #[cfg(feature = "mock")]
 pub use transport::mock::{MockMountState, MockTransportFactory};
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,8 +37,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
-use tokio::signal;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Builder for the Alpaca server bound to a configured Transport.
 ///
@@ -201,21 +201,18 @@ impl BoundServer {
         self.local_addr
     }
 
-    pub async fn start(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.tls {
             Some(ref tls_config) => {
                 info!("star-adventurer-gti started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
             }
             None => {
                 info!("star-adventurer-gti started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
         }
         debug!("star-adventurer-gti shut down");
@@ -370,36 +367,6 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
         .route("/debug/v1/mock-commands", get(commands_handler))
         .route("/debug/v1/mock-state", post(seed_handler))
         .with_state(state)
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
-    }
 }
 
 #[cfg(all(test, feature = "mock"))]
