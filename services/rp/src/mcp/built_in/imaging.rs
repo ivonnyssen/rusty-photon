@@ -13,6 +13,38 @@ use super::super::internals::{
 use super::super::{tool_error, tool_success};
 use crate::imaging;
 
+/// Canonical error text for missing image-source inputs. Centralised so
+/// every tool surfaces the same message and a future tweak only needs to
+/// land in one place.
+const MISSING_SOURCE_ERROR: &str =
+    "missing required argument: provide either document_id or image_path";
+
+/// Resolved image source: either an exposure-document id from the cache
+/// or a filesystem path. Constructed exclusively via
+/// [`require_image_source`] so a `(None, None)` input becomes an `Err`
+/// before the tool's `match` runs — downstream code only has to handle
+/// the two reachable variants, no defensive arm required.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ImageSource<'a> {
+    Document(&'a str),
+    Path(&'a str),
+}
+
+/// Resolve the `(document_id, image_path)` parameter pair into a typed
+/// [`ImageSource`]. `document_id` wins when both are supplied (matches
+/// the documented param semantics). `(None, None)` is the only input
+/// that errors.
+pub(super) fn require_image_source<'a>(
+    document_id: Option<&'a str>,
+    image_path: Option<&'a str>,
+) -> Result<ImageSource<'a>, &'static str> {
+    match (document_id, image_path) {
+        (Some(d), _) => Ok(ImageSource::Document(d)),
+        (None, Some(p)) => Ok(ImageSource::Path(p)),
+        (None, None) => Err(MISSING_SOURCE_ERROR),
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ComputeImageStatsParams {
     /// Exposure-document id to resolve through the unified image+document
@@ -166,20 +198,22 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeImageStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let stats = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.stats_via_document(doc_id).await {
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
+
+        let stats = match source {
+            ImageSource::Document(doc_id) => match self.stats_via_document(doc_id).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
             },
-            (None, Some(path)) => match self.stats_via_path(path).await {
+            ImageSource::Path(path) => match self.stats_via_path(path).await {
                 Ok(s) => s,
                 Err(e) => return Ok(tool_error!("failed to compute stats: {}", e)),
             },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
-            }
         };
 
         debug!(
@@ -220,11 +254,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureBasicParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -243,20 +278,17 @@ impl McpHandler {
             max_area,
         };
 
-        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.measure_via_document(doc_id, &resolved).await {
-                Ok(r) => r,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, Some(path)) => match self.measure_via_path(path, &resolved).await {
-                Ok(r) => r,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
+        let result = match source {
+            ImageSource::Document(doc_id) => {
+                match self.measure_via_document(doc_id, &resolved).await {
+                    Ok(r) => r,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
             }
+            ImageSource::Path(path) => match self.measure_via_path(path, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            },
         };
 
         if let Some(doc_id) = params.document_id.as_deref() {
@@ -285,11 +317,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<EstimateBackgroundParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
         if !params.k.is_finite() || params.k <= 0.0 {
             return Ok(tool_error!("invalid parameter: k must be > 0"));
         }
@@ -301,20 +334,17 @@ impl McpHandler {
             max_iters: params.max_iters as usize,
         };
 
-        let outcome = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.estimate_via_document(doc_id, &resolved).await {
-                Ok(s) => s,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, Some(path)) => match self.estimate_via_path(path, &resolved).await {
-                Ok(s) => s,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
+        let outcome = match source {
+            ImageSource::Document(doc_id) => {
+                match self.estimate_via_document(doc_id, &resolved).await {
+                    Ok(s) => s,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
             }
+            ImageSource::Path(path) => match self.estimate_via_path(path, &resolved).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            },
         };
 
         let payload = serde_json::json!({
@@ -346,11 +376,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -369,20 +400,17 @@ impl McpHandler {
             max_area,
         };
 
-        let outcome = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.detect_via_document(doc_id, &resolved).await {
-                Ok(o) => o,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, Some(path)) => match self.detect_via_path(path, &resolved).await {
-                Ok(o) => o,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
+        let outcome = match source {
+            ImageSource::Document(doc_id) => {
+                match self.detect_via_document(doc_id, &resolved).await {
+                    Ok(o) => o,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
             }
+            ImageSource::Path(path) => match self.detect_via_path(path, &resolved).await {
+                Ok(o) => o,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            },
         };
 
         let stars_json: Vec<serde_json::Value> = outcome.stars.iter().map(star_to_json).collect();
@@ -423,11 +451,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeasureStarsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -452,20 +481,17 @@ impl McpHandler {
             stamp_half_size: params.stamp_half_size,
         };
 
-        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.measure_stars_via_document(doc_id, &resolved).await {
-                Ok(r) => r,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, Some(path)) => match self.measure_stars_via_path(path, &resolved).await {
-                Ok(r) => r,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
+        let result = match source {
+            ImageSource::Document(doc_id) => {
+                match self.measure_stars_via_document(doc_id, &resolved).await {
+                    Ok(r) => r,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                }
             }
+            ImageSource::Path(path) => match self.measure_stars_via_path(path, &resolved).await {
+                Ok(r) => r,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            },
         };
 
         let payload = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
@@ -492,11 +518,12 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ComputeSnrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.document_id.is_none() && params.image_path.is_none() {
-            return Ok(tool_error!(
-                "missing required argument: provide either document_id or image_path"
-            ));
-        }
+        let source =
+            match require_image_source(params.document_id.as_deref(), params.image_path.as_deref())
+            {
+                Ok(s) => s,
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            };
         let min_area = match params.min_area {
             Some(v) => v,
             None => {
@@ -515,20 +542,15 @@ impl McpHandler {
             max_area,
         };
 
-        let result = match (params.document_id.as_deref(), params.image_path.as_deref()) {
-            (Some(doc_id), _) => match self.snr_via_document(doc_id, &resolved).await {
+        let result = match source {
+            ImageSource::Document(doc_id) => match self.snr_via_document(doc_id, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
             },
-            (None, Some(path)) => match self.snr_via_path(path, &resolved).await {
+            ImageSource::Path(path) => match self.snr_via_path(path, &resolved).await {
                 Ok(r) => r,
                 Err(e) => return Ok(tool_error!("{}", e)),
             },
-            (None, None) => {
-                return Ok(tool_error!(
-                    "missing required argument: provide either document_id or image_path"
-                ));
-            }
         };
 
         let payload = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
@@ -546,5 +568,35 @@ impl McpHandler {
         Ok(CallToolResult::success(vec![Content::text(
             payload.to_string(),
         )]))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_image_source_prefers_document_id_when_both_present() {
+        let src = require_image_source(Some("doc-1"), Some("/tmp/img.fits")).unwrap();
+        assert!(matches!(src, ImageSource::Document("doc-1")));
+    }
+
+    #[test]
+    fn require_image_source_uses_path_when_only_path_present() {
+        let src = require_image_source(None, Some("/tmp/img.fits")).unwrap();
+        assert!(matches!(src, ImageSource::Path("/tmp/img.fits")));
+    }
+
+    #[test]
+    fn require_image_source_uses_document_when_only_document_present() {
+        let src = require_image_source(Some("doc-1"), None).unwrap();
+        assert!(matches!(src, ImageSource::Document("doc-1")));
+    }
+
+    #[test]
+    fn require_image_source_errors_when_neither_present() {
+        let err = require_image_source(None, None).unwrap_err();
+        assert_eq!(err, MISSING_SOURCE_ERROR);
     }
 }
