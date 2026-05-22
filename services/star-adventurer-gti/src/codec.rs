@@ -70,6 +70,20 @@ pub enum SkywatcherCodecError {
     /// quote the count for log triage.
     #[error("device returned non-matching response ({0} frame(s) read)")]
     SkipExhausted(usize),
+    /// The connect handshake's `:e1` identity probe came back with a
+    /// reply that is not a Sky-Watcher motor-board-version frame — either
+    /// the frame is malformed or the mount-type byte is outside the
+    /// [`skywatcher_motor_protocol::MountType`] whitelist. Carried
+    /// through this error type so the handshake hook can stop the
+    /// connect sequence before issuing any device-specific command (`:F`,
+    /// `:a`, `:b`, `:g`, …) and the device-layer mapping can route the
+    /// structured context (port label + reason) into
+    /// [`StarAdvError::WrongDevice`] for an operator-friendly diagnostic.
+    /// See [issue #254][issue].
+    ///
+    /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+    #[error("wrong device on {port}: {reason}")]
+    WrongDevice { port: String, reason: String },
 }
 
 /// Flatten a [`SessionError`] arising inside a handshake / teardown
@@ -86,6 +100,20 @@ impl From<SessionError<SkywatcherCodecError>> for SkywatcherCodecError {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
             SessionError::SkipExhausted(n) => Self::SkipExhausted(n),
+        }
+    }
+}
+
+impl SkywatcherCodecError {
+    /// Build a [`SkywatcherCodecError::WrongDevice`] from a port label and
+    /// a free-form reason. Lives on the codec error so the handshake hook
+    /// can construct it without reaching into either the `StarAdvError`
+    /// type (one layer above the hook's return-type constraint) or the
+    /// protocol crate (one layer below it).
+    pub fn wrong_device(port: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::WrongDevice {
+            port: port.into(),
+            reason: reason.into(),
         }
     }
 }
@@ -263,6 +291,14 @@ impl From<SessionError<SkywatcherCodecError>> for StarAdvError {
                     "device returned non-matching response ({n} frame{s} read)",
                     s = if n == 1 { "" } else { "s" }
                 ))
+            }
+            // WrongDevice carries port-label context the handshake hook
+            // captured (see `MountManager::new` in manager.rs); preserve
+            // it as the structured `StarAdvError::WrongDevice` so the
+            // operator-facing message lands intact in ASCOM's
+            // `INVALID_OPERATION` reply.
+            SessionError::Codec(SkywatcherCodecError::WrongDevice { port, reason }) => {
+                StarAdvError::WrongDevice { port, reason }
             }
             SessionError::SkipExhausted(n) => StarAdvError::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",

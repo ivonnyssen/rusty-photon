@@ -31,6 +31,24 @@ impl Default for TransportConfig {
     }
 }
 
+impl TransportConfig {
+    /// Human-readable label for the configured transport target. Used by
+    /// the connect handshake's wrong-device diagnostic (see
+    /// [`crate::error::StarAdvError::WrongDevice`] and issue #254) to
+    /// quote the configured port in operator-facing error messages.
+    ///
+    /// * USB → the configured serial-port path verbatim (e.g.
+    ///   `/dev/serial/by-id/...` or `/dev/ttyACM0`).
+    /// * UDP → `address:port` (the form an operator would type into a
+    ///   tool like `nc -u`).
+    pub fn port_label(&self) -> String {
+        match self {
+            Self::Usb(u) => u.port.clone(),
+            Self::Udp(u) => format!("{}:{}", u.address, u.port),
+        }
+    }
+}
+
 /// USB-CDC serial transport config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsbConfig {
@@ -613,6 +631,23 @@ mod tests {
         // bind_address is mandatory for UDP and must be on the 192.168.4.0/24
         // subnet when the mount is in AP mode.
         assert!(udp.bind_address.to_string().starts_with("192.168.4."));
+    }
+
+    #[test]
+    fn port_label_usb_returns_serial_path_verbatim() {
+        let cfg = TransportConfig::Usb(UsbConfig {
+            port: "/dev/serial/by-id/usb-Some_Device-port0".into(),
+            ..UsbConfig::default()
+        });
+        assert_eq!(cfg.port_label(), "/dev/serial/by-id/usb-Some_Device-port0");
+    }
+
+    #[test]
+    fn port_label_udp_formats_address_and_port() {
+        let cfg = TransportConfig::Udp(UdpConfig::default());
+        // UdpConfig::default() targets the GTi's AP-mode address on the
+        // documented port.
+        assert_eq!(cfg.port_label(), "192.168.4.1:11880");
     }
 
     #[test]

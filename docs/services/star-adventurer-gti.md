@@ -172,7 +172,7 @@ Mount-side parameters are queried at connect time rather than hard-coded:
 | Counts per revolution (per axis) | `:a1` / `:a2` | `0x375F00` = 3,628,800 | encoder-tick ↔ angle conversion |
 | Timer-interrupt frequency | `:b1` | `0xF42400` ≈ 16 MHz | step-period (T1 preset) calculation |
 | High-speed ratio | `:g1` / `:g2` | mount-specific (e.g. 16, 32, 64) | high-speed-slew step-period scaling |
-| Motor board version | `:e1` | `0x03300C` (mount type 0x03, fw v0x30.0x0C) | mount-family detection (EQ vs AZ) |
+| Motor board version | `:e1` | `0x03300C` (mount type 0x03, fw v0x30.0x0C) | mount-family detection (EQ vs AZ), **and identity gate** (see [§Initialisation sequence](#initialisation-sequence)) |
 
 CPR varies between the GTi's RA and Dec axes and between firmware
 revisions; the driver reads both rather than assuming.
@@ -276,18 +276,42 @@ signed-`i32` encoder counts only.
 
 After opening the transport and before the first motion command:
 
-1. `:F1` → expect `=\r` (Initialize axis 1)
-2. `:F2` → expect `=\r` (Initialize axis 2)
-3. `:a1` → record RA-axis CPR
-4. `:a2` → record Dec-axis CPR
-5. `:b1` → record TMR_Freq
-6. `:g1` → record RA-axis high-speed ratio
-7. `:g2` → record Dec-axis high-speed ratio
-8. `:e1` → log mount type / firmware version
+1. `:e1` → **identity gate**. Decode as
+   [`skywatcher_motor_protocol::Response::U24`]; the high byte must be a
+   known Sky-Watcher mount-type ID (see
+   [`MountType::from_motor_board_version`][mount-type]). On any other
+   reply (framing malformed, payload wrong shape, mount-type byte
+   outside the whitelist) the driver aborts the handshake with
+   [`StarAdvError::WrongDevice`][wrong-device] *before* sending
+   anything else — the wrong device sees exactly one frame (`:e1\r`).
+2. `:F1` → expect `=\r` (Initialize axis 1)
+3. `:F2` → expect `=\r` (Initialize axis 2)
+4. `:a1` → record RA-axis CPR
+5. `:a2` → record Dec-axis CPR
+6. `:b1` → record TMR_Freq
+7. `:g1` → record RA-axis high-speed ratio
+8. `:g2` → record Dec-axis high-speed ratio
 9. `:j1` / `:j2` → record initial encoder positions
 
-These values seed the in-memory mount-parameters cache used by the
-coordinate module and the slew planner.
+Steps 4-9 seed the in-memory mount-parameters cache used by the
+coordinate module and the slew planner. The motor-board-version reply
+from step 1 is also cached (`MountParameters::motor_board_version`)
+for diagnostic logging.
+
+**Why `:e1` is first** (issue #254): the 2026-05-17 San Diego hardware
+session pointed the driver at `/dev/serial/...` for a QHY focuser by
+mistake. The pre-fix handshake had already sent seven mount-specific
+commands (`:F1`, `:F2`, `:a1`, `:a2`, `:b1`, `:g1`, `:g2`) to the wrong
+device before reaching the identity check at step 8. Reordering so
+`:e1` is first and strictly-validated bounds the wrong-device blast
+radius to a single innocuous inquiry, and the ASCOM error surfaced to
+the operator names the configured port plus the wrong-device
+hypothesis (see [`StarAdvError::WrongDevice`][wrong-device]'s `Display`
+shape).
+
+[mount-type]: ../../crates/skywatcher-motor-protocol/src/mount_type.rs
+[wrong-device]: ../../services/star-adventurer-gti/src/error.rs
+[`skywatcher_motor_protocol::Response::U24`]: ../../crates/skywatcher-motor-protocol/src/response.rs
 
 ### Commands used by the MVP
 
@@ -1555,11 +1579,15 @@ open transport (serial: tokio-serial open + raw mode;
                 UDP: bind to config.bind_address, set timeout)
    ↓
 init handshake:
+  :e1               (motor board version)  → identity gate +
+                                              mount-type whitelist
+                                              (issue #254);
+                                              wrong-device handshake
+                                              stops here.
   :F1, :F2          (initialize axes)
   :a1, :a2          (CPR per axis)         → cache
   :b1               (TMR_Freq)             → cache
   :g1, :g2          (high-speed ratio)     → cache
-  :e1               (motor board version)  → debug! log
   :j1, :j2          (initial positions)    → cache
    ↓
 load park target from config / handshake → in-memory park ticks

@@ -23,7 +23,7 @@ use std::time::Duration;
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SharedTransport, TransportFactory, WhileOpen,
 };
-use skywatcher_motor_protocol::{Axis, AxisStatus, Command, Response};
+use skywatcher_motor_protocol::{Axis, AxisStatus, Command, MountType, Response};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, warn};
@@ -118,12 +118,17 @@ impl MountManager {
             TransportConfig::Usb(usb) => (usb.polling_interval, usb.command_timeout),
             TransportConfig::Udp(udp) => (udp.polling_interval, udp.command_timeout),
         };
+        // Capture once; the handshake hook quotes this in the
+        // [`StarAdvError::WrongDevice`] diagnostic when the `:e1` identity
+        // probe rejects the device on the other end of the wire (issue #254).
+        let port_label: Arc<str> = Arc::from(config.transport.port_label());
 
         let hooks = build_hooks(
             Arc::clone(&parameters),
             Arc::clone(&snapshot),
             Arc::clone(&poll_pause_depth),
             polling_interval,
+            Arc::clone(&port_label),
         );
         let transport = SharedTransport::new(factory, SkywatcherCodec, hooks);
 
@@ -262,17 +267,20 @@ fn build_hooks(
     snapshot: Arc<RwLock<MountSnapshot>>,
     poll_pause_depth: Arc<AtomicU32>,
     polling_interval: Duration,
+    port_label: Arc<str>,
 ) -> Hooks<SkywatcherCodec> {
     let p_hs = Arc::clone(&parameters);
     let s_hs = Arc::clone(&snapshot);
     let s_poll = Arc::clone(&snapshot);
     let depth_poll = Arc::clone(&poll_pause_depth);
     let p_td = Arc::clone(&parameters);
+    let port_hs = Arc::clone(&port_label);
     Hooks {
         handshake: Box::new(move |conn| {
             let parameters = Arc::clone(&p_hs);
             let snapshot = Arc::clone(&s_hs);
-            Box::pin(handshake(conn, parameters, snapshot))
+            let port_label = Arc::clone(&port_hs);
+            Box::pin(handshake(conn, parameters, snapshot, port_label))
         }),
         teardown: Box::new(move |conn| {
             let parameters = Arc::clone(&p_td);
@@ -286,31 +294,86 @@ fn build_hooks(
     }
 }
 
-/// `0→1` handshake: initialise both axes, query parameters, seed the
-/// snapshot with the initial encoder positions.
+/// `0→1` handshake.
+///
+/// **`:e1` first.** The motor-board-version inquiry runs as the very first
+/// wire command, with the reply validated against the
+/// [`MountType`] whitelist *before* any mount-specific
+/// initialisation (`:F1` / `:F2`) goes on the wire. If the device on the
+/// other end isn't a Sky-Watcher motor controller (wrong serial port,
+/// foreign USB-CDC peripheral, etc.), the handshake aborts after sending
+/// exactly one frame (`:e1\r`) and surfaces
+/// [`SkywatcherCodecError::WrongDevice`] carrying the port label and a
+/// human-readable reason. See [issue #254][issue] for the hardware session
+/// that motivated this and the operator-facing diagnostic shape.
+///
+/// On success, the rest of the handshake follows the documented order:
+/// initialise both axes, query parameters, seed the snapshot with the
+/// initial encoder positions.
+///
+/// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
 async fn handshake(
     conn: &Connection<SkywatcherCodec>,
     parameters: Arc<RwLock<Option<MountParameters>>>,
     snapshot: Arc<RwLock<MountSnapshot>>,
+    port_label: Arc<str>,
 ) -> std::result::Result<(), SkywatcherCodecError> {
-    // Step 1–2: initialise both axes.
+    // Step 1: identify the device. `:e1` is the first (and, on a wrong-
+    // device handshake, the *only*) frame on the wire. Transport-level
+    // failures (timeout, EOF, framing) propagate as-is so the existing
+    // `Timeout` / `Transport` classifications survive; protocol-level
+    // failures (frame malformed, payload wrong shape, unexpected
+    // response kind) are converted to `WrongDevice` so the operator
+    // sees a hint about the cause instead of a cryptic codec error.
+    let board = match request_typed(conn, Command::InquireMotorBoardVersion(Axis::Ra)).await {
+        Ok(Response::U24(v)) => v,
+        Ok(other) => {
+            return Err(SkywatcherCodecError::wrong_device(
+                port_label.as_ref(),
+                format!("expected motor-board-version U24, got {other:?}"),
+            ));
+        }
+        Err(SkywatcherCodecError::Protocol(pe)) => {
+            return Err(SkywatcherCodecError::wrong_device(
+                port_label.as_ref(),
+                format!("malformed `:e1` reply: {pe}"),
+            ));
+        }
+        // Transport / SkipExhausted / pre-existing WrongDevice variants
+        // bubble through unchanged — those classifications are already
+        // correct for their respective failure modes.
+        Err(other) => return Err(other),
+    };
+    let mount_type = MountType::from_motor_board_version(board).map_err(|byte| {
+        SkywatcherCodecError::wrong_device(
+            port_label.as_ref(),
+            format!(
+                "`:e1` reply mount-type byte {byte:#04X} is not a known Sky-Watcher \
+                 mount-controller ID (reply: {board:#08X})"
+            ),
+        )
+    })?;
+    debug!(
+        motor_board = format!("{board:#08X}"),
+        mount_type = ?mount_type,
+        "motor-board version validated"
+    );
+
+    // Step 2–3: now safe to issue mount-specific init. Initialise both
+    // axes.
     for axis in [Axis::Ra, Axis::Dec] {
         expect_ack(request_typed(conn, Command::Initialize(axis)).await?)?;
     }
 
-    // Step 3–4: per-axis CPR.
+    // Step 4–5: per-axis CPR.
     let cpr_ra = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Ra)).await?)?;
     let cpr_dec = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Dec)).await?)?;
-    // Step 5: TMR_Freq.
+    // Step 6: TMR_Freq.
     let tmr_freq = expect_u24(request_typed(conn, Command::InquireTmrFreq).await?)?;
-    // Step 6–7: high-speed ratio per axis.
+    // Step 7–8: high-speed ratio per axis.
     let hsr_ra = expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Ra)).await?)?;
     let hsr_dec =
         expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Dec)).await?)?;
-    // Step 8: motor-board version (logged only).
-    let board =
-        expect_u24(request_typed(conn, Command::InquireMotorBoardVersion(Axis::Ra)).await?)?;
-    debug!(motor_board = format!("{board:#08X}"), "motor-board version");
 
     // Step 9–10: initial encoder positions seed the snapshot.
     let pos_ra = expect_position(request_typed(conn, Command::InquirePosition(Axis::Ra)).await?)?;
@@ -1095,5 +1158,196 @@ mod tests {
         ] {
             assert!(validate_command_args(&cmd).is_ok(), "rejected {cmd:?}");
         }
+    }
+
+    // ========================================================================
+    // Issue #254: `:e1` runs first and gates the rest of the handshake.
+    //
+    // On a wrong-device handshake the driver must send exactly one frame
+    // (`:e1\r`), then bail out with a structured `StarAdvError::WrongDevice`
+    // carrying the configured port label and a reason naming the failure mode
+    // — no `:F1` / `:F2` / `:a*` / `:b*` / `:g*` / `:j*` should reach a device
+    // that isn't a Sky-Watcher motor controller.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn acquire_issues_e1_as_the_very_first_wire_frame() {
+        // The first frame in the command log must be `:e1\r`. Everything
+        // else (`:F*`, `:a*`, `:b*`, `:g*`, `:j*`) follows only after the
+        // device has been identified.
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let m = MountManager::new(Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        let log = state.lock().await.command_log.clone();
+        assert!(!log.is_empty(), "handshake produced no wire frames");
+        assert_eq!(
+            log[0],
+            b":e1\r",
+            "first wire frame must be `:e1`; got {:?}",
+            std::str::from_utf8(&log[0]).unwrap_or("<non-utf8>")
+        );
+        // Sanity: the rest of the handshake still ran (`:F1` shows up
+        // somewhere after `:e1`), so reordering didn't drop commands.
+        assert!(
+            log.iter().any(|f| f == b":F1\r"),
+            "`:F1` missing from handshake log: {log:?}"
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unknown_mount_type_byte_without_issuing_mount_commands() {
+        // Seed a motor-board-version with a high byte outside the
+        // `MountType` whitelist before the handshake reaches the wire.
+        // `0xFF` is a plausible "wrong device" byte: no Sky-Watcher motor
+        // controller reports it (the documented IDs top out at `0x06` for
+        // the EQ family and `0x82` for AZ-GTi).
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        state.lock().await.motor_board_version = 0x00FF_0000;
+        let m = MountManager::new(Config::default(), Arc::new(factory));
+        let err = m
+            .transport()
+            .acquire()
+            .await
+            .expect_err("acquire must reject a wrong-device handshake");
+        let mapped = StarAdvError::from(err);
+        match mapped {
+            StarAdvError::WrongDevice { port, reason } => {
+                // Default `UsbConfig` port path is documented in
+                // `config.rs::UsbConfig::default`.
+                assert_eq!(port, "/dev/ttyACM0", "wrong port in diagnostic");
+                assert!(
+                    reason.contains("0xFF"),
+                    "reason must quote the rejected byte; got {reason:?}"
+                );
+                assert!(
+                    reason.contains("Sky-Watcher"),
+                    "reason must call out the whitelist mismatch; got {reason:?}"
+                );
+            }
+            other => panic!("expected WrongDevice, got {other:?}"),
+        }
+        // The driver must NOT have issued any of the mount-specific init
+        // commands. `:e1\r` is allowed (and required); everything else
+        // would have leaked a write to the wrong device.
+        let log = state.lock().await.command_log.clone();
+        assert_eq!(
+            log.len(),
+            1,
+            "expected exactly one wire frame after wrong-device rejection, got {log:?}"
+        );
+        assert_eq!(log[0], b":e1\r");
+        assert!(
+            !m.is_available(),
+            "RollbackGuard should roll the refcount back on handshake failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unexpected_e1_response_kind_as_wrong_device() {
+        // Build a transport whose first `recv_frame` returns a malformed
+        // `:e1` reply: a 3-hex-byte status payload (`=100\r`), which the
+        // codec accepts structurally (it's a well-formed `=...\r`) but
+        // which `Response::decode` cannot turn into a U24 motor-board
+        // version. The driver must surface this as `WrongDevice`, not as
+        // a `Protocol(FrameError(...))` that would map to a generic
+        // `INVALID_OPERATION` with no port hint.
+        struct FakeTransport {
+            served: AtomicBool,
+        }
+
+        #[async_trait]
+        impl FrameTransport for FakeTransport {
+            async fn send_frame(
+                &mut self,
+                _bytes: &[u8],
+            ) -> std::result::Result<(), TransportError> {
+                Ok(())
+            }
+            async fn recv_frame(
+                &mut self,
+                buf: &mut Vec<u8>,
+            ) -> std::result::Result<(), TransportError> {
+                if !self.served.swap(true, Ordering::SeqCst) {
+                    buf.clear();
+                    buf.extend_from_slice(b"=100\r");
+                    Ok(())
+                } else {
+                    Err(TransportError::Eof)
+                }
+            }
+        }
+
+        struct FakeFactory;
+
+        #[async_trait]
+        impl TransportFactory for FakeFactory {
+            async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+                Ok(Box::new(FakeTransport {
+                    served: AtomicBool::new(false),
+                }))
+            }
+        }
+
+        let m = MountManager::new(Config::default(), Arc::new(FakeFactory));
+        let err = m
+            .transport()
+            .acquire()
+            .await
+            .expect_err("malformed `:e1` reply must reject");
+        let mapped = StarAdvError::from(err);
+        match mapped {
+            StarAdvError::WrongDevice { port, reason } => {
+                assert_eq!(port, "/dev/ttyACM0");
+                // Either route is acceptable: the response decoded as a
+                // non-U24 variant (`Response::Status` here), or the
+                // payload check rejected the shape. Both end up in
+                // `WrongDevice` per the handshake hook's branching.
+                assert!(
+                    reason.contains("malformed") || reason.contains("expected motor-board"),
+                    "reason should describe the malformed-:e1 cause; got {reason:?}"
+                );
+            }
+            other => panic!("expected WrongDevice, got {other:?}"),
+        }
+        assert!(
+            !m.is_available(),
+            "RollbackGuard should roll the refcount back on wrong-device failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_device_diagnostic_quotes_the_configured_port() {
+        // The diagnostic is a smell-test for an operator who just pointed
+        // the driver at the wrong serial port — the message must name
+        // *their* configured port, not a hardcoded default, so the
+        // verify-the-port hint is actionable.
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        state.lock().await.motor_board_version = 0x0099_0000;
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.port = "/dev/serial/by-id/usb-Foo_Bar-port0".into();
+        }
+        let m = MountManager::new(cfg, Arc::new(factory));
+        let err = m.transport().acquire().await.expect_err("reject");
+        let ascom: ascom_alpaca::ASCOMError = StarAdvError::from(err).into();
+        // The to-string is what an ASCOM client surfaces to the operator
+        // — assert the actionable bits are in it.
+        let msg = ascom.message.to_string();
+        assert!(
+            msg.contains("/dev/serial/by-id/usb-Foo_Bar-port0"),
+            "port path missing from ASCOM error message: {msg}"
+        );
+        assert!(
+            msg.contains("Sky-Watcher motor controller"),
+            "wrong-device hint missing: {msg}"
+        );
+        assert!(
+            msg.contains("wrong serial port"),
+            "verify-the-port hint missing: {msg}"
+        );
     }
 }

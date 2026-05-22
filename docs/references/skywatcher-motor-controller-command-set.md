@@ -124,14 +124,21 @@ beyond test fixtures.
 
 After opening the transport, before the first motion command:
 
-1. `:F1`, `:F2` — initialize both axes
-2. `:a1`, `:a2` — record CPR per axis
-3. `:b1` — record TMR_Freq
-4. `:g1`, `:g2` — record high-speed ratio per axis
-5. `:e1` — log mount type / firmware version
+1. `:e1` — identity gate (mount-type whitelist; see the
+   `skywatcher_motor_protocol::MountType` enum). On a wrong-device
+   handshake (frame malformed, payload wrong shape, mount-type byte
+   outside the whitelist) the driver stops here and surfaces
+   `StarAdvError::WrongDevice` — bounding the wrong-device blast radius
+   to a single inquiry. Motivated by the 2026-05-17 hardware session
+   where the operator pointed the driver at a QHY focuser by mistake
+   (issue #254).
+2. `:F1`, `:F2` — initialize both axes
+3. `:a1`, `:a2` — record CPR per axis
+4. `:b1` — record TMR_Freq
+5. `:g1`, `:g2` — record high-speed ratio per axis
 6. `:j1`, `:j2` — record initial encoder positions
 
-These values seed the in-memory parameter cache used by the coordinate
+Steps 2–6 seed the in-memory parameter cache used by the coordinate
 module and the slew planner.
 
 ## See also
