@@ -4386,6 +4386,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-service-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "windows-service",
+]
+
+[[package]]
 name = "rusty-photon-shared-transport"
 version = "0.1.0"
 dependencies = [
