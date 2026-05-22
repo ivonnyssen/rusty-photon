@@ -1,4 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,11 +9,10 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
 use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use serde::{Deserialize, Serialize};
-use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -326,21 +326,18 @@ impl BoundServer {
         self.local_addr
     }
 
-    pub async fn start(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         match self.tls {
             Some(ref tls_config) => {
                 info!("filemonitor started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
             }
             None => {
                 info!("filemonitor started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
         }
         debug!("filemonitor shut down");
@@ -348,11 +345,27 @@ impl BoundServer {
     }
 }
 
-/// Legacy wrapper for backward compat with existing callers.
-pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    ServerBuilder::new(config).build().await?.start().await
+/// Build a fresh `BoundServer` from a `Config` and run it until the
+/// `shutdown` future resolves. The drain semantics are whatever
+/// `rp_tls::server::serve_plain` / `serve_tls` provide for graceful
+/// shutdown.
+pub async fn start_server(
+    config: Config,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ServerBuilder::new(config)
+        .build()
+        .await?
+        .start(shutdown)
+        .await
 }
 
+/// Run filemonitor's server in a config-reload loop until `shutdown`
+/// fires. On `shutdown`, the inner `serve_plain`/`serve_tls` call
+/// observes the same future and drains in-flight requests before
+/// returning — `run_server_loop` therefore exits cleanly via the
+/// `start_server` arm rather than racing an outer signal handler
+/// against the inner one (fixes #287 for filemonitor).
 pub async fn run_server_loop(
     config_path: &Path,
     shutdown: CancellationToken,
@@ -362,41 +375,9 @@ pub async fn run_server_loop(
         let config = load_config(config_path)?;
         info!("Starting filemonitor server on port {}", config.server.port);
         tokio::select! {
-            result = start_server(config) => return result,
-            () = shutdown.cancelled() => { info!("Received stop signal"); break; }
+            result = start_server(config, shutdown.clone().cancelled_owned()) => return result,
             () = reload.recv() => { info!("Reloading configuration"); continue; }
         }
-    }
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
     }
 }
 

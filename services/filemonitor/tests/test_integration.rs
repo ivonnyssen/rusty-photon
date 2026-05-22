@@ -44,7 +44,7 @@ async fn test_start_server_creation() {
 
     std::fs::write(&config.file.path, "test").unwrap();
 
-    let server_future = start_server(config.clone());
+    let server_future = start_server(config.clone(), std::future::pending::<()>());
     let result = timeout(Duration::from_millis(100), server_future).await;
 
     std::fs::remove_file(&config.file.path).unwrap();
@@ -145,19 +145,33 @@ async fn test_server_loop_stop_and_reload() {
         let shutdown = CancellationToken::new();
         let reload = ReloadSignal::new();
 
-        // Trigger one reload after 100ms, then stop after another 100ms.
+        // Strategy for observing a real reload: corrupt the config file
+        // *before* firing the reload signal. If `run_server_loop` honours
+        // the reload, it drops the running server, re-enters the loop,
+        // calls `load_config(config_path)`, sees malformed JSON, and
+        // returns Err — which we assert below. If reload were silently
+        // ignored, the original server would keep running until the
+        // safety `shutdown.cancel()` fires and the test would get Ok.
+        let config_path_for_task = config_path.clone();
         let reload_trigger = reload.clone();
         let shutdown_trigger = shutdown.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            std::fs::write(&config_path_for_task, "this is not valid json").unwrap();
             reload_trigger.notify();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Safety net: if the assertion below is going to fail, make
+            // sure we don't hang the test runner.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             shutdown_trigger.cancel();
         });
 
         let result = run_server_loop(&config_path, shutdown, reload).await;
 
-        assert!(result.is_ok(), "reload test failed: {:?}", result.err());
+        assert!(
+            result.is_err(),
+            "reload should have caused a second load_config that fails on \
+             the corrupted file; got Ok which means reload was silently ignored"
+        );
     }
 }
 
