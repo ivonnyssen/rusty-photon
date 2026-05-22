@@ -59,6 +59,13 @@ where
 pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTime<Utc>> {
     let start = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0)?).and_utc();
     let lst0 = lst_hours(site, &time_jds(start));
+    // NaN propagates through `rem_euclid` but `as i64` saturates NaN
+    // to 0, which would silently collapse the computation to "start".
+    // Surface the failure as `None` instead so callers see the
+    // upstream time-conversion problem.
+    if !lst0.is_finite() {
+        return None;
+    }
     let delta_sidereal = (target.ra_hours - lst0).rem_euclid(24.0);
     let delta_solar = delta_sidereal * SIDEREAL_TO_SOLAR;
     let candidate = start + Duration::milliseconds((delta_solar * 3_600_000.0) as i64);
@@ -66,6 +73,9 @@ pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option
     // One Newton iteration: re-evaluate LST at the candidate, take
     // the residual mod 24 (signed: residual > 12h means we overshot).
     let lst1 = lst_hours(site, &time_jds(candidate));
+    if !lst1.is_finite() {
+        return None;
+    }
     let mut residual = (target.ra_hours - lst1).rem_euclid(24.0);
     if residual > 12.0 {
         residual -= 24.0;
@@ -124,6 +134,9 @@ pub(crate) fn meridian_flip(
     time: DateTime<Utc>,
 ) -> Option<Duration> {
     let lst = lst_hours(site, &time_jds(time));
+    if !lst.is_finite() {
+        return None;
+    }
     let ha = (lst - target.ra_hours).rem_euclid(24.0);
     // ha ∈ [0, 24). HA = 0 means the target is on the meridian *right
     // now* — the flip is due now, not in another full sidereal day.
@@ -150,8 +163,15 @@ pub(crate) fn twilight(
     // degree of longitude (240 s = 240_000 ms / deg). longitude_degrees
     // is positive east, so local solar noon is *earlier* in UTC for
     // eastern longitudes.
-    let noon_utc =
-        NaiveDateTime::new(date, NaiveTime::from_hms_opt(12, 0, 0).expect("hms valid")).and_utc();
+    let Some(noon_naive) = NaiveTime::from_hms_opt(12, 0, 0) else {
+        // (12, 0, 0) is structurally always a valid HMS; this arm is
+        // only here to keep production code panic-free.
+        return TwilightWindow {
+            begin_utc: None,
+            end_utc: None,
+        };
+    };
+    let noon_utc = NaiveDateTime::new(date, noon_naive).and_utc();
     let solar_noon = noon_utc - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
     let midnight = solar_noon + Duration::hours(12);
     let next_noon = solar_noon + Duration::hours(24);
