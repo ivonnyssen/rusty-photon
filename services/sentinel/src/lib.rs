@@ -228,41 +228,14 @@ impl Sentinel {
     }
 
     /// Start the sentinel service: runs the polling loop until cancelled, then disconnects.
+    ///
+    /// Shutdown is propagated through the [`CancellationToken`] supplied
+    /// to [`SentinelBuilder::with_cancellation_token`]. In production the
+    /// binary builds that token from `rusty_photon_service_lifecycle::
+    /// Shutdown::token()`, so the runner's OS-signal watcher drives this
+    /// shutdown; in tests it is driven directly.
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
-
-        // Setup shutdown handler (Ctrl+C and SIGTERM)
-        let cancel_for_signal = cancel.clone();
-        tokio::spawn(async move {
-            let ctrl_c = async {
-                if let Err(e) = tokio::signal::ctrl_c().await {
-                    tracing::warn!("failed to wait for Ctrl+C: {e}");
-                    std::future::pending::<()>().await;
-                }
-            };
-
-            #[cfg(unix)]
-            let terminate = async {
-                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                    Ok(mut sig) => {
-                        sig.recv().await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to install SIGTERM handler: {e}");
-                        std::future::pending::<()>().await;
-                    }
-                }
-            };
-
-            #[cfg(not(unix))]
-            let terminate = std::future::pending::<()>();
-
-            tokio::select! {
-                () = ctrl_c => tracing::info!("Received Ctrl+C"),
-                () = terminate => tracing::info!("Received SIGTERM"),
-            }
-            cancel_for_signal.cancel();
-        });
 
         // Start dashboard if we have a bound listener
         if let Some(listener) = self.dashboard_listener {

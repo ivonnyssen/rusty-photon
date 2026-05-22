@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use rusty_photon_service_lifecycle::ServiceRunner;
 use sentinel::{load_config, Config, SentinelBuilder};
 use tracing::Level;
 
@@ -26,8 +27,7 @@ struct Args {
     log_level: Level,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -63,7 +63,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.transitions.len()
     );
 
-    SentinelBuilder::new(config).build().await?.start().await?;
-
-    Ok(())
+    ServiceRunner::new("sentinel").run(move |shutdown| async move {
+        SentinelBuilder::new(config)
+            .with_cancellation_token(shutdown.token())
+            .build()
+            .await?
+            .start()
+            .await?;
+        Ok(())
+    })
 }
