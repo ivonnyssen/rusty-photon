@@ -1,9 +1,7 @@
 //! ASCOM Alpaca CoverCalibrator device for the Deep Sky Dad FP2.
 //!
 //! Holds an `Arc<FlatPanelManager>` (the service-wide façade over
-//! `SharedTransport<Fp2Codec>`) plus a per-device session slot. The
-//! session-per-device pattern follows the migration sketch in
-//! `docs/plans/shared-transport-extraction.md` (qhy-focuser variant).
+//! `SharedTransport<Fp2Codec>`) plus a per-device session slot.
 //!
 //! Cover and calibrator state derive from the cached snapshot the manager's
 //! while-open task refreshes. Writes (open/close/calibrator-on/-off) go

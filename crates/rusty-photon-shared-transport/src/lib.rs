@@ -4,9 +4,9 @@
 //! This crate factors out the connect-handshake-share-teardown pattern that
 //! every ASCOM service in this workspace had grown independently
 //! (`qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`,
-//! `star-adventurer-gti`). See `docs/plans/shared-transport-extraction.md`
-//! for the design rationale and the three bug classes the abstraction
-//! dissolves structurally.
+//! `star-adventurer-gti`). It dissolves three bug classes structurally:
+//! the `set_connected` lock-holding race, the refcount leak on
+//! partial-connect failure, and the polling-task teardown leak.
 //!
 //! # The shape
 //!

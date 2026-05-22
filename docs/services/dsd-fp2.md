@@ -22,7 +22,7 @@ that previously lived per-service. The crate provides:
 command/response translation), `FrameTransport` (one open conduit),
 `TransportFactory` (open-me-a-transport), `Session<C>` (per-device
 handle), and `Hooks` (per-service handshake / teardown / while-open
-plug). See `docs/plans/shared-transport-extraction.md` for the rationale.
+plug).
 
 ```
 +----------------------------------------------------------------+
