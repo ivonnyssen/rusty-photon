@@ -20,16 +20,20 @@ pub use survey::SurveyClient;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
-/// the BDD harness, and serve forever.
-pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
+/// the BDD harness, and serve until `shutdown` resolves.
+pub async fn run(
+    config_path: &Path,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), SkySurveyCameraError> {
     let config = load_config(config_path).await?;
     let survey_client = build_survey_client(&config)?;
-    run_with_client(config, survey_client).await
+    run_with_client(config, survey_client, shutdown).await
 }
 
 /// Variant of [`run`] used by tests / the `mock` feature where the
@@ -37,6 +41,7 @@ pub async fn run(config_path: &Path) -> Result<(), SkySurveyCameraError> {
 pub async fn run_with_client(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
     let device = build_device(config.clone(), survey_client)?;
     let shared_state = device.shared_state();
@@ -68,7 +73,7 @@ pub async fn run_with_client(
     // profraw files flush when bdd-infra's ServiceHandle sends
     // SIGTERM at the end of each scenario.
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
     Ok(())
@@ -136,34 +141,4 @@ fn build_device(
         pointing_source,
         last_snapshot,
     ))
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                tracing::warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::debug!("received Ctrl+C"),
-        () = terminate => tracing::debug!("received SIGTERM"),
-    }
 }
