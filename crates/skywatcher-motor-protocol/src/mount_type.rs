@@ -58,8 +58,10 @@ impl MountType {
     ///
     /// `version` is the [`crate::Response::U24`] payload of the
     /// [`crate::Command::InquireMotorBoardVersion`] reply, with the codec's
-    /// little-endian-nibble decoding already applied — i.e. for the GTi
-    /// probe wire reply `=03300C\r` the caller passes `0x0003_300C`.
+    /// low-byte-first hex decoding (see [`crate::codec::decode_u24`])
+    /// already applied — i.e. for the GTi probe the wire reply
+    /// `=0C3003\r` decodes to `0x0003_300C`, which is what the caller
+    /// passes in.
     ///
     /// Returns `Ok(MountType)` when the high byte is in the whitelist;
     /// returns `Err(byte)` carrying the unrecognised mount-type byte

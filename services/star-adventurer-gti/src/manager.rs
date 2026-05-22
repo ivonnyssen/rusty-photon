@@ -318,13 +318,29 @@ async fn handshake(
     snapshot: Arc<RwLock<MountSnapshot>>,
     port_label: Arc<str>,
 ) -> std::result::Result<(), SkywatcherCodecError> {
-    // Step 1: identify the device. `:e1` is the first (and, on a wrong-
-    // device handshake, the *only*) frame on the wire. Transport-level
-    // failures (timeout, EOF, framing) propagate as-is so the existing
-    // `Timeout` / `Transport` classifications survive; protocol-level
-    // failures (frame malformed, payload wrong shape, unexpected
-    // response kind) are converted to `WrongDevice` so the operator
-    // sees a hint about the cause instead of a cryptic codec error.
+    // Step 1: identify the device. `:e1` is the first (and, on a
+    // wrong-device handshake, the *only*) frame on the wire.
+    //
+    // The two "frame-shaped" error sources are deliberately routed
+    // differently — easy to confuse from the variant names alone:
+    //
+    // - `SkywatcherCodecError::Transport(TransportError::*)` —
+    //   *transport-layer* failures (`Timeout`, `Eof`, `Io`, `Open`,
+    //   `Framing` — the last being e.g. UDP datagram-bounds /
+    //   max-frame violations). Propagated unchanged so the existing
+    //   `Timeout` / `ConnectionFailed` / `Transport` classifications
+    //   survive into the operator-facing ASCOM error.
+    //
+    // - `SkywatcherCodecError::Protocol(ProtocolError::*)` —
+    //   *codec-layer* response-frame failures (`FrameError` for
+    //   missing `=` prefix / missing `\r`, `PayloadError` for
+    //   wrong-shape body, `HexError` for non-hex payload bytes),
+    //   plus the `Ok(other)` case where the device sent a
+    //   structurally valid but type-wrong reply (e.g. a
+    //   `Response::Status` `:f`-shaped frame instead of the U24
+    //   motor-board-version we asked for). All converted to
+    //   `WrongDevice` so the operator sees an actionable diagnostic
+    //   instead of a cryptic codec error.
     let board = match request_typed(conn, Command::InquireMotorBoardVersion(Axis::Ra)).await {
         Ok(Response::U24(v)) => v,
         Ok(other) => {

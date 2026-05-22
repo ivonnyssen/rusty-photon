@@ -39,12 +39,16 @@ impl TransportConfig {
     ///
     /// * USB → the configured serial-port path verbatim (e.g.
     ///   `/dev/serial/by-id/...` or `/dev/ttyACM0`).
-    /// * UDP → `address:port` (the form an operator would type into a
-    ///   tool like `nc -u`).
+    /// * UDP → [`SocketAddr`]'s `Display` form, which brackets IPv6
+    ///   correctly (`[fe80::1]:11880`) and leaves IPv4 unbracketed
+    ///   (`192.168.4.1:11880`). Matches the canonical operator-typing
+    ///   form a tool like `nc -u` accepts.
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
     pub fn port_label(&self) -> String {
         match self {
             Self::Usb(u) => u.port.clone(),
-            Self::Udp(u) => format!("{}:{}", u.address, u.port),
+            Self::Udp(u) => std::net::SocketAddr::new(u.address, u.port).to_string(),
         }
     }
 }
@@ -648,6 +652,20 @@ mod tests {
         // UdpConfig::default() targets the GTi's AP-mode address on the
         // documented port.
         assert_eq!(cfg.port_label(), "192.168.4.1:11880");
+    }
+
+    #[test]
+    fn port_label_udp_brackets_ipv6_addresses() {
+        // `SocketAddr`'s Display brackets v6 so the resulting label is
+        // unambiguous (without brackets `fe80::1:11880` could read as
+        // address `fe80::1` port `11880` *or* address `fe80::1:11880`
+        // with no port). Matches the canonical operator-typing form.
+        let cfg = TransportConfig::Udp(UdpConfig {
+            address: "fe80::1".parse().expect("parse v6"),
+            port: 11880,
+            ..UdpConfig::default()
+        });
+        assert_eq!(cfg.port_label(), "[fe80::1]:11880");
     }
 
     #[test]
