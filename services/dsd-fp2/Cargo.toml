@@ -38,6 +38,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
