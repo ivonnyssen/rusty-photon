@@ -69,7 +69,7 @@ async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
     let port = bound.listen_addr().port();
 
     let handle = tokio::spawn(async move {
-        let _ = bound.start().await;
+        let _ = bound.start(std::future::pending::<()>()).await;
     });
 
     (port, handle)

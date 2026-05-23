@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::{debug, info, warn, Level};
+use rusty_photon_service_lifecycle::ServiceRunner;
+use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
@@ -49,38 +50,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
         .map_err(|_| format!("Invalid log level: {s}. Use: trace, debug, info, warn, error"))
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -118,42 +88,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Running in MOCK MODE - no real hardware");
     info!("Server port: {}", config.server.port);
 
-    let builder = ServerBuilder::new()
-        .with_config(config)
-        .with_config_file_path(config_file_path);
+    ServiceRunner::new("star-adventurer-gti").run(move |shutdown| async move {
+        let builder = ServerBuilder::new()
+            .with_config(config)
+            .with_config_file_path(config_file_path);
 
-    #[cfg(feature = "mock")]
-    let builder = {
-        // CapturingMockFactory shares its `MockMountState` Arc with
-        // every transport it hands out. Reuse that same state for the
-        // /debug/v1/mock-commands endpoint so tools like BDD harnesses
-        // can inspect the wire command log over HTTP.
-        let factory = CapturingMockFactory::new();
-        let state = Arc::clone(&factory.state);
-        let factory: Arc<dyn TransportFactory> = Arc::new(factory);
-        builder
-            .with_transport_factory(factory)
-            .with_debug_mock_state(state)
-    };
+        #[cfg(feature = "mock")]
+        let builder = {
+            // CapturingMockFactory shares its `MockMountState` Arc with
+            // every transport it hands out. Reuse that same state for the
+            // /debug/v1/mock-commands endpoint so tools like BDD harnesses
+            // can inspect the wire command log over HTTP.
+            let factory = CapturingMockFactory::new();
+            let state = Arc::clone(&factory.state);
+            let factory: Arc<dyn TransportFactory> = Arc::new(factory);
+            builder
+                .with_transport_factory(factory)
+                .with_debug_mock_state(state)
+        };
 
-    #[cfg(not(feature = "mock"))]
-    {
-        // Production builds let `ServerBuilder::build()` pick the factory
-        // (Serial vs UDP) from `config.transport`. The factory's
-        // `connect()` body is filled in by Phase 3; until then ASCOM
-        // `Connected = true` returns NOT_IMPLEMENTED but the HTTP server
-        // still binds and serves metadata.
-        let _: Option<Arc<dyn TransportFactory>> = None;
-    }
+        #[cfg(not(feature = "mock"))]
+        {
+            // Production builds let `ServerBuilder::build()` pick the factory
+            // (Serial vs UDP) from `config.transport`. The factory's
+            // `connect()` body is filled in by Phase 3; until then ASCOM
+            // `Connected = true` returns NOT_IMPLEMENTED but the HTTP server
+            // still binds and serves metadata.
+            let _: Option<Arc<dyn TransportFactory>> = None;
+        }
 
-    let bound = builder.build().await?;
+        let bound = builder.build().await?;
 
-    tokio::select! {
-        result = bound.start() => { result?; }
-        () = shutdown_signal() => { info!("Shutting down"); }
-    }
-
-    Ok(())
+        bound.start(shutdown.cancelled()).await?;
+        Ok(())
+    })
 }
 
 fn apply_cli_overrides(config: &mut Config, args: &Args) -> Result<(), Box<dyn std::error::Error>> {

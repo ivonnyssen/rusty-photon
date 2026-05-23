@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event, Rect, SettleParams};
+use rusty_photon_service_lifecycle::{ServiceRunner, Shutdown};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, info, Level};
@@ -118,8 +119,7 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -131,92 +131,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.host, args.port, args.log_level
     );
 
-    // Build configuration from CLI args or config file
-    let phd2_config = if let Some(config_path) = &args.config {
-        debug!("Loading configuration from {:?}", config_path);
-        let config = load_config(config_path)?;
-        config.phd2
-    } else {
-        Phd2Config {
-            host: args.host,
-            port: args.port,
-            ..Default::default()
-        }
-    };
+    ServiceRunner::new("phd2-guider").run(move |shutdown| async move {
+        // Build configuration from CLI args or config file
+        let phd2_config = if let Some(config_path) = &args.config {
+            debug!("Loading configuration from {:?}", config_path);
+            let config = load_config(config_path)?;
+            config.phd2
+        } else {
+            Phd2Config {
+                host: args.host,
+                port: args.port,
+                ..Default::default()
+            }
+        };
 
-    let client = Phd2Client::new(phd2_config);
+        let client = Phd2Client::new(phd2_config);
 
-    match args.command {
-        Commands::Status => {
-            run_status(&client).await?;
-        }
-        Commands::Monitor => {
-            run_monitor(&client).await?;
-        }
-        Commands::Connect => {
-            run_connect(&client).await?;
-        }
-        Commands::Disconnect => {
-            run_disconnect(&client).await?;
-        }
-        Commands::Profiles => {
-            run_profiles(&client).await?;
-        }
-        Commands::Guide {
-            recalibrate,
-            settle_pixels,
-            settle_time,
-            settle_timeout,
-            roi,
-        } => {
-            run_guide(
-                &client,
+        match args.command {
+            Commands::Status => run_status(&client).await?,
+            Commands::Monitor => run_monitor(&client, shutdown).await?,
+            Commands::Connect => run_connect(&client).await?,
+            Commands::Disconnect => run_disconnect(&client).await?,
+            Commands::Profiles => run_profiles(&client).await?,
+            Commands::Guide {
                 recalibrate,
                 settle_pixels,
                 settle_time,
                 settle_timeout,
                 roi,
-            )
-            .await?;
-        }
-        Commands::StopGuiding => {
-            run_stop_guiding(&client).await?;
-        }
-        Commands::StopCapture => {
-            run_stop_capture(&client).await?;
-        }
-        Commands::Loop => {
-            run_loop(&client).await?;
-        }
-        Commands::Pause { full } => {
-            run_pause(&client, full).await?;
-        }
-        Commands::Resume => {
-            run_resume(&client).await?;
-        }
-        Commands::IsPaused => {
-            run_is_paused(&client).await?;
-        }
-        Commands::Dither {
-            amount,
-            ra_only,
-            settle_pixels,
-            settle_time,
-            settle_timeout,
-        } => {
-            run_dither(
-                &client,
+            } => {
+                run_guide(
+                    &client,
+                    recalibrate,
+                    settle_pixels,
+                    settle_time,
+                    settle_timeout,
+                    roi,
+                )
+                .await?;
+            }
+            Commands::StopGuiding => run_stop_guiding(&client).await?,
+            Commands::StopCapture => run_stop_capture(&client).await?,
+            Commands::Loop => run_loop(&client).await?,
+            Commands::Pause { full } => run_pause(&client, full).await?,
+            Commands::Resume => run_resume(&client).await?,
+            Commands::IsPaused => run_is_paused(&client).await?,
+            Commands::Dither {
                 amount,
                 ra_only,
                 settle_pixels,
                 settle_time,
                 settle_timeout,
-            )
-            .await?;
+            } => {
+                run_dither(
+                    &client,
+                    amount,
+                    ra_only,
+                    settle_pixels,
+                    settle_time,
+                    settle_timeout,
+                )
+                .await?;
+            }
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
@@ -245,13 +225,20 @@ async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-async fn run_monitor(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_monitor(
+    client: &Phd2Client,
+    shutdown: Shutdown,
+) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
+    #[cfg(unix)]
+    info!("Monitoring PHD2 events (press Ctrl+C or send SIGTERM to stop)...");
+    #[cfg(not(unix))]
     info!("Monitoring PHD2 events (press Ctrl+C to stop)...");
 
     let mut receiver = client.subscribe();
+    let token = shutdown.token();
 
     loop {
         tokio::select! {
@@ -266,7 +253,7 @@ async fn run_monitor(client: &Phd2Client) -> Result<(), Box<dyn std::error::Erro
                     }
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = token.cancelled() => {
                 info!("Shutting down...");
                 break;
             }

@@ -1,0 +1,259 @@
+# Skill: Service Lifecycle
+
+## When to Read This
+
+- When scaffolding a new long-running service binary
+- When touching a service's `main.rs` or top-level shutdown handling
+- When wiring a new entry point that needs SIGINT/SIGTERM, SIGHUP-on-reload,
+  or Windows Service Control Manager dispatch
+- When you see a hand-rolled `tokio::signal::ctrl_c` / `signal(SignalKind::terminate())`
+  pair in a service and wonder whether it should be there
+
+## Prerequisites
+
+- Read the crate design: [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
+  — that's the authoritative reference for the public API, behavior,
+  and SCM internals.
+
+---
+
+## Why this exists
+
+Every long-running binary in the workspace needs the same three things:
+a tokio runtime, OS signal handlers for graceful shutdown, and a way to
+propagate "time to stop" to its workers. Before issue #294, twelve
+services had drifted into four shapes for the same task — some panicked
+on signal install failure, some spawned hand-rolled cancel tasks,
+filemonitor carried ~100 lines of Windows SCM glue, and the five
+shared-transport ASCOM services additionally raced two installations
+against each other (issue #287).
+
+`rusty-photon-service-lifecycle` is the single workspace-wide
+replacement. One signal-install path, one propagation primitive
+([`tokio_util::sync::CancellationToken`]), one handle (`Shutdown`),
+optional SCM behind a cargo feature.
+
+---
+
+## The standard pattern
+
+For any new service binary, this is the shape:
+
+```rust
+use rusty_photon_service_lifecycle::ServiceRunner;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    tracing_subscriber::fmt().with_max_level(args.log_level).init();
+
+    ServiceRunner::new("my-service").run(move |shutdown| async move {
+        let bound = ServerBuilder::new()
+            .with_config(args.config)
+            .build()
+            .await?;
+        bound.start(shutdown.cancelled()).await?;
+        Ok(())
+    })
+}
+```
+
+Key points:
+
+- `main` is **plain `fn`**, not `#[tokio::main]`. The runner owns the
+  tokio runtime, so wrapping it with `#[tokio::main]` would nest two
+  runtimes.
+- Initialization that doesn't need async (clap parse, tracing init)
+  stays outside the closure. Everything async — building the server,
+  loading config that needs awaitable IO — lives inside.
+- `shutdown.cancelled()` returns a `'static + Send` future. Hand it to
+  any API that takes a shutdown future (`axum::serve(...).with_graceful_shutdown(...)`,
+  the shared-transport `BoundServer::start(shutdown)`, …).
+- `shutdown.token()` returns a `CancellationToken` clone for code that
+  prefers tokens over futures (`tokio::select! { _ = token.cancelled() => ... }`,
+  or APIs like sentinel's `with_cancellation_token`).
+- Return type from the closure is `Result<(), Box<dyn std::error::Error>>`.
+
+---
+
+## Plugging into a server
+
+### Shared-transport ASCOM driver (`BoundServer::start(shutdown)`)
+
+The five shared-transport services already take a shutdown future:
+
+```rust
+bound.start(shutdown.cancelled()).await?;
+```
+
+This is the only signal source — there is **no outer `tokio::select!`**
+in `main` racing the server against another signal future. That double-
+installation pattern is what issue #287 was about; the fix is to thread
+a single source through.
+
+### Plain axum service
+
+`axum::serve` accepts a shutdown future directly. Inside your closure:
+
+```rust
+axum::serve(listener, app)
+    .with_graceful_shutdown(shutdown.cancelled())
+    .await?;
+```
+
+### Code that takes a `CancellationToken`
+
+Some library code (e.g. `sentinel`'s engine) takes a `CancellationToken`
+in its builder so workers can race against it. Use `shutdown.token()`:
+
+```rust
+SentinelBuilder::new(config)
+    .with_cancellation_token(shutdown.token())
+    .build()
+    .await?
+    .start()
+    .await?;
+```
+
+The token is cloned cheaply and propagates to every clone — no
+per-task wake-up cost.
+
+### Long-running loops with multiple await points
+
+When you have a `tokio::select!` already (e.g., a CLI's monitor mode
+racing a receiver against a stop signal), bind the token once and race
+on `token.cancelled()`:
+
+```rust
+let token = shutdown.token();
+loop {
+    tokio::select! {
+        event = receiver.recv() => { ... }
+        _ = token.cancelled() => break,
+    }
+}
+```
+
+`token.cancelled()` is cheap to re-await in a loop; each iteration
+constructs a fresh future that observes the same cancellation.
+
+---
+
+## Reload (SIGHUP / SCM ParamChange)
+
+Only `filemonitor` uses reload today. Enable it with `.with_reload()`
+and use `run_with_reload`:
+
+```rust
+ServiceRunner::new("my-service")
+    .with_reload()
+    .run_with_reload(|shutdown, reload| async move {
+        loop {
+            let config = load_config()?;
+            tokio::select! {
+                result = serve(config, shutdown.cancelled()) => return result,
+                () = reload.recv() => continue,  // reload triggers config re-read
+            }
+        }
+    })
+```
+
+`ReloadSignal::recv()` fires on Unix when SIGHUP is delivered, or when
+SCM sends `ParamChange` in Windows service mode. On Windows console
+mode there is no SIGHUP equivalent; `reload.recv()` returns a never-
+resolving future.
+
+---
+
+## Windows Service Control Manager mode
+
+SCM dispatch is opt-in per service via the `scm` cargo feature, and is
+a no-op on non-Windows targets. To adopt SCM for a new service:
+
+```toml
+# services/<name>/Cargo.toml
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+```
+
+```rust
+// services/<name>/src/main.rs
+#[derive(Parser)]
+struct Args {
+    /// Run as a Windows service (used by the service control manager)
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service: bool,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    ServiceRunner::new("my-service")
+        .scm_mode(args.service)   // no-op on non-Windows targets
+        .run(|shutdown| async move {
+            // ... same closure as console mode ...
+        })
+}
+```
+
+The `scm_mode` builder is always available; the `cfg(windows)` /
+feature check happens inside the crate. The user closure runs
+identically under SCM and console mode — that's the whole point.
+
+The worked example is [`services/filemonitor`](../services/filemonitor.md);
+its `main.rs` is the canonical reference for what an SCM-enabled
+binary looks like.
+
+---
+
+## What the runner does NOT do
+
+These are deliberate boundaries (see the crate design's "Out of scope"
+section for the full list):
+
+- **Initialize `tracing` / logging.** Services vary on filters,
+  formats, and CLI flags; init `tracing_subscriber` yourself before
+  calling the runner.
+- **Parse CLI arguments.** Services keep `clap`. The runner takes a
+  static name and a closure, nothing else.
+- **Define what graceful shutdown means for your server.** It just
+  produces the *signal*. Composing it into the server's stop path
+  (axum's `with_graceful_shutdown`, a `tokio::select!`, etc.) is
+  the caller's job.
+
+---
+
+## Common pitfalls
+
+- **Don't install your own signal handler downstream.** If you find
+  yourself writing `tokio::signal::ctrl_c().await` inside a service
+  that already runs under `ServiceRunner`, you're recreating the bug
+  the runner exists to prevent. Use `shutdown.cancelled()` or
+  `shutdown.token()` instead. The only exception is one-off CLI tools
+  that don't (and shouldn't) use the runner.
+- **Don't wrap `ServiceRunner` inside `#[tokio::main]`.** The runner
+  builds its own runtime; nesting will either fail at startup or
+  produce a confusing two-runtime situation.
+- **Don't pass non-`'static` borrows into the closure.** The runner
+  requires `Fut: 'static` because the SCM dispatch path type-erases
+  the future. `move` ownership into the closure (which is the natural
+  shape anyway) and you're fine.
+- **`Fut: Send` is not required.** `Runtime::block_on` polls on the
+  calling thread; error types inside your closure don't need `Send`
+  bounds. Only the *closure itself* is `Send + 'static`.
+
+---
+
+## References
+
+- [Crate design](../crates/rusty-photon-service-lifecycle.md) — public
+  API, behavior, SCM dispatch internals, testing strategy.
+- [Migration plan](../plans/service-lifecycle-unification.md) — how
+  the workspace got from twelve divergent shutdown shapes to one,
+  closed under issue #294 (with #287 as a side fix in the five
+  shared-transport services).
+- [`services/filemonitor`](../services/filemonitor.md) — worked example
+  for reload + SCM. Its `main.rs` is the canonical reference for an
+  SCM-enabled binary.
+- [`services/sentinel`](../services/sentinel.md) — worked example for
+  the `with_cancellation_token` pattern, where library code already
+  takes a token in its builder.

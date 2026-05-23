@@ -40,6 +40,7 @@ pub use switches::{SwitchId, SwitchInfo, MAX_SWITCH};
 #[cfg(feature = "mock")]
 pub use mock::MockPpbaTransportFactory;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -47,8 +48,7 @@ use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
 use rusty_photon_shared_transport::TransportFactory;
-use tokio::signal;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Builder for the ASCOM Alpaca server.
 pub struct ServerBuilder {
@@ -149,54 +149,21 @@ impl BoundServer {
         self.local_addr
     }
 
-    pub async fn start(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.tls {
             Some(ref tls_config) => {
                 info!("ppba-driver started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    shutdown_signal(),
-                )
-                .await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
             }
             None => {
                 info!("ppba-driver started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown_signal()).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
         }
         debug!("ppba-driver shut down");
         Ok(())
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
     }
 }

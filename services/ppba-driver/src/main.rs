@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use rust_embed::RustEmbed;
 use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
-use tracing::{warn, Level};
+use rusty_photon_service_lifecycle::ServiceRunner;
+use tracing::Level;
 
 #[cfg(feature = "mock")]
 use ppba_driver::{load_config, Config, MockPpbaTransportFactory, ServerBuilder};
@@ -66,8 +67,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
 
@@ -141,56 +141,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Baud rate: {}", config.serial.baud_rate);
     tracing::info!("Server port: {}", config.server.port);
 
-    #[cfg(feature = "mock")]
-    let bound = {
-        let factory = std::sync::Arc::new(MockPpbaTransportFactory::default());
-        ServerBuilder::new(config)
-            .with_factory(factory)
-            .build()
-            .await?
-    };
+    ServiceRunner::new("ppba-driver").run(move |shutdown| async move {
+        #[cfg(feature = "mock")]
+        let bound = {
+            let factory = std::sync::Arc::new(MockPpbaTransportFactory::default());
+            ServerBuilder::new(config)
+                .with_factory(factory)
+                .build()
+                .await?
+        };
 
-    #[cfg(not(feature = "mock"))]
-    let bound = ServerBuilder::new(config).build().await?;
+        #[cfg(not(feature = "mock"))]
+        let bound = ServerBuilder::new(config).build().await?;
 
-    // Race the server with a shutdown signal so SIGTERM triggers a clean
-    // exit, allowing llvm-cov profraw data to be flushed.
-    tokio::select! {
-        result = bound.start() => { result?; },
-        () = shutdown_signal() => {
-            tracing::debug!("shutting down");
-        }
-    }
-
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::debug!("received Ctrl+C"),
-        () = terminate => tracing::debug!("received SIGTERM"),
-    }
+        bound.start(shutdown.cancelled()).await?;
+        Ok(())
+    })
 }

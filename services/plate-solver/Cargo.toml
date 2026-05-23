@@ -12,6 +12,7 @@ description = "rp-managed plate solver service: HTTP wrapper around the ASTAP CL
 workspace = true
 
 [dependencies]
+rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

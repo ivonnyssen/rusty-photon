@@ -539,6 +539,7 @@ dependencies = [
  "mockall",
  "reqwest 0.13.3",
  "rmcp",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
@@ -1128,6 +1129,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",
@@ -1295,14 +1297,15 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
- "windows-service",
 ]
 
 [[package]]
@@ -3046,6 +3049,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",
@@ -3180,8 +3184,10 @@ dependencies = [
  "clap",
  "humantime",
  "humantime-serde",
+ "libc",
  "mockall",
  "rp-fits",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
@@ -3233,6 +3239,7 @@ dependencies = [
  "libc",
  "mockall",
  "reqwest 0.13.3",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
@@ -3296,6 +3303,7 @@ dependencies = [
  "rp-tls",
  "rust-embed",
  "rusty-photon-i18n",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",
@@ -3517,6 +3525,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",
@@ -4036,6 +4045,7 @@ dependencies = [
  "rp-plate-solver",
  "rp-tls",
  "rpassword",
+ "rusty-photon-service-lifecycle",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -4386,6 +4396,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-service-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "windows-service",
+]
+
+[[package]]
 name = "rusty-photon-shared-transport"
 version = "0.1.0"
 dependencies = [
@@ -4536,6 +4557,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
@@ -4890,6 +4912,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-fits",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",
@@ -4996,6 +5019,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rp-auth",
  "rp-tls",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "serde",
  "serde_json",

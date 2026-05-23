@@ -9,6 +9,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
     "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
 
 # rp-plate-solver ships two Bazel variants — production-clean for

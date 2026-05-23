@@ -1,0 +1,31 @@
+[package]
+name = "rusty-photon-service-lifecycle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified service lifecycle for Rusty Photon: tokio runtime + signal handlers + optional Windows SCM, exposing a single Shutdown handle across the workspace"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+windows-service = { version = "0.8", optional = true }
+
+[features]
+default = []
+# Enables Windows Service Control Manager dispatch via `ServiceRunner::scm_mode(true)`.
+# Pulls in the `windows-service` crate. Adopters: filemonitor (Phase 1).
+scm = ["dep:windows-service"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+# Signal-install integration tests self-raise SIGTERM / SIGHUP via libc::raise.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

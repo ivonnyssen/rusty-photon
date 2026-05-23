@@ -2416,3 +2416,78 @@ fn test_connection_timeout_message() {
         "Should have error output"
     );
 }
+
+// ----------------------------------------------------------------------------
+// Shutdown signal handling (regression for #294 / #287 Phase 2)
+// ----------------------------------------------------------------------------
+
+/// Regression test for the SIGTERM-missing bug fixed by the
+/// rusty-photon-service-lifecycle adoption. Before #294, the Monitor
+/// loop only watched `tokio::signal::ctrl_c()`, so `systemctl stop` or
+/// `kill -TERM` would leave the process running until force-killed.
+/// After the migration, ServiceRunner installs both SIGINT and SIGTERM,
+/// and the loop races against `shutdown.cancelled()` which observes
+/// either.
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_monitor_shuts_down_on_sigterm() {
+    let (_server, port) = spawn_mock_server();
+
+    // Stdio::null on both streams: the test doesn't read either, and
+    // phd2-guider monitor logs every PHD2 event — an undrained piped
+    // stream can fill the OS pipe buffer and deadlock the child. Same
+    // pattern as spawn_mock_phd2_dynamic_port's default in this file.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+        .args(["--port", &port.to_string(), "monitor"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn phd2-guider monitor");
+
+    // Give the process time to start the Monitor loop. The Version event
+    // typically arrives within ~500ms; 1s is comfortably past that.
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Confirm the child is still running before signalling — otherwise
+    // the test would falsely pass for a process that already crashed.
+    assert!(
+        child.try_wait().expect("try_wait failed").is_none(),
+        "Child should still be running before SIGTERM"
+    );
+
+    // Send SIGTERM. Safety: kill(2) on a child PID is the documented
+    // way to signal a child process; libc::kill is unsafe only because
+    // it touches global process state.
+    let pid = child.id() as libc::pid_t;
+    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(rc, 0, "libc::kill returned non-zero");
+
+    // The Monitor loop should observe the runner's cancellation and
+    // exit within a small bounded interval. 2s is generous — graceful
+    // shutdown completes in well under 100ms in practice; the budget
+    // accommodates CI load and disconnect-RPC roundtrip to the mock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                // Process exited within the deadline. Any termination
+                // shape is acceptable as long as it happened
+                // promptly — signal-induced exit, clean shutdown,
+                // disconnect-failure-on-already-killed-mock; the
+                // contract under test is "shut down on SIGTERM", not
+                // a specific exit code.
+                let _ = status;
+                return;
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    child.kill().ok();
+                    let _ = child.wait();
+                    panic!("phd2-guider monitor did not exit within 2s of SIGTERM");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}

@@ -1,4 +1,5 @@
 use clap::Parser;
+use rusty_photon_service_lifecycle::ServiceRunner;
 use sky_survey_camera::run;
 use std::path::PathBuf;
 use tracing::{debug, Level};
@@ -14,16 +15,17 @@ struct Args {
     log_level: Level,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        tracing_subscriber::fmt()
-            .with_max_level(args.log_level)
-            .init();
-        debug!(config = ?args.config, "starting sky-survey-camera");
-        run(&args.config).await
-    })?;
-    Ok(())
+    tracing_subscriber::fmt()
+        .with_max_level(args.log_level)
+        .init();
+    debug!(config = ?args.config, "starting sky-survey-camera");
+
+    ServiceRunner::new("sky-survey-camera").run(move |shutdown| async move {
+        run(&args.config, shutdown.cancelled())
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+    })
 }

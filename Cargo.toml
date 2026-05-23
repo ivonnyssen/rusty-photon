@@ -9,6 +9,7 @@ members = [
   "crates/rp-tls",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
+  "crates/rusty-photon-service-lifecycle",
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
@@ -114,6 +115,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 ] }
 rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
+rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"

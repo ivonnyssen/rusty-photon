@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tracing::{debug, info, warn, Level};
+use rusty_photon_service_lifecycle::ServiceRunner;
+use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
 use qhy_focuser::{load_config, Config, MockQhyTransportFactory, ServerBuilder};
@@ -43,38 +44,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     })
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -109,23 +79,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Baud rate: {}", config.serial.baud_rate);
     info!("Server port: {}", config.server.port);
 
-    #[cfg(feature = "mock")]
-    let bound = {
-        let factory = std::sync::Arc::new(MockQhyTransportFactory::default());
-        ServerBuilder::new()
-            .with_config(config)
-            .with_factory(factory)
-            .build()
-            .await?
-    };
+    ServiceRunner::new("qhy-focuser").run(move |shutdown| async move {
+        #[cfg(feature = "mock")]
+        let bound = {
+            let factory = std::sync::Arc::new(MockQhyTransportFactory::default());
+            ServerBuilder::new()
+                .with_config(config)
+                .with_factory(factory)
+                .build()
+                .await?
+        };
 
-    #[cfg(not(feature = "mock"))]
-    let bound = ServerBuilder::new().with_config(config).build().await?;
+        #[cfg(not(feature = "mock"))]
+        let bound = ServerBuilder::new().with_config(config).build().await?;
 
-    tokio::select! {
-        result = bound.start() => { result?; }
-        () = shutdown_signal() => { info!("Shutting down"); }
-    }
-
-    Ok(())
+        bound.start(shutdown.cancelled()).await?;
+        Ok(())
+    })
 }

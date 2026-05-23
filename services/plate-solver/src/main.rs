@@ -7,6 +7,7 @@
 
 use clap::Parser;
 use plate_solver::{load_config, ServerBuilder};
+use rusty_photon_service_lifecycle::ServiceRunner;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
@@ -23,8 +24,7 @@ struct Cli {
     config: PathBuf,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -42,24 +42,41 @@ async fn main() -> ExitCode {
         }
     };
 
-    let server = match ServerBuilder::new().with_config(config).build().await {
-        Ok(s) => s,
+    let result = ServiceRunner::new("plate-solver").run(move |shutdown| async move {
+        let server = ServerBuilder::new()
+            .with_config(config)
+            .build()
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { Box::from(format!("build: {e}")) })?;
+
+        let addr = server.listen_addr();
+        // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
+        // discover the test-spawned service's port. Must be on stdout.
+        println!("bound_addr={addr}");
+        tracing::info!(%addr, "plate-solver listening");
+
+        server
+            .start(shutdown.cancelled())
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { Box::from(format!("server: {e}")) })?;
+        Ok(())
+    });
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("plate-solver: {e}");
-            return ExitCode::from(2);
+            let msg = e.to_string();
+            eprintln!("plate-solver: {msg}");
+            // Preserve the prior split: config / build failures returned
+            // 2, runtime errors returned 1. After the migration the
+            // closure surfaces both via Box<dyn Error>; we recover the
+            // distinction by tagging build failures with a "build: "
+            // prefix in the closure above.
+            if msg.starts_with("build: ") {
+                ExitCode::from(2)
+            } else {
+                ExitCode::from(1)
+            }
         }
-    };
-
-    let addr = server.listen_addr();
-    // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
-    // discover the test-spawned service's port. Must be on stdout.
-    println!("bound_addr={addr}");
-    tracing::info!(%addr, "plate-solver listening");
-
-    if let Err(e) = server.start().await {
-        eprintln!("plate-solver: server error: {e}");
-        return ExitCode::from(1);
     }
-
-    ExitCode::SUCCESS
 }

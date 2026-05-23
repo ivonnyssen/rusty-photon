@@ -29,6 +29,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 rp-auth = { workspace = true }
 rp-tls = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true }

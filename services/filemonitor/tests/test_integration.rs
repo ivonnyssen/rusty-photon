@@ -44,7 +44,7 @@ async fn test_start_server_creation() {
 
     std::fs::write(&config.file.path, "test").unwrap();
 
-    let server_future = start_server(config.clone());
+    let server_future = start_server(config.clone(), std::future::pending::<()>());
     let result = timeout(Duration::from_millis(100), server_future).await;
 
     std::fs::remove_file(&config.file.path).unwrap();
@@ -62,9 +62,9 @@ async fn test_start_server_creation() {
 #[cfg(not(miri))]
 async fn test_server_loop_stop_and_reload() {
     use filemonitor::run_server_loop;
+    use rusty_photon_service_lifecycle::ReloadSignal;
     use std::io::Write;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
 
     // --- Part 1: stop signal ---
     {
@@ -97,16 +97,16 @@ async fn test_server_loop_stop_and_reload() {
         let mut f = std::fs::File::create(&config_path).unwrap();
         f.write_all(config.to_string().as_bytes()).unwrap();
 
-        let result = run_server_loop(
-            &config_path,
-            || {
-                Box::pin(async {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                })
-            },
-            || Box::pin(std::future::pending()),
-        )
-        .await;
+        let shutdown = CancellationToken::new();
+        let reload = ReloadSignal::new();
+
+        let shutdown_trigger = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            shutdown_trigger.cancel();
+        });
+
+        let result = run_server_loop(&config_path, shutdown, reload).await;
 
         assert!(result.is_ok(), "stop test failed: {:?}", result.err());
     }
@@ -142,44 +142,35 @@ async fn test_server_loop_stop_and_reload() {
         let mut f = std::fs::File::create(&config_path).unwrap();
         f.write_all(config.to_string().as_bytes()).unwrap();
 
-        let loop_count = Arc::new(AtomicU32::new(0));
-        let loop_count_reload = Arc::clone(&loop_count);
-        let loop_count_stop = Arc::clone(&loop_count);
+        let shutdown = CancellationToken::new();
+        let reload = ReloadSignal::new();
 
-        let result = run_server_loop(
-            &config_path,
-            move || {
-                let count = loop_count_stop.clone();
-                Box::pin(async move {
-                    // Stop after the reload has happened (loop_count >= 2)
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        if count.load(Ordering::Relaxed) >= 2 {
-                            break;
-                        }
-                    }
-                })
-            },
-            move || {
-                let count = loop_count_reload.clone();
-                Box::pin(async move {
-                    let current = count.fetch_add(1, Ordering::Relaxed);
-                    if current == 0 {
-                        // First iteration: trigger a reload after a brief delay
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    } else {
-                        // Subsequent iterations: don't reload again
-                        std::future::pending::<()>().await;
-                    }
-                })
-            },
-        )
-        .await;
+        // Strategy for observing a real reload: corrupt the config file
+        // *before* firing the reload signal. If `run_server_loop` honours
+        // the reload, it drops the running server, re-enters the loop,
+        // calls `load_config(config_path)`, sees malformed JSON, and
+        // returns Err — which we assert below. If reload were silently
+        // ignored, the original server would keep running until the
+        // safety `shutdown.cancel()` fires and the test would get Ok.
+        let config_path_for_task = config_path.clone();
+        let reload_trigger = reload.clone();
+        let shutdown_trigger = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            std::fs::write(&config_path_for_task, "this is not valid json").unwrap();
+            reload_trigger.notify();
+            // Safety net: if the assertion below is going to fail, make
+            // sure we don't hang the test runner.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            shutdown_trigger.cancel();
+        });
 
-        assert!(result.is_ok(), "reload test failed: {:?}", result.err());
+        let result = run_server_loop(&config_path, shutdown, reload).await;
+
         assert!(
-            loop_count.load(Ordering::Relaxed) >= 2,
-            "Server loop should have run at least twice (once initial + once after reload)"
+            result.is_err(),
+            "reload should have caused a second load_config that fails on \
+             the corrupted file; got Ok which means reload was silently ignored"
         );
     }
 }

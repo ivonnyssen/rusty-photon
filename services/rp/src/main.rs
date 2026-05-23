@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use rusty_photon_service_lifecycle::{ServiceRunner, Shutdown};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
@@ -85,14 +86,13 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Serve { config, log_level }) => {
             init_tracing(&log_level);
-            run_serve(&config).await
+            run_serve(config)
         }
         Some(Commands::HashPassword { log_level, stdin }) => {
             init_tracing(&log_level);
@@ -112,15 +112,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             init_tracing(&log_level);
             if acme {
-                rp::tls_cmd::run_acme(
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()?;
+                rt.block_on(rp::tls_cmd::run_acme(
                     output_dir.as_deref(),
                     domain.as_deref(),
                     dns_provider.as_deref(),
                     dns_token.as_deref(),
                     email.as_deref(),
                     staging,
-                )
-                .await
+                ))
             } else {
                 rp::tls_cmd::run(
                     output_dir.as_deref(),
@@ -135,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`",
             )?;
             init_tracing(&cli.log_level);
-            run_serve(&config).await
+            run_serve(config)
         }
     }
 }
@@ -159,16 +161,18 @@ fn init_tracing(log_level: &str) {
         .init();
 }
 
-async fn run_serve(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    debug!(config_path = %config_path.display(), "loading configuration");
-    let config = rp::config::load_config(config_path)?;
+fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
+        debug!(config_path = %config_path.display(), "loading configuration");
+        let config = rp::config::load_config(&config_path)?;
 
-    rp::ServerBuilder::new()
-        .with_config(config)
-        .build()
-        .await?
-        .start()
-        .await?;
+        rp::ServerBuilder::new()
+            .with_config(config)
+            .build()
+            .await?
+            .start(shutdown.cancelled())
+            .await?;
 
-    Ok(())
+        Ok(())
+    })
 }

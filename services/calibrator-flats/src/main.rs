@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use rusty_photon_service_lifecycle::ServiceRunner;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
@@ -27,8 +28,7 @@ struct Cli {
     log_level: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
@@ -37,17 +37,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    debug!(config_path = %cli.config.display(), "loading configuration");
-    let plan = calibrator_flats::config::load_config(&cli.config)?;
+    ServiceRunner::new("calibrator-flats").run(move |shutdown| async move {
+        debug!(config_path = %cli.config.display(), "loading configuration");
+        let plan = calibrator_flats::config::load_config(&cli.config)?;
 
-    calibrator_flats::ServerBuilder::new()
-        .with_plan(plan)
-        .with_port(cli.port)
-        .with_bind_address(cli.bind_address)
-        .build()
-        .await?
-        .start()
-        .await?;
+        calibrator_flats::ServerBuilder::new()
+            .with_plan(plan)
+            .with_port(cli.port)
+            .with_bind_address(cli.bind_address)
+            .build()
+            .await?
+            .start(shutdown.cancelled())
+            .await?;
 
-    Ok(())
+        Ok(())
+    })
 }

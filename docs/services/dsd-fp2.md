@@ -349,7 +349,7 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 | `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>` |
 | `mock.rs`             | `MockTransportFactory` + `MockFrameTransport` (feature `mock`); shared `MockState` simulator |
 | `lib.rs`              | Public exports, `ServerBuilder`, `BoundServer`                                              |
-| `main.rs`             | CLI (clap) + tracing init + shutdown signal                                                 |
+| `main.rs`             | CLI (clap) + tracing init; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner` |
 
 ## MVP Scope
 

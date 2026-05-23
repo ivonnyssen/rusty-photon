@@ -294,7 +294,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 services/pa-falcon-rotator/
 ├── src/
 │   ├── lib.rs              # ServerBuilder, BoundServer
-│   ├── main.rs             # CLI entry point
+│   ├── main.rs             # CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner`
 │   ├── config.rs           # Config types + JSON loading
 │   ├── error.rs            # FalconRotatorError enum (thiserror)
 │   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl

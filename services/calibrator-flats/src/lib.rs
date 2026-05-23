@@ -5,10 +5,10 @@ pub mod mcp_client;
 pub mod routes;
 pub mod workflow;
 
+use std::future::Future;
 use std::net::SocketAddr;
 
-use tokio::signal;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::config::FlatPlan;
 use crate::error::Result;
@@ -88,45 +88,15 @@ impl BoundServer {
         self.local_addr
     }
 
-    pub async fn start(self) -> Result<()> {
+    pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("calibrator-flats service started on {}", self.local_addr);
 
         axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(|e| crate::error::CalibratorFlatsError::Server(e.to_string()))?;
 
         debug!("calibrator-flats service shut down");
         Ok(())
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => debug!("received Ctrl+C"),
-        () = terminate => debug!("received SIGTERM"),
     }
 }

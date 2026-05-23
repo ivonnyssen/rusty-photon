@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+rusty-photon-service-lifecycle = { workspace = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
