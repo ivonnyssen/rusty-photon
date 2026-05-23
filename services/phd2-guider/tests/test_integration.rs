@@ -2434,10 +2434,14 @@ fn test_connection_timeout_message() {
 fn test_monitor_shuts_down_on_sigterm() {
     let (_server, port) = spawn_mock_server();
 
+    // Stdio::null on both streams: the test doesn't read either, and
+    // phd2-guider monitor logs every PHD2 event — an undrained piped
+    // stream can fill the OS pipe buffer and deadlock the child. Same
+    // pattern as spawn_mock_phd2_dynamic_port's default in this file.
     let mut child = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
         .args(["--port", &port.to_string(), "monitor"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .expect("Failed to spawn phd2-guider monitor");
 
