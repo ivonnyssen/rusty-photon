@@ -4,18 +4,13 @@ use crate::world::StarAdventurerWorld;
 use cucumber::{given, then, when};
 use std::time::Duration;
 
-/// Resolve an `ap_park_N` feature-file token to the typed [`ApPark`].
+/// Resolve an `ap_park_N` feature-file token to the typed [`ApPark`]
+/// via its canonical `FromStr`; a bad token fails the scenario.
 fn parse_ap_park(token: &str) -> star_adventurer_gti::ApPark {
-    use star_adventurer_gti::ApPark;
-    match token {
-        "ap_park_0" => ApPark::ApPark0,
-        "ap_park_1" => ApPark::ApPark1,
-        "ap_park_2" => ApPark::ApPark2,
-        "ap_park_3" => ApPark::ApPark3,
-        "ap_park_4" => ApPark::ApPark4,
-        "ap_park_5" => ApPark::ApPark5,
-        other => panic!("unknown AP park token {other:?}"),
-    }
+    token
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid AP park token {token:?}: {e}"))
 }
 
 #[given(expr = "a star-adventurer service configured with unpark_from_ap_position {string}")]

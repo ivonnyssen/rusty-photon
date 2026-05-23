@@ -148,7 +148,8 @@ pub(super) struct MountConnectFields {
 /// the next connect without a driver restart.
 ///
 /// Per-field decoding matches the single-field helpers: tick keys go
-/// through [`extract_park_tick`] (loud on a non-i24 value), AP-park keys
+/// through [`extract_park_tick`] (loud on a non-integer, or an integer
+/// outside the `i32` / signed-24-bit encoder range), AP-park keys
 /// through [`extract_ap_park`] (loud on an unrecognised string). A
 /// missing/malformed file or a missing `mount` object is a
 /// `StarAdvError::Config`. The `ap_park_0` rejection that
