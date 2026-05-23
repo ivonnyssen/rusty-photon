@@ -113,11 +113,87 @@ jobs:
             echo "::warning::No timing CSV at $csv — BDD did not record any solve durations."
           fi
 
+      - name: Assert solve-time budget
+        # Issue #234 — phase-1 coarse guardrail on the per-OS timing the
+        # step above just recorded. Two independent checks, both scoped
+        # to this matrix leg's own CSV (no cross-OS aggregation needed):
+        #
+        #   1. Ratio: the blind solve must stay at least
+        #      MIN_BLIND_HINTED_RATIO× slower than the hinted solve. If
+        #      the argv-mapping in runner/astap.rs silently drops a hint
+        #      flag — or ASTAP's `-r` search-radius optimization regresses
+        #      — the hinted solve collapses toward the blind spiral time
+        #      and the ratio craters. Ratio is OS-independent and
+        #      self-normalizing, so it tolerates slow/contended runners
+        #      without false alarms.
+        #   2. Absolute ceilings catch a *uniform* slowdown the ratio
+        #      check would miss (a globally slower ASTAP) and gross
+        #      integration drift.
+        #
+        # Thresholds are deliberately coarse — phase-1. Baseline observed
+        # over 2026-05-21..23 (7 runs, GitHub-hosted runners):
+        #   hinted: ubuntu 674–822 ms · macos 134–276 ms · windows 285–453 ms
+        #   blind:  ubuntu 76.1–85.6 s · macos 51.5–68.6 s · windows 57.6–62.6 s
+        #   blind/hinted ratio: 93×–408×  (worst leg ≈ 93×, ubuntu)
+        # 10× leaves ~9× headroom on the ratio; the ceilings sit ~6×
+        # (hinted) and ~2.1× (blind) above the worst observed, and the
+        # blind ceiling stays under the scenario's 300 s request timeout.
+        # Per-OS budget tightening + trend visualization remain forward
+        # work until several weeks of *schedule* runs accumulate.
+        env:
+          MIN_BLIND_HINTED_RATIO: "10"
+          HINTED_MAX_MS: "5000"
+          BLIND_MAX_MS: "180000"
+        shell: bash
+        run: |
+          set -euo pipefail
+          csv="${{ runner.temp }}/plate-solver-perf.csv"
+          if [[ ! -f "$csv" ]]; then
+            echo "::error::No timing CSV at $csv — cannot assert solve-time budget."
+            exit 1
+          fi
+
+          hinted=""; blind=""
+          while IFS=, read -r label ms; do
+            case "$label" in
+              m101_hinted) hinted="$ms" ;;
+              m101_blind)  blind="$ms" ;;
+            esac
+          done < "$csv"
+
+          if [[ ! "$hinted" =~ ^[0-9]+$ || ! "$blind" =~ ^[0-9]+$ || "$hinted" -le 0 || "$blind" -le 0 ]]; then
+            echo "::error::CSV is missing a positive m101_hinted and/or m101_blind row:"
+            cat "$csv"
+            exit 1
+          fi
+
+          ratio=$(( blind / hinted ))
+          fail=0
+
+          if (( blind < MIN_BLIND_HINTED_RATIO * hinted )); then
+            echo "::error::hint speedup regressed on ${{ matrix.os }}: blind=${blind}ms is only ${ratio}× hinted=${hinted}ms (need ≥ ${MIN_BLIND_HINTED_RATIO}×). Most likely a dropped hint flag in services/plate-solver/src/runner/astap.rs."
+            fail=1
+          fi
+          if (( hinted > HINTED_MAX_MS )); then
+            echo "::error::hinted solve too slow on ${{ matrix.os }}: ${hinted}ms exceeds ${HINTED_MAX_MS}ms ceiling."
+            fail=1
+          fi
+          if (( blind > BLIND_MAX_MS )); then
+            echo "::error::blind solve too slow on ${{ matrix.os }}: ${blind}ms exceeds ${BLIND_MAX_MS}ms ceiling."
+            fail=1
+          fi
+
+          if (( fail )); then
+            echo "::error::plate-solver solve-time budget exceeded on ${{ matrix.os }} — see annotations above."
+            exit 1
+          fi
+          echo "::notice::plate-solver budget OK [${{ matrix.os }}]: hinted=${hinted}ms blind=${blind}ms ratio=${ratio}× (need ≥${MIN_BLIND_HINTED_RATIO}×, hinted≤${HINTED_MAX_MS}ms, blind≤${BLIND_MAX_MS}ms)"
+
       - name: Upload timing CSV artifact
         # Per-OS artifact so a nightly run produces three CSVs the
-        # operator (or a future trend-aggregator) can download. v1
-        # ships the data; trend visualization + regression assertion
-        # are forward work (the assertion side is owned by #234).
+        # operator (or a future trend-aggregator) can download. The
+        # regression assertion landed (issue #234 — the step above);
+        # trend visualization across runs remains forward work.
         if: always()
         uses: actions/upload-artifact@v7
         with:

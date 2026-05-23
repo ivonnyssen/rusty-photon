@@ -344,6 +344,16 @@ FOV. The nightly `plate-solver-smoke` workflow trends both numbers
 automatically per OS — see issue #236 and the per-run
 `plate-solver-perf-<os>` CSV artifacts.
 
+The workflow's "Assert solve-time budget" step then guards those
+numbers (issue #234). Per OS it requires the blind solve to stay at
+least 10× slower than the hinted solve — a dropped hint flag in
+`runner/astap.rs` collapses that ratio — and enforces coarse absolute
+ceilings (hinted ≤ 5 s, blind ≤ 180 s) to catch a uniform slowdown.
+A breach fails the smoke run, which on a scheduled run opens or
+updates the `plate-solver-nightly` tracking issue. The thresholds are
+deliberately loose (phase-1); pinning tighter per-OS budgets is
+forward work pending several weeks of scheduled-run baseline.
+
 ### Configuration Validation at Startup
 
 The service validates its config before binding the HTTP listener.
