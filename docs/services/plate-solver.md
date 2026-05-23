@@ -428,11 +428,13 @@ the test sets before spawning the wrapper:
 
 Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
-Setting `MOCK_ASTAP_SPAWN_LOG=<file>` (any mode) appends each
-invocation's spawn time (ns since the Unix epoch) to the named file.
-The single-flight BDD scenario reads it to assert serialization from
-the children's actual spawn ordering, rather than from client-side
-HTTP-completion timing (which was jitter-prone on loaded CI runners).
+Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes each invocation's
+spawn time (ns since the Unix epoch) to its own uniquely-named file in
+`<dir>`. The single-flight BDD scenario reads the directory to assert
+serialization from the children's actual spawn ordering, rather than
+from client-side HTTP-completion timing (which was jitter-prone on
+loaded CI runners). Per-child files avoid a shared handle — cross-process
+appends to one file dropped writes on Windows.
 
 This binary is **not feature-gated** — it builds with every
 `cargo build --all-targets`. BDD and supervision integration tests

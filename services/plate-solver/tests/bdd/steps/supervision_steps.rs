@@ -6,11 +6,12 @@ use std::time::Duration;
 
 #[when(expr = "I POST two concurrent solve requests with timeout {string} each")]
 async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: String) {
-    // Route each mock_astap child's spawn timestamp to a per-scenario file
-    // so the Then step can observe serialization server-side. Must be set
-    // before the wrapper starts so it lands in the wrapper's config.
-    let spawn_log = world.temp_dir_path().join("spawn_log.txt");
-    world.spawn_log_path = Some(spawn_log);
+    // Each mock_astap child writes its spawn time to its own file under this
+    // directory, so the Then step can observe serialization server-side. Must
+    // be set before the wrapper starts so it lands in the wrapper's config.
+    let spawn_dir = world.temp_dir_path().join("spawns");
+    std::fs::create_dir_all(&spawn_dir).expect("create spawn dir");
+    world.spawn_dir_path = Some(spawn_dir);
 
     // Make sure the wrapper is up before launching parallel requests.
     if world.service_handle.is_none() {
@@ -62,16 +63,19 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     // observed gap below the threshold and failing even though serialization
     // worked. Spawn times are recorded inside the children, so they reflect
     // true server-side ordering regardless of how the client is scheduled.
-    let path = world
-        .spawn_log_path
+    // Each child writes its own uniquely-named file; a shared append file
+    // dropped writes across processes on Windows.
+    let dir = world
+        .spawn_dir_path
         .as_ref()
-        .expect("spawn_log_path set by the concurrent-request When step");
-    let contents = std::fs::read_to_string(path).expect("read spawn log");
-    let mut spawns: Vec<u128> = contents
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            l.trim()
+        .expect("spawn_dir_path set by the concurrent-request When step");
+    let mut spawns: Vec<u128> = std::fs::read_dir(dir)
+        .expect("read spawn dir")
+        .map(|entry| {
+            let path = entry.expect("spawn dir entry").path();
+            std::fs::read_to_string(&path)
+                .expect("read spawn file")
+                .trim()
                 .parse::<u128>()
                 .expect("spawn timestamp parses as u128 ns")
         })
@@ -79,14 +83,14 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     assert_eq!(
         spawns.len(),
         2,
-        "expected exactly two mock_astap spawns, got {spawns:?}"
+        "expected exactly two mock_astap spawn files in {dir:?}, got {spawns:?}"
     );
     spawns.sort_unstable();
     let gap_ms = (spawns[1] - spawns[0]) / 1_000_000; // ns → ms
     assert!(
         gap_ms >= 50,
         "single-flight failed: child spawns only {gap_ms}ms apart (parallel?); \
-         serialized spawns are ~one 100ms deadline apart"
+         serialized spawns are ~one 100ms deadline apart (timestamps: {spawns:?})"
     );
 }
 

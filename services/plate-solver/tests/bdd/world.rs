@@ -36,10 +36,11 @@ pub struct PlateSolverWorld {
     /// `MOCK_ASTAP_ARGV_OUT` is set on its env.
     pub argv_out_path: Option<PathBuf>,
 
-    /// Path that `mock_astap` appends per-invocation spawn timestamps to
-    /// when `MOCK_ASTAP_SPAWN_LOG` is set on its env. The single-flight
-    /// scenario reads it to observe server-side spawn ordering directly.
-    pub spawn_log_path: Option<PathBuf>,
+    /// Directory that each `mock_astap` child writes a per-PID spawn-time
+    /// file into when `MOCK_ASTAP_SPAWN_DIR` is set on its env. The
+    /// single-flight scenario reads it to observe server-side spawn
+    /// ordering directly.
+    pub spawn_dir_path: Option<PathBuf>,
 
     /// Mode for the next wrapper spawn (passed via `astap_extra_env`).
     pub mock_astap_mode: Option<String>,
@@ -139,8 +140,8 @@ impl PlateSolverWorld {
         if let Some(p) = self.argv_out_path.clone() {
             extra_env.insert("MOCK_ASTAP_ARGV_OUT".to_string(), p.display().to_string());
         }
-        if let Some(p) = self.spawn_log_path.clone() {
-            extra_env.insert("MOCK_ASTAP_SPAWN_LOG".to_string(), p.display().to_string());
+        if let Some(p) = self.spawn_dir_path.clone() {
+            extra_env.insert("MOCK_ASTAP_SPAWN_DIR".to_string(), p.display().to_string());
         }
 
         self.astap_binary_path = Some(mock_path.clone());

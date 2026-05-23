@@ -15,11 +15,13 @@
 //! file at `<path>`, one arg per line, with a trailing blank line as record
 //! separator. Used for end-to-end argv-flow assertions.
 //!
-//! `MOCK_ASTAP_SPAWN_LOG=<path>` (any mode) appends this invocation's spawn
-//! time — nanoseconds since the Unix epoch, one per line — to `<path>`. The
-//! single-flight BDD scenario reads it to observe server-side spawn ordering
-//! directly, which is immune to the client-side HTTP-completion jitter that
-//! made the old wall-clock-gap check flaky on loaded CI runners.
+//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes this invocation's spawn
+//! time — nanoseconds since the Unix epoch — to its own uniquely-named file
+//! in `<dir>`. Each child writes its own file so concurrent invocations never
+//! share a handle (cross-process appends to one file proved lossy on
+//! Windows). The single-flight BDD scenario reads the directory to observe
+//! server-side spawn ordering directly, which is immune to the client-side
+//! HTTP-completion jitter that made the old wall-clock-gap check flaky.
 //!
 //! Pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
 
@@ -91,8 +93,8 @@ fn main() -> std::process::ExitCode {
 
     // Record spawn time before dispatching: `hang` mode never returns, so
     // the timestamp must be written up front.
-    if let Ok(spawn_log) = std::env::var("MOCK_ASTAP_SPAWN_LOG") {
-        let _ = record_spawn(&spawn_log);
+    if let Ok(spawn_dir) = std::env::var("MOCK_ASTAP_SPAWN_DIR") {
+        let _ = record_spawn(&spawn_dir);
     }
 
     let mode = std::env::var("MOCK_ASTAP_MODE").unwrap_or_else(|_| "normal".to_string());
@@ -123,24 +125,24 @@ fn write_argv(path: &str, args: &[String]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Append this invocation's spawn time — nanoseconds since the Unix epoch —
-/// to the file named by `MOCK_ASTAP_SPAWN_LOG`, one timestamp per line.
-/// `SystemTime` (wall clock) is used rather than `Instant` because the
-/// timestamps are compared across separate `mock_astap` processes and
-/// `Instant`'s epoch is process-local. Append-mode writes of a single short
-/// line are atomic on both Unix (`O_APPEND`) and Windows (`FILE_APPEND_DATA`),
-/// so concurrent children cannot corrupt each other's lines.
-fn record_spawn(path: &str) -> std::io::Result<()> {
+/// Write this invocation's spawn time — nanoseconds since the Unix epoch —
+/// to its own uniquely-named file under `dir`. `SystemTime` (wall clock) is
+/// used rather than `Instant` because the timestamps are compared across
+/// separate `mock_astap` processes and `Instant`'s epoch is process-local.
+///
+/// Each child writes its own file rather than appending to a shared one:
+/// cross-process appends to a single file dropped writes on Windows. The
+/// filename combines the timestamp and PID so two children can never collide
+/// on a name — neither via PID reuse (a serialized second child may inherit
+/// the first's freed PID) nor via identical timestamps (parallel spawns).
+fn record_spawn(dir: &str) -> std::io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(f, "{nanos}")?;
-    Ok(())
+    std::fs::create_dir_all(dir)?;
+    let path = std::path::Path::new(dir).join(format!("{nanos}-{}", std::process::id()));
+    std::fs::write(path, nanos.to_string())
 }
 
 fn fits_path_from_argv(args: &[String]) -> Option<PathBuf> {
