@@ -151,40 +151,58 @@ pub type HandshakeFn<C> = Box<
         + Sync,
 >;
 
-/// Closure type for the [`Hooks::teardown`] hook.
-pub type TeardownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
+/// Closure type for the [`Hooks::on_last_disconnect`] hook.
+pub type OnLastDisconnectFn<C> =
+    Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
+
+/// Closure type for the [`Hooks::shutdown`] hook.
+pub type ShutdownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
 
 /// Closure type for the [`Hooks::while_open`] hook.
 pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Service-specific plug for the three lifecycle phases.
+/// Service-specific plug for the four lifecycle phases.
 ///
-/// * `handshake` runs on the 0→1 connect transition, **before** any
-///   [`Session`] escapes. On error: rollback (count→0, available→false,
-///   transport dropped), error propagated to the [`crate::SharedTransport::acquire`]
-///   caller.
-/// * `teardown` runs on the 1→0 disconnect transition, **after** any
-///   while-open task has been cancelled and joined. Best-effort: errors
-///   that need to reach the caller surface through [`Session::close`]'s
-///   `Result<(), TransportError>`.
-/// * `while_open` (optional) spawns after `handshake` succeeds and is
-///   driven to completion (with a bounded 5-second join, then abort)
-///   before `teardown` runs.
+/// * `handshake` runs on every transition into the `Open` state — the
+///   `LazyAcquire`-mode 0→1 `acquire()` call, the `ServiceLifetime`-mode
+///   [`crate::SharedTransport::start`] call, and (in Phase 0b) every
+///   successful reconnect. Runs **before** any [`Session`] escapes. On
+///   error: rollback (count→0, available→false, transport dropped),
+///   error propagated to the caller.
+/// * `on_last_disconnect` runs on every refcount 1→0 transition. Per-service
+///   safety commands (stop tracking, park, turn off heater, …). In
+///   `LazyAcquire` mode, fires once before transport teardown. In
+///   `ServiceLifetime` mode, fires on every 1→0 and the port stays open
+///   — may run many times during a service's lifetime. Best-effort:
+///   errors surface through [`Session::close`]'s `Result<(), TransportError>`
+///   in `LazyAcquire` mode and are logged-and-dropped in `ServiceLifetime`
+///   mode (the supervisor keeps trying).
+/// * `shutdown` runs exactly once per `start()`/`shutdown()` cycle, from
+///   [`crate::SharedTransport::shutdown`] in the service's SIGTERM handler.
+///   Final cleanup before the port closes. Only meaningful in
+///   `ServiceLifetime` mode; never fires in `LazyAcquire` mode.
+/// * `while_open` (optional) spawns after `handshake` succeeds and runs
+///   for as long as the transport is `Open`. Cancelled (with a bounded
+///   5-second join, then abort) before `on_last_disconnect` runs in
+///   `LazyAcquire` mode, and before `shutdown` runs in `ServiceLifetime`
+///   mode. In Phase 0b, also cancelled and respawned across reconnects.
 pub struct Hooks<C: Codec> {
     pub handshake: HandshakeFn<C>,
-    pub teardown: TeardownFn<C>,
+    pub on_last_disconnect: OnLastDisconnectFn<C>,
+    pub shutdown: ShutdownFn<C>,
     pub while_open: Option<WhileOpenFn<C>>,
 }
 
 impl<C: Codec> Hooks<C> {
-    /// Hooks that do nothing on either transition and have no
+    /// Hooks that do nothing on any transition and have no
     /// background poll task. Useful as a base for `.handshake = ...`
     /// chains in tests, and as a sane default for services that don't
-    /// need any of the three.
+    /// need any of the four.
     pub fn noop() -> Self {
         Self {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         }
     }

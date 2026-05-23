@@ -122,7 +122,8 @@ impl FlatPanelManager {
                     Ok(())
                 })
             }),
-            teardown: Box::new(|_conn| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_conn| Box::pin(async {})),
+            shutdown: Box::new(|_conn| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx| {
                 let cs = cs_for_poll.clone();
                 Box::pin(poll_loop(ctx, cs, polling_interval))

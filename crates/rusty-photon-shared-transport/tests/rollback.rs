@@ -140,7 +140,8 @@ async fn alternating_failure_and_success_does_not_leak_count() {
                 }
             })
         }),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     };
     let st = build_with_factory_and_hooks(factory, hooks);

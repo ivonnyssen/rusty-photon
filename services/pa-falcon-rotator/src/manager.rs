@@ -84,7 +84,8 @@ impl FalconManager {
                 let last = Arc::clone(&last_for_hooks);
                 Box::pin(handshake(conn, last))
             }),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         };
         let transport = SharedTransport::new(factory, FalconCodec, hooks);

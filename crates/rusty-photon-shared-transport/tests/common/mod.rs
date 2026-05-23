@@ -182,12 +182,16 @@ pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig
     (st, cfg)
 }
 
-/// Hooks builder where the handshake increments a counter and the
-/// teardown increments a different one. Useful to assert that the
-/// hooks ran exactly N times across N connect/disconnect cycles.
+/// Hooks builder with one counter per lifecycle hook. Useful to assert
+/// the right hook fired the right number of times across N connect /
+/// disconnect / start / shutdown cycles.
+///
+/// `teardown_calls` is the historical name retained for the on_last_disconnect
+/// counter — old tests pre-date the hook split.
 pub struct CountingHooks {
     pub handshake_calls: Arc<AtomicU32>,
     pub teardown_calls: Arc<AtomicU32>,
+    pub shutdown_calls: Arc<AtomicU32>,
 }
 
 impl Default for CountingHooks {
@@ -195,6 +199,7 @@ impl Default for CountingHooks {
         Self {
             handshake_calls: Arc::new(AtomicU32::new(0)),
             teardown_calls: Arc::new(AtomicU32::new(0)),
+            shutdown_calls: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -203,6 +208,7 @@ impl CountingHooks {
     pub fn hooks(&self) -> Hooks<EchoCodec> {
         let hs = self.handshake_calls.clone();
         let td = self.teardown_calls.clone();
+        let sd = self.shutdown_calls.clone();
         Hooks {
             handshake: Box::new(move |_conn| {
                 let hs = hs.clone();
@@ -211,10 +217,16 @@ impl CountingHooks {
                     Ok(())
                 })
             }),
-            teardown: Box::new(move |_conn| {
+            on_last_disconnect: Box::new(move |_conn| {
                 let td = td.clone();
                 Box::pin(async move {
                     td.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+            shutdown: Box::new(move |_conn| {
+                let sd = sd.clone();
+                Box::pin(async move {
+                    sd.fetch_add(1, Ordering::SeqCst);
                 })
             }),
             while_open: None,
@@ -235,7 +247,8 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
         handshake: Box::new(|_conn| {
             Box::pin(async { Err(EchoCodecError("handshake refused".into())) })
         }),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
 }
@@ -245,7 +258,8 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_conn| Box::pin(async { panic!("handshake panic for test") })),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
 }
@@ -257,7 +271,8 @@ pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(|_ctx| panic!("while_open closure panic for test"))),
     }
 }
@@ -288,7 +303,8 @@ impl WhileOpenHooks {
         let exited = self.exited.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 let exited = exited.clone();
@@ -316,7 +332,8 @@ impl WhileOpenHooks {
         let started = self.started.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 Box::pin(async move {

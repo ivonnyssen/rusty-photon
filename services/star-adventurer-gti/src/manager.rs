@@ -282,10 +282,11 @@ fn build_hooks(
             let port_label = Arc::clone(&port_hs);
             Box::pin(handshake(conn, parameters, snapshot, port_label))
         }),
-        teardown: Box::new(move |conn| {
+        on_last_disconnect: Box::new(move |conn| {
             let parameters = Arc::clone(&p_td);
             Box::pin(teardown(conn, parameters))
         }),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(move |ctx| {
             let snapshot = Arc::clone(&s_poll);
             let depth = Arc::clone(&depth_poll);
