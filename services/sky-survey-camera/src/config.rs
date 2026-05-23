@@ -43,6 +43,13 @@ pub struct PointingConfig {
     /// the F1–F6 contracts for behaviour.
     #[serde(default)]
     pub telescope: Option<TelescopeFollowConfig>,
+    /// When present, sources `rotation_deg` from a connected ASCOM
+    /// Rotator's position angle on every light `StartExposure` instead
+    /// of the static `initial_rotation_deg` (F8). Only meaningful in
+    /// follow mode — `telescope` must also be set, or config load
+    /// fails. See `pointing.rotator` in the service design doc.
+    #[serde(default)]
+    pub rotator: Option<RotatorFollowConfig>,
 }
 
 /// Configuration for telescope-following mode. Absent in static mode.
@@ -71,6 +78,28 @@ pub struct TelescopeFollowConfig {
 }
 
 fn default_telescope_request_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+
+/// Configuration for the optional follow-mode Rotator. Parallel to
+/// [`TelescopeFollowConfig`] but with no offset fields — the rotator
+/// is read straight through to `rotation_deg`. Absent unless rotator
+/// support is wired up, and only valid alongside `telescope`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotatorFollowConfig {
+    pub alpaca_url: String,
+    #[serde(default)]
+    pub device_number: u32,
+    /// Per-read timeout on the `position` read against the ASCOM
+    /// Rotator. Bounds the latency a wedged rotator can add to
+    /// `StartExposure`, same role as the telescope timeout.
+    #[serde(default = "default_rotator_request_timeout", with = "humantime_serde")]
+    pub request_timeout: Duration,
+    #[serde(default)]
+    pub auth: Option<ClientAuthConfig>,
+}
+
+fn default_rotator_request_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
@@ -120,6 +149,22 @@ fn validate(config: &Config) -> Result<(), SkySurveyCameraError> {
             ));
         }
     }
+    // The rotator only feeds `rotation_deg` inside follow mode's
+    // `TelescopeFollow`; in static mode there is nowhere to plug it in
+    // (rotation comes from the static value / POST). Reject the orphan
+    // config rather than silently ignore it.
+    if config.pointing.rotator.is_some() && config.pointing.telescope.is_none() {
+        return Err(SkySurveyCameraError::ConfigInvalid(
+            "pointing.rotator requires pointing.telescope (rotator-driven rotation only applies in follow mode)".into(),
+        ));
+    }
+    if let Some(r) = &config.pointing.rotator {
+        if r.request_timeout.is_zero() {
+            return Err(SkySurveyCameraError::ConfigInvalid(
+                "pointing.rotator.request_timeout must be > 0".into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -148,6 +193,7 @@ mod tests {
                 initial_dec_deg: 0.0,
                 initial_rotation_deg: 0.0,
                 telescope,
+                rotator: None,
             },
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),
@@ -168,6 +214,25 @@ mod tests {
             request_timeout: Duration::from_secs(2),
             auth: None,
         }
+    }
+
+    fn rotator_config() -> RotatorFollowConfig {
+        RotatorFollowConfig {
+            alpaca_url: "http://127.0.0.1:32324".into(),
+            device_number: 0,
+            request_timeout: Duration::from_secs(2),
+            auth: None,
+        }
+    }
+
+    /// `base_config_with_telescope` plus a rotator block.
+    fn config_with_telescope_and_rotator(
+        telescope: Option<TelescopeFollowConfig>,
+        rotator: Option<RotatorFollowConfig>,
+    ) -> Config {
+        let mut config = base_config_with_telescope(telescope);
+        config.pointing.rotator = rotator;
+        config
     }
 
     #[test]
@@ -240,5 +305,72 @@ mod tests {
         }"#;
         let cfg: PointingConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.telescope.is_none());
+    }
+
+    #[test]
+    fn validate_accepts_rotator_with_telescope() {
+        validate(&config_with_telescope_and_rotator(
+            Some(telescope_config()),
+            Some(rotator_config()),
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_rotator_without_telescope() {
+        let err = validate(&config_with_telescope_and_rotator(
+            None,
+            Some(rotator_config()),
+        ))
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("pointing.rotator requires pointing.telescope"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_rotator_request_timeout() {
+        let mut r = rotator_config();
+        r.request_timeout = Duration::ZERO;
+        let err = validate(&config_with_telescope_and_rotator(
+            Some(telescope_config()),
+            Some(r),
+        ))
+        .unwrap_err();
+        assert!(format!("{err}").contains("pointing.rotator.request_timeout"));
+    }
+
+    #[test]
+    fn rotator_block_round_trips() {
+        let json = r#"{
+            "alpaca_url": "http://example/",
+            "device_number": 2,
+            "request_timeout": "7s"
+        }"#;
+        let cfg: RotatorFollowConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.alpaca_url, "http://example/");
+        assert_eq!(cfg.device_number, 2);
+        assert_eq!(cfg.request_timeout, Duration::from_secs(7));
+        assert!(cfg.auth.is_none());
+    }
+
+    #[test]
+    fn rotator_defaults_when_optional_fields_omitted() {
+        let json = r#"{ "alpaca_url": "http://x/" }"#;
+        let cfg: RotatorFollowConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.device_number, 0);
+        assert_eq!(cfg.request_timeout, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn pointing_rotator_absent_by_default() {
+        let json = r#"{
+            "initial_ra_deg": 0.0,
+            "initial_dec_deg": 0.0
+        }"#;
+        let cfg: PointingConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.rotator.is_none());
     }
 }

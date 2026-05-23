@@ -278,7 +278,7 @@ async fn run_exposure_inner(
             .pointing_source
             .snapshot()
             .await
-            .map_err(|e| format!("mount read failed: {e}"))?,
+            .map_err(|e| format!("pointing read failed: {e}"))?,
     };
     if state.pointing_source.is_follow_mode() {
         state.last_snapshot.store(pointing).await;
@@ -817,6 +817,7 @@ mod tests {
                 initial_dec_deg: 0.0,
                 initial_rotation_deg: 0.0,
                 telescope: None,
+                rotator: None,
             },
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),

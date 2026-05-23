@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use crate::error::MountReadError;
+use crate::error::{MountReadError, PointingReadError, RotatorReadError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PointingState {
@@ -41,6 +41,18 @@ pub struct MountPosition {
 #[async_trait]
 pub trait MountReader: Send + Sync + std::fmt::Debug {
     async fn read_position(&self) -> Result<MountPosition, MountReadError>;
+}
+
+/// Narrow trait around the single ASCOM Rotator read `TelescopeFollow`
+/// needs: the position angle, in degrees. Mirrors [`MountReader`] —
+/// wrapping the full `ascom_alpaca::api::Rotator` trait keeps unit-test
+/// mocks down to one method (per ADR-004). The production impl
+/// ([`crate::rotator::AlpacaRotatorReader`]) reads the ASCOM `Position`
+/// property, which is the synced sky position angle of the field.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait RotatorReader: Send + Sync + std::fmt::Debug {
+    async fn position_angle(&self) -> Result<f64, RotatorReadError>;
 }
 
 /// Shared `PointingState` snapshot store. Wrapped in an
@@ -132,17 +144,22 @@ pub fn validate_pointing(
     Ok(PointingState::new(ra_deg, dec_deg, rot))
 }
 
-/// Telescope-following snapshot source. Holds the [`MountReader`] plus
-/// the configured rotation and the constant pointing offset (F5, the
-/// cone-error analog). Per F1, the snapshot computes
+/// Telescope-following snapshot source. Holds the [`MountReader`], an
+/// optional [`RotatorReader`], the configured rotation fallback, and
+/// the constant pointing offset (F5, the cone-error analog). Per F1,
+/// the snapshot computes
 ///
 /// ```text
 /// ra_deg  = (mount_ra_hours * 15 + offset_ra_arcsec  / 3600).rem_euclid(360)
 /// dec_deg = clamp(mount_dec_deg     + offset_dec_arcsec / 3600, -90, +90)
 /// ```
+///
+/// `rotation_deg` is the rotator's position angle when `rotator` is
+/// `Some` (F8); otherwise the static `rotation_deg` fallback.
 #[derive(Debug)]
 pub struct TelescopeFollow {
     reader: Arc<dyn MountReader>,
+    rotator: Option<Arc<dyn RotatorReader>>,
     rotation_deg: f64,
     offset_ra_arcsec: f64,
     offset_dec_arcsec: f64,
@@ -151,19 +168,21 @@ pub struct TelescopeFollow {
 impl TelescopeFollow {
     pub fn new(
         reader: Arc<dyn MountReader>,
+        rotator: Option<Arc<dyn RotatorReader>>,
         rotation_deg: f64,
         offset_ra_arcsec: f64,
         offset_dec_arcsec: f64,
     ) -> Self {
         Self {
             reader,
+            rotator,
             rotation_deg: wrap_rotation(rotation_deg),
             offset_ra_arcsec,
             offset_dec_arcsec,
         }
     }
 
-    pub async fn snapshot(&self) -> Result<PointingState, MountReadError> {
+    pub async fn snapshot(&self) -> Result<PointingState, PointingReadError> {
         let pos = self.reader.read_position().await?;
         let raw_ra_deg = pos.ra_hours * 15.0 + self.offset_ra_arcsec / 3600.0;
         let raw_dec_deg = pos.dec_deg + self.offset_dec_arcsec / 3600.0;
@@ -182,10 +201,18 @@ impl TelescopeFollow {
         } else {
             raw_dec_deg
         };
+        // F8: source rotation from the rotator's position angle when
+        // configured; otherwise fall back to the static value. A
+        // failed rotator read aborts the snapshot the same way a failed
+        // mount read does (UNSPECIFIED_ERROR via F2/F8).
+        let rotation_deg = match &self.rotator {
+            Some(rotator) => wrap_rotation(rotator.position_angle().await?),
+            None => self.rotation_deg,
+        };
         Ok(PointingState {
             ra_deg,
             dec_deg,
-            rotation_deg: self.rotation_deg,
+            rotation_deg,
         })
     }
 }
@@ -206,9 +233,9 @@ impl PointingSource {
     }
 
     /// Snapshot the current pointing. In `Static` mode this is
-    /// infallible. In `Telescope` mode, a failed mount read surfaces
-    /// per F2.
-    pub async fn snapshot(&self) -> Result<PointingState, MountReadError> {
+    /// infallible. In `Telescope` mode, a failed mount or rotator read
+    /// surfaces per F2/F8.
+    pub async fn snapshot(&self) -> Result<PointingState, PointingReadError> {
         match self {
             Self::Static(s) => Ok(s.snapshot().await),
             Self::Telescope(t) => t.snapshot().await,
@@ -275,13 +302,19 @@ mod tests {
         reader
     }
 
+    fn mock_rotator_returning(angle: f64) -> MockRotatorReader {
+        let mut rotator = MockRotatorReader::new();
+        rotator.expect_position_angle().returning(move || Ok(angle));
+        rotator
+    }
+
     #[tokio::test]
     async fn telescope_follow_converts_hours_to_degrees() {
         let reader = mock_reader_returning(MountPosition {
             ra_hours: 10.0,
             dec_deg: 30.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 12.5, 0.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 12.5, 0.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
         assert!((snap.ra_deg - 150.0).abs() < 1e-9);
         assert!((snap.dec_deg - 30.0).abs() < 1e-9);
@@ -294,9 +327,77 @@ mod tests {
         reader
             .expect_read_position()
             .returning(|| Err(MountReadError::Transport("oops".into())));
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 0.0, 0.0);
         let err = follow.snapshot().await.unwrap_err();
-        assert!(matches!(err, MountReadError::Transport(_)));
+        assert!(matches!(
+            err,
+            PointingReadError::Mount(MountReadError::Transport(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_sources_rotation_from_rotator() {
+        // The rotator's position angle overrides the static fallback
+        // (here 12.5) per F8.
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 10.0,
+            dec_deg: 30.0,
+        });
+        let rotator = mock_rotator_returning(42.0);
+        let follow =
+            TelescopeFollow::new(Arc::new(reader), Some(Arc::new(rotator)), 12.5, 0.0, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert!((snap.ra_deg - 150.0).abs() < 1e-9);
+        assert!((snap.dec_deg - 30.0).abs() < 1e-9);
+        assert!((snap.rotation_deg - 42.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_wraps_rotator_position_angle() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
+        });
+        let rotator = mock_rotator_returning(370.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), Some(Arc::new(rotator)), 0.0, 0.0, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert!((snap.rotation_deg - 10.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_propagates_rotator_transport_error() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
+        });
+        let mut rotator = MockRotatorReader::new();
+        rotator
+            .expect_position_angle()
+            .returning(|| Err(RotatorReadError::Transport("oops".into())));
+        let follow = TelescopeFollow::new(Arc::new(reader), Some(Arc::new(rotator)), 0.0, 0.0, 0.0);
+        let err = follow.snapshot().await.unwrap_err();
+        assert!(matches!(
+            err,
+            PointingReadError::Rotator(RotatorReadError::Transport(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_propagates_rotator_timeout() {
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.0,
+            dec_deg: 0.0,
+        });
+        let mut rotator = MockRotatorReader::new();
+        rotator
+            .expect_position_angle()
+            .returning(|| Err(RotatorReadError::Timeout(std::time::Duration::from_secs(2))));
+        let follow = TelescopeFollow::new(Arc::new(reader), Some(Arc::new(rotator)), 0.0, 0.0, 0.0);
+        let err = follow.snapshot().await.unwrap_err();
+        assert!(matches!(
+            err,
+            PointingReadError::Rotator(RotatorReadError::Timeout(_))
+        ));
     }
 
     #[tokio::test]
@@ -306,7 +407,7 @@ mod tests {
             ra_hours: 0.0,
             dec_deg: 0.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 60.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 60.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
         assert!((snap.ra_deg - (1.0 / 60.0)).abs() < 1e-9);
         assert_eq!(snap.dec_deg, 0.0);
@@ -318,7 +419,7 @@ mod tests {
             ra_hours: 0.0,
             dec_deg: 30.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, -45.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 0.0, -45.0);
         let snap = follow.snapshot().await.unwrap();
         assert_eq!(snap.ra_deg, 0.0);
         assert!((snap.dec_deg - (30.0 - 45.0 / 3600.0)).abs() < 1e-9);
@@ -332,7 +433,7 @@ mod tests {
             ra_hours: 23.99986111, // exactly enough that +20 arcsec crosses 360
             dec_deg: 0.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 20.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 20.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
         // expected: (23.99986111 * 15 + 20/3600) mod 360
         let expected = (23.99986111_f64 * 15.0 + 20.0 / 3600.0).rem_euclid(360.0);
@@ -352,7 +453,7 @@ mod tests {
             ra_hours: 0.0,
             dec_deg: 0.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, -3600.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, -3600.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
         assert!((snap.ra_deg - 359.0).abs() < 1e-9);
     }
@@ -364,7 +465,7 @@ mod tests {
             dec_deg: 89.99,
         });
         // +60 arcsec offset on Dec=89.99 = 89.99 + 0.01666... = 90.00666... → clamped 90
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 60.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 0.0, 60.0);
         let snap = follow.snapshot().await.unwrap();
         assert_eq!(snap.dec_deg, 90.0);
     }
@@ -375,7 +476,7 @@ mod tests {
             ra_hours: 0.0,
             dec_deg: -89.99,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, -60.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 0.0, -60.0);
         let snap = follow.snapshot().await.unwrap();
         assert_eq!(snap.dec_deg, -90.0);
     }
@@ -395,7 +496,7 @@ mod tests {
             ra_hours: 0.0,
             dec_deg: 0.0,
         });
-        let follow = TelescopeFollow::new(Arc::new(reader), 0.0, 0.0, 0.0);
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 0.0, 0.0);
         let src = PointingSource::Telescope(follow);
         assert!(src.is_follow_mode());
         src.snapshot().await.unwrap();

@@ -1,4 +1,4 @@
-Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7)
+Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7, F8)
 
   When `pointing.telescope` is configured, every `StartExposure`
   reads RA/Dec from the configured ASCOM Telescope (with an
@@ -12,6 +12,11 @@ Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7)
   subsequent exposures resume reading the mount. This is a test
   affordance for injecting "the camera saw something different from
   where the mount thinks it is" on a single capture.
+
+  When `pointing.rotator` is also configured, each light exposure
+  additionally reads `position` from the ASCOM Rotator and uses it
+  as the snapshot's rotation (F8); without it, rotation stays at the
+  static `initial_rotation_deg`.
 
   Scenario: F1/F4 — each exposure reads the mount fresh
     Given a mount reports RA 10.0 hours and Dec 30.0 degrees
@@ -48,3 +53,20 @@ Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7)
     Then the response status is 204
     Then after a successful exposure, the position endpoint reports RA approximately 1.0 Dec approximately 2.0
     Then after another successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0
+
+  Scenario: F8 — the rotator's position angle drives the exposure rotation, read fresh each time
+    Given a mount reports RA 10.0 hours and Dec 30.0 degrees
+    And a rotator reports position angle 42.0 degrees
+    And the camera is configured to follow that mount
+    And the camera is started and connected in follow mode
+    Then after a successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0 and rotation approximately 42.0
+    When the rotator is updated to position angle 17.5 degrees
+    Then after another successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0 and rotation approximately 17.5
+
+  Scenario: F8 — rotator read failure surfaces as an exposure error
+    Given a mount reports RA 10.0 hours and Dec 30.0 degrees
+    And a rotator that errors on every read
+    And the camera is configured to follow that mount
+    And the camera is started and connected in follow mode
+    When I StartExposure with default parameters
+    Then the exposure fails with ASCOM UNSPECIFIED_ERROR

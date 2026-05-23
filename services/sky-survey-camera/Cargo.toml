@@ -21,7 +21,7 @@ conformu = ["mock", "ascom-alpaca/test"]
 workspace = true
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "camera", "client", "telescope"] }
+ascom-alpaca = { workspace = true, features = ["server", "camera", "client", "telescope", "rotator"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

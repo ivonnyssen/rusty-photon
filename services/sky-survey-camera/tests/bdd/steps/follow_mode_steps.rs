@@ -1,6 +1,7 @@
-//! Step definitions for `follow_mode.feature` (contracts F1, F2, F5, F6).
+//! Step definitions for `follow_mode.feature` (contracts F1, F2, F5,
+//! F6, F8).
 
-use crate::world::{MountStubBehavior, SkySurveyCameraWorld};
+use crate::world::{MountStubBehavior, RotatorStubBehavior, SkySurveyCameraWorld};
 use cucumber::{given, then};
 use serde_json::Value;
 
@@ -14,6 +15,25 @@ async fn mount_reports(world: &mut SkySurveyCameraWorld, ra_hours: f64, dec_deg:
 #[given("a mount that errors on every read")]
 async fn mount_errors(world: &mut SkySurveyCameraWorld) {
     world.spawn_mount_stub(MountStubBehavior::AscomError).await;
+}
+
+#[given(expr = "a rotator reports position angle {float} degrees")]
+async fn rotator_reports(world: &mut SkySurveyCameraWorld, position_angle: f64) {
+    world
+        .spawn_rotator_stub(RotatorStubBehavior::Ok { position_angle })
+        .await;
+}
+
+#[given("a rotator that errors on every read")]
+async fn rotator_errors(world: &mut SkySurveyCameraWorld) {
+    world
+        .spawn_rotator_stub(RotatorStubBehavior::AscomError)
+        .await;
+}
+
+#[cucumber::when(expr = "the rotator is updated to position angle {float} degrees")]
+fn rotator_updated(world: &mut SkySurveyCameraWorld, position_angle: f64) {
+    world.set_rotator_stub_behavior(RotatorStubBehavior::Ok { position_angle });
 }
 
 #[given("the camera is configured to follow that mount")]
@@ -62,7 +82,54 @@ async fn position_after_another_exposure(world: &mut SkySurveyCameraWorld, ra: f
     drive_exposure_then_check_position(world, ra, dec).await;
 }
 
+#[then(
+    expr = "after a successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float} and rotation approximately {float}"
+)]
+async fn position_after_exposure_with_rotation(
+    world: &mut SkySurveyCameraWorld,
+    ra: f64,
+    dec: f64,
+    rotation: f64,
+) {
+    drive_exposure_then_check_position_rotation(world, ra, dec, rotation).await;
+}
+
+#[then(
+    expr = "after another successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float} and rotation approximately {float}"
+)]
+async fn position_after_another_exposure_with_rotation(
+    world: &mut SkySurveyCameraWorld,
+    ra: f64,
+    dec: f64,
+    rotation: f64,
+) {
+    drive_exposure_then_check_position_rotation(world, ra, dec, rotation).await;
+}
+
+async fn drive_exposure_then_check_position_rotation(
+    world: &mut SkySurveyCameraWorld,
+    ra: f64,
+    dec: f64,
+    rotation: f64,
+) {
+    let body = drive_exposure_then_get_position(world).await;
+    assert_position(&body, ra, dec);
+    let actual_rotation = body["rotation_deg"].as_f64().expect("missing rotation_deg");
+    assert!(
+        (actual_rotation - rotation).abs() < 1e-4,
+        "expected rotation ≈ {rotation}, got {actual_rotation}"
+    );
+}
+
 async fn drive_exposure_then_check_position(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
+    let body = drive_exposure_then_get_position(world).await;
+    assert_position(&body, ra, dec);
+}
+
+/// Drive one light exposure, wait for it to complete, then GET the
+/// position endpoint and return the parsed JSON body. Shared by the
+/// RA/Dec-only and the RA/Dec/rotation Then steps.
+async fn drive_exposure_then_get_position(world: &mut SkySurveyCameraWorld) -> Value {
     world.drive_start_exposure_default().await;
     if let Some(code) = world.last_ascom_error {
         panic!("StartExposure rejected with ASCOM {code:#X}");
@@ -86,8 +153,11 @@ async fn drive_exposure_then_check_position(world: &mut SkySurveyCameraWorld, ra
         "GET /sky-survey/position returned {} (body: {body_text})",
         status
     );
-    let body: Value = serde_json::from_str(&body_text)
-        .unwrap_or_else(|e| panic!("position body not JSON: {e} (body: {body_text})"));
+    serde_json::from_str(&body_text)
+        .unwrap_or_else(|e| panic!("position body not JSON: {e} (body: {body_text})"))
+}
+
+fn assert_position(body: &Value, ra: f64, dec: f64) {
     let actual_ra = body["ra_deg"].as_f64().expect("missing ra_deg");
     let actual_dec = body["dec_deg"].as_f64().expect("missing dec_deg");
     assert!(

@@ -88,7 +88,8 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
     "initial_ra_deg": 83.8221,
     "initial_dec_deg": -5.3911,
     "initial_rotation_deg": 0.0,
-    "telescope": null
+    "telescope": null,
+    "rotator": null
   },
   "survey": {
     "name": "DSS2 Red",
@@ -146,6 +147,39 @@ Configuration sections:
     extra latency a wedged mount can add to `StartExposure`.
   - `auth` reuses `rp_auth::config::ClientAuthConfig` for symmetry
     with `rp`'s mount config.
+- **pointing.rotator** *(optional)* — When present, sources
+  `rotation_deg` from a connected ASCOM Rotator's position angle on
+  every light `StartExposure` instead of the static
+  `initial_rotation_deg` (see *Telescope follow mode* F8). Parallel to
+  `pointing.telescope` but with no offset fields — the rotator's
+  `position` is read straight through.
+
+  ```jsonc
+  "rotator": {
+    "alpaca_url": "http://127.0.0.1:32323",
+    "device_number": 0,                  // index of the Rotator on the Alpaca server
+    "request_timeout": "2s",             // humantime; bound on each Rotator read
+    "auth": null                         // optional rp_auth ClientAuthConfig
+  }
+  ```
+
+  Field rules:
+
+  - **Only valid in follow mode.** `pointing.rotator` requires
+    `pointing.telescope`; a config that sets the rotator without the
+    telescope is rejected at load (static mode has no `rotation_deg`
+    source to override — rotation comes from the static value /
+    `POST`). There is no "static mode + rotator," the same way there is
+    no "static mode + offset."
+  - `alpaca_url` + `device_number` resolve a single ASCOM Rotator. As
+    with the mount, the camera does **not** call `set_connected(true)`
+    on the rotator — whoever owns it (`rp`, a guiding stack) connects
+    it. A read against a disconnected rotator surfaces the standard
+    ASCOM error via F8 (same path as F2).
+  - `request_timeout` defaults to `2s`, validated `> 0`. Bounds the
+    extra latency a wedged rotator can add to `StartExposure`.
+  - The ASCOM `Position` property is read — the synced sky position
+    angle of the field, the orientation the simulator renders.
 - **survey** — Backend selector + request timeout (humantime per the
   `Duration` convention) + on-disk cache directory.
 - **server** — Listening port. TLS and Basic Auth are added later via
@@ -198,10 +232,11 @@ enum PointingSource {
   result as the snapshot's RA/Dec. After a successful read the
   exposure pipeline writes the result back into `last_snapshot` so
   `GET /sky-survey/position` reflects the most recent snapshot
-  (F6). `rotation_deg` is sourced from
-  `pointing.initial_rotation_deg` (ASCOM Telescope has no rotation
-  property; rotation control is out of scope until a connected
-  ASCOM Rotator is added). `POST /sky-survey/position` is rejected
+  (F6). `rotation_deg` is sourced from the configured ASCOM Rotator's
+  position angle when `pointing.rotator` is set (F8), read on every
+  light exposure alongside RA/Dec; otherwise it stays at the static
+  `pointing.initial_rotation_deg` (ASCOM Telescope itself has no
+  rotation property). `POST /sky-survey/position` is rejected
   with `409 Conflict` in this mode (F6) — any write would be
   silently overwritten by the next mount read.
 
@@ -447,9 +482,11 @@ do not apply in static mode.
   from the configured ASCOM Telescope and snapshots
   `PointingState { ra_deg: (mount_ra + offset_ra).rem_euclid(360),
    dec_deg: clamp(mount_dec + offset_dec, -90, +90),
-   rotation_deg: pointing.initial_rotation_deg }`.
-  Rotation is **not** sourced from the mount (ASCOM Telescope has no
-  rotation property); future work could add a connected Rotator.
+   rotation_deg: <rotator position angle if pointing.rotator set,
+   else pointing.initial_rotation_deg> }`.
+  Rotation is sourced from the configured ASCOM Rotator when
+  `pointing.rotator` is present (F8); the ASCOM Telescope itself has
+  no rotation property, so without a rotator the static value is used.
   Dark exposures (`Light = false`) skip the mount read entirely —
   they produce a zero-filled frame per S2 and have no sky to render,
   so the read would only add latency. `last_snapshot` is therefore
@@ -495,6 +532,22 @@ do not apply in static mode.
   as a test affordance for injecting "the camera saw something
   different from where the mount thinks it is" on a single capture;
   production deployments rarely use it.
+- **F8.** With `pointing.rotator` set (which requires
+  `pointing.telescope` — see *Configuration*), every light
+  `StartExposure` reads the ASCOM Rotator's `position` (its synced
+  sky position angle, in degrees) fresh alongside the mount RA/Dec
+  and uses it, wrapped into `[0, 360)`, as `PointingState::rotation`.
+  Without `pointing.rotator`, rotation stays at the static
+  `pointing.initial_rotation_deg` and today's behaviour is preserved
+  verbatim. A failed rotator read (transport error, ASCOM error, or a
+  read exceeding `pointing.rotator.request_timeout`) aborts the
+  snapshot and surfaces via the same `UNSPECIFIED_ERROR` path as F2:
+  `last_error` is set, `image_ready` stays `false`, logged at
+  `warn!`, and the next `StartExposure` retries with a fresh read.
+  Like the mount (F3/F4), the rotator is read on every light exposure
+  with no client-side cache, and `set_connected(true)` does not probe
+  it. Dark exposures skip the rotator read (per F1, they skip the
+  snapshot path entirely).
 
 ## Architecture
 
@@ -507,6 +560,7 @@ graph TD;
     C --> D[Optics Constants];
     C --> PS["PointingSource<br/>(Static | Telescope)"];
     PS -. follow mode .-> M["ASCOM Telescope<br/>(over Alpaca)"];
+    PS -. "follow mode + pointing.rotator" .-> R["ASCOM Rotator<br/>(over Alpaca)"];
     C --> F[Exposure Pipeline];
     F --> PS;
     F --> G[SkyViewClient];
@@ -583,10 +637,13 @@ split, or rename modules so long as the BDD scenarios pass.
    `RwLock` cache used as the static-mode source *and* the
    most-recent-snapshot cache for follow mode), the narrow in-crate
    `MountReader` trait around the two ASCOM reads we need
-   (`right_ascension`, `declination`), and the `PointingSource` enum
+   (`right_ascension`, `declination`), the equally-narrow
+   `RotatorReader` trait around the one rotator read (`position`),
+   and the `PointingSource` enum
    (`Static(Arc<SharedPointing>)` / `Telescope(TelescopeFollow)`).
-   `TelescopeFollow` owns an `Arc<dyn MountReader>` plus the
-   configured offset and implements the F1/F5 read path.
+   `TelescopeFollow` owns an `Arc<dyn MountReader>`, an optional
+   `Arc<dyn RotatorReader>`, and the configured offset, and
+   implements the F1/F5/F8 read path.
 5. **`mount.rs`** — `AlpacaMountReader`, the production
    `MountReader` impl. Builds the `ascom_alpaca::Client` at
    construction (cheap, no network) and resolves the Telescope
@@ -594,6 +651,13 @@ split, or rename modules so long as the BDD scenarios pass.
    cached on success and re-resolved after failure so a transient
    outage doesn't poison the client. Per F3, this never calls
    `set_connected(true)` on the mount.
+   - **`rotator.rs`** — `AlpacaRotatorReader`, the production
+     `RotatorReader` impl. The exact mirror of `mount.rs` (lazy
+     device resolution, cache-on-success, never connects), reading
+     the ASCOM `Position` property per F8.
+   - **`alpaca.rs`** — `build_alpaca_client`, the shared Alpaca
+     client constructor (plain or `Basic`-auth) used by both readers
+     so auth handling can't drift between device classes.
 6. **`survey.rs`** — `SurveyClient` trait
    (`health_check`, `fetch`), `SkyViewClient` HTTP backend, and
    the disk cache helpers (`try_cache_load` / `try_cache_store`).
@@ -629,9 +693,10 @@ Layered per `docs/skills/testing.md`:
   dimensions when the survey backend is stubbed, the C1–C4 connection
   contracts including the warn-only behaviour for an unreachable
   endpoint, the S1–S6 survey-error paths against a stub HTTP server,
-  and the F1/F2/F5/F6 follow-mode contracts against a tiny in-test
-  axum stub serving the two ASCOM Telescope reads (`right_ascension`,
-  `declination`). The end-to-end `slew → expose → plate-solve →
+  and the F1/F2/F5/F6/F8 follow-mode contracts against tiny in-test
+  axum stubs serving the two ASCOM Telescope reads (`right_ascension`,
+  `declination`) and the one ASCOM Rotator read (`position`). The
+  end-to-end `slew → expose → plate-solve →
   sync_mount` integration lives in `services/rp/tests/features/` so
   it can drive the real `center_on_target` MCP tool; this crate's
   BDD covers the camera-side contracts in isolation.
@@ -650,9 +715,11 @@ Layered per `docs/skills/testing.md`:
 - **Telescope-following mode.** *(Done — see Configuration §
   `pointing.telescope`, *Pointing Offset Simulation*, and the F1–F6
   Behavioral Contracts.)*
-- **Rotator-driven `rotation_deg`.** When a connected ASCOM Rotator
-  is added, `TelescopeFollow` sources `rotation_deg` from
-  `Rotator.position_angle` instead of `pointing.initial_rotation_deg`.
+- **Rotator-driven `rotation_deg`.** *(Done — see Configuration §
+  `pointing.rotator` and the F8 Behavioral Contract.)* When
+  `pointing.rotator` is set, `TelescopeFollow` sources `rotation_deg`
+  from the ASCOM Rotator's `Position` (read on every light exposure)
+  instead of the static `pointing.initial_rotation_deg`.
 - **Non-linear pointing models.** Az/alt-dependent pointing residuals,
   polar misalignment, atmospheric refraction. The constant offset of
   *Pointing Offset Simulation* is enough to make the centering loop

@@ -14,14 +14,12 @@
 use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::Client;
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
-use rp_auth::config::ClientAuthConfig;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::alpaca::build_alpaca_client;
 use crate::config::TelescopeFollowConfig;
 use crate::error::{MountReadError, SkySurveyCameraError};
 use crate::pointing::{MountPosition, MountReader};
@@ -117,24 +115,6 @@ impl MountReader for AlpacaMountReader {
     }
 }
 
-fn build_alpaca_client(
-    url: &str,
-    auth: Option<&ClientAuthConfig>,
-) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    match auth {
-        Some(a) => {
-            let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Basic {encoded}").parse()?);
-            let http = reqwest::Client::builder()
-                .default_headers(headers)
-                .build()?;
-            Ok(Client::new_with_client(url, http)?)
-        }
-        None => Ok(Client::new(url)?),
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -161,15 +141,6 @@ mod tests {
     fn from_config_rejects_invalid_url() {
         let err = AlpacaMountReader::from_config(&cfg("not a url")).unwrap_err();
         assert!(matches!(err, SkySurveyCameraError::MountClient(_)));
-    }
-
-    #[test]
-    fn build_alpaca_client_with_auth() {
-        let auth = ClientAuthConfig {
-            username: "u".into(),
-            password: "p".into(),
-        };
-        build_alpaca_client("http://127.0.0.1/", Some(&auth)).unwrap();
     }
 
     #[tokio::test]
