@@ -48,14 +48,15 @@ async fn then_both_responses_504(world: &mut PlateSolverWorld) {
 
 #[then("the two solves were serialized by the single-flight semaphore")]
 async fn then_solves_serialized(world: &mut PlateSolverWorld) {
-    // Observe serialization server-side: each `mock_astap` child appends its
-    // spawn time (ns since the Unix epoch) to `MOCK_ASTAP_SPAWN_LOG`. With a
-    // capacity-1 semaphore the second child cannot spawn until the first
-    // releases the permit — which happens only after the first request's full
-    // 100ms deadline elapses. So serialized spawns are ~one deadline apart,
-    // while a parallel pair (if the semaphore ever failed) would spawn
-    // near-simultaneously. The 50ms floor is half the deadline: wide margin
-    // above runner jitter, yet a parallel regression (gap ≈ 0) still trips it.
+    // Observe serialization server-side: each `mock_astap` child writes its
+    // spawn time (ns since the Unix epoch) to its own file under
+    // `MOCK_ASTAP_SPAWN_DIR`. With a capacity-1 semaphore the second child
+    // cannot spawn until the first releases the permit — which happens only
+    // after the first request's full 100ms deadline elapses. So serialized
+    // spawns are ~one deadline apart, while a parallel pair (if the semaphore
+    // ever failed) would spawn near-simultaneously. The 50ms floor is half
+    // the deadline: wide margin above runner jitter, yet a parallel
+    // regression (gap ≈ 0) still trips it.
     //
     // This replaces an earlier check on client-side HTTP completion times
     // captured under `tokio::join!`. On a loaded Windows CI runner the test
