@@ -58,9 +58,11 @@ type SessionSlot = Arc<RwLock<Option<Session<SkywatcherCodec>>>>;
 /// An empty/inverted interval (`zone_min >= zone_max`) disables the
 /// guard — the same convention the slew-path binding-zone check uses.
 /// A non-finite or negative `margin` is treated as `0.0` (stop exactly
-/// at zone entry) so a bad config value fails safe rather than fails
-/// open: the field is not validated at startup today, so the guard
-/// sanitises its own input.
+/// at zone entry) so a bad value fails safe rather than open. Config-file
+/// margins are already rejected at load by
+/// [`crate::config::MountConfig::validate`]; this sanitisation is
+/// defense-in-depth for construction paths that bypass that check
+/// (programmatic configs, tests).
 pub(super) fn tracking_guard_breached(mech_ha: f64, zone: (f64, f64), margin: f64) -> bool {
     let (zone_min, zone_max) = zone;
     if zone_min >= zone_max {

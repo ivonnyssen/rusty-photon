@@ -229,6 +229,92 @@ async fn tracking_guard_tick_is_noop_when_not_tracking() {
 }
 
 #[tokio::test]
+async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
+    // Before the handshake caches CPR, mech_HA can't be computed, so the
+    // guard must no-op even with tracking engaged. Build a device and
+    // never connect, so `parameters()` stays None.
+    let cfg = Config {
+        mount: MountConfig {
+            binding_zone_min_hours: 0.95,
+            binding_zone_max_hours: 11.05,
+            ..Default::default()
+        },
+        ..Config::default()
+    };
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.state.write().await.tracking_requested = true;
+    assert!(d.manager.parameters().await.is_none());
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(!fired, "no cached CPR -> guard cannot act");
+    assert!(
+        d.state.read().await.tracking_requested,
+        "tracking must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
+    // Params cached and mech_HA in-band, but the device's session slot
+    // was cleared (a disconnect racing the tick) before the guard could
+    // issue :K1.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let cfg = Config {
+        mount: MountConfig {
+            binding_zone_min_hours: 0.95,
+            binding_zone_max_hours: 11.05,
+            ..Default::default()
+        },
+        ..Config::default()
+    };
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    // Acquire to run the handshake (caches CPR, keeps the transport alive)
+    // but leave the device's own session slot empty.
+    let _session = d.manager.transport().acquire().await.unwrap();
+    seed_mech_ha(&d, &mock, 6.0).await; // mid-zone -> would otherwise fire
+    d.state.write().await.tracking_requested = true;
+    assert!(d.session.read().await.is_none());
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(!fired, "no session -> nothing to stop");
+    assert!(
+        d.state.read().await.tracking_requested,
+        "tracking must be left set"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_k1(&log), "no :K1 without a session, log: {log:?}");
+}
+
+#[tokio::test]
+async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
+    // If the :K1 stop fails on the wire, the guard must NOT clear Tracking
+    // (it keeps reporting the wire truth) and must report not-fired so the
+    // next tick retries while mech_HA stays in-band.
+    let (d, mock) = guard_device(0.05).await;
+    seed_mech_ha(&d, &mock, 6.0).await; // mid-zone -> would fire
+    mock.lock().await.fail_command = Some(b'K'); // make :K1 error
+    d.state.write().await.tracking_requested = true;
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(!fired, "a failed stop is not a successful fire");
+    assert!(
+        d.state.read().await.tracking_requested,
+        "Tracking must stay set when the wire stop fails"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        log_has_k1(&log),
+        "the :K1 attempt should still reach the wire, log: {log:?}"
+    );
+}
+
+#[tokio::test]
 async fn set_connected_idempotent_within_a_session() {
     let d = device();
     d.set_connected(true).await.unwrap();

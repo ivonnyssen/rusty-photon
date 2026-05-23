@@ -164,8 +164,11 @@ pub struct MountConfig {
     /// Independent of [`FlipPolicy::enabled`]: the guard is the safety
     /// floor and runs whenever the zone is active
     /// (`binding_zone_min_hours < binding_zone_max_hours`), regardless
-    /// of meridian-flip support. A non-finite or negative value is
-    /// treated as `0.0` by the guard.
+    /// of meridian-flip support. Validated on load: a non-finite,
+    /// negative, or over-cap value (> [`MAX_TRACKING_GUARD_MARGIN_HOURS`])
+    /// fails config loading. The guard additionally treats a non-finite or
+    /// negative value as `0.0` as defense-in-depth for construction paths
+    /// that bypass validation.
     #[serde(default = "default_tracking_guard_margin_hours")]
     pub tracking_guard_margin_hours: f64,
 
@@ -297,12 +300,23 @@ impl MountConfig {
 
         // CW exclusion zone. `min >= max` is the documented "disabled"
         // sentinel (used by tests and by operators whose geometry
-        // differs — see the field docs), so only finiteness is required
-        // here; the guard / slew checks treat an inverted interval as
-        // "no zone".
+        // differs — see the field docs), accepted as "no zone". An
+        // *active* zone (`min < max`) must live in the folded
+        // mechanical-HA domain `[-12, +12)` that the guard and slew
+        // checks assume (neither does 24 h wrap handling).
         if !self.binding_zone_min_hours.is_finite() || !self.binding_zone_max_hours.is_finite() {
             return Err(format!(
                 "binding_zone_min_hours / binding_zone_max_hours must be finite, got ({}, {})",
+                self.binding_zone_min_hours, self.binding_zone_max_hours
+            ));
+        }
+        if self.binding_zone_min_hours < self.binding_zone_max_hours
+            && (self.binding_zone_min_hours < -12.0 || self.binding_zone_max_hours > 12.0)
+        {
+            return Err(format!(
+                "an active CW exclusion zone must satisfy \
+                 -12 <= binding_zone_min_hours < binding_zone_max_hours <= 12 (folded mech_HA), \
+                 got ({}, {})",
                 self.binding_zone_min_hours, self.binding_zone_max_hours
             ));
         }
@@ -1184,6 +1198,20 @@ mod tests {
         }
         .validate()
         .unwrap_err();
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_active_zone_outside_folded_range() {
+        // An active zone (min < max) must stay within folded mech_HA
+        // [-12, +12); a max beyond +12 is out of the domain the guard
+        // and slew checks assume.
+        let m = MountConfig {
+            binding_zone_min_hours: 0.95,
+            binding_zone_max_hours: 20.0,
+            ..Default::default()
+        };
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("active CW exclusion zone"), "got {err}");
     }
 
     #[test]

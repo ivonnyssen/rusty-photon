@@ -872,9 +872,11 @@ elsewhere, or park.
 
 `tracking_guard_margin_hours` (default `0.05` h ≈ 45 s of sidereal
 drift) lets cautious operators stop *before* the zone entry rather than
-at it; `0.0` stops exactly at `binding_zone_min_hours`. A non-finite or
-negative value is treated as `0.0`. The guard is **independent of
-`flip_policy.enabled`**: it is the safety floor that keeps an
+at it; `0.0` stops exactly at `binding_zone_min_hours`. A non-finite,
+negative, or over-cap (> 1.0 h) margin is rejected at config load
+(`load_config` → `MountConfig::validate`); the guard additionally treats
+a non-finite or negative value as `0.0` as defense-in-depth. The guard is
+**independent of `flip_policy.enabled`**: it is the safety floor that keeps an
 unattended autoguided session from contacting hardware whether or not
 meridian-flip support is configured. It is disabled only when the zone
 itself is (`binding_zone_min_hours ≥ binding_zone_max_hours`). Because
