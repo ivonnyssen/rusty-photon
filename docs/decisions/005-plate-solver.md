@@ -475,7 +475,11 @@ below tracks which have been retired.
    pointing breadcrumbs were stripped in #236 so blind is truly
    blind). Both numbers land in the `plate-solver-perf-<os>`
    artifact per nightly run — per-platform success-path timing
-   alongside the failure-path baseline.
+   alongside the failure-path baseline. As of 2026-05-23 the smoke
+   workflow also *asserts* a coarse budget on those numbers (issue
+   #234): a per-OS ratio check (blind ≥10× hinted) plus generous
+   absolute ceilings, failing the run on gross regression. Tighter
+   per-OS budgets await several weeks of schedule-run baseline.
 5. **LGPL-3.0 §4 / §6 review under BYO** — **Retired by Phase 8.**
    Conclusions: (a) subprocess execution doesn't engage §4
    (Combined Works) or §6 (Conveying Non-Source Forms) — those

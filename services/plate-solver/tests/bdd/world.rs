@@ -8,7 +8,7 @@ use bdd_infra::ServiceHandle;
 use cucumber::World;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
@@ -35,6 +35,12 @@ pub struct PlateSolverWorld {
     /// Path that `mock_astap` writes received argv to when
     /// `MOCK_ASTAP_ARGV_OUT` is set on its env.
     pub argv_out_path: Option<PathBuf>,
+
+    /// Directory that each `mock_astap` child writes a per-PID spawn-time
+    /// file into when `MOCK_ASTAP_SPAWN_DIR` is set on its env. The
+    /// single-flight scenario reads it to observe server-side spawn
+    /// ordering directly.
+    pub spawn_dir_path: Option<PathBuf>,
 
     /// Mode for the next wrapper spawn (passed via `astap_extra_env`).
     pub mock_astap_mode: Option<String>,
@@ -76,7 +82,6 @@ pub struct HttpResponse {
 #[derive(Debug, Clone)]
 pub struct ConcurrentResult {
     pub status: u16,
-    pub completed_at: Instant,
 }
 
 impl PlateSolverWorld {
@@ -134,6 +139,9 @@ impl PlateSolverWorld {
         }
         if let Some(p) = self.argv_out_path.clone() {
             extra_env.insert("MOCK_ASTAP_ARGV_OUT".to_string(), p.display().to_string());
+        }
+        if let Some(p) = self.spawn_dir_path.clone() {
+            extra_env.insert("MOCK_ASTAP_SPAWN_DIR".to_string(), p.display().to_string());
         }
 
         self.astap_binary_path = Some(mock_path.clone());

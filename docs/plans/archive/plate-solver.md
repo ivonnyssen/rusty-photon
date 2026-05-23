@@ -12,7 +12,12 @@ issues:
 - #232 — Sentinel HTTP service supervision (Phase 5 deferred)
 - #233 — Committable m31 happy-path FITS fixture (Phase 6 deferred,
   landed via committed M 101 fixture in PR #268)
-- #234 — Solve-time budget assertion in nightly (Phase 6 deferred)
+- #234 — Solve-time budget assertion in nightly (Phase 6 deferred).
+  Phase-1 coarse guardrail landed 2026-05-23: the smoke workflow now
+  asserts a per-OS ratio (blind must stay ≥10× slower than hinted)
+  plus generous absolute ceilings. Per-OS budget *tightening* and
+  trend visualization remain, pending several weeks of schedule-run
+  baseline.
 - #235 — Windows ARM64 verification (ADR-005 OQ 3, out of scope for v1)
 - ~~#236 — Automated nightly hinted-vs-blind perf trending (Phase 7 deferred)~~
   landed 2026-05-20; see Phase 7's "did not do" note for the
@@ -813,6 +818,12 @@ What this phase did **not** do (forward work):
   doesn't assert. v1 wants the data trend before pinning a
   threshold; once a baseline exists, a future tightening can fail
   the build on regressions.
+  **Update (2026-05-23):** a phase-1 coarse guardrail now asserts in
+  the smoke workflow's "Assert solve-time budget" step — a per-OS
+  ratio check (blind ≥10× hinted) plus generous absolute ceilings
+  (hinted ≤ 5 s, blind ≤ 180 s), issue #234. Pinning *tighter* per-OS
+  thresholds still wants several weeks of schedule-run data; that
+  tightening remains forward work.
 
 ADR-005 OQ 1–4 marked retired (item 4 partially — solve-time
 trending is forward work in Phase 7). OQ 3 (Windows ARM64) closed

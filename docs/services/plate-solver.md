@@ -344,6 +344,16 @@ FOV. The nightly `plate-solver-smoke` workflow trends both numbers
 automatically per OS — see issue #236 and the per-run
 `plate-solver-perf-<os>` CSV artifacts.
 
+The workflow's "Assert solve-time budget" step then guards those
+numbers (issue #234). Per OS it requires the blind solve to stay at
+least 10× slower than the hinted solve — a dropped hint flag in
+`runner/astap.rs` collapses that ratio — and enforces coarse absolute
+ceilings (hinted ≤ 5 s, blind ≤ 180 s) to catch a uniform slowdown.
+A breach fails the smoke run, which on a scheduled run opens or
+updates the `plate-solver-nightly` tracking issue. The thresholds are
+deliberately loose (phase-1); pinning tighter per-OS budgets is
+forward work pending several weeks of scheduled-run baseline.
+
 ### Configuration Validation at Startup
 
 The service validates its config before binding the HTTP listener.
@@ -418,6 +428,13 @@ the test sets before spawning the wrapper:
 
 Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
+Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes each invocation's
+spawn time (ns since the Unix epoch) to its own uniquely-named file in
+`<dir>`. The single-flight BDD scenario reads the directory to assert
+serialization from the children's actual spawn ordering, rather than
+from client-side HTTP-completion timing (which was jitter-prone on
+loaded CI runners). Per-child files avoid a shared handle — cross-process
+appends to one file dropped writes on Windows.
 
 This binary is **not feature-gated** — it builds with every
 `cargo build --all-targets`. BDD and supervision integration tests

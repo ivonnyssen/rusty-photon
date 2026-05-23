@@ -35,4 +35,4 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
     And a writable FITS path
     When I POST two concurrent solve requests with timeout "100ms" each
     Then both responses have status 504
-    And the second request's spawn time is after the first request's exit time
+    And the two solves were serialized by the single-flight semaphore

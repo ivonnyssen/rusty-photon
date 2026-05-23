@@ -2,10 +2,17 @@
 
 use crate::world::{ConcurrentResult, PlateSolverWorld};
 use cucumber::{then, when};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[when(expr = "I POST two concurrent solve requests with timeout {string} each")]
 async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: String) {
+    // Each mock_astap child writes its spawn time to its own file under this
+    // directory, so the Then step can observe serialization server-side. Must
+    // be set before the wrapper starts so it lands in the wrapper's config.
+    let spawn_dir = world.temp_dir_path().join("spawns");
+    std::fs::create_dir_all(&spawn_dir).expect("create spawn dir");
+    world.spawn_dir_path = Some(spawn_dir);
+
     // Make sure the wrapper is up before launching parallel requests.
     if world.service_handle.is_none() {
         world.start_wrapper_with_mock().await;
@@ -23,7 +30,6 @@ async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: Strin
             let resp = client.post(&url).json(&body).send().await.expect("POST");
             ConcurrentResult {
                 status: resp.status().as_u16(),
-                completed_at: Instant::now(),
             }
         }
     };
@@ -40,26 +46,52 @@ async fn then_both_responses_504(world: &mut PlateSolverWorld) {
     }
 }
 
-#[then("the second request's spawn time is after the first request's exit time")]
-async fn then_second_after_first(world: &mut PlateSolverWorld) {
-    // The two HTTP requests are launched ~simultaneously by the test
-    // — `started_at` is the test's send-time, not when the wrapper
-    // started processing. The semaphore's serialization is observable
-    // instead via the gap between completion times: a serialized
-    // pair completes ~per_request_time apart, while a parallel pair
-    // completes within a few ms.
+#[then("the two solves were serialized by the single-flight semaphore")]
+async fn then_solves_serialized(world: &mut PlateSolverWorld) {
+    // Observe serialization server-side: each `mock_astap` child writes its
+    // spawn time (ns since the Unix epoch) to its own file under
+    // `MOCK_ASTAP_SPAWN_DIR`. With a capacity-1 semaphore the second child
+    // cannot spawn until the first releases the permit — which happens only
+    // after the first request's full 100ms deadline elapses. So serialized
+    // spawns are ~one deadline apart, while a parallel pair (if the semaphore
+    // ever failed) would spawn near-simultaneously. The 50ms floor is half
+    // the deadline: wide margin above runner jitter, yet a parallel
+    // regression (gap ≈ 0) still trips it.
     //
-    // With `mock_astap=hang` and timeout=100ms, each request takes
-    // ~100ms wall-clock (timeout fires, mock_astap exits on SIGTERM
-    // promptly). Serialized → ~100ms gap; parallel → near 0.
-    let mut sorted = world.concurrent_results.clone();
-    sorted.sort_by_key(|r| r.completed_at);
-    let first = &sorted[0];
-    let second = &sorted[1];
-    let gap = second.completed_at.duration_since(first.completed_at);
+    // This replaces an earlier check on client-side HTTP completion times
+    // captured under `tokio::join!`. On a loaded Windows CI runner the test
+    // task could be descheduled across both completions, collapsing the
+    // observed gap below the threshold and failing even though serialization
+    // worked. Spawn times are recorded inside the children, so they reflect
+    // true server-side ordering regardless of how the client is scheduled.
+    // Each child writes its own uniquely-named file; a shared append file
+    // dropped writes across processes on Windows.
+    let dir = world
+        .spawn_dir_path
+        .as_ref()
+        .expect("spawn_dir_path set by the concurrent-request When step");
+    let mut spawns: Vec<u128> = std::fs::read_dir(dir)
+        .expect("read spawn dir")
+        .map(|entry| {
+            let path = entry.expect("spawn dir entry").path();
+            std::fs::read_to_string(&path)
+                .expect("read spawn file")
+                .trim()
+                .parse::<u128>()
+                .expect("spawn timestamp parses as u128 ns")
+        })
+        .collect();
+    assert_eq!(
+        spawns.len(),
+        2,
+        "expected exactly two mock_astap spawn files in {dir:?}, got {spawns:?}"
+    );
+    spawns.sort_unstable();
+    let gap_ms = (spawns[1] - spawns[0]) / 1_000_000; // ns → ms
     assert!(
-        gap >= Duration::from_millis(50),
-        "single-flight failed: completion gap {gap:?} too small (parallel?)"
+        gap_ms >= 50,
+        "single-flight failed: child spawns only {gap_ms}ms apart (parallel?); \
+         serialized spawns are ~one 100ms deadline apart (timestamps: {spawns:?})"
     );
 }
 
