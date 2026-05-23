@@ -46,6 +46,16 @@ pub enum TransportError {
     /// `max_frame_size` without a terminator, malformed datagram, etc.
     #[error("framing error: {0}")]
     Framing(String),
+
+    /// The shared transport is currently reconnecting after a transient
+    /// transport-loss event (USB drop / replug, cable jostle, peer
+    /// reset). Returned from `Session::request` and `SharedTransport::acquire`
+    /// while the supervisor is mid-recovery. The retry shape is
+    /// caller-defined; the supervisor's next periodic tick or the
+    /// per-acquire eager attempt will recover automatically when the
+    /// hardware reappears.
+    #[error("transport is reconnecting")]
+    Reconnecting,
 }
 
 /// User-facing failure for [`crate::Session::request`].

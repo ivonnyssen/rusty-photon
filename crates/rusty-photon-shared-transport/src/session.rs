@@ -14,6 +14,7 @@ use std::io;
 use std::sync::Arc;
 
 use derive_more::Debug;
+use tokio::sync::RwLock;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use crate::codec::Codec;
@@ -21,6 +22,22 @@ use crate::connection::Connection;
 use crate::error::{SessionError, TransportError};
 use crate::shared::SharedTransport;
 use crate::BoxFuture;
+
+/// Shared cell wrapping the *current* [`Connection<C>`] for one open
+/// transport.
+///
+/// [`SharedTransport`] holds an `Arc` clone of this cell in its
+/// `slot`; every [`Session`] handed out by `acquire()` also holds an
+/// `Arc` clone. The supervisor's reconnect path takes the cell's
+/// `write` lock to swap the inner `Arc<Connection<C>>` atomically;
+/// live `Session`s observe the new connection on their next
+/// `request()` call (which takes a cheap `read` lock to clone the
+/// current `Arc<Connection<C>>`). This is the indirection that makes
+/// the live-session-survival contract from the
+/// [transport-lifecycle plan][lifecycle-plan] possible.
+///
+/// [lifecycle-plan]: ../../../../docs/plans/eager-hardware-validation.md
+pub(crate) type ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>;
 
 /// A live, refcounted handle to the shared transport.
 ///
@@ -31,14 +48,15 @@ use crate::BoxFuture;
 #[debug("Session {{ closed: {}, .. }}", transport.is_none())]
 pub struct Session<C: Codec> {
     transport: Option<Arc<SharedTransport<C>>>,
-    connection: Option<Arc<Connection<C>>>,
+    #[debug(skip)]
+    cell: Option<ConnectionCell<C>>,
 }
 
 impl<C: Codec> Session<C> {
-    pub(crate) fn new(transport: Arc<SharedTransport<C>>, connection: Arc<Connection<C>>) -> Self {
+    pub(crate) fn new(transport: Arc<SharedTransport<C>>, cell: ConnectionCell<C>) -> Self {
         Self {
             transport: Some(transport),
-            connection: Some(connection),
+            cell: Some(cell),
         }
     }
 
@@ -47,17 +65,27 @@ impl<C: Codec> Session<C> {
     /// Forwards to [`Connection::request`] — the request arbitration
     /// lock makes this call safe to run concurrently from multiple
     /// `Session`s (and the while-open task) sharing the same transport.
+    /// Reads the current connection via the cell so a supervisor-driven
+    /// reconnect that swapped the inner `Arc<Connection<C>>` between
+    /// requests is invisible to the caller — the next request transparently
+    /// uses the fresh transport.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
-        // `connection` only becomes `None` inside `close` (which consumes
+        // `cell` only becomes `None` inside `close` (which consumes
         // `self`) or `drop` (which destructs `self`). Neither path can
         // race a live `&self` call to `request`, so this branch is
         // unreachable in well-typed code — handled as an I/O error
         // instead of a panic to satisfy the workspace's no-panic policy.
-        let Some(connection) = self.connection.as_ref() else {
+        let Some(cell) = self.cell.as_ref() else {
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("session.request after close/drop"),
             )));
         };
+        if let Some(transport) = self.transport.as_ref() {
+            if transport.is_reconnecting() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+        }
+        let connection = cell.read().await.clone();
         connection.request(cmd).await
     }
 
@@ -80,11 +108,10 @@ impl<C: Codec> Session<C> {
                 "session.close after close/drop",
             )));
         };
-        // Drop our connection clone before the cleanup runs so the
-        // refcount on the inner Arc<Connection<C>> reaches 1 (only the
-        // slot's clone remains) by the time `run_cleanup` takes the
-        // slot's connection out.
-        self.connection.take();
+        // Drop our cell clone before the cleanup runs so the slot is
+        // the only remaining cell-holder when run_cleanup runs (in
+        // LazyAcquire mode).
+        self.cell.take();
         transport.release_inline().await
     }
 }
@@ -100,7 +127,7 @@ impl<C: Codec> Drop for Session<C> {
     /// plan for the explicit-close-is-primary rationale.
     fn drop(&mut self) {
         if let Some(transport) = self.transport.take() {
-            self.connection.take();
+            self.cell.take();
             transport.release_detached();
         }
     }

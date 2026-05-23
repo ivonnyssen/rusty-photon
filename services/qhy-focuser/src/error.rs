@@ -81,6 +81,9 @@ impl From<TransportError> for QhyFocuserError {
             }
             TransportError::Eof => QhyFocuserError::Communication("Connection closed".to_string()),
             TransportError::Framing(s) => QhyFocuserError::Communication(format!("framing: {s}")),
+            TransportError::Reconnecting => {
+                QhyFocuserError::Communication("transport is reconnecting".to_string())
+            }
         }
     }
 }

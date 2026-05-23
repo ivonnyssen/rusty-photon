@@ -287,6 +287,9 @@ impl From<TransportError> for StarAdvError {
             }
             TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
             TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
+            TransportError::Reconnecting => {
+                StarAdvError::Transport("transport is reconnecting".to_string())
+            }
         }
     }
 }
