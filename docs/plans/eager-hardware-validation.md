@@ -333,28 +333,38 @@ manager.transport().shutdown().await.ok();
 
 ## Config surface (per service)
 
+### What landed (Phases 1-5)
+
+Each migrated service's top-level `Config` grew one field:
+
 ```rust
-// In each service's TransportConfig (USB and UDP variants both):
+// One per service Config struct (dsd-fp2, pa-falcon-rotator,
+// ppba-driver, qhy-focuser, star-adventurer-gti):
 #[serde(default)]
-pub validate_on_start: bool,                        // default true in production
-#[serde(default = "default_reconnect_interval", with = "humantime_serde")]
-pub reconnect_interval: Duration,                   // default 5s
-#[serde(default = "default_reconnect_acquire_timeout", with = "humantime_serde")]
-pub reconnect_acquire_timeout: Duration,            // default 2s
-#[serde(default)]
-pub startup_retries: u32,                           // default 0; production may set 5
-#[serde(default = "default_startup_retry_backoff", with = "humantime_serde")]
-pub startup_retry_backoff: Duration,                // default 2s
+pub validate_on_start: bool,                        // default false
 ```
 
-`validate_on_start: false` skips the startup `transport.start()` call
-(useful for smoke tests that don't have hardware) and keeps the
-transport in `Closed` until the first `acquire()` (legacy behaviour).
-When `true`, startup failures retry up to `startup_retries` times
-before exiting non-zero.
+`validate_on_start: false` (the default) skips the startup
+`transport.start()` call entirely, so `cargo run` without `--config`
+and pre-existing BDD scenarios keep their `LazyAcquire` behaviour
+unchanged. Set `validate_on_start: true` in production configs to
+opt into `ServiceLifetime` mode: the binary opens the port + runs
+the identity-probe handshake before binding the Alpaca HTTP server,
+and exits non-zero on handshake failure.
 
-`Config::default()` defaults to `validate_on_start: false` so
-`cargo run` without `--config` still comes up cleanly.
+The reconnect supervisor's cadence uses the fixed default
+`DEFAULT_RECONNECT_INTERVAL = 5s` baked into shared-transport;
+operators wanting a different cadence can call
+`SharedTransport::set_reconnect_interval()` from a service-specific
+bootstrap path, but no `Config` field exposes this yet.
+
+### Follow-ups deferred to a later PR
+
+| Field | Purpose | Status |
+|---|---|---|
+| `reconnect_interval: Duration` | Override the supervisor's periodic retry cadence per-service from `Config` (instead of calling `set_reconnect_interval` manually). | Not implemented. |
+| `reconnect_acquire_timeout: Duration` | Time `acquire()` will wait for the on-acquire eager-reconnect path before returning `Reconnecting`. | Not implemented (the on-acquire path itself is a follow-up — see the [§Triggers](#triggers) table). |
+| `startup_retries: u32` + `startup_retry_backoff: Duration` | Retry-loop wrapping `transport.start()` for the dome-power-on-same-circuit case (mount comes up seconds after the daemon). | Not implemented. Operators relying on this today need to wrap their systemd unit with `Restart=on-failure` + `RestartSec=` instead. |
 
 ## CLI surface (per service)
 
@@ -372,43 +382,60 @@ Maps to `start()` + `shutdown()` + exit.
 
 ## Test strategy
 
-- **Shared-transport** new tests in `tests/lifecycle.rs`:
+### Landed in this PR
+
+- **Shared-transport `tests/lifecycle.rs`** (Phase 0a, 12 tests):
   - `start()` runs handshake; `shutdown()` runs `Hooks::shutdown`;
     refcount=0 in between doesn't close the port.
   - `Session::close()` on 1→0 runs `on_last_disconnect` exactly once
-    but doesn't close the port.
-  - Reconnect: an injected transport error from `while_open`
-    triggers `Reconnecting`; subsequent successful open transitions
-    back to `Open`; pre-existing `Session<C>` references' `request`
-    calls resume on the new connection.
-  - Reconnect: on-acquire eager path returns a working `Session`
-    when reconnect succeeds within `reconnect_acquire_timeout`.
-  - Reconnect: codec errors do **not** trigger reconnect.
-- **Per-service** integration tests:
-  - `validate_on_start = true` + wrong-device mock → service `main`
-    returns non-zero.
-  - Session round-trip survives a simulated transport-drop in the
-    mock factory.
-- **BDD**: existing scenarios assume `validate_on_start = false`
-  (the default). Add per-service:
-  - "service refuses to start when configured port targets the
-    wrong device"
-  - "session resumes after a transient transport drop"
-- **CI nightly hardware-attached run** ([pi5 nightly][pi5]): set
-  `validate_on_start: true` in the nightly config; failed
-  validation paged via the existing nightly-failures Slack hook.
+    but doesn't close the port (in `ServiceLifetime` mode).
+  - `LazyAcquire` mode preservation: bit-for-bit unchanged from
+    pre-Phase-0a.
+  - `while_open` task lifecycle across all mode transitions.
+- **Shared-transport `tests/reconnect.rs`** (Phase 0b, 7 tests):
+  - `reconnect_now()` opens a fresh transport, runs handshake,
+    swaps the cell — happy path.
+  - **Live `Session<C>` references survive a reconnect via cell
+    swap** (the headline contract from the
+    [§Connection swap mechanics](#connection-swap-mechanics) section).
+  - Refcount invariance across reconnect; supervisor cancellation
+    on `shutdown()`.
+  - Reconnect-failure case: stays in `Reconnecting` until next
+    successful retry; `Session::request` short-circuits to
+    `TransportError::Reconnecting` while the supervisor is in
+    that state.
+  - **Codec errors do not trigger reconnect** (the contract
+    enforced in `Connection::request`'s signal-fire logic).
+
+### Follow-ups
+
+- **On-acquire eager reconnect test**: documented in the
+  `tests/reconnect.rs` file header. Lands together with the
+  `reconnect_acquire_timeout` config plumbing in a follow-up PR.
+- **Per-service integration tests** ("`validate_on_start = true` +
+  wrong-device mock → service `main` returns non-zero"; "session
+  round-trip survives a simulated transport-drop"): not landed;
+  worth adding per service in follow-ups.
+- **BDD scenarios** ("service refuses to start when configured port
+  targets the wrong device"; "session resumes after a transient
+  transport drop"): not landed; need a wrong-device mock factory
+  per service first.
+- **CI nightly hardware-attached run** ([pi5 nightly][pi5]):
+  unchanged today; flipping the nightly config to
+  `validate_on_start: true` to actually exercise the eager path
+  is a separate operations task.
 
 [pi5]: ../../docs/operations/pi-nightly-runner.md
 
 ## Failure-mode matrix
 
-| Scenario | Behaviour (new model) |
+| Scenario | Behaviour (current implementation) |
 |---|---|
-| Device powered off at boot | `start()` fails. With `startup_retries > 0`, retries `startup_retry_backoff` apart. Exits 2 on exhaustion; orchestrator restarts. |
-| Device powered on, wrong device | `start()` fails with `WrongDevice`. No retry (config error). Exits 2 immediately with the diagnostic. |
-| Device powered on, transient handshake failure (CRC, dropped byte) | `start()` retries up to `startup_retries`. |
+| Device powered off at boot | `start()` fails. Exits 2 immediately (no `startup_retries` plumbing yet — that's a follow-up; operators wrap the systemd unit with `Restart=on-failure` for now). Orchestrator restarts the binary. |
+| Device powered on, wrong device | `start()` fails with `WrongDevice`. Exits 2 immediately with the diagnostic. |
+| Device powered on, transient handshake failure (CRC, dropped byte) | `start()` fails; same restart-via-orchestrator path as the powered-off case. Per-attempt retries inside `start()` would need the `startup_retries` follow-up. |
 | Device powered on, correct device | `start()` succeeds; clients connect on top of a warm transport. |
-| Transient transport loss mid-session | Supervisor enters `Reconnecting`. Periodic retry every `reconnect_interval`. Sessions stay alive but requests fail until recovery. On success, sessions resume on the new connection. |
+| Transient transport loss mid-session | Supervisor enters `Reconnecting`. Periodic retry every `DEFAULT_RECONNECT_INTERVAL` (5s, override via `SharedTransport::set_reconnect_interval`). Sessions stay alive but requests fail with `TransportError::Reconnecting` until recovery. On success, sessions resume on the new connection via the cell swap. |
 | Permanent device removal | Supervisor stays in `Reconnecting` forever. Operator notices via sentinel / dashboard. (Future enhancement: configurable max-reconnect-attempts before the service exits 3 and lets the orchestrator decide.) |
 
 ## Phasing

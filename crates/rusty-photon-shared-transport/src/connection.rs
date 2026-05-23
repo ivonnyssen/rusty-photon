@@ -81,17 +81,22 @@ impl fmt::Display for DisplayWire<'_> {
 pub struct Connection<C: Codec> {
     transport: Mutex<Box<dyn FrameTransport>>,
     codec: C,
-    /// Notify fired on every `TransportError` from `request`. `None`
-    /// for ad-hoc connections built via `Connection::new()` directly
-    /// (in-crate unit tests, the legacy `LazyAcquire` cold-start path
-    /// inside `acquire()` — when no supervisor exists to listen).
-    /// `Some(_)` for any connection that `SharedTransport` will own
-    /// in `ServiceLifetime` mode: both `start()` and the supervisor's
-    /// `attempt_reconnect()` attach the signal before running the
-    /// handshake, so a handshake-time `TransportError` would
-    /// no-op-notify (no listener yet) before `start()` itself
-    /// surfaces the error to the caller — harmless but worth knowing
-    /// when tracing the supervisor's signal flow.
+    /// Notify fired on every `TransportError` from `request`.
+    /// `Some(_)` for every connection that `SharedTransport` itself
+    /// builds — that includes the `LazyAcquire`-mode 0→1 cold-start
+    /// path in `acquire()`, the `ServiceLifetime`-mode `start()`
+    /// path, and the supervisor's `attempt_reconnect()`; all three
+    /// attach the signal via `.with_reconnect_signal(...)` before
+    /// running the handshake. The supervisor task itself is what
+    /// listens for the notifications. `None` only for ad-hoc
+    /// connections built via `Connection::new()` directly — in
+    /// practice that's just in-crate unit tests; the wiring at
+    /// every `SharedTransport` callsite always attaches the signal,
+    /// so the LazyAcquire branch's lack of an active listener (the
+    /// supervisor doesn't run until `start()` is called) means
+    /// transport-error notifications in LazyAcquire mode no-op
+    /// rather than waking anything — harmless, since LazyAcquire's
+    /// recovery model is "next acquire reopens".
     reconnect_signal: Option<Arc<Notify>>,
 }
 

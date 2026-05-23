@@ -21,9 +21,6 @@
 //!
 //! - On-acquire eager reconnect (an `acquire()` mid-reconnect that
 //!   triggers a synchronous attempt with `reconnect_acquire_timeout`).
-//! - Codec-error filtering verification (needs a codec that can be
-//!   poked into emitting `SessionError::Codec`; `EchoCodec` always
-//!   round-trips successfully).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
@@ -226,4 +223,60 @@ async fn shutdown_cancels_supervisor_cleanly() {
 
     // is_reconnecting cleared by shutdown.
     assert!(!st.is_reconnecting());
+}
+
+#[tokio::test]
+async fn codec_error_does_not_trigger_reconnect() {
+    // The supervisor only reacts to `TransportError`s — codec-level
+    // mismatches (malformed JSON, skip-budget exhaustion, etc.) are
+    // protocol bugs, not hardware loss, and reconnecting wouldn't fix
+    // them. `Connection::request` enforces this by routing the
+    // signal-fire only through the `Transport` arms (see
+    // `connection.rs::signal_reconnect`); this test pins that contract
+    // end-to-end.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+
+    // EchoCodec's decoder rejects any frame starting with `b"BAD"` —
+    // see the test-only sentinel in `common/mod.rs::EchoCodec::decode`.
+    // The EchoTransport echoes whatever was sent, so the codec
+    // failure fires on the response decode.
+    let err = session.request(b"BAD".to_vec()).await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("BAD prefix"),
+        "expected the BAD-prefix codec error to bubble through SessionError::Codec, got: {display}"
+    );
+
+    // Give any (incorrect) supervisor reaction a chance to land
+    // before asserting the negative.
+    common::yield_briefly().await;
+
+    assert!(
+        !st.is_reconnecting(),
+        "codec error must not advance the supervisor to Reconnecting"
+    );
+    assert_eq!(
+        cfg.opens(),
+        1,
+        "no fresh factory.open() should have happened — reconnect is for transport loss, not codec mismatches"
+    );
+    assert_eq!(
+        counting.handshake_calls.load(Ordering::SeqCst),
+        1,
+        "no fresh handshake should have run for the same reason"
+    );
+
+    // Confirm the transport is still usable: a clean payload still
+    // round-trips through the same session, proving no spurious cell
+    // swap happened.
+    let r = session.request(b"ping".to_vec()).await.unwrap();
+    assert_eq!(r, b"ping");
+
+    session.close().await.unwrap();
 }

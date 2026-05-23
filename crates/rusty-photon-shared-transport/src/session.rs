@@ -196,14 +196,18 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   successful reconnect. Runs **before** any [`Session`] escapes. On
 ///   error: rollback (count→0, available→false, transport dropped),
 ///   error propagated to the caller.
-/// * `on_last_disconnect` runs on every refcount 1→0 transition. Per-service
-///   safety commands (stop tracking, park, turn off heater, …). In
-///   `LazyAcquire` mode, fires once before transport teardown. In
-///   `ServiceLifetime` mode, fires on every 1→0 and the port stays open
-///   — may run many times during a service's lifetime. Best-effort:
-///   errors surface through [`Session::close`]'s `Result<(), TransportError>`
-///   in `LazyAcquire` mode and are logged-and-dropped in `ServiceLifetime`
-///   mode (the supervisor keeps trying).
+/// * `on_last_disconnect` runs on every refcount 1→0 transition.
+///   Per-service safety commands (stop tracking, park, turn off
+///   heater, …). In `LazyAcquire` mode, fires once after `while_open`
+///   is cancelled and before transport teardown. In `ServiceLifetime`
+///   mode, fires on every 1→0 and the port stays open — may run many
+///   times during a service's lifetime. The hook signature returns
+///   `()` and the runtime ignores any errors observed on the inner
+///   `request` calls, so the hook is **best-effort** in both modes;
+///   any failures hit while running it must be handled / logged
+///   inside the hook body itself (typically `tracing::warn!` on the
+///   request `Result`). Failures never propagate to
+///   [`Session::close`]'s caller and never abort the cleanup path.
 /// * `shutdown` runs exactly once per `start()`/`shutdown()` cycle, from
 ///   [`crate::SharedTransport::shutdown`] in the service's SIGTERM handler.
 ///   Final cleanup before the port closes. Only meaningful in

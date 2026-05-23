@@ -38,7 +38,18 @@ impl Codec for EchoCodec {
         cmd.clone()
     }
 
+    /// Identity decode, with one poke-able failure path: bytes
+    /// starting with the `b"BAD"` prefix decode to `Err(EchoCodecError)`,
+    /// exercising the `SessionError::Codec` arm. Tests that need to
+    /// hit codec-error paths (e.g. `tests/reconnect.rs::codec_error_does_not_trigger_reconnect`)
+    /// send a `b"BAD..."` payload; the EchoTransport echoes it back
+    /// and decode fails on the response.
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+        if bytes.starts_with(b"BAD") {
+            return Err(EchoCodecError(
+                "decode rejected BAD prefix (test-only sentinel)".into(),
+            ));
+        }
         Ok(bytes.to_vec())
     }
 }

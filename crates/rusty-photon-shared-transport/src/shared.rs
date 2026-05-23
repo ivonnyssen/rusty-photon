@@ -59,7 +59,7 @@ const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// enough that a brief USB unplug/replug recovers within one or two
 /// attempts and slow enough that a permanently-dead device doesn't
 /// spam syslog. Configurable per service via
-/// [`SharedTransport::with_reconnect_interval`].
+/// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Refcounted multi-client lifecycle wrapper around a single duplex
@@ -127,9 +127,20 @@ pub struct SharedTransport<C: Codec> {
     reconnect_signal: Arc<Notify>,
     /// Period between reconnect attempts while in the `Reconnecting`
     /// state. Configurable per service via
-    /// [`SharedTransport::with_reconnect_interval`]. Default
+    /// [`SharedTransport::set_reconnect_interval`]. Default
     /// [`DEFAULT_RECONNECT_INTERVAL`] = 5s.
     reconnect_interval: Mutex<Duration>,
+    /// Serialises [`attempt_reconnect`](Self::attempt_reconnect) so
+    /// the supervisor's periodic / signal-driven tick can't race
+    /// [`reconnect_now`](Self::reconnect_now) (or two concurrent
+    /// `reconnect_now` callers). Without this both paths would call
+    /// `attempt_reconnect` directly and could run overlapping
+    /// `factory.open` → handshake → cell swap → while_open respawn
+    /// sequences, producing extra open() calls and orphaned poll
+    /// tasks. With the mutex, at most one attempt runs at a time;
+    /// the second caller blocks, then runs its own attempt (rare
+    /// redundant work, but never inconsistent state).
+    attempt_reconnect_lock: Mutex<()>,
 }
 
 impl<C: Codec> SharedTransport<C> {
@@ -150,6 +161,7 @@ impl<C: Codec> SharedTransport<C> {
             supervisor_state: Mutex::new(None),
             reconnect_signal: Arc::new(Notify::new()),
             reconnect_interval: Mutex::new(DEFAULT_RECONNECT_INTERVAL),
+            attempt_reconnect_lock: Mutex::new(()),
         })
     }
 
@@ -348,7 +360,18 @@ impl<C: Codec> SharedTransport<C> {
     /// [`ConnectionCell`], and respawn `while_open` against the new
     /// connection. Live sessions resume on the new transport on their
     /// next `request()` call.
+    ///
+    /// Serialised via [`attempt_reconnect_lock`](Self::attempt_reconnect_lock):
+    /// the supervisor loop and `reconnect_now()` both go through this
+    /// method, and the lock prevents them from running
+    /// `factory.open` / handshake / cell swap concurrently. A second
+    /// caller blocks until the first completes (typically tens of
+    /// milliseconds; longer if `factory.open` is slow on the
+    /// platform), then runs its own attempt against the now-fresh
+    /// state — wasteful in the rare collision case, but never
+    /// inconsistent.
     async fn attempt_reconnect(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
+        let _attempt_guard = self.attempt_reconnect_lock.lock().await;
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let new_conn = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
