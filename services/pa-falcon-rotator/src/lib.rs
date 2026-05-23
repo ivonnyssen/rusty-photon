@@ -91,6 +91,14 @@ impl ServerBuilder {
 
         let manager = FalconManager::new(self.factory);
 
+        // Phase 3: eager hardware validation. Opt-in via
+        // `validate_on_start: true`; default `false` preserves
+        // lazy-acquire behaviour.
+        if self.config.validate_on_start {
+            info!("validating hardware via eager startup handshake");
+            manager.transport().start().await?;
+        }
+
         if self.config.rotator.enabled {
             let rotator_device =
                 FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&manager));
@@ -142,6 +150,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            manager,
         })
     }
 }
@@ -152,6 +161,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `start()` can call `manager.transport().shutdown()` after
+    /// the HTTP server stops. No-op in LazyAcquire mode.
+    manager: Arc<FalconManager>,
 }
 
 impl BoundServer {
@@ -172,6 +184,9 @@ impl BoundServer {
                 info!("pa-falcon-rotator started on {}", self.local_addr);
                 rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
+        }
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("pa-falcon-rotator shut down");
         Ok(())

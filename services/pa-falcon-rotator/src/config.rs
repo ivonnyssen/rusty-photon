@@ -11,6 +11,12 @@ pub struct Config {
     pub server: ServerConfig,
     pub rotator: RotatorConfig,
     pub switch: SwitchConfig,
+    /// Opt in to `ServiceLifetime` transport mode (eager hardware
+    /// validation at startup; service exits non-zero on handshake
+    /// failure). Default `false` preserves lazy-acquire behaviour.
+    /// See `docs/plans/eager-hardware-validation.md`.
+    #[serde(default)]
+    pub validate_on_start: bool,
 }
 
 /// Serial port configuration
