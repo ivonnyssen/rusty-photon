@@ -99,9 +99,15 @@ impl Command {
 /// Parsed Falcon `FA` full-status response.
 ///
 /// Wire format: `FR_OK:position_in_steps:position_in_deg:is_moving:limit_detect:do_derotation:motor_reverse`
+///
+/// `position_steps` is **signed**: the Falcon's step counter is referenced to
+/// the 0° home and reads negative for positions reached CCW of home — which
+/// happens whenever a target beyond the 220° CW soft limit is reached the long
+/// way round. `position_deg` is always normalised to `[0, 360)`. Captured on
+/// real hardware (firmware 1.5); see `parse_full_status` tests.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FalconStatus {
-    pub position_steps: u32,
+    pub position_steps: i32,
     pub position_deg: f64,
     pub is_moving: bool,
     pub limit_detect: bool,
@@ -143,7 +149,10 @@ pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
             fields.len()
         )));
     }
-    let position_steps: u32 = fields[0]
+    // Signed: negative for positions CCW of the 0° home (e.g. a target past
+    // the 220° CW limit reached the long way round). Parsing as u32 here is
+    // the bug that broke every status read whenever steps went negative.
+    let position_steps: i32 = fields[0]
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_steps: {e}")))?;
     let position_deg: f64 = fields[1]
@@ -194,7 +203,10 @@ pub fn parse_position_deg(response: &str) -> Result<f64> {
 }
 
 /// Parse the `FP:n..` steps response.
-pub fn parse_position_steps(response: &str) -> Result<u32> {
+///
+/// Signed: the step counter is referenced to the 0° home and reads negative
+/// for positions CCW of home (real hardware, firmware 1.5).
+pub fn parse_position_steps(response: &str) -> Result<i32> {
     let rest = strip_known_prefix(response, "FP:")?;
     rest.parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FP: {e}")))
@@ -490,6 +502,21 @@ mod tests {
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
+    #[test]
+    fn parse_full_status_accepts_negative_steps_below_home() {
+        // Real-hardware capture (firmware 1.5): driving past the 220° CW limit
+        // sends the rotator the long way round — CCW past the 0° home — where
+        // the signed step counter goes negative while position_deg wraps into
+        // [0, 360). Parsing field 0 as i32 (not u32) is what keeps status reads
+        // alive across that region; the u32 parse here used to abort the read
+        // with "FA position_steps: invalid digit found in string".
+        let status = parse_full_status("FR_OK:-2838:327.24:1:0:0:0").unwrap();
+        assert_eq!(status.position_steps, -2838);
+        assert!((status.position_deg - 327.24).abs() < 1e-9);
+        assert!(status.is_moving);
+        assert!(!status.limit_detect);
+    }
+
     // ---- parse_firmware_version -------------------------------------------
 
     #[test]
@@ -570,11 +597,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_position_steps_rejects_negative() {
-        assert!(matches!(
-            parse_position_steps("FP:-1").unwrap_err(),
-            FalconRotatorError::ParseError(_)
-        ));
+    fn parse_position_steps_accepts_negative_below_home() {
+        // The Falcon step counter is signed relative to the 0° home: positions
+        // CCW of home report negative steps. Captured on real hardware
+        // (firmware 1.5), e.g. `FP:-1784` observed at 339.96° while traversing
+        // past the 220° CW limit the long way round.
+        assert_eq!(parse_position_steps("FP:-1784").unwrap(), -1784);
     }
 
     // ---- parse_voltage_raw ------------------------------------------------

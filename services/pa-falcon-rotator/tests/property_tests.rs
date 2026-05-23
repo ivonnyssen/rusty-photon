@@ -13,7 +13,10 @@ use proptest::prelude::*;
 proptest! {
     #[test]
     fn full_status_wire_format_round_trips(
-        steps in 0u32..1_000_000,
+        // Signed range: the Falcon step counter goes negative CCW of the 0°
+        // home (real hardware, firmware 1.5), so the round-trip must hold for
+        // negative steps too.
+        steps in -1_000_000i32..1_000_000,
         deg_cents in 0u32..36_000,
         is_moving in any::<bool>(),
         limit_detect in any::<bool>(),

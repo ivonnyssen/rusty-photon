@@ -100,12 +100,20 @@ Field types:
 
 | Field | Type | Notes |
 |---|---|---|
-| `position_in_steps` | unsigned integer | Internal step counter |
-| `position_in_deg` | `f64`, two decimals | Authoritative for `MechanicalPosition` |
+| `position_in_steps` | **signed** integer (`i32`) | Step counter relative to the 0° home; **negative for positions CCW of home**. Informational only — the driver derives all positions from `position_in_deg`. |
+| `position_in_deg` | `f64`, two decimals | Authoritative for `MechanicalPosition`; always wrapped to `[0, 360)` |
 | `is_moving` | `0` / `1` | Drives `IsMoving` |
 | `limit_detect` | `0` / `1` | Driver logs `warn!` on edge transitions, does not raise |
 | `do_derotation` | `0` / `1` | MVP keeps this `0` (see [De-rotation](#de-rotation)) |
 | `motor_reverse` | `0` / `1` | Drives `Reverse` |
+
+> **Signed step counter (validated on real hardware, firmware 1.5, ConformU).**
+> A target beyond the 220° CW limit is reached the long way round — CCW past the
+> 0° home — where `position_in_steps` goes **negative** (e.g. `FR_OK:-2838:327.24:1:0:0:0`)
+> while `position_in_deg` stays wrapped to `[0, 360)`. Parsing the step field as
+> unsigned previously aborted every status read in that region with
+> `INVALID_OPERATION: FA position_steps: invalid digit found in string`; it is
+> now parsed as `i32`. The degree field is unaffected, so positions stay correct.
 
 ### Commands the driver does **not** send
 
