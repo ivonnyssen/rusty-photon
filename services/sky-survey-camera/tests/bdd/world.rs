@@ -58,6 +58,23 @@ pub struct MountStubState {
     pub read_count: Arc<AtomicU32>,
 }
 
+/// Behaviour the in-test ASCOM Rotator stub serves on each `position`
+/// read. Drives the F8 follow-mode scenario. Mirrors
+/// [`MountStubBehavior`].
+#[derive(Debug, Clone)]
+pub enum RotatorStubBehavior {
+    /// Serve `Value=<position_angle>` with `ErrorNumber=0`.
+    Ok { position_angle: f64 },
+    /// Serve `ErrorNumber=1024` ("driver-specific") on every read.
+    AscomError,
+}
+
+#[derive(Debug)]
+pub struct RotatorStubState {
+    pub behavior: Arc<RwLock<RotatorStubBehavior>>,
+    pub read_count: Arc<AtomicU32>,
+}
+
 /// Build a minimal valid FITS payload of the given dimensions filled
 /// with zero pixels (BITPIX = 32). Suitable for both happy-path tests
 /// and cache-hit pre-seeding.
@@ -125,9 +142,17 @@ pub struct SkySurveyCameraWorld {
     /// Shared state of the ASCOM Telescope stub (None until spawned).
     pub mount_stub_state: Option<Arc<MountStubState>>,
 
+    /// Shared state of the ASCOM Rotator stub (None until spawned).
+    pub rotator_stub_state: Option<Arc<RotatorStubState>>,
+
     /// When set, the camera is configured in telescope-follow mode
     /// pointing at this URL. Built by `spawn_mount_stub`.
     pub telescope_endpoint_override: Option<String>,
+
+    /// When set, `pointing.rotator` is emitted pointing at this URL so
+    /// follow mode sources rotation from the rotator. Built by
+    /// `spawn_rotator_stub`.
+    pub rotator_endpoint_override: Option<String>,
 
     /// Configured RA offset for follow mode (arcsec, signed).
     pub telescope_offset_ra_arcsec: f64,
@@ -194,6 +219,13 @@ impl SkySurveyCameraWorld {
                 "device_number": 0,
                 "offset_ra_arcsec": self.telescope_offset_ra_arcsec,
                 "offset_dec_arcsec": self.telescope_offset_dec_arcsec,
+                "request_timeout": "2s",
+            });
+        }
+        if let Some(url) = &self.rotator_endpoint_override {
+            pointing["rotator"] = serde_json::json!({
+                "alpaca_url": url,
+                "device_number": 0,
                 "request_timeout": "2s",
             });
         }
@@ -293,6 +325,39 @@ impl SkySurveyCameraWorld {
             .as_ref()
             .expect("mount stub not spawned — call spawn_mount_stub first");
         *state.behavior.write().expect("mount stub rwlock") = behavior;
+    }
+
+    /// Spawn a tiny ASCOM Alpaca Rotator stub on `127.0.0.1:0`. Serves
+    /// only the two endpoints `AlpacaRotatorReader` exercises:
+    /// `GET /management/v1/configureddevices` and
+    /// `GET /api/v1/rotator/0/position`. Points
+    /// `rotator_endpoint_override` at the bound address so
+    /// `build_config_json` emits `pointing.rotator`. Mirrors
+    /// `spawn_mount_stub`.
+    pub async fn spawn_rotator_stub(&mut self, behavior: RotatorStubBehavior) {
+        let state = Arc::new(RotatorStubState {
+            behavior: Arc::new(RwLock::new(behavior)),
+            read_count: Arc::new(AtomicU32::new(0)),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind rotator stub listener");
+        let addr = listener.local_addr().expect("local_addr");
+        let app = axum::Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                axum::routing::get(handle_rotator_configured_devices),
+            )
+            .route(
+                "/api/v1/rotator/0/position",
+                axum::routing::get(handle_rotator_position),
+            )
+            .with_state(Arc::clone(&state));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        self.rotator_endpoint_override = Some(format!("http://{addr}/"));
+        self.rotator_stub_state = Some(state);
     }
 
     pub fn set_stub_behavior(&mut self, behavior: StubBehavior) {
@@ -651,6 +716,40 @@ async fn handle_declination(
             "Value": 0.0,
             "ErrorNumber": 0,
             "ErrorMessage": ""
+        })),
+    }
+}
+
+async fn handle_rotator_configured_devices(
+    axum::extract::State(_state): axum::extract::State<Arc<RotatorStubState>>,
+) -> axum::Json<Value> {
+    axum::Json(serde_json::json!({
+        "Value": [{
+            "DeviceName": "Rotator 0",
+            "DeviceType": "Rotator",
+            "DeviceNumber": 0,
+            "UniqueID": "test-rotator-uid"
+        }],
+        "ErrorNumber": 0,
+        "ErrorMessage": ""
+    }))
+}
+
+async fn handle_rotator_position(
+    axum::extract::State(state): axum::extract::State<Arc<RotatorStubState>>,
+) -> axum::Json<Value> {
+    state.read_count.fetch_add(1, Ordering::Relaxed);
+    let behavior = state.behavior.read().expect("rotator stub rwlock").clone();
+    match behavior {
+        RotatorStubBehavior::Ok { position_angle } => axum::Json(serde_json::json!({
+            "Value": position_angle,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })),
+        RotatorStubBehavior::AscomError => axum::Json(serde_json::json!({
+            "Value": 0.0,
+            "ErrorNumber": 1024,
+            "ErrorMessage": "simulated rotator read failure"
         })),
     }
 }

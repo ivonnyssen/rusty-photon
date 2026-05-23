@@ -1,6 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! sky-survey-camera: ASCOM Alpaca Camera simulator backed by NASA SkyView.
 
+pub mod alpaca;
 pub mod camera;
 pub mod config;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod fits;
 pub mod mock;
 pub mod mount;
 pub mod pointing;
+pub mod rotator;
 pub mod routes;
 pub mod survey;
 
@@ -106,7 +108,9 @@ fn build_device(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
 ) -> Result<camera::SkySurveyCamera, SkySurveyCameraError> {
-    use crate::pointing::{PointingSource, PointingState, SharedPointing, TelescopeFollow};
+    use crate::pointing::{
+        PointingSource, PointingState, RotatorReader, SharedPointing, TelescopeFollow,
+    };
 
     let last_snapshot = Arc::new(SharedPointing::new(PointingState::new(
         config.pointing.initial_ra_deg,
@@ -118,8 +122,27 @@ fn build_device(
         None => PointingSource::Static(Arc::clone(&last_snapshot)),
         Some(t) => {
             let reader = mount::AlpacaMountReader::from_config(t)?;
+            // F8: when `pointing.rotator` is set, source `rotation_deg`
+            // from the rotator instead of the static initial value.
+            // Config validation guarantees the rotator only appears in
+            // follow mode, so this is the only place it's wired. Like
+            // the mount client, construction is offline (F3) — a wedged
+            // rotator surfaces lazily on the first exposure.
+            let rotator: Option<Arc<dyn RotatorReader>> = match &config.pointing.rotator {
+                None => None,
+                Some(r) => {
+                    let rr = rotator::AlpacaRotatorReader::from_config(r)?;
+                    tracing::debug!(
+                        alpaca_url = %r.alpaca_url,
+                        device_number = r.device_number,
+                        "rotator follow source armed"
+                    );
+                    Some(Arc::new(rr))
+                }
+            };
             let follow = TelescopeFollow::new(
                 Arc::new(reader),
+                rotator,
                 config.pointing.initial_rotation_deg,
                 t.offset_ra_arcsec,
                 t.offset_dec_arcsec,
