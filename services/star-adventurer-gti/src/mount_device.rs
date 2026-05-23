@@ -19,6 +19,9 @@
 //!   sequence) and flip-aware delta geometry.
 //! - [`watchers`] — tokio tasks observing slew / park / pulse-guide
 //!   completion in the background.
+//! - [`tracking_guard`] — per-connection background task that stops
+//!   tracking before the encoder `mech_HA` drifts into the CW
+//!   exclusion zone (issue #259).
 //! - [`park_persistence`] — JSON config-file read/write for `SetPark`
 //!   and the boot-time writability probe.
 
@@ -39,6 +42,7 @@ mod inherent;
 mod park_persistence;
 mod slew;
 mod telescope;
+mod tracking_guard;
 mod watchers;
 
 #[cfg(all(test, feature = "mock"))]

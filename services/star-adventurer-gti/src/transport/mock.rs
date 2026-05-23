@@ -184,6 +184,12 @@ pub struct MockMountState {
     /// Every command frame received, in arrival order. Tests assert against
     /// this to verify the driver issued the expected wire commands.
     pub command_log: Vec<Vec<u8>>,
+    /// Test-only fault injection. When `Some(letter)`, any command whose
+    /// letter matches replies with a mount error (`!XX`) instead of its
+    /// normal response, so the driver's send path returns `Err`. Used to
+    /// exercise wire-failure branches (e.g. the tracking guard's
+    /// `:K1`-failed path). The request is still recorded in `command_log`.
+    pub fail_command: Option<u8>,
     /// Pending replies the next `recv_frame` call should drain. Every
     /// processed command appends one frame; the [`FrameTransport`] impl
     /// pulls from the front to deliver replies in order.
@@ -207,6 +213,7 @@ impl Default for MockMountState {
             high_speed_ratio_dec: 32,
             motor_board_version: 0x0003_300C,
             command_log: Vec::new(),
+            fail_command: None,
             pending_replies: std::collections::VecDeque::new(),
         }
     }
@@ -244,6 +251,14 @@ impl MockMountState {
         let cmd = request[1];
         let axis = request[2];
         let payload = &request[3..request.len() - 1];
+
+        // Test-only fault injection: reply with a mount error for the
+        // selected command letter so the driver's send path returns
+        // `Err` (see `MockMountState::fail_command`).
+        if self.fail_command == Some(cmd) {
+            self.pending_replies.push_back(err_reply(0));
+            return;
+        }
 
         // Inquiries (lowercase letters)
         let reply = match cmd {

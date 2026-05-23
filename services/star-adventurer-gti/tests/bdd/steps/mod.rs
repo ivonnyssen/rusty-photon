@@ -8,4 +8,5 @@ pub mod pulse_guide_steps;
 pub mod side_of_pier_steps;
 pub mod slew_steps;
 pub mod sync_steps;
+pub mod tracking_safety_steps;
 pub mod tracking_steps;
