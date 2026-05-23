@@ -160,20 +160,23 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result so transport.shutdown() runs even
+        // when the HTTP server errors out — otherwise the supervisor
+        // and port would leak past a serve failure.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("dsd-fp2 started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("dsd-fp2 started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
-        }
+        };
         if let Err(e) = self.manager.transport().shutdown().await {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("dsd-fp2 shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }

@@ -170,11 +170,12 @@ losses without operator or client intervention.
 
 ### Triggers
 
-| Trigger | When |
-|---|---|
-| Periodic | Every `reconnect_interval` (default 5s) while state is `Reconnecting`. |
-| On-acquire | When a client calls `acquire()` and state is `Reconnecting`, attempt one synchronous reconnect (capped by `reconnect_acquire_timeout`, default 2s) before returning. If it succeeds, hand out the session normally; if it doesn't, return `SessionError::Transport(Reconnecting)`. |
-| Forced | `SharedTransport::reconnect_now().await` — exposed for test infrastructure and a future operator CLI ("kick reconnect"). |
+| Trigger | When | Status |
+|---|---|---|
+| Periodic | Every `reconnect_interval` (default 5s) while state is `Reconnecting`. | Implemented (Phase 0b). |
+| Notify-driven | `Connection::request` fires the supervisor's `Notify` on every `TransportError`, waking the loop immediately rather than waiting for the next periodic tick. | Implemented (Phase 0b). |
+| Forced | `SharedTransport::reconnect_now().await` — exposed for test infrastructure and a future operator CLI ("kick reconnect"). | Implemented (Phase 0b). |
+| On-acquire | When a client calls `acquire()` and state is `Reconnecting`, attempt one synchronous reconnect (capped by `reconnect_acquire_timeout`, default 2s) before returning. If it succeeds, hand out the session normally; if it doesn't, return `SessionError::Transport(Reconnecting)`. | **Follow-up.** `acquire()` does not short-circuit on `Reconnecting` today; `Session::request` is what reflects the state. Lands together with the `reconnect_acquire_timeout` config plumbing in a follow-up PR. |
 
 ### How transport errors enter the supervisor
 

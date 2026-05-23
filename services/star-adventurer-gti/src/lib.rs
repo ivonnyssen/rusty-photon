@@ -226,26 +226,31 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result and run `transport.shutdown()`
+        // unconditionally so a serve error doesn't leave the port and
+        // the reconnect supervisor alive (the original `?` shape did
+        // skip the shutdown block on serve failure). The serve error,
+        // if any, is propagated after the transport-side teardown.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("star-adventurer-gti started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("star-adventurer-gti started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
-        }
-        // Best-effort transport shutdown after the HTTP server stops
-        // accepting new requests. In ServiceLifetime mode this cancels
-        // the supervisor, runs the safety teardown commands one last
-        // time, and drops the port. Errors are logged (not propagated)
-        // because we're already on the way down.
+        };
+        // Always-run transport shutdown. In ServiceLifetime mode this
+        // cancels the supervisor, runs the safety teardown one last
+        // time, and drops the port. Errors are logged-not-propagated
+        // because we're already on the way down — the serve_result
+        // below is the canonical exit status.
         if let Err(e) = self.manager.transport().shutdown().await {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }
 

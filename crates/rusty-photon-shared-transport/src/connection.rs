@@ -36,10 +36,16 @@ pub struct Connection<C: Codec> {
     transport: Mutex<Box<dyn FrameTransport>>,
     codec: C,
     /// Notify fired on every `TransportError` from `request`. `None`
-    /// for ad-hoc connections (tests, the initial-handshake path inside
-    /// `SharedTransport::start` before the supervisor is wired);
-    /// `Some(_)` for connections handed out via `acquire()` once the
-    /// supervisor is running.
+    /// for ad-hoc connections built via `Connection::new()` directly
+    /// (in-crate unit tests, the legacy `LazyAcquire` cold-start path
+    /// inside `acquire()` — when no supervisor exists to listen).
+    /// `Some(_)` for any connection that `SharedTransport` will own
+    /// in `ServiceLifetime` mode: both `start()` and the supervisor's
+    /// `attempt_reconnect()` attach the signal before running the
+    /// handshake, so a handshake-time `TransportError` would
+    /// no-op-notify (no listener yet) before `start()` itself
+    /// surfaces the error to the caller — harmless but worth knowing
+    /// when tracing the supervisor's signal flow.
     reconnect_signal: Option<Arc<Notify>>,
 }
 

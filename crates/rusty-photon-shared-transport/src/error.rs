@@ -49,11 +49,16 @@ pub enum TransportError {
 
     /// The shared transport is currently reconnecting after a transient
     /// transport-loss event (USB drop / replug, cable jostle, peer
-    /// reset). Returned from `Session::request` and `SharedTransport::acquire`
-    /// while the supervisor is mid-recovery. The retry shape is
-    /// caller-defined; the supervisor's next periodic tick or the
-    /// per-acquire eager attempt will recover automatically when the
-    /// hardware reappears.
+    /// reset). Returned from `Session::request` while the supervisor
+    /// is mid-recovery so callers don't queue against the dying
+    /// transport's command lock. The retry shape is caller-defined;
+    /// the supervisor's next periodic tick or a `reconnect_now()` call
+    /// will recover automatically when the hardware reappears.
+    ///
+    /// `SharedTransport::acquire()` does **not** short-circuit on this
+    /// state in the current implementation — the on-acquire eager
+    /// reconnect path is a follow-up (see the plan doc's reconnect
+    /// triggers table).
     #[error("transport is reconnecting")]
     Reconnecting,
 }

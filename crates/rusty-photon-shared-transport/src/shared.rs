@@ -207,8 +207,12 @@ impl<C: Codec> SharedTransport<C> {
             // the slot is populated, while_open is running, the
             // handshake already ran. No I/O needed; just flip the flag
             // so the next 1→0 transition keeps the port open instead
-            // of tearing it down.
+            // of tearing it down. The lazy `acquire()` cold-start
+            // path already attaches the reconnect signal to the
+            // Connection it published, so spawning the supervisor
+            // here wires up listener+notifier correctly.
             self.service_lifetime.store(true, Ordering::SeqCst);
+            self.spawn_supervisor().await;
             return Ok(());
         }
 
@@ -270,7 +274,20 @@ impl<C: Codec> SharedTransport<C> {
         let mut sup = self.supervisor_state.lock().await;
         if let Some((mut old_handle, old_cancel)) = sup.take() {
             old_cancel.cancel();
-            let _ = tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle).await;
+            if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle)
+                .await
+                .is_err()
+            {
+                // A supervisor loop that ignores its cancellation token
+                // would leak indefinitely (and potentially fight a
+                // replacement spawned right after). Abort and warn so
+                // operators see the misbehaving hook in logs.
+                old_handle.abort();
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    "previous supervisor task did not respond to cancellation; aborted"
+                );
+            }
         }
         let cancel = CancellationToken::new();
         let cancel_for_task = cancel.clone();
@@ -352,7 +369,21 @@ impl<C: Codec> SharedTransport<C> {
             let mut wo_state = self.while_open_state.lock().await;
             if let Some((mut old_handle, old_cancel)) = wo_state.take() {
                 old_cancel.cancel();
-                let _ = tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle).await;
+                if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle)
+                    .await
+                    .is_err()
+                {
+                    // A stubborn while_open task that ignores the
+                    // cancellation token would keep firing requests
+                    // against the dead transport alongside the freshly
+                    // installed connection. Abort it so a single
+                    // misbehaving hook doesn't outlive its replacement.
+                    old_handle.abort();
+                    warn!(
+                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                        "while_open task did not respond to cancellation during reconnect; aborted"
+                    );
+                }
             }
         }
 
@@ -633,12 +664,17 @@ impl<C: Codec> SharedTransport<C> {
 
     /// 1→0 cleanup body. The caller must hold [`acquire_lock`](Self::acquire_lock).
     ///
-    /// Always runs [`Hooks::on_last_disconnect`] against the live slot
-    /// connection. Then, **only in `LazyAcquire` mode**, does the full
-    /// transport teardown (cancels while-open, drops the slot's
-    /// connection so the port closes). In `ServiceLifetime` mode the
-    /// port stays open across this transition; the supervisor /
-    /// service binary owns transport teardown via [`shutdown`](Self::shutdown).
+    /// In `LazyAcquire` mode: cancel/join `while_open` first (so the
+    /// poll loop doesn't race the safety commands on the wire),
+    /// then run [`Hooks::on_last_disconnect`], then drop the slot's
+    /// connection so the port closes. This ordering matches the
+    /// contract documented on [`Hooks::on_last_disconnect`] in
+    /// `session.rs`.
+    ///
+    /// In `ServiceLifetime` mode: only run [`Hooks::on_last_disconnect`];
+    /// `while_open`, the supervisor, and the port all stay live for
+    /// the next client. Transport teardown belongs to the explicit
+    /// [`shutdown`](Self::shutdown) call from the service binary.
     async fn run_cleanup_locked(&self) -> Result<(), TransportError> {
         // Re-check count: a new acquire could not have raced in while we
         // held the lock, but the symmetric check makes the invariant
@@ -647,10 +683,48 @@ impl<C: Codec> SharedTransport<C> {
             return Ok(());
         }
 
+        let service_lifetime = self.service_lifetime.load(Ordering::SeqCst);
+
+        if !service_lifetime {
+            // LazyAcquire mode: cancel while_open BEFORE running
+            // on_last_disconnect so the poll loop's in-flight requests
+            // don't interleave with the safety commands. The command
+            // lock would arbitrate the bytes-on-the-wire, but the
+            // resulting interleaving (one teardown command, one
+            // routine poll, one teardown command, …) is not what the
+            // hook author wrote against — clean wire access matters.
+            self.available.store(false, Ordering::SeqCst);
+
+            let while_open = self.while_open_state.lock().await.take();
+            if let Some((mut handle, cancel)) = while_open {
+                cancel.cancel();
+                match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(join_err)) => {
+                        warn!(
+                            error = %join_err,
+                            "while_open task panicked or was cancelled before teardown"
+                        );
+                    }
+                    Err(_) => {
+                        handle.abort();
+                        warn!(
+                            timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                            "while_open task did not respond to cancellation; aborted"
+                        );
+                    }
+                }
+            }
+        }
+        // In ServiceLifetime mode, while_open keeps running across this
+        // transition by design (the port stays open for the next client).
+
         // Safety teardown: run `on_last_disconnect` against the live
-        // connection. Borrow rather than take so the slot stays
-        // populated in ServiceLifetime mode and the hook can issue
-        // wire commands.
+        // connection. In LazyAcquire mode while_open is now quiet so
+        // the hook has exclusive command-lock access. In ServiceLifetime
+        // mode while_open still runs but the hook's writes still
+        // arbitrate through the command lock — same per-command
+        // serialisation Sessions use.
         {
             let slot_guard = self.slot.lock().await;
             if let Some(cell) = slot_guard.as_ref() {
@@ -659,45 +733,17 @@ impl<C: Codec> SharedTransport<C> {
             }
         }
 
-        if self.service_lifetime.load(Ordering::SeqCst) {
-            // ServiceLifetime mode: port stays open. while_open keeps
-            // running. The next client's `acquire()` will reuse the
-            // existing slot connection. Done.
+        if service_lifetime {
+            // Port stays open; next acquire reuses the slot connection.
             return Ok(());
         }
 
-        // LazyAcquire mode: full transport teardown.
-        self.available.store(false, Ordering::SeqCst);
-
-        let while_open = self.while_open_state.lock().await.take();
-        if let Some((mut handle, cancel)) = while_open {
-            cancel.cancel();
-            match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(join_err)) => {
-                    warn!(
-                        error = %join_err,
-                        "while_open task panicked or was cancelled before teardown"
-                    );
-                }
-                Err(_) => {
-                    handle.abort();
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "while_open task did not respond to cancellation; aborted"
-                    );
-                }
-            }
-        }
-
-        let conn = self.slot.lock().await.take();
-        if let Some(conn) = conn {
-            // `conn` is now the only Arc holding the Connection (the
-            // while_open task's clone dropped when its future ended;
-            // sessions all dropped before we got here). When `conn`
-            // drops at the end of this scope the inner FrameTransport
-            // drops with it and the OS-level conduit closes.
-            drop(conn);
+        // LazyAcquire mode: drop the slot's cell so the inner
+        // Arc<Connection<C>> drops, which drops the FrameTransport,
+        // which closes the OS-level conduit.
+        let cell = self.slot.lock().await.take();
+        if let Some(cell) = cell {
+            drop(cell);
         }
         Ok(())
     }
