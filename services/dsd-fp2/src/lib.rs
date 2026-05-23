@@ -82,6 +82,15 @@ impl ServerBuilder {
 
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
+        // Phase 2: eager hardware validation. Opt-in via
+        // `validate_on_start: true`; on handshake failure the error
+        // bubbles up to `main` for a non-zero exit. Default `false`
+        // preserves the lazy-acquire flow.
+        if self.config.validate_on_start {
+            info!("validating hardware via eager startup handshake");
+            manager.transport().start().await?;
+        }
+
         if self.config.cover_calibrator.enabled {
             let device =
                 DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
@@ -126,6 +135,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            manager,
         })
     }
 }
@@ -136,6 +146,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `start()` can call `manager.transport().shutdown()` after
+    /// the HTTP server stops. No-op in LazyAcquire mode.
+    manager: Arc<FlatPanelManager>,
 }
 
 impl BoundServer {
@@ -156,6 +169,9 @@ impl BoundServer {
                 info!("dsd-fp2 started on {}", self.local_addr);
                 rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
+        }
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("dsd-fp2 shut down");
         Ok(())

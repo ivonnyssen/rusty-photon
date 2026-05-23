@@ -334,6 +334,7 @@ mod mock_tests {
                 auth: None,
             },
             cover_calibrator: CoverCalibratorConfig::default(),
+            validate_on_start: false,
         }
     }
 

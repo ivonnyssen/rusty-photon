@@ -299,6 +299,7 @@ mod mock_tests {
                 auth: None,
             },
             cover_calibrator: crate::config::CoverCalibratorConfig::default(),
+            validate_on_start: false,
         }
     }
 
