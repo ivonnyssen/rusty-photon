@@ -7,6 +7,8 @@
 //! `load_park_target_after_connect`) with structural rollback via
 //! `session.close().await` on any error.
 
+use std::sync::Arc;
+
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
 use async_trait::async_trait;
@@ -69,6 +71,19 @@ impl Device for MountDevice {
                     return Err(e);
                 }
                 *slot = Some(session);
+                // Start the tracking-time CW-exclusion-zone safety
+                // guard for this connection. It reads the cached
+                // snapshot the background poll loop refreshes and
+                // self-terminates when `set_connected(false)` clears
+                // the slot below. See [`super::tracking_guard`] and
+                // issue #259.
+                super::tracking_guard::spawn_tracking_guard(
+                    Arc::clone(&self.state),
+                    Arc::clone(&self.manager),
+                    Arc::clone(&self.session),
+                    self.config.clone(),
+                    self.manager.polling_interval_for_watcher(),
+                );
             }
             (false, true) => {
                 if let Some(session) = slot.take() {

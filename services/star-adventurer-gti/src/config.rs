@@ -149,6 +149,26 @@ pub struct MountConfig {
     #[serde(default = "default_binding_zone_max_hours")]
     pub binding_zone_max_hours: f64,
 
+    /// Slack added on both edges of the CW exclusion zone for the
+    /// **tracking-time safety guard** (see the design doc's
+    /// [§"Tracking-time safety guard"](../../../docs/services/star-adventurer-gti.md#tracking-time-safety-guard)).
+    ///
+    /// While `Tracking = true`, a background watcher stops the mount
+    /// (`:K1`) once the live encoder `mech_HA` enters
+    /// `(binding_zone_min_hours − margin, binding_zone_max_hours + margin)`,
+    /// before tracking drift can carry the counterweights into the
+    /// zone. The margin lets cautious operators stop early; `0.0`
+    /// stops exactly at zone entry. Defaults to `0.05` h (≈ 45 s of
+    /// sidereal drift).
+    ///
+    /// Independent of [`FlipPolicy::enabled`]: the guard is the safety
+    /// floor and runs whenever the zone is active
+    /// (`binding_zone_min_hours < binding_zone_max_hours`), regardless
+    /// of meridian-flip support. A non-finite or negative value is
+    /// treated as `0.0` by the guard.
+    #[serde(default = "default_tracking_guard_margin_hours")]
+    pub tracking_guard_margin_hours: f64,
+
     /// Safe Dec mechanical-degree envelope. Same enforcement and
     /// rationale as the RA limits. Defaults `[-90.0, +90.0]` — the
     /// observable hemisphere, plus the convention that
@@ -253,6 +273,71 @@ impl FlipPolicy {
                 self.flip_range_hours
             ));
         }
+        Ok(())
+    }
+}
+
+/// Outer bound on [`MountConfig::tracking_guard_margin_hours`]. The
+/// margin is operator-preference slack before the CW exclusion zone,
+/// not a mechanical limit; this cap only catches a misconfiguration
+/// (e.g. a value entered in degrees, or a unit mix-up) at startup. The
+/// shipped default is `0.05` h.
+pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
+
+impl MountConfig {
+    /// Validate the mount configuration after load. Returns
+    /// `Err(message)` on a bad value; [`load_config`] surfaces it as a
+    /// startup error so an out-of-range config fails fast instead of
+    /// silently driving the mount with a bad parameter.
+    ///
+    /// These fields are bare `f64` with no newtype guarantees, so this
+    /// method is the single place their documented ranges are enforced.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        self.flip_policy.validate()?;
+
+        // CW exclusion zone. `min >= max` is the documented "disabled"
+        // sentinel (used by tests and by operators whose geometry
+        // differs — see the field docs), so only finiteness is required
+        // here; the guard / slew checks treat an inverted interval as
+        // "no zone".
+        if !self.binding_zone_min_hours.is_finite() || !self.binding_zone_max_hours.is_finite() {
+            return Err(format!(
+                "binding_zone_min_hours / binding_zone_max_hours must be finite, got ({}, {})",
+                self.binding_zone_min_hours, self.binding_zone_max_hours
+            ));
+        }
+
+        // Tracking-guard margin: finite, non-negative, capped to catch a
+        // misconfiguration. The guard also sanitises bad values at
+        // runtime, but a startup error is clearer to the operator.
+        if !self.tracking_guard_margin_hours.is_finite()
+            || self.tracking_guard_margin_hours < 0.0
+            || self.tracking_guard_margin_hours > MAX_TRACKING_GUARD_MARGIN_HOURS
+        {
+            return Err(format!(
+                "tracking_guard_margin_hours must be in [0, {MAX_TRACKING_GUARD_MARGIN_HOURS}] hours, got {}",
+                self.tracking_guard_margin_hours
+            ));
+        }
+
+        // Dec clip range: a real celestial-Dec interval within the
+        // observable hemisphere.
+        if !self.dec_min_degrees.is_finite() || !self.dec_max_degrees.is_finite() {
+            return Err(format!(
+                "dec_min_degrees / dec_max_degrees must be finite, got ({}, {})",
+                self.dec_min_degrees, self.dec_max_degrees
+            ));
+        }
+        if self.dec_min_degrees < -90.0
+            || self.dec_max_degrees > 90.0
+            || self.dec_min_degrees >= self.dec_max_degrees
+        {
+            return Err(format!(
+                "dec_min_degrees / dec_max_degrees must satisfy -90 <= min < max <= 90, got ({}, {})",
+                self.dec_min_degrees, self.dec_max_degrees
+            ));
+        }
+
         Ok(())
     }
 }
@@ -513,6 +598,9 @@ fn default_binding_zone_min_hours() -> f64 {
 fn default_binding_zone_max_hours() -> f64 {
     11.05
 }
+fn default_tracking_guard_margin_hours() -> f64 {
+    0.05
+}
 fn default_dec_min_degrees() -> f64 {
     -90.0
 }
@@ -582,6 +670,7 @@ impl Default for MountConfig {
             tracking_rate: TrackingRateName::Sidereal,
             binding_zone_min_hours: default_binding_zone_min_hours(),
             binding_zone_max_hours: default_binding_zone_max_hours(),
+            tracking_guard_margin_hours: default_tracking_guard_margin_hours(),
             dec_min_degrees: default_dec_min_degrees(),
             dec_max_degrees: default_dec_max_degrees(),
             park_ra_ticks: None,
@@ -596,6 +685,10 @@ impl Default for MountConfig {
 pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
+    config
+        .mount
+        .validate()
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
     Ok(config)
 }
 
@@ -991,6 +1084,153 @@ mod tests {
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
         assert!(!m.flip_policy.enabled);
         assert!((m.flip_policy.flip_range_hours - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mount_config_default_tracking_guard_margin_is_45s_of_drift() {
+        // 0.05 h ≈ 45 s of sidereal drift — the shipped default the
+        // design doc's §"Tracking-time safety guard" documents.
+        let cfg = MountConfig::default();
+        assert!(
+            (cfg.tracking_guard_margin_hours - 0.05).abs() < f64::EPSILON,
+            "got {}",
+            cfg.tracking_guard_margin_hours
+        );
+    }
+
+    #[test]
+    fn mount_config_deserialises_missing_tracking_guard_margin_as_default() {
+        // Configs written before the tracking-time safety guard landed
+        // do not carry `tracking_guard_margin_hours`; the driver must
+        // read them as the 0.05 h default rather than failing.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0
+        }"#;
+        let m: MountConfig = serde_json::from_str(json).expect("deserialise");
+        assert!((m.tracking_guard_margin_hours - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mount_config_validate_accepts_defaults() {
+        MountConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn mount_config_validate_accepts_disabled_binding_zone() {
+        // `min >= max` is the documented disable sentinel — must pass.
+        MountConfig {
+            binding_zone_min_hours: 24.0,
+            binding_zone_max_hours: 0.0,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn mount_config_validate_delegates_to_flip_policy() {
+        // Previously dead: an out-of-range flip_range_hours is now
+        // rejected because `load_config` calls `validate`.
+        let m = MountConfig {
+            flip_policy: FlipPolicy {
+                flip_range_hours: 5.0, // > MAX_FLIP_RANGE_HOURS
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("flip_range_hours"), "got {err}");
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_margin_above_cap() {
+        let m = MountConfig {
+            tracking_guard_margin_hours: MAX_TRACKING_GUARD_MARGIN_HOURS + 0.1,
+            ..Default::default()
+        };
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("tracking_guard_margin_hours"), "got {err}");
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_negative_margin() {
+        MountConfig {
+            tracking_guard_margin_hours: -0.01,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_non_finite_margin() {
+        MountConfig {
+            tracking_guard_margin_hours: f64::NAN,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_non_finite_binding_zone() {
+        MountConfig {
+            binding_zone_min_hours: f64::INFINITY,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_inverted_dec_range() {
+        let m = MountConfig {
+            dec_min_degrees: 10.0,
+            dec_max_degrees: -10.0,
+            ..Default::default()
+        };
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("dec_"), "got {err}");
+    }
+
+    #[test]
+    fn mount_config_validate_rejects_out_of_range_dec() {
+        MountConfig {
+            dec_min_degrees: -100.0,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+    }
+
+    #[test]
+    fn load_config_rejects_an_out_of_range_value() {
+        // End-to-end: validation is wired into `load_config`, so a bad
+        // value in the file fails the load rather than being silently
+        // accepted. flip_range_hours = 5.0 is out of (0, 0.95].
+        use std::io::Write;
+        let cfg = Config {
+            mount: MountConfig {
+                flip_policy: FlipPolicy {
+                    flip_range_hours: 5.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialise config");
+        let mut f = tempfile::NamedTempFile::new().expect("temp file");
+        f.write_all(json.as_bytes()).expect("write temp config");
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("flip_range_hours"),
+            "expected a flip_range_hours validation error, got: {err}"
+        );
     }
 
     #[test]

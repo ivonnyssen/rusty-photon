@@ -841,6 +841,54 @@ The Dec envelope (`dec_min_degrees` / `dec_max_degrees`, defaults
 driver will accept, primarily a sanity check against client-side
 coordinate-math bugs.
 
+#### Tracking-time safety guard
+
+The safety envelope above is enforced at *slew* time. But `Tracking =
+true` issues `:G` + `:I` + `:J` on the RA axis and from that point the
+firmware advances the encoder autonomously — the driver sends no
+further wire commands and the slew-time path checks never re-run. A
+multi-hour session that begins at a safe negative `mech_HA` drifts up
+across the zone entry (`mech_HA = +0.95` by default) with no operator
+action: the same physical failure mode as a zone-crossing slew, reached
+via tracking drift instead of a slew command (issue #259).
+
+A per-connection background guard closes that gap. While `Tracking =
+true` it watches the live encoder `mech_HA` — read from the snapshot
+the background poll loop already refreshes, at `polling_interval`, so
+the guard adds no extra wire traffic. When `mech_HA` enters the band
+`(binding_zone_min_hours − margin, binding_zone_max_hours + margin)` —
+the CW exclusion zone widened by `tracking_guard_margin_hours` on each
+edge — the guard:
+
+1. issues `:K1` to stop the RA axis,
+2. clears the in-memory `Tracking` flag to match the wire, and
+3. emits a `warn!` explaining why.
+
+It does **not** pick a pier side or flip. Post-guard state is
+`Tracking = false`, `Slewing = false`, the encoder wherever it was when
+the guard fired (no automatic park). The operator — or higher-level
+automation — decides what to do next: flip via `SetSideOfPier`, slew
+elsewhere, or park.
+
+`tracking_guard_margin_hours` (default `0.05` h ≈ 45 s of sidereal
+drift) lets cautious operators stop *before* the zone entry rather than
+at it; `0.0` stops exactly at `binding_zone_min_hours`. A non-finite or
+negative value is treated as `0.0`. The guard is **independent of
+`flip_policy.enabled`**: it is the safety floor that keeps an
+unattended autoguided session from contacting hardware whether or not
+meridian-flip support is configured. It is disabled only when the zone
+itself is (`binding_zone_min_hours ≥ binding_zone_max_hours`). Because
+`slew_to_coordinates_async` clears `Tracking` for a slew's duration, the
+guard is naturally dormant during slews and resumes once the
+completion watcher re-engages tracking on the new pose.
+
+Driver-planned auto-flip during tracking (Phase 2.5) — flipping ahead
+of the zone instead of just stopping — is a separate, larger change
+tracked as Part 2 of issue #259 and remains
+[deferred](#deferred-not-in-mvp). When it lands, this guard stays as the
+belt-and-suspenders fallback for when an auto-flip can't find a safe
+path.
+
 #### Pier-side decision tree
 
 `DestinationSideOfPier(ra, dec)` and `SlewToCoordinatesAsync(ra,
@@ -1020,6 +1068,13 @@ function.
 JSON, deserialised with `serde` + `humantime-serde` for `Duration`
 fields. The transport block is a tagged enum: `usb` or `udp`.
 
+The mount block is validated at startup (`load_config` →
+`MountConfig::validate`): an out-of-range `flip_policy.flip_range_hours`,
+a non-finite binding zone or tracking-guard margin, a margin above
+`MAX_TRACKING_GUARD_MARGIN_HOURS` (1.0 h), or an inverted /
+out-of-hemisphere Dec range is rejected with a clear error rather than
+silently driving the mount with a bad parameter.
+
 ```json
 {
   "transport": {
@@ -1099,6 +1154,14 @@ Notes:
   (CW points into the ground beneath the pier, not above the mount
   head). Setting `min ≥ max` disables the check (used by tests and
   by operators whose mount geometry differs).
+- `tracking_guard_margin_hours` extends CW exclusion-zone enforcement
+  to *tracking* time: a background guard stops the mount (`:K1`) once
+  the live encoder `mech_HA` drifts into
+  `(binding_zone_min_hours − margin, binding_zone_max_hours + margin)`
+  while `Tracking = true`. Defaults `0.05` h (≈ 45 s of sidereal
+  drift); `0.0` stops exactly at the zone entry. Independent of
+  `flip_policy.enabled`. See
+  [§Tracking-time safety guard](#tracking-time-safety-guard).
 - `dec_min_degrees` / `dec_max_degrees` clip the celestial-Dec
   range the driver will accept on slew / sync. Defaults `[−90, +90]°`.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
@@ -1635,7 +1698,7 @@ as `qhy-focuser` and `ppba-driver`.)
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`. Re-enabled `[package.metadata.conformu]` so the full two-phase ConformU integration ran again — but the `conformance` phase, which `alpacaprotocol`-only manual runs hadn't exercised, surfaced three failures that PR #206's review hadn't caught; see Phase A8. |
 | **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
-| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). Auto-flip-during-tracking is intentionally deferred to a Phase 2.5 follow-up — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) remains deferred — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -1905,7 +1968,7 @@ What's still outstanding from Phase 4:
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |
-| Auto-flip during tracking (Phase 2.5: `flip_policy.auto_flip_during_tracking` + `auto_flip_at_meridian_offset_hours`) | hosts like NINA / SGP / `rp` own flip timing themselves; mid-exposure auto-flip is a footgun for astrophotography and a separate state machine. Phase 6 lands explicit `SetSideOfPier`-driven flips only |
+| Driver-planned auto-flip during tracking (Phase 2.5 / Part 2 of issue #259: `flip_policy.auto_flip_during_tracking` + `auto_flip_at_meridian_offset_hours`) | hosts like NINA / SGP / `rp` own flip timing themselves; mid-exposure auto-flip is a footgun for astrophotography and a separate state machine. The Part 1 tracking-time safety guard (stop-only, see [§Tracking-time safety guard](#tracking-time-safety-guard)) has landed; auto-flip would replace the stop with a flip slew and re-engage tracking on the new pier side |
 | Altitude-based safety floor (Phase 3 in [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md)) | replaces the rectangular Dec envelope with an altitude floor; independent of Phase 6 and can land in either order |
 
 ## References

@@ -23,13 +23,14 @@ use crate::config::Config;
 use crate::coordinates::{fold_to_canonical_band, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
-use crate::transport::mock::MockTransportFactory;
+use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
 
 use super::park_persistence::{read_park_from_config, write_park_to_config};
 use super::slew::{
     canonical_path_crosses_pole, check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta,
     pickup_reslew_axis, stop_axis_and_wait,
 };
+use super::tracking_guard::tracking_guard_tick;
 use super::watchers::{watcher_poll_with_retry, watcher_should_abort};
 use super::*;
 
@@ -134,6 +135,97 @@ async fn set_connected_drives_transport_connect_and_disconnect() {
     assert!(d.connected().await.unwrap());
     d.set_connected(false).await.unwrap();
     assert!(!d.connected().await.unwrap());
+}
+
+/// Build a device with the CW exclusion zone enabled and the given
+/// tracking-guard margin, then establish a session **directly** (not via
+/// `set_connected`, so the background guard task isn't spawned — these
+/// tests drive [`tracking_guard_tick`] by hand for determinism). Returns
+/// the shared mock state for encoder seeding and command-log assertions.
+async fn guard_device(margin_hours: f64) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = Config::default();
+    cfg.mount.binding_zone_min_hours = 0.95;
+    cfg.mount.binding_zone_max_hours = 11.05;
+    cfg.mount.tracking_guard_margin_hours = margin_hours;
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    let session = d.manager.transport().acquire().await.unwrap();
+    *d.session.write().await = Some(session);
+    (d, mock)
+}
+
+/// Seed both the mock encoder and the cached snapshot to the tick value
+/// for `mech_ha`, so a poll-loop refresh and a direct snapshot read
+/// agree on the same position regardless of timing.
+async fn seed_mech_ha(
+    d: &MountDevice,
+    mock: &Arc<tokio::sync::Mutex<MockMountState>>,
+    mech_ha: f64,
+) {
+    let cpr = d.manager.parameters().await.unwrap().cpr_ra;
+    let ticks = (mech_ha * cpr as f64 / 24.0) as i32;
+    mock.lock().await.ra.position_ticks = ticks;
+    d.manager.seed_ra_position(ticks).await;
+}
+
+fn log_has_k1(log: &[Vec<u8>]) -> bool {
+    log.iter().any(|f| f == b":K1\r")
+}
+
+#[tokio::test]
+async fn tracking_guard_tick_stops_tracking_inside_the_zone() {
+    let (d, mock) = guard_device(0.05).await;
+    seed_mech_ha(&d, &mock, 6.0).await; // mid-zone (mech_HA = +6 h)
+    d.state.write().await.tracking_requested = true;
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(fired, "guard should fire mid-zone");
+    assert!(
+        !d.tracking().await.unwrap(),
+        "Tracking must be cleared after the guard fires"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(log_has_k1(&log), "expected a :K1 stop, log: {log:?}");
+}
+
+#[tokio::test]
+async fn tracking_guard_tick_is_noop_far_from_the_zone() {
+    let (d, mock) = guard_device(0.05).await;
+    seed_mech_ha(&d, &mock, -3.0).await; // typical session start, well clear
+    d.state.write().await.tracking_requested = true;
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(!fired, "guard must not fire far from the zone");
+    assert!(
+        d.tracking().await.unwrap(),
+        "Tracking must stay engaged far from the zone"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log_has_k1(&log),
+        "no stop expected far from the zone, log: {log:?}"
+    );
+}
+
+#[tokio::test]
+async fn tracking_guard_tick_is_noop_when_not_tracking() {
+    let (d, mock) = guard_device(0.05).await;
+    seed_mech_ha(&d, &mock, 6.0).await; // mid-zone, but tracking is off
+                                        // `tracking_requested` left false — the guard only acts while the
+                                        // client has tracking engaged.
+
+    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+
+    assert!(!fired, "guard only acts while tracking is engaged");
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log_has_k1(&log),
+        "no stop expected when not tracking, log: {log:?}"
+    );
 }
 
 #[tokio::test]

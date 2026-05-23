@@ -1,0 +1,64 @@
+//! Steps for tracking_safety.feature.
+
+use std::time::Duration;
+
+use crate::world::StarAdventurerWorld;
+use cucumber::{given, then};
+
+/// GTi counts-per-revolution on both axes (`0x375F00`) — the value the
+/// mock seeds and the driver caches at handshake. Used to convert a
+/// human-readable mech_HA into the encoder tick value the
+/// `/debug/v1/mock-state` seed endpoint expects:
+/// `ticks = mech_HA × CPR / 24`.
+const GTI_CPR: f64 = 3_628_800.0;
+
+#[given(
+    expr = "a star-adventurer service with the CW exclusion zone from {float} to {float} hours"
+)]
+async fn configured_zone(world: &mut StarAdventurerWorld, min_hours: f64, max_hours: f64) {
+    let cfg = world.config_mut();
+    cfg.mount.binding_zone_min_hours = min_hours;
+    cfg.mount.binding_zone_max_hours = max_hours;
+}
+
+#[given("a star-adventurer service with the CW exclusion zone disabled")]
+async fn configured_zone_disabled(world: &mut StarAdventurerWorld) {
+    // An inverted interval (min > max) switches the binding-zone check
+    // off — the convention the slew planner and the guard share.
+    let cfg = world.config_mut();
+    cfg.mount.binding_zone_min_hours = 24.0;
+    cfg.mount.binding_zone_max_hours = 0.0;
+}
+
+#[given(expr = "a tracking-guard margin of {float} hours")]
+async fn configured_margin(world: &mut StarAdventurerWorld, margin_hours: f64) {
+    world.config_mut().mount.tracking_guard_margin_hours = margin_hours;
+}
+
+#[given(expr = "the RA encoder is at mechanical HA {float} hours")]
+async fn ra_encoder_at_mech_ha(world: &mut StarAdventurerWorld, mech_ha: f64) {
+    let ticks = (mech_ha * GTI_CPR / 24.0).round() as i32;
+    world.queue_seed("ra_ticks", ticks.into()).await;
+}
+
+#[then(expr = "the mount should stop tracking within {int} ms")]
+async fn stop_tracking_within(world: &mut StarAdventurerWorld, ms: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+    while std::time::Instant::now() < deadline {
+        if !world.mount().tracking().await.unwrap() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the tracking guard did not stop tracking within {ms} ms");
+}
+
+#[then(expr = "the mount should still be tracking after {int} ms")]
+async fn still_tracking_after(world: &mut StarAdventurerWorld, ms: u64) {
+    // Give the guard several poll cycles to (wrongly) fire; it must not.
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+    assert!(
+        world.mount().tracking().await.unwrap(),
+        "tracking was stopped after {ms} ms but should have stayed engaged"
+    );
+}
