@@ -26,7 +26,7 @@ pub enum MountReadError {
     Timeout(std::time::Duration),
     #[error("mount transport error: {0}")]
     Transport(String),
-    #[error("ASCOM error: {0}")]
+    #[error("mount ASCOM error: {0}")]
     Ascom(String),
     #[error("mount device {device_number} not found on Alpaca server")]
     DeviceNotFound { device_number: u32 },
@@ -41,7 +41,7 @@ pub enum RotatorReadError {
     Timeout(std::time::Duration),
     #[error("rotator transport error: {0}")]
     Transport(String),
-    #[error("ASCOM error: {0}")]
+    #[error("rotator ASCOM error: {0}")]
     Ascom(String),
     #[error("rotator device {device_number} not found on Alpaca server")]
     DeviceNotFound { device_number: u32 },

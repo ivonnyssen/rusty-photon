@@ -360,6 +360,14 @@ impl SkySurveyCameraWorld {
         self.rotator_stub_state = Some(state);
     }
 
+    pub fn set_rotator_stub_behavior(&mut self, behavior: RotatorStubBehavior) {
+        let state = self
+            .rotator_stub_state
+            .as_ref()
+            .expect("rotator stub not spawned — call spawn_rotator_stub first");
+        *state.behavior.write().expect("rotator stub rwlock") = behavior;
+    }
+
     pub fn set_stub_behavior(&mut self, behavior: StubBehavior) {
         let state = self
             .stub_state

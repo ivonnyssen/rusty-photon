@@ -54,9 +54,19 @@ Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7, F8)
     Then after a successful exposure, the position endpoint reports RA approximately 1.0 Dec approximately 2.0
     Then after another successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0
 
-  Scenario: F8 — the rotator's position angle drives the exposure rotation
+  Scenario: F8 — the rotator's position angle drives the exposure rotation, read fresh each time
     Given a mount reports RA 10.0 hours and Dec 30.0 degrees
     And a rotator reports position angle 42.0 degrees
     And the camera is configured to follow that mount
     And the camera is started and connected in follow mode
     Then after a successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0 and rotation approximately 42.0
+    When the rotator is updated to position angle 17.5 degrees
+    Then after another successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0 and rotation approximately 17.5
+
+  Scenario: F8 — rotator read failure surfaces as an exposure error
+    Given a mount reports RA 10.0 hours and Dec 30.0 degrees
+    And a rotator that errors on every read
+    And the camera is configured to follow that mount
+    And the camera is started and connected in follow mode
+    When I StartExposure with default parameters
+    Then the exposure fails with ASCOM UNSPECIFIED_ERROR

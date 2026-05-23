@@ -1,7 +1,10 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! sky-survey-camera: ASCOM Alpaca Camera simulator backed by NASA SkyView.
 
-pub mod alpaca;
+// Internal-only: holds the shared `build_alpaca_client` helper
+// (`pub(crate)`), used by `mount` and `rotator`. Not part of the public
+// API, so the module is private.
+mod alpaca;
 pub mod camera;
 pub mod config;
 pub mod error;

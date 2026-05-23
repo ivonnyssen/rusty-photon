@@ -24,6 +24,18 @@ async fn rotator_reports(world: &mut SkySurveyCameraWorld, position_angle: f64) 
         .await;
 }
 
+#[given("a rotator that errors on every read")]
+async fn rotator_errors(world: &mut SkySurveyCameraWorld) {
+    world
+        .spawn_rotator_stub(RotatorStubBehavior::AscomError)
+        .await;
+}
+
+#[cucumber::when(expr = "the rotator is updated to position angle {float} degrees")]
+fn rotator_updated(world: &mut SkySurveyCameraWorld, position_angle: f64) {
+    world.set_rotator_stub_behavior(RotatorStubBehavior::Ok { position_angle });
+}
+
 #[given("the camera is configured to follow that mount")]
 fn follow_with_zero_offset(_world: &mut SkySurveyCameraWorld) {
     // `spawn_mount_stub` already set `telescope_endpoint_override`,
@@ -74,6 +86,27 @@ async fn position_after_another_exposure(world: &mut SkySurveyCameraWorld, ra: f
     expr = "after a successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float} and rotation approximately {float}"
 )]
 async fn position_after_exposure_with_rotation(
+    world: &mut SkySurveyCameraWorld,
+    ra: f64,
+    dec: f64,
+    rotation: f64,
+) {
+    drive_exposure_then_check_position_rotation(world, ra, dec, rotation).await;
+}
+
+#[then(
+    expr = "after another successful exposure, the position endpoint reports RA approximately {float} Dec approximately {float} and rotation approximately {float}"
+)]
+async fn position_after_another_exposure_with_rotation(
+    world: &mut SkySurveyCameraWorld,
+    ra: f64,
+    dec: f64,
+    rotation: f64,
+) {
+    drive_exposure_then_check_position_rotation(world, ra, dec, rotation).await;
+}
+
+async fn drive_exposure_then_check_position_rotation(
     world: &mut SkySurveyCameraWorld,
     ra: f64,
     dec: f64,
