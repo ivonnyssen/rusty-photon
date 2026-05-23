@@ -339,6 +339,16 @@ fn fast_settle_device() -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
+    // Pin the park target to the mock's start position (0, 0) so
+    // `park()` is a zero-distance, instant slew. The park-lifecycle
+    // tests using this helper exercise the watcher / AtPark flip, not
+    // park-target resolution; without the pin they would inherit the
+    // `preferred_ap_park` default (`ap_park_3`, ~907 k ticks away) and
+    // turn every `park()` into a multi-poll slew that races the tests'
+    // fixed settle sleeps. `preferred_ap_park` resolution is covered by
+    // the dedicated `park_target_*` tests.
+    cfg.mount.park_ra_ticks = Some(0);
+    cfg.mount.park_dec_ticks = Some(0);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
@@ -369,6 +379,10 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     cfg.mount.binding_zone_max_hours = 1.5;
     cfg.mount.dec_min_degrees = -5.0;
     cfg.mount.dec_max_degrees = 5.0;
+    // Pin the park target to (0, 0) — see `fast_settle_device` for why
+    // (keeps `park()` instant despite the `preferred_ap_park` default).
+    cfg.mount.park_ra_ticks = Some(0);
+    cfg.mount.park_dec_ticks = Some(0);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -1618,28 +1632,29 @@ async fn set_park_persists_current_snapshot_and_updates_in_memory_target() {
 }
 
 #[tokio::test]
-async fn park_target_defaults_to_handshake_capture_when_config_has_no_values() {
-    // No config park values **and no `home_pose`** → driver falls
-    // back to the live snapshot, which on a fresh connect equals
-    // the handshake-captured encoder reading. The mock starts both
-    // axes at 0 and the home_pose seed is a no-op when none is
-    // configured, so park_ra_ticks / park_dec_ticks should be
-    // Some(0) after connect.
+async fn park_target_defaults_to_preferred_ap_park_when_no_raw_override() {
+    // No raw `park_*_ticks` override and the ship-default
+    // `unpark_from_ap_position = ap_park_0` (no seed) → the park
+    // target resolves to the `preferred_ap_park` default (`ap_park_3`).
+    // `device()` runs at latitude 0, so ap_park_3 → mech_HA = -6h
+    // (ra = -6/24 * cpr = -907,200) and dec_enc = +90° (northern arm
+    // via `>= 0`; dec = 90/360 * cpr = +907,200).
     let d = device();
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(0));
-    assert_eq!(s.park_dec_ticks, Some(0));
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(907_200));
 }
 
 #[tokio::test]
-async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
-    // Sky-Watcher firmware does not always read exactly (0, 0)
-    // after a power-cycle: the validation GTi reports dec = -1 on
-    // fresh power-up. Without the FRESH_POWER_UP_TICK_TOLERANCE
-    // guard the strict `!= 0` check would skip the seed and the
-    // mount would silently end up with a wrong celestial mapping
-    // (and a wrong Park target via the snapshot fallback).
+async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
+    // Sky-Watcher firmware does not always read exactly (0, 0) after a
+    // power-cycle: the validation GTi reports dec = -1 on fresh
+    // power-up. Without the FRESH_POWER_UP_TICK_TOLERANCE guard the
+    // strict `!= 0` check would skip the seed and the mount would
+    // silently end up with a wrong celestial mapping. The seed is
+    // observed directly via the post-seed snapshot encoder — the park
+    // target no longer reflects the seed (it tracks preferred_ap_park).
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     // Force the dec encoder to a 1-tick fresh-power-up artifact
@@ -1652,26 +1667,27 @@ async fn home_pose_seed_fires_when_firmware_reports_near_zero_encoder() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ApPark3 N hemisphere with mock cpr = 0x375F00 = 3,628,800:
-    // expected seed → ra_ticks = -907,200, dec_ticks = +907,200.
-    // If the seed had been skipped, the park target would be
-    // (0, -1) (the pre-seed snapshot).
-    let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(-907200));
-    assert_eq!(s.park_dec_ticks, Some(907200));
+    // expected seed → ra_ticks = -907,200, dec_ticks = +907,200. The
+    // snapshot reflects the `:E` writes; if the seed had been skipped
+    // it would still read the pre-seed (0, -1).
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, -907_200);
+    assert_eq!(snap.dec.position_ticks, 907_200);
 }
 
 #[tokio::test]
-async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
-    // A real post-slew encoder is tens of thousands of ticks away
-    // from zero — well beyond FRESH_POWER_UP_TICK_TOLERANCE. The
-    // seed must skip in that case so a mid-session reconnect does
-    // not clobber the operator's slewed-to position.
+async fn unpark_seed_skips_when_firmware_encoder_beyond_tolerance() {
+    // A real post-slew encoder is tens of thousands of ticks away from
+    // zero — well beyond FRESH_POWER_UP_TICK_TOLERANCE. The seed must
+    // skip so a mid-session reconnect does not clobber the operator's
+    // slewed-to position: the snapshot stays at the pre-seed reading
+    // (no `:E` written).
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     {
@@ -1682,21 +1698,19 @@ async fn home_pose_seed_skips_when_firmware_encoder_beyond_tolerance() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
-    // Seed skipped → park target falls back to the snapshot (the
-    // pre-seed handshake reading), so park_ra_ticks should equal
-    // the firmware's reported 50,000 (not -907,200).
-    let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(50_000));
-    assert_eq!(s.park_dec_ticks, Some(0));
+    // Seed skipped → snapshot unchanged from the fresh-power-up reading.
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, 50_000);
+    assert_eq!(snap.dec.position_ticks, 0);
 }
 
 #[tokio::test]
-async fn home_pose_seed_skips_just_above_fresh_power_up_tolerance() {
+async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
     // Pins the tight 10-tick fresh-power-up floor. A reading of 50
     // ticks (~18″ at the GTi's CPR) is well above the single-tick
     // firmware artifact and indicates the operator has already moved
@@ -1712,45 +1726,282 @@ async fn home_pose_seed_skips_just_above_fresh_power_up_tolerance() {
     let mut cfg = Config::default();
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
-    let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(50));
-    assert_eq!(s.park_dec_ticks, Some(0));
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, 50);
+    assert_eq!(snap.dec.position_ticks, 0);
 }
 
 #[tokio::test]
-async fn park_target_defaults_to_home_pose_encoder_when_home_pose_configured() {
-    // Operator configures `home_pose: ap_park_3` (Sky-Watcher's
-    // stock power-up pose) and leaves `park_*_ticks` null. After
-    // connect, `seed_home_pose_after_connect` writes the home_pose's
-    // logical encoder values to the firmware via `:E`, and the
-    // park-target fallback must pick those up from the snapshot —
-    // otherwise `Park` would slew the mount to firmware-encoder-
-    // zero (mech_HA = 0h, mech_dec = 0°) instead of the pose the
-    // operator powered up at. Regression test for the
-    // meridian-flip-phase hardware-validation observation that
-    // `Park` from `home_pose: ap_park_3` drove the OTA to
-    // meridian / celestial equator instead of NCP.
+async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
+    // The fresh-power-up seed (`unpark_from_ap_position`) and the
+    // `Park()` target (`preferred_ap_park`) are independent. Configure
+    // a seed of ap_park_3 and a *different* preferred park of ap_park_2:
+    // the snapshot must reflect the ap_park_3 seed, while the park
+    // target resolves to the ap_park_2 encoder pair.
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.binding_zone_min_hours = 24.0;
     cfg.mount.binding_zone_max_hours = 0.0;
-    cfg.mount.home_pose = Some(crate::config::HomePose::ApPark3);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    cfg.mount.preferred_ap_park = crate::config::ApPark::ApPark2;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
-    // ApPark3 codebase convention: mech_HA = -6h, dec encoder = +90°
-    // (northern hemisphere). Mock cpr = 0x375F00 = 3,628,800 for
-    // both axes, so ra = -6/24 * cpr = -907,200 and
-    // dec = 90/360 * cpr = +907,200.
+    // ap_park_3 seed: mech_HA = -6h, dec_enc = +90° → snapshot
+    // (-907,200, +907,200).
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, -907_200);
+    assert_eq!(snap.dec.position_ticks, 907_200);
+    // ap_park_2 park target: mech_HA = -6h (ra = -907,200), dec_enc = 0°
+    // (dec = 0) — distinct from the seed on the dec axis.
     let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(-907200));
-    assert_eq!(s.park_dec_ticks, Some(907200));
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(0));
+}
+
+// ---- reset_mount_encoders helper (Phase B) ----
+
+#[tokio::test]
+async fn reset_mount_encoders_writes_encoder_and_clears_state() {
+    let d = connected_device().await;
+    // Dirty the in-memory motion/target/tracking state a reset clears.
+    {
+        let mut s = d.state.write().await;
+        s.slew_in_progress = true;
+        s.target_ra_hours = Some(5.0);
+        s.target_dec_degrees = Some(10.0);
+        s.tracking_requested = true;
+    }
+    {
+        let guard = d.session.read().await;
+        let session = guard.as_ref().expect("connected device holds a session");
+        d.reset_mount_encoders(session, 12_345, -6_789)
+            .await
+            .unwrap();
+    }
+    // The `:E` writes are published to the cached snapshot.
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, 12_345);
+    assert_eq!(snap.dec.position_ticks, -6_789);
+    // Driver-internal motion/target/tracking state is cleared.
+    let s = d.state.read().await;
+    assert!(!s.slew_in_progress);
+    assert_eq!(s.target_ra_hours, None);
+    assert_eq!(s.target_dec_degrees, None);
+    assert!(!s.tracking_requested);
+}
+
+#[tokio::test]
+async fn reset_mount_encoders_errors_when_axis_never_stops() {
+    // If stop-and-wait fails (the axis never reports idle), the reset
+    // bails before writing any encoder seed — motion is still in flight
+    // and re-seeding then would race the firmware.
+    let manager = Arc::new(MountManager::new(
+        Config::default(),
+        Arc::new(StuckAxisFactory),
+    ));
+    let session = manager.transport().acquire().await.unwrap();
+    let d = MountDevice::new(Config::default().mount, Arc::clone(&manager));
+    let err = d
+        .reset_mount_encoders(&session, 1_000, -1_000)
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("did not stop"),
+        "expected a stop-timeout error, got {err:?}"
+    );
+}
+
+// ---- Custom Actions (Phase D) ----
+
+#[tokio::test]
+async fn supported_actions_lists_the_three_vendor_actions() {
+    let d = device();
+    let actions = d.supported_actions().await.unwrap();
+    assert_eq!(
+        actions,
+        vec![
+            "SetUnparkFromApPosition".to_string(),
+            "SetPreferredApPark".to_string(),
+            "UnparkFromApPosition".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn action_with_unknown_name_returns_action_not_implemented() {
+    let d = device();
+    let err = d
+        .action("NoSuchAction".to_string(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn set_unpark_from_ap_position_persists_to_config() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path.clone());
+    d.set_connected(true).await.unwrap();
+    let ret = d
+        .action(
+            "SetUnparkFromApPosition".to_string(),
+            "ap_park_2".to_string(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ret, "ap_park_2");
+    let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        back.mount.unpark_from_ap_position,
+        crate::config::ApPark::ApPark2
+    );
+}
+
+#[tokio::test]
+async fn set_unpark_from_ap_position_without_config_is_refused() {
+    // No `--config` path → nowhere to persist; the Action refuses.
+    let d = device();
+    let err = d
+        .action(
+            "SetUnparkFromApPosition".to_string(),
+            "ap_park_2".to_string(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+#[tokio::test]
+async fn set_unpark_from_ap_position_rejects_unknown_park() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path);
+    let err = d
+        .action(
+            "SetUnparkFromApPosition".to_string(),
+            "ap_park_9".to_string(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+}
+
+#[tokio::test]
+async fn set_preferred_ap_park_rejects_ap_park_0() {
+    // "Current position" is not a slew target.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path);
+    let err = d
+        .action("SetPreferredApPark".to_string(), "ap_park_0".to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+}
+
+#[tokio::test]
+async fn set_preferred_ap_park_persists_and_updates_live_target() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path.clone());
+    d.set_connected(true).await.unwrap();
+    let ret = d
+        .action("SetPreferredApPark".to_string(), "ap_park_2".to_string())
+        .await
+        .unwrap();
+    assert_eq!(ret, "ap_park_2");
+    // Persisted to disk.
+    let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(back.mount.preferred_ap_park, crate::config::ApPark::ApPark2);
+    // Live park target re-resolved without a reconnect. device_with_path
+    // runs at latitude 0; ap_park_2 → mech_HA = -6h (ra = -907,200),
+    // dec_enc = 0° (dec = 0).
+    let s = d.state.read().await;
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(0));
+}
+
+#[tokio::test]
+async fn unpark_from_ap_position_ap_park_0_clears_at_park_without_encoder_change() {
+    let d = connected_device().await;
+    // Set the parked flag directly — this test exercises the unpark path.
+    d.state.write().await.at_park = true;
+    let before = d.manager.snapshot().await;
+    let ret = d
+        .action("UnparkFromApPosition".to_string(), "ap_park_0".to_string())
+        .await
+        .unwrap();
+    assert_eq!(ret, "ap_park_0");
+    assert!(!d.at_park().await.unwrap());
+    // "Current position" leaves the encoder untouched (≡ standard Unpark).
+    let after = d.manager.snapshot().await;
+    assert_eq!(after.ra.position_ticks, before.ra.position_ticks);
+    assert_eq!(after.dec.position_ticks, before.dec.position_ticks);
+}
+
+#[tokio::test]
+async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() {
+    // The operator asserts the OTA is physically at ap_park_3; the
+    // driver makes the firmware encoder match regardless of the stale
+    // current reading, then clears AtPark.
+    use crate::transport::mock::CapturingMockFactory;
+    let factory = CapturingMockFactory::new();
+    {
+        let mut state = factory.state.lock().await;
+        state.ra.position_ticks = 200_000;
+        state.dec.position_ticks = -50_000;
+    }
+    let mut cfg = Config::default();
+    cfg.mount.binding_zone_min_hours = 24.0;
+    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.site_latitude_deg = 32.7157;
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.state.write().await.at_park = true;
+    let ret = d
+        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+        .await
+        .unwrap();
+    assert_eq!(ret, "ap_park_3");
+    // ap_park_3 at lat 32.7157: ra = -907,200, dec = +907,200.
+    let snap = d.manager.snapshot().await;
+    assert_eq!(snap.ra.position_ticks, -907_200);
+    assert_eq!(snap.dec.position_ticks, 907_200);
+    assert!(!d.at_park().await.unwrap());
+}
+
+#[tokio::test]
+async fn unpark_from_ap_position_refuses_when_not_parked() {
+    let d = connected_device().await;
+    // at_park is false (default).
+    let err = d
+        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+#[tokio::test]
+async fn unpark_from_ap_position_refuses_when_disconnected() {
+    let d = device();
+    let err = d
+        .action("UnparkFromApPosition".to_string(), "ap_park_0".to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
 }
 
 #[tokio::test]
@@ -1808,9 +2059,11 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
 }
 
 #[tokio::test]
-async fn reconnect_with_partial_config_uses_handshake_for_missing_axis() {
-    // Per-axis fallback: if the config sets only park_ra_ticks,
-    // RA comes from the file and Dec comes from the handshake.
+async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis() {
+    // Per-axis fallback: if the config pins only park_ra_ticks, RA
+    // comes from the file and Dec falls through to the
+    // `preferred_ap_park` encoder pair (the default `ap_park_3`), not
+    // the raw handshake reading.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     // Hand-craft a JSON config that sets only park_ra_ticks
@@ -1824,8 +2077,9 @@ async fn reconnect_with_partial_config_uses_handshake_for_missing_axis() {
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
     assert_eq!(s.park_ra_ticks, Some(1234));
-    // Mock handshake reports Dec at 0.
-    assert_eq!(s.park_dec_ticks, Some(0));
+    // device_with_path runs at latitude 0; ap_park_3 dec_enc = +90°
+    // → dec = 90/360 * cpr = 907,200.
+    assert_eq!(s.park_dec_ticks, Some(907_200));
 }
 
 #[test]
@@ -2302,7 +2556,9 @@ async fn pulse_guide_rejects_same_axis_while_one_in_flight() {
 
 #[tokio::test]
 async fn pulse_guide_refuses_while_parked() {
-    let d = connected_device().await;
+    // `fast_settle_connected` pins the park target to (0, 0), so the
+    // park completes in one poll — see `fast_settle_device`.
+    let d = fast_settle_connected().await;
     d.park().await.unwrap();
     // Wait for AtPark = true (park watcher).
     let deadline = std::time::Instant::now() + Duration::from_secs(5);

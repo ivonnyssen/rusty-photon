@@ -1,10 +1,11 @@
 # Star Adventurer GTi: required `unpark_from_ap_position` + recovery actions
 
-## Status: design landed; implementation not started
+## Status: implemented (issue #249)
 
-Design captured in
+All six phases below landed under issue #249. Design captured in
 [`docs/services/star-adventurer-gti.md` §Unpark from AP position](../services/star-adventurer-gti.md#unpark-from-ap-position).
-Conversation log lives on issue #248 (the tracker for picking this up).
+Conversation log lives on issue #248 (the design tracker); issue #249
+tracked the implementation.
 
 ## Motivation
 

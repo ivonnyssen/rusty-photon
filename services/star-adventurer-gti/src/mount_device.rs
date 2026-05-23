@@ -8,7 +8,11 @@
 //!
 //! ## Submodule layout
 //!
-//! - [`device`] — `impl Device for MountDevice` (connect/description).
+//! - [`actions`] — the three driver-specific ASCOM `Action` handlers
+//!   (`SetUnparkFromApPosition`, `SetPreferredApPark`,
+//!   `UnparkFromApPosition`) dispatched from `device`'s `action`.
+//! - [`device`] — `impl Device for MountDevice` (connect/description,
+//!   `SupportedActions` + `Action` dispatch).
 //! - [`telescope`] — `impl Telescope for MountDevice` (the ASCOM
 //!   surface: coordinate reads, slew/sync/park, side-of-pier,
 //!   pulse-guide).
@@ -34,6 +38,7 @@ use crate::codec::SkywatcherCodec;
 use crate::config::MountConfig;
 use crate::manager::MountManager;
 
+mod actions;
 mod device;
 mod inherent;
 mod park_persistence;

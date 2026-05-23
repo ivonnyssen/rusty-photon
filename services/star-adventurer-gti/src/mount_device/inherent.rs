@@ -19,7 +19,7 @@
 //!   (ASCOM-mapped wrapper over [`super::slew::stop_axis_and_wait`]),
 //!   [`MountDevice::await_slew_complete`] (synchronous-slew polling).
 //! - **Post-connect lifecycle**:
-//!   [`MountDevice::seed_home_pose_after_connect`],
+//!   [`MountDevice::seed_after_connect`],
 //!   [`MountDevice::load_park_target_after_connect`].
 //! - **Slew planner**:
 //!   [`MountDevice::execute_slew_with_explicit_side`] — the shared
@@ -36,6 +36,7 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tracing::{debug, info};
 
 use crate::codec::SkywatcherCodec;
+use crate::config::ApPark;
 use crate::coordinates::{
     dec_degrees_to_ticks, fold_ha, fold_to_canonical_band, local_sidereal_time_hours,
     mechanical_ha_to_ra_ticks, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
@@ -43,7 +44,7 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 
-use super::park_persistence::read_park_from_config;
+use super::park_persistence::{read_ap_park_field, read_park_from_config};
 use super::slew::{
     check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, issue_slew_axis,
     stop_axis_and_wait, AXIS_STOP_TIMEOUT,
@@ -60,8 +61,9 @@ use super::{pre_flip_side_for_latitude, MountDevice};
 const SYNC_SLEW_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Maximum absolute encoder reading at connect that
-/// [`MountDevice::seed_home_pose_after_connect`] still treats as
-/// "fresh power-up" and applies the `home_pose` seed to. The
+/// [`MountDevice::seed_after_connect`] still treats as
+/// "fresh power-up" and applies the `unpark_from_ap_position` seed to.
+/// The
 /// Sky-Watcher firmware does not always read exactly `0` after a
 /// power-cycle — empirically the validation GTi reports `dec = −1`
 /// on connect, a single-tick initialisation artifact (≈ 0.4″ at the
@@ -297,30 +299,32 @@ impl MountDevice {
     /// Post-connect park-target load. Source priority, per axis:
     ///
     /// 1. `mount.park_*_ticks` from the **on-disk** config file when one
-    ///    was supplied via `--config`. Reading fresh from disk on every
-    ///    connect means a successful `SetPark` followed by
-    ///    disconnect/reconnect picks up the new target, and an operator
-    ///    hand-edit between connects takes effect.
-    /// 2. `self.config.park_*_ticks` for `Config::default()` runs (no
-    ///    config file) — these never change in-process because
-    ///    `SetPark` is unreachable in that mode.
-    /// 3. The **current** firmware encoder reading from the snapshot
-    ///    when neither of the above provided a value.
-    ///    `seed_home_pose_after_connect` runs first in `set_connected`
-    ///    so the snapshot already reflects the home_pose's logical
-    ///    encoder values on a fresh power-up; a mid-session reconnect
-    ///    (firmware encoder non-zero) leaves the snapshot at the
-    ///    handshake reading, which is the "park where the OTA already
-    ///    is" semantic operators expect from a reconnect.
+    ///    was supplied via `--config` (or `self.config.park_*_ticks` for
+    ///    `Config::default()` runs). The raw-encoder override: an
+    ///    operator who pinned a specific tick pair via `SetPark` or a
+    ///    hand-edit. Per-axis — one axis can be pinned while the other
+    ///    falls through. Reading fresh from disk means a `SetPark`
+    ///    followed by disconnect/reconnect picks up the new target.
+    /// 2. The `preferred_ap_park` encoder pair (the design's `Park()`
+    ///    target), resolved from the configured AP park, the site
+    ///    latitude, and the handshake counts-per-revolution. This is the
+    ///    default for any install that hasn't pinned raw ticks;
+    ///    `preferred_ap_park` ships as `ap_park_3`.
+    /// 3. The current firmware encoder reading from the snapshot, as a
+    ///    defensive fallback only when `preferred_ap_park` has no
+    ///    encoder mapping (`ap_park_0`, which deserialize rejects) or
+    ///    transport parameters are somehow unavailable.
+    ///
+    /// `seed_after_connect` runs first in `set_connected`, so on a fresh
+    /// power-up the snapshot already reflects the seeded encoder; the
+    /// defensive snapshot fallback therefore still lands on the pose the
+    /// operator powered up at if it is ever reached.
     ///
     /// Extracted from `set_connected` so a failure here (file missing,
     /// malformed JSON, lost transport mid-load) can be rolled back by the
     /// caller without leaking the connection ref-count. See the design
     /// doc's §"Park lifecycle" for the resolution rules.
-    pub(super) async fn load_park_target_after_connect(
-        &self,
-        _session: &Session<SkywatcherCodec>,
-    ) -> ASCOMResult<()> {
+    pub(super) async fn load_park_target_after_connect(&self) -> ASCOMResult<()> {
         let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
             let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
                 .await
@@ -334,16 +338,18 @@ impl MountDevice {
         } else {
             (self.config.park_ra_ticks, self.config.park_dec_ticks)
         };
-        // Read the live snapshot rather than `params.ra_at_handshake_ticks`:
-        // `seed_home_pose_after_connect` runs before this function and
-        // mutates the snapshot when the operator has configured a
-        // `home_pose`, so the snapshot is the source-of-truth for the
-        // post-seed encoder state. Using the pre-seed handshake reading
-        // would default the park target to firmware-zero (mech_HA = 0h,
-        // mech_dec = 0°) — not the home_pose the operator powered up at.
+        // Fallback for any axis without a raw override: the
+        // `preferred_ap_park` encoder pair, else (defensively) the live
+        // snapshot. `seed_after_connect` ran first, so on a fresh
+        // power-up the snapshot already reflects the seeded encoder.
+        let preferred = self.configured_preferred_ap_park().await?;
         let snap = self.manager.snapshot().await;
-        let ra_target = config_ra.unwrap_or(snap.ra.position_ticks);
-        let dec_target = config_dec.unwrap_or(snap.dec.position_ticks);
+        let (fallback_ra, fallback_dec) = self
+            .ap_park_target_ticks(preferred)
+            .await
+            .unwrap_or((snap.ra.position_ticks, snap.dec.position_ticks));
+        let ra_target = config_ra.unwrap_or(fallback_ra);
+        let dec_target = config_dec.unwrap_or(fallback_dec);
         {
             let mut s = self.state.write().await;
             s.park_ra_ticks = Some(ra_target);
@@ -354,48 +360,183 @@ impl MountDevice {
             dec_target,
             from_config_ra = config_ra.is_some(),
             from_config_dec = config_dec.is_some(),
+            preferred_ap_park = ?preferred,
             from_file = self.config_file_path.is_some(),
             "park target loaded"
         );
         Ok(())
     }
 
-    /// Post-connect encoder seed for the operator's configured `HomePose`.
+    /// Safe-stop-then-seed the firmware encoder counter to the given
+    /// `(ra, dec)` tick pair. Wraps the bare `:E1` / `:E2` writes in a
+    /// stop envelope so the operation is correct regardless of in-flight
+    /// firmware state (pending `:G` goto, active `:I` tracking):
+    ///
+    /// 1. `:K1` / `:K2` (stop both axes) + poll `:f1` / `:f2` until idle.
+    /// 2. `:E1` / `:E2` write the seed encoder values, publishing each
+    ///    to the cached snapshot so an immediate read reflects it.
+    /// 3. Clear the driver-internal slew / target / tracking-request
+    ///    flags so the just-written encoder is the source of truth.
+    ///
+    /// Invoked by [`Self::seed_after_connect`] (where the stops are
+    /// no-ops on a fresh-power-up mount — the motors are idle) and by
+    /// the `UnparkFromApPosition(ap_park_N)` recovery Action for
+    /// `N ≥ 1` (where the stops cancel whatever motion a crash left
+    /// running). The standard `Unpark()` flow does **not** call this —
+    /// writing the encoder there would silently destroy session state.
+    ///
+    /// Takes the session explicitly because the connect-time seed runs
+    /// *before* the session is stored in `self.session`. On a
+    /// `stop_axis_and_wait` failure the encoder writes are **not**
+    /// attempted — motion is still in flight and re-seeding then would
+    /// race the firmware.
+    pub(super) async fn reset_mount_encoders(
+        &self,
+        session: &Session<SkywatcherCodec>,
+        ra_target_ticks: i32,
+        dec_target_ticks: i32,
+    ) -> ASCOMResult<()> {
+        // 1. Stop both axes and wait for idle. A stop failure bails
+        //    before any `:E` so we never seed against a moving axis.
+        stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
+            .await
+            .map_err(ASCOMError::from)?;
+        stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
+            .await
+            .map_err(ASCOMError::from)?;
+        // 2. Write the seed encoder values and publish them to the
+        //    cached snapshot.
+        self.manager
+            .send(
+                session,
+                Command::SetPosition {
+                    axis: Axis::Ra,
+                    ticks: ra_target_ticks,
+                },
+            )
+            .await
+            .map_err(ASCOMError::from)?;
+        self.manager.seed_ra_position(ra_target_ticks).await;
+        self.manager
+            .send(
+                session,
+                Command::SetPosition {
+                    axis: Axis::Dec,
+                    ticks: dec_target_ticks,
+                },
+            )
+            .await
+            .map_err(ASCOMError::from)?;
+        self.manager.seed_dec_position(dec_target_ticks).await;
+        // 3. Clear driver-internal motion / target / tracking state so
+        //    the freshly written encoder is the source of truth.
+        let mut state = self.state.write().await;
+        state.slew_in_progress = false;
+        state.target_ra_hours = None;
+        state.target_dec_degrees = None;
+        state.tracking_requested = false;
+        Ok(())
+    }
+
+    /// Resolve a `mount.<key>` AP-park field for use this connect.
+    ///
+    /// Read fresh from the on-disk config file when the driver was
+    /// started with `--config` (so a `SetUnparkFromApPosition` /
+    /// `SetPreferredApPark` write — or an operator hand-edit — applies
+    /// on the next connect without a driver restart), falling back to
+    /// `fallback` (the in-memory startup value) when the key is absent
+    /// or no config file is in use. Mirrors
+    /// [`Self::load_park_target_after_connect`]'s disk read.
+    async fn configured_ap_park(&self, key: &'static str, fallback: ApPark) -> ASCOMResult<ApPark> {
+        let Some(path) = self.config_file_path.clone() else {
+            return Ok(fallback);
+        };
+        let from_disk = tokio::task::spawn_blocking(move || read_ap_park_field(&path, key))
+            .await
+            .map_err(|e| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("{key} config read task join error: {e}"),
+                )
+            })?
+            .map_err(ASCOMError::from)?;
+        Ok(from_disk.unwrap_or(fallback))
+    }
+
+    /// The `unpark_from_ap_position` in effect for this connect (disk,
+    /// falling back to the startup value). Used by the fresh-power-up
+    /// auto-seed.
+    pub(super) async fn configured_unpark_from_ap_position(&self) -> ASCOMResult<ApPark> {
+        self.configured_ap_park(
+            "unpark_from_ap_position",
+            self.config.unpark_from_ap_position,
+        )
+        .await
+    }
+
+    /// The `preferred_ap_park` in effect for this connect (disk,
+    /// falling back to the startup value). Used as the `Park()` target
+    /// when no raw `park_*_ticks` override is set.
+    pub(super) async fn configured_preferred_ap_park(&self) -> ASCOMResult<ApPark> {
+        self.configured_ap_park("preferred_ap_park", self.config.preferred_ap_park)
+            .await
+    }
+
+    /// Encoder `(ra, dec)` tick pair for an AP park, or [`None`] when
+    /// the park has no codebase mapping (`ap_park_0`) or transport
+    /// parameters are unavailable (not connected). Resolves against the
+    /// configured site latitude and the handshake-reported counts-per-
+    /// revolution.
+    pub(super) async fn ap_park_target_ticks(&self, park: ApPark) -> Option<(i32, i32)> {
+        let mech_ha = park.codebase_mech_ha_hours(self.config.site_latitude_deg)?;
+        let dec_deg = park.codebase_dec_encoder_degrees(self.config.site_latitude_deg)?;
+        let params = self.manager.parameters().await?;
+        Some((
+            mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra),
+            dec_degrees_to_ticks(dec_deg, params.cpr_dec),
+        ))
+    }
+
+    /// Post-connect encoder seed for the operator's configured
+    /// `unpark_from_ap_position`.
     ///
     /// The Sky-Watcher firmware's encoder counter resets to `(0, 0)`
-    /// every time the mount powers up. With `home_pose !=
-    /// OtaOnMeridianAtEquator`, the codebase's convention for `(0, 0)`
-    /// doesn't match the operator's physical pose, so we issue
-    /// `:E1` / `:E2` (no-motion encoder seed) right after connect to
-    /// align the firmware's encoder counter with the codebase's
-    /// convention for the configured pose.
+    /// every power-up. For `ap_park_1..ap_park_5` the codebase's
+    /// convention for `(0, 0)` doesn't match the operator's physical
+    /// pose, so we run [`Self::reset_mount_encoders`] right after connect
+    /// (on a fresh power-up the stop steps are no-ops; the `:E1` / `:E2`
+    /// encoder writes are the meaningful work) to align the firmware's
+    /// encoder counter with the codebase convention for the pose.
     ///
     /// Skipped when:
-    /// - The home pose is the codebase default (no offset needed).
-    /// - The firmware reports a non-zero encoder reading at connect
-    ///   time **beyond a small fresh-power-up tolerance**. That
-    ///   indicates the mount has already been slewed or synced this
-    ///   power cycle — re-seeding would clobber it. The tolerance
-    ///   exists because the Sky-Watcher firmware does not always
-    ///   read exactly `(0, 0)` after a power-cycle: on the validation
-    ///   GTi we observed `dec = −1` on fresh power-up, a 1-tick
-    ///   initialisation artifact (~0.4″) that obviously still
-    ///   represents the "just powered up" state.
+    /// - The configured pose is `ap_park_0` ("current position"): the
+    ///   operator asserts they will plate-solve and `SyncToCoordinates`
+    ///   themselves, so the driver does not touch the encoder. No
+    ///   `info!()` lines are emitted in this case.
+    /// - The firmware reports a non-zero encoder reading at connect time
+    ///   **beyond a small fresh-power-up tolerance**. That indicates the
+    ///   mount has already been slewed or synced this power cycle —
+    ///   re-seeding would clobber it. The tolerance absorbs the
+    ///   Sky-Watcher firmware's 1-tick fresh-power-up artifact
+    ///   (observed `dec = −1` on the validation GTi, ~0.4″).
     ///
-    /// Documented operator assumption: when `home_pose != default`,
-    /// the operator powers up the mount **at** the configured pose and
-    /// connects the driver before any slew or sync. Reconnecting
-    /// mid-session after a slew is safe (the non-zero-encoder guard
-    /// catches it — a real slew lands tens of thousands of ticks away
-    /// from zero, well outside the tolerance).
-    pub(super) async fn seed_home_pose_after_connect(
+    /// Documented operator assumption: when `unpark_from_ap_position`
+    /// is one of `ap_park_1..ap_park_5`, the operator powers up the
+    /// mount **at** the configured pose and connects the driver before
+    /// any slew or sync. Reconnecting mid-session after a slew is safe
+    /// (the non-zero-encoder guard catches it — a real slew lands tens
+    /// of thousands of ticks away from zero, well outside the tolerance).
+    pub(super) async fn seed_after_connect(
         &self,
         session: &Session<SkywatcherCodec>,
     ) -> ASCOMResult<()> {
-        let Some(home_pose) = self.config.home_pose else {
-            // No pose configured — trust the firmware encoder as-is.
-            // This is the codebase's historical (pre-Phase-6) behaviour
-            // and what existing pre-`home_pose` config files expect.
+        let configured = self.configured_unpark_from_ap_position().await?;
+        // `ap_park_0` ("current position") has no codebase encoder
+        // mapping — trust the firmware encoder as-is and emit no logs.
+        let (Some(mech_ha), Some(dec_deg)) = (
+            configured.codebase_mech_ha_hours(self.config.site_latitude_deg),
+            configured.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
+        ) else {
             return Ok(());
         };
         let params = self
@@ -407,7 +548,7 @@ impl MountDevice {
         info!(
             pre_seed_ra_ticks = snap.ra.position_ticks,
             pre_seed_dec_ticks = snap.dec.position_ticks,
-            home_pose = ?home_pose,
+            unpark_from_ap_position = ?configured,
             "pre-seed encoder snapshot at connect"
         );
         if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
@@ -417,41 +558,20 @@ impl MountDevice {
                 ra = snap.ra.position_ticks,
                 dec = snap.dec.position_ticks,
                 tolerance = FRESH_POWER_UP_TICK_TOLERANCE,
-                "skipping home_pose encoder seed: firmware encoder is non-zero beyond tolerance"
+                "skipping unpark_from_ap_position encoder seed: firmware encoder \
+                 is non-zero beyond tolerance"
             );
             return Ok(());
         }
-        let mech_ha = home_pose.codebase_mech_ha_hours(self.config.site_latitude_deg);
-        let dec_deg = home_pose.codebase_dec_encoder_degrees(self.config.site_latitude_deg);
         let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
         let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
-        self.manager
-            .send(
-                session,
-                Command::SetPosition {
-                    axis: Axis::Ra,
-                    ticks: ra_ticks,
-                },
-            )
-            .await
-            .map_err(ASCOMError::from)?;
-        self.manager.seed_ra_position(ra_ticks).await;
-        self.manager
-            .send(
-                session,
-                Command::SetPosition {
-                    axis: Axis::Dec,
-                    ticks: dec_ticks,
-                },
-            )
-            .await
-            .map_err(ASCOMError::from)?;
-        self.manager.seed_dec_position(dec_ticks).await;
+        self.reset_mount_encoders(session, ra_ticks, dec_ticks)
+            .await?;
         info!(
             seeded_ra_ticks = ra_ticks,
             seeded_dec_ticks = dec_ticks,
-            home_pose = ?home_pose,
-            "seeded firmware encoder for home_pose"
+            unpark_from_ap_position = ?configured,
+            "seeded firmware encoder for unpark_from_ap_position"
         );
         Ok(())
     }

@@ -13,7 +13,7 @@ pub mod mount_device;
 pub mod transport;
 
 pub use config::{
-    load_config, Config, FlipPolicy, HomePose, MountConfig, ServerConfig, TrackingRateName,
+    load_config, ApPark, Config, FlipPolicy, MountConfig, ServerConfig, TrackingRateName,
     TransportConfig, UdpConfig, UsbConfig, MAX_FLIP_RANGE_HOURS,
 };
 pub use error::{Result, StarAdvError};
