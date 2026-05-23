@@ -15,6 +15,12 @@
 //! file at `<path>`, one arg per line, with a trailing blank line as record
 //! separator. Used for end-to-end argv-flow assertions.
 //!
+//! `MOCK_ASTAP_SPAWN_LOG=<path>` (any mode) appends this invocation's spawn
+//! time — nanoseconds since the Unix epoch, one per line — to `<path>`. The
+//! single-flight BDD scenario reads it to observe server-side spawn ordering
+//! directly, which is immune to the client-side HTTP-completion jitter that
+//! made the old wall-clock-gap check flaky on loaded CI runners.
+//!
 //! Pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
 
 use std::io::Write;
@@ -83,6 +89,12 @@ fn main() -> std::process::ExitCode {
         let _ = write_argv(&out_path, &args);
     }
 
+    // Record spawn time before dispatching: `hang` mode never returns, so
+    // the timestamp must be written up front.
+    if let Ok(spawn_log) = std::env::var("MOCK_ASTAP_SPAWN_LOG") {
+        let _ = record_spawn(&spawn_log);
+    }
+
     let mode = std::env::var("MOCK_ASTAP_MODE").unwrap_or_else(|_| "normal".to_string());
 
     match mode.as_str() {
@@ -108,6 +120,26 @@ fn write_argv(path: &str, args: &[String]) -> std::io::Result<()> {
         writeln!(f, "{a}")?;
     }
     writeln!(f)?;
+    Ok(())
+}
+
+/// Append this invocation's spawn time — nanoseconds since the Unix epoch —
+/// to the file named by `MOCK_ASTAP_SPAWN_LOG`, one timestamp per line.
+/// `SystemTime` (wall clock) is used rather than `Instant` because the
+/// timestamps are compared across separate `mock_astap` processes and
+/// `Instant`'s epoch is process-local. Append-mode writes of a single short
+/// line are atomic on both Unix (`O_APPEND`) and Windows (`FILE_APPEND_DATA`),
+/// so concurrent children cannot corrupt each other's lines.
+fn record_spawn(path: &str) -> std::io::Result<()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(f, "{nanos}")?;
     Ok(())
 }
 
