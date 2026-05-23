@@ -44,7 +44,7 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 
-use super::park_persistence::{read_ap_park_field, read_park_from_config};
+use super::park_persistence::{read_connect_fields, MountConnectFields};
 use super::slew::{
     check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, issue_slew_axis,
     stop_axis_and_wait, AXIS_STOP_TIMEOUT,
@@ -95,6 +95,21 @@ pub(super) fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<f64> {
         ));
     }
     Ok(fraction)
+}
+
+/// Resolved connect-time config: the raw per-axis `park_*_ticks`
+/// overrides (`None` = fall through to the AP-park target) plus the
+/// effective `unpark_from_ap_position` / `preferred_ap_park` (the
+/// on-disk value, or the in-memory startup value when the key is absent
+/// or no config file is in use). Produced once per connect by
+/// [`MountDevice::read_connect_config`] and consumed by the seed +
+/// park-target hooks so neither re-reads the file.
+#[derive(Debug)]
+pub(super) struct ConnectConfig {
+    pub park_ra_ticks: Option<i32>,
+    pub park_dec_ticks: Option<i32>,
+    pub unpark_from_ap_position: ApPark,
+    pub preferred_ap_park: ApPark,
 }
 
 impl MountDevice {
@@ -324,32 +339,61 @@ impl MountDevice {
     /// malformed JSON, lost transport mid-load) can be rolled back by the
     /// caller without leaking the connection ref-count. See the design
     /// doc's §"Park lifecycle" for the resolution rules.
-    pub(super) async fn load_park_target_after_connect(&self) -> ASCOMResult<()> {
-        let (config_ra, config_dec) = if let Some(path) = self.config_file_path.clone() {
-            let result = tokio::task::spawn_blocking(move || read_park_from_config(&path))
-                .await
-                .map_err(|e| {
-                    ASCOMError::new(
-                        ASCOMErrorCode::INVALID_OPERATION,
-                        format!("park-config read task join error: {e}"),
-                    )
-                })?;
-            result.map_err(ASCOMError::from)?
-        } else {
-            (self.config.park_ra_ticks, self.config.park_dec_ticks)
+    /// Read the connect-time `mount.*` config fields in a single disk
+    /// read + parse (when started with `--config`), resolving each
+    /// AP-park field to the in-memory startup value when the key is
+    /// absent. For `Config::default()` runs (no config file) every field
+    /// comes straight from `self.config`. Called once per connect by
+    /// `set_connected` and re-used by both the seed and park-target
+    /// hooks; also re-run by `SetPreferredApPark` to re-resolve the live
+    /// target after a write.
+    pub(super) async fn read_connect_config(&self) -> ASCOMResult<ConnectConfig> {
+        let Some(path) = self.config_file_path.clone() else {
+            return Ok(ConnectConfig {
+                park_ra_ticks: self.config.park_ra_ticks,
+                park_dec_ticks: self.config.park_dec_ticks,
+                unpark_from_ap_position: self.config.unpark_from_ap_position,
+                preferred_ap_park: self.config.preferred_ap_park,
+            });
         };
+        let MountConnectFields {
+            park_ra_ticks,
+            park_dec_ticks,
+            unpark_from_ap_position,
+            preferred_ap_park,
+        } = tokio::task::spawn_blocking(move || read_connect_fields(&path))
+            .await
+            .map_err(|e| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("connect-config read task join error: {e}"),
+                )
+            })?
+            .map_err(ASCOMError::from)?;
+        Ok(ConnectConfig {
+            park_ra_ticks,
+            park_dec_ticks,
+            unpark_from_ap_position: unpark_from_ap_position
+                .unwrap_or(self.config.unpark_from_ap_position),
+            preferred_ap_park: preferred_ap_park.unwrap_or(self.config.preferred_ap_park),
+        })
+    }
+
+    pub(super) async fn load_park_target_after_connect(
+        &self,
+        cfg: &ConnectConfig,
+    ) -> ASCOMResult<()> {
         // Fallback for any axis without a raw override: the
         // `preferred_ap_park` encoder pair, else (defensively) the live
         // snapshot. `seed_after_connect` ran first, so on a fresh
         // power-up the snapshot already reflects the seeded encoder.
-        let preferred = self.configured_preferred_ap_park().await?;
         let snap = self.manager.snapshot().await;
         let (fallback_ra, fallback_dec) = self
-            .ap_park_target_ticks(preferred)
+            .ap_park_target_ticks(cfg.preferred_ap_park)
             .await
             .unwrap_or((snap.ra.position_ticks, snap.dec.position_ticks));
-        let ra_target = config_ra.unwrap_or(fallback_ra);
-        let dec_target = config_dec.unwrap_or(fallback_dec);
+        let ra_target = cfg.park_ra_ticks.unwrap_or(fallback_ra);
+        let dec_target = cfg.park_dec_ticks.unwrap_or(fallback_dec);
         {
             let mut s = self.state.write().await;
             s.park_ra_ticks = Some(ra_target);
@@ -358,9 +402,9 @@ impl MountDevice {
         debug!(
             ra_target,
             dec_target,
-            from_config_ra = config_ra.is_some(),
-            from_config_dec = config_dec.is_some(),
-            preferred_ap_park = ?preferred,
+            from_config_ra = cfg.park_ra_ticks.is_some(),
+            from_config_dec = cfg.park_dec_ticks.is_some(),
+            preferred_ap_park = ?cfg.preferred_ap_park,
             from_file = self.config_file_path.is_some(),
             "park target loaded"
         );
@@ -438,50 +482,6 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Resolve a `mount.<key>` AP-park field for use this connect.
-    ///
-    /// Read fresh from the on-disk config file when the driver was
-    /// started with `--config` (so a `SetUnparkFromApPosition` /
-    /// `SetPreferredApPark` write — or an operator hand-edit — applies
-    /// on the next connect without a driver restart), falling back to
-    /// `fallback` (the in-memory startup value) when the key is absent
-    /// or no config file is in use. Mirrors
-    /// [`Self::load_park_target_after_connect`]'s disk read.
-    async fn configured_ap_park(&self, key: &'static str, fallback: ApPark) -> ASCOMResult<ApPark> {
-        let Some(path) = self.config_file_path.clone() else {
-            return Ok(fallback);
-        };
-        let from_disk = tokio::task::spawn_blocking(move || read_ap_park_field(&path, key))
-            .await
-            .map_err(|e| {
-                ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("{key} config read task join error: {e}"),
-                )
-            })?
-            .map_err(ASCOMError::from)?;
-        Ok(from_disk.unwrap_or(fallback))
-    }
-
-    /// The `unpark_from_ap_position` in effect for this connect (disk,
-    /// falling back to the startup value). Used by the fresh-power-up
-    /// auto-seed.
-    pub(super) async fn configured_unpark_from_ap_position(&self) -> ASCOMResult<ApPark> {
-        self.configured_ap_park(
-            "unpark_from_ap_position",
-            self.config.unpark_from_ap_position,
-        )
-        .await
-    }
-
-    /// The `preferred_ap_park` in effect for this connect (disk,
-    /// falling back to the startup value). Used as the `Park()` target
-    /// when no raw `park_*_ticks` override is set.
-    pub(super) async fn configured_preferred_ap_park(&self) -> ASCOMResult<ApPark> {
-        self.configured_ap_park("preferred_ap_park", self.config.preferred_ap_park)
-            .await
-    }
-
     /// Encoder `(ra, dec)` tick pair for an AP park, or [`None`] when
     /// the park has no codebase mapping (`ap_park_0`) or transport
     /// parameters are unavailable (not connected). Resolves against the
@@ -529,13 +529,13 @@ impl MountDevice {
     pub(super) async fn seed_after_connect(
         &self,
         session: &Session<SkywatcherCodec>,
+        unpark_from_ap_position: ApPark,
     ) -> ASCOMResult<()> {
-        let configured = self.configured_unpark_from_ap_position().await?;
         // `ap_park_0` ("current position") has no codebase encoder
         // mapping — trust the firmware encoder as-is and emit no logs.
         let (Some(mech_ha), Some(dec_deg)) = (
-            configured.codebase_mech_ha_hours(self.config.site_latitude_deg),
-            configured.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
+            unpark_from_ap_position.codebase_mech_ha_hours(self.config.site_latitude_deg),
+            unpark_from_ap_position.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
         ) else {
             return Ok(());
         };
@@ -548,7 +548,7 @@ impl MountDevice {
         info!(
             pre_seed_ra_ticks = snap.ra.position_ticks,
             pre_seed_dec_ticks = snap.dec.position_ticks,
-            unpark_from_ap_position = ?configured,
+            unpark_from_ap_position = ?unpark_from_ap_position,
             "pre-seed encoder snapshot at connect"
         );
         if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
@@ -570,7 +570,7 @@ impl MountDevice {
         info!(
             seeded_ra_ticks = ra_ticks,
             seeded_dec_ticks = dec_ticks,
-            unpark_from_ap_position = ?configured,
+            unpark_from_ap_position = ?unpark_from_ap_position,
             "seeded firmware encoder for unpark_from_ap_position"
         );
         Ok(())

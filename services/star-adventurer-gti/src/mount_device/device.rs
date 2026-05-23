@@ -52,20 +52,32 @@ impl Device for MountDevice {
                     .acquire()
                     .await
                     .map_err(Self::ascom_session_err)?;
-                // Post-acquire fallible work. Order matters:
-                // `seed_after_connect` runs FIRST so the snapshot
-                // reflects the configured AP park's logical encoder
-                // values before `load_park_target_after_connect`
-                // resolves its park target. On any failure,
-                // `session.close().await` synchronously closes —
-                // propagating its result so the user sees a real error
-                // instead of a swallowed warning (the pre-migration
-                // "rollback-disconnect failed" log branch is gone).
-                if let Err(e) = self.seed_after_connect(&session).await {
+                // Post-acquire fallible work. The connect-time config is
+                // read once here and threaded into both hooks so neither
+                // re-reads the file. Order matters: `seed_after_connect`
+                // runs FIRST so the snapshot reflects the configured AP
+                // park's logical encoder values before
+                // `load_park_target_after_connect` resolves its park
+                // target. On any failure, `session.close().await`
+                // synchronously closes — propagating its result so the
+                // user sees a real error instead of a swallowed warning
+                // (the pre-migration "rollback-disconnect failed" log
+                // branch is gone).
+                let connect_cfg = match self.read_connect_config().await {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        session.close().await.map_err(Self::ascom_transport_err)?;
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = self
+                    .seed_after_connect(&session, connect_cfg.unpark_from_ap_position)
+                    .await
+                {
                     session.close().await.map_err(Self::ascom_transport_err)?;
                     return Err(e);
                 }
-                if let Err(e) = self.load_park_target_after_connect().await {
+                if let Err(e) = self.load_park_target_after_connect(&connect_cfg).await {
                     session.close().await.map_err(Self::ascom_transport_err)?;
                     return Err(e);
                 }

@@ -25,7 +25,7 @@ use crate::error::StarAdvError;
 use crate::manager::MountManager;
 use crate::transport::mock::MockTransportFactory;
 
-use super::park_persistence::{read_park_from_config, write_park_to_config};
+use super::park_persistence::{read_connect_fields, write_park_to_config};
 use super::slew::{
     canonical_path_crosses_pole, check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta,
     pickup_reslew_axis, stop_axis_and_wait,
@@ -1331,11 +1331,11 @@ fn write_park_to_config_fails_on_malformed_json() {
 }
 
 #[test]
-fn read_park_from_config_fails_on_malformed_json() {
+fn read_connect_fields_fails_on_malformed_json() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, "{ not valid json").unwrap();
-    let err = read_park_from_config(&path).unwrap_err();
+    let err = read_connect_fields(&path).unwrap_err();
     match err {
         StarAdvError::Config(msg) => assert!(msg.contains("parse config"), "{msg}"),
         other => panic!("expected Config error, got {other:?}"),
@@ -1506,7 +1506,7 @@ async fn set_connected_rolls_back_transport_when_park_load_fails() {
     // We trigger the failure path by handing `MountDevice` a
     // `config_file_path` that points to a non-existent file:
     // the handshake will succeed (mock transport is happy), but
-    // `read_park_from_config` will fail with a missing-file error.
+    // `read_connect_fields` will fail with a missing-file error.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("does_not_exist.json");
     let d = device_with_path(path);
@@ -2005,6 +2005,67 @@ async fn unpark_from_ap_position_refuses_when_disconnected() {
 }
 
 #[tokio::test]
+async fn unpark_from_ap_position_refuses_while_slewing() {
+    let d = connected_device().await;
+    {
+        let mut s = d.state.write().await;
+        s.at_park = true;
+        s.slew_in_progress = true;
+    }
+    let err = d
+        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+}
+
+#[tokio::test]
+async fn set_unpark_from_ap_position_round_trips_every_named_park() {
+    // Exercises parse + canonical-string round-trip for the AP parks
+    // the focused action tests don't otherwise touch (ap_park_1/4/5).
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path.clone());
+    d.set_connected(true).await.unwrap();
+    for (token, expected) in [
+        ("ap_park_1", crate::config::ApPark::ApPark1),
+        ("ap_park_4", crate::config::ApPark::ApPark4),
+        ("ap_park_5", crate::config::ApPark::ApPark5),
+    ] {
+        let ret = d
+            .action("SetUnparkFromApPosition".to_string(), token.to_string())
+            .await
+            .unwrap();
+        assert_eq!(ret, token);
+        let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.mount.unpark_from_ap_position, expected);
+    }
+}
+
+#[tokio::test]
+async fn ap_park_target_ticks_is_none_for_ap_park_0() {
+    // "Current position" has no codebase encoder mapping, so the
+    // resolver returns None regardless of connection state.
+    let d = device();
+    assert_eq!(
+        d.ap_park_target_ticks(crate::config::ApPark::ApPark0).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn ap_park_target_ticks_is_none_when_disconnected() {
+    // A named park has a codebase mapping, but the tick conversion
+    // needs the handshake CPR — unavailable until connected.
+    let d = device();
+    assert_eq!(
+        d.ap_park_target_ticks(crate::config::ApPark::ApPark3).await,
+        None
+    );
+}
+
+#[tokio::test]
 async fn park_target_prefers_config_values_over_handshake_capture() {
     // Config carries park values → driver should use them, not the
     // (zeroed) handshake fallback.
@@ -2067,7 +2128,7 @@ async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis()
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     // Hand-craft a JSON config that sets only park_ra_ticks
-    // (park_dec_ticks absent, which `read_park_from_config`
+    // (park_dec_ticks absent, which `read_connect_fields`
     // must read as `None`).
     let mut cfg = Config::default();
     cfg.mount.park_ra_ticks = Some(1234);
@@ -2083,7 +2144,7 @@ async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis()
 }
 
 #[test]
-fn read_park_from_config_returns_none_for_each_missing_key() {
+fn read_connect_fields_returns_none_for_each_missing_key() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let json = serde_json::json!({
@@ -2092,36 +2153,43 @@ fn read_park_from_config_returns_none_for_each_missing_key() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let (ra, dec) = read_park_from_config(&path).unwrap();
-    assert_eq!(ra, None);
-    assert_eq!(dec, None);
+    let f = read_connect_fields(&path).unwrap();
+    assert_eq!(f.park_ra_ticks, None);
+    assert_eq!(f.park_dec_ticks, None);
+    assert_eq!(f.unpark_from_ap_position, None);
+    assert_eq!(f.preferred_ap_park, None);
 }
 
 #[test]
-fn read_park_from_config_parses_both_keys() {
+fn read_connect_fields_parses_all_keys() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let json = serde_json::json!({
         "mount": {
             "park_ra_ticks": 1234,
             "park_dec_ticks": -5678,
+            "unpark_from_ap_position": "ap_park_1",
+            "preferred_ap_park": "ap_park_4",
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let (ra, dec) = read_park_from_config(&path).unwrap();
-    assert_eq!(ra, Some(1234));
-    assert_eq!(dec, Some(-5678));
+    let f = read_connect_fields(&path).unwrap();
+    assert_eq!(f.park_ra_ticks, Some(1234));
+    assert_eq!(f.park_dec_ticks, Some(-5678));
+    assert_eq!(
+        f.unpark_from_ap_position,
+        Some(crate::config::ApPark::ApPark1)
+    );
+    assert_eq!(f.preferred_ap_park, Some(crate::config::ApPark::ApPark4));
 }
 
 #[test]
-fn read_park_from_config_treats_explicit_null_as_none_per_axis() {
-    // Pins the doc-comment guarantee: a `None` return value means
-    // the file did not set that key OR set it to `null`, and the
-    // two axes are returned independently. Here `park_ra_ticks`
-    // is set to a real value while `park_dec_ticks` is explicitly
-    // JSON `null`; the helper must return `(Some(1234), None)`,
-    // and the caller (`set_connected`) will then fall back to the
-    // handshake-captured value for the Dec axis only.
+fn read_connect_fields_treats_explicit_null_as_none_per_axis() {
+    // Pins the doc-comment guarantee: a `None` field means the file
+    // did not set that key OR set it to `null`, returned per key.
+    // Here `park_ra_ticks` is a real value while `park_dec_ticks` is
+    // explicitly JSON `null`; the reader returns `(Some(1234), None)`,
+    // and the caller falls back to the AP-park target for the Dec axis.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let json = serde_json::json!({
@@ -2131,13 +2199,35 @@ fn read_park_from_config_treats_explicit_null_as_none_per_axis() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let (ra, dec) = read_park_from_config(&path).unwrap();
-    assert_eq!(ra, Some(1234));
-    assert_eq!(dec, None);
+    let f = read_connect_fields(&path).unwrap();
+    assert_eq!(f.park_ra_ticks, Some(1234));
+    assert_eq!(f.park_dec_ticks, None);
 }
 
 #[test]
-fn read_park_from_config_errors_on_wrong_type() {
+fn read_connect_fields_errors_on_invalid_ap_park() {
+    // Operator typo: an unrecognised AP-park string must fail loudly
+    // rather than silently fall back.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    let json = serde_json::json!({
+        "mount": {
+            "unpark_from_ap_position": "ap_park_99",
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let err = read_connect_fields(&path).unwrap_err();
+    match err {
+        StarAdvError::Config(msg) => {
+            assert!(msg.contains("unpark_from_ap_position"), "{msg}");
+            assert!(msg.contains("AP park"), "{msg}");
+        }
+        other => panic!("expected Config error, got {other:?}"),
+    }
+}
+
+#[test]
+fn read_connect_fields_errors_on_wrong_type() {
     // Operator typo: park_ra_ticks declared as a string. Used to
     // be silently treated as None (fell back to handshake);
     // current contract is to surface the misconfiguration. Per
@@ -2151,7 +2241,7 @@ fn read_park_from_config_errors_on_wrong_type() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let err = read_park_from_config(&path).unwrap_err();
+    let err = read_connect_fields(&path).unwrap_err();
     match err {
         StarAdvError::Config(msg) => {
             assert!(msg.contains("park_ra_ticks"), "{msg}");
@@ -2162,7 +2252,7 @@ fn read_park_from_config_errors_on_wrong_type() {
 }
 
 #[test]
-fn read_park_from_config_errors_on_float_value() {
+fn read_connect_fields_errors_on_float_value() {
     // serde_json::Value::Number for 1.5 isn't representable as
     // i64; `as_i64()` returns None and we surface a Config error
     // rather than silently dropping the value.
@@ -2175,12 +2265,12 @@ fn read_park_from_config_errors_on_float_value() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let err = read_park_from_config(&path).unwrap_err();
+    let err = read_connect_fields(&path).unwrap_err();
     assert!(matches!(err, StarAdvError::Config(_)));
 }
 
 #[test]
-fn read_park_from_config_errors_on_out_of_i32_range() {
+fn read_connect_fields_errors_on_out_of_i32_range() {
     // A value that fits in i64 but not i32 — e.g. someone copied
     // a large encoder count from a higher-resolution mount, or
     // a typo added a digit. Either way we should fail loudly so
@@ -2195,7 +2285,7 @@ fn read_park_from_config_errors_on_out_of_i32_range() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let err = read_park_from_config(&path).unwrap_err();
+    let err = read_connect_fields(&path).unwrap_err();
     match err {
         StarAdvError::Config(msg) => {
             assert!(msg.contains("park_ra_ticks"), "{msg}");
@@ -2298,11 +2388,11 @@ fn probe_park_file_writability_fails_on_a_read_only_directory() {
 }
 
 #[test]
-fn read_park_from_config_fails_when_mount_object_is_missing() {
+fn read_connect_fields_fails_when_mount_object_is_missing() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, "{}").unwrap();
-    let err = read_park_from_config(&path).unwrap_err();
+    let err = read_connect_fields(&path).unwrap_err();
     match err {
         StarAdvError::Config(msg) => assert!(msg.contains("mount"), "{msg}"),
         other => panic!("expected Config, got {other:?}"),

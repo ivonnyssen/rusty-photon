@@ -132,12 +132,13 @@ impl MountDevice {
         self.persist_mount_ap_park("preferred_ap_park", park)
             .await?;
         // Re-resolve the live park target when connected so the change
-        // applies this session. `load_park_target_after_connect` re-reads
-        // the (just-persisted) value plus any raw `park_*_ticks` override
+        // applies this session. `read_connect_config` re-reads the
+        // (just-persisted) value plus any raw `park_*_ticks` override
         // from disk, so the raw-ticks-win rule holds. When disconnected
         // the next connect resolves it.
         if self.session.read().await.is_some() {
-            self.load_park_target_after_connect().await?;
+            let cfg = self.read_connect_config().await?;
+            self.load_park_target_after_connect(&cfg).await?;
         }
         tracing::debug!(preferred_ap_park = ?park, "SetPreferredApPark persisted to config file");
         Ok(ap_park_str(park).to_string())
