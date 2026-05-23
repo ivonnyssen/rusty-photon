@@ -15,6 +15,20 @@ pub struct Config {
     pub transport: TransportConfig,
     pub server: ServerConfig,
     pub mount: MountConfig,
+    /// Opt in to `ServiceLifetime` transport mode: open the port,
+    /// run the handshake (= identity probe), and spawn the reconnect
+    /// supervisor at service startup, before binding the Alpaca HTTP
+    /// listener. On handshake failure the binary exits non-zero so
+    /// systemd / orchestration treats startup as a failure instead
+    /// of advertising a broken device.
+    ///
+    /// Default `false` so `cargo run` without `--config` (and BDD
+    /// scenarios that haven't been updated) keep their pre-Phase-1
+    /// `LazyAcquire` behaviour. Production configs flip this to
+    /// `true`. See `docs/plans/eager-hardware-validation.md` for the
+    /// rationale.
+    #[serde(default)]
+    pub validate_on_start: bool,
 }
 
 /// Transport block — `usb` (serial) or `udp` (WiFi).

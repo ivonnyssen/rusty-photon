@@ -274,6 +274,7 @@ fn build_hooks(
     let s_poll = Arc::clone(&snapshot);
     let depth_poll = Arc::clone(&poll_pause_depth);
     let p_td = Arc::clone(&parameters);
+    let p_sd = Arc::clone(&parameters);
     let port_hs = Arc::clone(&port_label);
     Hooks {
         handshake: Box::new(move |conn| {
@@ -286,7 +287,17 @@ fn build_hooks(
             let parameters = Arc::clone(&p_td);
             Box::pin(teardown(conn, parameters))
         }),
-        shutdown: Box::new(|_| Box::pin(async {})),
+        // Phase 1: run the same `:L1, :L2, :K1` safety sequence at
+        // service shutdown that runs at every last-client-disconnect.
+        // The mount may be in any state (e.g. the supervisor was
+        // mid-reconnect, a client crashed and never disconnected, the
+        // last client did disconnect but a stray request landed in
+        // between) — stopping tracking + halting both axes is
+        // idempotent and the safest default for an unattended dome.
+        shutdown: Box::new(move |conn| {
+            let parameters = Arc::clone(&p_sd);
+            Box::pin(teardown(conn, parameters))
+        }),
         while_open: Some(Box::new(move |ctx| {
             let snapshot = Arc::clone(&s_poll);
             let depth = Arc::clone(&depth_poll);

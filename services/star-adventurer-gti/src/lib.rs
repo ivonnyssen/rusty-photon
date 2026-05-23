@@ -132,6 +132,20 @@ impl ServerBuilder {
 
         let manager = MountManager::new(self.config.clone(), factory);
 
+        // Phase 1: eager hardware validation. When the operator opts in
+        // via `validate_on_start: true`, open the port and run the
+        // handshake (which includes the wrong-device identity probe
+        // landed in PR #296) BEFORE binding the HTTP listener. On
+        // failure the error bubbles up to `main` and the binary exits
+        // non-zero — systemd / orchestration treats startup as failed
+        // and operators get the diagnostic at the terminal instead of
+        // having the driver advertise a broken device on the network.
+        // Default `false` preserves pre-Phase-1 lazy-acquire behaviour.
+        if self.config.validate_on_start {
+            info!("validating hardware via eager startup handshake");
+            manager.transport().start().await?;
+        }
+
         if self.config.mount.enabled {
             let device = MountDevice::with_config_file_path(
                 self.config.mount.clone(),
@@ -185,6 +199,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            manager,
         })
     }
 }
@@ -194,6 +209,12 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `BoundServer::start` can call `manager.transport().shutdown()`
+    /// after the HTTP server stops accepting requests. In
+    /// `ServiceLifetime` mode this cancels the reconnect supervisor, runs
+    /// `Hooks::shutdown`, and closes the port. In `LazyAcquire` mode it's
+    /// a no-op so pre-Phase-1 deployments are unaffected.
+    manager: Arc<MountManager>,
 }
 
 impl BoundServer {
@@ -214,6 +235,14 @@ impl BoundServer {
                 info!("star-adventurer-gti started on {}", self.local_addr);
                 rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
+        }
+        // Best-effort transport shutdown after the HTTP server stops
+        // accepting new requests. In ServiceLifetime mode this cancels
+        // the supervisor, runs the safety teardown commands one last
+        // time, and drops the port. Errors are logged (not propagated)
+        // because we're already on the way down.
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");
         Ok(())
