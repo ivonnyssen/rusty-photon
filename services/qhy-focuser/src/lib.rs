@@ -86,6 +86,14 @@ impl ServerBuilder {
 
         let manager = FocuserManager::new(self.config.clone(), factory);
 
+        // Phase 4: eager hardware validation. Opt-in via
+        // `validate_on_start: true`; default `false` preserves
+        // lazy-acquire behaviour.
+        if self.config.validate_on_start {
+            info!("validating hardware via eager startup handshake");
+            manager.transport().start().await?;
+        }
+
         if self.config.focuser.enabled {
             let focuser_device =
                 QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
@@ -131,6 +139,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            manager,
         })
     }
 }
@@ -141,6 +150,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `start()` can call `manager.transport().shutdown()` after
+    /// the HTTP server stops. No-op in LazyAcquire mode.
+    manager: Arc<FocuserManager>,
 }
 
 impl BoundServer {
@@ -161,6 +173,9 @@ impl BoundServer {
                 info!("qhy-focuser started on {}", self.local_addr);
                 rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
             }
+        }
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("qhy-focuser shut down");
         Ok(())

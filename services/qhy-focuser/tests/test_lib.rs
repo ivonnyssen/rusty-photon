@@ -53,6 +53,7 @@ fn test_config(focuser_enabled: bool) -> Config {
             enabled: focuser_enabled,
             ..Default::default()
         },
+        validate_on_start: false,
     }
 }
 

@@ -52,6 +52,7 @@ fn qhy_configured_with_tls(world: &mut QhyFocuserWorld) {
             enabled: true,
             ..Default::default()
         },
+        validate_on_start: false,
     });
 }
 

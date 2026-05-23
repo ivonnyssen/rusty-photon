@@ -49,6 +49,7 @@ fn qhy_configured_with_tls_and_auth(world: &mut QhyFocuserWorld) {
             enabled: true,
             ..Default::default()
         },
+        validate_on_start: false,
     });
 
     world.auth_password = Some(AUTH_PASSWORD.to_string());
@@ -72,6 +73,7 @@ fn qhy_configured_without_auth(world: &mut QhyFocuserWorld) {
             enabled: true,
             ..Default::default()
         },
+        validate_on_start: false,
     });
 }
 
