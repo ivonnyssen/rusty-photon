@@ -306,7 +306,7 @@ impl FlipPolicy {
 /// for Park 4 (target on the meridian, anti-pole side) and at
 /// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
 /// horizon), and the Dec encoder is past the celestial pole.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApPark {
     /// "Current position." No encoder seeding — the driver trusts the
     /// firmware encoder as-is on connect. The operator asserts they
@@ -315,7 +315,6 @@ pub enum ApPark {
     /// setups. Not a valid `preferred_ap_park` (it is not a slew
     /// target). The `codebase_*` accessors return [`None`] for this
     /// variant.
-    #[serde(rename = "ap_park_0")]
     ApPark0,
     /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
     /// saddle on the *west* end, counterweight on the east end). OTA
@@ -326,7 +325,6 @@ pub enum ApPark {
     /// `(−90 − Latitude)` for south. Codebase reading:
     /// `mech_HA = 0`, `dec_encoder = ±(90 − |latitude|)` (sign matches
     /// the hemisphere).
-    #[serde(rename = "ap_park_1")]
     ApPark1,
     /// AP Park 2. "RA axis vertical, Dec = 0". OTA level facing the
     /// east horizon, counterweight shaft pointing down. The "RA
@@ -334,7 +332,6 @@ pub enum ApPark {
     /// at any latitude the codebase reading is `mech_HA = −6 h`
     /// (target on the east-rising celestial equator), `dec_encoder
     /// = 0`. Hemisphere-independent.
-    #[serde(rename = "ap_park_2")]
     ApPark2,
     /// AP Park 3 (also Sky-Watcher's power-on home). OTA along the
     /// polar axis pointing at the visible celestial pole — Polaris
@@ -344,7 +341,6 @@ pub enum ApPark {
     /// AP table: `Dec = 90` (visible pole). Codebase reading:
     /// `mech_HA = 0`, `dec_encoder = +90°` for north / `−90°` for
     /// south.
-    #[serde(rename = "ap_park_3")]
     ApPark3,
     /// AP Park 4. East-side / post-meridian-flip equivalent of Park 1:
     /// saddle on the *east* end of the Dec axis, counterweight shaft
@@ -359,7 +355,6 @@ pub enum ApPark {
     /// ∓(90 + |latitude|)`. Codebase reading: `mech_HA = −12 h`
     /// (= `+12 h` via the encoder wrap),
     /// `dec_encoder = ∓(90 + |latitude|)`.
-    #[serde(rename = "ap_park_4")]
     ApPark4,
     /// AP Park 5. East-side / post-meridian-flip equivalent of Park 1
     /// (mirror of Park 4 across the polar-axis plane): saddle on the
@@ -378,8 +373,82 @@ pub enum ApPark {
     /// (`Note: Park 5 shown below is only available in APCC and the
     /// AP V2 driver.` per the AP doc — it's an APCC extension, not on
     /// the keypad.)
-    #[serde(rename = "ap_park_5")]
     ApPark5,
+}
+
+impl ApPark {
+    /// The canonical `ap_park_N` token for this variant — the single
+    /// source of truth for the string form used in config JSON
+    /// (`Serialize`/`Deserialize` delegate here), ASCOM `Action`
+    /// parameters, and `Action` return values.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApPark0 => "ap_park_0",
+            Self::ApPark1 => "ap_park_1",
+            Self::ApPark2 => "ap_park_2",
+            Self::ApPark3 => "ap_park_3",
+            Self::ApPark4 => "ap_park_4",
+            Self::ApPark5 => "ap_park_5",
+        }
+    }
+}
+
+impl std::fmt::Display for ApPark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ApPark {
+    type Err = ApParkParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "ap_park_0" => Ok(Self::ApPark0),
+            "ap_park_1" => Ok(Self::ApPark1),
+            "ap_park_2" => Ok(Self::ApPark2),
+            "ap_park_3" => Ok(Self::ApPark3),
+            "ap_park_4" => Ok(Self::ApPark4),
+            "ap_park_5" => Ok(Self::ApPark5),
+            other => Err(ApParkParseError(other.to_string())),
+        }
+    }
+}
+
+/// Error from parsing an unrecognised AP-park token via
+/// [`ApPark::from_str`]. Carries the offending token for the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApParkParseError(pub String);
+
+impl std::fmt::Display for ApParkParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown AP park {:?}; expected one of ap_park_0..ap_park_5",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ApParkParseError {}
+
+impl Serialize for ApPark {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ApPark {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let token = String::deserialize(deserializer)?;
+        token.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 impl ApPark {
@@ -822,6 +891,31 @@ mod tests {
             let got: ApPark = serde_json::from_str(json).expect(json);
             assert_eq!(got, expected, "json input {json}");
         }
+    }
+
+    #[test]
+    fn ap_park_as_str_and_from_str_are_the_canonical_token_mapping() {
+        for park in [
+            ApPark::ApPark0,
+            ApPark::ApPark1,
+            ApPark::ApPark2,
+            ApPark::ApPark3,
+            ApPark::ApPark4,
+            ApPark::ApPark5,
+        ] {
+            // `as_str` ↔ `FromStr` round-trip.
+            assert_eq!(park.as_str().parse::<ApPark>().unwrap(), park);
+            // serde delegates to the same mapping, so the JSON string
+            // form is exactly `as_str()` — the single source of truth.
+            assert_eq!(
+                serde_json::to_value(park).unwrap(),
+                serde_json::Value::String(park.as_str().to_string()),
+            );
+        }
+        assert_eq!(ApPark::ApPark3.as_str(), "ap_park_3");
+        // An unrecognised token is a parse error that names the offender.
+        let err = "ap_park_9".parse::<ApPark>().unwrap_err();
+        assert!(err.to_string().contains("ap_park_9"), "{err}");
     }
 
     #[test]

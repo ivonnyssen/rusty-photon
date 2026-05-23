@@ -24,49 +24,50 @@ use crate::config::ApPark;
 use super::park_persistence::write_mount_fields_to_config;
 use super::MountDevice;
 
-/// `SupportedActions` entry: persist a new `unpark_from_ap_position`.
-pub(super) const ACTION_SET_UNPARK_FROM_AP_POSITION: &str = "SetUnparkFromApPosition";
-/// `SupportedActions` entry: persist a new `preferred_ap_park`.
-pub(super) const ACTION_SET_PREFERRED_AP_PARK: &str = "SetPreferredApPark";
-/// `SupportedActions` entry: recovery unpark from a named physical pose.
-pub(super) const ACTION_UNPARK_FROM_AP_POSITION: &str = "UnparkFromApPosition";
+/// The driver-specific ASCOM vendor Actions. Owns its `SupportedActions`
+/// names and the name→variant parsing the `Action` dispatch in
+/// [`super::device`] uses, so the name set lives in exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ApParkAction {
+    SetUnparkFromApPosition,
+    SetPreferredApPark,
+    UnparkFromApPosition,
+}
 
-/// The driver-specific Action names, in `SupportedActions` order.
-pub(super) const SUPPORTED_ACTIONS: [&str; 3] = [
-    ACTION_SET_UNPARK_FROM_AP_POSITION,
-    ACTION_SET_PREFERRED_AP_PARK,
-    ACTION_UNPARK_FROM_AP_POSITION,
-];
+impl ApParkAction {
+    /// Every variant, in `SupportedActions` order.
+    pub(super) const ALL: [Self; 3] = [
+        Self::SetUnparkFromApPosition,
+        Self::SetPreferredApPark,
+        Self::UnparkFromApPosition,
+    ];
 
-/// Parse an `Action` parameter string into an [`ApPark`]. Accepts the
-/// six `ap_park_N` tokens (whitespace-trimmed); anything else is an
-/// `INVALID_VALUE`.
-fn parse_ap_park(parameter: &str) -> ASCOMResult<ApPark> {
-    match parameter.trim() {
-        "ap_park_0" => Ok(ApPark::ApPark0),
-        "ap_park_1" => Ok(ApPark::ApPark1),
-        "ap_park_2" => Ok(ApPark::ApPark2),
-        "ap_park_3" => Ok(ApPark::ApPark3),
-        "ap_park_4" => Ok(ApPark::ApPark4),
-        "ap_park_5" => Ok(ApPark::ApPark5),
-        other => Err(ASCOMError::new(
-            ASCOMErrorCode::INVALID_VALUE,
-            format!("unknown AP park {other:?}; expected one of ap_park_0..ap_park_5"),
-        )),
+    /// The ASCOM action name.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::SetUnparkFromApPosition => "SetUnparkFromApPosition",
+            Self::SetPreferredApPark => "SetPreferredApPark",
+            Self::UnparkFromApPosition => "UnparkFromApPosition",
+        }
+    }
+
+    /// Resolve an ASCOM action name; `None` for an unrecognised name
+    /// (the caller maps that to `ACTION_NOT_IMPLEMENTED`).
+    pub(super) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.name() == name)
     }
 }
 
-/// Canonical `ap_park_N` string for an [`ApPark`] — the persisted JSON
-/// value and the Action return string.
-fn ap_park_str(park: ApPark) -> &'static str {
-    match park {
-        ApPark::ApPark0 => "ap_park_0",
-        ApPark::ApPark1 => "ap_park_1",
-        ApPark::ApPark2 => "ap_park_2",
-        ApPark::ApPark3 => "ap_park_3",
-        ApPark::ApPark4 => "ap_park_4",
-        ApPark::ApPark5 => "ap_park_5",
-    }
+/// Parse an `Action`'s single `parameters` string into an [`ApPark`]
+/// (whitespace-trimmed), mapping an unrecognised token to
+/// `INVALID_VALUE`. The token↔variant mapping itself is canonical on
+/// [`ApPark`] (`FromStr` / [`ApPark::as_str`]); this only adapts it to
+/// the ASCOM error type.
+fn parse_ap_park(parameter: &str) -> ASCOMResult<ApPark> {
+    parameter
+        .trim()
+        .parse::<ApPark>()
+        .map_err(|e| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, e.to_string()))
 }
 
 impl MountDevice {
@@ -82,7 +83,7 @@ impl MountDevice {
             )
         })?;
         let path = path.clone();
-        let value = serde_json::Value::String(ap_park_str(park).to_string());
+        let value = serde_json::Value::String(park.as_str().to_string());
         tokio::task::spawn_blocking(move || write_mount_fields_to_config(&path, &[(key, value)]))
             .await
             .map_err(|e| {
@@ -110,7 +111,7 @@ impl MountDevice {
             unpark_from_ap_position = ?park,
             "SetUnparkFromApPosition persisted to config file"
         );
-        Ok(ap_park_str(park).to_string())
+        Ok(park.as_str().to_string())
     }
 
     /// `SetPreferredApPark(park)` — set the `Park()` target. Rejects
@@ -141,7 +142,7 @@ impl MountDevice {
             self.load_park_target_after_connect(&cfg).await?;
         }
         tracing::debug!(preferred_ap_park = ?park, "SetPreferredApPark persisted to config file");
-        Ok(ap_park_str(park).to_string())
+        Ok(park.as_str().to_string())
     }
 
     /// `UnparkFromApPosition(park)` — recovery unpark. The operator
@@ -199,6 +200,6 @@ impl MountDevice {
             );
         }
         self.state.write().await.at_park = false;
-        Ok(ap_park_str(park).to_string())
+        Ok(park.as_str().to_string())
     }
 }

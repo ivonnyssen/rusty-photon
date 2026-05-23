@@ -12,10 +12,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
 use tracing::debug;
 
-use super::actions::{
-    ACTION_SET_PREFERRED_AP_PARK, ACTION_SET_UNPARK_FROM_AP_POSITION,
-    ACTION_UNPARK_FROM_AP_POSITION, SUPPORTED_ACTIONS,
-};
+use super::actions::ApParkAction;
 use super::MountDevice;
 
 #[async_trait]
@@ -112,7 +109,10 @@ impl Device for MountDevice {
     /// the design doc's
     /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(SUPPORTED_ACTIONS.iter().map(|s| (*s).to_string()).collect())
+        Ok(ApParkAction::ALL
+            .iter()
+            .map(|action| action.name().to_string())
+            .collect())
     }
 
     /// Dispatch a vendor `Action`. Each handler takes the single
@@ -120,17 +120,19 @@ impl Device for MountDevice {
     /// unrecognised name returns `ACTION_NOT_IMPLEMENTED` per the ASCOM
     /// `Action` contract.
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        match action.as_str() {
-            ACTION_SET_UNPARK_FROM_AP_POSITION => {
+        match ApParkAction::from_name(&action) {
+            Some(ApParkAction::SetUnparkFromApPosition) => {
                 self.handle_set_unpark_from_ap_position(&parameters).await
             }
-            ACTION_SET_PREFERRED_AP_PARK => self.handle_set_preferred_ap_park(&parameters).await,
-            ACTION_UNPARK_FROM_AP_POSITION => {
+            Some(ApParkAction::SetPreferredApPark) => {
+                self.handle_set_preferred_ap_park(&parameters).await
+            }
+            Some(ApParkAction::UnparkFromApPosition) => {
                 self.handle_unpark_from_ap_position(&parameters).await
             }
-            other => Err(ASCOMError::new(
+            None => Err(ASCOMError::new(
                 ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                format!("unknown action {other:?}"),
+                format!("unknown action {action:?}"),
             )),
         }
     }
