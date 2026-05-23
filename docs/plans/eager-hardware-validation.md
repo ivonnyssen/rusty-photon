@@ -368,7 +368,9 @@ bootstrap path, but no `Config` field exposes this yet.
 
 ## CLI surface (per service)
 
-`--check-device` forces a one-shot validation pass and exits:
+**Not implemented in this PR — follow-up.** The original plan
+proposed a `--check-device` flag that forces a one-shot validation
+pass and exits:
 
 ```bash
 star-adventurer-gti --config /etc/dome.json --check-device
@@ -376,9 +378,20 @@ star-adventurer-gti --config /etc/dome.json --check-device
 # exit 2 → wrong device or transient failure
 ```
 
-Independent of `validate_on_start`. Useful for "verify before
+Independent of `validate_on_start`; useful for "verify before
 service install" workflows and CI hardware-attached smoke tests.
-Maps to `start()` + `shutdown()` + exit.
+The implementation maps to `transport.start()` + `transport.shutdown()`
++ exit, but it needs per-service `Args` wiring (clap derive in each
+`main.rs`) and a branch that bypasses `ServiceRunner` and the HTTP
+listener bind. Five services' worth of mechanical wiring; tracked
+as a follow-up.
+
+Operators today can approximate the check by running the service
+with `validate_on_start: true` and a config that points at the
+device they want to verify — the binary will exit non-zero on
+handshake failure. Less ergonomic than a dedicated flag (it still
+binds the HTTP listener on success), but functionally equivalent
+for the "does the configured port talk to the right device" question.
 
 ## Test strategy
 
