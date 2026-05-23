@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::ApPark;
 use crate::error::StarAdvError;
 
 /// Probe whether the parent directory of `config_path` can host the
@@ -84,47 +85,6 @@ pub fn warn_if_park_path_unwritable(config_path: &Path) {
     }
 }
 
-/// Read `mount.park_ra_ticks` / `mount.park_dec_ticks` from the on-disk
-/// config file. Each axis is returned independently — a `None` means
-/// the file did not set that key (or set it to JSON `null`), and the
-/// caller will fall back to the handshake-captured value for that axis.
-///
-/// A key that **is** present but holds something other than an integer
-/// inside `i32`'s range is surfaced as a `StarAdvError::Config` rather
-/// than silently treated as `None`. Operator typos (a string,
-/// an i64 too large to be encoder ticks, a float) should fail loudly so
-/// the misconfiguration is visible rather than masked by the handshake
-/// fallback. Other failures (file missing, malformed JSON, `mount` key
-/// missing or not an object) are also surfaced as `StarAdvError::Config`.
-///
-/// Reading the file only at connect time means an operator can
-/// hand-edit the park keys between connects and have the change take
-/// effect on reconnect, without restarting the driver.
-///
-/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
-pub(super) fn read_park_from_config(
-    config_path: &Path,
-) -> crate::error::Result<(Option<i32>, Option<i32>)> {
-    let content = std::fs::read_to_string(config_path)
-        .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
-    let root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-        StarAdvError::Config(format!("parse config {}: {e}", config_path.display()))
-    })?;
-    let mount = root
-        .as_object()
-        .and_then(|o| o.get("mount"))
-        .and_then(|v| v.as_object())
-        .ok_or_else(|| {
-            StarAdvError::Config(format!(
-                "config {} has no `mount` object",
-                config_path.display()
-            ))
-        })?;
-    let ra = extract_park_tick(mount.get("park_ra_ticks"), "mount.park_ra_ticks")?;
-    let dec = extract_park_tick(mount.get("park_dec_ticks"), "mount.park_dec_ticks")?;
-    Ok((ra, dec))
-}
-
 /// Decode an optional park-tick JSON value:
 ///
 /// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
@@ -167,6 +127,83 @@ fn extract_park_tick(
     }
 }
 
+/// The connect-time `mount.*` fields the driver re-reads from disk on
+/// every connect, read in a **single** parse. A `None` means the key was
+/// absent or JSON `null` on disk — the caller applies the in-memory
+/// startup fallback for that field.
+#[derive(Debug)]
+pub(super) struct MountConnectFields {
+    pub park_ra_ticks: Option<i32>,
+    pub park_dec_ticks: Option<i32>,
+    pub unpark_from_ap_position: Option<ApPark>,
+    pub preferred_ap_park: Option<ApPark>,
+}
+
+/// Read the four connect-time `mount.*` fields (`park_ra_ticks`,
+/// `park_dec_ticks`, `unpark_from_ap_position`, `preferred_ap_park`)
+/// from the on-disk config in one read + parse, so `set_connected`'s
+/// seed + park-target hooks don't each re-read the file. A
+/// `SetUnparkFromApPosition` / `SetPreferredApPark` / `SetPark` write —
+/// or an operator hand-edit between connects — therefore takes effect on
+/// the next connect without a driver restart.
+///
+/// Per-field decoding matches the single-field helpers: tick keys go
+/// through [`extract_park_tick`] (loud on a non-integer, or an integer
+/// outside the `i32` / signed-24-bit encoder range), AP-park keys
+/// through [`extract_ap_park`] (loud on an unrecognised string). A
+/// missing/malformed file or a missing `mount` object is a
+/// `StarAdvError::Config`. The `ap_park_0` rejection that
+/// `preferred_ap_park` carries at full-config deserialize is **not**
+/// re-applied here — the caller treats an `ap_park_0` value as "no AP
+/// target" and falls back accordingly.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
+pub(super) fn read_connect_fields(config_path: &Path) -> crate::error::Result<MountConnectFields> {
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
+    let root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        StarAdvError::Config(format!("parse config {}: {e}", config_path.display()))
+    })?;
+    let mount = root
+        .as_object()
+        .and_then(|o| o.get("mount"))
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            StarAdvError::Config(format!(
+                "config {} has no `mount` object",
+                config_path.display()
+            ))
+        })?;
+    Ok(MountConnectFields {
+        park_ra_ticks: extract_park_tick(mount.get("park_ra_ticks"), "mount.park_ra_ticks")?,
+        park_dec_ticks: extract_park_tick(mount.get("park_dec_ticks"), "mount.park_dec_ticks")?,
+        unpark_from_ap_position: extract_ap_park(
+            mount.get("unpark_from_ap_position"),
+            "unpark_from_ap_position",
+        )?,
+        preferred_ap_park: extract_ap_park(mount.get("preferred_ap_park"), "preferred_ap_park")?,
+    })
+}
+
+/// Decode an optional `mount.<key>` AP-park value: absent / `null` →
+/// `Ok(None)`; a recognised `ap_park_N` string → `Ok(Some(park))`;
+/// anything else → `Err(StarAdvError::Config)`. Loud failure on an
+/// operator typo mirrors [`extract_park_tick`].
+fn extract_ap_park(
+    value: Option<&serde_json::Value>,
+    key: &str,
+) -> crate::error::Result<Option<ApPark>> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let park: ApPark = serde_json::from_value(v.clone()).map_err(|e| {
+                StarAdvError::Config(format!("`mount.{key}` is not a valid AP park: {e}"))
+            })?;
+            Ok(Some(park))
+        }
+    }
+}
+
 /// Patch the on-disk JSON config with the supplied park encoder pair.
 ///
 /// Read-as-`Value` + atomic-rename pattern: load the file as
@@ -197,6 +234,45 @@ pub(super) fn write_park_to_config(
     park_ra_ticks: i32,
     park_dec_ticks: i32,
 ) -> crate::error::Result<()> {
+    write_mount_fields_to_config(
+        config_path,
+        &[
+            ("park_ra_ticks", serde_json::Value::from(park_ra_ticks)),
+            ("park_dec_ticks", serde_json::Value::from(park_dec_ticks)),
+        ],
+    )
+}
+
+/// Patch the on-disk JSON config, setting each `mount.<key>` in
+/// `updates` to its paired value. The read-modify-write engine behind
+/// [`write_park_to_config`] and the `SetUnparkFromApPosition` /
+/// `SetPreferredApPark` Actions.
+///
+/// Read-as-`Value` + atomic-rename pattern: load the file as
+/// `serde_json::Value`, mutate **only** the listed `mount` keys,
+/// serialise pretty-printed, write via a `tempfile::NamedTempFile` in
+/// the same directory, `persist` to swap it in atomically. Every other
+/// field — known and unknown — is preserved as a JSON value. Operator
+/// formatting (key order, indentation) is not preserved byte-for-byte
+/// because the round-trip pretty-prints the whole document; the
+/// *semantic* content outside the listed keys is unchanged.
+///
+/// Durability: fsync the staged file before rename (`tempfile::persist`
+/// uses POSIX `rename(2)`), then fsync the parent directory after
+/// rename so the directory entry update is itself durable. Mirrors
+/// `services/rp/src/persistence/document.rs::write_sidecar_sync`.
+///
+/// The driver never re-serialises its in-memory typed `Config` here:
+/// doing so would round-trip CLI overrides (`--port`, `--baud`, etc.)
+/// back to disk and is structurally avoided. See the design doc's
+/// [§"Park persistence"](../../../../docs/services/star-adventurer-gti.md#park-persistence)
+/// for the contract this helper implements.
+///
+/// Blocking I/O; callers wrap in `tokio::task::spawn_blocking`.
+pub(super) fn write_mount_fields_to_config(
+    config_path: &Path,
+    updates: &[(&str, serde_json::Value)],
+) -> crate::error::Result<()> {
     use std::io::Write;
 
     let content = std::fs::read_to_string(config_path)
@@ -214,14 +290,9 @@ pub(super) fn write_park_to_config(
                 config_path.display()
             ))
         })?;
-    mount.insert(
-        "park_ra_ticks".to_string(),
-        serde_json::Value::from(park_ra_ticks),
-    );
-    mount.insert(
-        "park_dec_ticks".to_string(),
-        serde_json::Value::from(park_dec_ticks),
-    );
+    for (key, value) in updates {
+        mount.insert((*key).to_string(), value.clone());
+    }
     let mut pretty = serde_json::to_string_pretty(&root)
         .map_err(|e| StarAdvError::Config(format!("serialise config: {e}")))?;
     // serde_json's pretty-printer omits a trailing newline; add one so

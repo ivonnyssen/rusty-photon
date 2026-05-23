@@ -1441,7 +1441,12 @@ src/
                            re-exports of the park-persistence helpers
   mount_device/
     device.rs            — `impl Device for MountDevice` (connect /
-                           description / driver info)
+                           description / driver info, plus
+                           `SupportedActions` + `Action` dispatch)
+    actions.rs           — the three driver-specific ASCOM `Action`
+                           handlers (`SetUnparkFromApPosition`,
+                           `SetPreferredApPark`, `UnparkFromApPosition`)
+                           that `device.rs`'s `action` dispatches to
     telescope.rs         — `impl Telescope for MountDevice` (the ASCOM
                            surface: capability flags, coordinate reads,
                            slew / sync / park / side-of-pier / pulse-guide)
@@ -1449,7 +1454,7 @@ src/
                            between the trait impls: validation,
                            preconditions, motion-control wrappers,
                            post-connect lifecycle hooks
-                           (`seed_home_pose_after_connect`,
+                           (`seed_after_connect`, `reset_mount_encoders`,
                             `load_park_target_after_connect`),
                            the slew planner
                            (`execute_slew_with_explicit_side`),

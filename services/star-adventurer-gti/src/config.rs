@@ -200,18 +200,41 @@ pub struct MountConfig {
     #[serde(default)]
     pub flip_policy: FlipPolicy,
 
-    /// Physical pose the mount is in at power-up.
+    /// Physical pose the operator powers the mount up in. **Required**
+    /// in spirit — the ship default is [`ApPark::ApPark0`] ("current
+    /// position, I will plate-solve"), the safest assumption for an
+    /// unknown or variable physical setup.
     ///
-    /// When `Some(ApPark*)`, the driver seeds the firmware encoder on
-    /// connect (no motion, just `:E1` / `:E2`) so the codebase's
-    /// celestial-coordinate math matches the operator's physical
-    /// pose. When `None` (the default), the driver does no seeding
-    /// and trusts the firmware encoder as-is — the codebase's
-    /// historical pre-Phase-6 behaviour. See [`HomePose`] for the
-    /// supported AP park positions and the wiring in
-    /// `MountDevice::seed_home_pose_after_connect`.
-    #[serde(default)]
-    pub home_pose: Option<HomePose>,
+    /// For `ap_park_1..ap_park_5` the driver seeds the firmware encoder
+    /// on the fresh-power-up connect (no motion, just `:E1` / `:E2`) so
+    /// the codebase's celestial-coordinate math matches the operator's
+    /// physical pose. For `ap_park_0` the driver does **no** seeding and
+    /// trusts the firmware encoder as-is — the operator has asserted
+    /// they will ground-truth the position via plate-solve + sync.
+    ///
+    /// The runtime `SetUnparkFromApPosition` Action persists a new value
+    /// here (applied on the next fresh-power-up). See [`ApPark`] for the
+    /// supported positions, the design doc's
+    /// [§Unpark from AP position](../../../docs/services/star-adventurer-gti.md#unpark-from-ap-position),
+    /// and the wiring in `MountDevice::seed_after_connect`.
+    #[serde(default = "default_unpark_from_ap_position")]
+    pub unpark_from_ap_position: ApPark,
+
+    /// AP park the standard ASCOM `Park()` slews to when no raw
+    /// `park_*_ticks` override is set. Defaults to [`ApPark::ApPark3`]
+    /// (Sky-Watcher's stock power-up pose along the polar axis).
+    ///
+    /// `ap_park_0` is rejected at deserialize time — "current position"
+    /// is not a slew target. The runtime `SetPreferredApPark` Action
+    /// persists a new value here. When both this and an explicit
+    /// `park_ra_ticks` / `park_dec_ticks` pair are set, the raw tick
+    /// pair wins (per-axis). See the design doc's
+    /// [§Custom Actions for runtime control](../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
+    #[serde(
+        default = "default_preferred_ap_park",
+        deserialize_with = "deserialize_preferred_ap_park"
+    )]
+    pub preferred_ap_park: ApPark,
 }
 
 /// Master switch + parameters for driver-planned meridian flips.
@@ -362,9 +385,11 @@ impl MountConfig {
 /// positions.
 ///
 /// The Sky-Watcher firmware resets its encoder counter to `(0, 0)`
-/// every power-up. When `home_pose: Some(ApPark*)`, the driver
-/// seeds the firmware encoder on connect so the codebase's coordinate
-/// math interprets that zero against the operator's physical pose.
+/// every power-up. For `ap_park_1..ap_park_5` the driver seeds the
+/// firmware encoder on connect so the codebase's coordinate math
+/// interprets that zero against the operator's physical pose. The
+/// [`ApPark::ApPark0`] variant means "no seed — trust the firmware
+/// encoder as-is"; its `codebase_*` accessors return [`None`].
 ///
 /// Each AP pose is mirror-symmetric between the Northern and Southern
 /// Hemispheres around the observer's local meridian — the
@@ -380,8 +405,16 @@ impl MountConfig {
 /// for Park 4 (target on the meridian, anti-pole side) and at
 /// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
 /// horizon), and the Dec encoder is past the celestial pole.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum HomePose {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApPark {
+    /// "Current position." No encoder seeding — the driver trusts the
+    /// firmware encoder as-is on connect. The operator asserts they
+    /// will plate-solve and `SyncToCoordinates` before any blind-
+    /// pointing slew. Safe ship default for unknown / variable physical
+    /// setups. Not a valid `preferred_ap_park` (it is not a slew
+    /// target). The `codebase_*` accessors return [`None`] for this
+    /// variant.
+    ApPark0,
     /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
     /// saddle on the *west* end, counterweight on the east end). OTA
     /// tube level, pointing at the polar-side horizon — north horizon
@@ -391,7 +424,6 @@ pub enum HomePose {
     /// `(−90 − Latitude)` for south. Codebase reading:
     /// `mech_HA = 0`, `dec_encoder = ±(90 − |latitude|)` (sign matches
     /// the hemisphere).
-    #[serde(rename = "ap_park_1")]
     ApPark1,
     /// AP Park 2. "RA axis vertical, Dec = 0". OTA level facing the
     /// east horizon, counterweight shaft pointing down. The "RA
@@ -399,7 +431,6 @@ pub enum HomePose {
     /// at any latitude the codebase reading is `mech_HA = −6 h`
     /// (target on the east-rising celestial equator), `dec_encoder
     /// = 0`. Hemisphere-independent.
-    #[serde(rename = "ap_park_2")]
     ApPark2,
     /// AP Park 3 (also Sky-Watcher's power-on home). OTA along the
     /// polar axis pointing at the visible celestial pole — Polaris
@@ -409,7 +440,6 @@ pub enum HomePose {
     /// AP table: `Dec = 90` (visible pole). Codebase reading:
     /// `mech_HA = 0`, `dec_encoder = +90°` for north / `−90°` for
     /// south.
-    #[serde(rename = "ap_park_3")]
     ApPark3,
     /// AP Park 4. East-side / post-meridian-flip equivalent of Park 1:
     /// saddle on the *east* end of the Dec axis, counterweight shaft
@@ -424,7 +454,6 @@ pub enum HomePose {
     /// ∓(90 + |latitude|)`. Codebase reading: `mech_HA = −12 h`
     /// (= `+12 h` via the encoder wrap),
     /// `dec_encoder = ∓(90 + |latitude|)`.
-    #[serde(rename = "ap_park_4")]
     ApPark4,
     /// AP Park 5. East-side / post-meridian-flip equivalent of Park 1
     /// (mirror of Park 4 across the polar-axis plane): saddle on the
@@ -443,14 +472,89 @@ pub enum HomePose {
     /// (`Note: Park 5 shown below is only available in APCC and the
     /// AP V2 driver.` per the AP doc — it's an APCC extension, not on
     /// the keypad.)
-    #[serde(rename = "ap_park_5")]
     ApPark5,
 }
 
-impl HomePose {
+impl ApPark {
+    /// The canonical `ap_park_N` token for this variant — the single
+    /// source of truth for the string form used in config JSON
+    /// (`Serialize`/`Deserialize` delegate here), ASCOM `Action`
+    /// parameters, and `Action` return values.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApPark0 => "ap_park_0",
+            Self::ApPark1 => "ap_park_1",
+            Self::ApPark2 => "ap_park_2",
+            Self::ApPark3 => "ap_park_3",
+            Self::ApPark4 => "ap_park_4",
+            Self::ApPark5 => "ap_park_5",
+        }
+    }
+}
+
+impl std::fmt::Display for ApPark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ApPark {
+    type Err = ApParkParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "ap_park_0" => Ok(Self::ApPark0),
+            "ap_park_1" => Ok(Self::ApPark1),
+            "ap_park_2" => Ok(Self::ApPark2),
+            "ap_park_3" => Ok(Self::ApPark3),
+            "ap_park_4" => Ok(Self::ApPark4),
+            "ap_park_5" => Ok(Self::ApPark5),
+            other => Err(ApParkParseError(other.to_string())),
+        }
+    }
+}
+
+/// Error from parsing an unrecognised AP-park token via
+/// [`ApPark::from_str`]. Carries the offending token for the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApParkParseError(pub String);
+
+impl std::fmt::Display for ApParkParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown AP park {:?}; expected one of ap_park_0..ap_park_5",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ApParkParseError {}
+
+impl Serialize for ApPark {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ApPark {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let token = String::deserialize(deserializer)?;
+        token.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl ApPark {
     /// Codebase-convention `mech_HA` (signed hours, `[−12, +12)`)
-    /// corresponding to firmware encoder `(0, 0)` at this home pose
-    /// for the configured latitude.
+    /// corresponding to firmware encoder `(0, 0)` at this AP park
+    /// for the configured latitude. [`None`] for [`ApPark::ApPark0`]
+    /// ("current position" has no fixed encoder mapping).
     ///
     /// AP defines each pose by the OTA pointing direction and which
     /// side of the mount the OTA tube is on (East or West, mechanical).
@@ -487,29 +591,31 @@ impl HomePose {
     ///   OTA reaches north horizon via natural-side dec rotation).
     /// - Parks 2 and 3 are hemisphere-neutral for mech_HA (`−6`,
     ///   saddle in the south-up direction, neither east nor west).
-    pub fn codebase_mech_ha_hours(&self, _latitude_deg: f64) -> f64 {
+    pub fn codebase_mech_ha_hours(&self, _latitude_deg: f64) -> Option<f64> {
         // We don't case-split on hemisphere for mech_HA: the saddle
         // east/west position is a function of the encoder alone,
         // which is hemisphere-independent. The dec encoder *is*
         // hemisphere-dependent — see [`codebase_dec_encoder_degrees`].
         match self {
+            // "Current position" has no fixed encoder mapping.
+            Self::ApPark0 => None,
             // Park 1: OTA west of mount → saddle west → mech_HA in
             // the (−6, +6) range. `mech_HA = 0` is the canonical
             // saddle-west position (dec axis east-west horizontal).
-            Self::ApPark1 => 0.0,
+            Self::ApPark1 => Some(0.0),
             // Park 2 and Park 3 share the same RA position ("RA axis
             // vertical" per the AP doc); only the dec rotation differs.
             // Both put the dec axis south-up out of east-west horizontal
             // (`mech_HA = −6`).
-            Self::ApPark2 => -6.0,
-            Self::ApPark3 => -6.0,
+            Self::ApPark2 => Some(-6.0),
+            Self::ApPark3 => Some(-6.0),
             // Park 4: OTA east of mount → saddle east → `mech_HA` in
             // the wrap region. `mech_HA = −12` is the canonical
             // saddle-east position.
-            Self::ApPark4 => -12.0,
+            Self::ApPark4 => Some(-12.0),
             // Park 5: OTA east of mount (same saddle side as Park 4,
             // different dec rotation) → `mech_HA = −12`.
-            Self::ApPark5 => -12.0,
+            Self::ApPark5 => Some(-12.0),
         }
     }
 
@@ -522,13 +628,15 @@ impl HomePose {
     /// hemispheres. The codebase dec_enc value is the rotation angle
     /// around the dec axis from the dec=0 reference (which itself is
     /// hemisphere-dependent at fixed mech_HA).
-    pub fn codebase_dec_encoder_degrees(&self, latitude_deg: f64) -> f64 {
+    pub fn codebase_dec_encoder_degrees(&self, latitude_deg: f64) -> Option<f64> {
         let northern = latitude_deg >= 0.0;
         let lat_abs = latitude_deg.abs();
         // Magnitude common to Parks 1, 4, 5 — the celestial Dec at the
         // polar-side / anti-polar horizon at this latitude.
         let horizon_dec_mag = 90.0 - lat_abs;
         match self {
+            // "Current position" has no fixed encoder mapping.
+            Self::ApPark0 => None,
             // Park 1: saddle west (mech_HA=0). OTA at polar-side
             // horizon — north horizon for N (alt=0, az=0), south
             // horizon for S. From the saddle-west position at
@@ -536,47 +644,37 @@ impl HomePose {
             // a past-pole rotation: `dec_enc ≈ ±(90 + |lat|)` (sign
             // matches hemisphere; magnitude > 90 indicates the
             // past-pole encoding).
-            Self::ApPark1 => {
-                if northern {
-                    90.0 + lat_abs
-                } else {
-                    -(90.0 + lat_abs)
-                }
-            }
-            Self::ApPark2 => 0.0,
-            Self::ApPark3 => {
+            Self::ApPark1 => Some(if northern {
+                90.0 + lat_abs
+            } else {
+                -(90.0 + lat_abs)
+            }),
+            Self::ApPark2 => Some(0.0),
+            Self::ApPark3 => Some(
                 // OTA at the visible celestial pole. Both hemispheres
                 // encode this as `dec_enc = ±90°` (sign matches
                 // hemisphere — celestial pole at +Dec in N, −Dec
                 // in S).
-                if northern {
-                    90.0
-                } else {
-                    -90.0
-                }
-            }
+                if northern { 90.0 } else { -90.0 },
+            ),
             // Park 4: saddle east (mech_HA=-12). OTA at the anti-
             // polar horizon — south for N (alt=0, az=180), north
             // for S. Past-pole rotation gives `dec_enc = ∓(90+|lat|)`
             // (sign opposite hemisphere).
-            Self::ApPark4 => {
-                if northern {
-                    -(90.0 + lat_abs)
-                } else {
-                    90.0 + lat_abs
-                }
-            }
+            Self::ApPark4 => Some(if northern {
+                -(90.0 + lat_abs)
+            } else {
+                90.0 + lat_abs
+            }),
             // Park 5: saddle east (mech_HA=-12, same as Park 4) but
             // OTA at the polar-side horizon (180° around dec axis
             // from Park 4). `dec_enc = ±(90 − |lat|)` (natural-side
             // encoding; |dec_enc| < 90).
-            Self::ApPark5 => {
-                if northern {
-                    horizon_dec_mag
-                } else {
-                    -horizon_dec_mag
-                }
-            }
+            Self::ApPark5 => Some(if northern {
+                horizon_dec_mag
+            } else {
+                -horizon_dec_mag
+            }),
         }
     }
 }
@@ -629,6 +727,33 @@ fn default_flip_range_hours() -> f64 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_unpark_from_ap_position() -> ApPark {
+    // Ship default: "current position" — the safest assumption for an
+    // unknown / variable physical setup. No encoder seed on connect.
+    ApPark::ApPark0
+}
+fn default_preferred_ap_park() -> ApPark {
+    // Sky-Watcher's stock power-up pose (OTA along the polar axis at
+    // the visible celestial pole) — a sensible default `Park()` target.
+    ApPark::ApPark3
+}
+
+/// Deserialize `preferred_ap_park`, rejecting [`ApPark::ApPark0`].
+/// "Current position" is not a slew target, so it cannot be the
+/// preferred `Park()` destination — surfacing the misconfiguration at
+/// config-load time rather than at the first `Park()` call.
+fn deserialize_preferred_ap_park<'de, D>(deserializer: D) -> std::result::Result<ApPark, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let park = ApPark::deserialize(deserializer)?;
+    if park == ApPark::ApPark0 {
+        return Err(serde::de::Error::custom(
+            "preferred_ap_park cannot be \"ap_park_0\" (\"current position\" is not a slew target)",
+        ));
+    }
+    Ok(park)
 }
 
 impl Default for UsbConfig {
@@ -690,7 +815,8 @@ impl Default for MountConfig {
             park_ra_ticks: None,
             park_dec_ticks: None,
             flip_policy: FlipPolicy::default(),
-            home_pose: None,
+            unpark_from_ap_position: default_unpark_from_ap_position(),
+            preferred_ap_park: default_preferred_ap_park(),
         }
     }
 }
@@ -843,31 +969,75 @@ mod tests {
     }
 
     #[test]
-    fn home_pose_default_is_none_for_backward_compat() {
-        // `home_pose: None` means "no encoder seeding on connect" —
-        // the codebase's pre-Phase-6 behaviour. Operators powering up
-        // at an AP park position opt in by setting `home_pose:
-        // "ap_park_<n>"`.
+    fn unpark_from_ap_position_default_is_ap_park_0() {
+        // The ship default is `ap_park_0` ("current position") — the
+        // safest assumption: no encoder seed on connect. Operators with
+        // a permanent setup opt into a named park to get the auto-seed.
         let cfg = MountConfig::default();
-        assert_eq!(cfg.home_pose, None);
+        assert_eq!(cfg.unpark_from_ap_position, ApPark::ApPark0);
     }
 
     #[test]
-    fn home_pose_deserialises_from_snake_case() {
+    fn preferred_ap_park_default_is_ap_park_3() {
+        // The default `Park()` target is Sky-Watcher's stock power-up
+        // pose along the polar axis.
+        let cfg = MountConfig::default();
+        assert_eq!(cfg.preferred_ap_park, ApPark::ApPark3);
+    }
+
+    #[test]
+    fn ap_park_deserialises_from_snake_case() {
         for (json, expected) in [
-            (r#""ap_park_1""#, HomePose::ApPark1),
-            (r#""ap_park_2""#, HomePose::ApPark2),
-            (r#""ap_park_3""#, HomePose::ApPark3),
-            (r#""ap_park_4""#, HomePose::ApPark4),
-            (r#""ap_park_5""#, HomePose::ApPark5),
+            (r#""ap_park_0""#, ApPark::ApPark0),
+            (r#""ap_park_1""#, ApPark::ApPark1),
+            (r#""ap_park_2""#, ApPark::ApPark2),
+            (r#""ap_park_3""#, ApPark::ApPark3),
+            (r#""ap_park_4""#, ApPark::ApPark4),
+            (r#""ap_park_5""#, ApPark::ApPark5),
         ] {
-            let got: HomePose = serde_json::from_str(json).expect(json);
+            let got: ApPark = serde_json::from_str(json).expect(json);
             assert_eq!(got, expected, "json input {json}");
         }
     }
 
     #[test]
-    fn home_pose_ap_park_1_matches_ap_table_both_hemispheres() {
+    fn ap_park_as_str_and_from_str_are_the_canonical_token_mapping() {
+        for park in [
+            ApPark::ApPark0,
+            ApPark::ApPark1,
+            ApPark::ApPark2,
+            ApPark::ApPark3,
+            ApPark::ApPark4,
+            ApPark::ApPark5,
+        ] {
+            // `as_str` ↔ `FromStr` round-trip.
+            assert_eq!(park.as_str().parse::<ApPark>().unwrap(), park);
+            // serde delegates to the same mapping, so the JSON string
+            // form is exactly `as_str()` — the single source of truth.
+            assert_eq!(
+                serde_json::to_value(park).unwrap(),
+                serde_json::Value::String(park.as_str().to_string()),
+            );
+        }
+        assert_eq!(ApPark::ApPark3.as_str(), "ap_park_3");
+        // An unrecognised token is a parse error that names the offender.
+        let err = "ap_park_9".parse::<ApPark>().unwrap_err();
+        assert!(err.to_string().contains("ap_park_9"), "{err}");
+    }
+
+    #[test]
+    fn ap_park_0_has_no_codebase_encoder_mapping() {
+        // "Current position" has no fixed encoder mapping; both
+        // accessors return `None` so callers must handle the no-seed
+        // case explicitly rather than seeding to a sentinel.
+        for lat in [-45.0, 0.0, 32.7] {
+            assert_eq!(ApPark::ApPark0.codebase_mech_ha_hours(lat), None);
+            assert_eq!(ApPark::ApPark0.codebase_dec_encoder_degrees(lat), None);
+        }
+    }
+
+    #[test]
+    fn ap_park_1_matches_ap_table_both_hemispheres() {
         // AP Park 1: OTA on west side of mount, level, facing the
         // polar-side horizon (N: north horizon, S: south horizon).
         // Saddle is on the west end of the dec axis → mech_HA = 0
@@ -882,56 +1052,65 @@ mod tests {
         let n = 32.7_f64;
         let s = -33.0_f64;
         assert!(
-            (HomePose::ApPark1.codebase_dec_encoder_degrees(n) - 122.7).abs() < 1e-9,
-            "Park 1 N dec_enc at 32.7°: got {}",
-            HomePose::ApPark1.codebase_dec_encoder_degrees(n)
+            (ApPark::ApPark1.codebase_dec_encoder_degrees(n).unwrap() - 122.7).abs() < 1e-9,
+            "Park 1 N dec_enc at 32.7°: got {:?}",
+            ApPark::ApPark1.codebase_dec_encoder_degrees(n)
         );
         assert!(
-            (HomePose::ApPark1.codebase_dec_encoder_degrees(s) - (-123.0)).abs() < 1e-9,
-            "Park 1 S dec_enc at −33°: got {}",
-            HomePose::ApPark1.codebase_dec_encoder_degrees(s)
+            (ApPark::ApPark1.codebase_dec_encoder_degrees(s).unwrap() - (-123.0)).abs() < 1e-9,
+            "Park 1 S dec_enc at −33°: got {:?}",
+            ApPark::ApPark1.codebase_dec_encoder_degrees(s)
         );
-        assert_eq!(HomePose::ApPark1.codebase_mech_ha_hours(n), 0.0);
-        assert_eq!(HomePose::ApPark1.codebase_mech_ha_hours(s), 0.0);
+        assert_eq!(ApPark::ApPark1.codebase_mech_ha_hours(n), Some(0.0));
+        assert_eq!(ApPark::ApPark1.codebase_mech_ha_hours(s), Some(0.0));
     }
 
     #[test]
-    fn home_pose_ap_park_2_is_hemisphere_independent() {
+    fn ap_park_2_is_hemisphere_independent() {
         // Park 2: "RA axis vertical, Dec = 0", both hemispheres.
         // OTA at east-rising celestial equator → celestial HA = −6 h,
         // celestial dec = 0. Both hemispheres land on the natural side
         // (|dec_enc| = 0 ≤ 90), so encoder = celestial dec for both.
         for lat in [-89.0, -33.0, 0.0, 32.7, 89.0] {
             assert_eq!(
-                HomePose::ApPark2.codebase_mech_ha_hours(lat),
-                -6.0,
+                ApPark::ApPark2.codebase_mech_ha_hours(lat),
+                Some(-6.0),
                 "Park 2 mech_HA at lat {lat}"
             );
             assert_eq!(
-                HomePose::ApPark2.codebase_dec_encoder_degrees(lat),
-                0.0,
+                ApPark::ApPark2.codebase_dec_encoder_degrees(lat),
+                Some(0.0),
                 "Park 2 dec at lat {lat}"
             );
         }
     }
 
     #[test]
-    fn home_pose_ap_park_3_visible_pole_inverts_with_hemisphere() {
+    fn ap_park_3_visible_pole_inverts_with_hemisphere() {
         // Park 3 / Sky-Watcher home: OTA along polar axis at the
         // visible pole. Celestial dec = +90 (N) / −90 (S). Natural
         // side for both hemispheres → encoder = celestial dec.
         // Verified on hardware at lat 32.7°N (2026-05-15): mech_HA =
         // −6 h and dec_enc = +90 leaves the OTA pointing at the NCP.
-        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(32.7), 90.0);
-        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(-33.0), -90.0);
+        assert_eq!(
+            ApPark::ApPark3.codebase_dec_encoder_degrees(32.7),
+            Some(90.0)
+        );
+        assert_eq!(
+            ApPark::ApPark3.codebase_dec_encoder_degrees(-33.0),
+            Some(-90.0)
+        );
         // Boundary: lat = 0 falls into the "north" arm via `>= 0`.
-        assert_eq!(HomePose::ApPark3.codebase_dec_encoder_degrees(0.0), 90.0);
-        assert_eq!(HomePose::ApPark3.codebase_mech_ha_hours(32.7), -6.0);
-        assert_eq!(HomePose::ApPark3.codebase_mech_ha_hours(-33.0), -6.0);
+        assert_eq!(
+            ApPark::ApPark3.codebase_dec_encoder_degrees(0.0),
+            Some(90.0)
+        );
+        assert_eq!(ApPark::ApPark3.codebase_mech_ha_hours(32.7), Some(-6.0));
+        assert_eq!(ApPark::ApPark3.codebase_mech_ha_hours(-33.0), Some(-6.0));
     }
 
     #[test]
-    fn home_pose_ap_park_4_dec_at_lat_32() {
+    fn ap_park_4_dec_at_lat_32() {
         // AP Park 4: OTA on east side of mount, level, facing the
         // anti-polar horizon (N: south horizon, S: north horizon).
         // Saddle east → mech_HA = −12. AP celestial dec:
@@ -941,21 +1120,21 @@ mod tests {
         // reference at this mech_HA): `dec_enc = ∓(90 + |lat|)`
         // (sign opposite hemisphere).
         assert!(
-            (HomePose::ApPark4.codebase_dec_encoder_degrees(32.7) - (-122.7)).abs() < 1e-9,
-            "Park 4 N at 32.7°: got {}",
-            HomePose::ApPark4.codebase_dec_encoder_degrees(32.7)
+            (ApPark::ApPark4.codebase_dec_encoder_degrees(32.7).unwrap() - (-122.7)).abs() < 1e-9,
+            "Park 4 N at 32.7°: got {:?}",
+            ApPark::ApPark4.codebase_dec_encoder_degrees(32.7)
         );
         assert!(
-            (HomePose::ApPark4.codebase_dec_encoder_degrees(-33.0) - 123.0).abs() < 1e-9,
-            "Park 4 S at −33°: got {}",
-            HomePose::ApPark4.codebase_dec_encoder_degrees(-33.0)
+            (ApPark::ApPark4.codebase_dec_encoder_degrees(-33.0).unwrap() - 123.0).abs() < 1e-9,
+            "Park 4 S at −33°: got {:?}",
+            ApPark::ApPark4.codebase_dec_encoder_degrees(-33.0)
         );
-        assert_eq!(HomePose::ApPark4.codebase_mech_ha_hours(32.7), -12.0);
-        assert_eq!(HomePose::ApPark4.codebase_mech_ha_hours(-33.0), -12.0);
+        assert_eq!(ApPark::ApPark4.codebase_mech_ha_hours(32.7), Some(-12.0));
+        assert_eq!(ApPark::ApPark4.codebase_mech_ha_hours(-33.0), Some(-12.0));
     }
 
     #[test]
-    fn home_pose_ap_park_5_matches_ap_table_both_hemispheres() {
+    fn ap_park_5_matches_ap_table_both_hemispheres() {
         // AP Park 5 (APCC / AP V2 driver only): OTA on east side of
         // mount, level, facing the polar-side horizon (N: north,
         // S: south). Saddle east → mech_HA = −12. Natural-side dec
@@ -967,29 +1146,35 @@ mod tests {
         // +461,815), saddle east, OTA at north horizon — matches AP
         // Park 5 N visually.
         assert!(
-            (HomePose::ApPark5.codebase_dec_encoder_degrees(32.7) - 57.3).abs() < 1e-9,
-            "Park 5 N at 32.7°: got {}",
-            HomePose::ApPark5.codebase_dec_encoder_degrees(32.7)
+            (ApPark::ApPark5.codebase_dec_encoder_degrees(32.7).unwrap() - 57.3).abs() < 1e-9,
+            "Park 5 N at 32.7°: got {:?}",
+            ApPark::ApPark5.codebase_dec_encoder_degrees(32.7)
         );
         assert!(
-            (HomePose::ApPark5.codebase_dec_encoder_degrees(-33.0) - (-57.0)).abs() < 1e-9,
-            "Park 5 S at −33°: got {}",
-            HomePose::ApPark5.codebase_dec_encoder_degrees(-33.0)
+            (ApPark::ApPark5.codebase_dec_encoder_degrees(-33.0).unwrap() - (-57.0)).abs() < 1e-9,
+            "Park 5 S at −33°: got {:?}",
+            ApPark::ApPark5.codebase_dec_encoder_degrees(-33.0)
         );
-        assert_eq!(HomePose::ApPark5.codebase_mech_ha_hours(32.7), -12.0);
-        assert_eq!(HomePose::ApPark5.codebase_mech_ha_hours(-33.0), -12.0);
+        assert_eq!(ApPark::ApPark5.codebase_mech_ha_hours(32.7), Some(-12.0));
+        assert_eq!(ApPark::ApPark5.codebase_mech_ha_hours(-33.0), Some(-12.0));
     }
 
     #[test]
-    fn home_pose_park1_park5_share_celestial_target_opposite_pier() {
+    fn ap_park_1_park5_share_celestial_target_opposite_pier() {
         // Park 1 (saddle west) and Park 5 (saddle east) point at the
         // same celestial coordinates (polar-side horizon) but on
         // opposite mechanical pier sides. The dec-encoder magnitudes
         // therefore differ by the "past the pole" offset:
         // `|natural| + |flipped| = |dec| + (180 − |dec|) = 180°`.
         for lat in [-45.0, -33.0, 32.7, 45.0] {
-            let p1 = HomePose::ApPark1.codebase_dec_encoder_degrees(lat).abs();
-            let p5 = HomePose::ApPark5.codebase_dec_encoder_degrees(lat).abs();
+            let p1 = ApPark::ApPark1
+                .codebase_dec_encoder_degrees(lat)
+                .unwrap()
+                .abs();
+            let p5 = ApPark::ApPark5
+                .codebase_dec_encoder_degrees(lat)
+                .unwrap()
+                .abs();
             assert!(
                 (p1 + p5 - 180.0).abs() < 1e-9,
                 "lat {lat}: |p1| {p1}, |p5| {p5}, sum {} (expected 180)",
@@ -999,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn home_pose_park4_and_park5_share_pier_opposite_celestial_dec() {
+    fn ap_park_4_and_park5_share_pier_opposite_celestial_dec() {
         // Park 4 (OTA facing anti-polar horizon) and Park 5 (OTA
         // facing polar-side horizon) are on the same mechanical pier
         // (East, `mech_HA = −12`), and their celestial Decs are equal
@@ -1010,10 +1195,16 @@ mod tests {
         // encoder values are equal in magnitude with opposite signs
         // iff one is past-pole and the other is not.
         for lat in [-45.0, -33.0, 32.7, 45.0] {
-            assert_eq!(HomePose::ApPark4.codebase_mech_ha_hours(lat), -12.0);
-            assert_eq!(HomePose::ApPark5.codebase_mech_ha_hours(lat), -12.0);
-            let p4_abs = HomePose::ApPark4.codebase_dec_encoder_degrees(lat).abs();
-            let p5_abs = HomePose::ApPark5.codebase_dec_encoder_degrees(lat).abs();
+            assert_eq!(ApPark::ApPark4.codebase_mech_ha_hours(lat), Some(-12.0));
+            assert_eq!(ApPark::ApPark5.codebase_mech_ha_hours(lat), Some(-12.0));
+            let p4_abs = ApPark::ApPark4
+                .codebase_dec_encoder_degrees(lat)
+                .unwrap()
+                .abs();
+            let p5_abs = ApPark::ApPark5
+                .codebase_dec_encoder_degrees(lat)
+                .unwrap()
+                .abs();
             assert!(
                 (p4_abs + p5_abs - 180.0).abs() < 1e-9,
                 "lat {lat}: |p4| {p4_abs}, |p5| {p5_abs}"
@@ -1022,36 +1213,75 @@ mod tests {
     }
 
     #[test]
-    fn home_pose_round_trips_through_mount_config_json() {
-        // None round-trips as the missing/null field.
-        let cfg = MountConfig {
-            home_pose: None,
-            ..MountConfig::default()
-        };
-        let json = serde_json::to_string(&cfg).expect("serialise");
-        let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
-        assert_eq!(back.home_pose, None, "None round trip");
-
-        // Every AP park variant round-trips through Some(...).
+    fn unpark_from_ap_position_round_trips_through_mount_config_json() {
+        // Every AP park variant round-trips through the required field.
         for pose in [
-            HomePose::ApPark1,
-            HomePose::ApPark2,
-            HomePose::ApPark3,
-            HomePose::ApPark4,
-            HomePose::ApPark5,
+            ApPark::ApPark0,
+            ApPark::ApPark1,
+            ApPark::ApPark2,
+            ApPark::ApPark3,
+            ApPark::ApPark4,
+            ApPark::ApPark5,
         ] {
             let cfg = MountConfig {
-                home_pose: Some(pose),
+                unpark_from_ap_position: pose,
                 ..MountConfig::default()
             };
             let json = serde_json::to_string(&cfg).expect("serialise");
             let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
-            assert_eq!(back.home_pose, Some(pose), "round trip for {pose:?}");
+            assert_eq!(
+                back.unpark_from_ap_position, pose,
+                "round trip for {pose:?}"
+            );
         }
     }
 
     #[test]
-    fn mount_config_deserialises_missing_home_pose_as_none() {
+    fn preferred_ap_park_round_trips_each_slew_target() {
+        // `ap_park_0` is excluded — it is rejected at deserialize time
+        // (covered by `preferred_ap_park_rejects_ap_park_0`).
+        for pose in [
+            ApPark::ApPark1,
+            ApPark::ApPark2,
+            ApPark::ApPark3,
+            ApPark::ApPark4,
+            ApPark::ApPark5,
+        ] {
+            let cfg = MountConfig {
+                preferred_ap_park: pose,
+                ..MountConfig::default()
+            };
+            let json = serde_json::to_string(&cfg).expect("serialise");
+            let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
+            assert_eq!(back.preferred_ap_park, pose, "round trip for {pose:?}");
+        }
+    }
+
+    #[test]
+    fn preferred_ap_park_rejects_ap_park_0() {
+        // "Current position" is not a slew target — `preferred_ap_park:
+        // "ap_park_0"` must fail at config-load time, not silently at
+        // the first `Park()`.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0,
+            "preferred_ap_park": "ap_park_0"
+        }"#;
+        let err = serde_json::from_str::<MountConfig>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("ap_park_0"),
+            "error should name the rejected value: {err}"
+        );
+    }
+
+    #[test]
+    fn mount_config_deserialises_missing_unpark_fields_as_ship_defaults() {
+        // Pre-rename config files (and any file omitting the new keys)
+        // load cleanly: `unpark_from_ap_position` defaults to the safe
+        // `ap_park_0`, `preferred_ap_park` to `ap_park_3`.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -1060,7 +1290,8 @@ mod tests {
             "site_longitude_deg": 0.0
         }"#;
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
-        assert_eq!(m.home_pose, None);
+        assert_eq!(m.unpark_from_ap_position, ApPark::ApPark0);
+        assert_eq!(m.preferred_ap_park, ApPark::ApPark3);
     }
 
     #[test]

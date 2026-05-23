@@ -3,17 +3,18 @@
 //! Mostly trivial getters that pass through to [`MountConfig`]; the
 //! interesting method is `set_connected` which drives the shared
 //! transport's session refcount and, on a 0→1 transition, runs the
-//! post-acquire fallible hooks (`seed_home_pose_after_connect` then
+//! post-acquire fallible hooks (`seed_after_connect` then
 //! `load_park_target_after_connect`) with structural rollback via
 //! `session.close().await` on any error.
 
 use std::sync::Arc;
 
 use ascom_alpaca::api::Device;
-use ascom_alpaca::ASCOMResult;
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
 use tracing::debug;
 
+use super::actions::ApParkAction;
 use super::MountDevice;
 
 #[async_trait]
@@ -50,23 +51,32 @@ impl Device for MountDevice {
                     .acquire()
                     .await
                     .map_err(Self::ascom_session_err)?;
-                // Post-acquire fallible work. Order matters:
-                // `seed_home_pose_after_connect` runs FIRST so the
-                // snapshot reflects the home_pose's logical encoder
-                // values before `load_park_target_after_connect`
-                // picks its default park target from the snapshot.
-                // Otherwise the handshake's pre-seed reading (firmware
-                // zero on a fresh power-up) would become the park
-                // fallback. On any failure, `session.close().await`
-                // synchronously closes — propagating its result so
-                // the user sees a real error instead of a swallowed
-                // warning (the pre-migration "rollback-disconnect
-                // failed" log branch is gone).
-                if let Err(e) = self.seed_home_pose_after_connect(&session).await {
+                // Post-acquire fallible work. The connect-time config is
+                // read once here and threaded into both hooks so neither
+                // re-reads the file. Order matters: `seed_after_connect`
+                // runs FIRST so the snapshot reflects the configured AP
+                // park's logical encoder values before
+                // `load_park_target_after_connect` resolves its park
+                // target. On any failure, `session.close().await`
+                // synchronously closes — propagating its result so the
+                // user sees a real error instead of a swallowed warning
+                // (the pre-migration "rollback-disconnect failed" log
+                // branch is gone).
+                let connect_cfg = match self.read_connect_config().await {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        session.close().await.map_err(Self::ascom_transport_err)?;
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = self
+                    .seed_after_connect(&session, connect_cfg.unpark_from_ap_position)
+                    .await
+                {
                     session.close().await.map_err(Self::ascom_transport_err)?;
                     return Err(e);
                 }
-                if let Err(e) = self.load_park_target_after_connect(&session).await {
+                if let Err(e) = self.load_park_target_after_connect(&connect_cfg).await {
                     session.close().await.map_err(Self::ascom_transport_err)?;
                     return Err(e);
                 }
@@ -108,5 +118,37 @@ impl Device for MountDevice {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    /// The driver-specific vendor Actions. See [`super::actions`] and
+    /// the design doc's
+    /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        Ok(ApParkAction::ALL
+            .iter()
+            .map(|action| action.name().to_string())
+            .collect())
+    }
+
+    /// Dispatch a vendor `Action`. Each handler takes the single
+    /// `parameters` string as an `ap_park_0..ap_park_5` token. An
+    /// unrecognised name returns `ACTION_NOT_IMPLEMENTED` per the ASCOM
+    /// `Action` contract.
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        match ApParkAction::from_name(&action) {
+            Some(ApParkAction::SetUnparkFromApPosition) => {
+                self.handle_set_unpark_from_ap_position(&parameters).await
+            }
+            Some(ApParkAction::SetPreferredApPark) => {
+                self.handle_set_preferred_ap_park(&parameters).await
+            }
+            Some(ApParkAction::UnparkFromApPosition) => {
+                self.handle_unpark_from_ap_position(&parameters).await
+            }
+            None => Err(ASCOMError::new(
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                format!("unknown action {action:?}"),
+            )),
+        }
     }
 }
