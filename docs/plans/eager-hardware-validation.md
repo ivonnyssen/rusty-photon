@@ -1,12 +1,23 @@
 # Plan: service-lifetime transport with split safety / shutdown teardown
 
+> **Status: implemented.** Phases 0a, 0b, and 1-5 landed in this PR:
+> shared-transport hook split + `start`/`shutdown` API (Phase 0a),
+> reconnect supervisor + connection-cell swap that preserves live
+> sessions across transient transport loss (Phase 0b), and per-service
+> migrations for `star-adventurer-gti`, `dsd-fp2`, `pa-falcon-rotator`,
+> `qhy-focuser`, and `ppba-driver` (Phases 1-5) — each adding
+> `Config.validate_on_start: bool` (default `false` for compatibility),
+> calling `manager.transport().start()` on opt-in, and
+> `manager.transport().shutdown()` from the HTTP-server stop path.
+> Phase 6 is this doc update.
+>
 > Originally scoped as "eager hardware validation" (validate-then-close
 > at startup, fixing the wrong-device handshake from issue #254). On
 > review the scope grew: validation is just one moment in a bigger
 > lifecycle redesign that aligns the transport's lifetime with the
 > service's lifetime instead of with ASCOM-client refcount. The
 > filename is kept for now; consider renaming to `transport-lifecycle.md`
-> after Phase 0 lands.
+> in a follow-up.
 
 ## Motivation
 
@@ -275,19 +286,20 @@ pub struct Hooks<C: Codec> {
 }
 ```
 
-### Compatibility shim during rollout
+### Rollout compatibility (implemented)
 
-Phase 0a ships a shim so existing services compile against the new
-hook shape without per-service changes:
-
-```rust
-impl<C: Codec> Hooks<C> {
-    /// Maps the old single `teardown` hook onto the new
-    /// `on_last_disconnect` + `shutdown` pair. Removed in Phase 6
-    /// once all services have migrated to explicit hooks.
-    pub fn legacy_teardown(teardown: TeardownFn<C>) -> Self { … }
-}
-```
+Phase 0a renamed `Hooks.teardown` to `Hooks.on_last_disconnect`
+and added a new `Hooks.shutdown` field. The plan originally
+proposed a `Hooks::legacy_teardown(t)` constructor as a compile-time
+shim, but in practice every service had a no-op or trivial teardown
+that was easier to update in-place than to wrap behind a shim — so
+the shim was skipped, each service got a manual two-line update to
+its `Hooks { ... }` literal, and the `LazyAcquire` runtime
+semantics ensure `on_last_disconnect` keeps firing on every 1→0
+close exactly as the old single hook did. Migrated services
+additionally got a `shutdown` body (no-op for the four no-op
+services; the same `:L1, :L2, :K1` safety sequence as
+`on_last_disconnect` for `star-adventurer-gti`).
 
 ## Per-service work
 
@@ -405,7 +417,8 @@ Mirror the [shared-transport-extraction precedent][shared-transport-plan]
 
 1. **Phase 0a** — `rusty-photon-shared-transport`: hook split
    (`on_last_disconnect` + `shutdown`), `start()` / `shutdown()`
-   API, `legacy_teardown` shim. One PR.
+   API. One PR. (No `legacy_teardown` shim ended up needed — see
+   [§Rollout compatibility](#rollout-compatibility-implemented).)
 2. **Phase 0b** — reconnect supervisor + connection-swap mechanics.
    One PR. Lands behind the API from 0a; services that don't
    override `reconnect_interval` get the default behaviour.
@@ -418,9 +431,11 @@ Mirror the [shared-transport-extraction precedent][shared-transport-plan]
 7. **Phase 5** — `ppba-driver`: audit; migrate. Possibly bundle with
    Phase 3 if a `pegasus-protocol` consolidation lands first.
 8. **Phase 6** (optional) — workspace docs:
-   `docs/skills/transport-lifecycle.md` codifying the pattern; drop
-   the `Hooks::legacy_teardown` shim once all services have
-   migrated.
+   `docs/skills/transport-lifecycle.md` codifying the pattern.
+   Updating this plan-doc itself with the implemented-status
+   headers is the minimum Phase 6 deliverable that landed; a
+   stand-alone skill doc remains as a follow-up enhancement for a
+   future contributor.
 
 Each phase is independently mergeable: services without
 `validate_on_start: true` in their production config and without
@@ -447,14 +462,24 @@ shim.
    because the transport is down; failure is logged but not
    propagated), and the supervisor keeps trying.
 3. **Issue #288 (lock-drop around slow I/O on `set_connected`).**
-   The new model makes this issue much smaller: `acquire()` is
-   fast (refcount++) so the connect-path lock-hold no longer
-   matters. The close path still runs `on_last_disconnect` on 1→0,
-   which is real I/O — so dropping the device-level write lock
-   before awaiting `Session::close()` is still worthwhile, but the
-   benefit is limited to the 1→0 case rather than every
-   disconnect. Decision: defer #288 until after Phase 0a so the
-   fix targets the smaller surface.
+   **Resolved by Phases 0a-0b.** The new lifecycle makes #288's
+   original concern moot: `acquire()` is a fast refcount-bump (no
+   I/O), and `Session::close()` on 1→0 is also fast (the slow path
+   in `LazyAcquire` was tearing down the transport; in
+   `ServiceLifetime` the port stays open and `on_last_disconnect`
+   runs but is per-service short). The connection-cell swap in
+   Phase 0b additionally means a transient transport-loss event
+   doesn't block any device's read lock — sessions short-circuit
+   to `TransportError::Reconnecting` while the supervisor recovers.
+   The remaining narrow case (a slow per-service `on_last_disconnect`
+   hook running on 1→0 in `LazyAcquire`) only applies to
+   `star-adventurer-gti` — the four other services have no-op
+   `on_last_disconnect` hooks. Operators who deploy `star-adventurer-gti`
+   with `validate_on_start: true` (production config) get
+   `ServiceLifetime` mode and never hit the close-path I/O on a
+   client disconnect; operators who keep the default `false`
+   (`cargo run` smoke flows, BDD) hit it but it's the same shape
+   the legacy code had before #288 was filed, so no regression.
 4. **systemd unit semantics.** Should we ship a sample `.service`
    file in `deploy/` with `Restart=on-failure` + `RestartSec=`
    matched to `startup_retry_backoff`? Otherwise operators
