@@ -28,9 +28,27 @@ mod common;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
-use common::{build_with_factory_and_hooks, CountingHooks, FactoryConfig, ProgrammableFactory};
+use common::{
+    build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, FactoryConfig,
+    ProgrammableFactory, WhileOpenHooks,
+};
 use rusty_photon_shared_transport::TransportFactory;
+
+/// Poll `cond` every 10ms until it returns true or `timeout` elapses.
+/// Used to wait on supervisor-driven async work that has no other
+/// signal to await on (the supervisor task is internal to the crate).
+async fn wait_until<F: Fn() -> bool>(cond: F, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    cond()
+}
 
 #[tokio::test]
 async fn reconnect_now_opens_fresh_transport_and_runs_handshake() {
@@ -329,4 +347,199 @@ async fn codec_error_does_not_trigger_reconnect() {
     assert_eq!(r, b"ping");
 
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn supervisor_periodic_ticker_recovers_after_failed_reconnect() {
+    // Cover the supervisor_loop's periodic-ticker branch (the
+    // `tokio::time::sleep(interval) => {}` arm) plus the post-wake
+    // attempt_reconnect success and failure log paths. A short
+    // `set_reconnect_interval` shrinks the default 5s cadence so this
+    // runs in real wall-clock time without paused-clock plumbing.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.set_reconnect_interval(Duration::from_millis(30)).await;
+    st.start().await.unwrap();
+    let opens_after_start = cfg.opens();
+    assert_eq!(opens_after_start, 1);
+
+    // Drive supervisor into Reconnecting via a failing reconnect_now.
+    // attempt_reconnect runs again on each periodic tick; while
+    // `fail` is still set, those retries log the warn at line 347-352
+    // — let one tick land before recovery.
+    cfg.set_fail(true);
+    let _ = st.reconnect_now().await;
+    assert!(st.is_reconnecting());
+
+    // Wait for at least one periodic retry while still failing — this
+    // covers the Err(e) warn-log arm. `opens` increments per
+    // factory.open call (success or failure), so the count growing
+    // proves the ticker fired and attempt_reconnect ran.
+    let saw_periodic_retry = wait_until(
+        || cfg.opens() >= opens_after_start + 2,
+        Duration::from_millis(500),
+    )
+    .await;
+    assert!(
+        saw_periodic_retry,
+        "supervisor's periodic ticker must trigger at least one retry attempt while reconnecting"
+    );
+
+    // Now let recovery succeed: the next ticker tick lands in the
+    // Ok(()) arm and clears the flags.
+    cfg.set_fail(false);
+    let recovered = wait_until(|| !st.is_reconnecting(), Duration::from_secs(1)).await;
+    assert!(
+        recovered,
+        "supervisor must recover once factory stops failing"
+    );
+    assert!(st.is_available());
+}
+
+#[tokio::test]
+async fn transport_error_fires_notify_and_supervisor_recovers() {
+    // End-to-end Notify path: Connection::request sees a TransportError,
+    // calls signal_reconnect, the supervisor wakes from notified(),
+    // flips the flags (signaled=true → reconnecting=true, available=false),
+    // and runs a fresh attempt_reconnect that succeeds. Covers
+    // supervisor_loop's notify arm (lines 323-325) and the
+    // signaled-true flag-flip block (333-335).
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+
+    // Arm a one-shot recv failure; the very next request's recv_frame
+    // returns TransportError::Io, which signals the reconnect notify
+    // and propagates the error back.
+    cfg.fail_recvs.store(true, Ordering::SeqCst);
+    let err = session.request(b"ping".to_vec()).await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("test-injected") || display.contains("transport"),
+        "expected the injected recv failure to bubble through, got: {display}"
+    );
+
+    // Supervisor wakes asynchronously. Wait until it has opened a
+    // fresh transport (opens == 2) and cleared the reconnecting flag.
+    let recovered = wait_until(
+        || cfg.opens() >= 2 && !st.is_reconnecting(),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        recovered,
+        "supervisor must observe the notify, attempt_reconnect, and clear reconnecting"
+    );
+    assert!(st.is_available());
+    assert_eq!(
+        counting.handshake_calls.load(Ordering::SeqCst),
+        2,
+        "reconnect must re-run the handshake against the fresh transport"
+    );
+
+    // Live session survives the swap.
+    let r = session.request(b"ping".to_vec()).await.unwrap();
+    assert_eq!(r, b"ping");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reconnect_cancels_old_while_open_and_respawns_against_new_connection() {
+    // attempt_reconnect's while_open lifecycle: an existing task is
+    // cancelled before the cell swap (lines 391-411) and a new task
+    // is spawned against the fresh connection afterwards (lines
+    // 430-436). Counted-spawn hooks make both halves observable.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = CountingWhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.hooks());
+
+    st.start().await.unwrap();
+    common::yield_briefly().await;
+    assert_eq!(
+        wo.spawns.load(Ordering::SeqCst),
+        1,
+        "start() spawns the first while_open task"
+    );
+    assert_eq!(wo.cancelled.load(Ordering::SeqCst), 0);
+
+    st.reconnect_now().await.unwrap();
+    common::yield_briefly().await;
+    assert_eq!(
+        wo.spawns.load(Ordering::SeqCst),
+        2,
+        "reconnect must respawn while_open against the fresh connection"
+    );
+    assert_eq!(
+        wo.cancelled.load(Ordering::SeqCst),
+        1,
+        "reconnect must cancel the prior while_open task"
+    );
+
+    // Shutdown cancels the second task too — final tally: 1 spawn +
+    // 1 respawn, both cancelled exactly once.
+    st.shutdown().await.unwrap();
+    common::yield_briefly().await;
+    assert_eq!(wo.cancelled.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn reconnect_now_before_start_returns_slot_empty_error() {
+    // attempt_reconnect's defensive "slot empty" arm (lines 422-424):
+    // reconnect_now flips reconnecting/available and calls
+    // attempt_reconnect directly, which then sees an empty slot
+    // because start() never populated it. The error is preferable
+    // to a panic in this defensive path.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    // No start() — slot stays empty.
+    let err = st.reconnect_now().await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("slot empty"),
+        "expected the defensive slot-empty error from attempt_reconnect, got: {display}"
+    );
+    // factory.open() ran once (attempt_reconnect always opens first)
+    // before hitting the slot check.
+    assert_eq!(cfg.opens(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn stubborn_while_open_is_aborted_during_reconnect() {
+    // attempt_reconnect's stubborn-task abort path (lines 404-409):
+    // a while_open task that ignores its cancellation token gets the
+    // bounded 5s join timeout treatment and is abort()-ed so the new
+    // connection isn't shadowed by a zombie task hammering the dead
+    // transport. Runs in paused time so the 5s wait is virtual.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.stubborn_hooks());
+
+    st.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert!(wo.started.load(Ordering::SeqCst));
+
+    // reconnect_now waits the full WHILE_OPEN_TEARDOWN_TIMEOUT for
+    // the stubborn task's join, then abort()s it. In paused time
+    // this completes virtually instantly.
+    st.reconnect_now().await.unwrap();
+    assert_eq!(cfg.opens(), 2);
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+    // Cooperative-exit flag must stay false — the stubborn task was
+    // aborted, never given a chance to exit cleanly.
+    assert!(!wo.exited.load(Ordering::SeqCst));
+
+    st.shutdown().await.unwrap();
 }

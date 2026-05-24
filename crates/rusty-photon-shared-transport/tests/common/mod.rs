@@ -394,6 +394,81 @@ impl WhileOpenHooks {
             })),
         }
     }
+
+    /// Hook where the while-open task marks `started`, yields once so
+    /// it's observably alive, then panics. Used to exercise the
+    /// `Ok(Err(join_err))` join-error arms in `shutdown()` and
+    /// `run_cleanup_locked()` — tokio catches the panic at the task
+    /// boundary and surfaces it via `JoinHandle::await`, which both
+    /// teardown paths log and continue past.
+    pub fn panicking_hooks(&self) -> Hooks<EchoCodec> {
+        let started = self.started.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
+                let started = started.clone();
+                Box::pin(async move {
+                    started.store(true, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    panic!("while_open panic for test");
+                })
+            })),
+        }
+    }
+}
+
+/// Hooks with a counter for while-open spawn invocations. Distinct from
+/// [`WhileOpenHooks`] because the cooperative variant uses an
+/// `AtomicBool` for `started` — switching to `AtomicU32` everywhere
+/// would churn existing tests for no benefit. Used by the reconnect
+/// respawn test to assert the closure was invoked twice (once at
+/// start, once at attempt_reconnect).
+pub struct CountingWhileOpenHooks {
+    pub spawns: Arc<AtomicU32>,
+    pub cancelled: Arc<AtomicU32>,
+}
+
+impl Default for CountingWhileOpenHooks {
+    fn default() -> Self {
+        Self {
+            spawns: Arc::new(AtomicU32::new(0)),
+            cancelled: Arc::new(AtomicU32::new(0)),
+        }
+    }
+}
+
+impl CountingWhileOpenHooks {
+    /// Cooperative task that bumps `spawns` on entry and `cancelled` on
+    /// exit-via-cancellation. Used to verify reconnect cancels the old
+    /// while_open task and spawns a fresh one.
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let spawns = self.spawns.clone();
+        let cancelled = self.cancelled.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
+                let spawns = spawns.clone();
+                let cancelled = cancelled.clone();
+                Box::pin(async move {
+                    spawns.fetch_add(1, Ordering::SeqCst);
+                    let mut interval = tokio::time::interval(Duration::from_millis(20));
+                    loop {
+                        tokio::select! {
+                            _ = ctx.cancelled() => {
+                                cancelled.fetch_add(1, Ordering::SeqCst);
+                                break;
+                            }
+                            _ = interval.tick() => {},
+                        }
+                    }
+                })
+            })),
+        }
+    }
 }
 
 /// Build a shared transport using the supplied hooks; reuse the

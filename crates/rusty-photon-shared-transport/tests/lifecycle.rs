@@ -381,3 +381,101 @@ async fn while_open_task_survives_client_disconnect_in_service_lifetime() {
         "while_open exits on shutdown()'s cancellation"
     );
 }
+
+// ---------------------------------------------------------------------------
+// while_open task fault handling at teardown
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn lazy_close_with_panicking_while_open_completes_cleanly() {
+    // A while_open task that panics surfaces as `Ok(Err(join_err))`
+    // when run_cleanup_locked awaits its JoinHandle. The teardown
+    // path must log and continue rather than propagate or wedge.
+    // Covers the LazyAcquire variant of that arm
+    // (`run_cleanup_locked`, lines 745-749).
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.panicking_hooks());
+
+    // tokio::spawn isolates any panic-propagation surprise to the spawned
+    // task so the test process itself doesn't unwind. The acquire +
+    // close flow itself must not panic.
+    let st_for_task = st.clone();
+    let result = tokio::spawn(async move {
+        let s = st_for_task.acquire().await.unwrap();
+        common::yield_briefly().await;
+        s.close().await
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+
+    assert!(wo.started.load(Ordering::SeqCst));
+    assert!(!st.is_available(), "LazyAcquire 1→0 closes the port");
+    assert_eq!(
+        cfg.dropped_count().await,
+        1,
+        "transport must drop even though while_open panicked"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_with_panicking_while_open_completes_cleanly() {
+    // ServiceLifetime variant of the panic-handling arm in shutdown()
+    // (lines 506-510). shutdown() awaits the while_open JoinHandle,
+    // observes the panic, logs, and proceeds with hook + drop.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.panicking_hooks());
+
+    let st_for_task = st.clone();
+    let result = tokio::spawn(async move {
+        st_for_task.start().await.unwrap();
+        common::yield_briefly().await;
+        st_for_task.shutdown().await
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+
+    assert!(wo.started.load(Ordering::SeqCst));
+    assert!(!st.is_available());
+    assert_eq!(
+        cfg.dropped_count().await,
+        1,
+        "shutdown must still close the port after a panicking while_open task"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_with_stubborn_while_open_aborts_after_timeout() {
+    // Cover the timeout/abort arm of shutdown()'s while_open join
+    // (lines 511-518). A stubborn task ignores cancellation; shutdown
+    // waits WHILE_OPEN_TEARDOWN_TIMEOUT (5s, virtualised) then
+    // abort()s it. The hook + drop path still runs.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.stubborn_hooks());
+
+    st.start().await.unwrap();
+    // Tick once in paused time so the spawned task gets a chance to
+    // mark itself started before shutdown asks it to stop.
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    assert!(wo.started.load(Ordering::SeqCst));
+
+    st.shutdown().await.unwrap();
+    // exited never flips — the stubborn task was aborted, not joined.
+    assert!(!wo.exited.load(Ordering::SeqCst));
+    assert!(!st.is_available());
+    assert_eq!(
+        cfg.dropped_count().await,
+        1,
+        "shutdown must still drop the transport after abort()ing while_open"
+    );
+}
