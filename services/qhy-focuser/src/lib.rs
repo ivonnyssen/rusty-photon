@@ -71,10 +71,6 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
-        let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
-
         // Default to the real-hardware factory when none was supplied.
         let factory: Arc<dyn TransportFactory> = self.factory.unwrap_or_else(|| {
             Arc::new(QhyTransportFactory::new(
@@ -93,53 +89,78 @@ impl ServerBuilder {
         info!("validating hardware via eager startup handshake");
         manager.transport().start().await?;
 
-        if self.config.focuser.enabled {
-            let focuser_device =
-                QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
-            server.devices.register(focuser_device);
-            info!("Registered Focuser device: {}", self.config.focuser.name);
+        // All post-start work is fallible (bind / local_addr in
+        // particular). Wrap it so a failure runs `transport.shutdown()`
+        // before propagating; otherwise the reconnect supervisor task
+        // would outlive the dropped manager and keep the port open
+        // until process exit.
+        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+            let mut server = Server::new(CargoServerInfo!());
+            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.discovery_port = self.config.server.discovery_port;
+
+            if self.config.focuser.enabled {
+                let focuser_device =
+                    QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
+                server.devices.register(focuser_device);
+                info!("Registered Focuser device: {}", self.config.focuser.name);
+            }
+
+            info!("Serial port: {}", self.config.serial.port);
+
+            let tls = self.config.server.tls.clone();
+            let router = axum::Router::new().fallback_service(server.into_service());
+
+            // Layer authentication if configured
+            let router = match &self.config.server.auth {
+                Some(auth) => {
+                    if self.config.server.tls.is_none() {
+                        tracing::warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(router, auth)
+                }
+                None => router,
+            };
+
+            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+                [0, 0, 0, 0],
+                self.config.server.port,
+            )))
+            .await?;
+            let local_addr = listener.local_addr()?;
+
+            // This println is parsed by tests to discover the bound port. It
+            // must go to stdout (not tracing/stderr) so the subprocess output
+            // can be read.
+            println!("Bound Alpaca server bound_addr={}", local_addr);
+            info!("Bound Alpaca server bound_addr={}", local_addr);
+
+            Ok(BoundServer {
+                listener,
+                router,
+                local_addr,
+                tls,
+                manager: Arc::clone(&manager),
+            })
         }
+        .await;
 
-        info!("Serial port: {}", self.config.serial.port);
-
-        let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
-
-        // Layer authentication if configured
-        let router = match &self.config.server.auth {
-            Some(auth) => {
-                if self.config.server.tls.is_none() {
+        match build_result {
+            Ok(bound) => Ok(bound),
+            Err(e) => {
+                if let Err(shutdown_err) = manager.transport().shutdown().await {
                     tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                        error = %shutdown_err,
+                        "transport shutdown failed during build() error rollback"
                     );
                 }
-                rp_auth::layer(router, auth)
+                Err(e)
             }
-            None => router,
-        };
-
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
-        let local_addr = listener.local_addr()?;
-
-        // This println is parsed by tests to discover the bound port. It
-        // must go to stdout (not tracing/stderr) so the subprocess output
-        // can be read.
-        println!("Bound Alpaca server bound_addr={}", local_addr);
-        info!("Bound Alpaca server bound_addr={}", local_addr);
-
-        Ok(BoundServer {
-            listener,
-            router,
-            local_addr,
-            tls,
-            manager,
-        })
+        }
     }
 }
 
