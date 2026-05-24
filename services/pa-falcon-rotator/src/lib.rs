@@ -91,13 +91,12 @@ impl ServerBuilder {
 
         let manager = FalconManager::new(self.factory);
 
-        // Phase 3: eager hardware validation. Opt-in via
-        // `validate_on_start: true`; default `false` preserves
-        // lazy-acquire behaviour.
-        if self.config.validate_on_start {
-            info!("validating hardware via eager startup handshake");
-            manager.transport().start().await?;
-        }
+        // Eager hardware validation at startup: opens the port,
+        // runs the handshake, and spawns the reconnect supervisor
+        // before binding the HTTP listener. Handshake failures
+        // bubble up to `main` for a non-zero exit.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
 
         if self.config.rotator.enabled {
             let rotator_device =

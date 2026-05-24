@@ -132,19 +132,16 @@ impl ServerBuilder {
 
         let manager = MountManager::new(self.config.clone(), factory);
 
-        // Phase 1: eager hardware validation. When the operator opts in
-        // via `validate_on_start: true`, open the port and run the
-        // handshake (which includes the wrong-device identity probe
-        // landed in PR #296) BEFORE binding the HTTP listener. On
-        // failure the error bubbles up to `main` and the binary exits
-        // non-zero — systemd / orchestration treats startup as failed
-        // and operators get the diagnostic at the terminal instead of
-        // having the driver advertise a broken device on the network.
-        // Default `false` preserves pre-Phase-1 lazy-acquire behaviour.
-        if self.config.validate_on_start {
-            info!("validating hardware via eager startup handshake");
-            manager.transport().start().await?;
-        }
+        // Eager hardware validation at startup: opens the port and
+        // runs the handshake (which includes the wrong-device
+        // identity probe landed in PR #296) BEFORE binding the HTTP
+        // listener. On failure the error bubbles up to `main` and
+        // the binary exits non-zero — systemd / orchestration treats
+        // startup as failed and operators get the diagnostic at the
+        // terminal instead of having the driver advertise a broken
+        // device on the network.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
 
         if self.config.mount.enabled {
             let device = MountDevice::with_config_file_path(

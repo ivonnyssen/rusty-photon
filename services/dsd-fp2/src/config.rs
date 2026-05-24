@@ -10,13 +10,6 @@ pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
     pub cover_calibrator: CoverCalibratorConfig,
-    /// Opt in to `ServiceLifetime` transport mode (eager hardware
-    /// validation at startup; service exits non-zero if the FP2
-    /// doesn't respond). Default `false` preserves pre-Phase-2
-    /// lazy-acquire behaviour. See
-    /// `docs/plans/eager-hardware-validation.md`.
-    #[serde(default)]
-    pub validate_on_start: bool,
 }
 
 /// Serial port configuration.

@@ -231,11 +231,6 @@ fn default_test_config() -> Config {
             binding_zone_max_hours: 0.0,
             ..MountConfig::default()
         },
-        // BDD scenarios test the HTTP / Alpaca surface; they don't
-        // exercise the eager-validation startup path. Leaving this
-        // false keeps the BDD harness on the LazyAcquire mode that
-        // pre-Phase-1 tests assumed.
-        validate_on_start: false,
     }
 }
 

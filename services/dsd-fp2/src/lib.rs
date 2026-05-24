@@ -82,14 +82,15 @@ impl ServerBuilder {
 
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
-        // Phase 2: eager hardware validation. Opt-in via
-        // `validate_on_start: true`; on handshake failure the error
-        // bubbles up to `main` for a non-zero exit. Default `false`
-        // preserves the lazy-acquire flow.
-        if self.config.validate_on_start {
-            info!("validating hardware via eager startup handshake");
-            manager.transport().start().await?;
-        }
+        // Eager hardware validation at startup: opens the port,
+        // runs the handshake (identity probe), and spawns the
+        // reconnect supervisor before binding the HTTP listener. On
+        // handshake failure the error bubbles up to `main` for a
+        // non-zero exit, so systemd / orchestration treats startup
+        // as failed rather than the service advertising a broken
+        // device on the network.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
 
         if self.config.cover_calibrator.enabled {
             let device =

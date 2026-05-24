@@ -7,6 +7,7 @@
 
 #![allow(dead_code)]
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,11 +59,23 @@ impl Codec for EchoCodec {
 /// the next `recv_frame`. Sufficient for tests that only need to verify
 /// connection setup / teardown — the request/response semantics are
 /// trivial.
+///
+/// An optional `fail_recvs` flag lets a test inject a one-shot recv
+/// failure (cleared on observation) to simulate mid-stream transport
+/// loss without tearing down the underlying socket. The supervisor-
+/// recovery tests use this to drive the end-to-end flow where
+/// `Connection::request` fires the reconnect signal in response to a
+/// real `TransportError`.
 pub struct EchoTransport {
     last_sent: Option<Vec<u8>>,
     /// Marks whether `drop` has run. Useful to assert teardown closed
     /// the transport.
     pub dropped_flag: Option<Arc<AtomicBool>>,
+    /// If `Some(_)`, `recv_frame` checks the flag at the top of the
+    /// next call. When set, the flag is cleared and the call returns
+    /// `TransportError::Io` — exactly the shape `Connection::request`
+    /// pattern-matches on to fire the reconnect signal.
+    fail_recvs: Option<Arc<AtomicBool>>,
 }
 
 impl EchoTransport {
@@ -70,11 +83,17 @@ impl EchoTransport {
         Self {
             last_sent: None,
             dropped_flag: None,
+            fail_recvs: None,
         }
     }
 
     pub fn with_drop_flag(mut self, flag: Arc<AtomicBool>) -> Self {
         self.dropped_flag = Some(flag);
+        self
+    }
+
+    pub fn with_fail_recvs(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.fail_recvs = Some(flag);
         self
     }
 }
@@ -88,6 +107,16 @@ impl FrameTransport for EchoTransport {
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         buf.clear();
+        // Test-injected failure: simulates a mid-stream transport
+        // drop. `swap(false, …)` makes the failure one-shot — the
+        // next `recv` after recovery succeeds.
+        if let Some(flag) = self.fail_recvs.as_ref() {
+            if flag.swap(false, Ordering::SeqCst) {
+                return Err(TransportError::Io(io::Error::other(
+                    "test-injected recv failure",
+                )));
+            }
+        }
         if let Some(b) = self.last_sent.take() {
             buf.extend_from_slice(&b);
             Ok(())
@@ -117,6 +146,12 @@ pub struct FactoryConfig {
     /// Each opened transport's drop flag — pushed onto this when the
     /// factory creates a transport.
     pub drop_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+    /// One-shot recv-failure flag shared with every [`EchoTransport`]
+    /// the factory builds. Tests set this to inject a mid-stream
+    /// `TransportError::Io` into the very next `Session::request`,
+    /// which routes through `Connection::request`'s signal-fire path
+    /// and notifies the supervisor.
+    pub fail_recvs: Arc<AtomicBool>,
 }
 
 impl FactoryConfig {
@@ -177,7 +212,9 @@ impl TransportFactory for ProgrammableFactory {
         }
         let drop_flag = Arc::new(AtomicBool::new(false));
         self.config.drop_flags.lock().await.push(drop_flag.clone());
-        let transport = EchoTransport::new().with_drop_flag(drop_flag);
+        let transport = EchoTransport::new()
+            .with_drop_flag(drop_flag)
+            .with_fail_recvs(self.config.fail_recvs.clone());
         Ok(Box::new(transport))
     }
 }

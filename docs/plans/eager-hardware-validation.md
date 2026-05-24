@@ -5,11 +5,21 @@
 > reconnect supervisor + connection-cell swap that preserves live
 > sessions across transient transport loss (Phase 0b), and per-service
 > migrations for `star-adventurer-gti`, `dsd-fp2`, `pa-falcon-rotator`,
-> `qhy-focuser`, and `ppba-driver` (Phases 1-5) — each adding
-> `Config.validate_on_start: bool` (default `false` for compatibility),
-> calling `manager.transport().start()` on opt-in, and
-> `manager.transport().shutdown()` from the HTTP-server stop path.
+> `qhy-focuser`, and `ppba-driver` (Phases 1-5) — each unconditionally
+> calling `manager.transport().start()` from `ServerBuilder::build()`
+> and `manager.transport().shutdown()` from the HTTP-server stop path.
 > Phase 6 is this doc update.
+>
+> An earlier draft introduced a `Config.validate_on_start: bool` flag
+> (default `false`) to opt into eager validation per service. That
+> flag was removed before merge: there are no pre-existing operator
+> configs to be backward-compat with, all CI paths use mock factories
+> (which satisfy the handshake), and the only realistic "I want the
+> service running without hardware" workflow is local dev — covered
+> by the existing `--features mock` builds. Always-validate is the
+> opinionated default; operators get an immediate, clear failure if
+> the configured port doesn't talk to the right device, rather than a
+> deferred failure on the first ASCOM client request.
 >
 > Originally scoped as "eager hardware validation" (validate-then-close
 > at startup, fixing the wrong-device handshake from issue #254). On
@@ -335,22 +345,13 @@ manager.transport().shutdown().await.ok();
 
 ### What landed (Phases 1-5)
 
-Each migrated service's top-level `Config` grew one field:
-
-```rust
-// One per service Config struct (dsd-fp2, pa-falcon-rotator,
-// ppba-driver, qhy-focuser, star-adventurer-gti):
-#[serde(default)]
-pub validate_on_start: bool,                        // default false
-```
-
-`validate_on_start: false` (the default) skips the startup
-`transport.start()` call entirely, so `cargo run` without `--config`
-and pre-existing BDD scenarios keep their `LazyAcquire` behaviour
-unchanged. Set `validate_on_start: true` in production configs to
-opt into `ServiceLifetime` mode: the binary opens the port + runs
-the identity-probe handshake before binding the Alpaca HTTP server,
-and exits non-zero on handshake failure.
+No per-service `Config` fields. Each migrated service's
+`ServerBuilder::build()` unconditionally calls
+`manager.transport().start()` after constructing the manager and
+before binding the HTTP listener; the resulting `SessionError` (if
+any) propagates out of `build()` into `main`, which returns a
+non-zero `ExitCode`. There is no opt-out — see the status banner at
+the top for the rationale.
 
 The reconnect supervisor's cadence uses the fixed default
 `DEFAULT_RECONNECT_INTERVAL = 5s` baked into shared-transport;
@@ -378,20 +379,19 @@ star-adventurer-gti --config /etc/dome.json --check-device
 # exit 2 → wrong device or transient failure
 ```
 
-Independent of `validate_on_start`; useful for "verify before
-service install" workflows and CI hardware-attached smoke tests.
-The implementation maps to `transport.start()` + `transport.shutdown()`
-+ exit, but it needs per-service `Args` wiring (clap derive in each
-`main.rs`) and a branch that bypasses `ServiceRunner` and the HTTP
-listener bind. Five services' worth of mechanical wiring; tracked
-as a follow-up.
+Useful for "verify before service install" workflows and CI
+hardware-attached smoke tests. The implementation maps to
+`transport.start()` + `transport.shutdown()` + exit, but it needs
+per-service `Args` wiring (clap derive in each `main.rs`) and a
+branch that bypasses `ServiceRunner` and the HTTP listener bind.
+Five services' worth of mechanical wiring; tracked as a follow-up.
 
 Operators today can approximate the check by running the service
-with `validate_on_start: true` and a config that points at the
-device they want to verify — the binary will exit non-zero on
-handshake failure. Less ergonomic than a dedicated flag (it still
-binds the HTTP listener on success), but functionally equivalent
-for the "does the configured port talk to the right device" question.
+with a config that points at the device they want to verify — the
+binary will exit non-zero on handshake failure. Less ergonomic than
+a dedicated flag (it still binds the HTTP listener on success), but
+functionally equivalent for the "does the configured port talk to
+the right device" question.
 
 ## Test strategy
 
@@ -425,18 +425,18 @@ for the "does the configured port talk to the right device" question.
 - **On-acquire eager reconnect test**: documented in the
   `tests/reconnect.rs` file header. Lands together with the
   `reconnect_acquire_timeout` config plumbing in a follow-up PR.
-- **Per-service integration tests** ("`validate_on_start = true` +
-  wrong-device mock → service `main` returns non-zero"; "session
-  round-trip survives a simulated transport-drop"): not landed;
-  worth adding per service in follow-ups.
+- **Per-service integration tests** ("wrong-device mock → service
+  `main` returns non-zero"; "session round-trip survives a simulated
+  transport-drop"): not landed; worth adding per service in
+  follow-ups.
 - **BDD scenarios** ("service refuses to start when configured port
   targets the wrong device"; "session resumes after a transient
   transport drop"): not landed; need a wrong-device mock factory
   per service first.
 - **CI nightly hardware-attached run** ([pi5 nightly][pi5]):
-  unchanged today; flipping the nightly config to
-  `validate_on_start: true` to actually exercise the eager path
-  is a separate operations task.
+  unchanged today. Production hardware paths now go through
+  `transport.start()` unconditionally on boot — the nightly run
+  already exercises that path on every restart.
 
 [pi5]: ../../docs/operations/pi-nightly-runner.md
 
@@ -478,10 +478,10 @@ Mirror the [shared-transport-extraction precedent][shared-transport-plan]
    stand-alone skill doc remains as a follow-up enhancement for a
    future contributor.
 
-Each phase is independently mergeable: services without
-`validate_on_start: true` in their production config and without
-explicit hook overrides keep their current behaviour through the
-shim.
+Each phase was independently mergeable up through Phase 5; the
+flag-removal cleanup that followed makes `ServiceLifetime` mode the
+unconditional shape for all five services and removes the per-service
+opt-out.
 
 ## Open questions worth surfacing before starting
 
@@ -503,24 +503,18 @@ shim.
    because the transport is down; failure is logged but not
    propagated), and the supervisor keeps trying.
 3. **Issue #288 (lock-drop around slow I/O on `set_connected`).**
-   **Resolved by Phases 0a-0b.** The new lifecycle makes #288's
-   original concern moot: `acquire()` is a fast refcount-bump (no
-   I/O), and `Session::close()` on 1→0 is also fast (the slow path
-   in `LazyAcquire` was tearing down the transport; in
-   `ServiceLifetime` the port stays open and `on_last_disconnect`
-   runs but is per-service short). The connection-cell swap in
-   Phase 0b additionally means a transient transport-loss event
-   doesn't block any device's read lock — sessions short-circuit
-   to `TransportError::Reconnecting` while the supervisor recovers.
-   The remaining narrow case (a slow per-service `on_last_disconnect`
-   hook running on 1→0 in `LazyAcquire`) only applies to
-   `star-adventurer-gti` — the four other services have no-op
-   `on_last_disconnect` hooks. Operators who deploy `star-adventurer-gti`
-   with `validate_on_start: true` (production config) get
-   `ServiceLifetime` mode and never hit the close-path I/O on a
-   client disconnect; operators who keep the default `false`
-   (`cargo run` smoke flows, BDD) hit it but it's the same shape
-   the legacy code had before #288 was filed, so no regression.
+   **Resolved by Phases 0a-0b + flag removal.** The new lifecycle
+   makes #288's original concern moot: `acquire()` is a fast
+   refcount-bump (no I/O), and `Session::close()` on 1→0 is also
+   fast in `ServiceLifetime` mode (the port stays open;
+   `on_last_disconnect` runs but is per-service short). The
+   connection-cell swap in Phase 0b additionally means a transient
+   transport-loss event doesn't block any device's read lock —
+   sessions short-circuit to `TransportError::Reconnecting` while
+   the supervisor recovers. With the `validate_on_start` flag
+   removed, every service runs in `ServiceLifetime` mode in
+   production, so the close-path I/O regression #288 originally
+   flagged is structurally unreachable.
 4. **systemd unit semantics.** Should we ship a sample `.service`
    file in `deploy/` with `Restart=on-failure` + `RestartSec=`
    matched to `startup_retry_backoff`? Otherwise operators
