@@ -208,6 +208,17 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   inside the hook body itself (typically `tracing::warn!` on the
 ///   request `Result`). Failures never propagate to
 ///   [`Session::close`]'s caller and never abort the cleanup path.
+///
+///   **State-lifetime contract:** the next `acquire()` after
+///   `on_last_disconnect` does **not** re-run `handshake` in
+///   `ServiceLifetime` mode (it is a fast refcount-bump). Hooks must
+///   therefore only clear state that the next acquire will explicitly
+///   re-establish on its own — clearing handshake-populated caches
+///   (CPR, identity fields, capability bits) here will orphan them
+///   until the next reconnect runs a fresh handshake. Move that kind
+///   of cleanup into `shutdown` (and rely on the reconnect supervisor
+///   to refresh the cache via its own handshake call on the new
+///   connection).
 /// * `shutdown` runs exactly once per `start()`/`shutdown()` cycle, from
 ///   [`crate::SharedTransport::shutdown`] in the service's SIGTERM handler.
 ///   Final cleanup before the port closes. Only meaningful in
