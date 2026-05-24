@@ -22,6 +22,7 @@ use crate::protocol::{
     parse_firmware_version, parse_full_status, parse_is_running, parse_position_deg,
     parse_position_steps, parse_voltage_raw, Command, FalconStatus,
 };
+use crate::units::{MechanicalDegrees, Steps};
 
 /// Decoded response frame from the device.
 ///
@@ -37,10 +38,10 @@ pub enum FalconResponse {
     /// `FV:n.n` — the `FV` firmware-version reply.
     FirmwareVersion(String),
     /// `FD:nn.nn` — the `FD` position-in-degrees reply.
-    PositionDeg(f64),
+    PositionDeg(MechanicalDegrees),
     /// `FP:n..` — the `FP` signed position-in-steps reply (negative CCW of
     /// the 0° home; see [`crate::protocol::FalconStatus::position_steps`]).
-    PositionSteps(i32),
+    PositionSteps(Steps),
     /// `VS:n..` — the `VS` raw input-voltage reply.
     Voltage(u32),
     /// `FR:0` / `FR:1` — the `FR` is-running reply.
@@ -233,7 +234,7 @@ mod tests {
 
     #[test]
     fn encode_move_deg_uses_two_decimal_places() {
-        let bytes = FalconCodec.encode(&Command::MoveDeg(45.0));
+        let bytes = FalconCodec.encode(&Command::MoveDeg(MechanicalDegrees::new(45.0)));
         assert_eq!(&bytes, b"MD:45.00\n");
     }
 
@@ -260,8 +261,8 @@ mod tests {
             FalconResponse::Status(s) => s,
             other => panic!("expected Status, got {other:?}"),
         };
-        assert_eq!(status.position_steps, 4332);
-        assert!((status.position_deg - 50.0).abs() < 1e-9);
+        assert_eq!(status.position_steps, Steps(4332));
+        assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
         assert!(!status.is_moving);
     }
 
@@ -278,13 +279,13 @@ mod tests {
             FalconResponse::PositionDeg(v) => v,
             other => panic!("expected PositionDeg, got {other:?}"),
         };
-        assert!((v - 142.30).abs() < 1e-9);
+        assert!((v.value() - 142.30).abs() < 1e-9);
     }
 
     #[test]
     fn decode_position_steps() {
         let resp = FalconCodec.decode(b"FP:4332\n").unwrap();
-        assert_eq!(resp, FalconResponse::PositionSteps(4332));
+        assert_eq!(resp, FalconResponse::PositionSteps(Steps(4332)));
     }
 
     #[test]
@@ -292,14 +293,14 @@ mod tests {
         // Real hardware (firmware 1.5) reports negative steps CCW of the 0°
         // home; the codec must decode them rather than abort the frame.
         let resp = FalconCodec.decode(b"FP:-1784\n").unwrap();
-        assert_eq!(resp, FalconResponse::PositionSteps(-1784));
+        assert_eq!(resp, FalconResponse::PositionSteps(Steps(-1784)));
     }
 
     #[test]
     fn decode_full_status_accepts_negative_steps_below_home() {
         let resp = FalconCodec.decode(b"FR_OK:-2838:327.24:1:0:0:0\n").unwrap();
         match resp {
-            FalconResponse::Status(s) => assert_eq!(s.position_steps, -2838),
+            FalconResponse::Status(s) => assert_eq!(s.position_steps, Steps(-2838)),
             other => panic!("expected Status, got {other:?}"),
         }
     }
@@ -365,8 +366,8 @@ mod tests {
         assert!(codec.matches(
             &Command::FullStatus,
             &FalconResponse::Status(FalconStatus {
-                position_steps: 0,
-                position_deg: 0.0,
+                position_steps: Steps(0),
+                position_deg: MechanicalDegrees::new(0.0),
                 is_moving: false,
                 limit_detect: false,
                 do_derotation: false,
@@ -384,7 +385,7 @@ mod tests {
     fn matches_pairs_echo_commands_with_echo_variant() {
         let codec = FalconCodec;
         assert!(codec.matches(
-            &Command::MoveDeg(180.0),
+            &Command::MoveDeg(MechanicalDegrees::new(180.0)),
             &FalconResponse::Echo("MD:180.00".to_string())
         ));
         assert!(codec.matches(&Command::Halt, &FalconResponse::Echo("FH:1".to_string())));
@@ -409,7 +410,10 @@ mod tests {
             &Command::FullStatus,
             &FalconResponse::Echo("MD:0.00".to_string())
         ));
-        assert!(!codec.matches(&Command::MoveDeg(0.0), &FalconResponse::IsRunning(true)));
+        assert!(!codec.matches(
+            &Command::MoveDeg(MechanicalDegrees::new(0.0)),
+            &FalconResponse::IsRunning(true)
+        ));
     }
 
     // ---- FalconCodecError::from_protocol --------------------------------

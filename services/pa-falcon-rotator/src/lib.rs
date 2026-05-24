@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod rotator_device;
 pub mod serial;
 pub mod switch_device;
+pub mod units;
 
 pub use codec::{FalconCodec, FalconCodecError, FalconResponse};
 pub use config::{load_config, Config, RotatorConfig, SerialConfig, ServerConfig, SwitchConfig};
@@ -29,6 +30,7 @@ pub use manager::FalconManager;
 pub use rotator_device::FalconRotatorDevice;
 pub use serial::FalconTransportFactory;
 pub use switch_device::FalconStatusSwitchDevice;
+pub use units::{MechanicalDegrees, SkyDegrees, Steps, SyncOffset};
 
 #[cfg(feature = "mock")]
 pub use mock::MockFalconTransportFactory;

@@ -25,8 +25,7 @@ use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFac
 use tokio::sync::Mutex;
 use tracing::debug;
 
-/// Steps per degree (vendor product page).
-const STEPS_PER_DEGREE: f64 = 86.6;
+use crate::units::{MechanicalDegrees, Steps, STEPS_PER_DEGREE};
 
 /// Firmware-enforced CW soft limit, in degrees. A target beyond this is only
 /// reachable the long way round (CCW past the 0° home), which the firmware
@@ -48,11 +47,12 @@ const UNKNOWN_COMMAND_RESPONSE: &str = "ERR:UNKNOWN";
 /// Simulated Falcon Rotator device state.
 #[derive(Debug, Clone)]
 struct MockDeviceState {
-    /// Signed mechanical position as a step count relative to the 0° home,
-    /// mirroring the real Falcon encoder (negative CCW of home). The normalised
-    /// `[0, 360)` angle is derived from this via
-    /// [`MockDeviceState::mech_position_deg`].
-    mech_steps: i32,
+    /// Mechanical position the device currently holds, in its own frame.
+    /// The signed `FA`/`FP` step counter is *derived* from this via
+    /// [`signed_target_steps`] (negative CCW of the 0° home, for targets past
+    /// the 220° CW limit), mirroring how the real Falcon reports a step count
+    /// alongside the authoritative degree field.
+    mech: MechanicalDegrees,
     /// `true` until the next `FA` clears the flag (best-effort BDD model).
     is_moving: bool,
     /// Mirrors the `FN:b` setting; persists across commands.
@@ -70,7 +70,7 @@ struct MockDeviceState {
 impl Default for MockDeviceState {
     fn default() -> Self {
         Self {
-            mech_steps: 0,
+            mech: MechanicalDegrees::new(0.0),
             is_moving: false,
             motor_reverse: false,
             do_derotation: false,
@@ -82,20 +82,23 @@ impl Default for MockDeviceState {
 }
 
 impl MockDeviceState {
-    fn position_steps(&self) -> i32 {
-        self.mech_steps
+    /// The signed step counter the device reports for `FP` and the `FA` step
+    /// field, derived from the mechanical angle (negative CCW of the 0° home;
+    /// see [`signed_target_steps`]).
+    fn position_steps(&self) -> Steps {
+        signed_target_steps(self.mech)
     }
 
-    /// Normalised `[0, 360)` mechanical angle derived from the signed step
-    /// counter — what the firmware reports for `FD` and the `FA` degree field.
+    /// The `[0, 360)` mechanical angle the firmware reports for `FD` and the
+    /// `FA` degree field.
     fn mech_position_deg(&self) -> f64 {
-        normalise_deg(f64::from(self.mech_steps) / STEPS_PER_DEGREE)
+        self.mech.value()
     }
 
     fn full_status_response(&self) -> String {
         format!(
             "FR_OK:{}:{:.2}:{}:{}:{}:{}",
-            self.position_steps(),
+            self.position_steps().value(),
             self.mech_position_deg(),
             bit(self.is_moving),
             bit(self.limit_detect),
@@ -113,22 +116,18 @@ fn bit(b: bool) -> u8 {
     }
 }
 
-fn normalise_deg(deg: f64) -> f64 {
-    ((deg % 360.0) + 360.0) % 360.0
-}
-
-/// Map a commanded degree to the Falcon's *signed* step counter, modelling the
+/// Map a mechanical angle to the Falcon's *signed* step counter, modelling the
 /// 220° CW soft limit: a target beyond 220° is only reachable the long way
 /// round (CCW past the 0° home), which the firmware represents as a negative
 /// step count (`deg - 360`). Mirrors real-hardware capture (firmware 1.5).
-fn signed_target_steps(deg: f64) -> i32 {
-    let d = normalise_deg(deg);
+fn signed_target_steps(mech: MechanicalDegrees) -> Steps {
+    let d = mech.value();
     let signed = if d > FALCON_CW_LIMIT_DEG {
         d - 360.0
     } else {
         d
     };
-    (signed * STEPS_PER_DEGREE).round() as i32
+    Steps((signed * STEPS_PER_DEGREE).round() as i32)
 }
 
 /// In-memory Falcon state plus a queue of pending response frames.
@@ -161,7 +160,7 @@ impl MockState {
             }
             "FV" => format!("FV:{}", self.device_state.firmware_version),
             "FD" => format!("FD:{:.2}", self.device_state.mech_position_deg()),
-            "FP" => format!("FP:{}", self.device_state.position_steps()),
+            "FP" => format!("FP:{}", self.device_state.position_steps().value()),
             "VS" => format!("VS:{}", self.device_state.voltage_raw),
             "FH" => {
                 self.device_state.is_moving = false;
@@ -201,7 +200,7 @@ impl MockState {
         let value = command.strip_prefix("MD:").unwrap_or("");
         match value.parse::<f64>() {
             Ok(deg) if deg.is_finite() => {
-                self.device_state.mech_steps = signed_target_steps(deg);
+                self.device_state.mech = MechanicalDegrees::new(deg);
                 self.device_state.is_moving = true;
                 // Echo the command literally so the driver's echo
                 // validation sees what it sent regardless of mock precision.
@@ -213,11 +212,12 @@ impl MockState {
 
     fn process_move_steps(&mut self, command: &str) -> String {
         let value = command.strip_prefix("MS:").unwrap_or("");
-        match value.parse::<u32>() {
+        // The encoder is signed relative to the 0° home, so parse the target
+        // as i32 (no lossy u32→i32 cast) and store the equivalent mechanical
+        // angle; the FA/FP step field is re-derived from it.
+        match value.parse::<i32>() {
             Ok(steps) => {
-                // MS commands an absolute (unsigned) step target; store it as
-                // the signed counter directly.
-                self.device_state.mech_steps = steps as i32;
+                self.device_state.mech = MechanicalDegrees::from(Steps(steps));
                 self.device_state.is_moving = true;
                 format!("MS:{steps}")
             }
@@ -293,7 +293,7 @@ impl TransportFactory for MockFalconTransportFactory {
 impl MockFalconTransportFactory {
     /// Seed the mock's mechanical position before opening a connection.
     pub async fn set_mech_position_deg(&self, value: f64) {
-        self.state.lock().await.device_state.mech_steps = signed_target_steps(value);
+        self.state.lock().await.device_state.mech = MechanicalDegrees::new(value);
     }
 
     /// Read the mock's current mechanical position. Used by tests that
@@ -348,16 +348,6 @@ mod tests {
     }
 
     // ---- Helpers ---------------------------------------------------------
-
-    #[test]
-    fn normalise_deg_wraps_positive_overflow() {
-        assert!((normalise_deg(370.0) - 10.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn normalise_deg_wraps_negative_into_positive() {
-        assert!((normalise_deg(-10.0) - 350.0).abs() < 1e-9);
-    }
 
     #[test]
     fn bit_maps_true_and_false() {

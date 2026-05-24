@@ -123,6 +123,17 @@ Field types:
 
 The Falcon has a single physical-angle concept. ASCOM's `IRotatorV3+` separates *mechanical* angle from *sky* angle joined by a `Sync` offset. The driver implements that separation in software.
 
+The two frames and their bridge are distinct types in `units.rs` — `MechanicalDegrees`, `SkyDegrees`, and the `SyncOffset` that joins them — so the offset arithmetic in the table below is checked at compile time rather than by convention. The whole algebra is three operators plus one rotation:
+
+| Relation | Typed form |
+|---|---|
+| `Position` = mech + offset | `MechanicalDegrees + SyncOffset → SkyDegrees` |
+| `MoveAbsolute`: mech = sky − offset | `SkyDegrees − SyncOffset → MechanicalDegrees` |
+| `Sync`: offset = sky − mech | `SkyDegrees − MechanicalDegrees → SyncOffset` |
+| `Move(delta)`: mech.rotate(delta) | relative rotation, stays mechanical |
+
+A sky angle therefore can't be used where a mechanical one is expected, and the offset can't be silently dropped, without a compile error. All three angle types normalise to `[0, 360)` on construction (see [Position normalisation](#position-normalisation)); non-finite inputs are rejected at the ASCOM boundary before a value is constructed. `Steps` (the signed `FA`/`FP` counter) is a fourth type, but since the driver derives every position from the degree field it is informational on the wire — only the mock converts between `Steps` and `MechanicalDegrees` (× 86.6).
+
 | ASCOM Property/Method | Implementation |
 |---|---|
 | `CanReverse` | `true` (always) |
@@ -311,7 +322,8 @@ services/pa-falcon-rotator/
 │   ├── serial.rs           # FalconTransportFactory (TransportFactory over tokio-serial)
 │   ├── mock.rs             # MockFalconTransportFactory (feature = "mock")
 │   ├── protocol.rs         # Command enum + response parsers + validate_echo
-│   └── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
+│   ├── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
+│   └── units.rs            # SkyDegrees / MechanicalDegrees / SyncOffset / Steps + frame algebra
 ├── tests/
 │   ├── bdd.rs              # cucumber entry point (harness = false)
 │   ├── bdd/

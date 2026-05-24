@@ -35,26 +35,7 @@ use tracing::{debug, info, warn};
 use crate::codec::{FalconCodec, FalconCodecError, FalconResponse};
 use crate::error::{FalconRotatorError, Result};
 use crate::protocol::{validate_echo, Command, FalconStatus};
-
-/// Normalise a degree value into `[0.0, 360.0)`.
-///
-/// Handles negative deltas (e.g. from `Move(delta < 0)`) by adding a full
-/// turn before the second modulo so the result is always non-negative.
-fn normalise_deg(deg: f64) -> f64 {
-    ((deg % 360.0) + 360.0) % 360.0
-}
-
-/// Quantise a degree value to the `MD:nn.nn` wire precision (1/100°) by
-/// rounding to two decimal places.
-///
-/// Without this step, `format!("{:.2}", 359.999)` rounds up to `"360.00"`,
-/// which violates the documented `[0, 360)` wire range. Quantising first
-/// produces `360.00` as an `f64`, which the subsequent `normalise_deg`
-/// call wraps back to `0.0` before formatting — keeping the wire output
-/// inside the documented range.
-fn quantise_to_wire(deg: f64) -> f64 {
-    (deg * 100.0).round() / 100.0
-}
+use crate::units::{MechanicalDegrees, SkyDegrees, SyncOffset};
 
 /// Manager wrapping the shared transport plus driver-side Falcon state.
 ///
@@ -63,8 +44,8 @@ fn quantise_to_wire(deg: f64) -> f64 {
 /// hold their own `Option<Session<FalconCodec>>`.
 pub struct FalconManager {
     transport: Arc<SharedTransport<FalconCodec>>,
-    sync_offset: Mutex<f64>,
-    target_position: Mutex<Option<f64>>,
+    sync_offset: Mutex<SyncOffset>,
+    target_position: Mutex<Option<SkyDegrees>>,
     last_limit_detected: Arc<Mutex<Option<bool>>>,
 }
 
@@ -90,7 +71,7 @@ impl FalconManager {
         let transport = SharedTransport::new(factory, FalconCodec, hooks);
         Arc::new(Self {
             transport,
-            sync_offset: Mutex::new(0.0),
+            sync_offset: Mutex::new(SyncOffset::ZERO),
             target_position: Mutex::new(None),
             last_limit_detected,
         })
@@ -164,10 +145,11 @@ impl FalconManager {
 
     /// Move to a mechanical angle on the caller's session.
     ///
-    /// The caller has already applied any sync offset; this method
-    /// validates finiteness, quantises to the `MD:nn.nn` wire precision,
-    /// normalises into `[0, 360)`, emits the command, and returns the
-    /// actual wire-quantised mechanical value that was sent.
+    /// The caller has already applied any sync offset (the
+    /// [`MechanicalDegrees`] type carries a normalised, finite angle by
+    /// construction). This method quantises to the `MD:nn.nn` wire precision
+    /// — which also re-normalises into `[0, 360)` — emits the command, and
+    /// returns the actual wire-quantised mechanical value that was sent.
     ///
     /// Returning the wire-quantised value matters because a near-boundary
     /// input (e.g. `359.999`) becomes `MD:0.00` on the wire; callers that
@@ -177,22 +159,17 @@ impl FalconManager {
     pub async fn move_mechanical(
         &self,
         session: &Session<FalconCodec>,
-        target_mech_deg: f64,
-    ) -> Result<f64> {
-        if !target_mech_deg.is_finite() {
-            return Err(FalconRotatorError::InvalidValue(format!(
-                "move target must be finite, got {target_mech_deg}"
-            )));
-        }
-        let wire_deg = normalise_deg(quantise_to_wire(target_mech_deg));
-        let cmd = Command::MoveDeg(wire_deg);
+        target: MechanicalDegrees,
+    ) -> Result<MechanicalDegrees> {
+        let wire = target.quantise_to_wire();
+        let cmd = Command::MoveDeg(wire);
         let resp = session
             .request(cmd.clone())
             .await
             .map_err(FalconRotatorError::from)?;
         let echo = expect_echo(resp, "MD")?;
         validate_echo(&cmd, &echo)?;
-        Ok(wire_deg)
+        Ok(wire)
     }
 
     /// Issue `FH`, validate the `FH:1` echo, and clear the stored target.
@@ -243,28 +220,31 @@ impl FalconManager {
                 "sync target must be finite, got {sky_deg}"
             )));
         }
+        let sky = SkyDegrees::new(sky_deg);
         let mech = self.read_status(session).await?.position_deg;
-        let offset = normalise_deg(sky_deg - mech);
+        let offset = sky - mech;
         *self.sync_offset.lock().await = offset;
         debug!(
             "sync: sky={:.4} mech={:.4} → sync_offset={:.4}",
-            sky_deg, mech, offset
+            sky.value(),
+            mech.value(),
+            offset.value()
         );
         Ok(())
     }
 
     /// Read the current driver-side sync offset.
-    pub async fn sync_offset(&self) -> f64 {
+    pub async fn sync_offset(&self) -> SyncOffset {
         *self.sync_offset.lock().await
     }
 
     /// Store the last-requested sky-coordinate target.
-    pub async fn set_target_position(&self, sky_deg: f64) {
-        *self.target_position.lock().await = Some(sky_deg);
+    pub async fn set_target_position(&self, target: SkyDegrees) {
+        *self.target_position.lock().await = Some(target);
     }
 
     /// Read the last-requested sky-coordinate target.
-    pub async fn target_position(&self) -> Option<f64> {
+    pub async fn target_position(&self) -> Option<SkyDegrees> {
         *self.target_position.lock().await
     }
 
@@ -273,7 +253,7 @@ impl FalconManager {
     /// from a clean slate (`sync_offset = 0`, no target, no remembered
     /// limit edge).
     pub async fn clear_session_state(&self) {
-        *self.sync_offset.lock().await = 0.0;
+        *self.sync_offset.lock().await = SyncOffset::ZERO;
         *self.target_position.lock().await = None;
         *self.last_limit_detected.lock().await = None;
     }
@@ -362,60 +342,6 @@ async fn handshake(
     Ok(())
 }
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-mod tests {
-    use super::*;
-
-    // ---- normalise_deg ---------------------------------------------------
-
-    #[test]
-    fn normalise_deg_zero_is_zero() {
-        assert!((normalise_deg(0.0)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn normalise_deg_under_360_passthrough() {
-        assert!((normalise_deg(180.0) - 180.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn normalise_deg_wraps_positive_overflow() {
-        assert!((normalise_deg(370.0) - 10.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn normalise_deg_wraps_negative_into_positive() {
-        assert!((normalise_deg(-10.0) - 350.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn normalise_deg_handles_two_turn_overflow() {
-        assert!((normalise_deg(720.0)).abs() < 1e-9);
-    }
-
-    // ---- quantise_to_wire ------------------------------------------------
-
-    #[test]
-    fn quantise_to_wire_rounds_up_to_360_from_just_below() {
-        assert!((quantise_to_wire(359.999) - 360.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn quantise_to_wire_preserves_two_decimal_values() {
-        assert!((quantise_to_wire(123.45) - 123.45).abs() < 1e-9);
-    }
-
-    #[test]
-    fn quantise_to_wire_then_normalise_keeps_wire_in_range() {
-        let v = normalise_deg(quantise_to_wire(359.999));
-        assert!((v).abs() < 1e-9, "expected 0.0, got {v}");
-        let formatted = format!("{v:.2}");
-        assert_eq!(formatted, "0.00");
-    }
-}
-
 /// Mock-backed integration tests for the manager.
 ///
 /// Exercises the handshake + protocol API against the deterministic
@@ -502,18 +428,18 @@ mod mock_tests {
         let (manager, factory) = make_manager();
         let session = acquire_session(&manager).await;
 
-        manager.set_target_position(123.45).await;
+        manager.set_target_position(SkyDegrees::new(123.45)).await;
         factory.set_limit_detect(true).await;
         let _ = manager.read_status(&session).await.unwrap();
         factory.set_mech_position_deg(45.0).await;
         manager.sync(&session, 90.0).await.unwrap();
-        assert!((manager.sync_offset().await - 45.0).abs() < 1e-9);
+        assert!((manager.sync_offset().await.value() - 45.0).abs() < 1e-9);
 
         session.close().await.unwrap();
         manager.clear_session_state().await;
 
         assert_eq!(manager.target_position().await, None);
-        assert!((manager.sync_offset().await).abs() < 1e-9);
+        assert!((manager.sync_offset().await.value()).abs() < 1e-9);
         assert_eq!(*manager.last_limit_detected.lock().await, None);
     }
 
@@ -526,7 +452,7 @@ mod mock_tests {
         let session = acquire_session(&manager).await;
 
         let status = manager.read_status(&session).await.unwrap();
-        assert!((status.position_deg - 50.0).abs() < 1e-9);
+        assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
         assert!(!status.is_moving);
     }
 
@@ -547,29 +473,17 @@ mod mock_tests {
         let session = acquire_session(&manager).await;
         factory.clear_command_log().await;
 
-        manager.move_mechanical(&session, -30.0).await.unwrap(); // → 330°
+        manager
+            .move_mechanical(&session, MechanicalDegrees::new(-30.0))
+            .await
+            .unwrap(); // → 330°
         let log = factory.command_log().await;
         assert_eq!(log, vec!["MD:330.00".to_string()]);
     }
 
-    #[tokio::test]
-    async fn move_mechanical_rejects_non_finite() {
-        let (manager, factory) = make_manager();
-        let session = acquire_session(&manager).await;
-        factory.clear_command_log().await;
-
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let err = manager.move_mechanical(&session, bad).await.unwrap_err();
-            assert!(
-                matches!(err, FalconRotatorError::InvalidValue(_)),
-                "expected InvalidValue for {bad}, got {err:?}"
-            );
-        }
-        assert!(
-            factory.command_log().await.is_empty(),
-            "no command should reach the wire for non-finite targets"
-        );
-    }
+    // Non-finite rejection now lives at the ASCOM boundary (the
+    // `MechanicalDegrees` argument is finite by construction); see the
+    // `move_*_rejects_non_finite` tests in `rotator_device`.
 
     #[tokio::test]
     async fn move_mechanical_wraps_just_under_360_to_zero() {
@@ -577,7 +491,10 @@ mod mock_tests {
         let session = acquire_session(&manager).await;
         factory.clear_command_log().await;
 
-        manager.move_mechanical(&session, 359.999).await.unwrap();
+        manager
+            .move_mechanical(&session, MechanicalDegrees::new(359.999))
+            .await
+            .unwrap();
         assert_eq!(factory.command_log().await, vec!["MD:0.00".to_string()]);
     }
 
@@ -587,16 +504,24 @@ mod mock_tests {
         let session = acquire_session(&manager).await;
         factory.clear_command_log().await;
 
-        let wire = manager.move_mechanical(&session, 359.999).await.unwrap();
+        let wire = manager
+            .move_mechanical(&session, MechanicalDegrees::new(359.999))
+            .await
+            .unwrap();
         assert!(
-            (wire - 0.0).abs() < 1e-9,
-            "expected wire-quantised 0.0, got {wire}"
+            (wire.value() - 0.0).abs() < 1e-9,
+            "expected wire-quantised 0.0, got {}",
+            wire.value()
         );
 
-        let wire = manager.move_mechanical(&session, 123.456).await.unwrap();
+        let wire = manager
+            .move_mechanical(&session, MechanicalDegrees::new(123.456))
+            .await
+            .unwrap();
         assert!(
-            (wire - 123.46).abs() < 1e-9,
-            "expected wire-quantised 123.46, got {wire}"
+            (wire.value() - 123.46).abs() < 1e-9,
+            "expected wire-quantised 123.46, got {}",
+            wire.value()
         );
     }
 
@@ -606,7 +531,10 @@ mod mock_tests {
         let session = acquire_session(&manager).await;
         factory.clear_command_log().await;
 
-        manager.move_mechanical(&session, 360.0).await.unwrap();
+        manager
+            .move_mechanical(&session, MechanicalDegrees::new(360.0))
+            .await
+            .unwrap();
         assert_eq!(factory.command_log().await, vec!["MD:0.00".to_string()]);
     }
 
@@ -614,7 +542,7 @@ mod mock_tests {
     async fn halt_sends_fh_and_clears_target() {
         let (manager, factory) = make_manager();
         let session = acquire_session(&manager).await;
-        manager.set_target_position(180.0).await;
+        manager.set_target_position(SkyDegrees::new(180.0)).await;
         factory.clear_command_log().await;
 
         manager.halt(&session).await.unwrap();
@@ -661,7 +589,7 @@ mod mock_tests {
 
         // mech = 120°, sync to 30° → offset = (30 - 120) mod 360 = 270.
         manager.sync(&session, 30.0).await.unwrap();
-        let offset = manager.sync_offset().await;
+        let offset = manager.sync_offset().await.value();
         assert!(
             (offset - 270.0).abs() < 1e-9,
             "expected offset 270.0, got {offset}"
@@ -672,7 +600,7 @@ mod mock_tests {
     async fn sync_rejects_non_finite() {
         let (manager, _factory) = make_manager();
         let session = acquire_session(&manager).await;
-        let starting_offset = manager.sync_offset().await;
+        let starting_offset = manager.sync_offset().await.value();
 
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let err = manager.sync(&session, bad).await.unwrap_err();
@@ -681,7 +609,7 @@ mod mock_tests {
                 "expected InvalidValue for {bad}, got {err:?}"
             );
         }
-        assert!((manager.sync_offset().await - starting_offset).abs() < 1e-9);
+        assert!((manager.sync_offset().await.value() - starting_offset).abs() < 1e-9);
     }
 
     // ---- limit_detect edge log -----------------------------------------
@@ -872,7 +800,7 @@ mod mock_tests {
 
         fail_switch.store(true, Ordering::SeqCst);
         let err = manager
-            .move_mechanical(&session, 180.0)
+            .move_mechanical(&session, MechanicalDegrees::new(180.0))
             .await
             .expect_err("move_mechanical should propagate the transport failure");
         assert!(
@@ -890,7 +818,7 @@ mod mock_tests {
         let (manager, factory) = make_injectable_manager();
         let fail_switch = factory.fail_next_send();
         let session = acquire_session(&manager).await;
-        manager.set_target_position(180.0).await;
+        manager.set_target_position(SkyDegrees::new(180.0)).await;
 
         fail_switch.store(true, Ordering::SeqCst);
         let err = manager
@@ -903,7 +831,7 @@ mod mock_tests {
         );
         assert_eq!(
             manager.target_position().await,
-            Some(180.0),
+            Some(SkyDegrees::new(180.0)),
             "halt's target-clearing side effect must NOT fire on transport failure"
         );
     }
@@ -915,7 +843,7 @@ mod mock_tests {
         let (manager, factory) = make_injectable_manager();
         let fail_switch = factory.fail_next_send();
         let session = acquire_session(&manager).await;
-        let starting_offset = manager.sync_offset().await;
+        let starting_offset = manager.sync_offset().await.value();
 
         fail_switch.store(true, Ordering::SeqCst);
         let err = manager
@@ -926,7 +854,7 @@ mod mock_tests {
             matches!(err, FalconRotatorError::Communication(_)),
             "expected Communication, got {err:?}"
         );
-        assert!((manager.sync_offset().await - starting_offset).abs() < 1e-9);
+        assert!((manager.sync_offset().await.value() - starting_offset).abs() < 1e-9);
     }
 
     #[tokio::test]
@@ -955,7 +883,7 @@ mod mock_tests {
         );
 
         assert!(!manager.is_available());
-        assert!((manager.sync_offset().await).abs() < 1e-9);
+        assert!((manager.sync_offset().await.value()).abs() < 1e-9);
         assert_eq!(manager.target_position().await, None);
     }
 }

@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use pa_falcon_rotator::protocol::{parse_full_status, FalconStatus};
+use pa_falcon_rotator::{MechanicalDegrees, Steps};
 use proptest::prelude::*;
 
 proptest! {
@@ -33,8 +34,8 @@ proptest! {
         );
         let parsed = parse_full_status(&wire).unwrap();
         prop_assert_eq!(parsed, FalconStatus {
-            position_steps: steps,
-            position_deg: deg,
+            position_steps: Steps(steps),
+            position_deg: MechanicalDegrees::new(deg),
             is_moving,
             limit_detect,
             do_derotation,
