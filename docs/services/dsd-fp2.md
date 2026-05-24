@@ -311,10 +311,128 @@ shuffle the FP2 onto a different `ttyACM*`.
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to configuration file |
-| `--port`           | Serial port path (overrides config) |
-| `--server-port`    | Server port (overrides config) |
+| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the XDG default `~/.config/rusty-photon/dsd-fp2.json` (read if present; created by `config.apply`). |
+| `--port`           | Serial port path (overrides `serial.port`; pins it as a CLI override) |
+| `--server-port`    | Server port (overrides `server.port`; pins it as a CLI override) |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
+
+## Config Actions
+
+The driver exposes its own configuration over HTTP as two vendor ASCOM
+`Action`s, so a host-agnostic UI (the BFF) can read and write config without a
+bespoke endpoint. This is the `dsd-fp2` instance of the cross-driver protocol
+defined in
+[`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md).
+
+### Supported actions
+
+`supported_actions()` lists:
+
+| Action | `Parameters` | Returns (HTTP 200 body) |
+|--------|--------------|--------------------------|
+| `config.get` | empty | JSON: effective config (secrets redacted) + override markers |
+| `config.apply` | full Config JSON | JSON: apply status + per-field classification |
+
+Unknown actions return `ASCOMError::ACTION_NOT_IMPLEMENTED`. Both actions work
+whether or not the device is `Connected` — a wrong `serial.port` must be fixable
+without first connecting to the thing the bad port blocks connecting to.
+
+### Config-path resolution
+
+A persist target is **always** resolvable, in priority order:
+
+1. `--config <path>` if given on the CLI, else
+2. the XDG default `~/.config/rusty-photon/dsd-fp2.json`
+   (`$XDG_CONFIG_HOME/rusty-photon/dsd-fp2.json` when that variable is set).
+
+Startup and reload **read** this path when the file exists, falling back to
+`Config::default()` otherwise. `config.apply` **writes** it, creating parent
+directories for the XDG default. (This is a behaviour change from the pre-config-
+actions driver, which ignored any file when `--config` was omitted.)
+
+### `config.get`
+
+```jsonc
+{
+  "config": { /* effective Config — see Configuration — with secrets redacted */ },
+  "overrides": ["serial.port"]   // fields pinned by --port / --server-port
+}
+```
+
+- **Effective config** = file config with CLI overrides applied: exactly what the
+  running driver is using.
+- **Redaction** (hygiene, independent of auth): `server.auth` credential material
+  and `server.tls` key material are never emitted in cleartext.
+- **`overrides`** lists JSON paths currently pinned by a CLI override (`--port` →
+  `serial.port`, `--server-port` → `server.port`). The UI surfaces these as
+  not-editable-here; `config.apply` will not persist them.
+
+### `config.apply`
+
+`Parameters` carries the full Config as JSON. The handler:
+
+1. **Parse** as the typed `Config`. Parse failure → ASCOM `INVALID_VALUE` (the
+   request was malformed, not the config).
+2. **Validate** ranges + semantics (table below). On failure returns **HTTP 200**
+   with `{"status":"invalid","errors":[{"path":"serial.baud_rate","msg":"…"}]}`
+   and **leaves the file unchanged** — a domain error the BFF renders as
+   field-level messages, distinct from a transport/ASCOM error.
+3. **Persist** atomically (temp → fsync → rename → fsync dir). CLI-override-pinned
+   fields are written through from the file's prior value, not the submitted
+   value, and listed in `skipped_override[]`. Absent/sentinel secret fields are
+   treated as "unchanged" so a round-tripped form does not blank them.
+4. **Classify** changed fields and **fire the in-process reload** if anything is
+   in `reload[]` — *after the response is flushed* (see In-process reload).
+5. **Return** HTTP 200 with the classification:
+
+```jsonc
+{
+  "status": "applying",          // "ok" if nothing needed reload; "invalid" on validation failure
+  "applied": [],                 // took effect live (none in Phase 1)
+  "reload": ["cover_calibrator.max_brightness"],
+  "restart_required": [],        // would need a Sentinel process restart (none in Phase 1)
+  "skipped_override": [],        // override-pinned, not persisted
+  "persisted_to": "~/.config/rusty-photon/dsd-fp2.json"
+}
+```
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `serial.port` | non-empty |
+| `serial.baud_rate` | `> 0` |
+| `serial.polling_interval` | `> 0` |
+| `serial.timeout` | `> 0` |
+| `cover_calibrator.max_brightness` | `<= 4096` (hardware ceiling, `MAX_BRIGHTNESS`) |
+| `server.port` | any `u16` (`0` = OS-assigned, used in tests) |
+
+#### Field classification (Phase 1)
+
+Every persisted change is classified `reload`: the driver re-reads the file and
+rebuilds its server + transport in-process. `applied` (live, no blip) and
+`restart_required` exist in the protocol but are unused by `dsd-fp2` in Phase 1;
+a later optimisation can move e.g. `cover_calibrator.max_brightness` to `applied`
+via a shared config cell. A `server.port` change reloads cleanly here, but
+carries a cross-service reference (the BFF's hard-coded driver URL) that Phase 1
+does not follow — see the plan's open questions.
+
+### In-process reload
+
+`config.apply` triggers an **in-process reload**, not a process restart.
+`main.rs` runs under `ServiceRunner::run_with_reload`: each loop iteration loads
+the effective config and builds the server; a `ReloadSignal` held in the device's
+config-action state (fired via `notify()`) makes the loop tear the current server
+down and rebuild from the new file.
+
+- **Fire-after-response.** The reload is fired from a detached task that yields
+  briefly so the `config.apply` response flushes first — the server being torn
+  down is the very one serving the request. `status:"applying"` tells the BFF to
+  expect a short connection blip and re-`config.get` to confirm.
+- **Clean teardown.** Before the old server is dropped, the reload arm calls
+  `device.set_connected(false).await` — the inline, awaited `Session::close`
+  path — so the serial port is fully released before any client reconnects to the
+  rebuilt server. A no-op when no client was connected.
 
 ## Error Handling
 
@@ -340,13 +458,14 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 
 | Module                | Description                                                                                  |
 |-----------------------|----------------------------------------------------------------------------------------------|
-| `config.rs`           | `Config`, `SerialConfig`, `ServerConfig`, `CoverCalibratorConfig` + defaults + JSON load     |
+| `config.rs`           | `Config`, `SerialConfig`, `ServerConfig`, `CoverCalibratorConfig` + defaults + JSON load; `CliOverrides`, XDG path resolution, `load_effective_config` |
+| `config_actions.rs`   | Config-action protocol: `ConfigAction` enum, request/response envelopes, `validate` / `classify` / `redact` / atomic `save`, override-path tracking |
 | `error.rs`            | `DsdFp2Error` enum (`thiserror`) + `to_ascom_error()` + `From<TransportError>` / `From<SessionError<…>>` / `From<DsdFp2Error> for ASCOMError` |
 | `protocol.rs`         | `Command` enum + `RawResponse` body parsers                                                  |
 | `codec.rs`            | `Fp2Codec` — `rusty_photon_shared_transport::Codec` impl                                    |
 | `transport.rs`        | `Fp2SerialTransportFactory` — opens `tokio_serial::SerialStream`, wraps in `SerialFrameTransport` |
 | `manager.rs`          | `FlatPanelManager` over `SharedTransport<Fp2Codec>` + `CachedState` + Hooks (handshake / while_open / teardown) |
-| `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>` |
+| `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>`; `supported_actions` / `action` dispatch for `config.get` / `config.apply` |
 | `mock.rs`             | `MockTransportFactory` + `MockFrameTransport` (feature `mock`); shared `MockState` simulator |
 | `lib.rs`              | Public exports, `ServerBuilder`, `BoundServer`                                              |
 | `main.rs`             | CLI (clap) + tracing init; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner` |
@@ -359,10 +478,13 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 - Cover open / close + state polling (`CoverState` ∈ {`Open`, `Closed`, `Moving`, `Unknown`, `Error`})
 - Calibrator on / off + brightness set (`CalibratorState` ∈ {`Off`, `Ready`, `Unknown`, `Error`})
 - Brightness read (cached) and `max_brightness = 4096`
+- **Config actions** (`config.get` / `config.apply`) with XDG-default config
+  path, layer-aware persist, validation, secret redaction, and in-process reload
 - Mock factory for ConformU and BDD (consumed by both the spawned
   binary and the in-process `manager.rs` mock tests)
-- Three BDD feature files: connection_lifecycle, cover_control, calibrator_control
-- Unit tests for protocol parsing and state derivation
+- Four BDD feature files: connection_lifecycle, cover_control, calibrator_control,
+  config_actions
+- Unit tests for protocol parsing, state derivation, and config-action internals
 
 ### Deferred
 
@@ -385,7 +507,7 @@ Follows `docs/skills/testing.md`.
 
 ### BDD Tests (Cucumber)
 
-Three feature files cover the MVP behaviour:
+Four feature files cover the MVP behaviour:
 
 - `connection_lifecycle.feature` — connect, disconnect, status after
   disconnect.
@@ -393,6 +515,14 @@ Three feature files cover the MVP behaviour:
   disconnected.
 - `calibrator_control.feature` — turn on at brightness, turn off,
   reject out-of-range brightness, state after disconnect.
+- `config_actions.feature` — `supportedactions` lists the config actions;
+  `config.get` returns the effective config and marks overrides (over the wire,
+  while disconnected); `config.apply` with a valid change returns
+  `status:"applying"` with the reload classification; an invalid `baud_rate`
+  returns `status:"invalid"` with validation errors; an unknown action returns
+  `ACTION_NOT_IMPLEMENTED`. Secret redaction and file-unchanged-on-invalid are
+  covered by the faster in-process unit tests (`device::mock_tests`,
+  `config_actions::tests`).
 
 Scenarios spawn the dsd-fp2 binary (built with `--features mock` so
 `MockTransportFactory` is wired in place of the real serial transport)
@@ -419,6 +549,10 @@ rejection) are covered by the in-process unit test
   tables above).
 - `manager.rs`: brightness validation; the shared-transport crate's
   own integration suite covers refcount + handshake-rollback edge cases.
+- `config_actions.rs`: validation field-errors; classification of changed
+  fields; secret redaction + "absent secret = unchanged" round-trip; atomic
+  `save` round-trips and leaves the file unchanged on invalid input;
+  layer-aware persist skips CLI-override-pinned fields; XDG path resolution.
 - `error.rs`: `to_ascom_error()` round-trips per the table in
   [Error Handling](#error-handling); `From<TransportError>` /
   `From<SessionError<DsdFp2Error>>` flattening (centralised here so

@@ -1,7 +1,8 @@
 //! Configuration types for the Deep Sky Dad FP2 driver.
 
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Top-level service configuration.
@@ -110,6 +111,72 @@ impl Default for CoverCalibratorConfig {
 pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
+    Ok(config)
+}
+
+/// CLI overrides layered over the file config. Tracks which fields are pinned by
+/// a command-line flag so the config actions can distinguish the file layer from
+/// the override layer (see `docs/services/dsd-fp2.md` "Config Actions").
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `serial.port`.
+    pub serial_port: Option<String>,
+    /// `--server-port` → `server.port`.
+    pub server_port: Option<u16>,
+}
+
+impl CliOverrides {
+    /// Dotted JSON paths currently pinned by an active override. Reported by
+    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    pub fn pinned_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        if self.serial_port.is_some() {
+            paths.push("serial.port".to_string());
+        }
+        if self.server_port.is_some() {
+            paths.push("server.port".to_string());
+        }
+        paths
+    }
+
+    /// Apply the overrides onto `config` in place.
+    pub fn apply(&self, config: &mut Config) {
+        if let Some(port) = &self.serial_port {
+            config.serial.port = port.clone();
+        }
+        if let Some(port) = self.server_port {
+            config.server.port = port;
+        }
+    }
+}
+
+/// Resolve the config-file path: the explicit `--config` path if given, else the
+/// XDG default `~/.config/rusty-photon/dsd-fp2.json`. A path is *always*
+/// resolvable, so config editing is never disabled for lack of one.
+pub fn resolve_config_path(
+    explicit: Option<PathBuf>,
+) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let dirs = ProjectDirs::from("", "", "rusty-photon")
+        .ok_or("could not determine an XDG config directory for the default config path")?;
+    Ok(dirs.config_dir().join("dsd-fp2.json"))
+}
+
+/// Load the effective config: the file at `path` if it exists, else
+/// `Config::default()`, with CLI `overrides` applied on top. This is what the
+/// running driver uses and what `config.get` reports.
+pub fn load_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+    let mut config = match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(e) => return Err(Box::new(e)),
+    };
+    overrides.apply(&mut config);
     Ok(config)
 }
 

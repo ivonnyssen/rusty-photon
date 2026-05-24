@@ -25,6 +25,10 @@ pub struct Fp2World {
     /// Stashed result of the last fallible call so a subsequent Then step
     /// can assert against it.
     pub last_error: Option<ASCOMError>,
+    /// Parsed JSON body of the last `config.get` / `config.apply` action.
+    pub last_response: Option<serde_json::Value>,
+    /// Result of the last `supported_actions` query.
+    pub last_supported_actions: Option<Vec<String>>,
 }
 
 impl Fp2World {
@@ -71,6 +75,40 @@ impl Fp2World {
 
     pub fn device(&self) -> &Arc<dyn CoverCalibrator> {
         self.device.as_ref().expect("device not acquired")
+    }
+
+    /// Call `config.get`, stash the parsed response, and return the `config`
+    /// object (so a When step can edit a field and re-`config.apply` it).
+    pub async fn current_config(&mut self) -> serde_json::Value {
+        let device = Arc::clone(self.device());
+        let body = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.get` and stash the parsed response.
+    pub async fn call_config_get(&mut self) {
+        self.current_config().await;
+    }
+
+    /// Call `config.apply` with `params` and stash the parsed response.
+    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
+        let device = Arc::clone(self.device());
+        let body = device
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
     }
 
     /// Poll the device until `cover_state` matches `expected`, panicking

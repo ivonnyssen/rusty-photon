@@ -42,6 +42,7 @@ rusty-photon-service-lifecycle = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
+directories = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

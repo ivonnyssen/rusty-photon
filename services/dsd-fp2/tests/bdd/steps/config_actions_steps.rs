@@ -1,0 +1,112 @@
+//! Step definitions for config_actions.feature.
+
+use std::sync::Arc;
+
+use ascom_alpaca::ASCOMErrorCode;
+use cucumber::{then, when};
+
+use crate::world::Fp2World;
+
+#[when("the supported actions are queried")]
+async fn query_supported_actions(world: &mut Fp2World) {
+    let device = Arc::clone(world.device());
+    world.last_supported_actions = Some(device.supported_actions().await.unwrap());
+}
+
+#[when("config.get is called")]
+async fn call_config_get(world: &mut Fp2World) {
+    world.call_config_get().await;
+}
+
+#[when(regex = r"^config\.apply sets max_brightness to (\d+)$")]
+async fn apply_max_brightness(world: &mut Fp2World, value: u32) {
+    let mut config = world.current_config().await;
+    config["cover_calibrator"]["max_brightness"] = serde_json::json!(value);
+    world.call_config_apply(config).await;
+}
+
+#[when("config.apply is called with an invalid baud_rate")]
+async fn apply_invalid_baud_rate(world: &mut Fp2World) {
+    let mut config = world.current_config().await;
+    config["serial"]["baud_rate"] = serde_json::json!(0);
+    world.call_config_apply(config).await;
+}
+
+#[when(regex = r#"^the action "([^"]+)" is called$"#)]
+async fn call_named_action(world: &mut Fp2World, name: String) {
+    let device = Arc::clone(world.device());
+    world.last_error = device.action(name, String::new()).await.err();
+}
+
+#[then("the supported actions should include config.get and config.apply")]
+async fn assert_supported_actions(world: &mut Fp2World) {
+    let actions = world
+        .last_supported_actions
+        .as_ref()
+        .expect("no supported actions queried");
+    assert!(
+        actions.iter().any(|a| a == "config.get"),
+        "config.get missing from {actions:?}"
+    );
+    assert!(
+        actions.iter().any(|a| a == "config.apply"),
+        "config.apply missing from {actions:?}"
+    );
+}
+
+#[then(regex = r"^the config should report serial\.port as (\S+)$")]
+async fn assert_config_serial_port(world: &mut Fp2World, expected: String) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    assert_eq!(
+        response["config"]["serial"]["port"].as_str(),
+        Some(expected.as_str())
+    );
+}
+
+#[then("the config should report no overrides")]
+async fn assert_no_overrides(world: &mut Fp2World) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let overrides = response["overrides"]
+        .as_array()
+        .expect("`overrides` is not an array");
+    assert!(
+        overrides.is_empty(),
+        "expected no overrides, got {overrides:?}"
+    );
+}
+
+#[then(regex = r"^the apply status should be (\w+)$")]
+async fn assert_apply_status(world: &mut Fp2World, expected: String) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    assert_eq!(response["status"].as_str(), Some(expected.as_str()));
+}
+
+#[then(regex = r"^the reload list should include (\S+)$")]
+async fn assert_reload_includes(world: &mut Fp2World, path: String) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let reload = response["reload"]
+        .as_array()
+        .expect("`reload` is not an array");
+    assert!(
+        reload.iter().any(|p| p.as_str() == Some(path.as_str())),
+        "reload list {reload:?} does not include {path}"
+    );
+}
+
+#[then("the response should contain validation errors")]
+async fn assert_validation_errors(world: &mut Fp2World) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let errors = response["errors"]
+        .as_array()
+        .expect("`errors` is not an array");
+    assert!(!errors.is_empty(), "expected validation errors, got none");
+}
+
+#[then("the call should fail with an action-not-implemented error")]
+async fn assert_action_not_implemented(world: &mut Fp2World) {
+    let err = world
+        .last_error
+        .take()
+        .expect("expected an error from the call");
+    assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+}

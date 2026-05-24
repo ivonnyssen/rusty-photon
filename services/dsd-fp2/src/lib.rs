@@ -6,6 +6,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod config_actions;
 pub mod device;
 pub mod error;
 pub mod manager;
@@ -15,8 +16,11 @@ pub mod protocol;
 pub mod transport;
 
 pub use codec::Fp2Codec;
-pub use config::{load_config, Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
-pub use device::DsdFp2Device;
+pub use config::{
+    load_config, load_effective_config, resolve_config_path, CliOverrides, Config,
+    CoverCalibratorConfig, SerialConfig, ServerConfig,
+};
+pub use device::{ConfigActionCtx, DsdFp2Device};
 pub use error::{DsdFp2Error, Result};
 pub use manager::{CachedState, FlatPanelManager};
 pub use transport::Fp2SerialTransportFactory;
@@ -26,11 +30,13 @@ pub use mock::{MockState, MockTransportFactory};
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use ascom_alpaca::api::CargoServerInfo;
+use ascom_alpaca::api::{CargoServerInfo, CoverCalibrator};
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
 
@@ -38,6 +44,13 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
+    /// Where `config.apply` persists and reload re-reads. `Some` enables the
+    /// config actions (together with `reload`).
+    config_path: Option<PathBuf>,
+    /// CLI overrides, so config actions can distinguish file vs. override layers.
+    overrides: CliOverrides,
+    /// Reload trigger handed to the device for fire-after-response reload.
+    reload: Option<ReloadSignal>,
 }
 
 fn default_factory(config: &Config) -> Arc<dyn TransportFactory> {
@@ -54,7 +67,13 @@ impl Default for ServerBuilder {
     fn default() -> Self {
         let config = Config::default();
         let factory = default_factory(&config);
-        Self { config, factory }
+        Self {
+            config,
+            factory,
+            config_path: None,
+            overrides: CliOverrides::default(),
+            reload: None,
+        }
     }
 }
 
@@ -75,6 +94,23 @@ impl ServerBuilder {
         self
     }
 
+    /// Set the config source (persist path + CLI overrides) for the
+    /// `config.get` / `config.apply` actions. Together with
+    /// [`Self::with_reload_signal`], this enables config editing.
+    pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
+        self.config_path = Some(path);
+        self.overrides = overrides;
+        self
+    }
+
+    /// Provide the reload trigger `config.apply` fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables config
+    /// editing.
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
+        self
+    }
+
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
@@ -82,15 +118,34 @@ impl ServerBuilder {
 
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
-        if self.config.cover_calibrator.enabled {
-            let device =
+        // Keep an `Arc<DsdFp2Device>` handle out of the router so the reload
+        // arm can drive a clean, awaited transport teardown
+        // (`device.set_connected(false).await`) before the old server drops.
+        let device_handle = if self.config.cover_calibrator.enabled {
+            let mut device =
                 DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
-            server.devices.register(device);
+            if let (Some(path), Some(reload)) = (self.config_path, self.reload) {
+                device = device.with_config_actions(ConfigActionCtx {
+                    effective: self.config.clone(),
+                    path,
+                    overrides: self.overrides,
+                    reload,
+                });
+            }
+            let device = Arc::new(device);
+            // `Arc<DsdFp2Device>` → `Arc<dyn CoverCalibrator>` unsizes at this
+            // annotated binding; the turbofish keeps `Arc::clone` from pinning
+            // `T = dyn CoverCalibrator` (which would reject `&device`).
+            let registered: Arc<dyn CoverCalibrator> = Arc::<DsdFp2Device>::clone(&device);
+            server.devices.register(registered);
             info!(
                 "Registered CoverCalibrator device: {}",
                 self.config.cover_calibrator.name
             );
-        }
+            Some(device)
+        } else {
+            None
+        };
 
         info!("Serial port: {}", self.config.serial.port);
 
@@ -126,6 +181,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            device: device_handle,
         })
     }
 }
@@ -136,11 +192,22 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// The registered device, retained so the reload loop can close the
+    /// transport cleanly before tearing the server down. `None` when the
+    /// CoverCalibrator is disabled in config.
+    device: Option<Arc<DsdFp2Device>>,
 }
 
 impl BoundServer {
     pub fn listen_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The registered device handle, for the reload arm's clean teardown
+    /// (`device.set_connected(false).await`). `None` when the CoverCalibrator
+    /// is disabled.
+    pub fn device(&self) -> Option<Arc<DsdFp2Device>> {
+        self.device.clone()
     }
 
     pub async fn start(

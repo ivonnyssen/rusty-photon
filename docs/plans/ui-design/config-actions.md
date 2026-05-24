@@ -1,6 +1,8 @@
 # Config actions + the BFF web UI
 
-**Status:** draft / proposed. No production code yet.
+**Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
+reload). Phase 2 (BFF skeleton + dsd-fp2 config page) is next. Key protocol
+decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
@@ -40,6 +42,9 @@ anything. Decisions reached during design exploration:
 | Process restart | **Sentinel** `service.restart(name)` via configured command | Already the sanctioned design (`rp.md:2759-2767`, watchdog plan's `Restarter`). Reserved for recovery/escalation. |
 | First driver | **`dsd-fp2`** | Single device, smallest config, first shared-transport adopter. |
 | Form rendering | **Hand-built first**, schema-driven later | Prove protocol + the designed look on one driver; generalise after. |
+| No-`--config` driver | **Persist to an XDG default path** (`~/.config/rusty-photon/<service>.json`) | A config path is *always* resolvable, so editing is never disabled; startup/reload read it if present. |
+| Driver auth on config actions | **No per-action gate**; rely on the server-wide auth/TLS the driver already runs | Matches ASCOM Alpaca — `action` is just another device method; auth and transport security are orthogonal concerns handled by `rp-auth`/`rp-tls`. |
+| Config layers | **Distinguish file vs. CLI-override** | `config.get` marks CLI-override-pinned fields; `config.apply` does not persist them, so a transient `--port` can't be baked into the file. |
 
 `config.set` was dropped in favour of a single `config.apply`: the set/apply
 split only helped batch multiple writes, which does not arise when a form
@@ -84,7 +89,10 @@ GET  /api/v1/{type}/{n}/supportedactions     → ["config.get","config.apply", �
 
 PUT  /api/v1/{type}/{n}/action
        Action=config.get      Parameters=
-   → 200, body = <current effective Config as JSON, secrets redacted>
+   → 200, body = {
+       "config":    <current effective Config as JSON, secrets redacted>,
+       "overrides": ["serial.port"]   // CLI-override-pinned; config.apply won't persist these
+     }
 
 PUT  /api/v1/{type}/{n}/action
        Action=config.apply    Parameters=<full Config JSON>
@@ -93,7 +101,8 @@ PUT  /api/v1/{type}/{n}/action
        "applied":          ["cover_calibrator.max_brightness"],  // took effect live
        "reload":           ["serial.port","server.port"],        // applied via reload
        "restart_required": [],                                   // needs Sentinel.restart
-       "persisted_to":     "/etc/rp/dsd-fp2.json",
+       "skipped_override": ["serial.port"],                      // override-pinned, not persisted
+       "persisted_to":     "~/.config/rusty-photon/dsd-fp2.json",
        "errors":           [ {"path":"serial.baud_rate","msg":"…"} ]  // when invalid
      }
 ```
@@ -112,8 +121,11 @@ Config { serial:{port, baud_rate, polling_interval, timeout},
 2. **Validate** (types + ranges + semantics). On failure return **HTTP 200** with
    `{"status":"invalid","errors":[…]}` — a *domain* error the BFF renders as
    field-level messages, distinct from a transport/ASCOM error.
-3. **Persist** the new config atomically to the driver's own config file
-   (stage temp → fsync → rename → fsync dir).
+3. **Persist** the new config atomically to the resolved config path
+   (stage temp → fsync → rename → fsync dir), creating parent dirs for the XDG
+   default. **CLI-override-pinned fields are written through from the file's
+   prior value, not the submitted value** (layer-aware persist), and listed in
+   `skipped_override[]`.
 4. **Classify** each changed field into `applied` (live), `reload`, or
    `restart_required`, and **fire the in-process reload** if anything is in
    `reload` — *after the response is flushed* (see below).
@@ -126,14 +138,22 @@ Config { serial:{port, baud_rate, polling_interval, timeout},
 - **Works while disconnected.** Config actions must not require `Connected=true`,
   or a wrong `serial.port` becomes unfixable (can't connect to fix the thing that
   blocks connecting). This is a deliberate choice in our `action()` impl.
-- **Requires a config-file path.** Reload re-reads the file, so `config.apply`
-  needs to know where to persist. If the driver was started without `--config`
-  (running on `Config::default()`), config-editing is **disabled**:
-  `config.apply` returns `{"status":"invalid","errors":[{"path":"","msg":"driver
-  started without --config; config editing disabled"}]}`. (Decision: reject
-  rather than invent a default path — see Open questions.)
-- **Privileged.** Config writes must sit behind the driver's existing
-  `server.auth`. If `auth` is `None`, `config.apply` is refused (see Security).
+- **Always has a config path.** A persist target is *always* resolvable: the
+  explicit `--config` path if given, else an XDG default
+  (`~/.config/rusty-photon/<service>.json`). Startup and reload read this path
+  if it exists (falling back to `Config::default()` otherwise), and
+  `config.apply` persists there. Editing is therefore never disabled for lack of
+  a path. (Resolved — see Open questions; previously this rejected when started
+  without `--config`.)
+- **Layer-aware persist.** `config.get` reports which fields are pinned by CLI
+  overrides (`--port`, `--server-port`); `config.apply` persists every field
+  *except* those, so a transient override is never baked into the file. Skipped
+  fields are echoed in `skipped_override[]`.
+- **No per-action auth gate.** `config.get`/`config.apply` are ordinary ASCOM
+  actions and are exactly as protected as `calibrator_on` — by whatever
+  server-wide `rp-auth`/`rp-tls` the driver runs, not a special case. Auth and
+  transport security are orthogonal concerns; the action layer does not know
+  about them. (Resolved — see Security and Open questions.)
 
 ## In-process reload mechanics
 
@@ -176,9 +196,14 @@ Three mechanics must be handled deliberately:
 3. **Clean teardown.** The shared transport prefers explicit `close().await` over
    drop-teardown ("`close().await` primary, `Drop` detached fallback"). Before
    `continue`, the reload arm must close the serial connection so the port is not
-   briefly double-held when the new `ServerBuilder` reconnects. This likely needs
-   `BoundServer` to expose a transport-close handle. (Implementation decision in
-   Phase 1.)
+   briefly double-held when a client reconnects to the rebuilt server.
+   **Resolved without a shared-transport change:** `ascom-alpaca`'s `register`
+   accepts an `Arc<dyn CoverCalibrator>`, so `build()` keeps an
+   `Arc<DsdFp2Device>` handle and `BoundServer` exposes it via `device()`. The
+   reload arm calls `device.set_connected(false).await` — the inline, awaited
+   `Session::close` path — before the old `BoundServer` future is dropped,
+   giving deterministic port teardown. (Idempotent: a no-op when no client was
+   connected.)
 
 If a field cannot be reloaded cleanly, `config.apply` returns it in
 `restart_required[]` and the BFF escalates to Sentinel — keeping the protocol
@@ -229,12 +254,18 @@ under `services/` (it is system-wide, not `rp`-specific).
 
 ## Security
 
-- `config.apply` is a privileged write. **Refuse it when the driver has no
-  `server.auth`** configured (otherwise anyone on the LAN can rewrite config and
-  trigger reloads). Decision: refuse vs. warn — see Open questions.
-- **Redact secrets in `config.get`**: never emit the `auth` password/hash or TLS
-  key material. On `config.apply`, treat absent/sentinel secret fields as
-  "unchanged" so a round-tripped form does not blank them.
+- **No per-action auth gate (resolved).** `config.apply` is a write like
+  `calibrator_on`; it is protected by the same server-wide `rp-auth`/`rp-tls`
+  layer the driver already runs, *not* by a special check inside `action()`.
+  Auth and transport security are orthogonal concerns, handled once at the
+  server boundary — this matches ASCOM Alpaca, where `action` is just another
+  device method. A driver exposed without auth has *every* write open, not just
+  config; that is a deployment choice, not something the config action
+  second-guesses.
+- **Redact secrets in `config.get` (hygiene, not a gate)**: never emit the
+  `auth` password/hash or TLS key material in the config dump, regardless of who
+  is authorised to read it. On `config.apply`, treat absent/sentinel secret
+  fields as "unchanged" so a round-tripped form does not blank them.
 - The BFF holds driver credentials to call the actions; store them in the BFF's
   own config, not in the page.
 
@@ -248,7 +279,9 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
   - `config.get` returns current config; secrets redacted.
   - `config.apply` with valid JSON persists + classifies; with invalid JSON →
     `status:"invalid"` and the file is unchanged; unknown action →
-    `ACTION_NOT_IMPLEMENTED`; works while disconnected; refused without auth.
+    `ACTION_NOT_IMPLEMENTED`; works while disconnected; works without auth (no
+    gate); CLI-override-pinned fields are reported in `overrides[]`/
+    `skipped_override[]` and not persisted.
 - **Driver reload test:** `config.apply` triggers reload and the server returns
   with the new config (BDD via `bdd-infra`, or an integration test against the
   bound server). Assert the fire-after-response ordering (the apply response is
@@ -258,14 +291,20 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 
 ## Phased plan
 
-**Phase 1 — `dsd-fp2` config actions + reload (driver-side, fully testable in mock mode).**
+**Phase 1 — `dsd-fp2` config actions + reload (driver-side, fully testable in mock mode). ✅ Landed.**
+- Add the XDG config-path resolver (`--config` else
+  `~/.config/rusty-photon/dsd-fp2.json`, via the `directories` workspace dep) +
+  CLI-override tracking (`--port`, `--server-port`).
 - Fire reload from `config.apply` via the already-public `ReloadSignal::notify()`
   (no lifecycle-crate change needed).
 - Restructure `dsd-fp2` `main.rs` to `run_with_reload`; move config-loading into
-  the loop; add clean transport teardown on the reload arm.
+  the loop; clean transport teardown on the reload arm via
+  `device.set_connected(false).await` (no shared-transport change — `build()`
+  keeps an `Arc<DsdFp2Device>`, `BoundServer::device()` exposes it).
 - Implement `config.get` / `config.apply` actions (+ `supported_actions`),
-  including validation, atomic persist, classification, fire-after-response reload,
-  secret redaction, auth gate.
+  including validation, atomic persist, classification, layer-aware persist
+  (skip CLI-override-pinned fields), fire-after-response reload, secret
+  redaction. No auth gate.
 - Tests as above. *Deliverable: a driver whose config you can read, write, and
   reload over HTTP.*
 
@@ -295,16 +334,23 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 ## Open questions
 
 - **BFF crate name** — `ui` / `console` / `web`?
-- **No-`--config` drivers** — refuse config editing (current proposal) vs. write to
-  a documented default path?
-- **No-auth drivers** — refuse `config.apply` (current proposal) vs. allow with a
-  loud warning?
 - **`server.port` changes** carry a cross-service reference: rp's roster
   `alpaca_url` for that device must change too. Out of scope while the BFF talks to
   the driver directly; revisit with the rp equipment page (Phase 5).
-- **Effective vs. file config** — `config.get` returns the *effective* config
-  (CLI overrides applied); saving it persists those overrides into the file. Accept
-  this, or distinguish file vs. override layers?
+
+### Resolved (2026-05-24)
+
+- **No-`--config` drivers** → **write to an XDG default path**
+  (`~/.config/rusty-photon/<service>.json`), not refuse. A path is always
+  resolvable, so editing is never disabled; startup/reload read it if present.
+- **No-auth drivers** → **all surfaces work; no per-action gate.** Config
+  actions match ASCOM Alpaca semantics — they are protected by the server-wide
+  `rp-auth`/`rp-tls` layer, which is an orthogonal concern from the action's
+  behaviour. (Previously proposed: refuse without auth.)
+- **Effective vs. file config** → **distinguish layers.** `config.get` returns
+  the effective config *and* marks CLI-override-pinned fields (`overrides[]`);
+  `config.apply` persists every field except those, so a transient `--port`
+  cannot be baked into the file.
 
 ## Doc impact (CLAUDE.md rule 2)
 
