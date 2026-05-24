@@ -167,6 +167,56 @@ async fn reconnect_now_failure_leaves_supervisor_in_reconnecting() {
 }
 
 #[tokio::test]
+async fn acquire_during_reconnect_returns_session_not_shutdown_error() {
+    // Regression: `acquire()` checks `service_lifetime && !available` to
+    // detect "shutdown already ran" and refuses. But `available` is also
+    // false while the supervisor is in `Reconnecting`, so without
+    // additionally gating on `!reconnecting`, a first-client acquire
+    // during a reconnect window wrongly returns
+    // `Io("transport has been shut down")` instead of letting the caller
+    // get a session whose first `request()` short-circuits with
+    // `TransportError::Reconnecting` (the documented contract).
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+
+    // Drive the supervisor into Reconnecting with no active sessions
+    // (refcount == 0): a failed reconnect_now flips both flags
+    // (`available=false`, `reconnecting=true`) and leaves them that way
+    // until a successful retry.
+    cfg.set_fail(true);
+    let _ = st.reconnect_now().await; // expected to fail
+    assert!(st.is_reconnecting());
+    assert!(!st.is_available());
+
+    // The acquire must succeed and hand back a session — the request
+    // path is the right place to surface `Reconnecting`, not the
+    // acquire path.
+    let session = st
+        .acquire()
+        .await
+        .expect("acquire during reconnect must succeed (return a session), not return Io shutdown");
+
+    // First request through the session surfaces the in-flight
+    // reconnect via the existing short-circuit.
+    let err = session.request(b"x".to_vec()).await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("reconnecting"),
+        "expected TransportError::Reconnecting from request, got: {display}"
+    );
+
+    // Cleanup: recover, then close + shutdown.
+    cfg.set_fail(false);
+    st.reconnect_now().await.unwrap();
+    session.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_request_short_circuits_to_reconnecting_during_failure() {
     // While the supervisor is in Reconnecting (a failed reconnect
     // attempt leaves us there), Session::request must short-circuit

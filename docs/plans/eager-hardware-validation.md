@@ -208,24 +208,31 @@ hardware loss, and reconnecting wouldn't fix them.
 ### Connection swap mechanics
 
 The trick that makes existing `Session<C>` references survive a
-reconnect: `Connection<C>` already wraps its `Box<dyn FrameTransport>`
-in `Mutex<…>` (the request arbitration lock). The supervisor's
-reconnect step is:
+reconnect: instead of mutating the existing `Connection<C>` in place,
+the slot holds an indirection cell
+`ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>`. Both
+`SharedTransport`'s `slot` and every `Session<C>` keep an `Arc` clone
+of the same cell. The supervisor's reconnect step is:
 
-1. Acquire the command lock on the existing `Connection<C>`.
-2. Drop the dead `FrameTransport`.
-3. Call `factory.open().await` to get a fresh one.
-4. Run `Hooks::handshake` against the fresh transport (under the
-   same command lock so no client request races the handshake).
-5. Install the fresh transport in the `Connection`'s slot.
-6. Release the command lock.
-7. Respawn `Hooks::while_open` (the previous task already exited).
-8. Set state back to `Open`.
+1. Call `factory.open().await` to get a fresh `FrameTransport`.
+2. Wrap it in a freshly constructed `Connection<C>` (a brand-new
+   command lock, no shared state with the dead one).
+3. Run `Hooks::handshake` against the new `Connection` in isolation —
+   it owns its own command lock, no contention with live sessions
+   (which are still pointing at the old, dead cell value).
+4. Cancel the previous `Hooks::while_open` task (with a bounded
+   timeout join, then abort) before installing the new connection,
+   so the dying poll loop's in-flight requests don't race the swap.
+5. Take the cell's `write` lock briefly and replace the inner
+   `Arc<Connection<C>>` with the new one (an atomic pointer swap
+   from any reader's perspective).
+6. Respawn `Hooks::while_open` against the fresh connection.
 
-After step 6 every existing `Session<C>` (all sharing the same
-`Arc<Connection<C>>`) automatically routes through the new transport
-on its next `request()` call. No client-visible Session recreation
-is needed.
+`Session::request` reads the cell via `cell.read().await.clone()` on
+every call, so live `Session<C>`s automatically pick up the new
+connection on their next request — no client-visible recreation is
+needed. The previous `Arc<Connection<C>>` drops when the last in-flight
+reader releases its clone, taking the dead `FrameTransport` with it.
 
 ### Backoff
 

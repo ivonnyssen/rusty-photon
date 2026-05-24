@@ -411,16 +411,21 @@ impl<C: Codec> SharedTransport<C> {
         }
 
         // Atomic cell swap: live `Session<C>` references see the new
-        // connection on their next `request()` call.
-        {
+        // connection on their next `request()` call. Clone the cell `Arc`
+        // out under the slot mutex and drop the guard before awaiting
+        // the cell's `RwLock`, so the slot lock isn't held across the
+        // cell await (avoids needless contention and removes a fragile
+        // lock-ordering between `slot` and the cell).
+        let cell = {
             let slot_guard = self.slot.lock().await;
             let Some(cell) = slot_guard.as_ref() else {
                 return Err(SessionError::Transport(TransportError::Io(
                     io::Error::other("slot empty during reconnect attempt"),
                 )));
             };
-            *cell.write().await = new_conn.clone();
-        }
+            Arc::clone(cell)
+        };
+        *cell.write().await = new_conn.clone();
 
         // Respawn `while_open` against the fresh connection.
         if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
@@ -550,11 +555,25 @@ impl<C: Codec> SharedTransport<C> {
 
         let service_lifetime = self.service_lifetime.load(Ordering::SeqCst);
 
-        if prev == 0 && service_lifetime && !self.available.load(Ordering::SeqCst) {
+        if prev == 0
+            && service_lifetime
+            && !self.available.load(Ordering::SeqCst)
+            && !self.reconnecting.load(Ordering::SeqCst)
+        {
             // ServiceLifetime mode but `shutdown()` already ran. Roll
             // back the speculative increment and refuse — the service
             // is going down and acquiring a new session would defeat
             // the orderly teardown.
+            //
+            // The `!reconnecting` guard distinguishes terminal shutdown
+            // (return `Io("transport has been shut down")`) from the
+            // transient reconnect window (where `available=false` too)
+            // so a first-client acquire during a reconnect falls through
+            // into the ServiceLifetime slot-clone path below. The
+            // resulting session's first `request()` then short-circuits
+            // on `is_reconnecting()` and returns
+            // `TransportError::Reconnecting`, which is the correct UX
+            // (\"try again\") rather than a misleading shutdown error.
             self.count.fetch_sub(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("transport has been shut down"),
@@ -748,12 +767,21 @@ impl<C: Codec> SharedTransport<C> {
         // mode while_open still runs but the hook's writes still
         // arbitrate through the command lock — same per-command
         // serialisation Sessions use.
-        {
+        //
+        // Clone the cell `Arc` out under the slot mutex and drop the
+        // guard before awaiting either the cell's `RwLock` or the hook
+        // itself. The hook can issue wire I/O via the connection's
+        // command lock, so holding the slot mutex through the hook
+        // would block any concurrent `slot.lock()` caller for the full
+        // hook duration — and would establish a `slot → command_lock`
+        // ordering that nothing else respects.
+        let cell_opt = {
             let slot_guard = self.slot.lock().await;
-            if let Some(cell) = slot_guard.as_ref() {
-                let conn = cell.read().await.clone();
-                (self.hooks.on_last_disconnect)(&conn).await;
-            }
+            slot_guard.as_ref().map(Arc::clone)
+        };
+        if let Some(cell) = cell_opt {
+            let conn = cell.read().await.clone();
+            (self.hooks.on_last_disconnect)(&conn).await;
         }
 
         if service_lifetime {

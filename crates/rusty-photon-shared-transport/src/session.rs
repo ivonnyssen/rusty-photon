@@ -81,8 +81,23 @@ impl<C: Codec> Session<C> {
             )));
         };
         if let Some(transport) = self.transport.as_ref() {
+            // Check `is_reconnecting` first so the transient case
+            // surfaces as `Reconnecting` (clients can retry). `shutdown()`
+            // clears `reconnecting=false` and `available=false`, so any
+            // false `available` reaching the next branch is terminal.
             if transport.is_reconnecting() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+            // Existing `Session`s keep `Arc` clones of the connection cell
+            // even after `SharedTransport::shutdown` drops the slot's clone,
+            // so without this short-circuit a session can still call
+            // `connection.request` against the un-dropped `Connection<C>` and
+            // talk to hardware while the service is tearing down. Match the
+            // error `acquire()` returns in the same situation.
+            if !transport.is_available() {
+                return Err(SessionError::Transport(TransportError::Io(
+                    io::Error::other("transport has been shut down"),
+                )));
             }
         }
         let connection = cell.read().await.clone();
