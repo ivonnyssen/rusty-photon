@@ -158,13 +158,14 @@ ServiceRunner::new("dsd-fp2")
 
 Three mechanics must be handled deliberately:
 
-1. **Programmatic reload trigger.** Today `ReloadSignal` fires only on SIGHUP /
-   SCM `ParamChange`. The `config.apply` handler needs an in-process way to fire
-   it. Add a trigger handle to `ReloadSignal` (or wrap it) and share it into the
-   axum app state so the action handler can fire it. *Verify against*
-   `crates/rusty-photon-service-lifecycle/src/reload.rs` — the lifecycle doc
-   already anticipates "control-handler callbacks feeding the same token"
-   (`service-lifecycle.md:54`).
+1. **Programmatic reload trigger.** `ReloadSignal`
+   (`crates/rusty-photon-service-lifecycle/src/reload.rs`) is `Clone` and already
+   exposes a public `notify()`, documented as the hook for "non-signal-driven
+   reload sources" beyond SIGHUP / SCM `ParamChange`. So the `config.apply` handler
+   just holds a clone of the `ReloadSignal` in the axum app state and calls
+   `.notify()` — **no lifecycle-crate change needed.** Caveat: the signal is
+   single-consumer (`notify_one`), so exactly one task may `recv()` it (the run
+   loop), which is already the intended pattern.
 2. **Fire-after-response.** The `config.apply` request is served by the very
    axum server the reload tears down. If reload fires synchronously, the response
    never flushes. So the handler must **return the response, then fire reload**
@@ -194,8 +195,9 @@ already-designed supervisor:
 > `systemctl restart qhyccd-alpaca`)… configured per service, not hardcoded."* —
 > `rp.md:2759-2767`
 
-Implementation: expose the planned `Restarter`
-(`predictive-deadlines-and-watchdog.md:501`) as a REST endpoint on Sentinel's
+Implementation: expose the planned `Restarter` trait (see the watchdog plan,
+[`../predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md))
+as a REST endpoint on Sentinel's
 existing dashboard router (e.g. `POST /api/services/{name}/restart`), driven by a
 per-service `restart_command` config entry. Sentinel does **not** spawn or own the
 processes — it shells out to the configured command; the OS supervisor (systemd /
@@ -257,7 +259,8 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 ## Phased plan
 
 **Phase 1 — `dsd-fp2` config actions + reload (driver-side, fully testable in mock mode).**
-- Add a programmatic trigger to `ReloadSignal` (or confirm one exists).
+- Fire reload from `config.apply` via the already-public `ReloadSignal::notify()`
+  (no lifecycle-crate change needed).
 - Restructure `dsd-fp2` `main.rs` to `run_with_reload`; move config-loading into
   the loop; add clean transport teardown on the reload arm.
 - Implement `config.get` / `config.apply` actions (+ `supported_actions`),
