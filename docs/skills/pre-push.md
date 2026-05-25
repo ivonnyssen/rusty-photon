@@ -36,10 +36,26 @@
 
 ## Procedure
 
-### Step 1: Run the full CI suite via `act` (recommended)
+### Step 1: Run Bazel — the required PR gate (recommended)
 
-The easiest way to run all quality gates locally is with `act`, which executes
-the actual GitHub Actions workflows in Docker containers.
+Since the Phase 7 cutover (`docs/plans/bazel-migration.md`), the **Bazel jobs
+are the required PR checks**, so reproduce those first:
+
+```bash
+bazel test //...                          # fast unit + integration targets
+bazel test //... --test_tag_filters=bdd   # BDD (cucumber) targets
+```
+
+These use the shared remote cache (`--config=remote-cache` in `.bazelrc`), so
+they are usually fast. Green here ≈ green on the required PR checks.
+
+### Step 2: Reproduce the Cargo safety-net gates via `act`
+
+The Cargo workflows no longer gate PRs — they run on push-to-main + nightly as
+the safety net for what Bazel doesn't cover (clippy, feature-powerset, msrv,
+coverage, sanitizers, miri, ConformU). Run them locally with `act` when a
+push-to-main / nightly Cargo job fails, or before a change touching those
+areas. `act` executes the actual GitHub Actions workflows in Docker containers.
 
 ```bash
 # Run all independent checks in parallel
@@ -67,7 +83,7 @@ act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # n
 > (macOS/Windows) is skipped locally. Multi-OS `conformu` jobs run the ubuntu
 > variant only.
 
-### Step 2 (fallback): Raw `cargo` commands
+### Step 3 (fallback): Raw `cargo` commands
 
 When Docker or `act` is unavailable, use these cargo commands directly.
 
