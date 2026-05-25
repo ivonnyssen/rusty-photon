@@ -6,7 +6,7 @@ use ascom_alpaca::api::Device;
 use clap::Parser;
 use dsd_fp2::{load_effective_config, resolve_config_path, CliOverrides, ServerBuilder};
 use rusty_photon_service_lifecycle::ServiceRunner;
-use tracing::{debug, info, Level};
+use tracing::{debug, info, warn, Level};
 
 #[cfg(feature = "mock")]
 use dsd_fp2::MockTransportFactory;
@@ -109,7 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(device) = device {
                             // Inline, awaited transport close so the serial port is
                             // released before a client reconnects to the rebuilt server.
-                            let _ = device.set_connected(false).await;
+                            // Best-effort: log a failed close (the port may stay held
+                            // and the rebuild may fail to reconnect) but still rebuild.
+                            if let Err(e) = device.set_connected(false).await {
+                                warn!(error = %e, "reload: clean transport teardown failed; rebuilding anyway");
+                            }
                         }
                         continue;
                     }

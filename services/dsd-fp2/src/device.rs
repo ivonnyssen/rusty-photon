@@ -24,7 +24,7 @@ use tracing::debug;
 use crate::codec::Fp2Codec;
 use crate::config::{CliOverrides, Config, CoverCalibratorConfig};
 use crate::config_actions::{
-    self, ApplyStatus, ConfigAction, ConfigApplyResponse, ConfigGetResponse,
+    self, ApplyStatus, ConfigAction, ConfigApplyResponse, ConfigGetResponse, FieldError,
 };
 use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
@@ -125,6 +125,22 @@ impl DsdFp2Device {
         // Build the value to persist: write through CLI-override-pinned fields
         // and round-tripped secrets from the file's current value.
         let file_current = config_actions::read_file_value(&ctx.path);
+
+        // The redaction sentinel means "keep the stored secret unchanged". If
+        // there is no stored secret to keep, the sentinel can't be honoured —
+        // persisting it verbatim would bake "********" in as the real password
+        // hash. Reject it as a domain error so the caller supplies a real hash.
+        if config_actions::redacted_secret_without_prior(&submitted, &file_current) {
+            let errors = vec![FieldError {
+                path: "server.auth.password_hash".to_string(),
+                msg:
+                    "cannot keep an unchanged secret when none is stored; provide the password hash"
+                        .to_string(),
+            }];
+            return serde_json::to_string(&ConfigApplyResponse::invalid(errors))
+                .map_err(config_action_error);
+        }
+
         let (to_persist, skipped) =
             config_actions::build_persist_value(&submitted, &file_current, &ctx.overrides)
                 .map_err(config_action_error)?;

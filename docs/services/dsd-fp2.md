@@ -377,10 +377,15 @@ actions driver, which ignored any file when `--config` was omitted.)
    with `{"status":"invalid","errors":[{"path":"serial.baud_rate","msg":"…"}]}`
    and **leaves the file unchanged** — a domain error the BFF renders as
    field-level messages, distinct from a transport/ASCOM error.
-3. **Persist** atomically (temp → fsync → rename → fsync dir). CLI-override-pinned
-   fields are written through from the file's prior value, not the submitted
-   value, and listed in `skipped_override[]`. Absent/sentinel secret fields are
-   treated as "unchanged" so a round-tripped form does not blank them.
+3. **Persist** atomically (stage to a unique `NamedTempFile` in the target dir →
+   fsync → rename → fsync dir; the random `O_EXCL` temp name avoids collisions
+   between concurrent applies and symlink attacks). CLI-override-pinned fields are
+   written through from the file's prior value, not the submitted value, and
+   listed in `skipped_override[]`. A redacted/sentinel secret (`********`) is
+   treated as "unchanged" so a round-tripped form does not blank it — **except**
+   when no secret is stored to restore, where the sentinel is rejected as
+   `status:"invalid"` (a field error on `server.auth.password_hash`) rather than
+   persisted verbatim as the real hash.
 4. **Classify** changed fields and **fire the in-process reload** if anything is
    in `reload[]` — *after the response is flushed* (see In-process reload).
 5. **Return** HTTP 200 with the classification:
@@ -432,7 +437,13 @@ down and rebuild from the new file.
 - **Clean teardown.** Before the old server is dropped, the reload arm calls
   `device.set_connected(false).await` — the inline, awaited `Session::close`
   path — so the serial port is fully released before any client reconnects to the
-  rebuilt server. A no-op when no client was connected.
+  rebuilt server. A no-op when no client was connected; a failed close is logged
+  at `warn` and the rebuild proceeds anyway.
+- **Clean HTTP rebind.** The rebuilt server binds the same `server.port` while a
+  client's keep-alive connections may still linger on it. The listener is created
+  with `SO_REUSEADDR` (`rp_tls::server::bind_dual_stack`), so the rebind succeeds
+  immediately instead of failing with `AddrInUse`. (`SO_REUSEADDR` does not permit
+  two live listeners on the port, so it can't mask an "already running" error.)
 
 ## Error Handling
 

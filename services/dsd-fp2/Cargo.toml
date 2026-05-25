@@ -43,11 +43,11 @@ rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
 directories = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
 cucumber = { workspace = true }
-tempfile = { workspace = true }
 reqwest = { workspace = true }
 bdd-infra = { workspace = true }
 

@@ -75,8 +75,13 @@ driver (the pattern `sentinel` uses for its Alpaca polling — see
 
 - **`HttpClient`** (`io.rs`) — `get(url)` / `put_form(url, params)`. Production
   impl wraps `reqwest` and is built through `rp_tls::client::build_reqwest_client`
-  so it trusts the Rusty Photon CA, with optional HTTP Basic auth. Mocked with
-  `mockall` for unit tests of the layer above.
+  so it trusts the Rusty Photon CA, with optional HTTP Basic auth. Requests send
+  `Connection: close` (no keep-alive pooling): a driver applies config by
+  reloading — tearing its server down and rebinding — which leaves a pooled
+  connection stale, and a non-idempotent `PUT` is not retried. A fresh connection
+  per request lets the reconnect poll recover the instant the driver is back;
+  config actions are low-frequency, so the lost pooling is immaterial. Mocked
+  with `mockall` for unit tests of the layer above.
 - **`ConfigClient`** (`driver_client.rs`) — `get_config()` /
   `apply_config(Value)`. Knows the ASCOM action protocol: shapes the
   `PUT .../action` request, unwraps the Alpaca envelope, and parses the inner

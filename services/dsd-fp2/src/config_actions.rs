@@ -226,6 +226,25 @@ pub fn build_persist_value(
     Ok((to_write, skipped))
 }
 
+/// Whether the submitted config carries the redaction sentinel for the auth
+/// password hash while the on-disk config has no stored secret to restore.
+///
+/// The sentinel means "keep the stored secret unchanged"; with nothing stored
+/// there is nothing to keep, so honouring it would persist `********` as the
+/// real hash. `config.apply` rejects this case as a domain error.
+pub fn redacted_secret_without_prior(submitted: &Config, file_current: &Value) -> bool {
+    let submitted_is_sentinel = submitted
+        .server
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.password_hash == REDACTED);
+    submitted_is_sentinel
+        && file_current
+            .pointer(SECRET_POINTER)
+            .and_then(Value::as_str)
+            .is_none()
+}
+
 /// Apply CLI overrides onto a config `Value`, producing the effective config the
 /// reloaded server would run.
 pub fn effective_value(file_value: &Value, overrides: &CliOverrides) -> Value {
@@ -288,20 +307,17 @@ pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("config.json");
-    let tmp = parent.join(format!(".{file_name}.tmp"));
+    // Stage to a uniquely-named temp file in the same directory. `NamedTempFile`
+    // creates it with `O_EXCL` and a random name, so concurrent `config.apply`
+    // calls can't collide on a predictable path and a pre-planted symlink can't
+    // redirect the write. fsync the contents, atomically rename into place, then
+    // fsync the directory so the rename is durable. The temp file is removed on
+    // drop if anything fails before the rename.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
 
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-
-    // Best-effort directory fsync so the rename is durable.
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
@@ -510,13 +526,69 @@ mod tests {
         let read_back: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read_back, value);
-        // No stray temp file left behind.
-        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        // No stray temp file left behind — the directory holds only the config.
+        let entries: Vec<String> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(leftovers.is_empty(), "temp file not cleaned up");
+        assert_eq!(
+            entries,
+            vec!["dsd-fp2.json".to_string()],
+            "stray files left behind: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn sentinel_secret_without_prior_is_rejected() {
+        let sentinel_auth = Some(AuthConfig {
+            username: "obs".to_string(),
+            password_hash: REDACTED.to_string(),
+        });
+
+        // Sentinel submitted, but the file has no stored secret → rejected.
+        let submitted = Config {
+            server: ServerConfig {
+                auth: sentinel_auth.clone(),
+                ..ServerConfig::default()
+            },
+            ..Config::default()
+        };
+        let file_without_secret = serde_json::to_value(Config::default()).unwrap();
+        assert!(redacted_secret_without_prior(
+            &submitted,
+            &file_without_secret
+        ));
+
+        // With a stored secret to restore, the sentinel is acceptable.
+        let file_cfg = Config {
+            server: ServerConfig {
+                auth: Some(AuthConfig {
+                    username: "obs".to_string(),
+                    password_hash: "$argon2id$real".to_string(),
+                }),
+                ..ServerConfig::default()
+            },
+            ..Config::default()
+        };
+        let file_with_secret = serde_json::to_value(&file_cfg).unwrap();
+        assert!(!redacted_secret_without_prior(
+            &submitted,
+            &file_with_secret
+        ));
+
+        // A real (non-sentinel) submitted hash is always fine.
+        let real = Config {
+            server: ServerConfig {
+                auth: Some(AuthConfig {
+                    username: "obs".to_string(),
+                    password_hash: "$argon2id$new".to_string(),
+                }),
+                ..ServerConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(!redacted_secret_without_prior(&real, &file_without_secret));
     }
 
     #[test]

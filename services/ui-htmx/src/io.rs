@@ -67,7 +67,15 @@ impl ReqwestHttpClient {
 impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str) -> Result<HttpResponse, HttpError> {
         tracing::debug!("GET {url}");
-        let mut request = self.client.get(url);
+        // Don't reuse connections: a driver applies config by reloading
+        // (tearing its server down and rebinding), which leaves any pooled
+        // keep-alive connection stale. A fresh connection per request lets the
+        // reconnect poll recover the moment the driver is back. Config actions
+        // are low-frequency, so the lost pooling is immaterial.
+        let mut request = self
+            .client
+            .get(url)
+            .header(reqwest::header::CONNECTION, "close");
         if let Some((user, pass)) = &self.auth {
             request = request.basic_auth(user, Some(pass));
         }
@@ -90,7 +98,13 @@ impl HttpClient for ReqwestHttpClient {
         params: &[(&str, &str)],
     ) -> Result<HttpResponse, HttpError> {
         tracing::debug!("PUT {url}");
-        let mut request = self.client.put(url).form(params);
+        // `Connection: close` for the same reason as `get` — avoid a stale
+        // pooled connection across a driver reload.
+        let mut request = self
+            .client
+            .put(url)
+            .form(params)
+            .header(reqwest::header::CONNECTION, "close");
         if let Some((user, pass)) = &self.auth {
             request = request.basic_auth(user, Some(pass));
         }

@@ -23,6 +23,16 @@ pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
         socket.set_only_v6(false)?;
     }
 
+    // SO_REUSEADDR lets a server rebind its port immediately across a
+    // restart or in-process reload, even while the previous listener's
+    // accepted connections (e.g. an HTTP client's keep-alive pool) or
+    // TIME_WAIT sockets still linger on it. Without this, a service that
+    // reloads (dsd-fp2's `config.apply`) fails to rebind with `AddrInUse`.
+    // It does *not* permit two live listeners on the same port — a second
+    // active `bind()`/`listen()` still returns `AddrInUse` — so it cannot
+    // mask an "another instance is already running" error.
+    socket.set_reuse_address(true)?;
+
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(128)?;
