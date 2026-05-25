@@ -11,6 +11,12 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // A literal `fail` argument simulates a service that rejects its CLI and
+    // exits before binding. Used to prove `start_with_args` /
+    // `try_start_with_args` pass their argument vector through to the process.
+    if args.iter().any(|a| a == "fail") {
+        std::process::exit(1);
+    }
     if let Some(idx) = args.iter().position(|a| a == "--config") {
         if let Some(path) = args.get(idx + 1) {
             if let Ok(content) = std::fs::read_to_string(path) {

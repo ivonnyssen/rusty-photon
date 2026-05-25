@@ -1,104 +1,35 @@
 //! Step definitions for config_page.feature.
+//!
+//! Every scenario drives the real BFF over HTTP against a real dsd-fp2 driver
+//! (see [`crate::world::UiWorld`]); the steps assert on the HTML the BFF
+//! actually renders.
 
 use cucumber::{given, then, when};
-use serde_json::{json, Value};
-
-use ui_htmx::{ApplyStatus, ConfigApplyResponse, ConfigClientError, ConfigGetResponse, FieldError};
 
 use crate::world::UiWorld;
 
-/// A complete dsd-fp2 config blob the way `config.get` would return it.
-fn full_config(serial_port: &str, max_brightness: u64) -> Value {
-    json!({
-        "serial": {
-            "port": serial_port,
-            "baud_rate": 115_200,
-            "polling_interval": "500ms",
-            "timeout": "3s"
-        },
-        "server": { "port": 11119, "discovery_port": 32227, "tls": null, "auth": null },
-        "cover_calibrator": {
-            "name": "Deep Sky Dad FP2",
-            "unique_id": "dsd-fp2-001",
-            "description": "Deep Sky Dad Flat Panel 2",
-            "enabled": true,
-            "max_brightness": max_brightness
-        }
-    })
-}
+// --- Given: stand up the real services --------------------------------------
 
-fn form_body(pairs: &[(&str, &str)]) -> String {
-    serde_urlencoded::to_string(pairs).expect("form encode")
-}
-
-#[given(regex = r#"^the dsd-fp2 driver reports serial\.port "([^"]+)" and max_brightness (\d+)$"#)]
-fn driver_reports(world: &mut UiWorld, port: String, max_brightness: u64) {
-    world.set_get(Ok(ConfigGetResponse {
-        config: full_config(&port, max_brightness),
-        overrides: vec![],
-    }));
+#[given(
+    regex = r#"^a dsd-fp2 driver running with serial\.port "([^"]+)" and max_brightness (\d+)$"#
+)]
+async fn driver_running(world: &mut UiWorld, port: String, max_brightness: u32) {
+    world.start_driver_and_bff(&port, max_brightness).await;
 }
 
 #[given(
-    regex = r#"^the dsd-fp2 driver reports serial\.port "([^"]+)" pinned by a command-line override$"#
+    regex = r#"^a dsd-fp2 driver running with the serial port pinned to "([^"]+)" by a command-line override$"#
 )]
-fn driver_reports_pinned(world: &mut UiWorld, port: String) {
-    world.set_get(Ok(ConfigGetResponse {
-        config: full_config(&port, 4096),
-        overrides: vec!["serial.port".to_string()],
-    }));
+async fn driver_running_with_override(world: &mut UiWorld, port: String) {
+    world.start_driver_with_serial_override_and_bff(&port).await;
 }
 
-#[given(
-    regex = r#"^the dsd-fp2 driver accepts config\.apply with status applying reloading "([^"]+)"$"#
-)]
-fn driver_accepts_applying(world: &mut UiWorld, reload_path: String) {
-    world.set_apply(Ok(ConfigApplyResponse {
-        status: ApplyStatus::Applying,
-        applied: vec![],
-        reload: vec![reload_path],
-        restart_required: vec![],
-        skipped_override: vec![],
-        persisted_to: Some("/tmp/dsd-fp2.json".to_string()),
-        errors: vec![],
-    }));
+#[given("the BFF is pointed at a dsd-fp2 driver that is not running")]
+async fn driver_not_running(world: &mut UiWorld) {
+    world.start_bff_with_unreachable_driver().await;
 }
 
-#[given("the dsd-fp2 driver accepts config.apply with status ok")]
-fn driver_accepts_ok(world: &mut UiWorld) {
-    world.set_apply(Ok(ConfigApplyResponse {
-        status: ApplyStatus::Ok,
-        applied: vec![],
-        reload: vec![],
-        restart_required: vec![],
-        skipped_override: vec![],
-        persisted_to: Some("/tmp/dsd-fp2.json".to_string()),
-        errors: vec![],
-    }));
-}
-
-#[given("the dsd-fp2 driver rejects config.apply with an invalid serial.baud_rate")]
-fn driver_rejects_invalid(world: &mut UiWorld) {
-    world.set_apply(Ok(ConfigApplyResponse {
-        status: ApplyStatus::Invalid,
-        applied: vec![],
-        reload: vec![],
-        restart_required: vec![],
-        skipped_override: vec![],
-        persisted_to: None,
-        errors: vec![FieldError {
-            path: "serial.baud_rate".to_string(),
-            msg: "must be greater than 0".to_string(),
-        }],
-    }));
-}
-
-#[given("the dsd-fp2 driver is unreachable")]
-fn driver_unreachable(world: &mut UiWorld) {
-    world.set_get(Err(ConfigClientError::Transport(
-        "connection refused".to_string(),
-    )));
-}
+// --- When: interact with the BFF --------------------------------------------
 
 #[when("I open the dsd-fp2 config page")]
 async fn open_page(world: &mut UiWorld) {
@@ -107,40 +38,33 @@ async fn open_page(world: &mut UiWorld) {
 
 #[when(regex = r"^I submit the config form setting max_brightness to (\d+)$")]
 async fn submit_max_brightness(world: &mut UiWorld, value: String) {
-    let blob = full_config("/dev/ttyACM0", 4096).to_string();
-    let body = form_body(&[
-        ("__config", &blob),
-        ("__overrides", "[]"),
-        ("cover_calibrator.max_brightness", &value),
-    ]);
-    world.post_form("/config/dsd-fp2", body).await;
+    world
+        .submit_form(&[("cover_calibrator.max_brightness", &value)])
+        .await;
 }
 
 #[when(regex = r"^I submit the config form setting baud_rate to (\d+)$")]
 async fn submit_baud_rate(world: &mut UiWorld, value: String) {
-    let blob = full_config("/dev/ttyACM0", 4096).to_string();
-    let body = form_body(&[
-        ("__config", &blob),
-        ("__overrides", "[]"),
-        ("serial.baud_rate", &value),
-    ]);
-    world.post_form("/config/dsd-fp2", body).await;
+    world.submit_form(&[("serial.baud_rate", &value)]).await;
 }
+
+#[when("I submit the config form without changing anything")]
+async fn submit_unchanged(world: &mut UiWorld) {
+    world.submit_form(&[]).await;
+}
+
+#[when(regex = r"^I poll the reconnect status until max_brightness (\d+) is served$")]
+async fn poll_until_served(world: &mut UiWorld, value: String) {
+    world.poll_status_until_value(&value).await;
+}
+
+// --- Then: assert on the rendered HTML --------------------------------------
 
 #[then(regex = r#"^the page shows the value "([^"]+)"$"#)]
 fn page_shows_value(world: &mut UiWorld, expected: String) {
     assert!(
         world.last_body.contains(&expected),
         "expected page to contain {expected:?}, body was:\n{}",
-        world.last_body
-    );
-}
-
-#[then(regex = r#"^the page does not show the value "([^"]+)"$"#)]
-fn page_does_not_show_value(world: &mut UiWorld, unexpected: String) {
-    assert!(
-        !world.last_body.contains(&unexpected),
-        "page unexpectedly contains {unexpected:?}:\n{}",
         world.last_body
     );
 }
@@ -187,6 +111,15 @@ fn polls_for_reconnection(world: &mut UiWorld) {
     );
 }
 
+#[then("the page reports the configuration was saved without a reload")]
+fn reports_saved_no_reload(world: &mut UiWorld) {
+    assert!(
+        world.last_body.contains("No reload was needed"),
+        "missing saved-without-reload banner:\n{}",
+        world.last_body
+    );
+}
+
 #[then(regex = r#"^the form shows the validation error "([^"]+)" on serial\.baud_rate$"#)]
 fn shows_validation_error(world: &mut UiWorld, message: String) {
     assert!(
@@ -194,11 +127,11 @@ fn shows_validation_error(world: &mut UiWorld, message: String) {
         "missing error message {message:?}:\n{}",
         world.last_body
     );
-    let tag = world.input_tag("serial.baud_rate");
-    // The field's wrapper carries the `invalid` class; the input is inside it.
+    // The field's wrapper carries the `invalid` class.
     assert!(
         world.last_body.contains("invalid"),
-        "baud_rate field not flagged invalid:\n{tag}"
+        "baud_rate field not flagged invalid:\n{}",
+        world.last_body
     );
 }
 

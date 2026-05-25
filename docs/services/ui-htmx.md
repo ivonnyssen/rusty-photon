@@ -85,9 +85,10 @@ driver (the pattern `sentinel` uses for its Alpaca polling — see
 - **`ConfigClient`** (`driver_client.rs`) — `get_config()` /
   `apply_config(Value)`. Knows the ASCOM action protocol: shapes the
   `PUT .../action` request, unwraps the Alpaca envelope, and parses the inner
-  JSON. The page handlers depend on `Arc<dyn ConfigClient>`, so the BDD/page
-  tests inject a mock returning canned `ConfigGetResponse` / `ConfigApplyResponse`
-  without constructing wire envelopes.
+  JSON. The page handlers depend on `Arc<dyn ConfigClient>`, so a handler unit
+  test can inject a stub (via `AppState::with_client`) to cover an error state
+  a live driver won't produce — see [Testing Strategy](#testing-strategy). The
+  end-to-end BDD suite, by contrast, runs against a real driver, not a stub.
 
 ### The driver config-action client (wire contract)
 
@@ -300,16 +301,39 @@ Follows [`docs/skills/testing.md`](../skills/testing.md).
 
 ### BDD Tests (Cucumber)
 
-`config_page.feature` is the canonical contract for the page behaviour. The steps
-drive the **in-process axum router** via `tower::ServiceExt::oneshot`, with a
-mocked `ConfigClient` in the `World` returning canned responses — no child
-processes, so no `bdd_main!` macro is needed (purely in-process, per
-testing.md §5.2). Scenarios:
+`config_page.feature` is the canonical contract for the page behaviour, and —
+like every other service — it exercises the **real binaries end to end**. Each
+scenario spawns the real `ui-htmx` process and a real `dsd-fp2` driver in mock
+mode (via `bdd_infra::ServiceHandle`), points the BFF at the driver, and drives
+the BFF over HTTP, asserting on the HTML it actually renders. There is no
+in-process router and no stubbed `ConfigClient`: the production
+`ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
+`config.get` / `config.apply` / in-process reload all run for real. The entry
+point therefore uses `bdd_infra::bdd_main!` (child-process spawning, skipped
+under Miri), and **both binaries must be pre-built with `--all-features`** (the
+driver's mock transport is feature-gated):
+
+```
+cargo build --all-features --all-targets
+cargo test  --all-features --test bdd -p ui-htmx
+```
+
+The driver is spawned on a fixed (not OS-assigned) port written into its config,
+so its in-process reload rebinds the *same* port and the BFF can reconnect to it
+(the override scenario additionally spawns the driver with `--port` via
+`ServiceHandle::start_with_args`). Scenarios:
 
 - The config page renders the driver's current configuration.
-- Override-pinned fields are shown read-only with an explanation.
-- A valid change is applied and the page reports the driver is reconnecting.
-- An invalid change re-renders the form with field-level errors, values preserved.
+- A serial-port override is shown read-only with an explanation.
+- A valid change is applied and the page reports the driver is reloading + polls
+  `…/status`.
+- The reloaded driver's new configuration is served back through the page —
+  drives the real `config.apply` → reload → rebind → `config.get` round trip.
+- An unchanged submission reports it was saved with no reload (`status:"ok"` —
+  the only no-reload path, since the driver classifies *any* changed field as a
+  reload).
+- An invalid change re-renders the form with the driver's field-level error,
+  the submitted value preserved.
 - An unreachable driver surfaces an error banner.
 
 ### Unit Tests
@@ -319,6 +343,11 @@ testing.md §5.2). Scenarios:
   string extraction for `config.get`/`config.apply`, `ErrorNumber != 0` →
   error, `ACTION_NOT_IMPLEMENTED` mapping, HTTP-non-2xx → transport error. Mocks
   `HttpClient`.
+- `lib.rs`: the `config.get` handler renders the "this driver does not expose
+  configuration" banner on `ACTION_NOT_IMPLEMENTED` — the one error state the
+  end-to-end suite can't produce (the real `dsd-fp2` always implements the
+  actions), driven in-process through `AppState::with_client` with a stub
+  `ConfigClient`; plus `from_config` rejection of URL-embedded credentials.
 - `pages`: form ⇆ Config reconstruction (hidden blob + editable overlay by JSON
   pointer; override-pinned not overlaid; redacted-secret sentinel round-trip).
 - `config.rs`: defaults and JSON load.

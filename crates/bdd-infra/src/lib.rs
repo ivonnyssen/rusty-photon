@@ -169,9 +169,21 @@ impl ServiceHandle {
     /// is not found — BDD binaries must be pre-built (e.g.
     /// `cargo build --all-features --all-targets`).
     pub async fn start(package_name: &str, config_path: &str) -> Self {
+        Self::start_with_args(package_name, &["--config", config_path]).await
+    }
+
+    /// Start a service binary with an explicit argument vector.
+    ///
+    /// [`start`](Self::start) is the common case (`--config <path>`). Use this
+    /// when a scenario needs extra flags — e.g. a CLI override the service
+    /// reports as pinned in its config (`--port`, `--server-port`). The args
+    /// are passed through verbatim, so the caller supplies `--config` itself.
+    ///
+    /// Same binary discovery and panic-on-missing behaviour as [`start`](Self::start).
+    pub async fn start_with_args(package_name: &str, args: &[&str]) -> Self {
         let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, config_path);
+        let mut child = spawn_process(&binary, package_name, args);
 
         let stdout = child
             .stdout
@@ -196,9 +208,15 @@ impl ServiceHandle {
     /// Still panics if the binary itself cannot be located — that's a setup
     /// error, not a runtime condition to recover from.
     pub async fn try_start(package_name: &str, config_path: &str) -> Result<Self, String> {
+        Self::try_start_with_args(package_name, &["--config", config_path]).await
+    }
+
+    /// Like [`try_start`](Self::try_start) but with an explicit argument vector
+    /// (see [`start_with_args`](Self::start_with_args)).
+    pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
         let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, config_path);
+        let mut child = spawn_process(&binary, package_name, args);
 
         let stdout = child
             .stdout
@@ -400,12 +418,10 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 /// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
-fn spawn_process(binary: &str, package_name: &str, config_path: &str) -> tokio::process::Child {
-    debug!(binary = %binary, "starting {} from pre-built binary", package_name);
+fn spawn_process(binary: &str, package_name: &str, args: &[&str]) -> tokio::process::Child {
+    debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
-    cmd.args(["--config", config_path])
-        .stdout(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args(args).stdout(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);

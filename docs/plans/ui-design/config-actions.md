@@ -291,8 +291,13 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
   with the new config (BDD via `bdd-infra`, or an integration test against the
   bound server). Assert the fire-after-response ordering (the apply response is
   received before the blip).
-- **BFF tests:** handlers render the form from a mocked `config.get`; POST
-  surfaces validation errors; the "applying" state renders. Mock the `HttpClient`.
+- **BFF tests:** the `config_page.feature` BDD suite spawns the *real* BFF and a
+  *real* `dsd-fp2` (mock mode) and drives it over HTTP end to end — render,
+  apply → reload → reconnect (serving the new value back), unchanged → `ok`,
+  validation, and unreachable-driver. A handler unit test covers the one error
+  state a live driver can't produce (`ACTION_NOT_IMPLEMENTED`) via a stub
+  `ConfigClient`; `driver_client` unit tests cover envelope parsing with a
+  mocked `HttpClient`.
 
 ## Phased plan
 
@@ -316,9 +321,11 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 **Phase 2 — BFF skeleton + hand-built `dsd-fp2` config page. ✅ Landed.**
 - New `services/ui-htmx` crate (axum + Maud + HTMX, embedded assets, dark theme).
 - `GET/POST /config/dsd-fp2` wired to the driver's config actions; validation,
-  override-pinned-field read-only, and "applying/reconnecting" states. 5 BDD
-  scenarios + handler/wire-parsing unit tests; verified end-to-end against a
-  mock-mode `dsd-fp2`. *Deliverable: a working config page for `dsd-fp2`.*
+  override-pinned-field read-only, and "applying/reconnecting" states. 7 BDD
+  scenarios that spawn the real BFF + a real mock-mode `dsd-fp2` and drive it
+  over HTTP (including the full apply → reload → reconnect round trip), plus
+  handler/wire-parsing unit tests. *Deliverable: a working config page for
+  `dsd-fp2`.*
 
 **Phase 3 — Generalise across drivers.**
 - Extract a shared `config-actions` helper so other drivers adopt `config.get`/

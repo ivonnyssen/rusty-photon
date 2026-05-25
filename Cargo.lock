@@ -5737,6 +5737,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bdd-infra",
  "clap",
  "cucumber",
  "maud",
@@ -5750,7 +5751,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tower",
  "tracing",
  "tracing-subscriber",
 ]

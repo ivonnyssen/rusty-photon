@@ -27,10 +27,10 @@ rp-tls = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 
 [dev-dependencies]
+bdd-infra = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
 serde_urlencoded = "0.7"
 
 [[test]]

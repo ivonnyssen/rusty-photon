@@ -225,4 +225,40 @@ mod tests {
     fn from_config_accepts_plain_url() {
         AppState::from_config(&config_with_base_url("http://127.0.0.1:11119")).unwrap();
     }
+
+    /// A `ConfigClient` whose `config.get` reports the target is not a
+    /// config-capable driver (`ACTION_NOT_IMPLEMENTED`). The real `dsd-fp2`
+    /// always implements the config actions, so this handler path is
+    /// unreachable from the end-to-end BDD suite and is covered here instead.
+    struct NonConfigDriver;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for NonConfigDriver {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            Err(ConfigClientError::Ascom {
+                code: crate::driver_client::ACTION_NOT_IMPLEMENTED,
+                message: "unknown action".to_string(),
+            })
+        }
+        async fn apply_config(
+            &self,
+            _config: &serde_json::Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            unreachable!("apply is not exercised by this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn config_get_renders_non_config_driver_banner() {
+        let state = AppState::with_client(Arc::new(NonConfigDriver));
+        let response = config_get(State(state), HeaderMap::new()).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            html.contains("does not expose configuration actions"),
+            "{html}"
+        );
+    }
 }
