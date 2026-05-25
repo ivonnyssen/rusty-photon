@@ -15,26 +15,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use qhy_focuser::config::{FocuserConfig, SerialConfig, ServerConfig};
-use qhy_focuser::Config;
-use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+use qhy_focuser::{Config, MockQhyTransportFactory};
+use rusty_photon_shared_transport::TransportFactory;
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
-
-/// Minimal transport factory for server startup tests.
-///
-/// `open()` is never called — the device is never connected during these
-/// tests, which exercise only the bind + listener wiring in
-/// `ServerBuilder::build()`.
-struct StubTransportFactory;
-
-#[async_trait]
-impl TransportFactory for StubTransportFactory {
-    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
-        unreachable!("open() should not be called during server startup tests")
-    }
-}
 
 fn test_config(focuser_enabled: bool) -> Config {
     Config {
@@ -57,7 +42,11 @@ fn test_config(focuser_enabled: bool) -> Config {
 }
 
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
-    let factory: Arc<dyn TransportFactory> = Arc::new(StubTransportFactory);
+    // Use the real mock factory now that `ServerBuilder::build()`
+    // unconditionally runs the eager startup handshake — the prior
+    // `StubTransportFactory` panicked on `open()` because LazyAcquire
+    // mode never opened during these bind-only tests.
+    let factory: Arc<dyn TransportFactory> = Arc::new(MockQhyTransportFactory::default());
 
     let bound = qhy_focuser::ServerBuilder::new()
         .with_config(config)

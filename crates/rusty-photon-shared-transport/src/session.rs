@@ -14,6 +14,7 @@ use std::io;
 use std::sync::Arc;
 
 use derive_more::Debug;
+use tokio::sync::RwLock;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use crate::codec::Codec;
@@ -21,6 +22,22 @@ use crate::connection::Connection;
 use crate::error::{SessionError, TransportError};
 use crate::shared::SharedTransport;
 use crate::BoxFuture;
+
+/// Shared cell wrapping the *current* [`Connection<C>`] for one open
+/// transport.
+///
+/// [`SharedTransport`] holds an `Arc` clone of this cell in its
+/// `slot`; every [`Session`] handed out by `acquire()` also holds an
+/// `Arc` clone. The supervisor's reconnect path takes the cell's
+/// `write` lock to swap the inner `Arc<Connection<C>>` atomically;
+/// live `Session`s observe the new connection on their next
+/// `request()` call (which takes a cheap `read` lock to clone the
+/// current `Arc<Connection<C>>`). This is the indirection that makes
+/// the live-session-survival contract from the
+/// [transport-lifecycle plan][lifecycle-plan] possible.
+///
+/// [lifecycle-plan]: ../../../../docs/plans/eager-hardware-validation.md
+pub(crate) type ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>;
 
 /// A live, refcounted handle to the shared transport.
 ///
@@ -31,14 +48,15 @@ use crate::BoxFuture;
 #[debug("Session {{ closed: {}, .. }}", transport.is_none())]
 pub struct Session<C: Codec> {
     transport: Option<Arc<SharedTransport<C>>>,
-    connection: Option<Arc<Connection<C>>>,
+    #[debug(skip)]
+    cell: Option<ConnectionCell<C>>,
 }
 
 impl<C: Codec> Session<C> {
-    pub(crate) fn new(transport: Arc<SharedTransport<C>>, connection: Arc<Connection<C>>) -> Self {
+    pub(crate) fn new(transport: Arc<SharedTransport<C>>, cell: ConnectionCell<C>) -> Self {
         Self {
             transport: Some(transport),
-            connection: Some(connection),
+            cell: Some(cell),
         }
     }
 
@@ -47,17 +65,42 @@ impl<C: Codec> Session<C> {
     /// Forwards to [`Connection::request`] — the request arbitration
     /// lock makes this call safe to run concurrently from multiple
     /// `Session`s (and the while-open task) sharing the same transport.
+    /// Reads the current connection via the cell so a supervisor-driven
+    /// reconnect that swapped the inner `Arc<Connection<C>>` between
+    /// requests is invisible to the caller — the next request transparently
+    /// uses the fresh transport.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
-        // `connection` only becomes `None` inside `close` (which consumes
+        // `cell` only becomes `None` inside `close` (which consumes
         // `self`) or `drop` (which destructs `self`). Neither path can
         // race a live `&self` call to `request`, so this branch is
         // unreachable in well-typed code — handled as an I/O error
         // instead of a panic to satisfy the workspace's no-panic policy.
-        let Some(connection) = self.connection.as_ref() else {
+        let Some(cell) = self.cell.as_ref() else {
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("session.request after close/drop"),
             )));
         };
+        if let Some(transport) = self.transport.as_ref() {
+            // Check `is_reconnecting` first so the transient case
+            // surfaces as `Reconnecting` (clients can retry). `shutdown()`
+            // clears `reconnecting=false` and `available=false`, so any
+            // false `available` reaching the next branch is terminal.
+            if transport.is_reconnecting() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+            // Existing `Session`s keep `Arc` clones of the connection cell
+            // even after `SharedTransport::shutdown` drops the slot's clone,
+            // so without this short-circuit a session can still call
+            // `connection.request` against the un-dropped `Connection<C>` and
+            // talk to hardware while the service is tearing down. Match the
+            // error `acquire()` returns in the same situation.
+            if !transport.is_available() {
+                return Err(SessionError::Transport(TransportError::Io(
+                    io::Error::other("transport has been shut down"),
+                )));
+            }
+        }
+        let connection = cell.read().await.clone();
         connection.request(cmd).await
     }
 
@@ -80,11 +123,10 @@ impl<C: Codec> Session<C> {
                 "session.close after close/drop",
             )));
         };
-        // Drop our connection clone before the cleanup runs so the
-        // refcount on the inner Arc<Connection<C>> reaches 1 (only the
-        // slot's clone remains) by the time `run_cleanup` takes the
-        // slot's connection out.
-        self.connection.take();
+        // Drop our cell clone before the cleanup runs so the slot is
+        // the only remaining cell-holder when run_cleanup runs (in
+        // LazyAcquire mode).
+        self.cell.take();
         transport.release_inline().await
     }
 }
@@ -100,7 +142,7 @@ impl<C: Codec> Drop for Session<C> {
     /// plan for the explicit-close-is-primary rationale.
     fn drop(&mut self) {
         if let Some(transport) = self.transport.take() {
-            self.connection.take();
+            self.cell.take();
             transport.release_detached();
         }
     }
@@ -151,40 +193,73 @@ pub type HandshakeFn<C> = Box<
         + Sync,
 >;
 
-/// Closure type for the [`Hooks::teardown`] hook.
-pub type TeardownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
+/// Closure type for the [`Hooks::on_last_disconnect`] hook.
+pub type OnLastDisconnectFn<C> =
+    Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
+
+/// Closure type for the [`Hooks::shutdown`] hook.
+pub type ShutdownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
 
 /// Closure type for the [`Hooks::while_open`] hook.
 pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Service-specific plug for the three lifecycle phases.
+/// Service-specific plug for the four lifecycle phases.
 ///
-/// * `handshake` runs on the 0→1 connect transition, **before** any
-///   [`Session`] escapes. On error: rollback (count→0, available→false,
-///   transport dropped), error propagated to the [`crate::SharedTransport::acquire`]
-///   caller.
-/// * `teardown` runs on the 1→0 disconnect transition, **after** any
-///   while-open task has been cancelled and joined. Best-effort: errors
-///   that need to reach the caller surface through [`Session::close`]'s
-///   `Result<(), TransportError>`.
-/// * `while_open` (optional) spawns after `handshake` succeeds and is
-///   driven to completion (with a bounded 5-second join, then abort)
-///   before `teardown` runs.
+/// * `handshake` runs on every transition into the `Open` state — the
+///   `LazyAcquire`-mode 0→1 `acquire()` call, the `ServiceLifetime`-mode
+///   [`crate::SharedTransport::start`] call, and (in Phase 0b) every
+///   successful reconnect. Runs **before** any [`Session`] escapes. On
+///   error: rollback (count→0, available→false, transport dropped),
+///   error propagated to the caller.
+/// * `on_last_disconnect` runs on every refcount 1→0 transition.
+///   Per-service safety commands (stop tracking, park, turn off
+///   heater, …). In `LazyAcquire` mode, fires once after `while_open`
+///   is cancelled and before transport teardown. In `ServiceLifetime`
+///   mode, fires on every 1→0 and the port stays open — may run many
+///   times during a service's lifetime. The hook signature returns
+///   `()` and the runtime ignores any errors observed on the inner
+///   `request` calls, so the hook is **best-effort** in both modes;
+///   any failures hit while running it must be handled / logged
+///   inside the hook body itself (typically `tracing::warn!` on the
+///   request `Result`). Failures never propagate to
+///   [`Session::close`]'s caller and never abort the cleanup path.
+///
+///   **State-lifetime contract:** the next `acquire()` after
+///   `on_last_disconnect` does **not** re-run `handshake` in
+///   `ServiceLifetime` mode (it is a fast refcount-bump). Hooks must
+///   therefore only clear state that the next acquire will explicitly
+///   re-establish on its own — clearing handshake-populated caches
+///   (CPR, identity fields, capability bits) here will orphan them
+///   until the next reconnect runs a fresh handshake. Move that kind
+///   of cleanup into `shutdown` (and rely on the reconnect supervisor
+///   to refresh the cache via its own handshake call on the new
+///   connection).
+/// * `shutdown` runs exactly once per `start()`/`shutdown()` cycle, from
+///   [`crate::SharedTransport::shutdown`] in the service's SIGTERM handler.
+///   Final cleanup before the port closes. Only meaningful in
+///   `ServiceLifetime` mode; never fires in `LazyAcquire` mode.
+/// * `while_open` (optional) spawns after `handshake` succeeds and runs
+///   for as long as the transport is `Open`. Cancelled (with a bounded
+///   5-second join, then abort) before `on_last_disconnect` runs in
+///   `LazyAcquire` mode, and before `shutdown` runs in `ServiceLifetime`
+///   mode. In Phase 0b, also cancelled and respawned across reconnects.
 pub struct Hooks<C: Codec> {
     pub handshake: HandshakeFn<C>,
-    pub teardown: TeardownFn<C>,
+    pub on_last_disconnect: OnLastDisconnectFn<C>,
+    pub shutdown: ShutdownFn<C>,
     pub while_open: Option<WhileOpenFn<C>>,
 }
 
 impl<C: Codec> Hooks<C> {
-    /// Hooks that do nothing on either transition and have no
+    /// Hooks that do nothing on any transition and have no
     /// background poll task. Useful as a base for `.handshake = ...`
     /// chains in tests, and as a sane default for services that don't
-    /// need any of the three.
+    /// need any of the four.
     pub fn noop() -> Self {
         Self {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         }
     }

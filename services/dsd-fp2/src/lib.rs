@@ -76,57 +76,89 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
-        let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
-
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
-        if self.config.cover_calibrator.enabled {
-            let device =
-                DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
-            server.devices.register(device);
-            info!(
-                "Registered CoverCalibrator device: {}",
-                self.config.cover_calibrator.name
-            );
+        // Eager hardware validation at startup: opens the port,
+        // runs the handshake (identity probe), and spawns the
+        // reconnect supervisor before binding the HTTP listener. On
+        // handshake failure the error bubbles up to `main` for a
+        // non-zero exit, so systemd / orchestration treats startup
+        // as failed rather than the service advertising a broken
+        // device on the network.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
+
+        // All post-start work is fallible (bind / local_addr in
+        // particular). Wrap it so a failure runs `transport.shutdown()`
+        // before propagating; otherwise the reconnect supervisor task
+        // would outlive the dropped manager and keep the port open
+        // until process exit.
+        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+            let mut server = Server::new(CargoServerInfo!());
+            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.discovery_port = self.config.server.discovery_port;
+
+            if self.config.cover_calibrator.enabled {
+                let device =
+                    DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
+                server.devices.register(device);
+                info!(
+                    "Registered CoverCalibrator device: {}",
+                    self.config.cover_calibrator.name
+                );
+            }
+
+            info!("Serial port: {}", self.config.serial.port);
+
+            let tls = self.config.server.tls.clone();
+            let router = axum::Router::new().fallback_service(server.into_service());
+
+            let router = match &self.config.server.auth {
+                Some(auth) => {
+                    if self.config.server.tls.is_none() {
+                        tracing::warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(router, auth)
+                }
+                None => router,
+            };
+
+            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+                [0, 0, 0, 0],
+                self.config.server.port,
+            )))
+            .await?;
+            let local_addr = listener.local_addr()?;
+
+            println!("Bound Alpaca server bound_addr={}", local_addr);
+            info!("Bound Alpaca server bound_addr={}", local_addr);
+
+            Ok(BoundServer {
+                listener,
+                router,
+                local_addr,
+                tls,
+                manager: Arc::clone(&manager),
+            })
         }
+        .await;
 
-        info!("Serial port: {}", self.config.serial.port);
-
-        let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
-
-        let router = match &self.config.server.auth {
-            Some(auth) => {
-                if self.config.server.tls.is_none() {
+        match build_result {
+            Ok(bound) => Ok(bound),
+            Err(e) => {
+                if let Err(shutdown_err) = manager.transport().shutdown().await {
                     tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                        error = %shutdown_err,
+                        "transport shutdown failed during build() error rollback"
                     );
                 }
-                rp_auth::layer(router, auth)
+                Err(e)
             }
-            None => router,
-        };
-
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
-        let local_addr = listener.local_addr()?;
-
-        println!("Bound Alpaca server bound_addr={}", local_addr);
-        info!("Bound Alpaca server bound_addr={}", local_addr);
-
-        Ok(BoundServer {
-            listener,
-            router,
-            local_addr,
-            tls,
-        })
+        }
     }
 }
 
@@ -136,6 +168,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `start()` can call `manager.transport().shutdown()` after
+    /// the HTTP server stops. No-op in LazyAcquire mode.
+    manager: Arc<FlatPanelManager>,
 }
 
 impl BoundServer {
@@ -147,17 +182,23 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result so transport.shutdown() runs even
+        // when the HTTP server errors out — otherwise the supervisor
+        // and port would leak past a serve failure.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("dsd-fp2 started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("dsd-fp2 started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
+        };
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("dsd-fp2 shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }

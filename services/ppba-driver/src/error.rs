@@ -105,6 +105,9 @@ impl From<TransportError> for PpbaError {
             }
             TransportError::Eof => PpbaError::Communication("Connection closed".to_string()),
             TransportError::Framing(s) => PpbaError::Communication(format!("framing: {s}")),
+            TransportError::Reconnecting => {
+                PpbaError::Communication("transport is reconnecting".to_string())
+            }
         }
     }
 }
