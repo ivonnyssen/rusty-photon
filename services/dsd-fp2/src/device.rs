@@ -105,7 +105,7 @@ impl DsdFp2Device {
         ctx: &ConfigActionCtx,
         parameters: &str,
     ) -> ASCOMResult<String> {
-        let submitted: Config = match serde_json::from_str(parameters) {
+        let mut submitted: Config = match serde_json::from_str(parameters) {
             Ok(config) => config,
             Err(e) => {
                 return Err(ASCOMError::new(
@@ -114,6 +114,10 @@ impl DsdFp2Device {
                 ))
             }
         };
+
+        // Normalize before validation/persist (e.g. trim a whitespace-padded
+        // serial.port that would otherwise be opened verbatim at runtime).
+        config_actions::normalize(&mut submitted);
 
         // Validation failure is a domain error: HTTP 200, file untouched.
         let errors = config_actions::validate(&submitted);

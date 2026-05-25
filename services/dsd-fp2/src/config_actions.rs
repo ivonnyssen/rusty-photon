@@ -117,6 +117,17 @@ impl ConfigApplyResponse {
     }
 }
 
+/// Normalize a submitted config in place before validation/persist. Trims
+/// surrounding whitespace from `serial.port`, which is otherwise used verbatim
+/// to open the device — so `" /dev/ttyACM0 "` would become an invalid runtime
+/// path despite passing the non-empty check.
+pub fn normalize(config: &mut Config) {
+    let trimmed = config.serial.port.trim();
+    if trimmed.len() != config.serial.port.len() {
+        config.serial.port = trimmed.to_string();
+    }
+}
+
 /// Validate a parsed config. An empty result means valid.
 pub fn validate(config: &Config) -> Vec<FieldError> {
     let mut errors = Vec::new();
@@ -364,6 +375,19 @@ mod tests {
     #[test]
     fn validate_accepts_default() {
         assert!(validate(&Config::default()).is_empty());
+    }
+
+    #[test]
+    fn normalize_trims_serial_port() {
+        let mut config = Config {
+            serial: SerialConfig {
+                port: "  /dev/ttyACM0\n".to_string(),
+                ..SerialConfig::default()
+            },
+            ..Config::default()
+        };
+        normalize(&mut config);
+        assert_eq!(config.serial.port, "/dev/ttyACM0");
     }
 
     #[test]

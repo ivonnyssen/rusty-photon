@@ -253,9 +253,14 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
   just an authorised client (see the plan's Security section).
 - **Secrets are already redacted** by `config.get` (`********`), so they never
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
-- **BFF-side TLS/auth is deferred.** Phase 2 binds plain HTTP for the trusted
-  warm-room-laptop → Pi LAN path. Putting the BFF itself behind `rp-tls`/`rp-auth`
-  (or a reverse proxy) is future work, tracked in [Deferred](#deferred).
+- **Binds loopback by default; BFF-side TLS/auth is deferred.** The default
+  config binds `127.0.0.1`, reachable only from the host (e.g. via an SSH tunnel
+  from the warm-room laptop). Exposing the BFF on the LAN means binding `0.0.0.0`,
+  which serves the config pages over **plain HTTP with no BFF-side auth** — so
+  until BFF TLS/auth lands ([Deferred](#deferred)), reach it through an SSH tunnel
+  or a reverse proxy that terminates TLS + auth, rather than a raw `0.0.0.0` bind.
+  (The driver credentials the BFF holds are unaffected — the BFF is a client, and
+  each driver still enforces its own `rp-auth`/`rp-tls`.)
 
 ## MVP Scope
 
