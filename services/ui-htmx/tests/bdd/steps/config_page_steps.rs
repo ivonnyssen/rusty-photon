@@ -64,6 +64,19 @@ fn driver_accepts_applying(world: &mut UiWorld, reload_path: String) {
     }));
 }
 
+#[given("the dsd-fp2 driver accepts config.apply with status ok")]
+fn driver_accepts_ok(world: &mut UiWorld) {
+    world.set_apply(Ok(ConfigApplyResponse {
+        status: ApplyStatus::Ok,
+        applied: vec![],
+        reload: vec![],
+        restart_required: vec![],
+        skipped_override: vec![],
+        persisted_to: Some("/tmp/dsd-fp2.json".to_string()),
+        errors: vec![],
+    }));
+}
+
 #[given("the dsd-fp2 driver rejects config.apply with an invalid serial.baud_rate")]
 fn driver_rejects_invalid(world: &mut UiWorld) {
     world.set_apply(Ok(ConfigApplyResponse {
@@ -119,6 +132,15 @@ fn page_shows_value(world: &mut UiWorld, expected: String) {
     assert!(
         world.last_body.contains(&expected),
         "expected page to contain {expected:?}, body was:\n{}",
+        world.last_body
+    );
+}
+
+#[then(regex = r#"^the page does not show the value "([^"]+)"$"#)]
+fn page_does_not_show_value(world: &mut UiWorld, unexpected: String) {
+    assert!(
+        !world.last_body.contains(&unexpected),
+        "page unexpectedly contains {unexpected:?}:\n{}",
         world.last_body
     );
 }

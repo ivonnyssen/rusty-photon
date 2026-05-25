@@ -26,6 +26,13 @@ Feature: dsd-fp2 configuration page
     Then the page reports the driver is reloading
     And the page polls /config/dsd-fp2/status every 1s for reconnection
 
+  Scenario: A no-reload apply shows the driver's effective config, not the submitted value
+    Given the dsd-fp2 driver reports serial.port "/dev/ttyACM0" and max_brightness 1234
+    And the dsd-fp2 driver accepts config.apply with status ok
+    When I submit the config form setting max_brightness to 9999
+    Then the page shows the value "1234"
+    And the page does not show the value "9999"
+
   Scenario: An invalid change re-renders the form with field errors
     Given the dsd-fp2 driver rejects config.apply with an invalid serial.baud_rate
     When I submit the config form setting baud_rate to 0

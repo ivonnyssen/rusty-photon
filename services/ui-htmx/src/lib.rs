@@ -150,9 +150,26 @@ async fn config_post(
         Ok(merged) => match state.dsd_fp2.apply_config(&merged.config).await {
             Ok(resp) => match resp.status {
                 ApplyStatus::Applying => pages::reconnecting_card(),
-                ApplyStatus::Ok => {
-                    pages::config_card(&merged.config, &merged.overrides, &[], Some(Banner::Saved))
-                }
+                // Persisted with no reload needed. Re-fetch so the success
+                // state shows the driver's real effective config (it may have
+                // normalized values — e.g. a trimmed serial.port — written
+                // through override-pinned fields, or redacted secrets) rather
+                // than echoing the submitted blob. If the refresh hiccups, the
+                // apply already succeeded, so fall back to the submitted values.
+                ApplyStatus::Ok => match state.dsd_fp2.get_config().await {
+                    Ok(fresh) => pages::config_card(
+                        &fresh.config,
+                        &fresh.overrides,
+                        &[],
+                        Some(Banner::Saved),
+                    ),
+                    Err(_) => pages::config_card(
+                        &merged.config,
+                        &merged.overrides,
+                        &[],
+                        Some(Banner::Saved),
+                    ),
+                },
                 ApplyStatus::Invalid => pages::config_card(
                     &merged.config,
                     &merged.overrides,
