@@ -241,6 +241,10 @@ fn bool_at(config: &Value, pointer: &str) -> bool {
 pub struct MergedForm {
     pub config: Value,
     pub overrides: Vec<String>,
+    /// BFF-side parse/range errors for numeric fields (e.g. a port above
+    /// 65535). When non-empty, the form is re-rendered with these field errors
+    /// rather than sent to the driver.
+    pub errors: Vec<FieldError>,
 }
 
 /// A malformed form submission (missing or unparseable hidden config blob).
@@ -254,8 +258,12 @@ pub enum FormError {
 
 enum Kind {
     Str,
-    Int,
-    OptInt,
+    /// `u16` (e.g. a TCP port).
+    U16,
+    /// Optional `u16` — an empty value persists `null`.
+    OptU16,
+    /// `u32` (e.g. baud rate, max brightness).
+    U32,
 }
 
 struct FieldSpec {
@@ -275,7 +283,7 @@ const EDITABLE_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "serial.baud_rate",
         pointer: "/serial/baud_rate",
-        kind: Kind::Int,
+        kind: Kind::U32,
     },
     FieldSpec {
         name: "serial.polling_interval",
@@ -290,12 +298,12 @@ const EDITABLE_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "server.port",
         pointer: "/server/port",
-        kind: Kind::Int,
+        kind: Kind::U16,
     },
     FieldSpec {
         name: "server.discovery_port",
         pointer: "/server/discovery_port",
-        kind: Kind::OptInt,
+        kind: Kind::OptU16,
     },
     FieldSpec {
         name: "cover_calibrator.name",
@@ -315,7 +323,7 @@ const EDITABLE_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "cover_calibrator.max_brightness",
         pointer: "/cover_calibrator/max_brightness",
-        kind: Kind::Int,
+        kind: Kind::U32,
     },
 ];
 
@@ -337,6 +345,7 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
 
     let is_pinned = |name: &str| overrides.iter().any(|o| o == name);
 
+    let mut errors = Vec::new();
     for spec in EDITABLE_FIELDS {
         if is_pinned(spec.name) {
             continue;
@@ -344,15 +353,32 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
         let Some(raw) = form.get(spec.name) else {
             continue;
         };
-        let new_value = match spec.kind {
-            Kind::Str => Value::String(raw.clone()),
-            Kind::Int => Value::from(raw.trim().parse::<u64>().unwrap_or(0)),
-            Kind::OptInt => match raw.trim() {
-                "" => Value::Null,
-                t => t.parse::<u64>().map(Value::from).unwrap_or(Value::Null),
+        let trimmed = raw.trim();
+        match spec.kind {
+            Kind::Str => set_pointer(&mut config, spec.pointer, Value::String(raw.clone())),
+            // Optional integer: an empty value persists `null`.
+            Kind::OptU16 if trimmed.is_empty() => {
+                set_pointer(&mut config, spec.pointer, Value::Null)
+            }
+            // Required integer, empty: keep the prior blob value. Clearing a
+            // port must not silently become 0 (which dsd-fp2 reads as an
+            // OS-assigned port).
+            Kind::U16 | Kind::U32 if trimmed.is_empty() => {}
+            // Parse into the field's bounded type. A non-empty value that
+            // doesn't fit is a field error (actionable feedback) rather than a
+            // silent coercion or a later driver-side parse failure.
+            Kind::U16 | Kind::OptU16 => match trimmed.parse::<u16>() {
+                Ok(n) => set_pointer(&mut config, spec.pointer, Value::from(n)),
+                Err(_) => errors.push(field_error(
+                    spec.name,
+                    "must be a whole number between 0 and 65535",
+                )),
             },
-        };
-        set_pointer(&mut config, spec.pointer, new_value);
+            Kind::U32 => match trimmed.parse::<u32>() {
+                Ok(n) => set_pointer(&mut config, spec.pointer, Value::from(n)),
+                Err(_) => errors.push(field_error(spec.name, "must be a whole number")),
+            },
+        }
     }
 
     if !is_pinned(ENABLED_NAME) {
@@ -360,7 +386,18 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
         set_pointer(&mut config, ENABLED_POINTER, Value::Bool(enabled));
     }
 
-    Ok(MergedForm { config, overrides })
+    Ok(MergedForm {
+        config,
+        overrides,
+        errors,
+    })
+}
+
+fn field_error(path: &str, msg: &str) -> FieldError {
+    FieldError {
+        path: path.to_string(),
+        msg: msg.to_string(),
+    }
 }
 
 fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
@@ -531,5 +568,55 @@ mod tests {
         let form = form_from(&[("serial.port", "/dev/ttyACM0")]);
         let err = merge_form(&form).unwrap_err();
         assert!(matches!(err, FormError::MissingConfig));
+    }
+
+    #[test]
+    fn merge_form_out_of_range_port_is_a_field_error() {
+        // 99999 doesn't fit a u16, so it's a field error rather than a value
+        // the driver would reject with a non-field parse error.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("server.port", "99999"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
+        assert_eq!(merged.errors[0].path, "server.port");
+        // The prior value is kept (not coerced) so re-render shows it.
+        assert_eq!(
+            merged
+                .config
+                .pointer("/server/port")
+                .and_then(Value::as_u64),
+            Some(11119)
+        );
+    }
+
+    #[test]
+    fn merge_form_empty_required_int_keeps_prior_value() {
+        // Clearing server.port must not silently become 0 (OS-assigned).
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("server.port", ""),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert!(merged.errors.is_empty(), "{:?}", merged.errors);
+        assert_eq!(
+            merged
+                .config
+                .pointer("/server/port")
+                .and_then(Value::as_u64),
+            Some(11119)
+        );
+    }
+
+    #[test]
+    fn merge_form_non_numeric_baud_rate_is_a_field_error() {
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("serial.baud_rate", "fast"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
+        assert_eq!(merged.errors[0].path, "serial.baud_rate");
     }
 }

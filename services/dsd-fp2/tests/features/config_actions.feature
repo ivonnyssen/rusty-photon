@@ -25,6 +25,11 @@ Feature: Configuration actions
     Then the apply status should be applying
     And the reload list should include cover_calibrator.max_brightness
 
+  Scenario: A reloaded server rebinds its port and serves the new configuration
+    Given a running FP2 service
+    When config.apply pins the bound port and sets max_brightness to 2048
+    Then the reloaded service serves max_brightness 2048
+
   Scenario: An invalid configuration is rejected and not persisted
     Given a running FP2 service
     When config.apply is called with an invalid baud_rate

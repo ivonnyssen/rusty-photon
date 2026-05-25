@@ -434,16 +434,23 @@ down and rebuild from the new file.
   briefly so the `config.apply` response flushes first — the server being torn
   down is the very one serving the request. `status:"applying"` tells the BFF to
   expect a short connection blip and re-`config.get` to confirm.
-- **Clean teardown.** Before the old server is dropped, the reload arm calls
-  `device.set_connected(false).await` — the inline, awaited `Session::close`
-  path — so the serial port is fully released before any client reconnects to the
-  rebuilt server. A no-op when no client was connected; a failed close is logged
-  at `warn` and the rebuild proceeds anyway.
+- **Await the server's own teardown.** The loop passes `start()` a stop future
+  that resolves on *either* the service shutdown *or* a reload, and **awaits
+  `start()` to completion** rather than dropping it. So `start()`'s teardown
+  always runs — gracefully draining HTTP connections and calling
+  `manager.transport().shutdown()` to stop the reconnect supervisor and release
+  the serial port — before the loop rebuilds. (An earlier design dropped the
+  server future on reload, which skipped that teardown and could leak the port +
+  supervisor across reloads under the service-lifetime transport model.)
 - **Clean HTTP rebind.** The rebuilt server binds the same `server.port` while a
   client's keep-alive connections may still linger on it. The listener is created
   with `SO_REUSEADDR` (`rp_tls::server::bind_dual_stack`), so the rebind succeeds
   immediately instead of failing with `AddrInUse`. (`SO_REUSEADDR` does not permit
   two live listeners on the port, so it can't mask an "already running" error.)
+  A `config_actions.feature` scenario drives a full apply → reload → rebind cycle
+  over the wire (pinning the OS-assigned port so the same port is rebound),
+  guarding this OS-sensitive path in CI; `rp-tls` adds a focused unit test that
+  rebinds a port with a lingering connection.
 
 ## Error Handling
 
@@ -531,9 +538,11 @@ Four feature files cover the MVP behaviour:
   while disconnected); `config.apply` with a valid change returns
   `status:"applying"` with the reload classification; an invalid `baud_rate`
   returns `status:"invalid"` with validation errors; an unknown action returns
-  `ACTION_NOT_IMPLEMENTED`. Secret redaction and file-unchanged-on-invalid are
-  covered by the faster in-process unit tests (`device::mock_tests`,
-  `config_actions::tests`).
+  `ACTION_NOT_IMPLEMENTED`; and a valid change is **reloaded end-to-end** — the
+  scenario pins the bound port, applies, and then confirms the rebuilt server
+  rebinds and serves the new value over the wire (guarding the reload + rebind
+  on every CI OS). Secret redaction and file-unchanged-on-invalid are covered by
+  the faster in-process unit tests (`device::mock_tests`, `config_actions::tests`).
 
 Scenarios spawn the dsd-fp2 binary (built with `--features mock` so
 `MockTransportFactory` is wired in place of the real serial transport)

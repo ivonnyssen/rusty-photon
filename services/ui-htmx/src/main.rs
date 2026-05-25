@@ -61,6 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let addr = format!("{}:{}", config.server.bind, config.server.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         let bound = listener.local_addr()?;
+        // Print to stdout (not just `info!`) so port discovery works regardless
+        // of log level/output — matching the drivers' `bound_addr=` line.
+        println!("Bound ui-htmx server bound_addr={bound}");
         info!("ui-htmx listening; bound_addr={bound}");
 
         axum::serve(listener, app)

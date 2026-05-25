@@ -77,6 +77,11 @@ impl Fp2World {
         self.device.as_ref().expect("device not acquired")
     }
 
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.handle.as_ref().expect("service not started").port
+    }
+
     /// Call `config.get`, stash the parsed response, and return the `config`
     /// object (so a When step can edit a field and re-`config.apply` it).
     pub async fn current_config(&mut self) -> serde_json::Value {
@@ -141,6 +146,39 @@ impl Fp2World {
             self.device().calibrator_state().await.unwrap()
         );
     }
+
+    /// Poll `config.get` until `cover_calibrator.max_brightness` equals
+    /// `expected`, panicking after ~20 s. A *fresh* client is used each attempt
+    /// so a connection dropped by the reload doesn't wedge the poll, and the
+    /// loop tolerates the brief blip while the server tears down and rebinds.
+    /// If the rebind failed (e.g. an `AddrInUse` regression) the process exits,
+    /// the polls never succeed, and this panics — which is the point.
+    pub async fn wait_for_config_max_brightness(&self, expected: u32) {
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        for _ in 0..80 {
+            if try_get_max_brightness(addr).await == Some(u64::from(expected)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report max_brightness {expected} within 20s");
+    }
+}
+
+/// Read `cover_calibrator.max_brightness` via a fresh client, returning `None`
+/// on any transport/parse failure (e.g. mid-reload).
+async fn try_get_max_brightness(addr: SocketAddr) -> Option<u64> {
+    let client = AlpacaClient::new_from_addr(addr);
+    let mut devices = client.get_devices().await.ok()?;
+    if let Some(TypedDevice::CoverCalibrator(cc)) = devices.next() {
+        let body = cc
+            .action("config.get".to_string(), String::new())
+            .await
+            .ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+        return parsed["config"]["cover_calibrator"]["max_brightness"].as_u64();
+    }
+    None
 }
 
 /// Poll the Alpaca management endpoint until a `CoverCalibrator` device is

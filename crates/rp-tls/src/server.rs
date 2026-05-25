@@ -194,6 +194,37 @@ mod tests {
     }
 
     #[test]
+    fn bind_dual_stack_rebinds_port_with_lingering_connection() {
+        // A service that reloads tears down its listener and rebinds the same
+        // port while a client's previous connection may still linger on it.
+        // SO_REUSEADDR must let the rebind succeed instead of failing
+        // `AddrInUse`. This guards the OS-sensitive rebind behaviour (dsd-fp2's
+        // `config.apply` reload) across platforms.
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = bind_dual_stack(addr).unwrap();
+        // bind_dual_stack sets non-blocking; block in accept() for the test.
+        listener.set_nonblocking(false).unwrap();
+        let bound = listener.local_addr().unwrap();
+
+        // Establish and accept a connection, then drop the listener while the
+        // accepted connection lingers — independent of the listening socket.
+        let client = std::net::TcpStream::connect(bound).unwrap();
+        let (server_conn, _) = listener.accept().unwrap();
+        drop(listener);
+
+        // Rebinding the same port must succeed thanks to SO_REUSEADDR.
+        let rebind = bind_dual_stack(bound);
+        assert!(
+            rebind.is_ok(),
+            "rebind of {bound} failed (SO_REUSEADDR regression?): {:?}",
+            rebind.err()
+        );
+
+        drop(server_conn);
+        drop(client);
+    }
+
+    #[test]
     fn bind_dual_stack_ipv6() {
         let addr: SocketAddr = "[::]:0".parse().unwrap();
         // This may fail on systems without IPv6 support, so we just

@@ -169,6 +169,12 @@ This is the round-trip the protocol was designed for:
 - **Redacted secrets** round-trip as the `********` sentinel; `config.apply`
   treats the sentinel as "leave unchanged", so a saved form never blanks a
   password hash.
+- **Numeric fields are parsed into their bounded types** (`u16` ports, `u32`
+  baud/brightness). An out-of-range or non-numeric value becomes a field-level
+  error (re-rendered, not sent), rather than silently coercing to `0` or
+  producing a non-field driver parse error. An empty *required* number keeps the
+  prior value (clearing a port can't silently become OS-assigned); an empty
+  *optional* number (`discovery_port`) persists `null`.
 
 ## Behavioral contracts
 

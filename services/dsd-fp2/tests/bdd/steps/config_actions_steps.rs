@@ -32,6 +32,18 @@ async fn apply_invalid_baud_rate(world: &mut Fp2World) {
     world.call_config_apply(config).await;
 }
 
+#[when(regex = r"^config\.apply pins the bound port and sets max_brightness to (\d+)$")]
+async fn apply_pin_port_and_brightness(world: &mut Fp2World, value: u32) {
+    // Pin the (OS-assigned) bound port into the file so the reload rebinds the
+    // *same* port — letting this client reach the reloaded server (and
+    // exercising the SO_REUSEADDR rebind across a lingering connection).
+    let port = world.bound_port();
+    let mut config = world.current_config().await;
+    config["server"]["port"] = serde_json::json!(port);
+    config["cover_calibrator"]["max_brightness"] = serde_json::json!(value);
+    world.call_config_apply(config).await;
+}
+
 #[when(regex = r#"^the action "([^"]+)" is called$"#)]
 async fn call_named_action(world: &mut Fp2World, name: String) {
     let device = Arc::clone(world.device());
@@ -100,6 +112,11 @@ async fn assert_validation_errors(world: &mut Fp2World) {
         .as_array()
         .expect("`errors` is not an array");
     assert!(!errors.is_empty(), "expected validation errors, got none");
+}
+
+#[then(regex = r"^the reloaded service serves max_brightness (\d+)$")]
+async fn assert_reloaded_serves(world: &mut Fp2World, expected: u32) {
+    world.wait_for_config_max_brightness(expected).await;
 }
 
 #[then("the call should fail with an action-not-implemented error")]

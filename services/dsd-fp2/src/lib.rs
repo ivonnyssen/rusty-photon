@@ -33,7 +33,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ascom_alpaca::api::{CargoServerInfo, CoverCalibrator};
+use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
@@ -138,10 +138,7 @@ impl ServerBuilder {
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
             server.discovery_port = self.config.server.discovery_port;
 
-            // Keep an `Arc<DsdFp2Device>` handle out of the router so the reload
-            // arm can drive a clean, awaited transport teardown
-            // (`device.set_connected(false).await`) before the old server drops.
-            let device_handle = if self.config.cover_calibrator.enabled {
+            if self.config.cover_calibrator.enabled {
                 let mut device =
                     DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
                 if let (Some(path), Some(reload)) = (config_path.clone(), reload.clone()) {
@@ -152,20 +149,12 @@ impl ServerBuilder {
                         reload,
                     });
                 }
-                let device = Arc::new(device);
-                // `Arc<DsdFp2Device>` → `Arc<dyn CoverCalibrator>` unsizes at this
-                // annotated binding; the turbofish keeps `Arc::clone` from pinning
-                // `T = dyn CoverCalibrator` (which would reject `&device`).
-                let registered: Arc<dyn CoverCalibrator> = Arc::<DsdFp2Device>::clone(&device);
-                server.devices.register(registered);
+                server.devices.register(device);
                 info!(
                     "Registered CoverCalibrator device: {}",
                     self.config.cover_calibrator.name
                 );
-                Some(device)
-            } else {
-                None
-            };
+            }
 
             info!("Serial port: {}", self.config.serial.port);
 
@@ -202,7 +191,6 @@ impl ServerBuilder {
                 local_addr,
                 tls,
                 manager: Arc::clone(&manager),
-                device: device_handle,
             })
         }
         .await;
@@ -229,24 +217,15 @@ pub struct BoundServer {
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
     /// Held so `start()` can call `manager.transport().shutdown()` after the HTTP
-    /// server stops. No-op in LazyAcquire mode.
+    /// server stops — on shutdown *and* on reload (`main` awaits `start()` to
+    /// completion rather than dropping it), so the serial port and reconnect
+    /// supervisor are released before the service rebinds.
     manager: Arc<FlatPanelManager>,
-    /// The registered device, retained so the reload loop can close the transport
-    /// cleanly before tearing the server down. `None` when the CoverCalibrator is
-    /// disabled in config.
-    device: Option<Arc<DsdFp2Device>>,
 }
 
 impl BoundServer {
     pub fn listen_addr(&self) -> SocketAddr {
         self.local_addr
-    }
-
-    /// The registered device handle, for the reload arm's clean teardown
-    /// (`device.set_connected(false).await`). `None` when the CoverCalibrator
-    /// is disabled.
-    pub fn device(&self) -> Option<Arc<DsdFp2Device>> {
-        self.device.clone()
     }
 
     pub async fn start(

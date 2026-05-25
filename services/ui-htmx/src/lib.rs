@@ -116,6 +116,18 @@ async fn config_post(
         Ok(merged) => merged,
         Err(err) => return pages::message_error_card(&err.to_string()).into_response(),
     };
+    // BFF-side field errors (e.g. a port out of range) — re-render with the
+    // errors instead of sending a value the driver would reject with a
+    // non-field-level parse error.
+    if !merged.errors.is_empty() {
+        return pages::config_card(
+            &merged.config,
+            &merged.overrides,
+            &merged.errors,
+            Some(Banner::Invalid),
+        )
+        .into_response();
+    }
     match state.dsd_fp2.apply_config(&merged.config).await {
         Ok(resp) => match resp.status {
             ApplyStatus::Applying => pages::reconnecting_card().into_response(),

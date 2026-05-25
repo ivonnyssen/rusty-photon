@@ -1,17 +1,16 @@
 //! Deep Sky Dad FP2 ASCOM Alpaca driver — CLI entry point.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use ascom_alpaca::api::Device;
 use clap::Parser;
 use dsd_fp2::{load_effective_config, resolve_config_path, CliOverrides, ServerBuilder};
 use rusty_photon_service_lifecycle::ServiceRunner;
-use tracing::{debug, info, warn, Level};
+use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
 use dsd_fp2::MockTransportFactory;
-#[cfg(feature = "mock")]
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "dsd-fp2")]
@@ -101,23 +100,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .build()
                     .await?;
 
-                let device = bound.device();
-                tokio::select! {
-                    result = bound.start(shutdown.cancelled()) => return result,
-                    () = reload.recv() => {
-                        debug!("Reload signalled; tearing down and rebuilding dsd-fp2");
-                        if let Some(device) = device {
-                            // Inline, awaited transport close so the serial port is
-                            // released before a client reconnects to the rebuilt server.
-                            // Best-effort: log a failed close (the port may stay held
-                            // and the rebuild may fail to reconnect) but still rebuild.
-                            if let Err(e) = device.set_connected(false).await {
-                                warn!(error = %e, "reload: clean transport teardown failed; rebuilding anyway");
-                            }
+                // Stop the server on either the service shutdown or a config
+                // reload. We await `start()` to completion (rather than dropping
+                // it on reload) so its teardown runs — gracefully draining HTTP
+                // connections and calling `transport.shutdown()` to release the
+                // serial port and reconnect supervisor before we rebuild.
+                let reloaded = Arc::new(AtomicBool::new(false));
+                let stop = {
+                    let reloaded = Arc::clone(&reloaded);
+                    let shutdown = shutdown.cancelled();
+                    let reload = reload.clone();
+                    async move {
+                        tokio::select! {
+                            () = shutdown => {}
+                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
                         }
-                        continue;
                     }
+                };
+                bound.start(stop).await?;
+
+                if reloaded.load(Ordering::SeqCst) {
+                    debug!("Reload signalled; rebuilding dsd-fp2 from the new configuration");
+                    continue;
                 }
+                return Ok(());
             }
         },
     )
