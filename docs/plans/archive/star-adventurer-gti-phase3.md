@@ -2,7 +2,7 @@
 
 ## Status
 
-**COMPLETE (archived 2026-05-24).** Phase 3 shipped in PR #188 (3a–3h) and
+**Status: COMPLETE (archived 2026-05-24).** Phase 3 shipped in PR #188 (3a–3h) and
 PR #189 (3i: `@wip` removal), with codec + service coverage pushed >90% in
 PR #192. Phase 1 (design doc, PR #178) and Phase 2 (BDD scaffold + codec +
 service skeleton, PR #180) preceded it. The one "definition of done" item

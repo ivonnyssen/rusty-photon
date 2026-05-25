@@ -1,6 +1,8 @@
 # Star Adventurer GTi: required `unpark_from_ap_position` + recovery actions
 
-## Status: COMPLETE (archived 2026-05-24) — implemented in PR #301 (issue #249)
+## Status
+
+**Status: COMPLETE (archived 2026-05-24).** Implemented in PR #301 (issue #249).
 
 All six phases below landed under issue #249. Design captured in
 [`docs/services/star-adventurer-gti.md` §Unpark from AP position](../../services/star-adventurer-gti.md#unpark-from-ap-position).

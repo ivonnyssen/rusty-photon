@@ -16,7 +16,7 @@
 - **Phase 2 — meridian-flip support: hardware-validated 2026-05-16**
   on branch `worktree-meridian-flip-phase`, merged as PR #244 (titled
   "Phase 6" in the service's chronological PR sequence; "Phase 2" is this
-  plan's own local numbering). Scope landed in this PR:
+  plan's own local numbering). Scope landed in PR #244:
   §§2.1, 2.2, 2.3, 2.4, 2.6, 2.7 — coordinate helpers, per-pier-side
   envelopes, asymmetric counterweight binding-zone envelope,
   binding-zone-path-aware through-wrap RA routing,
