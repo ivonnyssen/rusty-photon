@@ -250,13 +250,19 @@ pub struct MergedForm {
     pub errors: Vec<FieldError>,
 }
 
-/// A malformed form submission (missing or unparseable hidden config blob).
+/// A malformed form submission (a missing or unparseable hidden field). Both
+/// hidden fields are always emitted by [`config_card`], so their absence or
+/// corruption means the submission did not come from a rendered page.
 #[derive(Debug, thiserror::Error)]
 pub enum FormError {
     #[error("the form was missing the hidden configuration field")]
     MissingConfig,
     #[error("the hidden configuration field was not valid JSON: {0}")]
     BadConfig(String),
+    #[error("the form was missing the hidden overrides field")]
+    MissingOverrides,
+    #[error("the hidden overrides field was not valid JSON: {0}")]
+    BadOverrides(String),
 }
 
 enum Kind {
@@ -340,10 +346,13 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
     let raw = form.get("__config").ok_or(FormError::MissingConfig)?;
     let mut config: Value =
         serde_json::from_str(raw).map_err(|e| FormError::BadConfig(e.to_string()))?;
-    let overrides: Vec<String> = form
-        .get("__overrides")
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+    // `__overrides` is required and validated like `__config`: a malformed value
+    // would otherwise be silently treated as "no overrides", letting pinned
+    // fields render editable (and be overlaid) on a re-render instead of
+    // surfacing the bad submission.
+    let overrides_raw = form.get("__overrides").ok_or(FormError::MissingOverrides)?;
+    let overrides: Vec<String> =
+        serde_json::from_str(overrides_raw).map_err(|e| FormError::BadOverrides(e.to_string()))?;
 
     let is_pinned = |name: &str| overrides.iter().any(|o| o == name);
 
@@ -559,7 +568,8 @@ mod tests {
         // device would unregister the config endpoint itself → self-lockout.)
         let form = form_from(&[
             ("__config", &sample_config().to_string()), // enabled: true
-            ("cover_calibrator.enabled", "false"),      // forged — must be ignored
+            ("__overrides", "[]"),
+            ("cover_calibrator.enabled", "false"), // forged — must be ignored
         ]);
         let merged = merge_form(&form).unwrap();
         assert_eq!(
@@ -575,6 +585,7 @@ mod tests {
     fn merge_form_empty_optional_becomes_null() {
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
             ("server.discovery_port", ""),
         ]);
         let merged = merge_form(&form).unwrap();
@@ -598,6 +609,7 @@ mod tests {
         // the driver would reject with a non-field parse error.
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
             ("server.port", "99999"),
         ]);
         let merged = merge_form(&form).unwrap();
@@ -618,6 +630,7 @@ mod tests {
         // Clearing server.port must not silently become 0 (OS-assigned).
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
             ("server.port", ""),
         ]);
         let merged = merge_form(&form).unwrap();
@@ -635,10 +648,30 @@ mod tests {
     fn merge_form_non_numeric_baud_rate_is_a_field_error() {
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
             ("serial.baud_rate", "fast"),
         ]);
         let merged = merge_form(&form).unwrap();
         assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
         assert_eq!(merged.errors[0].path, "serial.baud_rate");
+    }
+
+    #[test]
+    fn merge_form_missing_overrides_is_an_error() {
+        // `__overrides` is required like `__config`; absence is a malformed
+        // submission, not silently "no overrides".
+        let form = form_from(&[("__config", &sample_config().to_string())]);
+        let err = merge_form(&form).unwrap_err();
+        assert!(matches!(err, FormError::MissingOverrides), "{err:?}");
+    }
+
+    #[test]
+    fn merge_form_invalid_overrides_is_an_error() {
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", "not json"),
+        ]);
+        let err = merge_form(&form).unwrap_err();
+        assert!(matches!(err, FormError::BadOverrides(_)), "{err:?}");
     }
 }

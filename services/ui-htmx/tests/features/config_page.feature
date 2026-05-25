@@ -4,8 +4,8 @@ Feature: dsd-fp2 configuration page
   the page renders a form filled with the driver's current effective
   configuration; a field pinned by a command-line override is shown disabled.
   Submitting the form calls `config.apply` on the driver: an unchanged
-  submission persists nothing and reports no reload was needed; a valid change
-  triggers the driver's in-process reload, the page reports it is reconnecting,
+  submission reports the configuration was saved with no reload needed; a valid
+  change triggers the driver's in-process reload, the page reports it is reconnecting,
   and once the driver has reloaded the page serves the new value; an invalid
   change re-renders the form with the driver's field-level error and the
   submitted value preserved; and an unreachable driver surfaces an error banner.
