@@ -18,6 +18,9 @@ pub enum DsdFp2Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
     #[error("Malformed response: {0}")]
     MalformedResponse(String),
 
@@ -162,6 +165,27 @@ mod tests {
         let io = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
         let err: DsdFp2Error = io.into();
         assert!(matches!(err, DsdFp2Error::Io(_)));
+    }
+
+    #[test]
+    fn display_serialization() {
+        let serde_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
+        let err = DsdFp2Error::Serialization(serde_err);
+        assert!(
+            format!("{err}").starts_with("Serialization error:"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn from_serde_json_error_maps_to_invalid_operation() {
+        // `?` / `.into()` on a serde_json failure routes serde_json::Error ->
+        // DsdFp2Error -> ASCOMError (INVALID_OPERATION), which is how the
+        // config-action handlers surface serialization failures.
+        let serde_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
+        let err: DsdFp2Error = serde_err.into();
+        assert!(matches!(err, DsdFp2Error::Serialization(_)));
+        assert_eq!(err.to_ascom_error().code, ASCOMErrorCode::INVALID_OPERATION);
     }
 
     #[test]

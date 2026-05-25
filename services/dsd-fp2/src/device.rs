@@ -89,13 +89,13 @@ impl DsdFp2Device {
     /// `config.get`: return the effective config (secrets redacted) plus the
     /// CLI-override-pinned field paths.
     async fn handle_config_get(&self, ctx: &ConfigActionCtx) -> ASCOMResult<String> {
-        let mut config = serde_json::to_value(&ctx.effective).map_err(config_action_error)?;
+        let mut config = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
         config_actions::redact_value(&mut config);
         let response = ConfigGetResponse {
             config,
             overrides: ctx.overrides.pinned_paths(),
         };
-        serde_json::to_string(&response).map_err(config_action_error)
+        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
 
     /// `config.apply`: parse → validate → persist (layer-aware) → classify →
@@ -122,8 +122,8 @@ impl DsdFp2Device {
         // Validation failure is a domain error: HTTP 200, file untouched.
         let errors = config_actions::validate(&submitted);
         if !errors.is_empty() {
-            return serde_json::to_string(&ConfigApplyResponse::invalid(errors))
-                .map_err(config_action_error);
+            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
+                .map_err(DsdFp2Error::from)?);
         }
 
         // Build the value to persist: write through CLI-override-pinned fields
@@ -151,17 +151,17 @@ impl DsdFp2Device {
                     "cannot keep an unchanged secret when none is stored; provide the password hash"
                         .to_string(),
             }];
-            return serde_json::to_string(&ConfigApplyResponse::invalid(errors))
-                .map_err(config_action_error);
+            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
+                .map_err(DsdFp2Error::from)?);
         }
 
         let (to_persist, skipped) =
             config_actions::build_persist_value(&submitted, &file_current, &ctx.overrides)
-                .map_err(config_action_error)?;
+                .map_err(DsdFp2Error::from)?;
 
         // Classify what would change in the running (effective) config.
         let new_effective = config_actions::effective_value(&to_persist, &ctx.overrides);
-        let running = serde_json::to_value(&ctx.effective).map_err(config_action_error)?;
+        let running = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
         let changed = config_actions::diff_paths(&running, &new_effective);
 
         config_actions::save(&ctx.path, &to_persist).map_err(|e| {
@@ -195,18 +195,8 @@ impl DsdFp2Device {
             persisted_to: Some(ctx.path.display().to_string()),
             errors: Vec::new(),
         };
-        serde_json::to_string(&response).map_err(config_action_error)
+        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
-}
-
-/// Map an internal config-action failure (serialization, persistence) to an
-/// ASCOM error. Consistent with `error.rs`, IO/operation failures use
-/// `INVALID_OPERATION`.
-fn config_action_error(e: serde_json::Error) -> ASCOMError {
-    ASCOMError::new(
-        ASCOMErrorCode::INVALID_OPERATION,
-        format!("config action serialization failed: {e}"),
-    )
 }
 
 #[async_trait]
