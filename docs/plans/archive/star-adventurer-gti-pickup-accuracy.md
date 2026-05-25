@@ -1,6 +1,6 @@
 # Star Adventurer GTi: post-pickup RA accuracy experiments
 
-## Status: B + D landed on PR #210 (2026-05-12)
+## Status: COMPLETE (archived 2026-05-24) — B + D landed on PR #210 (2026-05-12)
 
 Real-hardware ConformU residuals before / after:
 

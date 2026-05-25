@@ -2,10 +2,18 @@
 
 ## Status
 
-**Active.** Phase 1 (design doc, PR #178) and Phase 2 (BDD scaffold +
-codec + service skeleton, PR #180) are landed. Phase 3 fills in every
-`unimplemented!()` body and removes the `@wip` tags from the 54 BDD
-scenarios, in the order described below.
+**COMPLETE (archived 2026-05-24).** Phase 3 shipped in PR #188 (3a–3h) and
+PR #189 (3i: `@wip` removal), with codec + service coverage pushed >90% in
+PR #192. Phase 1 (design doc, PR #178) and Phase 2 (BDD scaffold + codec +
+service skeleton, PR #180) preceded it. The one "definition of done" item
+not carried forward — re-adding `[package.metadata.conformu]` so the nightly
+ConformU workflow picks the service up — was deliberately reversed in PR #231
+after PulseGuide (#206) surfaced conformance failures (Dec-encoder
+`SideOfPier` convention + PulseGuide rate tolerances); the rationale lives in
+the `[package.metadata.conformu]` comment in
+`services/star-adventurer-gti/Cargo.toml`. The service has since evolved well
+past this plan (shared-transport migration, meridian flip, unpark-from-AP,
+tracking guard).
 
 ## Outcomes (definition of done)
 

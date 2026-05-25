@@ -7,6 +7,7 @@
       - Scaffolding a new long-running service binary, or touching a service's main.rs / shutdown handling: also read docs/skills/service-lifecycle.md
       - Writing or modifying tests: read docs/skills/testing.md
       - Pushing code or running CI checks: read docs/skills/pre-push.md
+      - Archiving a completed plan (moving docs/plans/<plan>.md into docs/plans/archive/): read docs/skills/archiving-plans.md
 
 2. You MUST ALWAYS update the appropriate README and / or the appropriate design document when you make a change to a service and the change is impacting what is stated in these documents. If in doubt, re-read the docs to evaluate impact.
 

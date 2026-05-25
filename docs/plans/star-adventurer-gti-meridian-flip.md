@@ -14,7 +14,9 @@
   LST-roundtrip drift no longer pushes boundary targets over the
   cliff. No CPR-dependent comparator constant needed.
 - **Phase 2 — meridian-flip support: hardware-validated 2026-05-16**
-  on branch `worktree-meridian-flip-phase`. Scope landed in this PR:
+  on branch `worktree-meridian-flip-phase`, merged as PR #244 (titled
+  "Phase 6" in the service's chronological PR sequence; "Phase 2" is this
+  plan's own local numbering). Scope landed in this PR:
   §§2.1, 2.2, 2.3, 2.4, 2.6, 2.7 — coordinate helpers, per-pier-side
   envelopes, asymmetric counterweight binding-zone envelope,
   binding-zone-path-aware through-wrap RA routing,
@@ -488,12 +490,15 @@ modulo 24 h at `k ∈ {-1, 0, +1}` to handle the wrap). Re-run of the
 same Park 5 slew issued RA −3,631 ticks CCW (the canonical safe step)
 and the mount landed at Park 5 N visually confirmed.
 
-A structurally analogous sign-blindness exists in `flip_slew_dec_delta`
-— the dec routing assumes "safe direction in north for post-flip half
-is negative" but inverts at the `-cpr_dec/2` side of the wrap. This
-session's Park 4 → Park 5 dec was on the `+cpr_dec/2` side where the
-old heuristic happens to be correct, so the dec bug wasn't exercised.
-Tracked in a follow-up issue.
+A structurally analogous sign-blindness existed in `flip_slew_dec_delta`
+— the dec routing assumed "safe direction in north for the post-flip half
+is negative" but inverted at the `-cpr_dec/2` side of the wrap. This
+session's Park 4 → Park 5 dec was on the `+cpr_dec/2` side where the old
+heuristic happened to be correct, so the dec bug wasn't exercised live. It
+was corrected in the same meridian-flip work rather than deferred: both
+`flip_slew_ra_delta` and `flip_slew_dec_delta` now route via the path-aware
+`canonical_path_crosses_pole` / binding-zone checks instead of the
+`|current| ≷ cpr/4` sign heuristic (see `mount_device/slew.rs`).
 
 ---
 

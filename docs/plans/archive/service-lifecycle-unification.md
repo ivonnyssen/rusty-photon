@@ -1,6 +1,6 @@
 # Plan: unified service lifecycle (issue #294)
 
-**Status: ALL PHASES LANDED.** The crate at
+**Status: COMPLETE (archived 2026-05-24; PR #295).** ALL PHASES LANDED. The crate at
 `crates/rusty-photon-service-lifecycle/` ships the full runner (console
 signal path + SCM dispatch behind the `scm` feature). All twelve
 long-running services have been migrated, including the five shared-
@@ -15,8 +15,8 @@ PR #295; issue #287 closes as a side fix in the same PR.
 **Issue:** [#294 — look over all services and simplify/unify the signal handler installation](https://github.com/ivonnyssen/rusty-photon/issues/294)
 **Also fixes:** [#287 — outer `shutdown_signal` race cancels inner graceful shutdown](https://github.com/ivonnyssen/rusty-photon/issues/287)
 **Closest precedent:** [`docs/plans/shared-transport-extraction.md`](shared-transport-extraction.md) (multi-phase workspace-wide infra crate adopted by N services)
-**Crate design doc:** [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
-**Skill doc:** [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
+**Crate design doc:** [`docs/crates/rusty-photon-service-lifecycle.md`](../../crates/rusty-photon-service-lifecycle.md)
+**Skill doc:** [`docs/skills/service-lifecycle.md`](../../skills/service-lifecycle.md)
 
 ## Outcomes
 
@@ -47,10 +47,10 @@ PR #295; issue #287 closes as a side fix in the same PR.
   each commit; full `cargo rail run --profile commit -q` clean at
   PR head.
 - **Phase 3** (skill doc + workspace docs polish): landed. Added
-  [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
+  [`docs/skills/service-lifecycle.md`](../../skills/service-lifecycle.md)
   covering the standard pattern, runner API, reload, SCM mode, and
   common pitfalls. Cross-references from
-  [`docs/skills/development-workflow.md`](../skills/development-workflow.md)
+  [`docs/skills/development-workflow.md`](../../skills/development-workflow.md)
   (read-this-when-scaffolding-a-service list) and `CLAUDE.md` rule 1.b.
 
 ## Background
@@ -113,7 +113,7 @@ single inner installation and just `bound.start().await?` in `main`.
 The fix is scoped to the five shared-transport services.
 
 The crate design itself —
-[`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
+[`docs/crates/rusty-photon-service-lifecycle.md`](../../crates/rusty-photon-service-lifecycle.md)
 — covers scope, public API, behavior, and usage examples. This plan
 covers only the *migration* from the four current shapes to the
 unified one.
@@ -164,7 +164,7 @@ unified one.
 These resolve open questions raised during design discussion. Crate
 design decisions (one crate not two, builder not macro, runner owns
 runtime, naming, no `tracing` init in runner) are documented in the
-[crate design doc](../crates/rusty-photon-service-lifecycle.md);
+[crate design doc](../../crates/rusty-photon-service-lifecycle.md);
 migration-specific decisions live here.
 
 * **Defer installer packaging.** Architectural payoff up front
@@ -183,7 +183,7 @@ migration-specific decisions live here.
 ## Phase 0 — design + scaffolding *(landed)*
 
 * Crate design doc at
-  [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md).
+  [`docs/crates/rusty-photon-service-lifecycle.md`](../../crates/rusty-photon-service-lifecycle.md).
 * This plan doc.
 * Crate scaffold at `crates/rusty-photon-service-lifecycle/` with full
   public API surface, `//!` doc comments, and `todo!()` bodies on the
@@ -214,7 +214,7 @@ mode) before any other service touches the crate. Landed on PR #295.
   closure-exactly-once. SCM dispatch is manually validated via
   filemonitor's existing Windows smoke test, not in CI. Detail in
   the crate design doc's [Testing
-  section](../crates/rusty-photon-service-lifecycle.md#testing).
+  section](../../crates/rusty-photon-service-lifecycle.md#testing).
 
 ### Filemonitor migration
 
@@ -237,7 +237,7 @@ mode) before any other service touches the crate. Landed on PR #295.
 * **Closure `Send + 'static` bound.** Services must `move` `args`
   into the closure. Idiomatic; no new lifetime gymnastics. Documented
   in the crate's [Public API
-  section](../crates/rusty-photon-service-lifecycle.md#public-api).
+  section](../../crates/rusty-photon-service-lifecycle.md#public-api).
 * **SCM regression in filemonitor.** The highest-risk migration
   because filemonitor is currently the only SCM adopter. Mitigated by
   preserving exact behavior (Stop→cancel, ParamChange→notify,

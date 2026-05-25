@@ -2,8 +2,8 @@
 
 **Date:** 2026-05-09
 **Branch:** `worktree-i18n-spike`
-**Parent plan:** [`docs/plans/i18n.md`](i18n.md) — workspace internationalization strategy
-**Status:** in flight. Picks up §7 Phase 3 (CLI help) of the parent plan as a small, isolated probe. Not a substitute for the §7 Phase 1 dashboard spike — this answers a different question.
+**Parent plan:** [`docs/plans/i18n.md`](../i18n.md) — workspace internationalization strategy
+**Status:** COMPLETE (archived 2026-05-24). Shipped in PR #181; the shared crate was later renamed rp-i18n → `rusty-photon-i18n` (#194). Picked up §7 Phase 3 (CLI help) of the parent plan as a small, isolated probe — not a substitute for the §7 Phase 1 dashboard spike, which answered a different question.
 
 ## 1. Goal
 
