@@ -22,9 +22,10 @@ use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command, Response};
 
 use crate::codec::SkywatcherCodec;
-use crate::coordinates::{ra_ticks_to_mechanical_ha, sidereal_step_period};
+use crate::coordinates::sidereal_step_period;
 use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters};
+use crate::units::{Cpr, RaTicks};
 
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
 /// after a `:K` (decelerate stop) before giving up. The firmware
@@ -146,7 +147,7 @@ pub(super) async fn enable_sidereal_tracking_ra(
     session: &Session<SkywatcherCodec>,
     params: &MountParameters,
 ) -> crate::error::Result<()> {
-    let period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+    let period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
     manager
         .send(
             session,
@@ -238,7 +239,9 @@ pub(super) fn flip_slew_ra_delta(
         return Ok(canonical_delta);
     }
     let cpr_i = cpr as i32;
-    let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
+    let cur_ha = RaTicks::new(current_ticks)
+        .to_mech_ha(Cpr::new(cpr))
+        .value();
     let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(canonical_delta);
@@ -279,7 +282,9 @@ pub(super) fn check_non_flip_ra_path(
     if cpr == 0 || canonical_delta == 0 {
         return Ok(());
     }
-    let cur_ha = ra_ticks_to_mechanical_ha(current_ticks, cpr);
+    let cur_ha = RaTicks::new(current_ticks)
+        .to_mech_ha(Cpr::new(cpr))
+        .value();
     let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(());

@@ -32,11 +32,11 @@ use tracing::debug;
 use crate::codec::SkywatcherCodec;
 use crate::config::MountConfig;
 use crate::coordinates::{
-    dec_degrees_to_ticks, encoder_to_celestial, fold_to_canonical_band, local_sidereal_time_hours,
-    pickup_target_ra_ticks, target_encoder_flipped,
+    encoder_to_celestial, local_sidereal_time_hours, pickup_target_ra_ticks, target_encoder_flipped,
 };
 use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountSnapshot};
+use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
 use super::slew::{
     enable_sidereal_tracking_ra, pickup_reslew_axis, stop_axis_and_wait, AXIS_STOP_TIMEOUT,
@@ -478,13 +478,14 @@ async fn slew_completion_step(
             // RA residual and the pickup loop would try to undo
             // the flip on its first iteration.
             let (cur_ra, cur_dec) = encoder_to_celestial(
-                snap.ra.position_ticks,
-                snap.dec.position_ticks,
+                RaTicks::new(snap.ra.position_ticks),
+                DecTicks::new(snap.dec.position_ticks),
                 lst,
-                params.cpr_ra,
-                params.cpr_dec,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
                 config.site_latitude_deg,
             );
+            let (cur_ra, cur_dec) = (cur_ra.value(), cur_dec.value());
             // RA residual is on a 24-hour circle; take the
             // shorter arc. Convert hours → arc-seconds
             // (15°/hour × 3600″/°).
@@ -543,17 +544,24 @@ async fn slew_completion_step(
                     .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
                     .is_some();
                 let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
-                    let lst_proj = lst + projection.as_secs_f64() / 3600.0;
+                    let lst_proj = Lst::new(lst.value() + projection.as_secs_f64() / 3600.0);
                     target_encoder_flipped(
-                        target_ra,
-                        target_dec,
+                        Ra::new(target_ra),
+                        Dec::new(target_dec),
                         lst_proj,
-                        params.cpr_ra,
-                        params.cpr_dec,
+                        Cpr::new(params.cpr_ra),
+                        Cpr::new(params.cpr_dec),
                     )
                 } else {
-                    let new_ra = pickup_target_ra_ticks(target_ra, lst, projection, params.cpr_ra);
-                    let new_dec = dec_degrees_to_ticks(target_dec, params.cpr_dec);
+                    let new_ra = pickup_target_ra_ticks(
+                        Ra::new(target_ra),
+                        lst,
+                        projection,
+                        Cpr::new(params.cpr_ra),
+                    );
+                    let new_dec = Dec::new(target_dec)
+                        .to_mech()
+                        .to_ticks(Cpr::new(params.cpr_dec));
                     (new_ra, new_dec)
                 };
                 // Fold the deltas to canonical so the pickup
@@ -561,10 +569,12 @@ async fn slew_completion_step(
                 // current encoder snapshot landed outside
                 // `[−cpr/2, +cpr/2)` after a through-wrap
                 // flip — see [`fold_to_canonical_band`].
-                let ra_delta =
-                    fold_to_canonical_band(new_ra_ticks - snap.ra.position_ticks, params.cpr_ra);
-                let dec_delta =
-                    fold_to_canonical_band(new_dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+                let ra_delta = RaTicks::new(new_ra_ticks.value() - snap.ra.position_ticks)
+                    .fold_to_canonical_band(Cpr::new(params.cpr_ra))
+                    .value();
+                let dec_delta = DecTicks::new(new_dec_ticks.value() - snap.dec.position_ticks)
+                    .fold_to_canonical_band(Cpr::new(params.cpr_dec))
+                    .value();
                 *pickup_iterations += 1;
                 debug!(
                     iteration = *pickup_iterations,

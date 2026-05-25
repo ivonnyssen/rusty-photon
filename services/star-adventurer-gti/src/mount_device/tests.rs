@@ -20,10 +20,11 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::Config;
-use crate::coordinates::{fold_to_canonical_band, SIDEREAL_DEG_PER_SEC};
+use crate::coordinates::SIDEREAL_DEG_PER_SEC;
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
 use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
+use crate::units::{Cpr, RaTicks};
 
 use super::park_persistence::{read_connect_fields, write_park_to_config};
 use super::slew::{
@@ -2713,7 +2714,8 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     let payload: &[u8; 6] = (&i1[3..9]).try_into().unwrap();
     let actual_period = decode_u24(payload).unwrap();
     let mock_state = mock.lock().await;
-    let p_sid = crate::coordinates::sidereal_step_period(mock_state.tmr_freq, mock_state.cpr_ra);
+    let p_sid =
+        crate::coordinates::sidereal_step_period(mock_state.tmr_freq, Cpr::new(mock_state.cpr_ra));
     let expected = 2 * p_sid;
     drop(mock_state);
     assert_eq!(
@@ -2956,7 +2958,9 @@ fn flip_slew_ra_delta_flip_back_from_plus_half_cpr_forces_cw_through_wrap() {
     let cpr = GTI_CPR;
     let current = cpr as i32 / 2;
     let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
-    let canonical = fold_to_canonical_band(canonical_raw, cpr); // +cpr/4
+    let canonical = RaTicks::new(canonical_raw)
+        .fold_to_canonical_band(Cpr::new(cpr))
+        .value(); // +cpr/4
     let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
     assert!(issued > 0, "post-flip wrap → safe arc must use CW");
     assert_eq!(issued, canonical, "canonical CW is already safe here");
@@ -3079,7 +3083,9 @@ fn flip_slew_ra_delta_wide_zone_picks_long_way_for_zone_boundary_traversal() {
     let target_h = 0.9_f64;
     let current = (cur_h * cpr as f64 / 24.0).round() as i32;
     let target = (target_h * cpr as f64 / 24.0).round() as i32;
-    let canonical = fold_to_canonical_band(target - current, cpr);
+    let canonical = RaTicks::new(target - current)
+        .fold_to_canonical_band(Cpr::new(cpr))
+        .value();
     let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
     assert!(
         issued > 0,

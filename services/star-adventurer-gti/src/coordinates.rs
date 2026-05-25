@@ -25,32 +25,7 @@ use erfars::timescales::{Dtf2d, Taitt, Utctai};
 
 use crate::config::FlipPolicy;
 use crate::error::{Result, StarAdvError};
-
-/// Convert RA-axis encoder ticks to a mechanical hour-angle in the range
-/// `[-12, +12)` hours.
-pub fn ra_ticks_to_mechanical_ha(ticks: i32, cpr: u32) -> f64 {
-    if cpr == 0 {
-        return 0.0;
-    }
-    let hours = (ticks as f64) * 24.0 / (cpr as f64);
-    fold_to_signed(hours, 24.0)
-}
-
-/// Convert Dec-axis encoder ticks to a declination angle in degrees.
-///
-/// Returns the linear mapping `ticks * 360 / cpr` then folded into
-/// `[-180, +180)`. **Does not** fold through the celestial pole — values
-/// outside `[-90, +90]` are returned as-is so the caller can detect a
-/// mount that ended up "through the pole" (Phase 4 sync logic decides
-/// what to do with that). For the BDD scenarios this is enough: every
-/// scenario stays inside the legal Dec range.
-pub fn dec_ticks_to_degrees(ticks: i32, cpr: u32) -> f64 {
-    if cpr == 0 {
-        return 0.0;
-    }
-    let deg = (ticks as f64) * 360.0 / (cpr as f64);
-    fold_to_signed(deg, 360.0)
-}
+use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
 /// Local apparent sidereal time in hours `[0, 24)` from the host's wall
 /// clock and the configured site longitude (east-positive, ASCOM
@@ -69,7 +44,7 @@ pub fn dec_ticks_to_degrees(ticks: i32, cpr: u32) -> f64 {
 /// silently accepted here. The coordinate-read hot path maps any Err
 /// to an ASCOM error rather than letting the tokio task abort and
 /// the Alpaca client see a connection reset.
-pub fn local_sidereal_time_hours(utc: SystemTime, site_longitude_deg: f64) -> Result<f64> {
+pub fn local_sidereal_time_hours(utc: SystemTime, site_longitude_deg: f64) -> Result<Lst> {
     lst_for_datetime(utc.into(), site_longitude_deg)
 }
 
@@ -79,9 +54,9 @@ pub fn local_sidereal_time_hours(utc: SystemTime, site_longitude_deg: f64) -> Re
 /// `SystemTime` (which on Windows is backed by FILETIME and cannot
 /// represent years below 1601, let alone below ERFA's `IYMIN = -4799`
 /// floor).
-pub(crate) fn lst_for_datetime(dt: DateTime<Utc>, site_longitude_deg: f64) -> Result<f64> {
+pub(crate) fn lst_for_datetime(dt: DateTime<Utc>, site_longitude_deg: f64) -> Result<Lst> {
     let gast_hours = greenwich_apparent_sidereal_hours(dt)?;
-    Ok((gast_hours + site_longitude_deg / 15.0).rem_euclid(24.0))
+    Ok(Lst::new(gast_hours + site_longitude_deg / 15.0))
 }
 
 fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
@@ -114,22 +89,6 @@ fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
     Ok(gast_radians * 12.0 / ERFA_DPI)
 }
 
-/// Mechanical hour angle (signed hours) → ASCOM right ascension (hours
-/// `[0, 24)`), given the LST.
-///
-/// `RA = LST - mechanical_HA`, folded into the standard `[0, 24)` range.
-pub fn mechanical_ha_to_ra(mech_ha: f64, lst_hours: f64) -> f64 {
-    (lst_hours - mech_ha).rem_euclid(24.0)
-}
-
-/// ASCOM right ascension (hours `[0, 24)`) → mechanical hour angle.
-///
-/// Inverse of [`mechanical_ha_to_ra`]. Folds the result into `[-12, +12)`
-/// because that matches what the encoder reports.
-pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
-    fold_to_signed((lst_hours - ra_hours).rem_euclid(24.0), 24.0)
-}
-
 /// Side-of-pier classification derived from the Dec-axis encoder
 /// position, the Dec-axis CPR, and the site latitude.
 ///
@@ -158,18 +117,18 @@ pub fn ra_to_mechanical_ha(ra_hours: f64, lst_hours: f64) -> f64 {
 /// here; AP Park 5 N (saddle east, dec normal) reports `pierWest`.
 /// The encoder values for each park pose are still mechanically
 /// correct — only the operational-vs-geometric label disagrees.
-pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> PierSide {
-    if cpr_dec == 0 {
+pub fn side_of_pier(dec_ticks: DecTicks, cpr_dec: Cpr, site_latitude_deg: f64) -> PierSide {
+    if cpr_dec.get() == 0 {
         return PierSide::Unknown;
     }
-    let quarter = (cpr_dec / 4) as i64;
+    let quarter = (cpr_dec.get() / 4) as i64;
     // Fold the raw counter into the canonical band before classifying:
     // raw can sit outside `[-cpr/2, +cpr/2)` after through-wrap flip
     // slews, and the half-classification only makes sense on the folded
     // position. Without folding, a raw in `(3·cpr/4, 5·cpr/4)` whose
     // folded value lies in `(-cpr/4, +cpr/4)` would be misread as
     // post-flip and the East/West label would invert.
-    let folded = fold_to_canonical_band(dec_ticks, cpr_dec);
+    let folded = dec_ticks.fold_to_canonical_band(cpr_dec).value();
     // Past-the-pole detection: |Dec encoder| > 90° means the mount
     // has rotated the Dec axis beyond either celestial pole — the
     // post-meridian-flip / cross-axis-rotated-180° state. The
@@ -189,15 +148,6 @@ pub fn side_of_pier(dec_ticks: i32, cpr_dec: u32, site_latitude_deg: f64) -> Pie
     }
 }
 
-/// Convert a mechanical hour-angle (signed hours) to RA-axis encoder ticks.
-/// Inverse of [`ra_ticks_to_mechanical_ha`].
-pub fn mechanical_ha_to_ra_ticks(mech_ha_hours: f64, cpr: u32) -> i32 {
-    if cpr == 0 {
-        return 0;
-    }
-    (mech_ha_hours * (cpr as f64) / 24.0).round() as i32
-}
-
 /// Compute the target's RA/Dec encoder pair for the "normal"
 /// (pre-flip) pointing state.
 ///
@@ -207,15 +157,15 @@ pub fn mechanical_ha_to_ra_ticks(mech_ha_hours: f64, cpr: u32) -> i32 {
 /// behaviour for every slew before Phase 6, extracted into a helper
 /// so [`target_encoder_flipped`] can share the structure.
 pub fn target_encoder_normal(
-    ra_hours: f64,
-    dec_degrees: f64,
-    lst_hours: f64,
-    cpr_ra: u32,
-    cpr_dec: u32,
-) -> (i32, i32) {
-    let mech_ha = ra_to_mechanical_ha(ra_hours, lst_hours);
-    let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, cpr_ra);
-    let dec_ticks = dec_degrees_to_ticks(dec_degrees, cpr_dec);
+    ra: Ra,
+    dec: Dec,
+    lst: Lst,
+    cpr_ra: Cpr,
+    cpr_dec: Cpr,
+) -> (RaTicks, DecTicks) {
+    let mech_ha = lst.hour_angle_of(ra).to_mech();
+    let ra_ticks = mech_ha.to_ticks(cpr_ra);
+    let dec_ticks = dec.to_mech().to_ticks(cpr_dec);
     (ra_ticks, dec_ticks)
 }
 
@@ -238,17 +188,15 @@ pub fn target_encoder_normal(
 /// physical mechanical position at the encoder wrap; downstream
 /// callers don't distinguish between them.
 pub fn target_encoder_flipped(
-    ra_hours: f64,
-    dec_degrees: f64,
-    lst_hours: f64,
-    cpr_ra: u32,
-    cpr_dec: u32,
-) -> (i32, i32) {
-    let mech_ha_normal = ra_to_mechanical_ha(ra_hours, lst_hours);
-    let mech_ha_flipped = fold_to_signed(mech_ha_normal + 12.0, 24.0);
-    let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha_flipped, cpr_ra);
-    let dec_flipped = dec_degrees.signum() * (180.0 - dec_degrees.abs());
-    let dec_ticks = dec_degrees_to_ticks(dec_flipped, cpr_dec);
+    ra: Ra,
+    dec: Dec,
+    lst: Lst,
+    cpr_ra: Cpr,
+    cpr_dec: Cpr,
+) -> (RaTicks, DecTicks) {
+    let mech_ha_flipped = lst.hour_angle_of(ra).to_mech().flipped();
+    let ra_ticks = mech_ha_flipped.to_ticks(cpr_ra);
+    let dec_ticks = dec.to_mech_flipped().to_ticks(cpr_dec);
     (ra_ticks, dec_ticks)
 }
 
@@ -270,15 +218,15 @@ pub fn target_encoder_flipped(
 /// pointing, and the pickup loop would interpret a successful flip
 /// as a 12-hour RA residual and try to undo it.
 pub fn encoder_to_celestial(
-    ra_ticks: i32,
-    dec_ticks: i32,
-    lst_hours: f64,
-    cpr_ra: u32,
-    cpr_dec: u32,
+    ra_ticks: RaTicks,
+    dec_ticks: DecTicks,
+    lst: Lst,
+    cpr_ra: Cpr,
+    cpr_dec: Cpr,
     site_latitude_deg: f64,
-) -> (f64, f64) {
-    let mech_ha = ra_ticks_to_mechanical_ha(ra_ticks, cpr_ra);
-    let dec_enc = dec_ticks_to_degrees(dec_ticks, cpr_dec);
+) -> (Ra, Dec) {
+    let mech_ha = ra_ticks.to_mech_ha(cpr_ra);
+    let dec_enc = dec_ticks.to_mech_dec(cpr_dec);
     let pier = side_of_pier(dec_ticks, cpr_dec, site_latitude_deg);
     let pre_flip_side = if site_latitude_deg >= 0.0 {
         PierSide::West
@@ -287,16 +235,15 @@ pub fn encoder_to_celestial(
     };
     let is_flipped = pier != pre_flip_side && pier != PierSide::Unknown;
     if is_flipped {
-        let ra = (lst_hours - mech_ha + 12.0).rem_euclid(24.0);
-        // `dec_enc.signum()` returns ±1 for any non-zero value; the
-        // degenerate `dec_enc == 0` post-flip case (dec encoder at the
+        let ra = mech_ha.to_ra_flipped(lst);
+        // The degenerate `dec_enc == 0` post-flip case (dec encoder at the
         // wrap) is unreachable when `is_flipped == true` because
         // `side_of_pier`'s `|dec_ticks| > cpr/4` check is strict.
-        let dec = dec_enc.signum() * (180.0 - dec_enc.abs());
+        let dec = dec_enc.to_dec_flipped();
         (ra, dec)
     } else {
-        let ra = (lst_hours - mech_ha).rem_euclid(24.0);
-        (ra, dec_enc)
+        let ra = mech_ha.to_ra(lst);
+        (ra, dec_enc.to_dec())
     }
 }
 
@@ -335,8 +282,8 @@ pub fn opposite_pier_side(side: PierSide) -> PierSide {
 /// classification to anchor a flip decision on. This mirrors how
 /// [`side_of_pier`] degrades when `cpr_dec == 0`.
 pub fn select_pier_side_for_target(
-    target_ra_hours: f64,
-    lst_hours: f64,
+    target_ra: Ra,
+    lst: Lst,
     current: PierSide,
     policy: &FlipPolicy,
     binding_zone_hours: (f64, f64),
@@ -348,7 +295,7 @@ pub fn select_pier_side_for_target(
     if current == PierSide::Unknown {
         return PierSide::Unknown;
     }
-    let target_ha = ra_to_mechanical_ha(target_ra_hours, lst_hours);
+    let target_ha = lst.hour_angle_of(target_ra).value();
     let northern = site_latitude_deg >= 0.0;
     let pre_flip_side = if northern {
         PierSide::West
@@ -371,15 +318,6 @@ pub fn select_pier_side_for_target(
     } else {
         opposite_pier_side(current)
     }
-}
-
-/// Convert a declination (degrees, `[-90, +90]`) to Dec-axis encoder ticks.
-/// Inverse of [`dec_ticks_to_degrees`].
-pub fn dec_degrees_to_ticks(dec_degrees: f64, cpr: u32) -> i32 {
-    if cpr == 0 {
-        return 0;
-    }
-    (dec_degrees * (cpr as f64) / 360.0).round() as i32
 }
 
 /// Compute the RA-axis encoder target for a pickup-loop re-slew,
@@ -407,14 +345,16 @@ pub fn dec_degrees_to_ticks(dec_degrees: f64, cpr: u32) -> i32 {
 /// ~`polling_interval × 2` (one watcher sleep + one slew-settle
 /// + wire round-trips).
 pub fn pickup_target_ra_ticks(
-    target_ra_hours: f64,
-    current_lst_hours: f64,
+    target_ra: Ra,
+    current_lst: Lst,
     projection: std::time::Duration,
-    cpr_ra: u32,
-) -> i32 {
-    let lst_at_next_check = current_lst_hours + projection.as_secs_f64() / 3600.0;
-    let mech_ha = ra_to_mechanical_ha(target_ra_hours, lst_at_next_check);
-    mechanical_ha_to_ra_ticks(mech_ha, cpr_ra)
+    cpr_ra: Cpr,
+) -> RaTicks {
+    let lst_at_next_check = Lst::new(current_lst.value() + projection.as_secs_f64() / 3600.0);
+    lst_at_next_check
+        .hour_angle_of(target_ra)
+        .to_mech()
+        .to_ticks(cpr_ra)
 }
 
 /// Convert RA / Dec → topocentric (altitude, azimuth) given the site
@@ -424,14 +364,9 @@ pub fn pickup_target_ra_ticks(
 /// clockwise from north in the range `[0, 360)`. Refraction is **not**
 /// applied — the design doc keeps the driver refraction-free
 /// (`DoesRefraction = false`).
-pub fn ra_dec_to_alt_az(
-    ra_hours: f64,
-    dec_degrees: f64,
-    site_latitude_deg: f64,
-    lst_hours: f64,
-) -> (f64, f64) {
-    let ha_rad = ((lst_hours - ra_hours) * 15.0).to_radians();
-    let dec_rad = dec_degrees.to_radians();
+pub fn ra_dec_to_alt_az(ra: Ra, dec: Dec, site_latitude_deg: f64, lst: Lst) -> (f64, f64) {
+    let ha_rad = ((lst.value() - ra.value()) * 15.0).to_radians();
+    let dec_rad = dec.value().to_radians();
     let lat_rad = site_latitude_deg.to_radians();
     let sin_alt = dec_rad.sin() * lat_rad.sin() + dec_rad.cos() * lat_rad.cos() * ha_rad.cos();
     let alt_rad = sin_alt.clamp(-1.0, 1.0).asin();
@@ -460,12 +395,12 @@ pub fn ra_dec_to_alt_az(
 ///
 /// For the GTi defaults (`tmr_freq = 0xF42400 = 16_000_000`,
 /// `cpr = 0x375F00 = 3_628_800`), this gives roughly `379,887`.
-pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: u32) -> u32 {
-    if cpr_ra == 0 {
+pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: Cpr) -> u32 {
+    if cpr_ra.get() == 0 {
         return 0;
     }
     let sidereal_seconds = 86164.0905_f64;
-    ((tmr_freq as f64) * sidereal_seconds / (cpr_ra as f64)).round() as u32
+    ((tmr_freq as f64) * sidereal_seconds / (cpr_ra.get() as f64)).round() as u32
 }
 
 /// Sidereal rate in degrees per second.
@@ -500,53 +435,6 @@ pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
     ((sidereal_period as f64) / rate_factor).round() as u32
 }
 
-/// Fold an hour-angle value into `[-12, +12)`. Public helper so
-/// callers can compute "flipped" mech_HA = `fold_ha(mech_HA_normal + 12)`
-/// without re-deriving the modular-arithmetic convention.
-pub fn fold_ha(hours: f64) -> f64 {
-    fold_to_signed(hours, 24.0)
-}
-
-/// Fold a value into `[-period/2, +period/2)`. Used by both the RA and
-/// Dec encoder mappings.
-fn fold_to_signed(value: f64, period: f64) -> f64 {
-    let half = period / 2.0;
-    let folded = value.rem_euclid(period);
-    if folded >= half {
-        folded - period
-    } else {
-        folded
-    }
-}
-
-/// Fold an encoder-tick value (position or delta) into the shortest
-/// equivalent representation in `[-cpr/2, +cpr/2)`.
-///
-/// The Sky-Watcher firmware's encoder counter is wider than the physical
-/// axis's logical period (cpr): a single revolution is `cpr` ticks, but
-/// the counter can run from `−2²³` to `+2²³ − 1` before the codec's
-/// 24-bit field wraps. A through-wrap meridian-flip slew can therefore
-/// leave the encoder counter outside the canonical `[−cpr/2, +cpr/2)`
-/// band (e.g. `−1.89M` for a flip that landed physically at `+11.5 h`,
-/// modular `+1.74M`). Without folding, the next slew's
-/// `target_ticks − current_ticks` would order a full extra revolution,
-/// and the [`side_of_pier`] half-classification would misread the
-/// physical position. This helper collapses the raw value to its
-/// canonical-band equivalent.
-pub fn fold_to_canonical_band(value: i32, cpr: u32) -> i32 {
-    if cpr == 0 {
-        return value;
-    }
-    let cpr_i = cpr as i32;
-    let half_cpr = cpr_i / 2;
-    let modular = value.rem_euclid(cpr_i);
-    if modular >= half_cpr {
-        modular - cpr_i
-    } else {
-        modular
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -555,45 +443,8 @@ mod tests {
 
     const GTI_CPR: u32 = 0x0037_5F00;
 
-    #[test]
-    fn ra_at_encoder_zero_is_meridian() {
-        assert_eq!(ra_ticks_to_mechanical_ha(0, GTI_CPR), 0.0);
-    }
-
-    #[test]
-    fn ra_at_quarter_revolution_is_six_hours_east() {
-        let ha = ra_ticks_to_mechanical_ha((GTI_CPR / 4) as i32, GTI_CPR);
-        assert!((ha - 6.0).abs() < 1e-9, "got {ha}");
-    }
-
-    #[test]
-    fn ra_at_negative_quarter_is_minus_six_hours() {
-        let ha = ra_ticks_to_mechanical_ha(-((GTI_CPR / 4) as i32), GTI_CPR);
-        assert!((ha + 6.0).abs() < 1e-9, "got {ha}");
-    }
-
-    #[test]
-    fn ra_at_half_revolution_folds_to_minus_twelve() {
-        let ha = ra_ticks_to_mechanical_ha((GTI_CPR / 2) as i32, GTI_CPR);
-        // Either -12 or just below 12, depending on fold direction.
-        assert!(ha.abs().abs_diff_eq(&12.0_f64, 1e-9), "got {ha}");
-    }
-
-    #[test]
-    fn dec_at_encoder_zero_is_celestial_equator() {
-        assert_eq!(dec_ticks_to_degrees(0, GTI_CPR), 0.0);
-    }
-
-    #[test]
-    fn dec_at_quarter_revolution_is_north_pole() {
-        let deg = dec_ticks_to_degrees((GTI_CPR / 4) as i32, GTI_CPR);
-        assert!((deg - 90.0).abs() < 1e-9, "got {deg}");
-    }
-
-    #[test]
-    fn dec_at_negative_quarter_is_south_pole() {
-        let deg = dec_ticks_to_degrees(-((GTI_CPR / 4) as i32), GTI_CPR);
-        assert!((deg + 90.0).abs() < 1e-9, "got {deg}");
+    fn cpr() -> Cpr {
+        Cpr::new(GTI_CPR)
     }
 
     #[test]
@@ -601,8 +452,8 @@ mod tests {
         // Two LSTs at the same UTC, 90° apart in longitude, must be 6
         // hours apart.
         let utc = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let lst_0 = local_sidereal_time_hours(utc, 0.0).unwrap();
-        let lst_e = local_sidereal_time_hours(utc, 90.0).unwrap();
+        let lst_0 = local_sidereal_time_hours(utc, 0.0).unwrap().value();
+        let lst_e = local_sidereal_time_hours(utc, 90.0).unwrap().value();
         let diff = (lst_e - lst_0).rem_euclid(24.0);
         assert!((diff - 6.0).abs() < 1e-6, "LST(90E) - LST(0) = {diff}h");
     }
@@ -644,22 +495,10 @@ mod tests {
     }
 
     #[test]
-    fn mechanical_ha_to_ra_round_trips() {
-        for &(mech_ha, lst) in &[(0.0, 0.0), (3.0, 6.0), (-4.5, 18.0), (5.999, 12.0)] {
-            let ra = mechanical_ha_to_ra(mech_ha, lst);
-            let back = ra_to_mechanical_ha(ra, lst);
-            assert!(
-                (back - mech_ha).abs() < 1e-9,
-                "mech_ha={mech_ha} lst={lst} ra={ra} back={back}"
-            );
-        }
-    }
-
-    #[test]
     fn side_of_pier_north_equator_is_west() {
         // Dec encoder at home (0 ticks ≈ celestial equator on the
         // meridian). Mount is in normal-pointing state → pierWest.
-        assert_eq!(side_of_pier(0, GTI_CPR, 47.6), PierSide::West);
+        assert_eq!(side_of_pier(DecTicks::new(0), cpr(), 47.6), PierSide::West);
     }
 
     #[test]
@@ -668,14 +507,26 @@ mod tests {
         // is reachable without a meridian flip. ConformU's SOPPierTest
         // exercises these cases; all four must read pierWest.
         let quarter = (GTI_CPR / 4) as i32;
-        assert_eq!(side_of_pier(quarter / 3, GTI_CPR, 47.6), PierSide::West);
-        assert_eq!(side_of_pier(-quarter / 3, GTI_CPR, 47.6), PierSide::West);
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter / 3), cpr(), 47.6),
+            PierSide::West
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(-quarter / 3), cpr(), 47.6),
+            PierSide::West
+        );
         // Boundary cases at exactly ±90°: the mount can reach either
         // celestial pole via normal pointing, so the boundary is
         // included in `West` (matches INDI eqmod's `> 90°` strict
         // check).
-        assert_eq!(side_of_pier(quarter, GTI_CPR, 47.6), PierSide::West);
-        assert_eq!(side_of_pier(-quarter, GTI_CPR, 47.6), PierSide::West);
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter), cpr(), 47.6),
+            PierSide::West
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(-quarter), cpr(), 47.6),
+            PierSide::West
+        );
     }
 
     #[test]
@@ -684,26 +535,47 @@ mod tests {
         // the Dec axis beyond the celestial pole — the post-flip /
         // counterweight-up state, which ASCOM names pierEast.
         let quarter = (GTI_CPR / 4) as i32;
-        assert_eq!(side_of_pier(quarter + 1, GTI_CPR, 47.6), PierSide::East);
-        assert_eq!(side_of_pier(-(quarter + 1), GTI_CPR, 47.6), PierSide::East);
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter + 1), cpr(), 47.6),
+            PierSide::East
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(-(quarter + 1)), cpr(), 47.6),
+            PierSide::East
+        );
         // Mid-flip and "full flip to equator on the opposite side".
         let half = (GTI_CPR / 2) as i32;
         assert_eq!(
-            side_of_pier(quarter + half / 4, GTI_CPR, 47.6),
+            side_of_pier(DecTicks::new(quarter + half / 4), cpr(), 47.6),
             PierSide::East
         );
-        assert_eq!(side_of_pier(half, GTI_CPR, 47.6), PierSide::East);
+        assert_eq!(
+            side_of_pier(DecTicks::new(half), cpr(), 47.6),
+            PierSide::East
+        );
     }
 
     #[test]
     fn side_of_pier_southern_hemisphere_inverts() {
         // Mirror of the northern split.
         let quarter = (GTI_CPR / 4) as i32;
-        assert_eq!(side_of_pier(0, GTI_CPR, -33.9), PierSide::East);
-        assert_eq!(side_of_pier(quarter / 3, GTI_CPR, -33.9), PierSide::East);
-        assert_eq!(side_of_pier(quarter, GTI_CPR, -33.9), PierSide::East);
-        assert_eq!(side_of_pier(quarter + 1, GTI_CPR, -33.9), PierSide::West);
-        assert_eq!(side_of_pier(-(quarter + 1), GTI_CPR, -33.9), PierSide::West);
+        assert_eq!(side_of_pier(DecTicks::new(0), cpr(), -33.9), PierSide::East);
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter / 3), cpr(), -33.9),
+            PierSide::East
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter), cpr(), -33.9),
+            PierSide::East
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(quarter + 1), cpr(), -33.9),
+            PierSide::West
+        );
+        assert_eq!(
+            side_of_pier(DecTicks::new(-(quarter + 1)), cpr(), -33.9),
+            PierSide::West
+        );
     }
 
     #[test]
@@ -713,7 +585,10 @@ mod tests {
         // `NOT_CONNECTED` before reaching the helper in practice, but
         // the helper still has to handle this defensively to stay a
         // total function.
-        assert_eq!(side_of_pier(0, 0, 47.6), PierSide::Unknown);
+        assert_eq!(
+            side_of_pier(DecTicks::new(0), Cpr::new(0), 47.6),
+            PierSide::Unknown
+        );
     }
 
     #[test]
@@ -728,114 +603,35 @@ mod tests {
         let cpr_i = GTI_CPR as i32;
         let raw_positive_zone = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
         assert!(raw_positive_zone.abs() > cpr_i / 4);
-        let folded = fold_to_canonical_band(raw_positive_zone, GTI_CPR);
+        let folded = DecTicks::new(raw_positive_zone)
+            .fold_to_canonical_band(cpr())
+            .value();
         assert!(folded.abs() <= cpr_i / 4, "must fold into pre-flip half");
         assert_eq!(
-            side_of_pier(raw_positive_zone, GTI_CPR, 47.6),
+            side_of_pier(DecTicks::new(raw_positive_zone), cpr(), 47.6),
             PierSide::West,
             "raw in positive disagreement zone must classify by folded position"
         );
         // Mirror on the negative side.
         let raw_negative_zone = -cpr_i * 7 / 8;
         assert_eq!(
-            side_of_pier(raw_negative_zone, GTI_CPR, 47.6),
+            side_of_pier(DecTicks::new(raw_negative_zone), cpr(), 47.6),
             PierSide::West,
             "raw in negative disagreement zone must classify by folded position"
         );
         // And the southern hemisphere mirror.
         assert_eq!(
-            side_of_pier(raw_positive_zone, GTI_CPR, -33.9),
+            side_of_pier(DecTicks::new(raw_positive_zone), cpr(), -33.9),
             PierSide::East,
             "south: raw in disagreement zone must classify by folded position"
         );
     }
 
     #[test]
-    fn fold_to_canonical_band_passes_through_small_deltas() {
-        assert_eq!(fold_to_canonical_band(0, GTI_CPR), 0);
-        assert_eq!(fold_to_canonical_band(1, GTI_CPR), 1);
-        assert_eq!(fold_to_canonical_band(-1, GTI_CPR), -1);
-        assert_eq!(fold_to_canonical_band(100_000, GTI_CPR), 100_000);
-        assert_eq!(fold_to_canonical_band(-100_000, GTI_CPR), -100_000);
-    }
-
-    #[test]
-    fn fold_to_canonical_band_collapses_long_way_to_short_way() {
-        let half = GTI_CPR as i32 / 2;
-        // Delta of +cpr/2 + 100 folds to −cpr/2 + 100 (taking the
-        // shorter path on the modular axis).
-        let folded = fold_to_canonical_band(half + 100, GTI_CPR);
-        assert_eq!(folded, -half + 100);
-        // Symmetric for the negative direction.
-        let folded = fold_to_canonical_band(-half - 100, GTI_CPR);
-        assert_eq!(folded, half - 100);
-    }
-
-    #[test]
-    fn fold_to_canonical_band_recovers_from_through_wrap_encoder() {
-        // After a through-wrap flip slew, the encoder may have landed
-        // at e.g. raw −1,890,000 (= +1,738,800 modular). A subsequent
-        // pickup that computes `target_canonical (+1,738,800) −
-        // current_raw (−1,890,000) = +3,628,800` would order a full
-        // revolution; folding collapses it to the (near-)zero residual
-        // it should be.
-        let target_canonical = 1_738_800_i32;
-        let current_raw = -1_890_000_i32;
-        let raw_delta = target_canonical - current_raw;
-        // raw_delta ≈ cpr. Folded should be small.
-        let folded = fold_to_canonical_band(raw_delta, GTI_CPR);
-        assert!(folded.abs() < 1000, "expected near-zero, got {folded}");
-    }
-
-    #[test]
-    fn fold_to_canonical_band_handles_zero_cpr_defensively() {
-        // cpr = 0 is the degenerate "parameter cache not populated"
-        // case. Callers normally short-circuit on NOT_CONNECTED
-        // before reaching this helper; pass-through is the defensive
-        // fallback so a logic bug there can't divide by zero here.
-        assert_eq!(fold_to_canonical_band(12_345, 0), 12_345);
-    }
-
-    /// Tiny `f64` helper so the half-revolution fold test can be stated
-    /// concisely.
-    trait AbsDiffEq {
-        fn abs_diff_eq(&self, other: &f64, tol: f64) -> bool;
-    }
-    impl AbsDiffEq for f64 {
-        fn abs_diff_eq(&self, other: &f64, tol: f64) -> bool {
-            (self - other).abs() < tol
-        }
-    }
-
-    #[test]
-    fn ra_ticks_round_trip_through_mechanical_ha() {
-        for ticks in [
-            0,
-            100_000,
-            -200_000,
-            GTI_CPR as i32 / 8,
-            -(GTI_CPR as i32 / 4),
-        ] {
-            let ha = ra_ticks_to_mechanical_ha(ticks, GTI_CPR);
-            let back = mechanical_ha_to_ra_ticks(ha, GTI_CPR);
-            assert_eq!(back, ticks, "ticks={ticks}");
-        }
-    }
-
-    #[test]
-    fn dec_ticks_round_trip_through_degrees() {
-        for ticks in [0, 1_000, -1_000, GTI_CPR as i32 / 8, -(GTI_CPR as i32 / 4)] {
-            let deg = dec_ticks_to_degrees(ticks, GTI_CPR);
-            let back = dec_degrees_to_ticks(deg, GTI_CPR);
-            assert_eq!(back, ticks, "ticks={ticks}");
-        }
-    }
-
-    #[test]
     fn alt_az_for_zenith_at_equator() {
         // At the equator, the celestial equator passes through the zenith
         // when the LST equals the target's RA.
-        let (alt, _az) = ra_dec_to_alt_az(12.0, 0.0, 0.0, 12.0);
+        let (alt, _az) = ra_dec_to_alt_az(Ra::new(12.0), Dec::new(0.0), 0.0, Lst::new(12.0));
         assert!((alt - 90.0).abs() < 1e-6, "got alt={alt}");
     }
 
@@ -843,14 +639,14 @@ mod tests {
     fn alt_az_for_celestial_pole_at_north_observer() {
         // From a northern observer, the NCP sits at altitude = latitude.
         // (Matches the standard astronomy textbook result.)
-        let (alt, _az) = ra_dec_to_alt_az(0.0, 90.0, 47.6, 12.0);
+        let (alt, _az) = ra_dec_to_alt_az(Ra::new(0.0), Dec::new(90.0), 47.6, Lst::new(12.0));
         assert!((alt - 47.6).abs() < 1e-6, "got alt={alt}");
     }
 
     #[test]
     fn sidereal_step_period_for_gti_defaults() {
         // tmr_freq = 16M, cpr = 3,628,800 → period ≈ 379,887.
-        let p = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let p = sidereal_step_period(0x00F4_2400, cpr());
         assert!((379_000..=380_000).contains(&p), "expected ~380K, got {p}");
     }
 
@@ -860,12 +656,11 @@ mod tests {
         // mech_ha → ticks math the slew-issue path uses. This is the
         // backwards-compat case: pre-compensation off ⇒ identical
         // wire behaviour to before the change.
-        let target_ra = 6.0;
-        let lst = 12.0;
-        let mech_ha = ra_to_mechanical_ha(target_ra, lst);
-        let unprojected = mechanical_ha_to_ra_ticks(mech_ha, GTI_CPR);
+        let target_ra = Ra::new(6.0);
+        let lst = Lst::new(12.0);
+        let unprojected = lst.hour_angle_of(target_ra).to_mech().to_ticks(cpr());
         let projected_zero =
-            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, cpr());
         assert_eq!(projected_zero, unprojected);
     }
 
@@ -878,15 +673,13 @@ mod tests {
         // sidereal seconds → 0.4/3600 hours of mech_HA.
         // Ticks per hour of mech_HA = cpr/24 = 151,200. So 400 ms ≈
         // 0.4/3600 × 151,200 ≈ 16.8 ticks.
-        let target_ra = 6.0;
-        let lst = 12.0;
-        let no_proj = pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
-        let projected = pickup_target_ra_ticks(
-            target_ra,
-            lst,
-            std::time::Duration::from_millis(400),
-            GTI_CPR,
-        );
+        let target_ra = Ra::new(6.0);
+        let lst = Lst::new(12.0);
+        let no_proj =
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, cpr()).value();
+        let projected =
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::from_millis(400), cpr())
+                .value();
         let delta = projected - no_proj;
         // Expected: ~16-17 ticks. Tolerance +/-1 for round() boundary.
         assert!(
@@ -899,20 +692,17 @@ mod tests {
     fn pickup_target_projection_scales_linearly_with_duration() {
         // Doubling the projection should double the tick delta (within
         // round-to-int noise).
-        let target_ra = 6.0;
-        let lst = 12.0;
-        let d1 = pickup_target_ra_ticks(
-            target_ra,
-            lst,
-            std::time::Duration::from_millis(200),
-            GTI_CPR,
-        ) - pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
-        let d2 = pickup_target_ra_ticks(
-            target_ra,
-            lst,
-            std::time::Duration::from_millis(400),
-            GTI_CPR,
-        ) - pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, GTI_CPR);
+        let target_ra = Ra::new(6.0);
+        let lst = Lst::new(12.0);
+        let zero = pickup_target_ra_ticks(target_ra, lst, std::time::Duration::ZERO, cpr()).value();
+        let d1 =
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::from_millis(200), cpr())
+                .value()
+                - zero;
+        let d2 =
+            pickup_target_ra_ticks(target_ra, lst, std::time::Duration::from_millis(400), cpr())
+                .value()
+                - zero;
         assert!(
             (d2 - 2 * d1).abs() <= 1,
             "expected ~2× scaling: 200ms→{d1}, 400ms→{d2}"
@@ -923,7 +713,7 @@ mod tests {
     fn pulse_guide_step_period_identity_at_unit_rate_factor() {
         // Rate factor = 1.0 reproduces the sidereal period exactly
         // (modulo rounding to integer).
-        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let p_sid = sidereal_step_period(0x00F4_2400, cpr());
         assert_eq!(pulse_guide_step_period(p_sid, 1.0), p_sid);
     }
 
@@ -931,7 +721,7 @@ mod tests {
     fn pulse_guide_step_period_halves_rate_doubles_period() {
         // Rate factor = 0.5 (Dec North/South at fraction = 0.5, or East
         // at fraction = 0.5) doubles the step period.
-        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let p_sid = sidereal_step_period(0x00F4_2400, cpr());
         let shifted = pulse_guide_step_period(p_sid, 0.5);
         assert_eq!(shifted, 2 * p_sid);
     }
@@ -939,7 +729,7 @@ mod tests {
     #[test]
     fn pulse_guide_step_period_west_at_fraction_half_uses_one_and_a_half_rate() {
         // West at fraction = 0.5 → rate_factor = 1.5 → period = P_sid / 1.5.
-        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let p_sid = sidereal_step_period(0x00F4_2400, cpr());
         let shifted = pulse_guide_step_period(p_sid, 1.5);
         let expected = ((p_sid as f64) / 1.5).round() as u32;
         assert_eq!(shifted, expected);
@@ -951,7 +741,7 @@ mod tests {
     #[test]
     fn pulse_guide_step_period_small_fraction_grows_period_proportionally() {
         // fraction = 0.1 on Dec → rate_factor = 0.1 → period = 10 × sidereal.
-        let p_sid = sidereal_step_period(0x00F4_2400, GTI_CPR);
+        let p_sid = sidereal_step_period(0x00F4_2400, cpr());
         let shifted = pulse_guide_step_period(p_sid, 0.1);
         assert_eq!(shifted, 10 * p_sid);
     }
@@ -963,11 +753,12 @@ mod tests {
         // The "normal" helper is the existing slew-issue pipeline,
         // extracted. Targets at LST=12h, RA=12h → mech_HA=0 (meridian);
         // any dec → encoder reflects that dec.
-        let (ra_ticks, dec_ticks) = target_encoder_normal(12.0, 30.0, 12.0, GTI_CPR, GTI_CPR);
-        assert_eq!(ra_ticks, 0);
+        let (ra_ticks, dec_ticks) =
+            target_encoder_normal(Ra::new(12.0), Dec::new(30.0), Lst::new(12.0), cpr(), cpr());
+        assert_eq!(ra_ticks.value(), 0);
         // Dec encoder at 30° / 360° × CPR.
         let expected_dec = (30.0 * (GTI_CPR as f64) / 360.0).round() as i32;
-        assert_eq!(dec_ticks, expected_dec);
+        assert_eq!(dec_ticks.value(), expected_dec);
     }
 
     #[test]
@@ -978,10 +769,15 @@ mod tests {
         let lst = 5.0; // arbitrary
         let target_ra = lst + 0.5; // mech_HA = lst − ra = −0.5
         let target_dec = 45.0;
-        let (ra_ticks, dec_ticks) =
-            target_encoder_flipped(target_ra, target_dec, lst, GTI_CPR, GTI_CPR);
-        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
-        let dec_enc_flipped = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        let (ra_ticks, dec_ticks) = target_encoder_flipped(
+            Ra::new(target_ra),
+            Dec::new(target_dec),
+            Lst::new(lst),
+            cpr(),
+            cpr(),
+        );
+        let mech_ha_flipped = ra_ticks.to_mech_ha(cpr()).value();
+        let dec_enc_flipped = dec_ticks.to_mech_dec(cpr()).value();
         assert!(
             (mech_ha_flipped - 11.5).abs() < 1e-6,
             "expected mech_HA_flipped ≈ +11.5, got {mech_ha_flipped}"
@@ -998,8 +794,14 @@ mod tests {
         // +0.5; post-flip = +0.5 + 12 = +12.5 → folds to −11.5.
         let lst = 5.0;
         let target_ra = lst - 0.5; // mech_HA = +0.5
-        let (ra_ticks, _dec) = target_encoder_flipped(target_ra, 30.0, lst, GTI_CPR, GTI_CPR);
-        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
+        let (ra_ticks, _dec) = target_encoder_flipped(
+            Ra::new(target_ra),
+            Dec::new(30.0),
+            Lst::new(lst),
+            cpr(),
+            cpr(),
+        );
+        let mech_ha_flipped = ra_ticks.to_mech_ha(cpr()).value();
         assert!(
             (mech_ha_flipped + 11.5).abs() < 1e-6,
             "expected mech_HA_flipped ≈ −11.5, got {mech_ha_flipped}"
@@ -1013,8 +815,14 @@ mod tests {
         // branch).
         let lst = 5.0;
         let target_ra = lst; // mech_HA = 0
-        let (ra_ticks, _) = target_encoder_flipped(target_ra, 30.0, lst, GTI_CPR, GTI_CPR);
-        let mech_ha_flipped = ra_ticks_to_mechanical_ha(ra_ticks, GTI_CPR);
+        let (ra_ticks, _) = target_encoder_flipped(
+            Ra::new(target_ra),
+            Dec::new(30.0),
+            Lst::new(lst),
+            cpr(),
+            cpr(),
+        );
+        let mech_ha_flipped = ra_ticks.to_mech_ha(cpr()).value();
         assert!(
             (mech_ha_flipped + 12.0).abs() < 1e-6 || (mech_ha_flipped - 12.0).abs() < 1e-6,
             "expected mech_HA_flipped at the ±12 wrap, got {mech_ha_flipped}"
@@ -1024,8 +832,9 @@ mod tests {
     #[test]
     fn target_encoder_flipped_dec_negative_target_flips_through_south_pole() {
         // dec = −45° → flipped dec_enc = −(180 − 45) = −135°.
-        let (_, dec_ticks) = target_encoder_flipped(6.0, -45.0, 6.0, GTI_CPR, GTI_CPR);
-        let dec_enc = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        let (_, dec_ticks) =
+            target_encoder_flipped(Ra::new(6.0), Dec::new(-45.0), Lst::new(6.0), cpr(), cpr());
+        let dec_enc = dec_ticks.to_mech_dec(cpr()).value();
         assert!(
             (dec_enc + 135.0).abs() < 1e-6,
             "expected dec_enc ≈ −135°, got {dec_enc}"
@@ -1038,8 +847,9 @@ mod tests {
         // (180 − 90) = +90. The pole is the same physical position
         // whether you're flipped or not — only the OTA's rotation about
         // its optical axis differs.
-        let (_, dec_ticks) = target_encoder_flipped(6.0, 90.0, 6.0, GTI_CPR, GTI_CPR);
-        let dec_enc = dec_ticks_to_degrees(dec_ticks, GTI_CPR);
+        let (_, dec_ticks) =
+            target_encoder_flipped(Ra::new(6.0), Dec::new(90.0), Lst::new(6.0), cpr(), cpr());
+        let dec_enc = dec_ticks.to_mech_dec(cpr()).value();
         assert!(
             (dec_enc - 90.0).abs() < 1e-6,
             "expected dec_enc ≈ +90°, got {dec_enc}"
@@ -1071,8 +881,14 @@ mod tests {
         // Even with target way outside the pre-flip envelope, !enabled
         // means "leave the side alone".
         for current in [PierSide::West, PierSide::East, PierSide::Unknown] {
-            let chosen =
-                select_pier_side_for_target(0.0, lst, current, &policy, BINDING_ZONE, LAT_NORTH);
+            let chosen = select_pier_side_for_target(
+                Ra::new(0.0),
+                Lst::new(lst),
+                current,
+                &policy,
+                BINDING_ZONE,
+                LAT_NORTH,
+            );
             assert_eq!(chosen, current, "current={current:?}");
         }
     }
@@ -1083,8 +899,8 @@ mod tests {
         // enabled, return Unknown.
         let policy = flip_enabled();
         let chosen = select_pier_side_for_target(
-            0.0,
-            12.0,
+            Ra::new(0.0),
+            Lst::new(12.0),
             PierSide::Unknown,
             &policy,
             BINDING_ZONE,
@@ -1101,8 +917,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst + 3.0; // mech_HA = lst − ra = −3
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::West,
             &policy,
             BINDING_ZONE,
@@ -1119,8 +935,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst - 0.3; // mech_HA = +0.3 (within ±0.5)
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::East,
             &policy,
             BINDING_ZONE,
@@ -1138,8 +954,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst + 3.0; // mech_HA = −3, outside ±0.5
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::East,
             &policy,
             BINDING_ZONE,
@@ -1159,8 +975,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst - 7.5; // mech_HA = +7.5
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::West,
             &policy,
             BINDING_ZONE,
@@ -1179,8 +995,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst - 0.5; // mech_HA = +0.5 = flip_range_hours
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::East,
             &policy,
             BINDING_ZONE,
@@ -1200,8 +1016,8 @@ mod tests {
         let lst = 12.0;
         let target_ra = lst + 3.0; // mech_HA = −3
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::East,
             &policy,
             BINDING_ZONE,
@@ -1211,8 +1027,8 @@ mod tests {
         // And the post-flip side (pierWest in south): outside flip
         // window means flip back to East (normal in south).
         let chosen = select_pier_side_for_target(
-            target_ra,
-            lst,
+            Ra::new(target_ra),
+            Lst::new(lst),
             PierSide::West,
             &policy,
             BINDING_ZONE,
@@ -1229,9 +1045,11 @@ mod tests {
         // must invert target_encoder_normal exactly.
         let lst = 5.0;
         for (ra, dec) in [(12.0, 30.0), (3.5, -45.0), (0.0, 0.0), (23.9, 89.9)] {
-            let (ra_ticks, dec_ticks) = target_encoder_normal(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_ticks, dec_ticks) =
+                target_encoder_normal(Ra::new(ra), Dec::new(dec), Lst::new(lst), cpr(), cpr());
             let (ra_back, dec_back) =
-                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, 47.6);
+                encoder_to_celestial(ra_ticks, dec_ticks, Lst::new(lst), cpr(), cpr(), 47.6);
+            let (ra_back, dec_back) = (ra_back.value(), dec_back.value());
             assert!(
                 ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
                 "ra round-trip: {ra} → {ra_back}"
@@ -1251,9 +1069,11 @@ mod tests {
         // RA/Dec of the OTA pointing.
         let lst = 5.0;
         for (ra, dec) in [(lst + 0.5, 45.0), (lst - 0.3, 30.0), (lst, 0.0)] {
-            let (ra_ticks, dec_ticks) = target_encoder_flipped(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_ticks, dec_ticks) =
+                target_encoder_flipped(Ra::new(ra), Dec::new(dec), Lst::new(lst), cpr(), cpr());
             let (ra_back, dec_back) =
-                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, 47.6);
+                encoder_to_celestial(ra_ticks, dec_ticks, Lst::new(lst), cpr(), cpr(), 47.6);
+            let (ra_back, dec_back) = (ra_back.value(), dec_back.value());
             assert!(
                 ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
                 "post-flip ra round-trip: {ra} → {ra_back}"
@@ -1273,9 +1093,11 @@ mod tests {
         // internally and `encoder_to_celestial` consumes it.
         let lst = 5.0;
         for (ra, dec) in [(lst + 0.5, 45.0), (lst, -30.0), (lst, 0.0)] {
-            let (ra_ticks, dec_ticks) = target_encoder_flipped(ra, dec, lst, GTI_CPR, GTI_CPR);
+            let (ra_ticks, dec_ticks) =
+                target_encoder_flipped(Ra::new(ra), Dec::new(dec), Lst::new(lst), cpr(), cpr());
             let (ra_back, dec_back) =
-                encoder_to_celestial(ra_ticks, dec_ticks, lst, GTI_CPR, GTI_CPR, -33.0);
+                encoder_to_celestial(ra_ticks, dec_ticks, Lst::new(lst), cpr(), cpr(), -33.0);
+            let (ra_back, dec_back) = (ra_back.value(), dec_back.value());
             assert!(
                 ((ra - ra_back + 12.0).rem_euclid(24.0) - 12.0).abs() < 1e-4,
                 "south post-flip ra round-trip: {ra} → {ra_back}"
@@ -1292,7 +1114,15 @@ mod tests {
         // Encoder at (0, 0) means mech_HA = 0 and dec encoder = 0 →
         // pre-flip pierWest in north → celestial (LST, 0).
         let lst = 7.25;
-        let (ra, dec) = encoder_to_celestial(0, 0, lst, GTI_CPR, GTI_CPR, 47.6);
+        let (ra, dec) = encoder_to_celestial(
+            RaTicks::new(0),
+            DecTicks::new(0),
+            Lst::new(lst),
+            cpr(),
+            cpr(),
+            47.6,
+        );
+        let (ra, dec) = (ra.value(), dec.value());
         assert!((ra - lst).abs() < 1e-6, "ra = {ra}, expected {lst}");
         assert!(dec.abs() < 1e-6, "dec = {dec}");
     }
@@ -1305,7 +1135,15 @@ mod tests {
         // (180 - 180) = 0. RA mapping uses the post-flip +12h shift.
         let lst = 12.0;
         let half_cpr = (GTI_CPR / 2) as i32;
-        let (_ra, dec) = encoder_to_celestial(0, half_cpr, lst, GTI_CPR, GTI_CPR, 47.6);
+        let (_ra, dec) = encoder_to_celestial(
+            RaTicks::new(0),
+            DecTicks::new(half_cpr),
+            Lst::new(lst),
+            cpr(),
+            cpr(),
+            47.6,
+        );
+        let dec = dec.value();
         assert!(dec.abs() < 1e-6, "dec at wrap = {dec}");
     }
 
