@@ -514,7 +514,7 @@ async fn slew_completion_step(
                 // pickup chases a moving target and the residual
                 // floor matches per-iteration sidereal drift
                 // (~6″ on USB, ~14″ on UDP). See
-                // `docs/plans/star-adventurer-gti-pickup-accuracy.md`
+                // `docs/plans/archive/star-adventurer-gti-pickup-accuracy.md`
                 // §"Experiment B".
                 //
                 // Adaptive: use the actually-observed time delta

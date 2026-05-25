@@ -8,7 +8,7 @@ shutdown handle backed by [`tokio_util::sync::CancellationToken`].
 This is a workspace library, not a service. Every service binary in
 `services/` consumes it directly. For the migration plan that moves
 existing services onto it, see
-[`docs/plans/service-lifecycle-unification.md`](../plans/service-lifecycle-unification.md);
+[`docs/plans/archive/service-lifecycle-unification.md`](../plans/archive/service-lifecycle-unification.md);
 this doc covers the crate's own design.
 
 ## Scope

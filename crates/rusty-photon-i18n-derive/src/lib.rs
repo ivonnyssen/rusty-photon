@@ -3,7 +3,7 @@
 //! Apply alongside `clap::Parser` and use `#[localized(about = "key")]` /
 //! `#[localized(help = "key")]` to map struct/field help to Fluent keys.
 //! See the crate-level docs in `crates/rusty-photon-i18n/src/lib.rs` and the spike
-//! write-up at `docs/plans/i18n-cli-spike.md` §10 for the user-facing flow.
+//! write-up at `docs/plans/archive/i18n-cli-spike.md` §10 for the user-facing flow.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;

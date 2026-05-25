@@ -11,13 +11,20 @@ Create platform-specific installable packages for the filemonitor service so use
 | Prerequisites | `pkg/` directory, systemd unit, config, maintainer scripts | Done | `feature/filemonitor-packaging` / `a6c9586` |
 | Phase 1 | `.deb` package (cargo-deb metadata) | Done | `feature/filemonitor-packaging` / `a6c9586` |
 | Phase 2 | `.rpm` package (cargo-generate-rpm metadata) | Done | `feature/filemonitor-packaging` / `a550c36` |
-| Phase 3 | `.msi` installer (cargo-wix) | Partial | `feature/filemonitor-packaging` / `365500e` |
-| Phase 4 | Homebrew formula | Partial | `feature/filemonitor-packaging` / `365500e` |
+| Phase 3 | `.msi` installer (cargo-wix) | Done | `feature/filemonitor-packaging` / `365500e` |
+| Phase 4 | Homebrew formula (release-workflow side) | Done | `feature/filemonitor-packaging` / `365500e` |
 | Phase 5 | GitHub Actions release workflow | Done | `feature/filemonitor-packaging` / `365500e` |
+
+All phases merged to `main` in PR #33 (`88f2d98`). The in-repo work —
+cargo-deb / cargo-generate-rpm / cargo-wix metadata, the committed
+`services/filemonitor/wix/main.wxs` (with config-file placement and
+Windows-service registration via `ServiceInstall`/`ServiceControl`), and the
+`release.yml` workflow — is complete. Only external GitHub setup remains
+before the first tagged release can publish a Homebrew formula:
 
 ### Remaining manual steps before first release
 
-- [ ] **Phase 3:** Run `cargo wix init -p filemonitor` on a Windows machine to generate `services/filemonitor/wix/main.wxs`, then commit it
+- [x] **Phase 3:** `cargo wix init -p filemonitor` → `services/filemonitor/wix/main.wxs` generated, customised, and committed in PR #33
 - [ ] **Phase 4:** Create the `ivonnyssen/homebrew-rusty-photon` GitHub repository with an initial `Formula/` directory
 - [ ] **Phase 4:** Add a `HOMEBREW_TAP_TOKEN` secret to the main repo (GitHub PAT with `repo` scope on the tap repo)
 

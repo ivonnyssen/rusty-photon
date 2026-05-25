@@ -247,7 +247,7 @@ section for the full list):
 
 - [Crate design](../crates/rusty-photon-service-lifecycle.md) — public
   API, behavior, SCM dispatch internals, testing strategy.
-- [Migration plan](../plans/service-lifecycle-unification.md) — how
+- [Migration plan](../plans/archive/service-lifecycle-unification.md) — how
   the workspace got from twelve divergent shutdown shapes to one,
   closed under issue #294 (with #287 as a side fix in the five
   shared-transport services).

@@ -130,8 +130,12 @@ The service plugs into it via:
   (`MountSnapshot`), and `PollPauseGuard` ref-counted polling-task
   pause. The handshake (`:F`/`:a`/`:b`/`:g`/`:e`/`:j`) and the
   poll-loop (`:j`/`:f`) live in `Hooks` closures inside
-  `MountManager::new`; the teardown hook issues a best-effort halt
-  sequence (`:L1`, `:L2`, `:K1`) before the transport drops.
+  `MountManager::new`, alongside two teardown hooks: `on_last_disconnect`
+  issues the best-effort halt sequence (`:L1`, `:L2`, `:K1`) every time the
+  last Alpaca client disconnects — in service-lifetime mode the transport
+  stays open, so the parameter cache is retained — and `shutdown` runs the
+  same sequence once at service shutdown before the transport drops,
+  additionally clearing the parameter cache.
 
 The device's session lives in `MountDevice::session:
 RwLock<Option<Session<SkywatcherCodec>>>` — the slot's presence is the
@@ -396,8 +400,8 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 
 | Method | Implementation |
 |---|---|
-| `Connected = true` | open transport, run init handshake, populate parameter cache, start polling |
-| `Connected = false` | stop polling, close transport, clear parameter cache |
+| `Connected = true` | acquire a session on the already-open transport (opened eagerly at service start — see [§Connection Lifecycle](#connection-lifecycle)); refcount bump, then the post-acquire hooks `seed_after_connect` (fresh-power-up AP-pose encoder seed) and `load_park_target_after_connect` run |
+| `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown |
 | `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions for `LST(now + MIN_SLEW_DWELL)` so the post-slew RA reading lands on `target_RA` instead of drifting at sidereal rate during the slew, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
@@ -1431,8 +1435,9 @@ src/
                            Command in scope
   manager.rs             — MountManager: wraps Arc<SharedTransport<SkywatcherCodec>>;
                            owns parameter cache (CPR, TMR_Freq, hsr per axis)
-                           and snapshot. Handshake + poll loop + teardown
-                           live in `Hooks` closures.
+                           and snapshot. Handshake + poll loop +
+                           on-last-disconnect / shutdown teardown live
+                           in `Hooks` closures.
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
   mount_device.rs        — module entry point: `DriverState`,
@@ -1642,8 +1647,19 @@ Historical baselines (`alpacaprotocol`-only or partial
 
 ## Connection Lifecycle
 
+The transport's lifetime is tied to the **service** lifetime, not to ASCOM
+`Connected`. The driver runs `rusty-photon-shared-transport` in its
+`ServiceLifetime` mode: the port opens eagerly at startup (so a wrong-device
+or unreachable mount fails the process *before* it advertises on the
+network) and stays open — kept alive across transient drops by the reconnect
+supervisor — until the service shuts down. ASCOM `Connected = true` / `false`
+only acquires / releases a session on the already-open transport. See
+[`docs/plans/archive/eager-hardware-validation.md`](../plans/archive/eager-hardware-validation.md)
+for the rationale.
+
 ```
-Connected = true
+Service start (`ServerBuilder::build()` → `SharedTransport::start()`,
+               before the HTTP listener binds)
    ↓
 open transport (serial: tokio-serial open + raw mode;
                 UDP: bind to config.bind_address, set timeout)
@@ -1653,42 +1669,53 @@ init handshake:
                                               mount-type whitelist
                                               (issue #254);
                                               wrong-device handshake
-                                              stops here.
+                                              stops here → build() errors
+                                              and the process exits
+                                              non-zero before binding
+                                              the listener.
   :F1, :F2          (initialize axes)
   :a1, :a2          (CPR per axis)         → cache
   :b1               (TMR_Freq)             → cache
   :g1, :g2          (high-speed ratio)     → cache
-  :j1, :j2          (initial positions)    → cache
-   ↓
-load park target from config / handshake → in-memory park ticks
-   ↓
-if unpark_from_ap_position ∈ ap_park_1..ap_park_5
-   AND firmware encoder is within FRESH_POWER_UP_TICK_TOLERANCE of (0, 0):
-  :E1, :E2  (seed encoder to the AP pose's codebase convention)
+  :j1, :j2          (initial positions)    → cache + snapshot
    ↓
 start background polling task (interval = config.polling_interval)
-   ↓
-Connected reports true once handshake completes
 ```
 
 ```
-Connected = false
+Connected = true   → acquire a session (refcount bump; the transport is
+                     already open and polling — no wire handshake here),
+                     then the post-acquire hooks run in order:
+  1. seed_after_connect — if unpark_from_ap_position ∈ ap_park_1..ap_park_5
+       AND the firmware encoder is within FRESH_POWER_UP_TICK_TOLERANCE of
+       (0, 0):  :E1, :E2  (seed encoder to the AP pose's codebase convention)
+  2. load_park_target_after_connect — resolve the in-memory park ticks from
+       config / preferred_ap_park
+
+Connected = false  → release the session. On the last client disconnect the
+                     on_last_disconnect hook runs :L1, :L2, :K1 (safety
+                     stop); the transport stays open, background polling
+                     continues, and the parameter cache is retained.
+```
+
+```
+Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
-abort any in-progress motion (:L1, :L2 — instant stop)
+shutdown hook runs :L1, :L2, :K1 one last time
    ↓
-stop tracking if running (:K1)
-   ↓
-cancel polling task
+cancel the reconnect supervisor + the polling task
    ↓
 close transport
    ↓
 clear parameter cache
 ```
 
-The transport is reference-counted: if multiple Alpaca clients each call
-`Connected = true`, the underlying transport is opened once and shared.
-Disconnect tears down only when the last reference drops. (Same pattern
-as `qhy-focuser` and `ppba-driver`.)
+Multiple Alpaca clients share the one open transport (refcount); a client
+disconnect no longer closes the port — that happens only at service
+shutdown. A transient transport drop is handled by the reconnect supervisor,
+which re-runs the handshake against the new connection while live sessions
+survive via the connection-cell swap. (Same service-lifetime pattern as
+`qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`, and `dsd-fp2`.)
 
 ## MVP Scope
 
@@ -1860,7 +1887,7 @@ In addition to the codec fixes:
      7.3″ → 5.0″ in the experiment runs). Park watcher follows
      the same pattern.
 
-  See `docs/plans/star-adventurer-gti-pickup-accuracy.md` for the
+  See `docs/plans/archive/star-adventurer-gti-pickup-accuracy.md` for the
   experiment plan and the diagnostic data that drove these
   choices.
 - **Mechanical safety envelope** — driving the mount into the
