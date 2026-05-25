@@ -186,8 +186,15 @@ This is the round-trip the protocol was designed for:
   not defend against a hand-crafted POST that edits `enabled` inside the
   `__config` blob — that is equivalent to any forged config submission. True
   tamper-proofing belongs in the driver: making config actions reachable while
-  the device is disabled, tracked as follow-up. `server.port` edits have the same
-  "the BFF loses the endpoint" property, deferred with the equipment roster.)
+  the device is disabled, tracked as follow-up.)
+- **`server.port` is rendered read-only** for the same class of reason, one step
+  removed: changing it makes the driver rebind a *different* port on reload, but
+  the BFF keeps using its configured `base_url`, so the page would lose the
+  driver until the BFF's own config is updated + restarted. Coordinating that
+  cross-service address change is deferred to the equipment roster (Phase 5);
+  until then the field is shown disabled and `merge_form` skips it (round-trips
+  from the blob). `server.discovery_port` stays editable — it is a separate UDP
+  discovery port and does not affect the HTTP endpoint the BFF connects to.
 
 ## Behavioral contracts
 

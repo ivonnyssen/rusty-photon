@@ -352,7 +352,10 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
   target-qualified for native). See [The BFF service](#the-bff-service-servicesui-htmx).
 - **`server.port` changes** carry a cross-service reference: rp's roster
   `alpaca_url` for that device must change too. Out of scope while the BFF talks to
-  the driver directly; revisit with the rp equipment page (Phase 5).
+  the driver directly; revisit with the rp equipment page (Phase 5). **Interim:**
+  the BFF renders `server.port` read-only so a change can't silently lock the page
+  out of the driver (the BFF would keep using the old `base_url`) before that
+  coordination exists.
 
 ### Resolved (2026-05-24)
 

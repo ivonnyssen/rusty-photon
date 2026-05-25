@@ -184,15 +184,23 @@ fn field_input(
     input_type: &str,
 ) -> Markup {
     let pinned = overrides.iter().any(|o| o == name);
+    let read_only = is_read_only(name);
+    let disabled = pinned || read_only;
     let err = errors.iter().find(|e| e.path == name);
     let value = str_at(config, pointer);
     html! {
-        div.field.pinned[pinned].invalid[err.is_some()] {
+        div.field.pinned[disabled].invalid[err.is_some()] {
             label for=(name) { (label) }
-            input type=(input_type) id=(name) name=(name) value=(value) disabled[pinned];
+            input type=(input_type) id=(name) name=(name) value=(value) disabled[disabled];
             @if let Some(e) = err { div.error { (e.msg) } }
             @if pinned {
                 div.hint { "Pinned by a command-line override; change the driver's launch flags to edit it." }
+            } @else if read_only {
+                div.hint {
+                    "Read-only for now — the BFF can't follow a change to the "
+                    "driver's address yet, so editing it here would lose the "
+                    "connection. Change it in the driver's config file."
+                }
             }
         }
     }
@@ -341,10 +349,27 @@ const EDITABLE_FIELDS: &[FieldSpec] = &[
     },
 ];
 
+/// Fields shown but **not editable** from the page (rendered disabled; skipped
+/// by [`merge_form`] so they round-trip from the hidden blob).
+///
+/// `server.port` changes the driver's bound address on reload, but the BFF keeps
+/// using its configured `base_url` — so editing it here would lock the page out
+/// of the driver until the BFF config is updated + restarted. Coordinating that
+/// cross-service address change is deferred to the equipment roster (Phase 5);
+/// until then the field is read-only. (`server.discovery_port` is *not* listed:
+/// it is a separate UDP port that does not affect the HTTP endpoint the BFF
+/// talks to, so changing it doesn't break the connection.)
+const READ_ONLY_FIELDS: &[&str] = &["server.port"];
+
+fn is_read_only(name: &str) -> bool {
+    READ_ONLY_FIELDS.contains(&name)
+}
+
 /// Rebuild the full Config from a submitted form: start from the hidden
-/// round-tripped blob and overlay the editable fields. Override-pinned fields
-/// are not overlaid (the driver skips them anyway), so a transient `--port`
-/// can't be re-submitted into the file.
+/// round-tripped blob and overlay the editable fields. Override-pinned and
+/// read-only fields are not overlaid (the driver skips override-pinned ones
+/// anyway, and read-only ones must round-trip untouched), so a transient
+/// `--port` can't be re-submitted into the file.
 pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormError> {
     let raw = form.get("__config").ok_or(FormError::MissingConfig)?;
     let mut config: Value =
@@ -361,7 +386,7 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
 
     let mut errors = Vec::new();
     for spec in EDITABLE_FIELDS {
-        if is_pinned(spec.name) {
+        if is_pinned(spec.name) || is_read_only(spec.name) {
             continue;
         }
         let Some(raw) = form.get(spec.name) else {
@@ -501,6 +526,21 @@ mod tests {
     }
 
     #[test]
+    fn config_card_renders_server_port_read_only() {
+        // server.port is read-only so the UI can't change the driver's address
+        // out from under the BFF (which would lock the page out of the driver).
+        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        let pos = markup.find(r#"name="server.port""#).unwrap();
+        let start = markup[..pos].rfind("<input").unwrap();
+        let end = markup[start..].find('>').unwrap() + start;
+        assert!(
+            markup[start..=end].contains("disabled"),
+            "server.port input not disabled: {}",
+            &markup[start..=end]
+        );
+    }
+
+    #[test]
     fn reconnecting_card_polls_status() {
         let markup = reconnecting_card().into_string();
         assert!(
@@ -611,37 +651,57 @@ mod tests {
     }
 
     #[test]
-    fn merge_form_out_of_range_port_is_a_field_error() {
+    fn merge_form_out_of_range_discovery_port_is_a_field_error() {
         // 99999 doesn't fit a u16, so it's a field error rather than a value
         // the driver would reject with a non-field parse error.
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
             ("__overrides", "[]"),
-            ("server.port", "99999"),
+            ("server.discovery_port", "99999"),
         ]);
         let merged = merge_form(&form).unwrap();
         assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
-        assert_eq!(merged.errors[0].path, "server.port");
+        assert_eq!(merged.errors[0].path, "server.discovery_port");
         // The prior value is kept (not coerced) so re-render shows it.
         assert_eq!(
             merged
                 .config
-                .pointer("/server/port")
+                .pointer("/server/discovery_port")
                 .and_then(Value::as_u64),
-            Some(11119)
+            Some(32227)
         );
     }
 
     #[test]
-    fn merge_form_empty_required_int_keeps_prior_value() {
-        // Clearing server.port must not silently become 0 (OS-assigned).
+    fn merge_form_empty_required_number_keeps_prior_value() {
+        // Clearing a required number (baud_rate) must not silently become 0.
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
             ("__overrides", "[]"),
-            ("server.port", ""),
+            ("serial.baud_rate", ""),
         ]);
         let merged = merge_form(&form).unwrap();
         assert!(merged.errors.is_empty(), "{:?}", merged.errors);
+        assert_eq!(
+            merged
+                .config
+                .pointer("/serial/baud_rate")
+                .and_then(Value::as_u64),
+            Some(115200)
+        );
+    }
+
+    #[test]
+    fn merge_form_never_changes_server_port() {
+        // server.port is read-only (the BFF can't follow a driver port change
+        // yet), so a submitted/forged value is ignored — it round-trips from the
+        // hidden blob, preventing a self-lockout via the UI.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()), // server.port: 11119
+            ("__overrides", "[]"),
+            ("server.port", "22222"), // forged — must be ignored
+        ]);
+        let merged = merge_form(&form).unwrap();
         assert_eq!(
             merged
                 .config
