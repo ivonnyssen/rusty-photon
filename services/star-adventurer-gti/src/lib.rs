@@ -111,10 +111,6 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
-        let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
-
         // Default to a config-driven factory if none was injected.
         // BDD tests inject `MockTransportFactory`; production picks
         // serial vs UDP from the transport block.
@@ -132,60 +128,99 @@ impl ServerBuilder {
 
         let manager = MountManager::new(self.config.clone(), factory);
 
-        if self.config.mount.enabled {
-            let device = MountDevice::with_config_file_path(
-                self.config.mount.clone(),
-                Arc::clone(&manager),
-                self.config_file_path.clone(),
-            );
-            server.devices.register(device);
-            info!("Registered Telescope device: {}", self.config.mount.name);
-        }
+        // Eager hardware validation at startup: opens the port and
+        // runs the handshake (which includes the wrong-device
+        // identity probe landed in PR #296) BEFORE binding the HTTP
+        // listener. On failure the error bubbles up to `main` and
+        // the binary exits non-zero — systemd / orchestration treats
+        // startup as failed and operators get the diagnostic at the
+        // terminal instead of having the driver advertise a broken
+        // device on the network.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
 
-        let tls = self.config.server.tls.clone();
-        // Mount the mock-introspection endpoint first so it takes
-        // priority over the Alpaca fallback service.
-        let router: axum::Router = {
-            let r = axum::Router::new();
-            #[cfg(feature = "mock")]
-            let r = if let Some(state) = self.debug_mock_state {
-                r.merge(debug_mock_router(state))
-            } else {
+        // All post-start work is fallible (bind / local_addr in
+        // particular). Wrap it so a failure runs `transport.shutdown()`
+        // before propagating; otherwise the reconnect supervisor task
+        // would outlive the dropped manager and keep the port open
+        // until process exit.
+        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+            let mut server = Server::new(CargoServerInfo!());
+            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.discovery_port = self.config.server.discovery_port;
+
+            if self.config.mount.enabled {
+                let device = MountDevice::with_config_file_path(
+                    self.config.mount.clone(),
+                    Arc::clone(&manager),
+                    self.config_file_path.clone(),
+                );
+                server.devices.register(device);
+                info!("Registered Telescope device: {}", self.config.mount.name);
+            }
+
+            let tls = self.config.server.tls.clone();
+            // Mount the mock-introspection endpoint first so it takes
+            // priority over the Alpaca fallback service. Borrow the
+            // mock state instead of moving it so this block can stay
+            // in `async {}` (borrow) form like the other services'
+            // build()s.
+            let router: axum::Router = {
+                let r = axum::Router::new();
+                #[cfg(feature = "mock")]
+                let r = match &self.debug_mock_state {
+                    Some(state) => r.merge(debug_mock_router(Arc::clone(state))),
+                    None => r,
+                };
                 r
             };
-            r
-        };
-        let router = router.fallback_service(server.into_service());
-        let router = match &self.config.server.auth {
-            Some(auth) => {
-                if self.config.server.tls.is_none() {
+            let router = router.fallback_service(server.into_service());
+            let router = match &self.config.server.auth {
+                Some(auth) => {
+                    if self.config.server.tls.is_none() {
+                        tracing::warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(router, auth)
+                }
+                None => router,
+            };
+
+            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+                [0, 0, 0, 0],
+                self.config.server.port,
+            )))
+            .await?;
+            let local_addr = listener.local_addr()?;
+
+            println!("Bound Alpaca server bound_addr={}", local_addr);
+            info!("Bound Alpaca server bound_addr={}", local_addr);
+
+            Ok(BoundServer {
+                listener,
+                router,
+                local_addr,
+                tls,
+                manager: Arc::clone(&manager),
+            })
+        }
+        .await;
+
+        match build_result {
+            Ok(bound) => Ok(bound),
+            Err(e) => {
+                if let Err(shutdown_err) = manager.transport().shutdown().await {
                     tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                        error = %shutdown_err,
+                        "transport shutdown failed during build() error rollback"
                     );
                 }
-                rp_auth::layer(router, auth)
+                Err(e)
             }
-            None => router,
-        };
-
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
-        let local_addr = listener.local_addr()?;
-
-        println!("Bound Alpaca server bound_addr={}", local_addr);
-        info!("Bound Alpaca server bound_addr={}", local_addr);
-
-        Ok(BoundServer {
-            listener,
-            router,
-            local_addr,
-            tls,
-        })
+        }
     }
 }
 
@@ -194,6 +229,12 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `BoundServer::start` can call `manager.transport().shutdown()`
+    /// after the HTTP server stops accepting requests. In
+    /// `ServiceLifetime` mode this cancels the reconnect supervisor, runs
+    /// `Hooks::shutdown`, and closes the port. In `LazyAcquire` mode it's
+    /// a no-op so pre-Phase-1 deployments are unaffected.
+    manager: Arc<MountManager>,
 }
 
 impl BoundServer {
@@ -205,18 +246,31 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result and run `transport.shutdown()`
+        // unconditionally so a serve error doesn't leave the port and
+        // the reconnect supervisor alive (the original `?` shape did
+        // skip the shutdown block on serve failure). The serve error,
+        // if any, is propagated after the transport-side teardown.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("star-adventurer-gti started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("star-adventurer-gti started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
+        };
+        // Always-run transport shutdown. In ServiceLifetime mode this
+        // cancels the supervisor, runs the safety teardown one last
+        // time, and drops the port. Errors are logged-not-propagated
+        // because we're already on the way down — the serve_result
+        // below is the canonical exit status.
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }
 

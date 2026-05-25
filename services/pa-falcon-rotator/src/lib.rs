@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod rotator_device;
 pub mod serial;
 pub mod switch_device;
+pub mod units;
 
 pub use codec::{FalconCodec, FalconCodecError, FalconResponse};
 pub use config::{load_config, Config, RotatorConfig, SerialConfig, ServerConfig, SwitchConfig};
@@ -29,6 +30,7 @@ pub use manager::FalconManager;
 pub use rotator_device::FalconRotatorDevice;
 pub use serial::FalconTransportFactory;
 pub use switch_device::FalconStatusSwitchDevice;
+pub use units::{MechanicalDegrees, SkyDegrees, Steps, SyncOffset};
 
 #[cfg(feature = "mock")]
 pub use mock::MockFalconTransportFactory;
@@ -85,64 +87,93 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
-        let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
-
         let manager = FalconManager::new(self.factory);
 
-        if self.config.rotator.enabled {
-            let rotator_device =
-                FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&manager));
-            server.devices.register(rotator_device);
-            info!("Registered Rotator device: {}", self.config.rotator.name);
+        // Eager hardware validation at startup: opens the port,
+        // runs the handshake, and spawns the reconnect supervisor
+        // before binding the HTTP listener. Handshake failures
+        // bubble up to `main` for a non-zero exit.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
+
+        // All post-start work is fallible (bind / local_addr in
+        // particular). Wrap it so a failure runs `transport.shutdown()`
+        // before propagating; otherwise the reconnect supervisor task
+        // would outlive the dropped manager and keep the port open
+        // until process exit.
+        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+            let mut server = Server::new(CargoServerInfo!());
+            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.discovery_port = self.config.server.discovery_port;
+
+            if self.config.rotator.enabled {
+                let rotator_device =
+                    FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&manager));
+                server.devices.register(rotator_device);
+                info!("Registered Rotator device: {}", self.config.rotator.name);
+            }
+
+            if self.config.switch.enabled {
+                let switch_device =
+                    FalconStatusSwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
+                server.devices.register(switch_device);
+                info!(
+                    "Registered Status Switch device: {}",
+                    self.config.switch.name
+                );
+            }
+
+            info!("Serial port: {}", self.config.serial.port);
+
+            let tls = self.config.server.tls.clone();
+            let router = axum::Router::new().fallback_service(server.into_service());
+
+            let router = match &self.config.server.auth {
+                Some(auth) => {
+                    if self.config.server.tls.is_none() {
+                        tracing::warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(router, auth)
+                }
+                None => router,
+            };
+
+            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+                [0, 0, 0, 0],
+                self.config.server.port,
+            )))
+            .await?;
+            let local_addr = listener.local_addr()?;
+
+            println!("Bound Alpaca server bound_addr={}", local_addr);
+            info!("Bound Alpaca server bound_addr={}", local_addr);
+
+            Ok(BoundServer {
+                listener,
+                router,
+                local_addr,
+                tls,
+                manager: Arc::clone(&manager),
+            })
         }
+        .await;
 
-        if self.config.switch.enabled {
-            let switch_device =
-                FalconStatusSwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
-            server.devices.register(switch_device);
-            info!(
-                "Registered Status Switch device: {}",
-                self.config.switch.name
-            );
-        }
-
-        info!("Serial port: {}", self.config.serial.port);
-
-        let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
-
-        let router = match &self.config.server.auth {
-            Some(auth) => {
-                if self.config.server.tls.is_none() {
+        match build_result {
+            Ok(bound) => Ok(bound),
+            Err(e) => {
+                if let Err(shutdown_err) = manager.transport().shutdown().await {
                     tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                        error = %shutdown_err,
+                        "transport shutdown failed during build() error rollback"
                     );
                 }
-                rp_auth::layer(router, auth)
+                Err(e)
             }
-            None => router,
-        };
-
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
-        let local_addr = listener.local_addr()?;
-
-        println!("Bound Alpaca server bound_addr={}", local_addr);
-        info!("Bound Alpaca server bound_addr={}", local_addr);
-
-        Ok(BoundServer {
-            listener,
-            router,
-            local_addr,
-            tls,
-        })
+        }
     }
 }
 
@@ -152,6 +183,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Held so `start()` can call `manager.transport().shutdown()` after
+    /// the HTTP server stops. No-op in LazyAcquire mode.
+    manager: Arc<FalconManager>,
 }
 
 impl BoundServer {
@@ -163,17 +197,23 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result so transport.shutdown() runs even
+        // when the HTTP server errors out — otherwise the supervisor
+        // and port would leak past a serve failure.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("pa-falcon-rotator started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("pa-falcon-rotator started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
+        };
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("pa-falcon-rotator shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }

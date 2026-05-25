@@ -5,6 +5,7 @@
 //! command table.
 
 use crate::error::{FalconRotatorError, Result};
+use crate::units::{MechanicalDegrees, Steps};
 
 /// Commands the driver issues to the Falcon Rotator.
 ///
@@ -39,10 +40,10 @@ pub enum Command {
     DerotationOff,
     /// `DR:<ms>` — enable de-rotation at `ms` ms/step.
     DerotationRate(u32),
-    /// `MD:<deg>` — move to absolute degrees.
-    MoveDeg(f64),
+    /// `MD:<deg>` — move to absolute (mechanical) degrees.
+    MoveDeg(MechanicalDegrees),
     /// `MS:<steps>` — move to absolute steps.
-    MoveSteps(u32),
+    MoveSteps(Steps),
     /// `FH` — halt. Expect `FH:1`.
     Halt,
     /// `FR` — is running. Expect `FR:1` or `FR:0`.
@@ -68,8 +69,8 @@ impl Command {
             Command::Voltage => "VS".to_string(),
             Command::DerotationOff => "DR:0".to_string(),
             Command::DerotationRate(ms) => format!("DR:{ms}"),
-            Command::MoveDeg(deg) => format!("MD:{deg:.2}"),
-            Command::MoveSteps(steps) => format!("MS:{steps}"),
+            Command::MoveDeg(deg) => format!("MD:{:.2}", deg.value()),
+            Command::MoveSteps(steps) => format!("MS:{}", steps.value()),
             Command::Halt => "FH".to_string(),
             Command::IsRunning => "FR".to_string(),
             Command::SetReverse(on) => format!("FN:{}", if *on { 1 } else { 0 }),
@@ -77,18 +78,20 @@ impl Command {
     }
 
     /// Reject command instances that would serialise to an invalid wire
-    /// payload — currently just non-finite `MoveDeg(f64)`, which would
-    /// emit `MD:NaN` / `MD:inf` / `MD:-inf`.
+    /// payload — currently just a `MoveDeg` whose `MechanicalDegrees` holds a
+    /// non-finite value, which would emit `MD:NaN` / `MD:inf` / `MD:-inf`.
     ///
-    /// `SerialManager::move_mechanical` already validates before constructing
-    /// the variant, so this is defence-in-depth for callers that route
-    /// through the public `SerialManager::send_command` entry point with a
-    /// hand-built `Command`. `to_command_string` stays infallible.
+    /// The ASCOM boundary rejects non-finite move targets before a
+    /// `MechanicalDegrees` is ever constructed, so this is defence-in-depth
+    /// for callers that hand-build a `Command` and route it through the
+    /// public `send_command` entry point. `to_command_string` stays
+    /// infallible.
     pub fn validate(&self) -> Result<()> {
         if let Command::MoveDeg(deg) = self {
-            if !deg.is_finite() {
+            if !deg.value().is_finite() {
                 return Err(FalconRotatorError::InvalidValue(format!(
-                    "MoveDeg target must be finite, got {deg}"
+                    "MoveDeg target must be finite, got {}",
+                    deg.value()
                 )));
             }
         }
@@ -99,10 +102,16 @@ impl Command {
 /// Parsed Falcon `FA` full-status response.
 ///
 /// Wire format: `FR_OK:position_in_steps:position_in_deg:is_moving:limit_detect:do_derotation:motor_reverse`
+///
+/// `position_steps` is **signed**: the Falcon's step counter is referenced to
+/// the 0° home and reads negative for positions reached CCW of home — which
+/// happens whenever a target beyond the 220° CW soft limit is reached the long
+/// way round. `position_deg` is always normalised to `[0, 360)`. Captured on
+/// real hardware (firmware 1.5); see `parse_full_status` tests.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FalconStatus {
-    pub position_steps: u32,
-    pub position_deg: f64,
+    pub position_steps: Steps,
+    pub position_deg: MechanicalDegrees,
     pub is_moving: bool,
     pub limit_detect: bool,
     pub do_derotation: bool,
@@ -143,17 +152,22 @@ pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
             fields.len()
         )));
     }
-    let position_steps: u32 = fields[0]
+    // Signed: negative for positions CCW of the 0° home (e.g. a target past
+    // the 220° CW limit reached the long way round). Parsing as u32 here is
+    // the bug that broke every status read whenever steps went negative.
+    let steps_raw: i32 = fields[0]
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_steps: {e}")))?;
-    let position_deg: f64 = fields[1]
+    let deg_raw: f64 = fields[1]
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_deg: {e}")))?;
-    if !position_deg.is_finite() {
+    if !deg_raw.is_finite() {
         return Err(FalconRotatorError::ParseError(format!(
-            "FA position_deg: non-finite value {position_deg} in {response:?}"
+            "FA position_deg: non-finite value {deg_raw} in {response:?}"
         )));
     }
+    let position_steps = Steps(steps_raw);
+    let position_deg = MechanicalDegrees::new(deg_raw);
     let is_moving = parse_bool(fields[2], "FA is_moving")?;
     let limit_detect = parse_bool(fields[3], "FA limit_detect")?;
     let do_derotation = parse_bool(fields[4], "FA do_derotation")?;
@@ -180,7 +194,7 @@ pub fn parse_firmware_version(response: &str) -> Result<String> {
 }
 
 /// Parse the `FD:nn.nn` degrees response.
-pub fn parse_position_deg(response: &str) -> Result<f64> {
+pub fn parse_position_deg(response: &str) -> Result<MechanicalDegrees> {
     let rest = strip_known_prefix(response, "FD:")?;
     let value: f64 = rest
         .parse()
@@ -190,13 +204,17 @@ pub fn parse_position_deg(response: &str) -> Result<f64> {
             "FD: non-finite value {value} in {response:?}"
         )));
     }
-    Ok(value)
+    Ok(MechanicalDegrees::new(value))
 }
 
 /// Parse the `FP:n..` steps response.
-pub fn parse_position_steps(response: &str) -> Result<u32> {
+///
+/// Signed: the step counter is referenced to the 0° home and reads negative
+/// for positions CCW of home (real hardware, firmware 1.5).
+pub fn parse_position_steps(response: &str) -> Result<Steps> {
     let rest = strip_known_prefix(response, "FP:")?;
     rest.parse()
+        .map(Steps)
         .map_err(|e| FalconRotatorError::ParseError(format!("FP: {e}")))
 }
 
@@ -316,18 +334,30 @@ mod tests {
 
     #[test]
     fn command_move_deg_uses_two_decimal_places() {
-        assert_eq!(Command::MoveDeg(284.8).to_command_string(), "MD:284.80");
+        assert_eq!(
+            Command::MoveDeg(MechanicalDegrees::new(284.8)).to_command_string(),
+            "MD:284.80"
+        );
     }
 
     #[test]
     fn command_move_deg_pads_to_two_decimal_places() {
-        assert_eq!(Command::MoveDeg(0.0).to_command_string(), "MD:0.00");
-        assert_eq!(Command::MoveDeg(45.0).to_command_string(), "MD:45.00");
+        assert_eq!(
+            Command::MoveDeg(MechanicalDegrees::new(0.0)).to_command_string(),
+            "MD:0.00"
+        );
+        assert_eq!(
+            Command::MoveDeg(MechanicalDegrees::new(45.0)).to_command_string(),
+            "MD:45.00"
+        );
     }
 
     #[test]
     fn command_move_steps_includes_count() {
-        assert_eq!(Command::MoveSteps(31_192).to_command_string(), "MS:31192");
+        assert_eq!(
+            Command::MoveSteps(Steps(31_192)).to_command_string(),
+            "MS:31192"
+        );
     }
 
     #[test]
@@ -344,16 +374,26 @@ mod tests {
 
     #[test]
     fn validate_accepts_finite_move_deg() {
-        Command::MoveDeg(180.0).validate().unwrap();
-        Command::MoveDeg(0.0).validate().unwrap();
-        Command::MoveDeg(-90.0).validate().unwrap();
-        Command::MoveDeg(359.99).validate().unwrap();
+        Command::MoveDeg(MechanicalDegrees::new(180.0))
+            .validate()
+            .unwrap();
+        Command::MoveDeg(MechanicalDegrees::new(0.0))
+            .validate()
+            .unwrap();
+        Command::MoveDeg(MechanicalDegrees::new(-90.0))
+            .validate()
+            .unwrap();
+        Command::MoveDeg(MechanicalDegrees::new(359.99))
+            .validate()
+            .unwrap();
     }
 
     #[test]
     fn validate_rejects_non_finite_move_deg() {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let err = Command::MoveDeg(bad).validate().unwrap_err();
+            let err = Command::MoveDeg(MechanicalDegrees::new(bad))
+                .validate()
+                .unwrap_err();
             assert!(
                 matches!(err, FalconRotatorError::InvalidValue(_)),
                 "expected InvalidValue for {bad}, got {err:?}"
@@ -373,7 +413,7 @@ mod tests {
         Command::Voltage.validate().unwrap();
         Command::DerotationOff.validate().unwrap();
         Command::DerotationRate(50).validate().unwrap();
-        Command::MoveSteps(31_192).validate().unwrap();
+        Command::MoveSteps(Steps(31_192)).validate().unwrap();
         Command::Halt.validate().unwrap();
         Command::IsRunning.validate().unwrap();
         Command::SetReverse(true).validate().unwrap();
@@ -395,8 +435,8 @@ mod tests {
     #[test]
     fn parse_full_status_happy_path() {
         let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0").unwrap();
-        assert_eq!(status.position_steps, 4332);
-        assert!((status.position_deg - 50.0).abs() < 1e-9);
+        assert_eq!(status.position_steps, Steps(4332));
+        assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
         assert!(!status.is_moving);
         assert!(!status.limit_detect);
         assert!(!status.do_derotation);
@@ -406,13 +446,13 @@ mod tests {
     #[test]
     fn parse_full_status_with_trailing_newline() {
         let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0\n").unwrap();
-        assert_eq!(status.position_steps, 4332);
+        assert_eq!(status.position_steps, Steps(4332));
     }
 
     #[test]
     fn parse_full_status_with_trailing_crlf() {
         let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0\r\n").unwrap();
-        assert_eq!(status.position_steps, 4332);
+        assert_eq!(status.position_steps, Steps(4332));
     }
 
     #[test]
@@ -490,6 +530,21 @@ mod tests {
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
+    #[test]
+    fn parse_full_status_accepts_negative_steps_below_home() {
+        // Real-hardware capture (firmware 1.5): driving past the 220° CW limit
+        // sends the rotator the long way round — CCW past the 0° home — where
+        // the signed step counter goes negative while position_deg wraps into
+        // [0, 360). Parsing field 0 as i32 (not u32) is what keeps status reads
+        // alive across that region; the u32 parse here used to abort the read
+        // with "FA position_steps: invalid digit found in string".
+        let status = parse_full_status("FR_OK:-2838:327.24:1:0:0:0").unwrap();
+        assert_eq!(status.position_steps, Steps(-2838));
+        assert!((status.position_deg.value() - 327.24).abs() < 1e-9);
+        assert!(status.is_moving);
+        assert!(!status.limit_detect);
+    }
+
     // ---- parse_firmware_version -------------------------------------------
 
     #[test]
@@ -519,7 +574,7 @@ mod tests {
     #[test]
     fn parse_position_deg_basic() {
         let v = parse_position_deg("FD:142.30").unwrap();
-        assert!((v - 142.30).abs() < 1e-9);
+        assert!((v.value() - 142.30).abs() < 1e-9);
     }
 
     #[test]
@@ -566,15 +621,16 @@ mod tests {
 
     #[test]
     fn parse_position_steps_basic() {
-        assert_eq!(parse_position_steps("FP:12345").unwrap(), 12345);
+        assert_eq!(parse_position_steps("FP:12345").unwrap(), Steps(12345));
     }
 
     #[test]
-    fn parse_position_steps_rejects_negative() {
-        assert!(matches!(
-            parse_position_steps("FP:-1").unwrap_err(),
-            FalconRotatorError::ParseError(_)
-        ));
+    fn parse_position_steps_accepts_negative_below_home() {
+        // The Falcon step counter is signed relative to the 0° home: positions
+        // CCW of home report negative steps. Captured on real hardware
+        // (firmware 1.5), e.g. `FP:-1784` observed at 339.96° while traversing
+        // past the 220° CW limit the long way round.
+        assert_eq!(parse_position_steps("FP:-1784").unwrap(), Steps(-1784));
     }
 
     // ---- parse_voltage_raw ------------------------------------------------
@@ -665,17 +721,25 @@ mod tests {
 
     #[test]
     fn validate_echo_move_deg_matches() {
-        validate_echo(&Command::MoveDeg(180.0), "MD:180.00").unwrap();
+        validate_echo(
+            &Command::MoveDeg(MechanicalDegrees::new(180.0)),
+            "MD:180.00",
+        )
+        .unwrap();
     }
 
     #[test]
     fn validate_echo_move_deg_matches_with_trailing_newline() {
-        validate_echo(&Command::MoveDeg(180.0), "MD:180.00\n").unwrap();
+        validate_echo(
+            &Command::MoveDeg(MechanicalDegrees::new(180.0)),
+            "MD:180.00\n",
+        )
+        .unwrap();
     }
 
     #[test]
     fn validate_echo_move_steps_matches() {
-        validate_echo(&Command::MoveSteps(15_000), "MS:15000").unwrap();
+        validate_echo(&Command::MoveSteps(Steps(15_000)), "MS:15000").unwrap();
     }
 
     #[test]
@@ -711,7 +775,11 @@ mod tests {
 
     #[test]
     fn validate_echo_rejects_mismatch() {
-        let err = validate_echo(&Command::MoveDeg(180.0), "MD:181.00").unwrap_err();
+        let err = validate_echo(
+            &Command::MoveDeg(MechanicalDegrees::new(180.0)),
+            "MD:181.00",
+        )
+        .unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 

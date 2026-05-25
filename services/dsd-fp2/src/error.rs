@@ -74,6 +74,9 @@ impl From<TransportError> for DsdFp2Error {
             TransportError::Timeout(d) => DsdFp2Error::Timeout(format!("{d:?}")),
             TransportError::Eof => DsdFp2Error::Communication("transport reached EOF".to_string()),
             TransportError::Framing(msg) => DsdFp2Error::Communication(format!("framing: {msg}")),
+            TransportError::Reconnecting => {
+                DsdFp2Error::Communication("transport is reconnecting".to_string())
+            }
         }
     }
 }

@@ -1,29 +1,75 @@
-# Plan: eager hardware validation across Alpaca services
+# Plan: service-lifetime transport with split safety / shutdown teardown
+
+> **Status: implemented.** Phases 0a, 0b, and 1-5 landed in this PR:
+> shared-transport hook split + `start`/`shutdown` API (Phase 0a),
+> reconnect supervisor + connection-cell swap that preserves live
+> sessions across transient transport loss (Phase 0b), and per-service
+> migrations for `star-adventurer-gti`, `dsd-fp2`, `pa-falcon-rotator`,
+> `qhy-focuser`, and `ppba-driver` (Phases 1-5) — each unconditionally
+> calling `manager.transport().start()` from `ServerBuilder::build()`
+> and `manager.transport().shutdown()` from the HTTP-server stop path.
+> Phase 6 is this doc update.
+>
+> An earlier draft introduced a `Config.validate_on_start: bool` flag
+> (default `false`) to opt into eager validation per service. That
+> flag was removed before merge: there are no pre-existing operator
+> configs to be backward-compat with, all CI paths use mock factories
+> (which satisfy the handshake), and the only realistic "I want the
+> service running without hardware" workflow is local dev — covered
+> by the existing `--features mock` builds. Always-validate is the
+> opinionated default; operators get an immediate, clear failure if
+> the configured port doesn't talk to the right device, rather than a
+> deferred failure on the first ASCOM client request.
+>
+> Originally scoped as "eager hardware validation" (validate-then-close
+> at startup, fixing the wrong-device handshake from issue #254). On
+> review the scope grew: validation is just one moment in a bigger
+> lifecycle redesign that aligns the transport's lifetime with the
+> service's lifetime instead of with ASCOM-client refcount. The
+> filename is kept for now; consider renaming to `transport-lifecycle.md`
+> in a follow-up.
 
 ## Motivation
 
 [Issue #254][issue-254] fixed the immediate Star Adventurer GTi pain
-(wrong-device handshake leaked seven mount-specific commands before the
-identity check) by reordering the handshake so `:e1` runs first and
-strictly validates against a Sky-Watcher mount-type whitelist. The fix
-landed in PR #296 and means the wrong-device case now surfaces a
-clear, port-quoted `INVALID_OPERATION` to the ASCOM client on first
-`Connected = true`.
+(wrong-device handshake leaked seven mount-specific commands before
+the identity check) by reordering the handshake so `:e1` runs first
+and strictly validates against a Sky-Watcher mount-type whitelist.
+The fix landed in PR #296 and means the wrong-device case now
+surfaces a clear, port-quoted `INVALID_OPERATION` to the ASCOM
+client on first `Connected = true`.
 
-The follow-up discussion surfaced a deeper question: in an **Alpaca**
-deployment (standalone HTTP daemon, discovery broadcast, multi-client
-refcount, systemd unit lifecycle) why is the wrong-device check
-gated on the first ASCOM client request rather than running at
-service startup? Classic ASCOM (Windows COM in-process driver) has
-to be lazy because the driver *is* the client process. Alpaca looks
-much more like postgres — a daemon that should validate its world
-at boot and exit non-zero on misconfiguration so systemd /
-orchestration treat the failure as a failure instead of advertising
-a broken device on the network.
+The follow-up discussion surfaced two deeper questions:
 
-This plan extends the identity-validation pattern across every
-Alpaca driver service in the workspace, with a small,
-non-invasive addition to `rusty-photon-shared-transport`.
+1. **Why is identity-validation gated on the first ASCOM request
+   instead of running at service startup?** Classic ASCOM (Windows
+   COM in-process driver) has to be lazy because the driver *is*
+   the client process. Alpaca looks much more like postgres — a
+   daemon that should validate its world at boot and exit non-zero
+   on misconfiguration.
+2. **Why is the underlying serial / USB port's lifetime tied to
+   ASCOM client refcount at all?** In an Alpaca deployment the
+   driver process is up only while the device is powered, and vice
+   versa: power lifetime ≡ driver lifetime ≡ port lifetime. ASCOM
+   clients connect and disconnect on top of a port that's
+   continuously open to the device. The "open on first connect,
+   close on last disconnect" model conflates two distinct teardown
+   moments ("last client walked away, put the device in a safe
+   state" vs. "the service is going down, close the port") that
+   should be separate.
+
+This plan addresses both by:
+
+- **Splitting the transport lifecycle** from the client refcount.
+  The port opens at `transport.start()` and closes at
+  `transport.shutdown()`, both called by the service binary. ASCOM
+  clients just bump the refcount.
+- **Splitting `Hooks::teardown`** into `on_last_disconnect` (refcount
+  1→0 safety commands, port stays open) and `shutdown` (final
+  cleanup, port closes).
+- **Adding a reconnect supervisor** that recovers from transient
+  transport loss (USB drop / replug, cable jostle, hub power
+  management) without operator or client intervention.
 
 [issue-254]: https://github.com/ivonnyssen/rusty-photon/issues/254
 
@@ -40,7 +86,7 @@ Five Alpaca driver services, all (or shortly to be) on
 | `pa-falcon-rotator` | 11118 | Pegasus identity query | on shared transport (Phase D, PR #282) |
 | `star-adventurer-gti` | 11117 | `:e1` + `MountType` whitelist | on shared transport (Phase E, PR #285); identity-probe landed in PR #296 |
 
-Explicitly out of scope:
+Out of scope:
 
 - `sentinel` (HTTP client polling other Alpaca devices, not a driver).
 - `phd2-guider` (PHD2 client, not Alpaca).
@@ -48,162 +94,291 @@ Explicitly out of scope:
 
 [shared-transport-plan]: ./shared-transport-extraction.md
 
-## What "eager validation" means here
+## The new lifecycle model
 
-At service startup, after config load but **before** binding the
-Alpaca HTTP server and starting the discovery responder:
+```
+   ┌──────────┐  start()    ┌──────┐         ┌──────────────┐
+   │  Closed  │────────────▶│ Open │────────▶│ Reconnecting │
+   └──────────┘             └──────┘  (io     └──────────────┘
+        ▲                      │ ▲    error)        │
+        │                      │ └─────(success)────┘
+        │ shutdown()           │
+        └──────────────────────┘
+```
 
-1. Open the transport.
-2. Run the existing handshake hook (which performs the identity
-   probe by construction — see [§Per-service work](#per-service-work)
-   for the audit checklist).
-3. Tear the transport back down (`Hooks::teardown` runs; transport
-   closes; refcount returns to zero).
-4. On success → proceed to bind the Alpaca server and the discovery
-   responder. The hardware is *not* held between this validation
-   handshake and the first `Connected = true` from a client; we
-   re-acquire on first connect. One extra handshake per service
-   lifetime is the only overhead.
-5. On failure → log the diagnostic at `error!`, return a non-zero
-   `ExitCode` from `main`. systemd / orchestration retries naturally.
-   Operator fixes config and the orchestrator restarts the service.
+State transitions are driven by the **service binary**, not by
+ASCOM clients. Clients connect and disconnect on top of a transport
+that's already open.
 
-The deliberate non-goal: **don't hold the hardware for the full
-service lifetime.** That would break:
+| Event | What happens |
+|---|---|
+| Service `main` calls `transport.start().await` | Open the port; run `Hooks::handshake` (which encompasses identity validation); spawn `Hooks::while_open` and the reconnect supervisor. On failure: return non-zero `ExitCode` from `main` before binding the Alpaca HTTP server. |
+| ASCOM client sends `Connected = true` | `transport.acquire()` returns a `Session` after a fast refcount-bump. No I/O on the happy path. |
+| ASCOM client sends `Connected = false` | `Session::close()` decrements the refcount. On 1→0 only: runs `Hooks::on_last_disconnect` to put the device in a safe state (stop tracking, park, turn off heater, …). Port stays open. |
+| Service receives SIGTERM | Service's shutdown handler calls `transport.shutdown().await`. Cancels `while_open` + supervisor; runs `Hooks::shutdown` for final cleanup; drops the port. |
+| Transport error mid-operation | Transport enters `Reconnecting`. See [§Reconnect mechanism](#reconnect-mechanism). |
 
-- The shared-transport ref-count contract (refcount goes 0 → 1 on
-  validation, would stay >0 forever, never reach 0 again).
-- The teardown hook on real client disconnect (`star-adventurer-gti`
-  issues `:L1, :L2, :K1`; `ppba-driver` and friends have their own
-  shutdown commands).
-- The "service holds hardware nobody's using" semantic — leaves the
-  bus / cable busy for tooling that needs to probe it (e.g.
-  `mode==diagnostic` ad-hoc reads from another process).
+The pivotal split: today's `Hooks::teardown` is responsible for
+both the safety commands (`star-adventurer-gti` issues `:L1, :L2,
+:K1`; others have analogues) **and** the transport teardown (cancel
+while-open, drop the port). The new model splits them:
 
-## Design choices
+- `Hooks::on_last_disconnect` — fires on every refcount 1→0.
+  Per-service safety commands. Port stays open. Idempotent — may
+  fire many times during a service's lifetime.
+- `Hooks::shutdown` — fires once, from `SharedTransport::shutdown()`
+  in the service's shutdown handler. Final cleanup; while_open and
+  supervisor are cancelled; port is closed.
 
-| Decision | Choice | Rejected alternative + why |
+Both may run real I/O; both surface errors through their result types.
+
+### Why service-lifetime port ownership
+
+This matches the physical reality of an Alpaca-driver-as-daemon
+deployment:
+
+1. **Power lifetime ≡ driver lifetime ≡ port lifetime.** The dome
+   gets powered on → the driver process starts (systemd) → the port
+   opens. The dome powers off → SIGTERM → port closes. ASCOM clients
+   come and go on top of an already-warm transport.
+2. **No re-handshake cost between client sessions.** A planetarium
+   crashes and reconnects; an automation script disconnects and
+   another connects. None of those should re-trigger the seven-byte
+   handshake. The handshake belongs to the port's lifecycle, not
+   the client's.
+3. **Safety teardown still runs at every client disconnect.** A
+   client crash or a forgotten disconnect still puts the mount in a
+   safe state — the only behaviour worth preserving from the old model.
+4. **Polling runs while the device is powered.** The `while_open`
+   task (status reads, current-position updates, environmental sensor
+   polls) makes sense whenever the device is on, not just while a
+   client is asking. Sentinel and the dashboard want continuous
+   data; per-client polling was always an awkward fit for what's
+   really continuous monitoring.
+5. **Transient transport loss becomes a first-class concern.** USB
+   serial devices drop and reappear; the current model masks this
+   by attempting a fresh acquire on every client request, but a
+   client mid-exposure that loses the focuser sees the raw io
+   error and has to reconnect itself. The new model owns recovery.
+
+### Trade-offs accepted
+
+| Concern | Old model | New model | Net |
+|---|---|---|---|
+| External tooling (operator `picocom`s the port) | Possible when no clients connected | Requires stopping the service | Acceptable — the service is the contract |
+| Polling while no client is connected | None | Continuous at the configured cadence | Acceptable — small fixed serial traffic; this is what the device is for |
+| Recovery from transient transport loss | Implicit via fresh acquire on next client | Explicit supervisor in shared-transport | Explicit-is-better; current model has the "half-broken port until next client" failure mode |
+| Boot-time cost | None (lazy-acquire) | One handshake at startup | Acceptable — milliseconds, paid once |
+| Shared-transport code complexity | Single teardown hook | Hook split + supervisor | Acceptable — explicit lifecycle is easier to reason about than the conflated one |
+
+## Reconnect mechanism
+
+The reconnect supervisor lives inside `SharedTransport` and runs as
+a background tokio task spawned by `start()`. Its job: once the
+transport reaches `Open`, keep it there across transient hardware
+losses without operator or client intervention.
+
+### Triggers
+
+| Trigger | When | Status |
 |---|---|---|
-| Where validation lives | New `SharedTransport::validate_hardware()` method that internally `acquire` + `close`. Per-protocol identity probe stays inside the codec's existing `handshake` hook. | Add a new `Hooks::identify` separate from `handshake` — duplicates the codec's "talk to the device" path and forks the wire sequence between validate and real connect. |
-| Hold vs. release after validate | Release (validate-close-reopen-on-first-client). Two handshakes per service lifetime is cheap; preserves the lazy-acquire / refcount contract. | Hold a synthetic reference for service lifetime — see [§What "eager validation" means here](#what-eager-validation-means-here) above. |
-| Default | Opt-in via `validate_on_start: true` in the service's transport config block. Defaults to `false` so `Config::default()` (smoke tests, `cargo run` with no `--config`) still comes up cleanly. Production config files set it to `true`. | Default-on workspace-wide — wrecks every `cargo run` smoke test and every BDD scenario that starts the server without hardware. |
-| Failure-mode behavior | Hard fail: log the diagnostic to stderr at `error!`, return `ExitCode::from(2)` from `main`. | Warn-and-continue — the discovery responder broadcasts a device that isn't really there, defeats the purpose. Retry-loop at startup — postpones the problem; orchestrators already do retry. |
-| Transient mount-off-at-boot tolerance | Allow opt-in `validate_on_start_retries: u32` (default 0) with a fixed backoff. Operators powering the mount on the same circuit as the host can set `validate_on_start_retries: 5`. | Always-retry — masks legitimate config errors. Never-retry — friction for the dome-power case. |
+| Periodic | Every `reconnect_interval` (default 5s) while state is `Reconnecting`. | Implemented (Phase 0b). |
+| Notify-driven | `Connection::request` fires the supervisor's `Notify` on every `TransportError`, waking the loop immediately rather than waiting for the next periodic tick. | Implemented (Phase 0b). |
+| Forced | `SharedTransport::reconnect_now().await` — exposed for test infrastructure and a future operator CLI ("kick reconnect"). | Implemented (Phase 0b). |
+| On-acquire | When a client calls `acquire()` and state is `Reconnecting`, attempt one synchronous reconnect (capped by `reconnect_acquire_timeout`, default 2s) before returning. If it succeeds, hand out the session normally; if it doesn't, return `SessionError::Transport(Reconnecting)`. | **Follow-up.** `acquire()` does not short-circuit on `Reconnecting` today; `Session::request` is what reflects the state. Lands together with the `reconnect_acquire_timeout` config plumbing in a follow-up PR. |
 
-## Shared-transport API addition
+### How transport errors enter the supervisor
+
+Two paths reach the supervisor:
+
+1. **`while_open` task** is the canonical detector. Its continuous
+   poll loop is the most likely thing to notice the device is gone.
+   A transport-error result from any request notifies the supervisor
+   (via a `tokio::sync::Notify`) and the task exits its iteration.
+2. **Per-request error from `Session::request`** — when a client
+   request fails with `TransportError::Io`, `Timeout`, or `Eof`, the
+   `Connection` fires the same `Notify`. Many such notifications
+   during the brief window before the supervisor flips state to
+   `Reconnecting` collapse to a single reconnect attempt.
+
+Codec errors (`TransportError::Framing`, `SessionError::Codec`) do
+**not** trigger reconnect — those are protocol mismatches, not
+hardware loss, and reconnecting wouldn't fix them.
+
+### Connection swap mechanics
+
+The trick that makes existing `Session<C>` references survive a
+reconnect: instead of mutating the existing `Connection<C>` in place,
+the slot holds an indirection cell
+`ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>`. Both
+`SharedTransport`'s `slot` and every `Session<C>` keep an `Arc` clone
+of the same cell. The supervisor's reconnect step is:
+
+1. Call `factory.open().await` to get a fresh `FrameTransport`.
+2. Wrap it in a freshly constructed `Connection<C>` (a brand-new
+   command lock, no shared state with the dead one).
+3. Run `Hooks::handshake` against the new `Connection` in isolation —
+   it owns its own command lock, no contention with live sessions
+   (which are still pointing at the old, dead cell value).
+4. Cancel the previous `Hooks::while_open` task (with a bounded
+   timeout join, then abort) before installing the new connection,
+   so the dying poll loop's in-flight requests don't race the swap.
+5. Take the cell's `write` lock briefly and replace the inner
+   `Arc<Connection<C>>` with the new one (an atomic pointer swap
+   from any reader's perspective).
+6. Respawn `Hooks::while_open` against the fresh connection.
+
+`Session::request` reads the cell via `cell.read().await.clone()` on
+every call, so live `Session<C>`s automatically pick up the new
+connection on their next request — no client-visible recreation is
+needed. The previous `Arc<Connection<C>>` drops when the last in-flight
+reader releases its clone, taking the dead `FrameTransport` with it.
+
+### Backoff
+
+Default schedule: every 5 seconds, no exponential growth. Reasoning:
+a 5-second cadence is fast enough that a brief unplug/replug cycle
+recovers within two attempts and slow enough that a dead device
+doesn't spam syslog. Configurable per service via `reconnect_interval`.
+
+### Reporting
+
+While in `Reconnecting`:
+
+- `SharedTransport::is_available()` returns `false`.
+- `Session::request()` returns `SessionError::Transport(Reconnecting)`
+  — a labelled variant so per-service error mapping can render
+  "device is reconnecting" instead of a generic io error.
+- ASCOM `Connected` continues to reflect the slot's session presence
+  (clients haven't called `set_connected(false)`); operations fail
+  until the supervisor recovers. See open question #1 on whether
+  `Connected` should track availability instead.
+
+A future enhancement: emit `reconnect_started` / `reconnect_succeeded`
+/ `reconnect_failed` events so `sentinel` and the dashboard can
+surface "focuser is reconnecting" instead of generic request failures.
+
+## Shared-transport API changes
 
 ```rust
 // crates/rusty-photon-shared-transport/src/lib.rs
 impl<C: Codec> SharedTransport<C> {
-    /// Eagerly open the transport, run the handshake (which
-    /// encompasses the codec's identity check), then close. Used at
-    /// service startup to validate the configured transport target
-    /// before binding the Alpaca HTTP server.
-    ///
-    /// On success the transport returns to its pre-validate state
-    /// (closed, refcount = 0); the first real client's
-    /// `Connected = true` triggers a fresh `acquire()`.
-    /// Identity-probe failures surface the same
-    /// `SessionError<C::Error>` shape `acquire()` would, so
-    /// per-service error mapping (`SessionError → service error →
-    /// ASCOMError` for runtime, plus `std::process::ExitCode` for
-    /// startup) reuses the existing routing.
-    pub async fn validate_hardware(&self) -> Result<(), SessionError<C::Error>> {
-        let session = self.acquire().await?;
-        session.close().await.map_err(SessionError::Transport)
-    }
+    /// Open the physical port, run `Hooks::handshake` (identity
+    /// validation), and spawn `Hooks::while_open` plus the reconnect
+    /// supervisor. Called once at service startup, before the Alpaca
+    /// HTTP server binds. On error returns the handshake's
+    /// `SessionError<C::Error>` so `main` can map it to a non-zero
+    /// `ExitCode`.
+    pub async fn start(&self) -> Result<(), SessionError<C::Error>>;
+
+    /// Final teardown: cancel `while_open` + reconnect supervisor;
+    /// run `Hooks::shutdown`; drop the port. Called from the
+    /// service's SIGTERM handler.
+    pub async fn shutdown(&self) -> Result<(), TransportError>;
+
+    /// Hand out a `Session`. Fast on the happy path: refcount++
+    /// and clone the existing connection `Arc`. No I/O on the 0→1
+    /// client transition (port is already open). On `Reconnecting`,
+    /// see the on-acquire trigger above.
+    pub async fn acquire(&self) -> Result<Session<C>, SessionError<C::Error>>;
+
+    /// Trigger an immediate reconnect attempt and await its result.
+    pub async fn reconnect_now(&self) -> Result<(), SessionError<C::Error>>;
+}
+
+/// Session::close decrements the refcount. On 1→0, runs
+/// `Hooks::on_last_disconnect`. Port stays open.
+impl<C: Codec> Session<C> {
+    pub async fn close(self) -> Result<(), TransportError>;
+}
+
+/// Hooks split: on_last_disconnect vs shutdown.
+pub struct Hooks<C: Codec> {
+    pub handshake: HandshakeFn<C>,
+    /// Runs on every refcount 1→0. Port stays open. Idempotent.
+    pub on_last_disconnect: OnLastDisconnectFn<C>,
+    /// Runs once on `SharedTransport::shutdown()`. Port closes after.
+    pub shutdown: ShutdownFn<C>,
+    /// Lifecycle tied to transport `Open`, not client refcount > 0.
+    pub while_open: Option<WhileOpenFn<C>>,
 }
 ```
 
-That's the entire shared-crate change. Three lines of new public
-surface; leverages the existing acquire / handshake / teardown /
-refcount plumbing verbatim. The validation path is structurally
-identical to a real client connect + immediate disconnect, so there's
-no second code path to maintain.
+### Rollout compatibility (implemented)
 
-### Implications for shared-transport's existing hooks
-
-- **`Hooks::handshake`** is the identity-probe contract. Today only
-  `star-adventurer-gti`'s handshake actually rejects on identity
-  mismatch (`SkywatcherCodecError::WrongDevice`, landed in PR #296).
-  The other four services' handshakes need audit — the eager-validation
-  rollout is the forcing function to harden them.
-- **`Hooks::teardown`** runs on validate-close just as on real
-  disconnect. Audit each service's teardown for "safe to send to a
-  freshly initialized device that's never moved" — most halt-equivalent
-  commands are idempotent, but worth verifying. For `star-adventurer-gti`
-  the existing `:L1, :L2, :K1` sequence is fine.
-- **`Hooks::while_open`** (background poll) starts on `acquire`, cancels
-  on `close`. Validate-close cancels it cleanly via the existing
-  `WhileOpen::cancelled()` signal — no change needed.
-- **No new hook needed.** Resist the temptation to add a separate
-  `Hooks::identify`; the existing `handshake` is already the
-  identity-probe checkpoint by construction (it's the first wire code
-  path that runs).
+Phase 0a renamed `Hooks.teardown` to `Hooks.on_last_disconnect`
+and added a new `Hooks.shutdown` field. The plan originally
+proposed a `Hooks::legacy_teardown(t)` constructor as a compile-time
+shim, but in practice every service had a no-op or trivial teardown
+that was easier to update in-place than to wrap behind a shim — so
+the shim was skipped, each service got a manual two-line update to
+its `Hooks { ... }` literal, and the `LazyAcquire` runtime
+semantics ensure `on_last_disconnect` keeps firing on every 1→0
+close exactly as the old single hook did. Migrated services
+additionally got a `shutdown` body (no-op for the four no-op
+services; the same `:L1, :L2, :K1` safety sequence as
+`on_last_disconnect` for `star-adventurer-gti`).
 
 ## Per-service work
 
 | Service | Audit | Likely change |
 |---|---|---|
-| `star-adventurer-gti` | Already done in PR #296. | Add `validate_on_start` config field + `main.rs` call to `validate_hardware()`. |
-| `dsd-fp2` | Confirm handshake checks an identity string and rejects on mismatch. | If not: port the `WrongDevice` pattern (codec error variant + diagnostic + service error variant + ASCOM mapping); add config field; `main.rs` hook. |
-| `ppba-driver` | Same — Pegasus PPBA has a version/identity query; confirm handshake rejects non-PPBA replies. | Same. |
-| `pa-falcon-rotator` | Same — Pegasus Falcon shares Pegasus identity shape; potentially share an identity-probe helper with `ppba-driver`. | Same; possible shared `pegasus-protocol` crate consolidation (track as a separate cleanup, not blocking). |
+| `star-adventurer-gti` | Wrong-device probe landed in PR #296. Existing teardown is `:L1, :L2, :K1`. | Move teardown to `on_last_disconnect`; add `Hooks::shutdown` (likely the same commands here); wire `start`/`shutdown` in `main`. |
+| `dsd-fp2` | Confirm handshake checks an identity string and rejects on mismatch. | If not: port the `WrongDevice` pattern (codec error + diagnostic + service error + ASCOM mapping); split teardown; wire start/shutdown. |
+| `ppba-driver` | Pegasus PPBA has a version/identity query — confirm handshake rejects non-PPBA replies. | Same as above. |
+| `pa-falcon-rotator` | Pegasus Falcon shares Pegasus identity shape with PPBA. | Same; consider a shared `pegasus-protocol` crate (track separately). |
 | `qhy-focuser` | QHY's JSON identity probe — confirm rejection on non-QHY JSON. | Same. |
 
-For each service, the per-service change is roughly:
-
-- New `WrongDevice { port, reason }` error variant in the service's
-  error enum (where missing — `star-adventurer-gti` already has it).
-- Wrong-device routing through
-  `SessionError → service error → ASCOMError` for runtime ASCOM
-  consistency (`star-adventurer-gti`'s `codec.rs` is the template).
-- `validate_on_start: bool` (and the two companion fields below) on
-  the transport config block.
-- `main.rs` call site:
+Each service's `main.rs` grows two calls:
 
 ```rust
-if cfg.transport.validate_on_start {
-    info!("validating hardware before binding Alpaca server");
-    manager
-        .transport()
-        .validate_hardware()
-        .await
-        .map_err(|e| {
-            error!(error = %ServiceError::from(e), "hardware validation failed");
-            ExitCode::from(2)
-        })?;
-}
+manager
+    .transport()
+    .start()
+    .await
+    .map_err(|e| {
+        error!(error = %ServiceError::from(e), "hardware startup failed");
+        ExitCode::from(2)
+    })?;
+
+// … in the SIGTERM handler …
+manager.transport().shutdown().await.ok();
 ```
+
+`rusty-photon-service-lifecycle` will probably grow a hook to thread
+`start`/`shutdown` through automatically — track separately.
 
 ## Config surface (per service)
 
-```rust
-// In each service's TransportConfig (USB / UDP variants both):
-#[serde(default)]
-pub validate_on_start: bool,
-#[serde(default)]
-pub validate_on_start_retries: u32,
-#[serde(default = "default_validate_retry_backoff", with = "humantime_serde")]
-pub validate_on_start_retry_backoff: Duration,
-```
+### What landed (Phases 1-5)
 
-Defaults: `validate_on_start: false`, `validate_on_start_retries: 0`,
-`validate_on_start_retry_backoff: 2s`. Production operators flip on;
-tests / smoke runs unaffected.
+No per-service `Config` fields. Each migrated service's
+`ServerBuilder::build()` unconditionally calls
+`manager.transport().start()` after constructing the manager and
+before binding the HTTP listener; the resulting `SessionError` (if
+any) propagates out of `build()` into `main`, which returns a
+non-zero `ExitCode`. There is no opt-out — see the status banner at
+the top for the rationale.
 
-The retry semantics: on `ConnectionFailed` / `Timeout` /
-`Transport(connection closed)` (i.e. the "device not yet ready" cluster
-of errors), retry up to `validate_on_start_retries` times with
-`validate_on_start_retry_backoff` between attempts. On `WrongDevice`
-or `Protocol` errors, fail immediately — these are config errors, not
-transient hardware-not-ready conditions, and retrying just adds
-seconds of confusion before the operator gets the diagnostic.
+The reconnect supervisor's cadence uses the fixed default
+`DEFAULT_RECONNECT_INTERVAL = 5s` baked into shared-transport;
+operators wanting a different cadence can call
+`SharedTransport::set_reconnect_interval()` from a service-specific
+bootstrap path, but no `Config` field exposes this yet.
+
+### Follow-ups deferred to a later PR
+
+| Field | Purpose | Status |
+|---|---|---|
+| `reconnect_interval: Duration` | Override the supervisor's periodic retry cadence per-service from `Config` (instead of calling `set_reconnect_interval` manually). | Not implemented. |
+| `reconnect_acquire_timeout: Duration` | Time `acquire()` will wait for the on-acquire eager-reconnect path before returning `Reconnecting`. | Not implemented (the on-acquire path itself is a follow-up — see the [§Triggers](#triggers) table). |
+| `startup_retries: u32` + `startup_retry_backoff: Duration` | Retry-loop wrapping `transport.start()` for the dome-power-on-same-circuit case (mount comes up seconds after the daemon). | Not implemented. Operators relying on this today need to wrap their systemd unit with `Restart=on-failure` + `RestartSec=` instead. |
 
 ## CLI surface (per service)
 
-Add `--check-device` to force a one-shot validation pass and exit
-(orchestration / dome-startup-script helper):
+**Not implemented in this PR — follow-up.** The original plan
+proposed a `--check-device` flag that forces a one-shot validation
+pass and exits:
 
 ```bash
 star-adventurer-gti --config /etc/dome.json --check-device
@@ -211,95 +386,164 @@ star-adventurer-gti --config /etc/dome.json --check-device
 # exit 2 → wrong device or transient failure
 ```
 
-This is independent of `validate_on_start`; useful for "verify before
-service install" workflows and CI hardware-attached smoke tests. Maps
-to the same `validate_hardware()` call as the implicit start-time
-validation.
+Useful for "verify before service install" workflows and CI
+hardware-attached smoke tests. The implementation maps to
+`transport.start()` + `transport.shutdown()` + exit, but it needs
+per-service `Args` wiring (clap derive in each `main.rs`) and a
+branch that bypasses `ServiceRunner` and the HTTP listener bind.
+Five services' worth of mechanical wiring; tracked as a follow-up.
+
+Operators today can approximate the check by running the service
+with a config that points at the device they want to verify — the
+binary will exit non-zero on handshake failure. Less ergonomic than
+a dedicated flag (it still binds the HTTP listener on success), but
+functionally equivalent for the "does the configured port talk to
+the right device" question.
 
 ## Test strategy
 
-- **Shared-transport**: one unit test in
-  `crates/rusty-photon-shared-transport/` exercising
-  `validate_hardware` on a mock that fails the handshake (asserts
-  refcount returns to zero, transport never re-opens implicitly).
-- **Per-service**: one integration test asserting
-  `validate_on_start = true` + wrong-device mock → service `main`
-  returns non-zero. Easiest path: extract main into a
-  `pub async fn run(...) -> Result<(), ServiceError>` that returns,
-  and call it directly with a wrong-device mock factory from a
-  unit test.
-- **BDD**: existing scenarios assume `validate_on_start = false`
-  (the default). Add one scenario per service: "service refuses to
-  start when configured port targets the wrong device." This BDD
-  step needs the harness to start the service with a wrong-device
-  mock factory — practically that means the existing BDD world
-  builder grows a `with_wrong_device_factory()` option.
-- **CI nightly hardware-attached run** ([pi5 nightly
-  runner][pi5]): set `validate_on_start: true` in the nightly
-  config; failed validation paged via the existing nightly-failures
-  Slack hook.
+### Landed in this PR
+
+- **Shared-transport `tests/lifecycle.rs`** (Phase 0a, 12 tests):
+  - `start()` runs handshake; `shutdown()` runs `Hooks::shutdown`;
+    refcount=0 in between doesn't close the port.
+  - `Session::close()` on 1→0 runs `on_last_disconnect` exactly once
+    but doesn't close the port (in `ServiceLifetime` mode).
+  - `LazyAcquire` mode preservation: bit-for-bit unchanged from
+    pre-Phase-0a.
+  - `while_open` task lifecycle across all mode transitions.
+- **Shared-transport `tests/reconnect.rs`** (Phase 0b, 7 tests):
+  - `reconnect_now()` opens a fresh transport, runs handshake,
+    swaps the cell — happy path.
+  - **Live `Session<C>` references survive a reconnect via cell
+    swap** (the headline contract from the
+    [§Connection swap mechanics](#connection-swap-mechanics) section).
+  - Refcount invariance across reconnect; supervisor cancellation
+    on `shutdown()`.
+  - Reconnect-failure case: stays in `Reconnecting` until next
+    successful retry; `Session::request` short-circuits to
+    `TransportError::Reconnecting` while the supervisor is in
+    that state.
+  - **Codec errors do not trigger reconnect** (the contract
+    enforced in `Connection::request`'s signal-fire logic).
+
+### Follow-ups
+
+- **On-acquire eager reconnect test**: documented in the
+  `tests/reconnect.rs` file header. Lands together with the
+  `reconnect_acquire_timeout` config plumbing in a follow-up PR.
+- **Per-service integration tests** ("wrong-device mock → service
+  `main` returns non-zero"; "session round-trip survives a simulated
+  transport-drop"): not landed; worth adding per service in
+  follow-ups.
+- **BDD scenarios** ("service refuses to start when configured port
+  targets the wrong device"; "session resumes after a transient
+  transport drop"): not landed; need a wrong-device mock factory
+  per service first.
+- **CI nightly hardware-attached run** ([pi5 nightly][pi5]):
+  unchanged today. Production hardware paths now go through
+  `transport.start()` unconditionally on boot — the nightly run
+  already exercises that path on every restart.
 
 [pi5]: ../../docs/operations/pi-nightly-runner.md
 
 ## Failure-mode matrix
 
-| Scenario | `validate_on_start = false` (current) | `validate_on_start = true` |
-|---|---|---|
-| Mount powered off at boot | Service starts. First client connect fails with `ConnectionFailed`. | Service exits 2. Orchestrator retries. Operator turns on mount. With `validate_on_start_retries > 0`, intermediate retry attempts before exiting. |
-| Mount powered on, wrong device | Service starts. First client connect surfaces `WrongDevice`. | Service exits 2 immediately with the same diagnostic at the operator's terminal. |
-| Mount powered on, transient handshake failure (CRC error, dropped byte) | Service starts. First client connect retries on next attempt. | With `validate_on_start_retries > 0`, retry; else exit 2. |
-| Mount powered on, correct device | Service starts. First client connect succeeds. | Service starts (after a brief validate-handshake), first client connect succeeds — one extra handshake at boot is the cost. |
+| Scenario | Behaviour (current implementation) |
+|---|---|
+| Device powered off at boot | `start()` fails. Exits 2 immediately (no `startup_retries` plumbing yet — that's a follow-up; operators wrap the systemd unit with `Restart=on-failure` for now). Orchestrator restarts the binary. |
+| Device powered on, wrong device | `start()` fails with `WrongDevice`. Exits 2 immediately with the diagnostic. |
+| Device powered on, transient handshake failure (CRC, dropped byte) | `start()` fails; same restart-via-orchestrator path as the powered-off case. Per-attempt retries inside `start()` would need the `startup_retries` follow-up. |
+| Device powered on, correct device | `start()` succeeds; clients connect on top of a warm transport. |
+| Transient transport loss mid-session | Supervisor enters `Reconnecting`. Periodic retry every `DEFAULT_RECONNECT_INTERVAL` (5s, override via `SharedTransport::set_reconnect_interval`). Sessions stay alive but requests fail with `TransportError::Reconnecting` until recovery. On success, sessions resume on the new connection via the cell swap. |
+| Permanent device removal | Supervisor stays in `Reconnecting` forever. Operator notices via sentinel / dashboard. (Future enhancement: configurable max-reconnect-attempts before the service exits 3 and lets the orchestrator decide.) |
 
 ## Phasing
 
 Mirror the [shared-transport-extraction precedent][shared-transport-plan]
 (PR-per-phase):
 
-1. **Phase 0** — `rusty-photon-shared-transport`: add
-   `validate_hardware()` + tests. One PR. Touches one file in one
-   crate; review effort minimal.
-2. **Phase 1** — `star-adventurer-gti`: add config field + `main.rs`
-   hook + per-service test + BDD scenario + design-doc update.
-   Already has the `WrongDevice` plumbing from PR #296, so this is
-   pure wiring.
-3. **Phase 2** — `dsd-fp2`: audit handshake's identity check; bring
-   it up to spec if needed; wire eager validation.
-4. **Phase 3** — `pa-falcon-rotator`: same.
-5. **Phase 4** — `qhy-focuser`: same.
-6. **Phase 5** — `ppba-driver`: same. Possibly bundle with Phase 3
-   if a shared `pegasus-protocol` crate makes sense.
-7. **Phase 6** (optional) — workspace docs: a
-   `docs/skills/eager-hardware-validation.md` that codifies the
-   pattern for future driver services. Cross-link from the design
-   doc of each service.
+1. **Phase 0a** — `rusty-photon-shared-transport`: hook split
+   (`on_last_disconnect` + `shutdown`), `start()` / `shutdown()`
+   API. One PR. (No `legacy_teardown` shim ended up needed — see
+   [§Rollout compatibility](#rollout-compatibility-implemented).)
+2. **Phase 0b** — reconnect supervisor + connection-swap mechanics.
+   One PR. Lands behind the API from 0a; services that don't
+   override `reconnect_interval` get the default behaviour.
+3. **Phase 1** — `star-adventurer-gti`: migrate to explicit hooks;
+   wire `start`/`shutdown`; add BDD coverage. Already has the
+   `WrongDevice` plumbing from PR #296.
+4. **Phase 2** — `dsd-fp2`: audit handshake; migrate.
+5. **Phase 3** — `pa-falcon-rotator`: audit; migrate.
+6. **Phase 4** — `qhy-focuser`: audit; migrate.
+7. **Phase 5** — `ppba-driver`: audit; migrate. Possibly bundle with
+   Phase 3 if a `pegasus-protocol` consolidation lands first.
+8. **Phase 6** (optional) — workspace docs:
+   `docs/skills/transport-lifecycle.md` codifying the pattern.
+   Updating this plan-doc itself with the implemented-status
+   headers is the minimum Phase 6 deliverable that landed; a
+   stand-alone skill doc remains as a follow-up enhancement for a
+   future contributor.
 
-Each phase is independently mergeable (services without
-`validate_on_start: true` in their production config are
-unaffected by their own phase landing).
+Each phase was independently mergeable up through Phase 5; the
+flag-removal cleanup that followed makes `ServiceLifetime` mode the
+unconditional shape for all five services and removes the per-service
+opt-out.
 
 ## Open questions worth surfacing before starting
 
-1. **systemd unit semantics.** Should we ship a sample `.service`
-   file in `deploy/` with `Restart=on-failure` + a `RestartSec=`
-   matched to `validate_on_start_retry_backoff`? Otherwise operators
+1. **ASCOM `Connected` semantics during `Reconnecting`.** When the
+   transport is in `Reconnecting` but the device's session slot is
+   `Some`, should `connected()` return `true` (client intent) or
+   `false` (current availability)? Current code computes
+   `slot.is_some() && transport.is_available()`, which would flip
+   to `false` during reconnect. Argument for keeping it that way:
+   matches today's observable behaviour. Argument for `true`: a
+   client asking "am I connected" wants to know if their session
+   handle is still valid, not whether the wire is healthy right
+   this instant. Default proposal: keep current behaviour
+   (`slot && is_available`) — it's the least surprising delta.
+2. **`set_connected(false)` while `Reconnecting`.** Does the
+   supervisor stop when the last client disconnects? No — the
+   supervisor is service-scoped, not client-scoped. The 1→0
+   transition runs `on_last_disconnect` (which itself will fail
+   because the transport is down; failure is logged but not
+   propagated), and the supervisor keeps trying.
+3. **Issue #288 (lock-drop around slow I/O on `set_connected`).**
+   **Resolved by Phases 0a-0b + flag removal.** The new lifecycle
+   makes #288's original concern moot: `acquire()` is a fast
+   refcount-bump (no I/O), and `Session::close()` on 1→0 is also
+   fast in `ServiceLifetime` mode (the port stays open;
+   `on_last_disconnect` runs but is per-service short). The
+   connection-cell swap in Phase 0b additionally means a transient
+   transport-loss event doesn't block any device's read lock —
+   sessions short-circuit to `TransportError::Reconnecting` while
+   the supervisor recovers. With the `validate_on_start` flag
+   removed, every service runs in `ServiceLifetime` mode in
+   production, so the close-path I/O regression #288 originally
+   flagged is structurally unreachable.
+4. **systemd unit semantics.** Should we ship a sample `.service`
+   file in `deploy/` with `Restart=on-failure` + `RestartSec=`
+   matched to `startup_retry_backoff`? Otherwise operators
    reinvent the retry budget at the orchestrator layer.
-2. **Discovery responder during validation.** The Alpaca discovery
-   responder bind happens before or after validation? Recommended: **after**.
-   Don't advertise a device we haven't confirmed.
-3. **Multi-mount hosts.** A host running `ppba-driver` +
-   `qhy-focuser` + `pa-falcon-rotator` on the same USB bus will
-   validate three serial ports in parallel at boot. Order-of-operations
-   dependency on `/dev/serial/by-id/...` paths under udev settling —
-   worth one round of validation against a real Pi at the dome before
-   defaulting `validate_on_start` to `true` for the workspace.
-4. **`Config::default()` ergonomics.** `Config::default()` is what
-   `cargo run -p <service>` without `--config` uses. Should
-   `Config::default()`'s `validate_on_start` definitely be `false`?
-   (Yes — otherwise every dev-loop `cargo run` fails.) Documenting
-   this explicitly here so a future contributor doesn't flip the
-   default and break local dev workflows.
-5. **Bundling Pegasus identity in a crate.** `ppba-driver` and
+5. **Discovery responder during startup.** Bind discovery after
+   `transport.start()` succeeds. Don't advertise a device we
+   haven't confirmed.
+6. **Polling while no client is connected.** Confirm each
+   service's poll interval is fine when the device is idle. Likely
+   yes for all five (status reads are a few bytes/sec); flag any
+   that have a measurable cost.
+7. **Bundling Pegasus identity in a crate.** `ppba-driver` and
    `pa-falcon-rotator` both speak the Pegasus protocol family.
    Their identity probes could share a `pegasus-protocol` crate
    (analogous to `skywatcher-motor-protocol`). Track separately
    if Phase 3 / Phase 5 audits surface enough duplication.
+8. **Permanent reconnect failure → service exit.** Should the
+   supervisor have an upper bound on consecutive failed reconnects
+   before declaring the device dead and exiting non-zero? Argument
+   for: clean orchestrator handoff (systemd restart loop, possibly
+   with hardware-power-cycle automation). Argument against:
+   transient losses can be long (overnight cable issue), and
+   exiting throws away in-flight client state. Default proposal:
+   no upper bound; future opt-in `max_reconnect_attempts` config
+   if operators ask for it.

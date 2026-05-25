@@ -85,6 +85,9 @@ impl From<TransportError> for FalconRotatorError {
             TransportError::Framing(s) => {
                 FalconRotatorError::Communication(format!("framing: {s}"))
             }
+            TransportError::Reconnecting => {
+                FalconRotatorError::Communication("transport is reconnecting".to_string())
+            }
         }
     }
 }

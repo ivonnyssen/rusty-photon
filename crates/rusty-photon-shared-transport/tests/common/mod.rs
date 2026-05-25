@@ -7,6 +7,7 @@
 
 #![allow(dead_code)]
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +39,18 @@ impl Codec for EchoCodec {
         cmd.clone()
     }
 
+    /// Identity decode, with one poke-able failure path: bytes
+    /// starting with the `b"BAD"` prefix decode to `Err(EchoCodecError)`,
+    /// exercising the `SessionError::Codec` arm. Tests that need to
+    /// hit codec-error paths (e.g. `tests/reconnect.rs::codec_error_does_not_trigger_reconnect`)
+    /// send a `b"BAD..."` payload; the EchoTransport echoes it back
+    /// and decode fails on the response.
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+        if bytes.starts_with(b"BAD") {
+            return Err(EchoCodecError(
+                "decode rejected BAD prefix (test-only sentinel)".into(),
+            ));
+        }
         Ok(bytes.to_vec())
     }
 }
@@ -47,11 +59,23 @@ impl Codec for EchoCodec {
 /// the next `recv_frame`. Sufficient for tests that only need to verify
 /// connection setup / teardown — the request/response semantics are
 /// trivial.
+///
+/// An optional `fail_recvs` flag lets a test inject a one-shot recv
+/// failure (cleared on observation) to simulate mid-stream transport
+/// loss without tearing down the underlying socket. The supervisor-
+/// recovery tests use this to drive the end-to-end flow where
+/// `Connection::request` fires the reconnect signal in response to a
+/// real `TransportError`.
 pub struct EchoTransport {
     last_sent: Option<Vec<u8>>,
     /// Marks whether `drop` has run. Useful to assert teardown closed
     /// the transport.
     pub dropped_flag: Option<Arc<AtomicBool>>,
+    /// If `Some(_)`, `recv_frame` checks the flag at the top of the
+    /// next call. When set, the flag is cleared and the call returns
+    /// `TransportError::Io` — exactly the shape `Connection::request`
+    /// pattern-matches on to fire the reconnect signal.
+    fail_recvs: Option<Arc<AtomicBool>>,
 }
 
 impl EchoTransport {
@@ -59,11 +83,17 @@ impl EchoTransport {
         Self {
             last_sent: None,
             dropped_flag: None,
+            fail_recvs: None,
         }
     }
 
     pub fn with_drop_flag(mut self, flag: Arc<AtomicBool>) -> Self {
         self.dropped_flag = Some(flag);
+        self
+    }
+
+    pub fn with_fail_recvs(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.fail_recvs = Some(flag);
         self
     }
 }
@@ -77,6 +107,16 @@ impl FrameTransport for EchoTransport {
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         buf.clear();
+        // Test-injected failure: simulates a mid-stream transport
+        // drop. `swap(false, …)` makes the failure one-shot — the
+        // next `recv` after recovery succeeds.
+        if let Some(flag) = self.fail_recvs.as_ref() {
+            if flag.swap(false, Ordering::SeqCst) {
+                return Err(TransportError::Io(io::Error::other(
+                    "test-injected recv failure",
+                )));
+            }
+        }
         if let Some(b) = self.last_sent.take() {
             buf.extend_from_slice(&b);
             Ok(())
@@ -106,6 +146,12 @@ pub struct FactoryConfig {
     /// Each opened transport's drop flag — pushed onto this when the
     /// factory creates a transport.
     pub drop_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+    /// One-shot recv-failure flag shared with every [`EchoTransport`]
+    /// the factory builds. Tests set this to inject a mid-stream
+    /// `TransportError::Io` into the very next `Session::request`,
+    /// which routes through `Connection::request`'s signal-fire path
+    /// and notifies the supervisor.
+    pub fail_recvs: Arc<AtomicBool>,
 }
 
 impl FactoryConfig {
@@ -166,7 +212,9 @@ impl TransportFactory for ProgrammableFactory {
         }
         let drop_flag = Arc::new(AtomicBool::new(false));
         self.config.drop_flags.lock().await.push(drop_flag.clone());
-        let transport = EchoTransport::new().with_drop_flag(drop_flag);
+        let transport = EchoTransport::new()
+            .with_drop_flag(drop_flag)
+            .with_fail_recvs(self.config.fail_recvs.clone());
         Ok(Box::new(transport))
     }
 }
@@ -182,12 +230,16 @@ pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig
     (st, cfg)
 }
 
-/// Hooks builder where the handshake increments a counter and the
-/// teardown increments a different one. Useful to assert that the
-/// hooks ran exactly N times across N connect/disconnect cycles.
+/// Hooks builder with one counter per lifecycle hook. Useful to assert
+/// the right hook fired the right number of times across N connect /
+/// disconnect / start / shutdown cycles.
+///
+/// `teardown_calls` is the historical name retained for the on_last_disconnect
+/// counter — old tests pre-date the hook split.
 pub struct CountingHooks {
     pub handshake_calls: Arc<AtomicU32>,
     pub teardown_calls: Arc<AtomicU32>,
+    pub shutdown_calls: Arc<AtomicU32>,
 }
 
 impl Default for CountingHooks {
@@ -195,6 +247,7 @@ impl Default for CountingHooks {
         Self {
             handshake_calls: Arc::new(AtomicU32::new(0)),
             teardown_calls: Arc::new(AtomicU32::new(0)),
+            shutdown_calls: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -203,6 +256,7 @@ impl CountingHooks {
     pub fn hooks(&self) -> Hooks<EchoCodec> {
         let hs = self.handshake_calls.clone();
         let td = self.teardown_calls.clone();
+        let sd = self.shutdown_calls.clone();
         Hooks {
             handshake: Box::new(move |_conn| {
                 let hs = hs.clone();
@@ -211,10 +265,16 @@ impl CountingHooks {
                     Ok(())
                 })
             }),
-            teardown: Box::new(move |_conn| {
+            on_last_disconnect: Box::new(move |_conn| {
                 let td = td.clone();
                 Box::pin(async move {
                     td.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+            shutdown: Box::new(move |_conn| {
+                let sd = sd.clone();
+                Box::pin(async move {
+                    sd.fetch_add(1, Ordering::SeqCst);
                 })
             }),
             while_open: None,
@@ -235,7 +295,8 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
         handshake: Box::new(|_conn| {
             Box::pin(async { Err(EchoCodecError("handshake refused".into())) })
         }),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
 }
@@ -245,7 +306,8 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_conn| Box::pin(async { panic!("handshake panic for test") })),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
 }
@@ -257,7 +319,8 @@ pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(|_ctx| panic!("while_open closure panic for test"))),
     }
 }
@@ -288,7 +351,8 @@ impl WhileOpenHooks {
         let exited = self.exited.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 let exited = exited.clone();
@@ -316,7 +380,8 @@ impl WhileOpenHooks {
         let started = self.started.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            teardown: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 Box::pin(async move {
@@ -324,6 +389,81 @@ impl WhileOpenHooks {
                     // Sleep forever, ignoring cancellation.
                     loop {
                         tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
+                })
+            })),
+        }
+    }
+
+    /// Hook where the while-open task marks `started`, yields once so
+    /// it's observably alive, then panics. Used to exercise the
+    /// `Ok(Err(join_err))` join-error arms in `shutdown()` and
+    /// `run_cleanup_locked()` — tokio catches the panic at the task
+    /// boundary and surfaces it via `JoinHandle::await`, which both
+    /// teardown paths log and continue past.
+    pub fn panicking_hooks(&self) -> Hooks<EchoCodec> {
+        let started = self.started.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
+                let started = started.clone();
+                Box::pin(async move {
+                    started.store(true, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    panic!("while_open panic for test");
+                })
+            })),
+        }
+    }
+}
+
+/// Hooks with a counter for while-open spawn invocations. Distinct from
+/// [`WhileOpenHooks`] because the cooperative variant uses an
+/// `AtomicBool` for `started` — switching to `AtomicU32` everywhere
+/// would churn existing tests for no benefit. Used by the reconnect
+/// respawn test to assert the closure was invoked twice (once at
+/// start, once at attempt_reconnect).
+pub struct CountingWhileOpenHooks {
+    pub spawns: Arc<AtomicU32>,
+    pub cancelled: Arc<AtomicU32>,
+}
+
+impl Default for CountingWhileOpenHooks {
+    fn default() -> Self {
+        Self {
+            spawns: Arc::new(AtomicU32::new(0)),
+            cancelled: Arc::new(AtomicU32::new(0)),
+        }
+    }
+}
+
+impl CountingWhileOpenHooks {
+    /// Cooperative task that bumps `spawns` on entry and `cancelled` on
+    /// exit-via-cancellation. Used to verify reconnect cancels the old
+    /// while_open task and spawns a fresh one.
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let spawns = self.spawns.clone();
+        let cancelled = self.cancelled.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
+                let spawns = spawns.clone();
+                let cancelled = cancelled.clone();
+                Box::pin(async move {
+                    spawns.fetch_add(1, Ordering::SeqCst);
+                    let mut interval = tokio::time::interval(Duration::from_millis(20));
+                    loop {
+                        tokio::select! {
+                            _ = ctx.cancelled() => {
+                                cancelled.fetch_add(1, Ordering::SeqCst);
+                                break;
+                            }
+                            _ = interval.tick() => {},
+                        }
                     }
                 })
             })),

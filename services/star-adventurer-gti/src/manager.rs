@@ -273,7 +273,7 @@ fn build_hooks(
     let s_hs = Arc::clone(&snapshot);
     let s_poll = Arc::clone(&snapshot);
     let depth_poll = Arc::clone(&poll_pause_depth);
-    let p_td = Arc::clone(&parameters);
+    let p_sd = Arc::clone(&parameters);
     let port_hs = Arc::clone(&port_label);
     Hooks {
         handshake: Box::new(move |conn| {
@@ -282,9 +282,30 @@ fn build_hooks(
             let port_label = Arc::clone(&port_hs);
             Box::pin(handshake(conn, parameters, snapshot, port_label))
         }),
-        teardown: Box::new(move |conn| {
-            let parameters = Arc::clone(&p_td);
-            Box::pin(teardown(conn, parameters))
+        // Safety stop only — do NOT clear the parameter cache. In
+        // `ServiceLifetime` mode the transport stays open and the next
+        // `acquire()` reuses the cache populated by the startup
+        // handshake; clearing here would make the next post-acquire
+        // hook (`seed_after_connect`, `load_park_target_after_connect`,
+        // any motion command) see `parameters() == None` and fail with
+        // `NOT_CONNECTED`. The cached values are immutable hardware
+        // facts about the connected device and remain valid until the
+        // device itself changes, which is handled by the reconnect
+        // supervisor's handshake against the new connection.
+        on_last_disconnect: Box::new(move |conn| Box::pin(safety_stop(conn))),
+        // Phase 1: run the same `:L1, :L2, :K1` safety sequence at
+        // service shutdown that runs at every last-client-disconnect.
+        // The mount may be in any state (e.g. the supervisor was
+        // mid-reconnect, a client crashed and never disconnected, the
+        // last client did disconnect but a stray request landed in
+        // between) — stopping tracking + halting both axes is
+        // idempotent and the safest default for an unattended dome.
+        // Clear the parameter cache as part of final teardown so a
+        // future `start()` on the same manager (cold restart) does
+        // not see stale handshake data.
+        shutdown: Box::new(move |conn| {
+            let parameters = Arc::clone(&p_sd);
+            Box::pin(shutdown_teardown(conn, parameters))
         }),
         while_open: Some(Box::new(move |ctx| {
             let snapshot = Arc::clone(&s_poll);
@@ -398,14 +419,12 @@ async fn handshake(
     Ok(())
 }
 
-/// `1→0` teardown: best-effort halt on both axes before the transport
-/// closes, then clear the parameter cache so the next acquire starts
-/// from a clean slate. All errors are log-and-continue per the
-/// `Hooks::teardown` infallible contract.
-async fn teardown(
-    conn: &Connection<SkywatcherCodec>,
-    parameters: Arc<RwLock<Option<MountParameters>>>,
-) {
+/// Best-effort halt on both axes (`:L1`, `:L2`, `:K1`). Used by both
+/// the `on_last_disconnect` hook (every `1→0` transition) and by
+/// `shutdown_teardown` (final teardown). All errors are log-and-continue
+/// per the `Hooks::on_last_disconnect` / `Hooks::shutdown` infallible
+/// contract.
+async fn safety_stop(conn: &Connection<SkywatcherCodec>) {
     // Order matters: `:L` is the hammer (instant stop), `:K` is
     // graceful — issue the hammer first to guarantee motion stops
     // even if the graceful stop fails.
@@ -418,10 +437,21 @@ async fn teardown(
             warn!(
                 command = ?cmd,
                 error = %e,
-                "teardown wire command failed (continuing)"
+                "safety stop wire command failed (continuing)"
             );
         }
     }
+}
+
+/// Final shutdown teardown: safety-stop both axes, then clear the
+/// parameter cache so a future `start()` on the same manager (cold
+/// restart) does not see stale handshake data. All errors are
+/// log-and-continue per the `Hooks::shutdown` infallible contract.
+async fn shutdown_teardown(
+    conn: &Connection<SkywatcherCodec>,
+    parameters: Arc<RwLock<Option<MountParameters>>>,
+) {
+    safety_stop(conn).await;
     *parameters.write().await = None;
 }
 
@@ -689,13 +719,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_clears_parameters_and_marks_unavailable() {
+    async fn close_marks_unavailable_but_keeps_parameter_cache() {
+        // In `LazyAcquire` mode (the default this test exercises),
+        // `Session::close` closes the underlying port and the next
+        // `acquire()` re-runs the handshake to repopulate the cache —
+        // so leaving the cache populated across close is harmless. In
+        // `ServiceLifetime` mode the cache MUST survive last-disconnect
+        // because the next acquire is a refcount-bump with no
+        // handshake; clearing here would break post-acquire hooks like
+        // `seed_after_connect` that read `parameters()`. The on-the-wire
+        // safety stop (`:L1`, `:L2`, `:K1`) is exercised by
+        // [`teardown_sends_halt_sequence`]; only `shutdown_teardown`
+        // (run by `Hooks::shutdown` on a final `SharedTransport::shutdown`)
+        // clears the cache.
         let m = manager();
         let session = m.transport().acquire().await.unwrap();
         assert!(m.is_available());
         session.close().await.unwrap();
         assert!(!m.is_available());
-        assert!(m.parameters().await.is_none());
+        assert!(
+            m.parameters().await.is_some(),
+            "parameter cache must survive `on_last_disconnect` so a \
+             ServiceLifetime re-acquire still sees CPR / TMR_Freq"
+        );
     }
 
     #[tokio::test]

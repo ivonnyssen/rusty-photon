@@ -148,7 +148,8 @@ fn build_hooks(
             let cs = Arc::clone(&cs_handshake);
             Box::pin(handshake(conn, cs))
         }),
-        teardown: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(move |ctx| {
             let cs = Arc::clone(&cs_poll);
             Box::pin(poll_loop(ctx, cs, poll_interval))

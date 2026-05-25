@@ -100,12 +100,20 @@ Field types:
 
 | Field | Type | Notes |
 |---|---|---|
-| `position_in_steps` | unsigned integer | Internal step counter |
-| `position_in_deg` | `f64`, two decimals | Authoritative for `MechanicalPosition` |
+| `position_in_steps` | **signed** integer (`i32`) | Step counter relative to the 0° home; **negative for positions CCW of home**. Informational only — the driver derives all positions from `position_in_deg`. |
+| `position_in_deg` | `f64`, two decimals | Authoritative for `MechanicalPosition`; always wrapped to `[0, 360)` |
 | `is_moving` | `0` / `1` | Drives `IsMoving` |
 | `limit_detect` | `0` / `1` | Driver logs `warn!` on edge transitions, does not raise |
 | `do_derotation` | `0` / `1` | MVP keeps this `0` (see [De-rotation](#de-rotation)) |
 | `motor_reverse` | `0` / `1` | Drives `Reverse` |
+
+> **Signed step counter (validated on real hardware, firmware 1.5, ConformU).**
+> A target beyond the 220° CW limit is reached the long way round — CCW past the
+> 0° home — where `position_in_steps` goes **negative** (e.g. `FR_OK:-2838:327.24:1:0:0:0`)
+> while `position_in_deg` stays wrapped to `[0, 360)`. Parsing the step field as
+> unsigned previously aborted every status read in that region with
+> `INVALID_OPERATION: FA position_steps: invalid digit found in string`; it is
+> now parsed as `i32`. The degree field is unaffected, so positions stay correct.
 
 ### Commands the driver does **not** send
 
@@ -114,6 +122,17 @@ Field types:
 ## ASCOM Rotator Mapping
 
 The Falcon has a single physical-angle concept. ASCOM's `IRotatorV3+` separates *mechanical* angle from *sky* angle joined by a `Sync` offset. The driver implements that separation in software.
+
+The two frames and their bridge are distinct types in `units.rs` — `MechanicalDegrees`, `SkyDegrees`, and the `SyncOffset` that joins them — so the offset arithmetic in the table below is checked at compile time rather than by convention. The whole algebra is three operators plus one rotation:
+
+| Relation | Typed form |
+|---|---|
+| `Position` = mech + offset | `MechanicalDegrees + SyncOffset → SkyDegrees` |
+| `MoveAbsolute`: mech = sky − offset | `SkyDegrees − SyncOffset → MechanicalDegrees` |
+| `Sync`: offset = sky − mech | `SkyDegrees − MechanicalDegrees → SyncOffset` |
+| `Move(delta)`: mech.rotate(delta) | relative rotation, stays mechanical |
+
+A sky angle therefore can't be used where a mechanical one is expected, and the offset can't be silently dropped, without a compile error. All three angle types normalise to `[0, 360)` on construction (see [Position normalisation](#position-normalisation)); non-finite inputs are rejected at the ASCOM boundary before a value is constructed. `Steps` (the signed `FA`/`FP` counter) is a fourth type, but since the driver derives every position from the degree field it is informational on the wire — only the mock converts between `Steps` and `MechanicalDegrees` (× 86.6).
 
 | ASCOM Property/Method | Implementation |
 |---|---|
@@ -303,7 +322,8 @@ services/pa-falcon-rotator/
 │   ├── serial.rs           # FalconTransportFactory (TransportFactory over tokio-serial)
 │   ├── mock.rs             # MockFalconTransportFactory (feature = "mock")
 │   ├── protocol.rs         # Command enum + response parsers + validate_echo
-│   └── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
+│   ├── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
+│   └── units.rs            # SkyDegrees / MechanicalDegrees / SyncOffset / Steps + frame algebra
 ├── tests/
 │   ├── bdd.rs              # cucumber entry point (harness = false)
 │   ├── bdd/

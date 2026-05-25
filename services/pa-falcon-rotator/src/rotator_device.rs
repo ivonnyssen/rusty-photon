@@ -25,11 +25,7 @@ use crate::codec::FalconCodec;
 use crate::config::RotatorConfig;
 use crate::error::FalconRotatorError;
 use crate::manager::FalconManager;
-
-/// Normalise a degree value into `[0.0, 360.0)`.
-fn normalise_deg(deg: f64) -> f64 {
-    ((deg % 360.0) + 360.0) % 360.0
-}
+use crate::units::{MechanicalDegrees, SkyDegrees};
 
 /// Guard macro that returns NOT_CONNECTED if the device is not connected.
 ///
@@ -176,7 +172,7 @@ impl Rotator for FalconRotatorDevice {
         let offset = self.manager.sync_offset().await;
         self.with_session(async |session| {
             let status = self.manager.read_status(session).await?;
-            Ok(normalise_deg(status.position_deg + offset))
+            Ok((status.position_deg + offset).value())
         })
         .await
     }
@@ -185,7 +181,7 @@ impl Rotator for FalconRotatorDevice {
         ensure_connected!(self);
         self.with_session(async |session| {
             let status = self.manager.read_status(session).await?;
-            Ok(normalise_deg(status.position_deg))
+            Ok(status.position_deg.value())
         })
         .await
     }
@@ -193,14 +189,14 @@ impl Rotator for FalconRotatorDevice {
     async fn target_position(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
         if let Some(target) = self.manager.target_position().await {
-            return Ok(target);
+            return Ok(target.value());
         }
         // No move outstanding: fall back to current Position. Matches the
         // design doc's TargetPosition row and the dominant ASCOM convention.
         let offset = self.manager.sync_offset().await;
         self.with_session(async |session| {
             let status = self.manager.read_status(session).await?;
-            Ok(normalise_deg(status.position_deg + offset))
+            Ok((status.position_deg + offset).value())
         })
         .await
     }
@@ -247,7 +243,7 @@ impl Rotator for FalconRotatorDevice {
                 // position is (mech + offset) + delta, and the mechanical
                 // wire value is therefore (mech + offset + delta) - offset
                 // = mech + delta.
-                let target_mech = normalise_deg(status.position_deg + position);
+                let target_mech = status.position_deg.rotate(position);
                 // Set TargetPosition only after the MD command has been
                 // accepted — a failed echo on the wire must NOT leave a
                 // stale target the client could read back via
@@ -258,7 +254,7 @@ impl Rotator for FalconRotatorDevice {
                 self.manager.move_mechanical(session, target_mech).await
             })
             .await?;
-        let target_sky = normalise_deg(wire_mech + offset);
+        let target_sky = wire_mech + offset;
         self.manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -272,11 +268,11 @@ impl Rotator for FalconRotatorDevice {
             .to_ascom_error());
         }
         let offset = self.manager.sync_offset().await;
-        let target_mech = normalise_deg(position - offset);
+        let target_mech = SkyDegrees::new(position) - offset;
         let wire_mech = self
             .with_session(async |session| self.manager.move_mechanical(session, target_mech).await)
             .await?;
-        let target_sky = normalise_deg(wire_mech + offset);
+        let target_sky = wire_mech + offset;
         self.manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -298,11 +294,11 @@ impl Rotator for FalconRotatorDevice {
         let wire_mech = self
             .with_session(async |session| {
                 self.manager
-                    .move_mechanical(session, normalise_deg(position))
+                    .move_mechanical(session, MechanicalDegrees::new(position))
                     .await
             })
             .await?;
-        let target_sky = normalise_deg(wire_mech + offset);
+        let target_sky = wire_mech + offset;
         self.manager.set_target_position(target_sky).await;
         Ok(())
     }
@@ -717,7 +713,7 @@ mod mock_tests {
         switch.set_connected(true).await.unwrap();
         factory.set_mech_position_deg(120.0).await;
         rotator.sync(30.0).await.unwrap();
-        let offset_before = manager.sync_offset().await;
+        let offset_before = manager.sync_offset().await.value();
         assert!(
             (offset_before - 270.0).abs() < 1e-9,
             "offset_before={offset_before}"
@@ -731,7 +727,7 @@ mod mock_tests {
             manager.is_available(),
             "switch still holds a session — transport must stay open"
         );
-        let offset_after = manager.sync_offset().await;
+        let offset_after = manager.sync_offset().await.value();
         assert!(
             (offset_after - offset_before).abs() < 1e-9,
             "sync_offset must not be cleared while another device still holds a session; \

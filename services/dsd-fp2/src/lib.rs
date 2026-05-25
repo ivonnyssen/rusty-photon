@@ -112,77 +112,113 @@ impl ServerBuilder {
     }
 
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
-        let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
-
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
-        // Keep an `Arc<DsdFp2Device>` handle out of the router so the reload
-        // arm can drive a clean, awaited transport teardown
-        // (`device.set_connected(false).await`) before the old server drops.
-        let device_handle = if self.config.cover_calibrator.enabled {
-            let mut device =
-                DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
-            if let (Some(path), Some(reload)) = (self.config_path, self.reload) {
-                device = device.with_config_actions(ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides: self.overrides,
-                    reload,
-                });
-            }
-            let device = Arc::new(device);
-            // `Arc<DsdFp2Device>` → `Arc<dyn CoverCalibrator>` unsizes at this
-            // annotated binding; the turbofish keeps `Arc::clone` from pinning
-            // `T = dyn CoverCalibrator` (which would reject `&device`).
-            let registered: Arc<dyn CoverCalibrator> = Arc::<DsdFp2Device>::clone(&device);
-            server.devices.register(registered);
-            info!(
-                "Registered CoverCalibrator device: {}",
-                self.config.cover_calibrator.name
-            );
-            Some(device)
-        } else {
-            None
-        };
+        // Eager hardware validation at startup: opens the port, runs the
+        // handshake (identity probe), and spawns the reconnect supervisor before
+        // binding the HTTP listener. On handshake failure the error bubbles up to
+        // `main` for a non-zero exit, so systemd / orchestration treats startup
+        // as failed rather than the service advertising a broken device on the
+        // network.
+        info!("validating hardware via eager startup handshake");
+        manager.transport().start().await?;
 
-        info!("Serial port: {}", self.config.serial.port);
+        // Config-action wiring (persist path + CLI overrides + reload trigger),
+        // cloned out here so the borrowing build block below can consume them.
+        let config_path = self.config_path.clone();
+        let overrides = self.overrides.clone();
+        let reload = self.reload.clone();
 
-        let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
+        // All post-start work is fallible (bind / local_addr in particular).
+        // Wrap it so a failure runs `transport.shutdown()` before propagating;
+        // otherwise the reconnect supervisor task would outlive the dropped
+        // manager and keep the port open until process exit.
+        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+            let mut server = Server::new(CargoServerInfo!());
+            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.discovery_port = self.config.server.discovery_port;
 
-        let router = match &self.config.server.auth {
-            Some(auth) => {
-                if self.config.server.tls.is_none() {
+            // Keep an `Arc<DsdFp2Device>` handle out of the router so the reload
+            // arm can drive a clean, awaited transport teardown
+            // (`device.set_connected(false).await`) before the old server drops.
+            let device_handle = if self.config.cover_calibrator.enabled {
+                let mut device =
+                    DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
+                if let (Some(path), Some(reload)) = (config_path.clone(), reload.clone()) {
+                    device = device.with_config_actions(ConfigActionCtx {
+                        effective: self.config.clone(),
+                        path,
+                        overrides: overrides.clone(),
+                        reload,
+                    });
+                }
+                let device = Arc::new(device);
+                // `Arc<DsdFp2Device>` → `Arc<dyn CoverCalibrator>` unsizes at this
+                // annotated binding; the turbofish keeps `Arc::clone` from pinning
+                // `T = dyn CoverCalibrator` (which would reject `&device`).
+                let registered: Arc<dyn CoverCalibrator> = Arc::<DsdFp2Device>::clone(&device);
+                server.devices.register(registered);
+                info!(
+                    "Registered CoverCalibrator device: {}",
+                    self.config.cover_calibrator.name
+                );
+                Some(device)
+            } else {
+                None
+            };
+
+            info!("Serial port: {}", self.config.serial.port);
+
+            let tls = self.config.server.tls.clone();
+            let router = axum::Router::new().fallback_service(server.into_service());
+
+            let router = match &self.config.server.auth {
+                Some(auth) => {
+                    if self.config.server.tls.is_none() {
+                        tracing::warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(router, auth)
+                }
+                None => router,
+            };
+
+            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
+                [0, 0, 0, 0],
+                self.config.server.port,
+            )))
+            .await?;
+            let local_addr = listener.local_addr()?;
+
+            println!("Bound Alpaca server bound_addr={}", local_addr);
+            info!("Bound Alpaca server bound_addr={}", local_addr);
+
+            Ok(BoundServer {
+                listener,
+                router,
+                local_addr,
+                tls,
+                manager: Arc::clone(&manager),
+                device: device_handle,
+            })
+        }
+        .await;
+
+        match build_result {
+            Ok(bound) => Ok(bound),
+            Err(e) => {
+                if let Err(shutdown_err) = manager.transport().shutdown().await {
                     tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                        error = %shutdown_err,
+                        "transport shutdown failed during build() error rollback"
                     );
                 }
-                rp_auth::layer(router, auth)
+                Err(e)
             }
-            None => router,
-        };
-
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
-        let local_addr = listener.local_addr()?;
-
-        println!("Bound Alpaca server bound_addr={}", local_addr);
-        info!("Bound Alpaca server bound_addr={}", local_addr);
-
-        Ok(BoundServer {
-            listener,
-            router,
-            local_addr,
-            tls,
-            device: device_handle,
-        })
+        }
     }
 }
 
@@ -192,9 +228,12 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
-    /// The registered device, retained so the reload loop can close the
-    /// transport cleanly before tearing the server down. `None` when the
-    /// CoverCalibrator is disabled in config.
+    /// Held so `start()` can call `manager.transport().shutdown()` after the HTTP
+    /// server stops. No-op in LazyAcquire mode.
+    manager: Arc<FlatPanelManager>,
+    /// The registered device, retained so the reload loop can close the transport
+    /// cleanly before tearing the server down. `None` when the CoverCalibrator is
+    /// disabled in config.
     device: Option<Arc<DsdFp2Device>>,
 }
 
@@ -214,17 +253,23 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        match self.tls {
+        // Capture the serve result so transport.shutdown() runs even when the
+        // HTTP server errors out — otherwise the supervisor and port would leak
+        // past a serve failure.
+        let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("dsd-fp2 started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
             }
             None => {
                 info!("dsd-fp2 started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
+                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
             }
+        };
+        if let Err(e) = self.manager.transport().shutdown().await {
+            tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("dsd-fp2 shut down");
-        Ok(())
+        serve_result.map_err(Into::into)
     }
 }

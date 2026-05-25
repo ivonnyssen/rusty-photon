@@ -8,12 +8,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use pa_falcon_rotator::protocol::{parse_full_status, FalconStatus};
+use pa_falcon_rotator::{MechanicalDegrees, Steps};
 use proptest::prelude::*;
 
 proptest! {
     #[test]
     fn full_status_wire_format_round_trips(
-        steps in 0u32..1_000_000,
+        // Signed range: the Falcon step counter goes negative CCW of the 0°
+        // home (real hardware, firmware 1.5), so the round-trip must hold for
+        // negative steps too.
+        steps in -1_000_000i32..1_000_000,
         deg_cents in 0u32..36_000,
         is_moving in any::<bool>(),
         limit_detect in any::<bool>(),
@@ -30,8 +34,8 @@ proptest! {
         );
         let parsed = parse_full_status(&wire).unwrap();
         prop_assert_eq!(parsed, FalconStatus {
-            position_steps: steps,
-            position_deg: deg,
+            position_steps: Steps(steps),
+            position_deg: MechanicalDegrees::new(deg),
             is_moving,
             limit_detect,
             do_derotation,
