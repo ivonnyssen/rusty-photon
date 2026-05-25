@@ -42,6 +42,21 @@ impl AppState {
     /// `HttpClient` (CA trust + optional Basic auth) for the configured driver.
     pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
         let target = &config.drivers.dsd_fp2;
+
+        // Reject credentials embedded in the URL (`http://user:pass@host`). They
+        // would otherwise leak into error messages (rendered in the page) and
+        // debug logs that echo the request URL. Credentials belong in the
+        // `auth` field, which is sent as a redactable `Authorization` header.
+        let parsed = reqwest::Url::parse(&target.base_url)
+            .map_err(|e| format!("invalid driver base_url {:?}: {e}", target.base_url))?;
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(
+                "driver base_url must not contain credentials (user:pass@…); \
+                 put them in the `auth` field instead"
+                    .into(),
+            );
+        }
+
         let reqwest_client = match &target.auth {
             Some(auth) => ReqwestHttpClient::with_auth(
                 target.ca_cert_path.as_deref(),
@@ -160,5 +175,37 @@ async fn config_status(State(state): State<AppState>) -> Markup {
             Some(Banner::Reconnected),
         ),
         Err(_) => pages::reconnecting_card(),
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    fn config_with_base_url(base_url: &str) -> Config {
+        let mut config = Config::default();
+        config.drivers.dsd_fp2.base_url = base_url.to_string();
+        config
+    }
+
+    #[test]
+    fn from_config_rejects_url_credentials() {
+        let config = config_with_base_url("http://obs:secret@127.0.0.1:11119");
+        // `AppState` isn't `Debug` (holds `Arc<dyn ConfigClient>`), so match
+        // rather than `unwrap_err`.
+        match AppState::from_config(&config) {
+            Ok(_) => panic!("expected from_config to reject credentials in base_url"),
+            Err(e) => assert!(
+                e.to_string().contains("must not contain credentials"),
+                "{e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn from_config_accepts_plain_url() {
+        AppState::from_config(&config_with_base_url("http://127.0.0.1:11119")).unwrap();
     }
 }
