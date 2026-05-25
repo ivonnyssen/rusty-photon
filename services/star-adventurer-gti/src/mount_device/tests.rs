@@ -1802,7 +1802,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
 }
 
 #[tokio::test]
-async fn set_park_persists_current_snapshot_and_updates_in_memory_target() {
+async fn set_park_persists_current_wire_position_and_updates_in_memory_target() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
