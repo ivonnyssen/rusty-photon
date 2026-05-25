@@ -11,6 +11,7 @@ pub mod error;
 pub mod manager;
 pub mod mount_device;
 pub mod transport;
+pub mod units;
 
 pub use config::{
     load_config, ApPark, Config, FlipPolicy, MountConfig, ServerConfig, TrackingRateName,
