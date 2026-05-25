@@ -8,7 +8,7 @@
 //!
 //! Full design and usage: `docs/crates/rusty-photon-service-lifecycle.md`.
 //! Migration plan from the existing per-service shutdown handlers:
-//! `docs/plans/service-lifecycle-unification.md` (issue #294).
+//! `docs/plans/archive/service-lifecycle-unification.md` (issue #294).
 //!
 //! The public surface is small:
 //!
