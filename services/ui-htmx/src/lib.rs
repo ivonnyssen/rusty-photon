@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! `ui-htmx` — the server-rendered web configuration UI (BFF) for rusty-photon.
 //!
 //! A client of the drivers (not part of `rp`): it reads and writes each driver's
