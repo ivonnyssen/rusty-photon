@@ -88,14 +88,8 @@ input[readonly], input:disabled, select:disabled {
   cursor: not-allowed;
 }
 
-.field.pinned label::after {
-  content: "pinned by --override";
-  margin-left: 8px;
-  font-weight: 400;
-  font-size: 11px;
-  color: var(--warn);
-  font-family: var(--mono);
-}
+/* Pinned fields are explained by the per-field `.hint` text rendered in the
+ * markup ("Pinned by a command-line override; …"), so no label pseudo-element. */
 
 .field.invalid input, .field.invalid select { border-color: var(--bad); }
 .field .error { color: var(--bad); font-size: 12px; margin-top: 5px; }

@@ -81,7 +81,7 @@ pub fn config_card(
     let config_blob = serde_json::to_string(config).unwrap_or_default();
     let overrides_blob = serde_json::to_string(overrides).unwrap_or_default();
     html! {
-        div #config-card {
+        div #config-card.card {
             @if let Some(b) = banner { (banner_markup(b)) }
             h1 { "Deep Sky Dad FP2" }
             p.subtitle { "dsd-fp2 · CoverCalibrator" }
@@ -120,7 +120,7 @@ pub fn config_card(
 /// the driver answers and the poll swaps in a fresh card.
 pub fn reconnecting_card() -> Markup {
     html! {
-        div #config-card hx-get="/config/dsd-fp2/status" hx-trigger="every 1s"
+        div #config-card.card hx-get="/config/dsd-fp2/status" hx-trigger="every 1s"
             hx-swap="outerHTML" hx-target="this" {
             div class="banner applying" {
                 span.dot {}
@@ -147,7 +147,7 @@ pub fn message_error_card(message: &str) -> Markup {
 
 fn error_card_with_message(message: &str) -> Markup {
     html! {
-        div #config-card {
+        div #config-card.card {
             div class="banner error" { span.dot {} span { (message) } }
             p {
                 a href="/config/dsd-fp2" hx-get="/config/dsd-fp2" hx-target="#config-card"

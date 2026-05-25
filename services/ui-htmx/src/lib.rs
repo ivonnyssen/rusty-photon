@@ -100,51 +100,54 @@ fn respond(card: Markup, headers: &HeaderMap, title: &str) -> Response {
     }
 }
 
+/// Page title for the dsd-fp2 config routes (used when wrapping a card in the
+/// full-page layout for a non-HTMX request).
+const CONFIG_TITLE: &str = "dsd-fp2 · configuration";
+
 async fn config_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let card = match state.dsd_fp2.get_config().await {
         Ok(resp) => pages::config_card(&resp.config, &resp.overrides, &[], None),
         Err(err) => pages::error_card(&err),
     };
-    respond(card, &headers, "dsd-fp2 · configuration")
+    respond(card, &headers, CONFIG_TITLE)
 }
 
 async fn config_post(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let merged = match pages::merge_form(&form) {
-        Ok(merged) => merged,
-        Err(err) => return pages::message_error_card(&err.to_string()).into_response(),
-    };
-    // BFF-side field errors (e.g. a port out of range) — re-render with the
-    // errors instead of sending a value the driver would reject with a
-    // non-field-level parse error.
-    if !merged.errors.is_empty() {
-        return pages::config_card(
+    // Route every path through `respond` so a non-HTMX POST (JS disabled, or
+    // the `<form method="post">` fallback) still gets the full-page layout
+    // instead of a bare `#config-card` fragment.
+    let card = match pages::merge_form(&form) {
+        Err(err) => pages::message_error_card(&err.to_string()),
+        // BFF-side field errors (e.g. a port out of range) — re-render with the
+        // errors instead of sending a value the driver rejects with a
+        // non-field-level parse error.
+        Ok(merged) if !merged.errors.is_empty() => pages::config_card(
             &merged.config,
             &merged.overrides,
             &merged.errors,
             Some(Banner::Invalid),
-        )
-        .into_response();
-    }
-    match state.dsd_fp2.apply_config(&merged.config).await {
-        Ok(resp) => match resp.status {
-            ApplyStatus::Applying => pages::reconnecting_card().into_response(),
-            ApplyStatus::Ok => {
-                pages::config_card(&merged.config, &merged.overrides, &[], Some(Banner::Saved))
-                    .into_response()
-            }
-            ApplyStatus::Invalid => pages::config_card(
-                &merged.config,
-                &merged.overrides,
-                &resp.errors,
-                Some(Banner::Invalid),
-            )
-            .into_response(),
+        ),
+        Ok(merged) => match state.dsd_fp2.apply_config(&merged.config).await {
+            Ok(resp) => match resp.status {
+                ApplyStatus::Applying => pages::reconnecting_card(),
+                ApplyStatus::Ok => {
+                    pages::config_card(&merged.config, &merged.overrides, &[], Some(Banner::Saved))
+                }
+                ApplyStatus::Invalid => pages::config_card(
+                    &merged.config,
+                    &merged.overrides,
+                    &resp.errors,
+                    Some(Banner::Invalid),
+                ),
+            },
+            Err(err) => pages::error_card(&err),
         },
-        Err(err) => pages::error_card(&err).into_response(),
-    }
+    };
+    respond(card, &headers, CONFIG_TITLE)
 }
 
 async fn config_status(State(state): State<AppState>) -> Markup {

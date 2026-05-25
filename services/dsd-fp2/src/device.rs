@@ -123,8 +123,18 @@ impl DsdFp2Device {
         }
 
         // Build the value to persist: write through CLI-override-pinned fields
-        // and round-tripped secrets from the file's current value.
-        let file_current = config_actions::read_file_value(&ctx.path);
+        // and round-tripped secrets from the file's current value. A present-
+        // but-corrupt file is surfaced rather than silently treated as default
+        // (which would overwrite and lose its contents).
+        let file_current = match config_actions::read_file_value(&ctx.path) {
+            Ok(value) => value,
+            Err(msg) => {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("config.apply: {msg}"),
+                ))
+            }
+        };
 
         // The redaction sentinel means "keep the stored secret unchanged". If
         // there is no stored secret to keep, the sentinel can't be honoured —

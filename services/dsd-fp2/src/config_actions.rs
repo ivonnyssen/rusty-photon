@@ -162,12 +162,26 @@ pub fn redact_value(value: &mut Value) {
     }
 }
 
-/// Read the persisted config as a `Value`, falling back to the serialized
-/// `Config::default()` when the file is absent or unparseable.
-pub fn read_file_value(path: &Path) -> Value {
+/// Read the persisted config as a `Value`:
+///
+/// * absent → `Ok(default)` — a fresh install; `config.apply` will create it,
+/// * present and valid → `Ok(value)`,
+/// * present but unparseable → `Err` — so `config.apply` surfaces it rather than
+///   silently treating the file as default and overwriting (losing) a corrupt
+///   file's contents on the layer-aware persist.
+pub fn read_file_value(path: &Path) -> std::result::Result<Value, String> {
     match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| default_value()),
-        Err(_) => default_value(),
+        Ok(content) => serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "existing config file {} is not valid JSON: {e}",
+                path.display()
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default_value()),
+        Err(e) => Err(format!(
+            "could not read config file {}: {e}",
+            path.display()
+        )),
     }
 }
 
@@ -593,7 +607,16 @@ mod tests {
 
     #[test]
     fn read_file_value_defaults_when_missing() {
-        let value = read_file_value(Path::new("/tmp/dsd_fp2_does_not_exist_42.json"));
+        let value = read_file_value(Path::new("/tmp/dsd_fp2_does_not_exist_42.json")).unwrap();
         assert_eq!(value, serde_json::to_value(Config::default()).unwrap());
+    }
+
+    #[test]
+    fn read_file_value_errors_on_present_but_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dsd-fp2.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = read_file_value(&path).unwrap_err();
+        assert!(err.contains("not valid JSON"), "{err}");
     }
 }

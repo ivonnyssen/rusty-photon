@@ -379,7 +379,10 @@ actions driver, which ignored any file when `--config` was omitted.)
    field-level messages, distinct from a transport/ASCOM error.
 3. **Persist** atomically (stage to a unique `NamedTempFile` in the target dir →
    fsync → rename → fsync dir; the random `O_EXCL` temp name avoids collisions
-   between concurrent applies and symlink attacks). CLI-override-pinned fields are
+   between concurrent applies and symlink attacks). If the existing config file
+   is *present but not valid JSON*, the apply is refused with an
+   `INVALID_OPERATION` error rather than treating it as default and overwriting
+   (losing) its contents. CLI-override-pinned fields are
    written through from the file's prior value, not the submitted value, and
    listed in `skipped_override[]`. A redacted/sentinel secret (`********`) is
    treated as "unchanged" so a round-tripped form does not blank it — **except**
