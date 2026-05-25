@@ -1,8 +1,9 @@
 # Config actions + the BFF web UI
 
 **Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
-reload). Phase 2 (BFF skeleton + dsd-fp2 config page) is next. Key protocol
-decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
+reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as the
+`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Key
+protocol decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
@@ -54,7 +55,7 @@ submits the whole config blob at once.
 
 ```
                 ┌───────────────────────────┐
-   browser ───► │  BFF  (services/ui)        │  server-rendered HTML
+   browser ───► │  BFF  (services/ui-htmx)   │  server-rendered HTML
                 │  axum + Maud + HTMX        │
                 └───┬───────────┬────────┬───┘
    config.get/apply │           │        │  service.restart(name)
@@ -229,11 +230,15 @@ processes — it shells out to the configured command; the OS supervisor (system
 SCM) owns relaunch. This is a larger workstream tied to the watchdog plan and is
 **not a prerequisite** for the config pages.
 
-## The BFF service (`services/ui`)
+## The BFF service (`services/ui-htmx`)
 
-Working crate name `ui` (package name TBD — see Open questions; alternatives
-`console`, `web`). Per the crate-naming convention it is an unprefixed service
-under `services/` (it is system-wide, not `rp`-specific).
+The crate is **`ui-htmx`** — the first member of a `ui-*` family of UI
+expressions: browser variants are qualified by technology (`ui-htmx`, future
+`ui-leptos`), native ones by target (future `ui-ios`, `ui-android`), and
+shared backend-for-frontend logic is extractable to `ui-core` when a second
+expression lands. Per the crate-naming convention it is an unprefixed service
+under `services/` (system-wide, not `rp`-specific). Full design:
+[`docs/services/ui-htmx.md`](../../services/ui-htmx.md).
 
 - **Stack:** axum + [Maud](https://maud.lambda.xyz/) + [HTMX](https://htmx.org/),
   assets embedded via `include_str!`. Dark theme reusing the mocks' CSS tokens so
@@ -308,10 +313,12 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 - Tests as above. *Deliverable: a driver whose config you can read, write, and
   reload over HTTP.*
 
-**Phase 2 — BFF skeleton + hand-built `dsd-fp2` config page.**
-- New `services/ui` crate (axum + Maud + HTMX, embedded assets, dark theme).
-- `GET/POST /config/dsd-fp2` wired to the driver's config actions; validation +
-  "applying/reconnecting" states. *Deliverable: a working config page for `dsd-fp2`.*
+**Phase 2 — BFF skeleton + hand-built `dsd-fp2` config page. ✅ Landed.**
+- New `services/ui-htmx` crate (axum + Maud + HTMX, embedded assets, dark theme).
+- `GET/POST /config/dsd-fp2` wired to the driver's config actions; validation,
+  override-pinned-field read-only, and "applying/reconnecting" states. 5 BDD
+  scenarios + handler/wire-parsing unit tests; verified end-to-end against a
+  mock-mode `dsd-fp2`. *Deliverable: a working config page for `dsd-fp2`.*
 
 **Phase 3 — Generalise across drivers.**
 - Extract a shared `config-actions` helper so other drivers adopt `config.get`/
@@ -333,7 +340,9 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 
 ## Open questions
 
-- **BFF crate name** — `ui` / `console` / `web`?
+- ~~**BFF crate name** — `ui` / `console` / `web`?~~ **Resolved:** `ui-htmx`,
+  the first member of a `ui-*` family (tech-qualified for browser expressions,
+  target-qualified for native). See [The BFF service](#the-bff-service-servicesui-htmx).
 - **`server.port` changes** carry a cross-service reference: rp's roster
   `alpaca_url` for that device must change too. Out of scope while the BFF talks to
   the driver directly; revisit with the rp equipment page (Phase 5).
@@ -354,7 +363,8 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 
 ## Doc impact (CLAUDE.md rule 2)
 
-When implementing: add a "Config actions" section to `docs/services/dsd-fp2.md`;
-create `docs/services/ui.md` for the BFF; extend `docs/services/sentinel.md` with
+When implementing: add a "Config actions" section to `docs/services/dsd-fp2.md`
+(done); create `docs/services/ui-htmx.md` for the BFF (done); extend
+`docs/services/sentinel.md` with
 `service.restart` (Phase 4); note any `ReloadSignal` trigger addition in
 `docs/skills/service-lifecycle.md`; and link this plan from `mocks/README.md`.

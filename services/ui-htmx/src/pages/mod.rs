@@ -1,0 +1,535 @@
+//! Server-rendered pages and fragments (Maud + HTMX) for the configuration UI,
+//! plus the form ⇆ Config mapping.
+//!
+//! The HTMX swap unit is the `#config-card` element: `GET /config/dsd-fp2`
+//! returns the full page (or just the card for an HTMX request); `POST` and the
+//! reconnect poll return a fresh `#config-card` fragment that HTMX swaps in by
+//! `outerHTML`.
+
+use std::collections::HashMap;
+
+use maud::{html, Markup, DOCTYPE};
+use serde_json::Value;
+
+use crate::driver_client::{ConfigClientError, FieldError};
+
+/// A status banner rendered above the form.
+#[derive(Debug, Clone, Copy)]
+pub enum Banner {
+    /// `config.apply` returned `status:"ok"` — persisted, no reload needed.
+    Saved,
+    /// `config.apply` returned `status:"invalid"`.
+    Invalid,
+    /// The reconnect poll found the driver back after a reload.
+    Reconnected,
+}
+
+/// The full HTML shell: dark theme, embedded CSS + HTMX, top nav.
+pub fn layout(title: &str, body: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                link rel="stylesheet" href="/assets/app.css";
+                script src="/assets/htmx.min.js" {}
+            }
+            body {
+                nav.topnav {
+                    div.logo {}
+                    span.title { "rusty-photon" }
+                    span.crumb { "· configuration" }
+                }
+                main.container { (body) }
+            }
+        }
+    }
+}
+
+/// The index: links to the configurable services (Phase 2: just `dsd-fp2`).
+pub fn index_page() -> Markup {
+    layout(
+        "rusty-photon · configuration",
+        html! {
+            h1 { "Configuration" }
+            p.subtitle {
+                "Per-device settings. Changes are applied by the driver and take "
+                "effect with a brief in-process reload."
+            }
+            ul.service-list {
+                li {
+                    a href="/config/dsd-fp2" {
+                        span { "Deep Sky Dad FP2" }
+                        span.svc-id { "dsd-fp2" }
+                    }
+                }
+            }
+        },
+    )
+}
+
+/// The `dsd-fp2` configuration form, filled from the effective config. Override-
+/// pinned fields render disabled; `errors` annotate fields after a rejected apply.
+pub fn config_card(
+    config: &Value,
+    overrides: &[String],
+    errors: &[FieldError],
+    banner: Option<Banner>,
+) -> Markup {
+    let config_blob = serde_json::to_string(config).unwrap_or_default();
+    let overrides_blob = serde_json::to_string(overrides).unwrap_or_default();
+    html! {
+        div #config-card {
+            @if let Some(b) = banner { (banner_markup(b)) }
+            h1 { "Deep Sky Dad FP2" }
+            p.subtitle { "dsd-fp2 · CoverCalibrator" }
+            form method="post" action="/config/dsd-fp2"
+                hx-post="/config/dsd-fp2" hx-target="#config-card" hx-swap="outerHTML" {
+                input type="hidden" name="__config" value=(config_blob);
+                input type="hidden" name="__overrides" value=(overrides_blob);
+
+                fieldset {
+                    legend { "Serial" }
+                    (field_input(config, overrides, errors, "Port", "serial.port", "/serial/port", "text"))
+                    (field_input(config, overrides, errors, "Baud rate", "serial.baud_rate", "/serial/baud_rate", "number"))
+                    (field_input(config, overrides, errors, "Polling interval", "serial.polling_interval", "/serial/polling_interval", "text"))
+                    (field_input(config, overrides, errors, "Timeout", "serial.timeout", "/serial/timeout", "text"))
+                }
+                fieldset {
+                    legend { "Server" }
+                    (field_input(config, overrides, errors, "Port", "server.port", "/server/port", "number"))
+                    (field_input(config, overrides, errors, "Discovery port", "server.discovery_port", "/server/discovery_port", "number"))
+                }
+                fieldset {
+                    legend { "Cover calibrator" }
+                    (field_input(config, overrides, errors, "Name", "cover_calibrator.name", "/cover_calibrator/name", "text"))
+                    (field_input(config, overrides, errors, "Unique ID", "cover_calibrator.unique_id", "/cover_calibrator/unique_id", "text"))
+                    (field_input(config, overrides, errors, "Description", "cover_calibrator.description", "/cover_calibrator/description", "text"))
+                    (field_input(config, overrides, errors, "Max brightness", "cover_calibrator.max_brightness", "/cover_calibrator/max_brightness", "number"))
+                    (field_checkbox(config, overrides, "Enabled", "cover_calibrator.enabled", "/cover_calibrator/enabled"))
+                }
+                div.actions { button.primary type="submit" { "Apply" } }
+            }
+        }
+    }
+}
+
+/// The "applying — reconnecting" fragment: polls `…/status` once a second until
+/// the driver answers and the poll swaps in a fresh card.
+pub fn reconnecting_card() -> Markup {
+    html! {
+        div #config-card hx-get="/config/dsd-fp2/status" hx-trigger="every 1s"
+            hx-swap="outerHTML" hx-target="this" {
+            div class="banner applying" {
+                span.dot {}
+                span { "Saved — the driver is reloading. Reconnecting…" }
+            }
+        }
+    }
+}
+
+/// An error card derived from a `ConfigClientError`, with a retry affordance.
+pub fn error_card(err: &ConfigClientError) -> Markup {
+    let message = if err.is_action_not_implemented() {
+        "This driver does not expose configuration actions.".to_string()
+    } else {
+        err.to_string()
+    };
+    error_card_with_message(&message)
+}
+
+/// An error card with an explicit message (e.g. a malformed form submission).
+pub fn message_error_card(message: &str) -> Markup {
+    error_card_with_message(message)
+}
+
+fn error_card_with_message(message: &str) -> Markup {
+    html! {
+        div #config-card {
+            div class="banner error" { span.dot {} span { (message) } }
+            p {
+                a href="/config/dsd-fp2" hx-get="/config/dsd-fp2" hx-target="#config-card"
+                    hx-swap="outerHTML" { "Retry" }
+            }
+        }
+    }
+}
+
+fn banner_markup(banner: Banner) -> Markup {
+    let (kind, text) = match banner {
+        Banner::Saved => ("ok", "Saved. No reload was needed."),
+        Banner::Invalid => (
+            "error",
+            "Some values were rejected. Fix the highlighted fields and apply again.",
+        ),
+        Banner::Reconnected => (
+            "ok",
+            "Reconnected. The driver reloaded with the new configuration.",
+        ),
+    };
+    html! {
+        div class=(format!("banner {kind}")) { span.dot {} span { (text) } }
+    }
+}
+
+fn field_input(
+    config: &Value,
+    overrides: &[String],
+    errors: &[FieldError],
+    label: &str,
+    name: &str,
+    pointer: &str,
+    input_type: &str,
+) -> Markup {
+    let pinned = overrides.iter().any(|o| o == name);
+    let err = errors.iter().find(|e| e.path == name);
+    let value = str_at(config, pointer);
+    html! {
+        div.field.pinned[pinned].invalid[err.is_some()] {
+            label for=(name) { (label) }
+            input type=(input_type) id=(name) name=(name) value=(value) disabled[pinned];
+            @if let Some(e) = err { div.error { (e.msg) } }
+            @if pinned {
+                div.hint { "Pinned by a command-line override; change the driver's launch flags to edit it." }
+            }
+        }
+    }
+}
+
+fn field_checkbox(
+    config: &Value,
+    overrides: &[String],
+    label: &str,
+    name: &str,
+    pointer: &str,
+) -> Markup {
+    let pinned = overrides.iter().any(|o| o == name);
+    let on = bool_at(config, pointer);
+    html! {
+        div.field.pinned[pinned] {
+            div.checkbox {
+                input type="checkbox" id=(name) name=(name) checked[on] disabled[pinned];
+                label for=(name) { (label) }
+            }
+            @if pinned { div.hint { "Pinned by a command-line override." } }
+        }
+    }
+}
+
+fn str_at(config: &Value, pointer: &str) -> String {
+    match config.pointer(pointer) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn bool_at(config: &Value, pointer: &str) -> bool {
+    config
+        .pointer(pointer)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The merged config produced from a submitted form, ready to send to
+/// `config.apply`, plus the override-pinned paths (echoed back so a re-render
+/// keeps those fields disabled).
+#[derive(Debug)]
+pub struct MergedForm {
+    pub config: Value,
+    pub overrides: Vec<String>,
+}
+
+/// A malformed form submission (missing or unparseable hidden config blob).
+#[derive(Debug, thiserror::Error)]
+pub enum FormError {
+    #[error("the form was missing the hidden configuration field")]
+    MissingConfig,
+    #[error("the hidden configuration field was not valid JSON: {0}")]
+    BadConfig(String),
+}
+
+enum Kind {
+    Str,
+    Int,
+    OptInt,
+}
+
+struct FieldSpec {
+    name: &'static str,
+    pointer: &'static str,
+    kind: Kind,
+}
+
+/// Editable fields overlaid onto the round-tripped config blob. The `enabled`
+/// checkbox is handled separately because an unchecked box submits nothing.
+const EDITABLE_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "serial.port",
+        pointer: "/serial/port",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "serial.baud_rate",
+        pointer: "/serial/baud_rate",
+        kind: Kind::Int,
+    },
+    FieldSpec {
+        name: "serial.polling_interval",
+        pointer: "/serial/polling_interval",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "serial.timeout",
+        pointer: "/serial/timeout",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "server.port",
+        pointer: "/server/port",
+        kind: Kind::Int,
+    },
+    FieldSpec {
+        name: "server.discovery_port",
+        pointer: "/server/discovery_port",
+        kind: Kind::OptInt,
+    },
+    FieldSpec {
+        name: "cover_calibrator.name",
+        pointer: "/cover_calibrator/name",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "cover_calibrator.unique_id",
+        pointer: "/cover_calibrator/unique_id",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "cover_calibrator.description",
+        pointer: "/cover_calibrator/description",
+        kind: Kind::Str,
+    },
+    FieldSpec {
+        name: "cover_calibrator.max_brightness",
+        pointer: "/cover_calibrator/max_brightness",
+        kind: Kind::Int,
+    },
+];
+
+const ENABLED_NAME: &str = "cover_calibrator.enabled";
+const ENABLED_POINTER: &str = "/cover_calibrator/enabled";
+
+/// Rebuild the full Config from a submitted form: start from the hidden
+/// round-tripped blob and overlay the editable fields. Override-pinned fields
+/// are not overlaid (the driver skips them anyway), so a transient `--port`
+/// can't be re-submitted into the file.
+pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormError> {
+    let raw = form.get("__config").ok_or(FormError::MissingConfig)?;
+    let mut config: Value =
+        serde_json::from_str(raw).map_err(|e| FormError::BadConfig(e.to_string()))?;
+    let overrides: Vec<String> = form
+        .get("__overrides")
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
+    let is_pinned = |name: &str| overrides.iter().any(|o| o == name);
+
+    for spec in EDITABLE_FIELDS {
+        if is_pinned(spec.name) {
+            continue;
+        }
+        let Some(raw) = form.get(spec.name) else {
+            continue;
+        };
+        let new_value = match spec.kind {
+            Kind::Str => Value::String(raw.clone()),
+            Kind::Int => Value::from(raw.trim().parse::<u64>().unwrap_or(0)),
+            Kind::OptInt => match raw.trim() {
+                "" => Value::Null,
+                t => t.parse::<u64>().map(Value::from).unwrap_or(Value::Null),
+            },
+        };
+        set_pointer(&mut config, spec.pointer, new_value);
+    }
+
+    if !is_pinned(ENABLED_NAME) {
+        let enabled = form.contains_key(ENABLED_NAME);
+        set_pointer(&mut config, ENABLED_POINTER, Value::Bool(enabled));
+    }
+
+    Ok(MergedForm { config, overrides })
+}
+
+fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
+    if let Some(slot) = config.pointer_mut(pointer) {
+        *slot = value;
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_config() -> Value {
+        json!({
+            "serial": { "port": "/dev/ttyACM0", "baud_rate": 115200, "polling_interval": "500ms", "timeout": "3s" },
+            "server": { "port": 11119, "discovery_port": 32227, "tls": null, "auth": null },
+            "cover_calibrator": { "name": "FP2", "unique_id": "dsd-fp2-001", "description": "panel", "enabled": true, "max_brightness": 4096 }
+        })
+    }
+
+    fn form_from(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn config_card_embeds_current_values_and_hidden_blob() {
+        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        assert!(markup.contains(r#"value="/dev/ttyACM0""#), "{markup}");
+        assert!(markup.contains(r#"value="4096""#), "{markup}");
+        // The hidden blob round-trips the full config for POST.
+        assert!(markup.contains(r#"name="__config""#), "{markup}");
+    }
+
+    #[test]
+    fn config_card_disables_override_pinned_fields() {
+        let overrides = vec!["serial.port".to_string()];
+        let markup = config_card(&sample_config(), &overrides, &[], None).into_string();
+        // The serial.port input carries `disabled`.
+        let pos = markup.find(r#"name="serial.port""#).unwrap();
+        let start = markup[..pos].rfind("<input").unwrap();
+        let end = markup[start..].find('>').unwrap() + start;
+        assert!(
+            markup[start..=end].contains("disabled"),
+            "{}",
+            &markup[start..=end]
+        );
+        assert!(
+            markup.contains("Pinned by a command-line override"),
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn config_card_shows_field_errors() {
+        let errors = vec![FieldError {
+            path: "serial.baud_rate".to_string(),
+            msg: "must be greater than 0".to_string(),
+        }];
+        let markup =
+            config_card(&sample_config(), &[], &errors, Some(Banner::Invalid)).into_string();
+        assert!(markup.contains("must be greater than 0"), "{markup}");
+        assert!(markup.contains("invalid"), "{markup}");
+    }
+
+    #[test]
+    fn reconnecting_card_polls_status() {
+        let markup = reconnecting_card().into_string();
+        assert!(
+            markup.contains(r#"hx-get="/config/dsd-fp2/status""#),
+            "{markup}"
+        );
+        assert!(markup.contains(r#"hx-trigger="every 1s""#), "{markup}");
+    }
+
+    #[test]
+    fn error_card_explains_action_not_implemented() {
+        let err = ConfigClientError::Ascom {
+            code: crate::driver_client::ACTION_NOT_IMPLEMENTED,
+            message: "nope".to_string(),
+        };
+        let markup = error_card(&err).into_string();
+        assert!(
+            markup.contains("does not expose configuration actions"),
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn merge_form_overlays_editable_fields() {
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
+            ("serial.port", "/dev/ttyACM5"),
+            ("cover_calibrator.max_brightness", "2048"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/serial/port")
+                .and_then(Value::as_str),
+            Some("/dev/ttyACM5")
+        );
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/max_brightness")
+                .and_then(Value::as_u64),
+            Some(2048)
+        );
+    }
+
+    #[test]
+    fn merge_form_does_not_overlay_pinned_fields() {
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", r#"["serial.port"]"#),
+            ("serial.port", "/dev/ttyACM9"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        // The pinned field keeps the blob's value, not the (disabled) submission.
+        assert_eq!(
+            merged
+                .config
+                .pointer("/serial/port")
+                .and_then(Value::as_str),
+            Some("/dev/ttyACM0")
+        );
+        assert_eq!(merged.overrides, vec!["serial.port".to_string()]);
+    }
+
+    #[test]
+    fn merge_form_checkbox_absence_means_false() {
+        // No `cover_calibrator.enabled` key in the form → enabled becomes false.
+        let form = form_from(&[("__config", &sample_config().to_string())]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/enabled")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn merge_form_empty_optional_becomes_null() {
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("server.discovery_port", ""),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert!(merged
+            .config
+            .pointer("/server/discovery_port")
+            .unwrap()
+            .is_null());
+    }
+
+    #[test]
+    fn merge_form_missing_blob_is_an_error() {
+        let form = form_from(&[("serial.port", "/dev/ttyACM0")]);
+        let err = merge_form(&form).unwrap_err();
+        assert!(matches!(err, FormError::MissingConfig));
+    }
+}

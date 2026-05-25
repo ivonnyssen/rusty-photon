@@ -1,0 +1,140 @@
+/* ui-htmx — dark theme reusing the design tokens from the chosen activity-stream
+ * mock (docs/plans/ui-design/mocks/7-stream-fold.html) so the configuration
+ * pages are visually consistent with the eventual stream UI. */
+
+:root {
+  --bg: #08080a;
+  --panel: #0f0f12;
+  --edge: #1c1c22;
+  --text: #fafafa;
+  --dim: #9c9ca6;
+  --accent-a: #6366f1;
+  --accent-b: #d946ef;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a { color: var(--accent-a); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--edge);
+  background: rgba(15, 15, 18, .85);
+}
+.logo {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+}
+.topnav .title { font-weight: 600; }
+.topnav .crumb { color: var(--dim); }
+
+.container { max-width: 720px; margin: 0 auto; padding: 28px 20px 64px; }
+
+h1 { font-size: 22px; margin: 0 0 4px; }
+.subtitle { color: var(--dim); margin: 0 0 24px; font-size: 14px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+fieldset { border: 0; margin: 0 0 8px; padding: 0; }
+fieldset + fieldset { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--edge); }
+legend {
+  padding: 0; margin-bottom: 12px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+}
+
+.field { margin-bottom: 16px; }
+.field label { display: block; font-weight: 500; margin-bottom: 6px; }
+.field .hint { color: var(--dim); font-size: 12px; margin-top: 5px; }
+
+input[type="text"], input[type="number"], select {
+  width: 100%;
+  padding: 9px 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  font: inherit;
+  font-family: var(--mono);
+}
+input:focus, select:focus { outline: none; border-color: var(--accent-a); }
+
+input[readonly], input:disabled, select:disabled {
+  color: var(--dim);
+  background: #0b0b0e;
+  cursor: not-allowed;
+}
+
+.field.pinned label::after {
+  content: "pinned by --override";
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--warn);
+  font-family: var(--mono);
+}
+
+.field.invalid input, .field.invalid select { border-color: var(--bad); }
+.field .error { color: var(--bad); font-size: 12px; margin-top: 5px; }
+
+.checkbox { display: flex; align-items: center; gap: 9px; }
+.checkbox input { width: auto; }
+
+.actions { margin-top: 22px; display: flex; gap: 10px; align-items: center; }
+button.primary {
+  font: inherit; font-weight: 600; cursor: pointer;
+  padding: 9px 18px; border: 0; border-radius: 7px;
+  color: #fff; background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+}
+button.primary:hover { filter: brightness(1.08); }
+
+.banner {
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--edge);
+  display: flex; align-items: center; gap: 10px;
+}
+.banner .dot { width: 9px; height: 9px; border-radius: 999px; flex: none; }
+.banner.ok { border-color: rgba(74, 222, 128, .4); background: rgba(74, 222, 128, .08); }
+.banner.ok .dot { background: var(--ok); }
+.banner.applying { border-color: rgba(251, 191, 36, .4); background: rgba(251, 191, 36, .08); }
+.banner.applying .dot { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+.banner.error { border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .08); }
+.banner.error .dot { background: var(--bad); }
+.banner code { font-family: var(--mono); color: var(--dim); }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+.service-list { list-style: none; margin: 0; padding: 0; }
+.service-list li + li { margin-top: 10px; }
+.service-list a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; border-radius: var(--radius);
+  background: var(--panel); border: 1px solid var(--edge); color: var(--text);
+}
+.service-list a:hover { border-color: var(--accent-a); text-decoration: none; }
+.service-list .svc-id { font-family: var(--mono); color: var(--dim); margin-left: auto; font-size: 13px; }

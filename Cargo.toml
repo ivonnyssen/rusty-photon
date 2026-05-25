@@ -25,6 +25,7 @@ members = [
   "services/sentinel-app",
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
+  "services/ui-htmx",
 ]
 resolver = "2"
 
