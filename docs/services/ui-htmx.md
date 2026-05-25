@@ -176,6 +176,16 @@ This is the round-trip the protocol was designed for:
   producing a non-field driver parse error. An empty *required* number keeps the
   prior value (clearing a port can't silently become OS-assigned); an empty
   *optional* number (`discovery_port`) persists `null`.
+- **`cover_calibrator.enabled` is rendered read-only.** The driver registers the
+  `covercalibrator/0` device — and therefore the `config.get` / `config.apply`
+  actions, which live on it — only when `enabled` is true. Editing it to `false`
+  from this page would tear down the very endpoint that could re-enable it (a
+  self-lockout, recoverable only by a manual config-file edit + restart). The
+  checkbox shows the current state but is disabled, and `merge_form` never
+  overlays it, so neither the rendered form nor a forged POST can flip it.
+  (Making config actions reachable while the device is disabled — a driver-side
+  change — is tracked as follow-up; `server.port` edits have the same "the BFF
+  loses the endpoint" property, deferred with the equipment roster.)
 
 ## Behavioral contracts
 

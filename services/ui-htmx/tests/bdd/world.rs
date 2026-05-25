@@ -226,17 +226,9 @@ impl UiWorld {
                 serde_json::to_string(&overrides).expect("serialize overrides"),
             ),
         ];
-        // A browser submits the Enabled checkbox only when checked, and the BFF
-        // reads its absence as `false`. Re-assert the current value so an
-        // otherwise-unchanged submission doesn't silently flip it (which would
-        // itself be a change → reload).
-        if config
-            .pointer("/cover_calibrator/enabled")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            pairs.push(("cover_calibrator.enabled".to_string(), "on".to_string()));
-        }
+        // `enabled` is read-only in the form (the BFF never overlays it), so a
+        // browser submits nothing for it and it round-trips from the hidden blob
+        // unchanged — no need to re-assert it here.
         for (name, value) in changes {
             pairs.push(((*name).to_string(), (*value).to_string()));
         }

@@ -108,7 +108,7 @@ pub fn config_card(
                     (field_input(config, overrides, errors, "Unique ID", "cover_calibrator.unique_id", "/cover_calibrator/unique_id", "text"))
                     (field_input(config, overrides, errors, "Description", "cover_calibrator.description", "/cover_calibrator/description", "text"))
                     (field_input(config, overrides, errors, "Max brightness", "cover_calibrator.max_brightness", "/cover_calibrator/max_brightness", "number"))
-                    (field_checkbox(config, overrides, "Enabled", "cover_calibrator.enabled", "/cover_calibrator/enabled"))
+                    (field_checkbox(config, "Enabled", "cover_calibrator.enabled", "/cover_calibrator/enabled"))
                 }
                 div.actions { button.primary type="submit" { "Apply" } }
             }
@@ -198,22 +198,25 @@ fn field_input(
     }
 }
 
-fn field_checkbox(
-    config: &Value,
-    overrides: &[String],
-    label: &str,
-    name: &str,
-    pointer: &str,
-) -> Markup {
-    let pinned = overrides.iter().any(|o| o == name);
+/// The `enabled` checkbox, rendered **read-only**. It shows the current state
+/// but cannot be edited from the page: disabling the device unregisters the
+/// `covercalibrator/0` endpoint the config actions themselves live on, which
+/// would lock this page out of the driver (recoverable only by a manual
+/// config-file edit + restart). [`merge_form`] also never overlays it, so a
+/// forged POST can't flip it either — defence in depth, not just the attribute.
+fn field_checkbox(config: &Value, label: &str, name: &str, pointer: &str) -> Markup {
     let on = bool_at(config, pointer);
     html! {
-        div.field.pinned[pinned] {
+        div.field {
             div.checkbox {
-                input type="checkbox" id=(name) name=(name) checked[on] disabled[pinned];
+                input type="checkbox" id=(name) name=(name) checked[on] disabled;
                 label for=(name) { (label) }
             }
-            @if pinned { div.hint { "Pinned by a command-line override." } }
+            div.hint {
+                "Read-only here — disabling the device would remove this "
+                "configuration page's own endpoint. Change it in the driver's "
+                "config file."
+            }
         }
     }
 }
@@ -272,8 +275,10 @@ struct FieldSpec {
     kind: Kind,
 }
 
-/// Editable fields overlaid onto the round-tripped config blob. The `enabled`
-/// checkbox is handled separately because an unchecked box submits nothing.
+/// Editable fields overlaid onto the round-tripped config blob. `enabled` is
+/// deliberately *not* here: it is read-only (see [`field_checkbox`]) so the UI
+/// can't disable the device and unregister the very endpoint the config actions
+/// live on — it round-trips from the hidden blob untouched.
 const EDITABLE_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "serial.port",
@@ -327,9 +332,6 @@ const EDITABLE_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-const ENABLED_NAME: &str = "cover_calibrator.enabled";
-const ENABLED_POINTER: &str = "/cover_calibrator/enabled";
-
 /// Rebuild the full Config from a submitted form: start from the hidden
 /// round-tripped blob and overlay the editable fields. Override-pinned fields
 /// are not overlaid (the driver skips them anyway), so a transient `--port`
@@ -381,10 +383,10 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
         }
     }
 
-    if !is_pinned(ENABLED_NAME) {
-        let enabled = form.contains_key(ENABLED_NAME);
-        set_pointer(&mut config, ENABLED_POINTER, Value::Bool(enabled));
-    }
+    // `enabled` is intentionally not overlaid: it is read-only in the UI (see
+    // `field_checkbox`), so it round-trips from the hidden blob unchanged and
+    // can't be flipped — not even by a hand-crafted POST — which would otherwise
+    // unregister the device and lock the page out of the config endpoint.
 
     Ok(MergedForm {
         config,
@@ -469,6 +471,21 @@ mod tests {
     }
 
     #[test]
+    fn config_card_renders_enabled_read_only() {
+        // The Enabled checkbox is shown for reference but disabled, so the UI
+        // can't unregister the device (and the config endpoint with it).
+        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        let pos = markup.find(r#"name="cover_calibrator.enabled""#).unwrap();
+        let start = markup[..pos].rfind("<input").unwrap();
+        let end = markup[start..].find('>').unwrap() + start;
+        assert!(
+            markup[start..=end].contains("disabled"),
+            "enabled checkbox not disabled: {}",
+            &markup[start..=end]
+        );
+    }
+
+    #[test]
     fn reconnecting_card_polls_status() {
         let markup = reconnecting_card().into_string();
         assert!(
@@ -536,16 +553,21 @@ mod tests {
     }
 
     #[test]
-    fn merge_form_checkbox_absence_means_false() {
-        // No `cover_calibrator.enabled` key in the form → enabled becomes false.
-        let form = form_from(&[("__config", &sample_config().to_string())]);
+    fn merge_form_never_changes_enabled() {
+        // `enabled` is read-only in the UI, so neither its absence nor a forged
+        // value may flip it — it round-trips from the hidden blob. (Disabling the
+        // device would unregister the config endpoint itself → self-lockout.)
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()), // enabled: true
+            ("cover_calibrator.enabled", "false"),      // forged — must be ignored
+        ]);
         let merged = merge_form(&form).unwrap();
         assert_eq!(
             merged
                 .config
                 .pointer("/cover_calibrator/enabled")
                 .and_then(Value::as_bool),
-            Some(false)
+            Some(true)
         );
     }
 
