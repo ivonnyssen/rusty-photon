@@ -181,11 +181,13 @@ This is the round-trip the protocol was designed for:
   actions, which live on it — only when `enabled` is true. Editing it to `false`
   from this page would tear down the very endpoint that could re-enable it (a
   self-lockout, recoverable only by a manual config-file edit + restart). The
-  checkbox shows the current state but is disabled, and `merge_form` never
-  overlays it, so neither the rendered form nor a forged POST can flip it.
-  (Making config actions reachable while the device is disabled — a driver-side
-  change — is tracked as follow-up; `server.port` edits have the same "the BFF
-  loses the endpoint" property, deferred with the equipment roster.)
+  checkbox shows the current state but is disabled, and `merge_form` ignores the
+  `cover_calibrator.enabled` form field, so the UI path can't flip it. (This does
+  not defend against a hand-crafted POST that edits `enabled` inside the
+  `__config` blob — that is equivalent to any forged config submission. True
+  tamper-proofing belongs in the driver: making config actions reachable while
+  the device is disabled, tracked as follow-up. `server.port` edits have the same
+  "the BFF loses the endpoint" property, deferred with the equipment roster.)
 
 ## Behavioral contracts
 

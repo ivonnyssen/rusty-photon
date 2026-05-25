@@ -202,8 +202,11 @@ fn field_input(
 /// but cannot be edited from the page: disabling the device unregisters the
 /// `covercalibrator/0` endpoint the config actions themselves live on, which
 /// would lock this page out of the driver (recoverable only by a manual
-/// config-file edit + restart). [`merge_form`] also never overlays it, so a
-/// forged POST can't flip it either — defence in depth, not just the attribute.
+/// config-file edit + restart). [`merge_form`] also ignores the
+/// `cover_calibrator.enabled` form field, so the UI path can't flip it. (A
+/// hand-crafted POST that edits `enabled` inside the `__config` blob still can —
+/// that is equivalent to any forged config and is the driver's job to reject;
+/// tracked as follow-up.)
 fn field_checkbox(config: &Value, label: &str, name: &str, pointer: &str) -> Markup {
     let on = bool_at(config, pointer);
     html! {
@@ -392,10 +395,13 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
         }
     }
 
-    // `enabled` is intentionally not overlaid: it is read-only in the UI (see
-    // `field_checkbox`), so it round-trips from the hidden blob unchanged and
-    // can't be flipped — not even by a hand-crafted POST — which would otherwise
-    // unregister the device and lock the page out of the config endpoint.
+    // `enabled` is intentionally not overlaid from its form field: it is
+    // read-only in the UI (see `field_checkbox`), so it round-trips from the
+    // hidden blob and the normal UI can't disable the device (which would
+    // unregister the config endpoint and lock the page out). This does not stop
+    // a hand-crafted POST that edits `enabled` inside the `__config` blob itself
+    // — that is equivalent to any forged config and is the driver's job to reject
+    // (deferred); the form-field handling only governs the UI path.
 
     Ok(MergedForm {
         config,
@@ -563,9 +569,10 @@ mod tests {
 
     #[test]
     fn merge_form_never_changes_enabled() {
-        // `enabled` is read-only in the UI, so neither its absence nor a forged
-        // value may flip it — it round-trips from the hidden blob. (Disabling the
-        // device would unregister the config endpoint itself → self-lockout.)
+        // `merge_form` ignores the `cover_calibrator.enabled` form field
+        // entirely (whether absent or forged), so `enabled` round-trips from the
+        // hidden `__config` blob. (Tampering with the blob itself is a separate,
+        // driver-side concern.)
         let form = form_from(&[
             ("__config", &sample_config().to_string()), // enabled: true
             ("__overrides", "[]"),
