@@ -23,6 +23,11 @@ jobs:
   sanitizers:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Explicit timeout — see test.yml's plan job. The sanitizer `cargo test`
+    # step runs the same BDD scenarios that intermittently hang; without a
+    # cap GitHub's 360 min default let `ubuntu / nightly / address` burn a
+    # full 6 h. 40 min sits ~2x above the ~19 min healthy sanitizer run.
+    timeout-minutes: 40
     name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
@@ -73,6 +78,7 @@ jobs:
     needs: sanitizers
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
     steps:

@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ascom_alpaca::api::camera::CameraState;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -19,6 +20,17 @@ use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
 
 use super::handler::McpHandler;
+
+/// Backstop grace added to the requested exposure `duration` to bound
+/// `do_capture`'s readout wait. An Alpaca camera can *fail* an exposure
+/// — transition `CameraState` to `Error` and leave `ImageReady` false
+/// (e.g. `sky-survey-camera` when its follow-mode mount read or survey
+/// fetch times out) — or, more rarely, wedge in `Exposing`. The poll
+/// loop treats `Error` as terminal; this grace caps the wait even when a
+/// camera never reports either readiness or error. 120 s mirrors
+/// `do_move_focuser_blocking`'s deadline and comfortably covers real
+/// readout/download latency on top of the exposure itself.
+const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
@@ -446,11 +458,42 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to start exposure: {}", e))?;
 
+        // Poll until the frame is ready — but a not-ready camera is not
+        // necessarily still exposing. An Alpaca camera that *fails* an
+        // exposure transitions to `CameraState::Error` and leaves
+        // `ImageReady` false forever; polling `ImageReady` alone treats
+        // that as "still exposing" and loops indefinitely. That is the
+        // bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
+        // cap: `sky-survey-camera`'s follow-mode mount read timed out
+        // under load, the exposure failed, and `do_capture` span here
+        // forever. Treat `Error` as terminal (surfacing the camera's
+        // stored reason via `image_array`), and cap the total wait with a
+        // deadline as a backstop for a camera wedged in `Exposing`.
+        let deadline = tokio::time::Instant::now() + duration + CAPTURE_READOUT_GRACE;
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cam.image_ready().await {
                 Ok(true) => break,
-                Ok(false) => continue,
+                Ok(false) => {
+                    // A transient `camera_state` read error is non-fatal —
+                    // `ImageReady` stays the primary signal and the deadline
+                    // below still bounds the wait.
+                    if let Ok(CameraState::Error) = cam.camera_state().await {
+                        let detail = cam
+                            .image_array()
+                            .await
+                            .err()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "camera reported error state".to_string());
+                        return Err(format!("exposure failed: {}", detail));
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "timeout waiting for image_ready after {:?}",
+                            duration + CAPTURE_READOUT_GRACE
+                        ));
+                    }
+                }
                 Err(e) => return Err(format!("error checking image ready: {}", e)),
             }
         }
