@@ -120,7 +120,7 @@ the starting point.
 - [x] Shadow mode: job is **not required** for merges; runs alongside Cargo jobs for 2+ weeks of parity validation.
 - [x] **Cache backend swapped to self-hosted `bazel-remote` on TrueNAS SCALE** (public-read / token-write via Cloudflare Tunnel). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs now get a warm cache too. Deterministic retention via `--max_size` ends the BuildBuddy LRU cold-cache outliers. Runbook: [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
 - [x] `.bazelrc` hostname set to `cache.rustyphoton.space` (zone `rustyphoton.space` verified on Cloudflare 2026-05-24).
-- [ ] Add the `BAZEL_CACHE_WRITE_TOKEN` GHA secret and deploy the TrueNAS side (runbook).
+- [x] `BAZEL_CACHE_WRITE_TOKEN` GHA secret added + TrueNAS side deployed; cache verified populating from push-to-main (2026-05-24).
 - [ ] Compare wall-clock and correctness against Cargo jobs weekly (≥1 week on the TrueNAS cache).
 
 **Exit criteria:** Bazel CI job green for 2 consecutive weeks with no flakes; wall-clock within ±20 % of Cargo or better.
@@ -139,11 +139,14 @@ on them. Remaining prerequisites: the TrueNAS cache live + parity logged
 `cargo-msrv`, coverage) kept on a Cargo nightly, and the `rust-project.json`
 IDE decision (open question 4).
 
-- [ ] Bazel job becomes **required** on PRs.
-- [ ] Cargo CI jobs moved to a scheduled nightly (as safety net).
-- [ ] `docs/skills/pre-push.md` rewritten for `bazel test //...` as the primary pre-push command.
-- [ ] `cargo-rail` dependency removed from CI (the 50-LOC upstream PR becomes moot).
-- [ ] `.config/rail.toml` deleted.
+Prepared in the cutover PR (do **not** merge until the Phase 5 soak passes —
+Bazel green for 2 consecutive weeks, wall-clock within ±20 % of Cargo):
+
+- [x] Cargo CI moved off PRs to push-to-main + nightly (check.yml/test.yml/safety.yml triggers) as the safety net.
+- [x] `docs/skills/pre-push.md` + `CLAUDE.md` rule 4 reframed — `bazel test //...` is the primary pre-push; Cargo covers the safety-net gates.
+- [x] `bazel.yml` jobs renamed (dropped "(shadow)").
+- [ ] **Bazel jobs made required on PRs** — branch-protection setting, applied manually at cutover (merging the workflow change alone does not enforce it).
+- [ ] `cargo-rail` removed from CI + `.config/rail.toml` deleted — deferred to a post-cutover cleanup PR (keeps reworking rail's BDD-discovery machinery off the trigger change).
 
 **Exit criteria:** 30 days of required-Bazel CI with zero reverts to Cargo jobs.
 
