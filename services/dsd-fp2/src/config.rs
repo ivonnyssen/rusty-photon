@@ -151,7 +151,10 @@ impl CliOverrides {
 }
 
 /// Resolve the config-file path: the explicit `--config` path if given, else the
-/// XDG default `~/.config/rusty-photon/dsd-fp2.json`. A path is *always*
+/// per-user platform config directory (`directories::ProjectDirs::config_dir`) —
+/// e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG),
+/// `~/Library/Application Support/rusty-photon/dsd-fp2.json` on macOS,
+/// `%APPDATA%\rusty-photon\dsd-fp2.json` on Windows. A path is *always*
 /// resolvable, so config editing is never disabled for lack of one.
 pub fn resolve_config_path(
     explicit: Option<PathBuf>,
@@ -160,7 +163,7 @@ pub fn resolve_config_path(
         return Ok(path);
     }
     let dirs = ProjectDirs::from("", "", "rusty-photon")
-        .ok_or("could not determine an XDG config directory for the default config path")?;
+        .ok_or("could not determine a platform config directory for the default config path")?;
     Ok(dirs.config_dir().join("dsd-fp2.json"))
 }
 

@@ -311,7 +311,7 @@ shuffle the FP2 onto a different `ttyACM*`.
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the XDG default `~/.config/rusty-photon/dsd-fp2.json` (read if present; created by `config.apply`). |
+| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the per-user platform config dir (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux; macOS/Windows differ) (read if present; created by `config.apply`). |
 | `--port`           | Serial port path (overrides `serial.port`; pins it as a CLI override) |
 | `--server-port`    | Server port (overrides `server.port`; pins it as a CLI override) |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
@@ -342,13 +342,16 @@ without first connecting to the thing the bad port blocks connecting to.
 A persist target is **always** resolvable, in priority order:
 
 1. `--config <path>` if given on the CLI, else
-2. the XDG default `~/.config/rusty-photon/dsd-fp2.json`
-   (`$XDG_CONFIG_HOME/rusty-photon/dsd-fp2.json` when that variable is set).
+2. the per-user **platform config directory** (`directories::ProjectDirs`) —
+   `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG;
+   `$XDG_CONFIG_HOME/rusty-photon/...` when set),
+   `~/Library/Application Support/rusty-photon/...` on macOS, and
+   `%APPDATA%\rusty-photon\...` on Windows.
 
 Startup and reload **read** this path when the file exists, falling back to
 `Config::default()` otherwise. `config.apply` **writes** it, creating parent
-directories for the XDG default. (This is a behaviour change from the pre-config-
-actions driver, which ignored any file when `--config` was omitted.)
+directories for the platform default. (This is a behaviour change from the
+pre-config-actions driver, which ignored any file when `--config` was omitted.)
 
 ### `config.get`
 
@@ -499,7 +502,7 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 - Cover open / close + state polling (`CoverState` ∈ {`Open`, `Closed`, `Moving`, `Unknown`, `Error`})
 - Calibrator on / off + brightness set (`CalibratorState` ∈ {`Off`, `Ready`, `Unknown`, `Error`})
 - Brightness read (cached) and `max_brightness = 4096`
-- **Config actions** (`config.get` / `config.apply`) with XDG-default config
+- **Config actions** (`config.get` / `config.apply`) with platform-default config
   path, layer-aware persist, validation, secret redaction, and in-process reload
 - Mock factory for ConformU and BDD (consumed by both the spawned
   binary and the in-process `manager.rs` mock tests)
