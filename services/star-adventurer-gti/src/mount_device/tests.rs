@@ -1385,6 +1385,25 @@ fn device_with_path(path: PathBuf) -> MountDevice {
     MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
 }
 
+/// Like [`device_with_path`] but backed by a [`CapturingMockFactory`] so
+/// the test can seed the mock's **wire** encoder state. `SetPark` reads
+/// the live encoder via `poll_axes_now`, so seeding the cached snapshot
+/// (`seed_ra_position`) is not enough — the value must be on the wire
+/// for a fresh `:j` poll to capture it.
+fn device_with_path_and_mock(
+    path: PathBuf,
+) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = Config::default();
+    // Disable the CW-exclusion zone check for these tests.
+    cfg.mount.binding_zone_min_hours = 24.0;
+    cfg.mount.binding_zone_max_hours = 0.0;
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
+    (d, mock)
+}
+
 /// Helper: write a default `Config` to `path` as pretty JSON. Used as
 /// the seed file for SetPark round-trip tests.
 fn seed_default_config(path: &Path) {
@@ -1783,17 +1802,20 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
 }
 
 #[tokio::test]
-async fn set_park_persists_current_snapshot_and_updates_in_memory_target() {
+async fn set_park_persists_current_wire_position_and_updates_in_memory_target() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
-    let d = device_with_path(path.clone());
+    let (d, mock) = device_with_path_and_mock(path.clone());
     d.set_connected(true).await.unwrap();
-    // Seed the snapshot directly — the polling loop won't overwrite
-    // a stationary mock axis (`advance_one_step` bails on
-    // `!running`), so these values stick.
-    d.manager.seed_ra_position(8000).await;
-    d.manager.seed_dec_position(-3000).await;
+    // Seed the mock's *wire* encoder: SetPark reads the live position
+    // via `poll_axes_now`, so the value must be on the wire (a
+    // stationary axis won't be advanced by `:j` polling).
+    {
+        let mut s = mock.lock().await;
+        s.ra.position_ticks = 8000;
+        s.dec.position_ticks = -3000;
+    }
 
     d.set_park().await.unwrap();
 
@@ -2274,10 +2296,14 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
-    let d = device_with_path(path.clone());
+    let (d, mock) = device_with_path_and_mock(path.clone());
     d.set_connected(true).await.unwrap();
-    d.manager.seed_ra_position(8000).await;
-    d.manager.seed_dec_position(-3000).await;
+    // Seed the mock *wire* encoder; SetPark reads it via `poll_axes_now`.
+    {
+        let mut s = mock.lock().await;
+        s.ra.position_ticks = 8000;
+        s.dec.position_ticks = -3000;
+    }
     d.set_park().await.unwrap();
 
     // Disconnect: in-memory park state is cleared.
@@ -2285,11 +2311,14 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
     assert_eq!(d.state.read().await.park_ra_ticks, None);
     assert_eq!(d.state.read().await.park_dec_ticks, None);
 
-    // Reset the mock encoders so reconnect's handshake fallback
-    // would be (0, 0) — proves the re-read picked up SetPark's
-    // values rather than just re-reading handshake.
-    d.manager.seed_ra_position(0).await;
-    d.manager.seed_dec_position(0).await;
+    // Reset the mock *wire* encoders so reconnect's handshake `:j`
+    // fallback would be (0, 0) — proves the re-read picked up SetPark's
+    // persisted values rather than just re-reading the handshake.
+    {
+        let mut s = mock.lock().await;
+        s.ra.position_ticks = 0;
+        s.dec.position_ticks = 0;
+    }
 
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;

@@ -111,6 +111,17 @@ build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
 
+# Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
+# consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.
+# Deliberately on build:ci — applied to EVERY ci invocation (build, fast test,
+# BDD), not just the BDD step — so the --test_env flag never CHANGES between the
+# Bazel invocations sharing one server. A changing --test_env discards the
+# analysis cache and forces a full re-analysis of all targets (expensive, worst
+# on Windows). Only the BDD step reads OMNISIM_PATH; the others carry the flag
+# harmlessly. Forwarding by name (not --test_env=PATH) keeps the action key
+# stable across push vs pull_request events.
+build:ci --test_env=OMNISIM_PATH
+
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
 # developers don't accidentally point at the shared cache. CI jobs combine:
 # --config=ci --config=remote-cache.
