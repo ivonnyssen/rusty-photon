@@ -251,6 +251,72 @@ Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:
 
 Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention (e.g. `RP_BINARY`, `PPBA_DRIVER_BINARY`, `QHY_FOCUSER_BINARY`). `bdd-infra` derives the name from the package string passed to `ServiceHandle::start` — there is no per-service override.
 
+## Coverage under Bazel (shadow, added 2026-05-26)
+
+A separate shadow-mode workflow, `.github/workflows/bazel-coverage.yml`, runs
+`bazel coverage` on every PR (and push to main) alongside the canonical Cargo
+coverage job (`test.yml`). It is **not required** for merge.
+
+**Why it's worth doing under Bazel.** Coverage actions are content-addressed and
+cacheable like any other action. `bazel coverage //...` builds/tests the whole
+repo, but targets untouched by a PR are cache hits (local disk + remote R2), so
+their `coverage.dat` is fetched rather than recomputed. Every PR therefore gets
+a *complete* full-repo report while paying only for the changed targets — no
+cargo-rail narrowing, and no dependence on Codecov flag carryforward to fill in
+the untouched packages (we upload every package's flag every run, mostly from
+cache). The coverage cache is a **separate action namespace** from `bazel.yml`'s
+stable build/test (different rustc flags + nightly toolchain), so the coverage
+workflow primes it on push-to-main with the write token.
+
+**Parity requirements (the non-obvious parts):**
+
+- **Pinned nightly toolchain + `--cfg=coverage_nightly`.** The `coverage(off)`
+  attributes on every `#[cfg(test)] mod tests` block are gated on the
+  nightly-only `coverage_attribute` feature. cargo-llvm-cov activates them by
+  running on nightly and auto-setting `--cfg=coverage_nightly`; rules_rust does
+  neither. So `MODULE.bazel` registers a pinned nightly alongside stable, and
+  `.bazelrc`'s `--config=coverage` selects `channel=nightly` and adds
+  `--cfg=coverage_nightly`. Without this, either the code fails to compile (the
+  feature gate) or test modules pollute the numbers. The date is pinned (not
+  rolling) so a nightly bump doesn't bust every coverage action's cache key.
+- **Per-package flags.** Bazel emits one combined lcov;
+  `tools/coverage/split_lcov.py` splits it per package (by `crates/<pkg>/` |
+  `services/<pkg>/` source path — directory basename is the package name
+  throughout this workspace) so the per-service Codecov flags survive.
+- **Distinct `bazel-<pkg>` flags (shadow mode).** Uploads go to `bazel-<pkg>`,
+  not `<pkg>`, so the canonical per-service badges stay Cargo-only until
+  cutover. Codecov's project-wide total becomes the union of Cargo+Bazel during
+  shadow mode (union can only raise coverage, never trip the 1 % drop gate);
+  scope the `project` status to the Cargo flags in `.github/codecov.yml` if you
+  want the total kept strictly Cargo-only.
+
+**BDD is included; child-process coverage is the open risk.** Coverage runs the
+BDD suite too — `--config=coverage` sets `--test_tag_filters=-requires-cargo`,
+so only requires-cargo (cargo-shelling) tests are dropped — and the CI job
+installs OmniSim for rp's scenarios. Under `bazel coverage //...` the spawned
+service binaries ARE instrumented (first-party top-level targets matching the
+instrumentation filter), so the ingredients for service-binary coverage are
+present. What is NOT guaranteed is **collection**: cargo-llvm-cov captures
+child-process coverage via a shared `LLVM_PROFILE_FILE` (with `%p`/`%m` patterns)
+and a whole-target-dir `llvm-profdata merge`; Bazel's per-test-action model
+reliably collects only the test process's own `.profraw`. Whether each
+BDD-spawned child's `.profraw` lands in `COVERAGE_DIR` and gets merged depends on
+the `LLVM_PROFILE_FILE` pattern rules_rust sets and whether its merge step globs
+the whole directory.
+
+**Validate in run #1** by diffing each `bazel-<service>` flag against `<service>`
+(Cargo). If a service's Bazel coverage is materially lower, child-process
+profraw is being dropped. **Contingency:** have `bdd-infra`'s spawn path set
+`LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw` on each child `Command`
+only when `COVERAGE_DIR` is set (Bazel-only — cargo-llvm-cov sets
+`LLVM_PROFILE_FILE`, not `COVERAGE_DIR`, so the Cargo path is untouched), so
+every child writes a distinct file into the directory Bazel's lcov merger
+consumes. Each service's BDD coverage still caches independently, same as the
+unit/integration actions.
+
+This supersedes the Phase 7 note that coverage stays a Cargo-only gate: coverage
+now has a Bazel shadow path, to be validated in CI before any cutover.
+
 ## Open questions
 
 1. **bzlmod vs WORKSPACE.** Starting with bzlmod. Fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress.

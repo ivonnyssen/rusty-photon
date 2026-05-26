@@ -133,6 +133,55 @@ build:ci --test_env=OMNISIM_PATH
 # gitignored user.bazelrc to point at a LAN bazel-remote instead.
 build:remote-cache --remote_cache=https://cache.rustyphoton.space
 
+# --- Coverage config -------------------------------------------------------
+
+# Activate with: bazel coverage --config=coverage //...
+# In CI also add --config=ci --config=remote-cache (see bazel-coverage.yml).
+#
+# Reproduces the Cargo coverage contract (.github/workflows/test.yml `coverage`)
+# under Bazel:
+#
+#  * channel=nightly -- the #[cfg_attr(coverage_nightly, coverage(off))] on every
+#    `#[cfg(test)] mod tests` block needs the nightly-only `coverage_attribute`
+#    feature. cargo-llvm-cov gets this by running on a nightly toolchain; under
+#    Bazel we select the pinned nightly registered in MODULE.bazel. Overrides
+#    the default `--@rules_rust//rust/toolchain/channel=stable` above.
+#  * --cfg=coverage_nightly -- cargo-llvm-cov sets this automatically on nightly;
+#    rules_rust does not, so we set it explicitly. This is what activates the
+#    coverage(off) attributes so test code stays out of the numbers. Passed as a
+#    single value (not comma-joined) so it composes with the base -Cdebuginfo=0
+#    regardless of how repeated list-flag occurrences resolve. Source-based
+#    coverage uses the __llvm_covmap section, not DWARF, so debuginfo is
+#    irrelevant to line/region coverage either way.
+#  * rules_rust adds -Cinstrument-coverage itself for instrumented targets under
+#    `bazel coverage`; we only choose WHICH targets via --instrumentation_filter.
+#  * --instrumentation_filter -- first-party only; @cr// crates.io deps are never
+#    instrumented (matches cargo llvm-cov, which reports workspace crates only).
+#  * --combined_report=lcov -- single merged lcov at
+#    $(bazel info output_path)/_coverage/_coverage_report.dat, split per package
+#    by tools/coverage/split_lcov.py before the per-flag Codecov upload.
+#
+# --test_tag_filters=-requires-cargo OVERRIDES the base
+# `test --test_tag_filters=-requires-cargo,-bdd`: coverage MUST include the BDD
+# suite, which exercises the service-binary integration paths (main.rs,
+# startup/shutdown, cross-service wiring) that unit tests never reach.
+# requires-cargo stays excluded (those tests shell out to cargo). BDD needs
+# OMNISIM_PATH (forwarded by build:ci --test_env) for rp's scenarios, so a local
+# `bazel coverage --config=coverage` needs OmniSim installed + OMNISIM_PATH set,
+# exactly like a local `bazel test --test_tag_filters=bdd` run.
+#
+# Child-process coverage caveat: under `bazel coverage //...` the spawned service
+# binaries ARE instrumented (first-party top-level targets matching the filter),
+# but whether their .profraw is COLLECTED depends on Bazel/rules_rust propagating
+# a unique LLVM_PROFILE_FILE to each spawned child and merging it back. Validate
+# in the first CI run by diffing bazel-<service> vs <service> coverage; see
+# docs/plans/bazel-migration.md for the contingency if child coverage is missing.
+coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
+coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
+coverage:coverage --instrumentation_filter=^//crates,^//services
+coverage:coverage --combined_report=lcov
+coverage:coverage --test_tag_filters=-requires-cargo
+
 # --- Local overrides -------------------------------------------------------
 
 # Developers may add personal overrides in user.bazelrc (gitignored).
