@@ -178,12 +178,13 @@ impl MountDevice {
     /// The check is in **encoder `mech_HA` space** (signed hours
     /// folded to `[−12, +12)`). For a target on the natural pier
     /// side, `target_mech_HA = celestial_HA`. For a flipped target,
-    /// `target_mech_HA = celestial_HA + 12 h` folded. The interval
-    /// `(binding_zone_min_hours, binding_zone_max_hours)` is **open**
-    /// — a target landing exactly on a zone boundary is permitted (and
-    /// matches the open-interval convention [`super::slew::check_non_flip_ra_path`]
-    /// uses for path checks). An empty zone (`min >= max`) disables
-    /// the check, matching the same path-check convention.
+    /// `target_mech_HA = celestial_HA + 12 h` folded. The zone comes from
+    /// [`crate::config::CwExclusionZone::bounds`] and is treated as an
+    /// **open** interval `(min, max)` — a target landing exactly on a
+    /// boundary is permitted (and matches the open-interval convention
+    /// [`super::slew::check_non_flip_ra_path`] uses for path checks). A
+    /// disabled zone (JSON `null`, where `bounds()` returns `min > max`)
+    /// disables the check, matching the same path-check convention.
     ///
     /// Note: this is the *destination-only* leg of the safety model.
     /// Path crossings are handled separately by

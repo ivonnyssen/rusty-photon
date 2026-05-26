@@ -210,8 +210,9 @@ angles summed) is *meaningless* and must stay a compile error. A blanket
 newtypes exist to close, so hand-rolling the valid conversions is both
 safer and (because the only derivable thing, `Into` to replace `value()`,
 would bloat the consuming math) no more code. `derive_more` stays at the
-`["debug"]` feature; its `Into` derive earns its keep only on the config
-newtypes below.
+`["debug"]` feature throughout — the config newtypes below validate via
+serde's `into`/`try_from` with hand-rolled `From` impls, not a
+`derive_more` derive.
 
 ### Config newtypes subsume `validate()`
 

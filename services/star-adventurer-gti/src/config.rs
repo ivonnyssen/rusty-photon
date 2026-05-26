@@ -115,8 +115,8 @@ pub struct MountConfig {
 
     /// CW exclusion zone in encoder `mech_HA` (signed
     /// hours, folded to `[−12, +12)`). Slews / syncs whose chosen
-    /// pier side's `mech_HA` falls inside
-    /// `(binding_zone_min_hours, binding_zone_max_hours)` are
+    /// pier side's `mech_HA` falls inside the active zone's open
+    /// interval `(min_hours, max_hours)` are
     /// rejected with `INVALID_VALUE` and never reach the wire. Flip
     /// slews additionally check that the *path swept* by the polar
     /// axis stays clear of the zone — see [`flip_slew_ra_delta`].
@@ -139,9 +139,10 @@ pub struct MountConfig {
     /// which the OTA contacted the tripod during the 2026-05-17
     /// session.
     ///
-    /// Set `binding_zone_min_hours = binding_zone_max_hours` (or any
-    /// non-overlapping pair) to disable the check entirely; only do
-    /// this for tests or for mounts whose CW exclusion arc is known to
+    /// JSON form is the active object `{ "min_hours": .., "max_hours": .. }`
+    /// (validated at deserialize time), or `null` to disable the check
+    /// entirely (deserialises to [`CwExclusionZone::Disabled`]); only
+    /// disable for tests or for mounts whose CW exclusion arc is known to
     /// be elsewhere. See the design doc's
     /// [§Per-pier safety envelopes](../../../docs/services/star-adventurer-gti.md#per-pier-safety-envelopes).
     #[serde(default)]
@@ -152,21 +153,22 @@ pub struct MountConfig {
     /// [§"Tracking-time safety guard"](../../../docs/services/star-adventurer-gti.md#tracking-time-safety-guard)).
     ///
     /// While `Tracking = true`, a background watcher stops the mount
-    /// (`:K1`) once the live encoder `mech_HA` enters
-    /// `(binding_zone_min_hours − margin, binding_zone_max_hours + margin)`,
+    /// (`:K1`) once the live encoder `mech_HA` enters the active zone
+    /// widened by the margin — `(min_hours − margin, max_hours + margin)` —
     /// before tracking drift can carry the counterweights into the
     /// zone. The margin lets cautious operators stop early; `0.0`
     /// stops exactly at zone entry. Defaults to `0.05` h (≈ 45 s of
     /// sidereal drift).
     ///
     /// Independent of [`FlipPolicy::enabled`]: the guard is the safety
-    /// floor and runs whenever the zone is active
-    /// (`binding_zone_min_hours < binding_zone_max_hours`), regardless
-    /// of meridian-flip support. Validated on load: a non-finite,
-    /// negative, or over-cap value (> [`MAX_TRACKING_GUARD_MARGIN_HOURS`])
-    /// fails config loading. The guard additionally treats a non-finite or
-    /// negative value as `0.0` as defense-in-depth for construction paths
-    /// that bypass validation.
+    /// floor and runs whenever `cw_exclusion_zone` is
+    /// [`Active`](CwExclusionZone::Active), regardless of meridian-flip
+    /// support. Validated at deserialize time by
+    /// [`TrackingGuardMarginHours`]: a non-finite, negative, or over-cap
+    /// value (> [`MAX_TRACKING_GUARD_MARGIN_HOURS`]) fails config loading.
+    /// The guard additionally treats a non-finite or negative value as
+    /// `0.0` as defense-in-depth for construction paths that bypass
+    /// validation.
     #[serde(default)]
     pub tracking_guard_margin_hours: TrackingGuardMarginHours,
 
@@ -299,10 +301,25 @@ pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
 pub struct FlipRangeHours(f64);
 
 impl FlipRangeHours {
-    /// Construct without validation — for defaults and trusted internal
-    /// callers. The validating boundary is serde deserialize (`try_from`).
-    pub const fn new(hours: f64) -> Self {
+    /// Unchecked `const` constructor, `pub(crate)` so the public API
+    /// cannot bypass validation — it exists only for `Default` and
+    /// in-crate callers with compile-time-known-good values (and tests
+    /// that deliberately build out-of-range values). External and
+    /// runtime-valued callers use [`try_new`](Self::try_new) or serde.
+    pub(crate) const fn new(hours: f64) -> Self {
         Self(hours)
+    }
+    /// Validating constructor: the single source of truth for the
+    /// invariant, which serde's `try_from` and any programmatic caller
+    /// funnel through. `Err` (with the field named) unless `hours` is in
+    /// `(0, MAX_FLIP_RANGE_HOURS]`.
+    pub fn try_new(hours: f64) -> std::result::Result<Self, String> {
+        if !hours.is_finite() || hours <= 0.0 || hours > MAX_FLIP_RANGE_HOURS {
+            return Err(format!(
+                "flip_policy.flip_range_hours must be in (0, {MAX_FLIP_RANGE_HOURS}] hours, got {hours}"
+            ));
+        }
+        Ok(Self(hours))
     }
     /// The underlying value in hours.
     pub fn value(self) -> f64 {
@@ -313,12 +330,7 @@ impl FlipRangeHours {
 impl TryFrom<f64> for FlipRangeHours {
     type Error = String;
     fn try_from(v: f64) -> std::result::Result<Self, String> {
-        if !v.is_finite() || v <= 0.0 || v > MAX_FLIP_RANGE_HOURS {
-            return Err(format!(
-                "flip_policy.flip_range_hours must be in (0, {MAX_FLIP_RANGE_HOURS}] hours, got {v}"
-            ));
-        }
-        Ok(Self(v))
+        Self::try_new(v)
     }
 }
 
@@ -335,9 +347,19 @@ impl From<FlipRangeHours> for f64 {
 pub struct TrackingGuardMarginHours(f64);
 
 impl TrackingGuardMarginHours {
-    /// Construct without validation — see [`FlipRangeHours::new`].
-    pub const fn new(hours: f64) -> Self {
+    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
+    pub(crate) const fn new(hours: f64) -> Self {
         Self(hours)
+    }
+    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
+    /// unless `hours` is in `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`.
+    pub fn try_new(hours: f64) -> std::result::Result<Self, String> {
+        if !hours.is_finite() || !(0.0..=MAX_TRACKING_GUARD_MARGIN_HOURS).contains(&hours) {
+            return Err(format!(
+                "tracking_guard_margin_hours must be in [0, {MAX_TRACKING_GUARD_MARGIN_HOURS}] hours, got {hours}"
+            ));
+        }
+        Ok(Self(hours))
     }
     /// The underlying value in hours.
     pub fn value(self) -> f64 {
@@ -348,12 +370,7 @@ impl TrackingGuardMarginHours {
 impl TryFrom<f64> for TrackingGuardMarginHours {
     type Error = String;
     fn try_from(v: f64) -> std::result::Result<Self, String> {
-        if !v.is_finite() || !(0.0..=MAX_TRACKING_GUARD_MARGIN_HOURS).contains(&v) {
-            return Err(format!(
-                "tracking_guard_margin_hours must be in [0, {MAX_TRACKING_GUARD_MARGIN_HOURS}] hours, got {v}"
-            ));
-        }
-        Ok(Self(v))
+        Self::try_new(v)
     }
 }
 
@@ -380,12 +397,39 @@ struct ActiveZoneWire {
 }
 
 impl ActiveZone {
-    /// Construct without validation — see [`FlipRangeHours::new`].
-    pub const fn new(min_hours: f64, max_hours: f64) -> Self {
+    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
+    pub(crate) const fn new(min_hours: f64, max_hours: f64) -> Self {
         Self {
             min_hours,
             max_hours,
         }
+    }
+    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
+    /// unless `-12 <= min_hours < max_hours <= 12` (folded mech_HA);
+    /// `null`/[`CwExclusionZone::Disabled`] is how a zone is turned off,
+    /// so an inverted interval is rejected rather than silently disabling.
+    pub fn try_new(min_hours: f64, max_hours: f64) -> std::result::Result<Self, String> {
+        if !min_hours.is_finite() || !max_hours.is_finite() {
+            return Err(format!(
+                "cw_exclusion_zone bounds must be finite, got ({min_hours}, {max_hours})"
+            ));
+        }
+        if min_hours >= max_hours {
+            return Err(format!(
+                "active cw_exclusion_zone needs min_hours < max_hours \
+                 (use null to disable), got ({min_hours}, {max_hours})"
+            ));
+        }
+        if min_hours < -12.0 || max_hours > 12.0 {
+            return Err(format!(
+                "active cw_exclusion_zone must satisfy -12 <= min_hours < max_hours <= 12 \
+                 (folded mech_HA), got ({min_hours}, {max_hours})"
+            ));
+        }
+        Ok(Self {
+            min_hours,
+            max_hours,
+        })
     }
     pub fn min_hours(self) -> f64 {
         self.min_hours
@@ -398,30 +442,7 @@ impl ActiveZone {
 impl TryFrom<ActiveZoneWire> for ActiveZone {
     type Error = String;
     fn try_from(w: ActiveZoneWire) -> std::result::Result<Self, String> {
-        if !w.min_hours.is_finite() || !w.max_hours.is_finite() {
-            return Err(format!(
-                "cw_exclusion_zone bounds must be finite, got ({}, {})",
-                w.min_hours, w.max_hours
-            ));
-        }
-        if w.min_hours >= w.max_hours {
-            return Err(format!(
-                "active cw_exclusion_zone needs min_hours < max_hours \
-                 (use null to disable), got ({}, {})",
-                w.min_hours, w.max_hours
-            ));
-        }
-        if w.min_hours < -12.0 || w.max_hours > 12.0 {
-            return Err(format!(
-                "active cw_exclusion_zone must satisfy -12 <= min_hours < max_hours <= 12 \
-                 (folded mech_HA), got ({}, {})",
-                w.min_hours, w.max_hours
-            ));
-        }
-        Ok(Self {
-            min_hours: w.min_hours,
-            max_hours: w.max_hours,
-        })
+        Self::try_new(w.min_hours, w.max_hours)
     }
 }
 
@@ -490,12 +511,30 @@ struct DecLimitsWire {
 }
 
 impl DecLimits {
-    /// Construct without validation — see [`FlipRangeHours::new`].
-    pub const fn new(min_degrees: f64, max_degrees: f64) -> Self {
+    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
+    pub(crate) const fn new(min_degrees: f64, max_degrees: f64) -> Self {
         Self {
             min_degrees,
             max_degrees,
         }
+    }
+    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
+    /// unless `-90 <= min_degrees < max_degrees <= 90`.
+    pub fn try_new(min_degrees: f64, max_degrees: f64) -> std::result::Result<Self, String> {
+        if !min_degrees.is_finite() || !max_degrees.is_finite() {
+            return Err(format!(
+                "dec_limits must be finite, got ({min_degrees}, {max_degrees})"
+            ));
+        }
+        if min_degrees < -90.0 || max_degrees > 90.0 || min_degrees >= max_degrees {
+            return Err(format!(
+                "dec_limits must satisfy -90 <= min_degrees < max_degrees <= 90, got ({min_degrees}, {max_degrees})"
+            ));
+        }
+        Ok(Self {
+            min_degrees,
+            max_degrees,
+        })
     }
     pub fn min_degrees(self) -> f64 {
         self.min_degrees
@@ -512,22 +551,7 @@ impl DecLimits {
 impl TryFrom<DecLimitsWire> for DecLimits {
     type Error = String;
     fn try_from(w: DecLimitsWire) -> std::result::Result<Self, String> {
-        if !w.min_degrees.is_finite() || !w.max_degrees.is_finite() {
-            return Err(format!(
-                "dec_limits must be finite, got ({}, {})",
-                w.min_degrees, w.max_degrees
-            ));
-        }
-        if w.min_degrees < -90.0 || w.max_degrees > 90.0 || w.min_degrees >= w.max_degrees {
-            return Err(format!(
-                "dec_limits must satisfy -90 <= min_degrees < max_degrees <= 90, got ({}, {})",
-                w.min_degrees, w.max_degrees
-            ));
-        }
-        Ok(Self {
-            min_degrees: w.min_degrees,
-            max_degrees: w.max_degrees,
-        })
+        Self::try_new(w.min_degrees, w.max_degrees)
     }
 }
 
@@ -546,14 +570,14 @@ impl From<DecLimits> for DecLimitsWire {
 impl Default for FlipRangeHours {
     /// `0.5` h — a half-hour meridian window.
     fn default() -> Self {
-        Self(0.5)
+        Self::new(0.5)
     }
 }
 
 impl Default for TrackingGuardMarginHours {
     /// `0.05` h (≈ 45 s of sidereal drift).
     fn default() -> Self {
-        Self(0.05)
+        Self::new(0.05)
     }
 }
 
@@ -1568,12 +1592,12 @@ mod tests {
             f64::NAN,
         ] {
             assert!(
-                FlipRangeHours::try_from(bad).is_err(),
+                FlipRangeHours::try_new(bad).is_err(),
                 "{bad} should be rejected"
             );
         }
-        assert!(FlipRangeHours::try_from(0.5).is_ok());
-        assert!(FlipRangeHours::try_from(MAX_FLIP_RANGE_HOURS).is_ok());
+        assert!(FlipRangeHours::try_new(0.5).is_ok());
+        assert!(FlipRangeHours::try_new(MAX_FLIP_RANGE_HOURS).is_ok());
         // The same rejection surfaces through serde with the field named.
         let err = serde_json::from_str::<FlipPolicy>(r#"{"flip_range_hours": 5.0}"#)
             .unwrap_err()
@@ -1585,12 +1609,14 @@ mod tests {
     fn tracking_guard_margin_validates_at_construction() {
         for bad in [MAX_TRACKING_GUARD_MARGIN_HOURS + 0.1, -0.01, f64::NAN] {
             assert!(
-                TrackingGuardMarginHours::try_from(bad).is_err(),
+                TrackingGuardMarginHours::try_new(bad).is_err(),
                 "{bad} should be rejected"
             );
         }
-        assert!(TrackingGuardMarginHours::try_from(0.0).is_ok());
-        assert!(TrackingGuardMarginHours::try_from(MAX_TRACKING_GUARD_MARGIN_HOURS).is_ok());
+        assert!(TrackingGuardMarginHours::try_new(0.0).is_ok());
+        assert!(TrackingGuardMarginHours::try_new(MAX_TRACKING_GUARD_MARGIN_HOURS).is_ok());
+        // The same rejection surfaces through serde (`try_from = "f64"`).
+        assert!(serde_json::from_str::<TrackingGuardMarginHours>("-0.01").is_err());
     }
 
     #[test]
@@ -1609,6 +1635,11 @@ mod tests {
         let ok: CwExclusionZone =
             serde_json::from_str(r#"{"min_hours": 0.95, "max_hours": 11.05}"#).expect("valid");
         assert!(matches!(ok, CwExclusionZone::Active(_)));
+        // The public checked constructor enforces the same invariant, so
+        // programmatic callers can't build an invalid zone either.
+        ActiveZone::try_new(0.95, 11.05).expect("in-range zone");
+        assert!(ActiveZone::try_new(11.05, 0.95).is_err(), "inverted");
+        assert!(ActiveZone::try_new(0.95, 20.0).is_err(), "max > 12");
     }
 
     #[test]
@@ -1624,6 +1655,10 @@ mod tests {
         }
         serde_json::from_str::<DecLimits>(r#"{"min_degrees": -90.0, "max_degrees": 90.0}"#)
             .expect("valid");
+        // The public checked constructor enforces the same invariant.
+        DecLimits::try_new(-90.0, 90.0).expect("full hemisphere");
+        assert!(DecLimits::try_new(10.0, -10.0).is_err(), "inverted");
+        assert!(DecLimits::try_new(-100.0, 90.0).is_err(), "< -90");
     }
 
     #[test]

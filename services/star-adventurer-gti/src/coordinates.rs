@@ -304,9 +304,16 @@ pub fn select_pier_side_for_target(
     };
     let current_covers = if current == pre_flip_side {
         // Natural side: mech_HA = celestial HA. "Covers" means not in
-        // binding zone — including the safe wrap region near ±12.
+        // binding zone — including the safe wrap region near ±12. The
+        // zone is the **open** interval `(zone_min, zone_max)` with
+        // `zone_min >= zone_max` meaning disabled, matching
+        // `check_within_safe_envelope`, `canonical_path_crosses_binding_zone`,
+        // and `tracking_guard_breached`. A target landing exactly on a
+        // boundary is therefore *not* in the zone — the envelope check
+        // would permit it on this side, so the selector must not force a
+        // spurious flip.
         let (zone_min, zone_max) = binding_zone_hours;
-        !(zone_min <= zone_max && (zone_min..=zone_max).contains(&target_ha))
+        !(zone_min < zone_max && target_ha > zone_min && target_ha < zone_max)
     } else {
         // Post-flip side: operational rule, stay on flipped only near
         // meridian. The binding zone for flipped-side mech_HA is
@@ -1003,6 +1010,35 @@ mod tests {
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn select_pier_side_north_target_on_zone_boundary_stays_natural_side() {
+        // Open-interval semantics, consistent with
+        // check_within_safe_envelope: a target landing exactly on a
+        // binding-zone boundary is *not* in the zone, so the selector
+        // keeps the natural (pre-flip) side instead of forcing a
+        // spurious flip the envelope check would not require. Uses an
+        // exactly-representable zone so the boundary equality is precise.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let zone = (6.0, 10.0);
+        for boundary in [zone.0, zone.1] {
+            let target_ra = lst - boundary; // mech_HA = lst − ra = boundary, exact
+            let chosen = select_pier_side_for_target(
+                Ra::new(target_ra),
+                Lst::new(lst),
+                PierSide::West,
+                &policy,
+                zone,
+                LAT_NORTH,
+            );
+            assert_eq!(
+                chosen,
+                PierSide::West,
+                "target on zone boundary {boundary} must stay the natural side"
+            );
+        }
     }
 
     #[test]

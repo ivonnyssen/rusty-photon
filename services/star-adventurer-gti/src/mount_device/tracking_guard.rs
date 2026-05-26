@@ -59,8 +59,8 @@ type SessionSlot = Arc<RwLock<Option<Session<SkywatcherCodec>>>>;
 /// guard — the same convention the slew-path binding-zone check uses.
 /// A non-finite or negative `margin` is treated as `0.0` (stop exactly
 /// at zone entry) so a bad value fails safe rather than open. Config-file
-/// margins are already rejected at load by
-/// [`crate::config::MountConfig::validate`]; this sanitisation is
+/// margins are already rejected at load — [`crate::config::TrackingGuardMarginHours`]
+/// validates at deserialize time; this sanitisation is
 /// defense-in-depth for construction paths that bypass that check
 /// (programmatic configs, tests).
 pub(super) fn tracking_guard_breached(mech_ha: f64, zone: (f64, f64), margin: f64) -> bool {
