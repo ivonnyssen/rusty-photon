@@ -1,0 +1,16 @@
+name = "rusty-photon-bazel-cache"
+main = "src/cache.js"
+compatibility_date = "2026-05-01"
+
+# Blob store for the cache. Create once: `wrangler r2 bucket create rusty-photon-bazel-cache`
+[[r2_buckets]]
+binding = "CACHE"
+bucket_name = "rusty-photon-bazel-cache"
+
+# Serve at the cache hostname. Make sure no other Cloudflare DNS record/route
+# already claims it, then `wrangler deploy` provisions this custom domain + DNS
+# on the zone. See README.md. The write token is NOT here — it's a secret:
+# `wrangler secret put WRITE_TOKEN`.
+[[routes]]
+pattern = "cache.rustyphoton.space"
+custom_domain = true

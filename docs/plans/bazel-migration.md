@@ -8,11 +8,12 @@
 
 Three decisions taken to shorten the path to a Bazel-primary cutover (Phase 7):
 
-1. **Cache backend: self-hosted `bazel-remote` on TrueNAS SCALE**, exposed
-   public-read / token-write via a Cloudflare Tunnel — replacing the BuildBuddy
-   free tier, whose LRU eviction (no retention guarantee) caused random
-   cold-cache rebuilds. Deterministic, $0, owned. Runbook:
-   [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
+1. **Cache backend: a Cloudflare Worker + R2 edge cache** (public-read /
+   token-write), replacing the BuildBuddy free tier. Served from the edge so
+   cloud CI isn't bottlenecked, ~$0 (R2 has no egress fees), retention
+   controlled via an R2 lifecycle rule. Code + deploy:
+   [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md);
+   overview: [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
 2. **Leptos / `sentinel-app` WASM: abandoned.** Not used today; Phase 4 is
    dropped, not deferred.
 3. **Release packaging: stays on Cargo permanently.** We release far less often
@@ -34,7 +35,7 @@ Bazel's remote cache is the structural fix for items 1 and 2 — the cache is co
 
 **In-scope:**
 - All 11 workspace crates build and test under Bazel.
-- Remote cache wired up. Bootstrapped on the BuildBuddy free tier; now self-hosted `bazel-remote` on TrueNAS SCALE (see Decisions, 2026-05-24).
+- Remote cache wired up. Bootstrapped on the BuildBuddy free tier; now a Cloudflare Worker + R2 cache (see Decisions, 2026-05-24).
 - New GHA workflow running Bazel in shadow mode; Cargo remains required until parity.
 - BDD cucumber tests run under Bazel via custom `rust_test` wrappers.
 - Documentation (`CLAUDE.md`, `docs/skills/pre-push.md`, `docs/skills/bazel-remote-cache.md`) updated.
@@ -118,10 +119,10 @@ the starting point.
 - [x] `.github/workflows/bazel.yml` — triggers on PR, push to main, and a nightly schedule (07:07 UTC), runs `bazel test //...` with remote cache.
 - [x] Bootstrap backend: BuildBuddy free tier (read+write token on push/schedule, read-only token on PRs).
 - [x] Shadow mode: job is **not required** for merges; runs alongside Cargo jobs for 2+ weeks of parity validation.
-- [x] **Cache backend swapped to self-hosted `bazel-remote` on TrueNAS SCALE** (public-read / token-write via Cloudflare Tunnel). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs now get a warm cache too. Deterministic retention via `--max_size` ends the BuildBuddy LRU cold-cache outliers. Runbook: [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
+- [x] **Cache backend swapped to a Cloudflare Worker + R2 edge cache** (public-read / token-write). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs get a warm cache too. Served from the edge (no origin uplink in the path), retention via an R2 lifecycle rule — replacing the BuildBuddy LRU cold-cache outliers. Code + deploy: [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
 - [x] `.bazelrc` hostname set to `cache.rustyphoton.space` (zone `rustyphoton.space` verified on Cloudflare 2026-05-24).
-- [ ] Add the `BAZEL_CACHE_WRITE_TOKEN` GHA secret and deploy the TrueNAS side (runbook).
-- [ ] Compare wall-clock and correctness against Cargo jobs weekly (≥1 week on the TrueNAS cache).
+- [ ] Add the `BAZEL_CACHE_WRITE_TOKEN` GHA secret and deploy the Worker + R2 ([tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md)).
+- [ ] Compare wall-clock and correctness against Cargo jobs weekly (≥1 week on the new cache).
 
 **Exit criteria:** Bazel CI job green for 2 consecutive weeks with no flakes; wall-clock within ±20 % of Cargo or better.
 
@@ -134,7 +135,7 @@ per-PR build/test path only; packaging keeps running on Cargo indefinitely.
 ### Phase 7 — Cutover (later)
 
 With Phase 4 (Leptos) and Phase 6 (packaging) dropped, cutover no longer waits
-on them. Remaining prerequisites: the TrueNAS cache live + parity logged
+on them. Remaining prerequisites: the cache live + parity logged
 (Phase 5), the Cargo-only gates (miri, sanitizers, conformu, `cargo-hack`,
 `cargo-msrv`, coverage) kept on a Cargo nightly, and the `rust-project.json`
 IDE decision (open question 4).
@@ -163,7 +164,7 @@ After Phase 7: the Cargo nightly job remains as a safety net for 30 days. Rollba
 | Leptos hydrate/ssr WASM rules are missing | High | Defer to Phase 4; prototype separately before committing. If blocked, keep `cargo leptos` as an escape hatch via `genrule`. |
 | rust-analyzer breaks under Bazel | Medium | Developers can still use Cargo locally (it's not removed). `rust-project.json` generator from rules_rust is also available. |
 | Team learning curve | Certain | This plan doc + pair programming on first few BUILD files. |
-| Remote cache unavailable / cold | Low | Resolved: self-hosted `bazel-remote` on TrueNAS SCALE with deterministic `--max_size` retention. Bazel treats remote-cache errors as non-fatal (warns, builds locally), so a cache or tunnel outage degrades to a cold build rather than a CI failure. |
+| Remote cache unavailable / cold | Low | Resolved: a Cloudflare Worker + R2 edge cache with retention via an R2 lifecycle rule. Bazel treats remote-cache errors as non-fatal (warns, builds locally), so a cache outage degrades to a cold build rather than a CI failure. |
 | `aws-lc-sys` build fails on Windows under Bazel (MAX_PATH + bswap) | Hit | Four fixes: (1) shortened `from_cargo` name from `"crates"` to `"cr"` — the repo name appears twice in every build-script runfiles path, saving 8 chars; (2) `build_script_data_glob = ["**"]` annotation ensures all vendored C files are materialised in Bazel's runfiles; (3) `AWS_LC_SYS_NO_JITTER_ENTROPY=1` disables jitterentropy on Windows — its `tree_drbg_jitter_entropy.c` uses a deep `../../../../` relative `#include` whose un-normalised intermediate form (~280 chars) exceeds MSVC's MAX_PATH; (4) `AWS_LC_SYS_CFLAGS=/we4013` promotes MSVC's implicit-function-declaration warning to an error — the cc-crate builder's feature check for `__builtin_bswap*` wrongly passes because cl.exe in C89 mode treats GCC built-ins as implicit declarations (C4013, level 3) without emitting the warning at the default `/W1` level; `/we4013` makes the check fail correctly so aws-lc uses MSVC's `_byteswap_*` intrinsics. We use `AWS_LC_SYS_CFLAGS` (not plain `CFLAGS`) because rules_rust overrides `CFLAGS` in the build-script environment with its own MSVC flags; the crate-specific variant is read first by `get_crate_cflags()` and propagated to `CFLAGS_<target>` before the feature checks run. |
 
 ## Success metrics
@@ -253,6 +254,6 @@ Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention (e.g. `RP_BIN
 ## Open questions
 
 1. **bzlmod vs WORKSPACE.** Starting with bzlmod. Fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress.
-2. **Remote cache vendor.** RESOLVED (2026-05-24): self-hosted `bazel-remote` on TrueNAS SCALE, public-read / token-write via Cloudflare Tunnel. See Decisions and [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
+2. **Remote cache vendor.** RESOLVED (2026-05-24): a Cloudflare Worker + R2 edge cache, public-read / token-write. See Decisions and [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
 3. **TypeScript addition.** Deferred until UI work actually starts. `rules_js` and `aspect_rules_ts` are bzlmod-first — will integrate cleanly then.
 4. **rust-analyzer.** Does the team use cargo directly for IDE, or do we need `rust-project.json` generation from rules_rust? Decide after Phase 2.

@@ -5,10 +5,29 @@
 //! reused for all tool calls within that scenario — mirroring how a real
 //! MCP client (e.g. calibrator-flats) works.
 
+use std::time::Duration;
+
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::ServiceExt;
 use serde_json::Value;
+
+/// Upper bound on a single MCP request (`call_tool` / `list_tools`).
+///
+/// rmcp's `Peer::call_tool` has no built-in client timeout: if an rp tool
+/// handler never returns, the `await` here hangs *forever*. That is what ran
+/// CI's closed-loop centering BDD to GitHub's 6 h job cap — rp's `do_capture`
+/// looped indefinitely on a failed `sky-survey-camera` exposure (root-caused
+/// and fixed in `services/rp/src/mcp/internals.rs::do_capture`). This timeout
+/// is a defense-in-depth backstop: any future handler hang fails the scenario
+/// fast and legibly here, rather than hanging the BDD binary until the CI
+/// job's `timeout-minutes` kills it.
+///
+/// 360 s sits comfortably above rp's worst-case single blocking operation
+/// (the 300 s slew/park deadlines), so a genuinely slow-but-progressing call
+/// still completes and a *server-produced* error still propagates with its
+/// real message; only a true hang trips this bound.
+const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(360);
 
 /// A persistent MCP client backed by a single rmcp session.
 pub struct McpTestClient {
@@ -36,10 +55,16 @@ impl McpTestClient {
             params.arguments = Some(obj.clone());
         }
 
-        let result = self
-            .peer
-            .call_tool(params)
+        let result = tokio::time::timeout(MCP_CALL_TIMEOUT, self.peer.call_tool(params))
             .await
+            .map_err(|_| {
+                format!(
+                    "{}: MCP call timed out after {}s with no response — the rp MCP \
+                     transport was almost certainly torn down mid-request (see MCP_CALL_TIMEOUT)",
+                    tool_name,
+                    MCP_CALL_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| format!("{}: {}", tool_name, e))?;
 
         if result.is_error.unwrap_or(false) {
@@ -64,10 +89,15 @@ impl McpTestClient {
 
     /// List all available MCP tools and return their names.
     pub async fn list_tools(&self) -> Result<Vec<String>, String> {
-        let tools = self
-            .peer
-            .list_all_tools()
+        let tools = tokio::time::timeout(MCP_CALL_TIMEOUT, self.peer.list_all_tools())
             .await
+            .map_err(|_| {
+                format!(
+                    "list_tools: MCP call timed out after {}s with no response (see \
+                     MCP_CALL_TIMEOUT)",
+                    MCP_CALL_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| format!("list_tools: {}", e))?;
 
         Ok(tools.into_iter().map(|t| t.name.to_string()).collect())

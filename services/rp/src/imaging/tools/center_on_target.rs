@@ -22,6 +22,15 @@
 //! slew traverse a small distance even under heavy CI load. See
 //! `services/rp/tests/features/center_on_target.feature` for the
 //! worked numbers.
+//!
+//! Note: the 6 h CI hangs in the closed-loop centering BDD (May 2026)
+//! were *not* this slew/keep-alive race. They traced to `do_capture`
+//! looping forever on a **failed** `sky-survey-camera` exposure — its
+//! follow-mode mount read timed out under load, so `ImageReady` never
+//! went true and the capture poll spun indefinitely. Fixed at the
+//! source in `mcp/internals.rs::do_capture` (treat `CameraState::Error`
+//! as terminal + a readout deadline). CI job `timeout-minutes` and the
+//! BDD client's `MCP_CALL_TIMEOUT` are independent backstops.
 
 use async_trait::async_trait;
 use serde::Serialize;
