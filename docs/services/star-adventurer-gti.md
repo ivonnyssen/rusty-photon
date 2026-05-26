@@ -574,7 +574,20 @@ argument). No separate state file. Concretely:
    `INVALID_OPERATION`) when the device is disconnected or while a
    slew / park is in progress — the "current encoder pair" wouldn't be
    stable otherwise.
-3. **Read-as-`Value`, write only park keys.** The driver reads the
+3. **Fresh encoder read.** The encoder pair (and the per-axis running
+   flag the in-progress refusal checks) is read **live from the wire** —
+   a synchronous `:j` / `:f` poll on both axes via the connected
+   session — not from the background poll snapshot, which lags the wire
+   by up to one `polling_interval`. Reading live means `SetPark`
+   persists the true current encoder even if the operator moved the
+   mount out-of-band immediately before the call, and removes a
+   connect/poll timing race that made the BDD persistence scenario flaky
+   on slow CI (issue #308): the eager service-start handshake seeds the
+   snapshot before the test sets the encoder, and the user's connect is
+   a refcount bump rather than a fresh handshake. (The write itself is
+   fully `fsync`'d and atomically renamed before the call returns — see
+   step 5 — so the persisted file is durable, not fire-and-forget.)
+4. **Read-as-`Value`, write only park keys.** The driver reads the
    on-disk JSON via `serde_json::Value`, mutates *only*
    `mount.park_ra_ticks` and `mount.park_dec_ticks`, and serialises the
    result pretty-printed. Any field the driver doesn't recognise
@@ -588,7 +601,7 @@ argument). No separate state file. Concretely:
    in-memory typed `Config`** to disk — that path would round-trip the
    CLI overrides (`--port`, `--baud`, `--server-port`, `--transport`)
    back into the file and is structurally avoided here.
-4. **Atomic rename via `tempfile::NamedTempFile`.** The temp file is
+5. **Atomic rename via `tempfile::NamedTempFile`.** The temp file is
    created in the **same directory** as the destination (required for
    `persist` to use POSIX `rename` rather than copy-and-delete),
    `sync_all`'d (fsync the file data) so a crash after rename can't
@@ -598,10 +611,10 @@ argument). No separate state file. Concretely:
    [`services/rp/src/persistence/document.rs::write_sidecar_sync`](../../services/rp/src/persistence/document.rs).
    On any error path the temp file auto-deletes via `Drop`, so a
    panic mid-write doesn't leave a `*.tmp` artifact behind.
-5. **Blocking I/O on the blocking pool.** The whole read+parse+stage+
+6. **Blocking I/O on the blocking pool.** The whole read+parse+stage+
    fsync+rename sequence runs inside `tokio::task::spawn_blocking` so
    the async runtime isn't held up. Same pattern as `write_sidecar`.
-6. **In-memory update follows disk.** The in-memory park target is
+7. **In-memory update follows disk.** The in-memory park target is
    updated only after the file write succeeds. If the file write
    fails, the in-memory park is unchanged and the caller sees an
    ASCOM error — there is no "partial success" state.
