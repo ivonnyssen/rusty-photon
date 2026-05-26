@@ -38,6 +38,14 @@ test --test_tag_filters=-requires-cargo,-bdd
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
+# Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
+# symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves
+# over the wire — keeping them small matters for a LAN cache and keeps CAS
+# blobs under the Cloudflare Worker cache's 100 MB request-body (write) limit.
+# Plural `extra_rustc_flags` (a list) so it composes with the per-OS
+# `extra_rustc_flag` linker setting below rather than overriding it.
+build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
+
 # --- Platform-specific config -----------------------------------------------
 
 # Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
@@ -107,17 +115,11 @@ test:ci --test_summary=terse
 # developers don't accidentally point at the shared cache. CI jobs combine:
 # --config=ci --config=remote-cache.
 #
-# Backend: self-hosted bazel-remote on a TrueNAS SCALE box, exposed to the
-# public internet via a Cloudflare Tunnel (HTTPS, no open router ports).
-# The cache is public-READ (so every PR, including forks, gets a warm cache)
-# and token-WRITE (only push-to-main and the nightly schedule hold the Bearer
-# token — see bazel.yml). The hostname below is this repo's Cloudflare Tunnel
-# public hostname (zone rustyphoton.space is on Cloudflare). Setup runbook:
-# docs/skills/bazel-remote-cache.md.
-#
-# HTTP (not gRPC) endpoint: --remote_cache_compression is gRPC-only, so it is
-# intentionally omitted; bazel-remote compresses at rest via --storage_mode
-# zstd instead. --remote_timeout is already set by --config=ci.
+# Backend: a Cloudflare Worker + R2 edge cache. Public-READ (every PR,
+# including forks, gets a warm cache) and token-WRITE (only push-to-main and
+# the nightly schedule hold the Bearer token — see bazel.yml). Worker code and
+# deploy steps: tools/bazel-cache-worker/. For local builds, override this in a
+# gitignored user.bazelrc to point at a LAN bazel-remote instead.
 build:remote-cache --remote_cache=https://cache.rustyphoton.space
 
 # --- Local overrides -------------------------------------------------------

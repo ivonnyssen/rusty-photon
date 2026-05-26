@@ -11,12 +11,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Nightly run from main keeps the BuildBuddy remote cache warm.
-  # BuildBuddy uses LRU eviction on a shared free-tier cache with no
-  # documented retention guarantee, so quiet stretches on main let
-  # action results age out and PRs pay the full uncached cost. A daily
-  # main-equivalent build refreshes last-used timestamps and re-uploads
-  # anything that did get evicted.
+  # Nightly run from main keeps the remote cache populated from trusted code
+  # during quiet stretches, so the next PR reads a warm cache.
   schedule:
     - cron: "7 7 * * *"
 concurrency:
@@ -40,8 +36,8 @@ jobs:
       run:
         shell: bash
     env:
-      # Self-hosted bazel-remote cache (TrueNAS + Cloudflare Tunnel) is
-      # public-READ / token-WRITE. Only push-to-main and the nightly schedule
+      # The remote cache (Cloudflare Worker + R2; see tools/bazel-cache-worker)
+      # is public-READ / token-WRITE. Only push-to-main and the nightly schedule
       # — which run from the default branch — get the write token, so they
       # populate the cache from trusted code. PRs (including forks, which get
       # no secrets at all) read anonymously and never write, which prevents
