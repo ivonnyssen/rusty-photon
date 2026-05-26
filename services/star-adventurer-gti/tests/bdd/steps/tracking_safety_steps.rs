@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::world::StarAdventurerWorld;
 use cucumber::{given, then};
+use star_adventurer_gti::{ActiveZone, CwExclusionZone, TrackingGuardMarginHours};
 
 /// GTi counts-per-revolution on both axes (`0x375F00`) — the value the
 /// mock seeds and the driver caches at handshake. Used to convert a
@@ -17,8 +18,7 @@ const GTI_CPR: f64 = 3_628_800.0;
 )]
 async fn configured_zone(world: &mut StarAdventurerWorld, min_hours: f64, max_hours: f64) {
     let cfg = world.config_mut();
-    cfg.mount.binding_zone_min_hours = min_hours;
-    cfg.mount.binding_zone_max_hours = max_hours;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(min_hours, max_hours));
 }
 
 #[given("a star-adventurer service with the CW exclusion zone disabled")]
@@ -26,13 +26,13 @@ async fn configured_zone_disabled(world: &mut StarAdventurerWorld) {
     // An inverted interval (min > max) switches the binding-zone check
     // off — the convention the slew planner and the guard share.
     let cfg = world.config_mut();
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
 }
 
 #[given(expr = "a tracking-guard margin of {float} hours")]
 async fn configured_margin(world: &mut StarAdventurerWorld, margin_hours: f64) {
-    world.config_mut().mount.tracking_guard_margin_hours = margin_hours;
+    world.config_mut().mount.tracking_guard_margin_hours =
+        TrackingGuardMarginHours::new(margin_hours);
 }
 
 #[given(expr = "the RA encoder is at mechanical HA {float} hours")]

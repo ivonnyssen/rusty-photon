@@ -168,8 +168,8 @@ pub(super) fn spawn_tracking_guard(
     config: MountConfig,
     polling_interval: Duration,
 ) {
-    let zone = (config.binding_zone_min_hours, config.binding_zone_max_hours);
-    let margin = config.tracking_guard_margin_hours;
+    let zone = config.cw_exclusion_zone.bounds();
+    let margin = config.tracking_guard_margin_hours.value();
     tokio::spawn(async move {
         let mut ticker = interval(polling_interval);
         // Skip the immediate first tick (matches the background poll

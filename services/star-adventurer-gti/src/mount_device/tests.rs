@@ -19,7 +19,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
 use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
-use crate::config::Config;
+use crate::config::{ActiveZone, Config, CwExclusionZone, DecLimits, TrackingGuardMarginHours};
 use crate::coordinates::SIDEREAL_DEG_PER_SEC;
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
@@ -40,8 +40,7 @@ fn device() -> MountDevice {
     // Same rationale as `fast_settle_device`: open the
     // mechanical-envelope check for tests that don't exercise it.
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
@@ -147,9 +146,8 @@ async fn guard_device(margin_hours: f64) -> (MountDevice, Arc<tokio::sync::Mutex
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
     let mut cfg = Config::default();
-    cfg.mount.binding_zone_min_hours = 0.95;
-    cfg.mount.binding_zone_max_hours = 11.05;
-    cfg.mount.tracking_guard_margin_hours = margin_hours;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
+    cfg.mount.tracking_guard_margin_hours = TrackingGuardMarginHours::new(margin_hours);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     let session = d.manager.transport().acquire().await.unwrap();
@@ -236,8 +234,7 @@ async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
     // never connect, so `parameters()` stays None.
     let cfg = Config {
         mount: MountConfig {
-            binding_zone_min_hours: 0.95,
-            binding_zone_max_hours: 11.05,
+            cw_exclusion_zone: CwExclusionZone::Active(ActiveZone::new(0.95, 11.05)),
             ..Default::default()
         },
         ..Config::default()
@@ -265,8 +262,7 @@ async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
     let mock = Arc::clone(&factory.state);
     let cfg = Config {
         mount: MountConfig {
-            binding_zone_min_hours: 0.95,
-            binding_zone_max_hours: 11.05,
+            cw_exclusion_zone: CwExclusionZone::Active(ActiveZone::new(0.95, 11.05)),
             ..Default::default()
         },
         ..Config::default()
@@ -516,8 +512,7 @@ fn fast_settle_device() -> MountDevice {
     // behaviour is covered separately by
     // [`fast_settle_connected_narrow_envelope`].
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     // Pin the park target to the mock's start position (0, 0) so
     // `park()` is a zero-distance, instant slew. The park-lifecycle
     // tests using this helper exercise the watcher / AtPark flip, not
@@ -554,10 +549,8 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     // target 1 h past meridian on the natural side is inside it,
     // and tight Dec band `[-5°, +5°]` so off-equator targets are
     // rejected.
-    cfg.mount.binding_zone_min_hours = 0.5;
-    cfg.mount.binding_zone_max_hours = 1.5;
-    cfg.mount.dec_min_degrees = -5.0;
-    cfg.mount.dec_max_degrees = 5.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.5, 1.5));
+    cfg.mount.dec_limits = DecLimits::new(-5.0, 5.0);
     // Pin the park target to (0, 0) — see `fast_settle_device` for why
     // (keeps `park()` instant despite the `preferred_ap_park` default).
     cfg.mount.park_ra_ticks = Some(0);
@@ -785,8 +778,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -867,8 +859,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -937,8 +928,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -1380,8 +1370,7 @@ async fn pickup_reslew_axis_swallows_transport_errors() {
 fn device_with_path(path: PathBuf) -> MountDevice {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
 }
@@ -1741,8 +1730,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
         usb.polling_interval = Duration::from_millis(20);
     }
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
@@ -1844,8 +1832,7 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     }
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -1875,8 +1862,7 @@ async fn unpark_seed_skips_when_firmware_encoder_beyond_tolerance() {
     }
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -1903,8 +1889,7 @@ async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
         state.ra.position_ticks = 50;
     }
     let mut cfg = Config::default();
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -1924,8 +1909,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     // target resolves to the ap_park_2 encoder pair.
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.preferred_ap_park = crate::config::ApPark::ApPark2;
     cfg.mount.site_latitude_deg = 32.7157;
@@ -2143,8 +2127,7 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
         state.dec.position_ticks = -50_000;
     }
     let mut cfg = Config::default();
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -2250,8 +2233,7 @@ async fn park_target_prefers_config_values_over_handshake_capture() {
     // (zeroed) handshake fallback.
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.park_ra_ticks = Some(5000);
     cfg.mount.park_dec_ticks = Some(-7000);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
@@ -2771,8 +2753,7 @@ async fn pulse_guide_rolls_back_flag_on_wire_failure() {
     // lack of actual motion.
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(StuckAxisFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3383,8 +3364,7 @@ async fn flip_enabled_device() -> MountDevice {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.flip_policy.enabled = true;
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
@@ -3774,8 +3754,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Open the envelope so the test target lands inside.
-    cfg.mount.binding_zone_min_hours = 24.0;
-    cfg.mount.binding_zone_max_hours = 0.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();

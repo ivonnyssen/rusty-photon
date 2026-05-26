@@ -311,7 +311,7 @@ pub fn select_pier_side_for_target(
         // Post-flip side: operational rule, stay on flipped only near
         // meridian. The binding zone for flipped-side mech_HA is
         // separately enforced by `check_within_safe_envelope`.
-        target_ha.abs() <= policy.flip_range_hours
+        target_ha.abs() <= policy.flip_range_hours.value()
     };
     if current_covers {
         current
@@ -861,13 +861,13 @@ mod tests {
     fn flip_disabled() -> FlipPolicy {
         FlipPolicy {
             enabled: false,
-            flip_range_hours: 0.5,
+            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
         }
     }
     fn flip_enabled() -> FlipPolicy {
         FlipPolicy {
             enabled: true,
-            flip_range_hours: 0.5,
+            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
         }
     }
     const BINDING_ZONE: (f64, f64) = (6.95, 11.05);

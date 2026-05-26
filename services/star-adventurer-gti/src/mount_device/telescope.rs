@@ -340,10 +340,7 @@ impl Telescope for MountDevice {
             lst,
             current_side,
             &self.config.flip_policy,
-            (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            ),
+            self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
         );
         let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
@@ -591,10 +588,7 @@ impl Telescope for MountDevice {
             lst,
             current_side,
             &self.config.flip_policy,
-            (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            ),
+            self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
         );
         self.execute_slew_with_explicit_side(ra, dec, chosen_side)

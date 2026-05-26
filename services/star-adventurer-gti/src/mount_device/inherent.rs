@@ -220,8 +220,7 @@ impl MountDevice {
                 normal
             }
         };
-        let zone_min = self.config.binding_zone_min_hours;
-        let zone_max = self.config.binding_zone_max_hours;
+        let (zone_min, zone_max) = self.config.cw_exclusion_zone.bounds();
         // Open interval: target landing exactly on a boundary is OK.
         // Disable on `min >= max` (empty zone), matching the path
         // check's convention so destination and path checks agree on
@@ -235,12 +234,13 @@ impl MountDevice {
                 ),
             ));
         }
-        if !(self.config.dec_min_degrees..=self.config.dec_max_degrees).contains(&dec_degrees) {
+        if !self.config.dec_limits.range().contains(&dec_degrees) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
                     "Dec target {dec_degrees:.3}° outside safe envelope [{}, {}]°",
-                    self.config.dec_min_degrees, self.config.dec_max_degrees
+                    self.config.dec_limits.min_degrees(),
+                    self.config.dec_limits.max_degrees()
                 ),
             ));
         }
@@ -681,10 +681,7 @@ impl MountDevice {
             let ra_delta_canonical = RaTicks::new(ra_ticks.value() - snap.ra.position_ticks)
                 .fold_to_canonical_band(Cpr::new(params.cpr_ra))
                 .value();
-            let binding_zone = (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            );
+            let binding_zone = self.config.cw_exclusion_zone.bounds();
             let ra_delta = if is_flip_slew {
                 // Flip slews steer the polar-axis sweep out of the
                 // CW exclusion zone — see
