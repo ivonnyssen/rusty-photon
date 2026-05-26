@@ -13,24 +13,33 @@
 //! Behavioral contract: `docs/services/rp.md` → Compound Tools →
 //! `center_on_target` Contract.
 //!
-//! **BDD-author note.** `do_slew_blocking`'s 300 s deadline races
-//! rmcp's 300 s MCP-transport keep-alive — both fire at the same
-//! moment, so a single inner-iteration slew that approaches 5 minutes
-//! breaks the test client before the loop can return its
-//! `tolerance_not_reached` / `equipment` error. Keep BDD canned WCS
-//! values within ~2′ of any prior synced position so iter-1's sync +
-//! slew traverse a small distance even under heavy CI load. See
-//! `services/rp/tests/features/center_on_target.feature` for the
-//! worked numbers.
+//! **BDD-author note.** A wedged iteration is *capped* by two
+//! independent backstops — the BDD client's `MCP_CALL_TIMEOUT` (360 s)
+//! and rmcp's 300 s MCP-transport idle keep-alive — so a hang fails the
+//! scenario instead of running to the job's `timeout-minutes`. Neither
+//! is the *cause* of a hang, only its ceiling: a 300 s/360 s failure
+//! means "something upstream stalled," so look there, not at the
+//! backstops. No inner-iteration slew should ever approach those
+//! ceilings — keep BDD canned WCS values within ~2′ of any prior synced
+//! position so iter-1's sync + slew stay quick even under heavy CI
+//! load. See `services/rp/tests/features/center_on_target.feature`.
 //!
-//! Note: the 6 h CI hangs in the closed-loop centering BDD (May 2026)
-//! were *not* this slew/keep-alive race. They traced to `do_capture`
-//! looping forever on a **failed** `sky-survey-camera` exposure — its
-//! follow-mode mount read timed out under load, so `ImageReady` never
-//! went true and the capture poll spun indefinitely. Fixed at the
-//! source in `mcp/internals.rs::do_capture` (treat `CameraState::Error`
-//! as terminal + a readout deadline). CI job `timeout-minutes` and the
-//! BDD client's `MCP_CALL_TIMEOUT` are independent backstops.
+//! Both closed-loop-centering CI hangs to date were fixed at the source,
+//! not by tuning the backstops:
+//!   1. `do_capture` looped forever on a **failed** `sky-survey-camera`
+//!      exposure — its follow-mode mount read stalled under load, so
+//!      `ImageReady` never went true and the readiness poll spun. Fixed
+//!      by treating `CameraState::Error` as terminal + a readout
+//!      deadline (`mcp/internals.rs::do_capture`).
+//!   2. Every Alpaca request was unbounded, so a device that accepted
+//!      the connection but stalled the response hung the awaiting
+//!      `await` *forever* — defeating the capture/slew poll deadlines,
+//!      which only re-check time *between* awaits. Fixed by bounding
+//!      every Alpaca request (`equipment::alpaca::ALPACA_READ_TIMEOUT`)
+//!      so a stall becomes an `Err`, and by letting the readiness/idle
+//!      poll loops ride out a transient stall
+//!      (`MAX_CONSECUTIVE_POLL_ERRORS`) rather than aborting an
+//!      operation still within its deadline.
 
 use async_trait::async_trait;
 use serde::Serialize;

@@ -1643,6 +1643,27 @@ a mount that does not expose the property), the validation is
 skipped with a `debug!()` log. See
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 
+**Request timeouts and stall tolerance.** Every Alpaca request is
+bounded by a connect timeout and a per-read timeout
+(`equipment::alpaca::ALPACA_CONNECT_TIMEOUT` / `ALPACA_READ_TIMEOUT`).
+This is a hard requirement, not a tuning knob: reqwest applies no
+timeout by default and `ascom_alpaca::Client::new` adds none either, so
+without these a device that accepts the TCP connection but then stalls
+the response (a wedged keep-alive connection, a peer mid-restart, a
+starved simulator under load) would block the awaiting MCP tool
+*forever*. The blocking compound-tool helpers in `mcp::internals`
+(capture readout, slew-until-idle) poll the device and only re-check
+their own deadline *between* `await`s, so a single unbounded request
+defeats them entirely — this is what once hung `center_on_target` to
+the MCP client's 360 s backstop. With the request bounded, a stall
+surfaces as an `Err`; the poll loops then ride out up to
+`MAX_CONSECUTIVE_POLL_ERRORS` consecutive transient failures (resetting
+on any successful read) rather than aborting an operation still within
+its deadline, so a momentary stall is absorbed while a genuinely wedged
+device still fails promptly. A `read_timeout` (which resets as bytes
+arrive) rather than a whole-request timeout keeps legitimately large
+image downloads working.
+
 ### Guider Service
 
 The guider service is an **rp-managed service** that wraps PHD2 and

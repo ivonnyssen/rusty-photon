@@ -86,6 +86,10 @@ struct MockCamera {
     /// that failed an exposure (e.g. sky-survey-camera's mount read
     /// timing out). Drives the `do_capture` failed-exposure path.
     report_error_state: bool,
+    /// Number of leading `image_ready()` reads that return a transient
+    /// `Err` before reporting readiness. Exercises `do_capture`'s
+    /// consecutive-error tolerance.
+    image_ready_transient_errors: std::sync::atomic::AtomicU32,
 }
 
 impl_mock_device!(MockCamera);
@@ -106,6 +110,15 @@ impl ascom_alpaca::api::Camera for MockCamera {
     async fn image_ready(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_image_ready {
             return Err(ASCOMError::invalid_operation("readout failed"));
+        }
+        if self
+            .image_ready_transient_errors
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            self.image_ready_transient_errors
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(ASCOMError::invalid_operation("transient readout stall"));
         }
         Ok(!self.never_ready)
     }
@@ -446,6 +459,10 @@ struct MockTelescope {
     fail_abort_slew: bool,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
+    /// Number of leading `slewing()` reads that return a transient `Err`
+    /// before falling through to `Ok(stuck_slewing)`. Exercises
+    /// `poll_slewing_until_idle`'s consecutive-error tolerance.
+    slewing_transient_errors: std::sync::atomic::AtomicU32,
     tracking_value: bool,
     can_set_tracking_value: bool,
     at_park_value: bool,
@@ -473,6 +490,7 @@ impl Default for MockTelescope {
             fail_can_unpark: false,
             fail_abort_slew: false,
             stuck_slewing: false,
+            slewing_transient_errors: std::sync::atomic::AtomicU32::new(0),
             tracking_value: true,
             can_set_tracking_value: true,
             at_park_value: false,
@@ -600,6 +618,17 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     async fn slewing(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_slewing_poll {
             return Err(ASCOMError::invalid_operation("slewing poll failed"));
+        }
+        if self
+            .slewing_transient_errors
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            self.slewing_transient_errors
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(ASCOMError::invalid_operation(
+                "transient slewing read stall",
+            ));
         }
         Ok(self.stuck_slewing)
     }
@@ -865,6 +894,47 @@ async fn test_capture_image_ready_error() {
         }))
         .await;
     assert_tool_error(result, "error checking image ready");
+}
+
+/// A *transient* `image_ready()` read failure — the shape the bounded
+/// `ALPACA_READ_TIMEOUT` produces when a device momentarily stalls a
+/// response — must NOT abort a capture still within its readout
+/// deadline. `do_capture` rides out up to `MAX_CONSECUTIVE_POLL_ERRORS`
+/// consecutive failures and keeps polling. This is the unit-level
+/// analogue of the `center_on_target` BDD hang, where a single stalled
+/// poll used to wedge the whole tool until the MCP client's 360 s
+/// backstop. `start_paused` auto-advances the 100 ms inter-poll sleeps.
+#[tokio::test(start_paused = true)]
+async fn test_capture_rides_out_transient_image_ready_errors() {
+    let cam = MockCamera {
+        image_ready_transient_errors: std::sync::atomic::AtomicU32::new(2),
+        ..Default::default()
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+    let handler = McpHandler::new(
+        Arc::new(camera_registry(Arc::new(cam))),
+        Arc::new(crate::events::EventBus::from_config(&[])),
+        SessionConfig {
+            data_directory: temp.path().to_string_lossy().to_string(),
+        },
+        cache,
+        None,
+    );
+    let result = handler
+        .capture(Parameters(CaptureParams {
+            camera_id: "cam".into(),
+            duration: Duration::from_millis(100),
+        }))
+        .await
+        .unwrap();
+    // Two transient read errors were tolerated; the capture produced a
+    // document rather than failing with "error checking image ready".
+    let json = ok_text(result);
+    assert!(
+        json["document_id"].as_str().is_some(),
+        "capture should succeed after riding out transient image_ready errors, got: {json}"
+    );
 }
 
 #[tokio::test]
@@ -2611,6 +2681,36 @@ async fn test_slew_polling_error_propagates() {
         }))
         .await;
     assert_tool_error(result, "error polling mount slewing");
+}
+
+/// A *transient* `slewing()` read failure must not abort a slew that is
+/// otherwise progressing: `poll_slewing_until_idle` rides out up to
+/// `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures, resets on the
+/// next successful read, sees the mount idle, and returns the post-slew
+/// pointing. Mirrors the capture readiness-poll tolerance.
+/// `start_paused` auto-advances the 100 ms inter-poll sleeps.
+#[tokio::test(start_paused = true)]
+async fn test_slew_rides_out_transient_slewing_errors() {
+    let mount = MockTelescope {
+        slewing_transient_errors: std::sync::atomic::AtomicU32::new(2),
+        ra_value: 10.6847,
+        dec_value: 41.2689,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let result = handler
+        .slew(Parameters(SlewParams {
+            ra: Some(10.6847),
+            dec: Some(41.2689),
+            settle_after: None,
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(
+        json["actual_ra"], 10.6847,
+        "slew should succeed after riding out transient slewing() errors, got: {json}"
+    );
 }
 
 #[tokio::test]

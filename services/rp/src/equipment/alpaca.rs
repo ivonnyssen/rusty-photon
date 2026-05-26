@@ -25,6 +25,34 @@ pub(super) const CONNECT_ATTEMPTS: u32 = 3;
 /// rp startup.
 pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Connection-establishment timeout applied to every Alpaca request.
+/// Localhost and LAN devices connect near-instantly; a connect that
+/// takes longer means the host is unreachable, which the per-device
+/// retry/backoff ([`CONNECT_ATTEMPTS`]) already handles at startup.
+pub(super) const ALPACA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-read timeout applied to every Alpaca request — the maximum gap
+/// reqwest will tolerate between received response bytes before failing
+/// the request. **This is the load-bearing robustness knob.** reqwest
+/// applies no timeout by default, and `ascom_alpaca::Client::new` does
+/// not add one either, so a device that accepts the TCP connection but
+/// then stalls the response (a wedged keep-alive connection, a peer mid
+/// restart, a starved sky-survey-camera under CI load) would block the
+/// awaiting call *forever*. The blocking MCP helpers in
+/// [`crate::mcp::internals`] (capture-readout and slew-until-idle polls)
+/// only re-check their own deadlines *between* `await`s, so a single
+/// stalled request defeats them entirely — which is exactly what hung
+/// the `center_on_target` BDD to the MCP client's 360 s backstop.
+///
+/// `read_timeout` (resets as bytes arrive) rather than a whole-request
+/// `timeout` so a legitimately large image download from a real camera
+/// keeps working as long as bytes keep flowing. Comfortably larger than
+/// any healthy Alpaca call (property reads are sub-100 ms; `StartExposure`
+/// and async slews return immediately) yet well under the capture
+/// (`duration + 120 s`) and slew (300 s) poll deadlines, so those still
+/// govern the overall operation.
+pub(super) const ALPACA_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Result of a single attempt inside [`retry_connect_attempt`]. The
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
@@ -98,23 +126,42 @@ where
     ))
 }
 
+/// Build the reqwest client that backs every Alpaca request, with the
+/// given connection/read timeouts and optional HTTP Basic Auth header.
+///
+/// Split out from [`build_alpaca_client`] so the timeout behaviour can be
+/// exercised with short durations in tests. We build our own client even
+/// in the no-auth case (rather than falling back to
+/// `ascom_alpaca::Client::new`'s built-in client) precisely so the
+/// timeouts below apply on every code path — see [`ALPACA_READ_TIMEOUT`].
+fn alpaca_reqwest_client(
+    auth: Option<&ClientAuthConfig>,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout);
+    if let Some(a) = auth {
+        let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("authorization", format!("Basic {encoded}").parse()?);
+        builder = builder.default_headers(headers);
+    }
+    Ok(builder.build()?)
+}
+
 /// Build an Alpaca client with optional HTTP Basic Auth credentials.
+///
+/// Every request the client makes is bounded by [`ALPACA_CONNECT_TIMEOUT`]
+/// and [`ALPACA_READ_TIMEOUT`] so a stalled device can never hang an
+/// awaiting MCP tool indefinitely.
 pub(super) fn build_alpaca_client(
     url: &str,
     auth: Option<&ClientAuthConfig>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    match auth {
-        Some(a) => {
-            let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Basic {encoded}").parse()?);
-            let http = reqwest::Client::builder()
-                .default_headers(headers)
-                .build()?;
-            Ok(Client::new_with_client(url, http)?)
-        }
-        None => Ok(Client::new(url)?),
-    }
+    let http = alpaca_reqwest_client(auth, ALPACA_CONNECT_TIMEOUT, ALPACA_READ_TIMEOUT)?;
+    Ok(Client::new_with_client(url, http)?)
 }
 
 #[cfg(test)]
@@ -141,6 +188,52 @@ mod tests {
     fn build_alpaca_client_with_invalid_url_fails() {
         let result = build_alpaca_client("not-a-url", None);
         assert!(result.is_err());
+    }
+
+    /// The load-bearing regression guard: a device that accepts the TCP
+    /// connection but never writes a response must surface a bounded
+    /// timeout error, not hang the caller forever. Without
+    /// [`ALPACA_READ_TIMEOUT`] on the client the `send().await` blocks
+    /// indefinitely and the outer guard fires instead — which is the
+    /// exact failure that ran `center_on_target`'s capture poll to the
+    /// MCP client's 360 s backstop. Uses a short read timeout so the
+    /// test is fast; the production constant is larger.
+    #[tokio::test]
+    async fn alpaca_request_read_timeout_bounds_a_stalled_server() {
+        // Accept connections and hold them open without ever replying.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _acceptor = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock); // keep alive, send nothing
+            }
+        });
+
+        let http = alpaca_reqwest_client(None, Duration::from_secs(5), Duration::from_millis(300))
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        // Outer guard: a regression that drops `read_timeout` makes
+        // `send()` hang, so this `timeout` elapses and the `expect` fails
+        // loudly instead of stalling the whole suite.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            http.get(format!("http://{addr}/")).send(),
+        )
+        .await
+        .expect("Alpaca request hung past 5 s — read_timeout is not applied to the client");
+
+        let err = outcome.expect_err("a stalled server must produce an error, not a response");
+        assert!(
+            err.is_timeout(),
+            "expected a read-timeout error, got: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "request should fail near the 300 ms read_timeout, took {:?}",
+            started.elapsed()
+        );
     }
 
     // ----- retry_connect_attempt direct unit tests --------------------

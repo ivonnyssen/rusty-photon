@@ -32,6 +32,18 @@ use super::handler::McpHandler;
 /// readout/download latency on top of the exposure itself.
 const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 
+/// How many *consecutive* failed device reads a polling loop tolerates
+/// before surfacing the error. Every Alpaca request is bounded by
+/// `equipment::alpaca::ALPACA_READ_TIMEOUT`, so a stalled response
+/// arrives here as an `Err` rather than an unbounded hang. A polling
+/// loop (capture-readout, slew-until-idle) issues many reads, so a
+/// single transient stall should not abort an operation still within
+/// its overall deadline — ride out a brief blip and keep polling,
+/// resetting the count on any successful read, but still fail promptly
+/// (rather than waiting out the full deadline) when a device is wedged
+/// and every read fails.
+const MAX_CONSECUTIVE_POLL_ERRORS: u32 = 3;
+
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
 // `pub(crate)` so individual category files can construct them.
@@ -470,11 +482,13 @@ impl McpHandler {
         // stored reason via `image_array`), and cap the total wait with a
         // deadline as a backstop for a camera wedged in `Exposing`.
         let deadline = tokio::time::Instant::now() + duration + CAPTURE_READOUT_GRACE;
+        let mut consecutive_errors = 0u32;
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cam.image_ready().await {
                 Ok(true) => break,
                 Ok(false) => {
+                    consecutive_errors = 0;
                     // A transient `camera_state` read error is non-fatal —
                     // `ImageReady` stays the primary signal and the deadline
                     // below still bounds the wait.
@@ -494,7 +508,22 @@ impl McpHandler {
                         ));
                     }
                 }
-                Err(e) => return Err(format!("error checking image ready: {}", e)),
+                // A failed `image_ready()` read is a transient stall (the
+                // bounded `ALPACA_READ_TIMEOUT` turns a hung response into
+                // this error), not proof the exposure failed — that is what
+                // the `CameraState::Error` check above signals. Ride out up
+                // to `MAX_CONSECUTIVE_POLL_ERRORS` in a row so a momentary
+                // stall doesn't abort a capture still within its readout
+                // deadline; a wedged camera (every read failing) still
+                // surfaces the error promptly.
+                Err(e) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS
+                        || tokio::time::Instant::now() >= deadline
+                    {
+                        return Err(format!("error checking image ready: {}", e));
+                    }
+                }
             }
         }
 
@@ -1145,13 +1174,31 @@ pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
 ) -> std::result::Result<(), PollIdleError> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let mut consecutive_errors = 0u32;
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         match mount.slewing().await {
             Ok(false) => return Ok(()),
-            Ok(true) if tokio::time::Instant::now() < deadline => continue,
+            Ok(true) if tokio::time::Instant::now() < deadline => {
+                consecutive_errors = 0;
+                continue;
+            }
             Ok(true) => return Err(PollIdleError::Timeout),
-            Err(e) => return Err(PollIdleError::Read(e)),
+            // A failed `slewing()` read is a transient stall (the bounded
+            // `ALPACA_READ_TIMEOUT` turns a hung response into this error),
+            // not a reason to abort a slew that is otherwise progressing.
+            // Ride out up to `MAX_CONSECUTIVE_POLL_ERRORS` in a row,
+            // resetting on any successful read; a wedged mount (every read
+            // failing) still surfaces the error promptly rather than
+            // waiting out the full deadline.
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS
+                    || tokio::time::Instant::now() >= deadline
+                {
+                    return Err(PollIdleError::Read(e));
+                }
+            }
         }
     }
 }
