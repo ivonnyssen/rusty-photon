@@ -11,7 +11,6 @@
 //! Requires both binaries pre-built with `--all-features` (the `dsd-fp2` mock
 //! transport is feature-gated): `cargo build --all-features --all-targets`.
 
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +21,11 @@ use tempfile::TempDir;
 
 /// The dsd-fp2 CoverCalibrator action endpoint the BFF (and these helpers) call.
 const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
+
+/// A reserved, low-numbered loopback port that reliably refuses connections —
+/// the repo's convention for an unreachable Alpaca target (see ui-htmx's
+/// `io.rs` test and rp's BDD steps). Deterministic, unlike a released free port.
+const UNREACHABLE_PORT: u16 = 1;
 
 #[derive(Debug, Default, World)]
 pub struct UiWorld {
@@ -87,7 +91,7 @@ impl UiWorld {
     /// Spawn a BFF pointed at a driver that is not running, so `config.get` is
     /// refused.
     pub async fn start_bff_with_unreachable_driver(&mut self) {
-        self.start_bff_pointing_at(closed_port()).await;
+        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
     }
 
     async fn start_bff_pointing_at(&mut self, driver_port: u16) {
@@ -315,22 +319,4 @@ impl UiWorld {
             + start;
         self.last_body[start..=end].to_string()
     }
-}
-
-/// A loopback port with nothing listening, for the "unreachable driver"
-/// scenario: bind `:0`, read the assigned port, and drop the listener so a
-/// connection to it is refused.
-///
-/// Unlike a *bind* target, this is only ever a *connect* target — the BFF tries
-/// to reach it and the test asserts an error — so the bind-then-drop window is
-/// harmless here: if the port were reused before the BFF connects, the BFF would
-/// still get a non-success response and surface the same "could not reach the
-/// driver" error. (Drivers are bound on `:0` and never preselect a port, so the
-/// `AddrInUse` race does not apply to them.)
-fn closed_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("failed to bind a free port")
-        .local_addr()
-        .expect("failed to read local_addr")
-        .port()
 }
