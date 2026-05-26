@@ -801,10 +801,10 @@ the negative-mech_HA half puts the CW into the floor beneath the
 pier rather than above the mount head, so no mirror zone applies.
 
 The driver enforces this as a single interval on the **chosen-side
-encoder mech_HA**, in `MountConfig::binding_zone_min_hours` and
-`binding_zone_max_hours` (defaults `0.95` and `11.05` — the wide
-zone derived from the 0.95 h rule and hardware-verified at lat
-32.7°N):
+encoder mech_HA**, in `MountConfig::cw_exclusion_zone` — an active
+`{ min_hours, max_hours }` interval (defaults `0.95` and `11.05` — the
+wide zone derived from the 0.95 h rule and hardware-verified at lat
+32.7°N), or `null` to disable:
 
 - A slew or sync's *target* mech_HA inside the interval is rejected
   with `INVALID_VALUE` before any motion (the destination check).
@@ -820,10 +820,10 @@ zone derived from the 0.95 h rule and hardware-verified at lat
   signed into `[−12, +12)`).
 - For flipped-side targets, `target_mech_HA = celestial_HA + 12 h`
   (folded).
-- Setting `binding_zone_min ≥ binding_zone_max` (an empty interval)
-  disables both the destination and path checks — used by BDD
-  scenarios that pass hardcoded celestial coords whose computed
-  mech_HA depends on wallclock LST.
+- Setting `cw_exclusion_zone` to `null` (disabled) turns off both the
+  destination and path checks — used by BDD scenarios that pass
+  hardcoded celestial coords whose computed mech_HA depends on
+  wallclock LST.
 
 Historical note: a narrower `(+6.95, +11.05)` zone was used before
 2026-05-17. That captured only the *outer* portion of the exclusion
@@ -840,10 +840,10 @@ pattern. The operator's `park_ra_ticks` / `park_dec_ticks` are
 assumed to have been validated against the zone at the time of
 configuration.
 
-The Dec envelope (`dec_min_degrees` / `dec_max_degrees`, defaults
-`[−90, +90]°`) is independent — it bounds the celestial Dec the
-driver will accept, primarily a sanity check against client-side
-coordinate-math bugs.
+The Dec envelope (`dec_limits`, default
+`{ min_degrees: -90, max_degrees: 90 }`) is independent — it bounds the
+celestial Dec the driver will accept, primarily a sanity check against
+client-side coordinate-math bugs.
 
 #### Tracking-time safety guard
 
@@ -860,8 +860,8 @@ A per-connection background guard closes that gap. While `Tracking =
 true` it watches the live encoder `mech_HA` — read from the snapshot
 the background poll loop already refreshes, at `polling_interval`, so
 the guard adds no extra wire traffic. When `mech_HA` enters the band
-`(binding_zone_min_hours − margin, binding_zone_max_hours + margin)` —
-the CW exclusion zone widened by `tracking_guard_margin_hours` on each
+`(min_hours − margin, max_hours + margin)` — the active
+`cw_exclusion_zone` widened by `tracking_guard_margin_hours` on each
 edge — the guard:
 
 1. issues `:K1` to stop the RA axis,
@@ -876,14 +876,14 @@ elsewhere, or park.
 
 `tracking_guard_margin_hours` (default `0.05` h ≈ 45 s of sidereal
 drift) lets cautious operators stop *before* the zone entry rather than
-at it; `0.0` stops exactly at `binding_zone_min_hours`. A non-finite,
-negative, or over-cap (> 1.0 h) margin is rejected at config load
-(`load_config` → `MountConfig::validate`); the guard additionally treats
-a non-finite or negative value as `0.0` as defense-in-depth. The guard is
-**independent of `flip_policy.enabled`**: it is the safety floor that keeps an
-unattended autoguided session from contacting hardware whether or not
-meridian-flip support is configured. It is disabled only when the zone
-itself is (`binding_zone_min_hours ≥ binding_zone_max_hours`). Because
+at it; `0.0` stops exactly at the zone's `min_hours`. A non-finite,
+negative, or over-cap (> 1.0 h) margin is rejected at config load by the
+`TrackingGuardMarginHours` newtype's deserialize; the guard additionally
+treats a non-finite or negative value as `0.0` as defense-in-depth. The
+guard is **independent of `flip_policy.enabled`**: it is the safety floor
+that keeps an unattended autoguided session from contacting hardware
+whether or not meridian-flip support is configured. It is disabled only
+when `cw_exclusion_zone` is `null` (`Disabled`). Because
 `slew_to_coordinates_async` clears `Tracking` for a slew's duration, the
 guard is naturally dormant during slews and resumes once the
 completion watcher re-engages tracking on the new pose.
@@ -1074,12 +1074,15 @@ function.
 JSON, deserialised with `serde` + `humantime-serde` for `Duration`
 fields. The transport block is a tagged enum: `usb` or `udp`.
 
-The mount block is validated at startup (`load_config` →
-`MountConfig::validate`): an out-of-range `flip_policy.flip_range_hours`,
-a non-finite binding zone or tracking-guard margin, a margin above
-`MAX_TRACKING_GUARD_MARGIN_HOURS` (1.0 h), or an inverted /
-out-of-hemisphere Dec range is rejected with a clear error rather than
-silently driving the mount with a bad parameter.
+The mount block is **validated at deserialize** (parse-don't-validate):
+the range-carrying fields are newtypes whose `serde` `try_from` rejects an
+out-of-range value during `load_config`, with the offending field named,
+so a bad config fails at startup rather than mid-session. `flip_range_hours`
+must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
+`cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
+`dec_limits` must satisfy `-90 ≤ min_degrees < max_degrees ≤ 90`. (This
+replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
+— see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
 
 ```json
 {
@@ -1106,6 +1109,9 @@ silently driving the mount with a bad parameter.
     "site_elevation_m": 0.0,
     "settle_after_slew": "2s",
     "tracking_rate": "sidereal",
+    "cw_exclusion_zone": { "min_hours": 0.95, "max_hours": 11.05 },
+    "tracking_guard_margin_hours": 0.05,
+    "dec_limits": { "min_degrees": -90.0, "max_degrees": 90.0 },
     "park_ra_ticks": null,
     "park_dec_ticks": null,
     "flip_policy": {
@@ -1147,29 +1153,32 @@ Notes:
   WGS84 degrees, `+E`. (ASCOM convention.)
 - `tracking_rate` accepts `"sidereal"` only in MVP. Field is reserved
   for future expansion.
-- `binding_zone_min_hours` / `binding_zone_max_hours` define the
-  CW exclusion interval in encoder `mech_HA` (signed
-  hours folded `[−12, +12)`). Slews / syncs whose chosen-side
-  `mech_HA` falls inside the interval are rejected with
-  `INVALID_VALUE`; flip slews and non-flip slews additionally check
-  that their swept path doesn't cross the zone (`INVALID_OPERATION`
-  if so — see [§Safety envelope](#safety-envelope-cw-exclusion-zone)).
-  Defaults `(0.95, 11.05)` for the GTi — the one-sided arc where
-  the CW shaft rises more than 0.95 h above horizontal, peaking at
-  `mech_HA = +6 h`. The negative-mech_HA side is *not* a CW exclusion zone
-  (CW points into the ground beneath the pier, not above the mount
-  head). Setting `min ≥ max` disables the check (used by tests and
-  by operators whose mount geometry differs).
+- `cw_exclusion_zone` defines the CW exclusion interval in encoder
+  `mech_HA` (signed hours folded `[−12, +12)`) as either an active
+  `{ "min_hours": .., "max_hours": .. }` object or `null` (disabled).
+  Slews / syncs whose chosen-side `mech_HA` falls inside the interval
+  are rejected with `INVALID_VALUE`; flip slews and non-flip slews
+  additionally check that their swept path doesn't cross the zone
+  (`INVALID_OPERATION` if so — see
+  [§Safety envelope](#safety-envelope-cw-exclusion-zone)).
+  Default `{ "min_hours": 0.95, "max_hours": 11.05 }` for the GTi — the
+  one-sided arc where the CW shaft rises more than 0.95 h above
+  horizontal, peaking at `mech_HA = +6 h`. The negative-mech_HA side is
+  *not* a CW exclusion zone (CW points into the ground beneath the pier,
+  not above the mount head). An active zone must satisfy
+  `-12 ≤ min_hours < max_hours ≤ 12`; use `null` to disable (tests, or
+  mounts whose geometry differs).
 - `tracking_guard_margin_hours` extends CW exclusion-zone enforcement
   to *tracking* time: a background guard stops the mount (`:K1`) once
-  the live encoder `mech_HA` drifts into
-  `(binding_zone_min_hours − margin, binding_zone_max_hours + margin)`
-  while `Tracking = true`. Defaults `0.05` h (≈ 45 s of sidereal
-  drift); `0.0` stops exactly at the zone entry. Independent of
-  `flip_policy.enabled`. See
+  the live encoder `mech_HA` drifts into the active zone widened by
+  `margin` on each edge, while `Tracking = true`. Defaults `0.05` h
+  (≈ 45 s of sidereal drift); `0.0` stops exactly at the zone entry;
+  valid range `[0, 1.0]`. Independent of `flip_policy.enabled`. See
   [§Tracking-time safety guard](#tracking-time-safety-guard).
-- `dec_min_degrees` / `dec_max_degrees` clip the celestial-Dec
-  range the driver will accept on slew / sync. Defaults `[−90, +90]°`.
+- `dec_limits` (`{ "min_degrees": .., "max_degrees": .. }`) clips the
+  celestial-Dec range the driver accepts on slew / sync. Default
+  `{ "min_degrees": -90.0, "max_degrees": 90.0 }`; must satisfy
+  `-90 ≤ min_degrees < max_degrees ≤ 90`.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
@@ -1894,10 +1903,11 @@ In addition to the codec fixes:
   counterweight-up region with ConformU's pier-flip tests stalled
   the motor against a hard stop while the encoder counter kept
   advancing (audible motor noise, OTA stationary). `MountConfig`
-  now carries `binding_zone_min_hours` /
-  `binding_zone_max_hours` (the asymmetric mech_HA interval where
-  the CW binds against the pier) plus `dec_min_degrees` /
-  `dec_max_degrees`. `SyncToCoordinates` and
+  carries the asymmetric mech_HA interval where the CW binds against
+  the pier (`cw_exclusion_zone`) plus the Dec envelope (`dec_limits`) —
+  both later wrapped as validated newtypes per
+  [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).
+  `SyncToCoordinates` and
   `SlewToCoordinatesAsync` reject targets whose chosen-side
   `mech_HA` falls inside the CW exclusion zone with `INVALID_VALUE`
   before any wire motion; `Park` writes the target encoder ticks

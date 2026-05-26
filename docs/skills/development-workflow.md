@@ -209,6 +209,45 @@ area at a time.
 
 ---
 
+## Conventions
+
+### Typed physical quantities (newtypes over bare `f64`/`i32`)
+
+When a service does unit- or frame-laden arithmetic (angles, encoder
+ticks, sync offsets), wrap the quantity in a newtype that carries its
+unit and reference frame rather than threading a bare `f64`/`i32`.
+Distinct types make unit and frame mix-ups **compile errors** instead of
+silent runtime faults, and conversions between frames become named,
+type-checked methods rather than inline float math.
+
+Precedents:
+
+- `services/pa-falcon-rotator/src/units.rs` — `MechanicalDegrees` vs
+  `SkyDegrees`, bridged by a `SyncOffset`.
+- `services/star-adventurer-gti/src/units.rs` — `MechHa` vs `HourAngle`/
+  `Ra`/`Lst`, `MechDec` vs `Dec`, and `RaTicks`/`DecTicks`/`Cpr`.
+
+Style: hand-roll the constructors (which normalise/fold) and only the
+operations that are *valid*. Do **not** derive blanket same-type
+arithmetic (`derive_more`'s `Add`/`Sub`) — it skips normalisation and
+re-admits meaningless operations (e.g. summing two absolute angles).
+Keep the types service-local until a second device needs them; no
+external units crate (`uom`). See
+[ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).
+
+### Parse-don't-validate for config
+
+Config invariants belong in the field *types*, checked at deserialize —
+not in a runtime `validate()` pass. A field with a range or a cross-field
+rule becomes a newtype (or a small grouped type) with a `serde`
+`try_from` that rejects a bad value during `serde_json::from_str`, with
+the offending field named, so a bad config fails at **load** (startup)
+rather than mid-session. `star-adventurer-gti`'s `config.rs`
+(`FlipRangeHours`, `CwExclusionZone`, `DecLimits`, …) is the reference; it
+retired a hand-rolled `MountConfig::validate`.
+
+---
+
 ## Example: rp Service Timeline
 
 The rp service followed this workflow. The full commit history

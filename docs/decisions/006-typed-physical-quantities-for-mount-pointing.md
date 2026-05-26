@@ -221,8 +221,8 @@ with the field name attached — strictly better than the hand-rolled
 `MountConfig::validate()` / `FlipPolicy::validate()`, which are retired:
 
 ```rust
-#[derive(Serialize, derive_more::Into)]      // Into generates From<_> for f64
-#[serde(try_from = "f64", into = "f64")]
+#[derive(Serialize, Deserialize)]            // From<_>/Into hand-rolled (no derive_more feature)
+#[serde(try_from = "f64", into = "f64")]     // JSON stays a bare number
 pub struct FlipRangeHours(f64);
 
 impl TryFrom<f64> for FlipRangeHours {
@@ -231,9 +231,21 @@ impl TryFrom<f64> for FlipRangeHours {
 }
 ```
 
-The CW zone — two fields with a cross-field `min ≥ max = disabled` rule —
-becomes one `CwExclusionZone` type (`Active { min, max } | Disabled`),
-so the "disabled" sentinel is modelled rather than conventional.
+The scalar fields (`FlipRangeHours`, `TrackingGuardMarginHours`) keep a
+bare-number JSON form. The CW zone becomes one `CwExclusionZone`
+(`Active(ActiveZone) | Disabled`), modelled as `Option<ActiveZone>` on
+the wire — an `{ min_hours, max_hours }` object, or `null` for disabled —
+so the "disabled" state is explicit rather than the old `min ≥ max`
+convention; `ActiveZone` validates `-12 ≤ min < max ≤ 12`. `DecLimits`
+is the analogous `{ min_degrees, max_degrees }` type. Defaults live on
+the types (`Default` impls), so the fields use bare `#[serde(default)]`.
+
+As-built notes: because there are no operators yet, the config JSON
+**schema changed** to this cleaner nested form rather than preserving the
+old flat `binding_zone_min/max_hours` / `dec_min/max_degrees` keys (no
+backwards-compatibility constraint). `derive_more` stays at `["debug"]`;
+the handful of `From` impls are hand-rolled rather than growing its
+feature set.
 
 ### No external units dependency
 
