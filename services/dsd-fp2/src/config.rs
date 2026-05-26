@@ -175,9 +175,13 @@ pub fn load_effective_config(
     overrides: &CliOverrides,
 ) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let mut config = match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content)?,
+        // Wrap both failure paths with the path (matching
+        // `config_actions::read_file_value`) so a startup/reload failure names
+        // the offending file instead of a bare "Permission denied" / parse error.
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => return Err(Box::new(e)),
+        Err(e) => return Err(format!("could not read config file {}: {e}", path.display()).into()),
     };
     overrides.apply(&mut config);
     Ok(config)
@@ -211,6 +215,17 @@ mod tests {
         assert!(json.contains("115200"));
         assert!(json.contains("11119"));
         assert!(json.contains("Deep Sky Dad FP2"));
+    }
+
+    #[test]
+    fn load_effective_config_corrupt_file_names_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dsd-fp2.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = load_effective_config(&path, &CliOverrides::default()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not valid JSON"), "{msg}");
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
     }
 
     #[test]
