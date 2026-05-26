@@ -21,11 +21,11 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tracing::debug;
 
 use crate::coordinates::{
-    dec_degrees_to_ticks, encoder_to_celestial, local_sidereal_time_hours,
-    mechanical_ha_to_ra_ticks, pulse_guide_step_period, ra_dec_to_alt_az, ra_to_mechanical_ha,
+    encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
     select_pier_side_for_target, side_of_pier as side_of_pier_calc, sidereal_step_period,
     SIDEREAL_DEG_PER_SEC,
 };
+use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
 use super::inherent::validate_guide_rate;
 use super::park_persistence::write_park_to_config;
@@ -117,14 +117,14 @@ impl Telescope for MountDevice {
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
         let (ra, _dec) = encoder_to_celestial(
-            snap.ra.position_ticks,
-            snap.dec.position_ticks,
+            RaTicks::new(snap.ra.position_ticks),
+            DecTicks::new(snap.dec.position_ticks),
             lst,
-            params.cpr_ra,
-            params.cpr_dec,
+            Cpr::new(params.cpr_ra),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
-        Ok(ra)
+        Ok(ra.value())
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
@@ -142,14 +142,14 @@ impl Telescope for MountDevice {
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
         let (_ra, dec) = encoder_to_celestial(
-            snap.ra.position_ticks,
-            snap.dec.position_ticks,
+            RaTicks::new(snap.ra.position_ticks),
+            DecTicks::new(snap.dec.position_ticks),
             lst,
-            params.cpr_ra,
-            params.cpr_dec,
+            Cpr::new(params.cpr_ra),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
-        Ok(dec)
+        Ok(dec.value())
     }
 
     async fn declination_rate(&self) -> ASCOMResult<f64> {
@@ -161,7 +161,12 @@ impl Telescope for MountDevice {
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        let (_alt, az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
+        let (_alt, az) = ra_dec_to_alt_az(
+            Ra::new(ra),
+            Dec::new(dec),
+            self.config.site_latitude_deg,
+            lst,
+        );
         Ok(az)
     }
 
@@ -170,12 +175,18 @@ impl Telescope for MountDevice {
         let dec = self.declination().await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        let (alt, _az) = ra_dec_to_alt_az(ra, dec, self.config.site_latitude_deg, lst);
+        let (alt, _az) = ra_dec_to_alt_az(
+            Ra::new(ra),
+            Dec::new(dec),
+            self.config.site_latitude_deg,
+            lst,
+        );
         Ok(alt)
     }
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
         local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map(|lst| lst.value())
             .map_err(ASCOMError::from)
     }
 
@@ -290,8 +301,8 @@ impl Telescope for MountDevice {
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         Ok(side_of_pier_calc(
-            snap.dec.position_ticks,
-            params.cpr_dec,
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         ))
     }
@@ -320,24 +331,21 @@ impl Telescope for MountDevice {
             .map_err(ASCOMError::from)?;
         let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
-            snap.dec.position_ticks,
-            params.cpr_dec,
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
         let chosen_side = select_pier_side_for_target(
-            ra,
+            Ra::new(ra),
             lst,
             current_side,
             &self.config.flip_policy,
-            (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            ),
+            self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
         );
         let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
         let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
-        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+        self.check_within_safe_envelope(ra, dec, lst.value(), target_is_flipped)?;
         Ok(chosen_side)
     }
 
@@ -386,8 +394,8 @@ impl Telescope for MountDevice {
             .map_err(ASCOMError::from)?;
         let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
-            snap.dec.position_ticks,
-            params.cpr_dec,
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
         if side_of_pier == current_side {
@@ -402,13 +410,14 @@ impl Telescope for MountDevice {
         // `execute_slew_with_explicit_side` will re-compute the target
         // encoder for the chosen side.
         let (cur_ra, cur_dec) = encoder_to_celestial(
-            snap.ra.position_ticks,
-            snap.dec.position_ticks,
+            RaTicks::new(snap.ra.position_ticks),
+            DecTicks::new(snap.dec.position_ticks),
             lst,
-            params.cpr_ra,
-            params.cpr_dec,
+            Cpr::new(params.cpr_ra),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        let (cur_ra, cur_dec) = (cur_ra.value(), cur_dec.value());
         // Drive the slew with the chosen-side encoder math directly,
         // bypassing the policy decision tree. The selector's
         // stay-on-current preference is correct for slew_to_coordinates
@@ -486,10 +495,13 @@ impl Telescope for MountDevice {
         // false`); operators must `AbortSlew` and re-sync the pre-
         // flip pointing first if a manual flip left the mount in a
         // post-flip state.
-        self.check_within_safe_envelope(ra, dec, lst, false)?;
-        let mech_ha = ra_to_mechanical_ha(ra, lst);
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec, params.cpr_dec);
+        self.check_within_safe_envelope(ra, dec, lst.value(), false)?;
+        let mech_ha = lst.hour_angle_of(Ra::new(ra)).to_mech();
+        let ra_ticks = mech_ha.to_ticks(Cpr::new(params.cpr_ra)).value();
+        let dec_ticks = Dec::new(dec)
+            .to_mech()
+            .to_ticks(Cpr::new(params.cpr_dec))
+            .value();
         self.send(Command::SetPosition {
             axis: Axis::Ra,
             ticks: ra_ticks,
@@ -567,19 +579,16 @@ impl Telescope for MountDevice {
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
         let snap = self.manager.snapshot().await;
         let current_side = side_of_pier_calc(
-            snap.dec.position_ticks,
-            params.cpr_dec,
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
         let chosen_side = select_pier_side_for_target(
-            ra,
+            Ra::new(ra),
             lst,
             current_side,
             &self.config.flip_policy,
-            (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            ),
+            self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
         );
         self.execute_slew_with_explicit_side(ra, dec, chosen_side)
@@ -964,7 +973,7 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let sidereal_period = sidereal_step_period(params.tmr_freq, params.cpr_ra);
+        let sidereal_period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
         let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
         const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
         if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {

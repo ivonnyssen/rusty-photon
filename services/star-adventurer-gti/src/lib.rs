@@ -11,9 +11,11 @@ pub mod error;
 pub mod manager;
 pub mod mount_device;
 pub mod transport;
+pub mod units;
 
 pub use config::{
-    load_config, ApPark, Config, FlipPolicy, MountConfig, ServerConfig, TrackingRateName,
+    load_config, ActiveZone, ApPark, Config, CwExclusionZone, DecLimits, FlipPolicy,
+    FlipRangeHours, MountConfig, ServerConfig, TrackingGuardMarginHours, TrackingRateName,
     TransportConfig, UdpConfig, UsbConfig, MAX_FLIP_RANGE_HOURS,
 };
 pub use error::{Result, StarAdvError};

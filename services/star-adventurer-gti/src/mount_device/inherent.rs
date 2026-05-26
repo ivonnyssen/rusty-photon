@@ -38,11 +38,11 @@ use tracing::{debug, info};
 use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
-    dec_degrees_to_ticks, fold_ha, fold_to_canonical_band, local_sidereal_time_hours,
-    mechanical_ha_to_ra_ticks, ra_to_mechanical_ha, side_of_pier as side_of_pier_calc,
-    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    local_sidereal_time_hours, side_of_pier as side_of_pier_calc, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
+use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, MountConnectFields};
 use super::slew::{
@@ -178,12 +178,13 @@ impl MountDevice {
     /// The check is in **encoder `mech_HA` space** (signed hours
     /// folded to `[−12, +12)`). For a target on the natural pier
     /// side, `target_mech_HA = celestial_HA`. For a flipped target,
-    /// `target_mech_HA = celestial_HA + 12 h` folded. The interval
-    /// `(binding_zone_min_hours, binding_zone_max_hours)` is **open**
-    /// — a target landing exactly on a zone boundary is permitted (and
-    /// matches the open-interval convention [`super::slew::check_non_flip_ra_path`]
-    /// uses for path checks). An empty zone (`min >= max`) disables
-    /// the check, matching the same path-check convention.
+    /// `target_mech_HA = celestial_HA + 12 h` folded. The zone comes from
+    /// [`crate::config::CwExclusionZone::bounds`] and is treated as an
+    /// **open** interval `(min, max)` — a target landing exactly on a
+    /// boundary is permitted (and matches the open-interval convention
+    /// [`super::slew::check_non_flip_ra_path`] uses for path checks). A
+    /// disabled zone (JSON `null`, where `bounds()` returns `min > max`)
+    /// disables the check, matching the same path-check convention.
     ///
     /// Note: this is the *destination-only* leg of the safety model.
     /// Path crossings are handled separately by
@@ -210,15 +211,17 @@ impl MountDevice {
         target_is_flipped: bool,
     ) -> ASCOMResult<()> {
         let target_mech_ha = {
-            let normal = ra_to_mechanical_ha(ra_hours, lst_hours);
+            let normal = Lst::new(lst_hours)
+                .hour_angle_of(Ra::new(ra_hours))
+                .to_mech()
+                .value();
             if target_is_flipped {
-                fold_ha(normal + 12.0)
+                MechHa::new(normal + 12.0).value()
             } else {
                 normal
             }
         };
-        let zone_min = self.config.binding_zone_min_hours;
-        let zone_max = self.config.binding_zone_max_hours;
+        let (zone_min, zone_max) = self.config.cw_exclusion_zone.bounds();
         // Open interval: target landing exactly on a boundary is OK.
         // Disable on `min >= max` (empty zone), matching the path
         // check's convention so destination and path checks agree on
@@ -232,12 +235,13 @@ impl MountDevice {
                 ),
             ));
         }
-        if !(self.config.dec_min_degrees..=self.config.dec_max_degrees).contains(&dec_degrees) {
+        if !self.config.dec_limits.range().contains(&dec_degrees) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
                     "Dec target {dec_degrees:.3}° outside safe envelope [{}, {}]°",
-                    self.config.dec_min_degrees, self.config.dec_max_degrees
+                    self.config.dec_limits.min_degrees(),
+                    self.config.dec_limits.max_degrees()
                 ),
             ));
         }
@@ -492,8 +496,12 @@ impl MountDevice {
         let dec_deg = park.codebase_dec_encoder_degrees(self.config.site_latitude_deg)?;
         let params = self.manager.parameters().await?;
         Some((
-            mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra),
-            dec_degrees_to_ticks(dec_deg, params.cpr_dec),
+            MechHa::new(mech_ha)
+                .to_ticks(Cpr::new(params.cpr_ra))
+                .value(),
+            MechDec::new(dec_deg)
+                .to_ticks(Cpr::new(params.cpr_dec))
+                .value(),
         ))
     }
 
@@ -563,8 +571,12 @@ impl MountDevice {
             );
             return Ok(());
         }
-        let ra_ticks = mechanical_ha_to_ra_ticks(mech_ha, params.cpr_ra);
-        let dec_ticks = dec_degrees_to_ticks(dec_deg, params.cpr_dec);
+        let ra_ticks = MechHa::new(mech_ha)
+            .to_ticks(Cpr::new(params.cpr_ra))
+            .value();
+        let dec_ticks = MechDec::new(dec_deg)
+            .to_ticks(Cpr::new(params.cpr_dec))
+            .value();
         self.reset_mount_encoders(session, ra_ticks, dec_ticks)
             .await?;
         info!(
@@ -611,14 +623,26 @@ impl MountDevice {
         let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
         let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
         let (ra_ticks, dec_ticks) = if target_is_flipped {
-            target_encoder_flipped(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+            target_encoder_flipped(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
         } else {
-            target_encoder_normal(ra, dec, lst, params.cpr_ra, params.cpr_dec)
+            target_encoder_normal(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
         };
         // Refuse before any wire motion if the slew target falls
         // outside the configured mechanical envelope for the chosen
         // pier side.
-        self.check_within_safe_envelope(ra, dec, lst, target_is_flipped)?;
+        self.check_within_safe_envelope(ra, dec, lst.value(), target_is_flipped)?;
 
         // Atomically reserve the in-progress slot **before** issuing
         // any motion. Latch the target + capture the tracking flag in
@@ -646,8 +670,8 @@ impl MountDevice {
         let result: ASCOMResult<()> = async {
             let snap = self.manager.snapshot().await;
             let current_side = side_of_pier_calc(
-                snap.dec.position_ticks,
-                params.cpr_dec,
+                DecTicks::new(snap.dec.position_ticks),
+                Cpr::new(params.cpr_dec),
                 self.config.site_latitude_deg,
             );
             let is_flip_slew = current_side != chosen_side;
@@ -655,12 +679,10 @@ impl MountDevice {
             // landed outside `[−cpr/2, +cpr/2)` after a prior
             // through-wrap flip doesn't trigger a full-revolution
             // correction here.
-            let ra_delta_canonical =
-                fold_to_canonical_band(ra_ticks - snap.ra.position_ticks, params.cpr_ra);
-            let binding_zone = (
-                self.config.binding_zone_min_hours,
-                self.config.binding_zone_max_hours,
-            );
+            let ra_delta_canonical = RaTicks::new(ra_ticks.value() - snap.ra.position_ticks)
+                .fold_to_canonical_band(Cpr::new(params.cpr_ra))
+                .value();
+            let binding_zone = self.config.cw_exclusion_zone.bounds();
             let ra_delta = if is_flip_slew {
                 // Flip slews steer the polar-axis sweep out of the
                 // CW exclusion zone — see
@@ -688,8 +710,9 @@ impl MountDevice {
                 )?;
                 ra_delta_canonical
             };
-            let dec_delta_canonical =
-                fold_to_canonical_band(dec_ticks - snap.dec.position_ticks, params.cpr_dec);
+            let dec_delta_canonical = DecTicks::new(dec_ticks.value() - snap.dec.position_ticks)
+                .fold_to_canonical_band(Cpr::new(params.cpr_dec))
+                .value();
             let dec_delta = if is_flip_slew {
                 // Flip slews force the Dec axis to traverse the
                 // visible celestial pole (NCP for north, SCP for

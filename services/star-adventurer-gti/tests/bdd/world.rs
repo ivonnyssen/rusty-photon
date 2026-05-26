@@ -19,7 +19,9 @@ use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
-use star_adventurer_gti::{Config, MountConfig, ServerConfig, TransportConfig, UsbConfig};
+use star_adventurer_gti::{
+    Config, CwExclusionZone, MountConfig, ServerConfig, TransportConfig, UsbConfig,
+};
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -220,15 +222,14 @@ fn default_test_config() -> Config {
             // BDD scenarios pass hardcoded RA / Dec targets (the
             // canonical example is `RA = 6.0 h, Dec = 30°`) whose
             // computed mech-HA depends on wallclock LST. Disable the
-            // binding-zone safety gate (empty range: min > max) so
-            // those scenarios don't intermittently trip
+            // binding-zone safety gate (`CwExclusionZone::Disabled`,
+            // JSON `null`) so those scenarios don't intermittently trip
             // `INVALID_VALUE` when the test happens to run at an
             // LST that puts the target inside the default
-            // `(6.95, 11.05)` zone. The gate itself is exercised by
+            // `(0.95, 11.05)` zone. The gate itself is exercised by
             // the unit tests in
             // `mount_device::tests::slew_async_refuses_ra_target_in_binding_zone`.
-            binding_zone_min_hours: 24.0,
-            binding_zone_max_hours: 0.0,
+            cw_exclusion_zone: CwExclusionZone::Disabled,
             ..MountConfig::default()
         },
     }

@@ -35,8 +35,8 @@ use tracing::{debug, warn};
 
 use crate::codec::SkywatcherCodec;
 use crate::config::MountConfig;
-use crate::coordinates::ra_ticks_to_mechanical_ha;
 use crate::manager::MountManager;
+use crate::units::{Cpr, RaTicks};
 
 use super::DriverState;
 
@@ -59,8 +59,8 @@ type SessionSlot = Arc<RwLock<Option<Session<SkywatcherCodec>>>>;
 /// guard — the same convention the slew-path binding-zone check uses.
 /// A non-finite or negative `margin` is treated as `0.0` (stop exactly
 /// at zone entry) so a bad value fails safe rather than open. Config-file
-/// margins are already rejected at load by
-/// [`crate::config::MountConfig::validate`]; this sanitisation is
+/// margins are already rejected at load — [`crate::config::TrackingGuardMarginHours`]
+/// validates at deserialize time; this sanitisation is
 /// defense-in-depth for construction paths that bypass that check
 /// (programmatic configs, tests).
 pub(super) fn tracking_guard_breached(mech_ha: f64, zone: (f64, f64), margin: f64) -> bool {
@@ -106,7 +106,9 @@ pub(super) async fn tracking_guard_tick(
         return false;
     };
     let snap = manager.snapshot().await;
-    let mech_ha = ra_ticks_to_mechanical_ha(snap.ra.position_ticks, params.cpr_ra);
+    let mech_ha = RaTicks::new(snap.ra.position_ticks)
+        .to_mech_ha(Cpr::new(params.cpr_ra))
+        .value();
     if !tracking_guard_breached(mech_ha, zone, margin) {
         return false;
     }
@@ -166,8 +168,8 @@ pub(super) fn spawn_tracking_guard(
     config: MountConfig,
     polling_interval: Duration,
 ) {
-    let zone = (config.binding_zone_min_hours, config.binding_zone_max_hours);
-    let margin = config.tracking_guard_margin_hours;
+    let zone = config.cw_exclusion_zone.bounds();
+    let margin = config.tracking_guard_margin_hours.value();
     tokio::spawn(async move {
         let mut ticker = interval(polling_interval);
         // Skip the immediate first tick (matches the background poll
