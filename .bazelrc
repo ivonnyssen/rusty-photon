@@ -38,6 +38,14 @@ test --test_tag_filters=-requires-cargo,-bdd
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
+# Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
+# symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves
+# over the wire — keeping them small matters for a LAN cache and keeps CAS
+# blobs under the Cloudflare Worker cache's 100 MB request-body (write) limit.
+# Plural `extra_rustc_flags` (a list) so it composes with the per-OS
+# `extra_rustc_flag` linker setting below rather than overriding it.
+build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
+
 # --- Platform-specific config -----------------------------------------------
 
 # Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
@@ -88,8 +96,10 @@ build --disk_cache=~/.cache/bazel-disk-cache
 # --- CI-specific config ----------------------------------------------------
 
 # Activate with `bazel build --config=ci --config=remote-cache` in GitHub
-# Actions. The API key is passed on the command line via --remote_header
-# (not checked in). See .github/workflows/bazel.yml.
+# Actions. On trusted events (push to main, nightly) a write token is passed
+# via --remote_header="Authorization=Bearer <token>" (not checked in); PRs read
+# anonymously and add --remote_upload_local_results=false. See
+# .github/workflows/bazel.yml.
 
 build:ci --color=yes
 build:ci --show_timestamps
@@ -102,12 +112,15 @@ test:ci --test_output=errors
 test:ci --test_summary=terse
 
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
-# developers don't accidentally upload to the shared cache with unvetted
-# credentials. CI jobs combine: --config=ci --config=remote-cache.
-build:remote-cache --bes_backend=grpcs://remote.buildbuddy.io
-build:remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
-build:remote-cache --remote_cache=grpcs://remote.buildbuddy.io
-build:remote-cache --remote_cache_compression
+# developers don't accidentally point at the shared cache. CI jobs combine:
+# --config=ci --config=remote-cache.
+#
+# Backend: a Cloudflare Worker + R2 edge cache. Public-READ (every PR,
+# including forks, gets a warm cache) and token-WRITE (only push-to-main and
+# the nightly schedule hold the Bearer token — see bazel.yml). Worker code and
+# deploy steps: tools/bazel-cache-worker/. For local builds, override this in a
+# gitignored user.bazelrc to point at a LAN bazel-remote instead.
+build:remote-cache --remote_cache=https://cache.rustyphoton.space
 
 # --- Local overrides -------------------------------------------------------
 

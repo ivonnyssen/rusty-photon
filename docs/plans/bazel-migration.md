@@ -4,6 +4,23 @@
 **Started:** 2026-04-16
 **Target cutover:** TBD (dependent on shadow-mode validation)
 
+## Decisions (2026-05-24)
+
+Three decisions taken to shorten the path to a Bazel-primary cutover (Phase 7):
+
+1. **Cache backend: a Cloudflare Worker + R2 edge cache** (public-read /
+   token-write), replacing the BuildBuddy free tier. Served from the edge so
+   cloud CI isn't bottlenecked, ~$0 (R2 has no egress fees), retention
+   controlled via an R2 lifecycle rule. Code + deploy:
+   [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md);
+   overview: [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
+2. **Leptos / `sentinel-app` WASM: abandoned.** Not used today; Phase 4 is
+   dropped, not deferred.
+3. **Release packaging: stays on Cargo permanently.** We release far less often
+   than we merge, so `release.yml` keeps using `cargo-deb` /
+   `cargo-generate-rpm`; Phase 6 is dropped. "Bazel-primary" applies to the
+   per-PR build/test path only.
+
 ## Motivation
 
 Three concrete problems drive this migration:
@@ -18,15 +35,15 @@ Bazel's remote cache is the structural fix for items 1 and 2 — the cache is co
 
 **In-scope:**
 - All 11 workspace crates build and test under Bazel.
-- Remote cache wired up (BuildBuddy free tier to start; self-host later if needed).
+- Remote cache wired up. Bootstrapped on the BuildBuddy free tier; now a Cloudflare Worker + R2 cache (see Decisions, 2026-05-24).
 - New GHA workflow running Bazel in shadow mode; Cargo remains required until parity.
 - BDD cucumber tests run under Bazel via custom `rust_test` wrappers.
-- `sentinel-app` Leptos WASM compiles under Bazel.
-- Release packaging (`cargo-deb`, `cargo-generate-rpm`) migrated to `rules_pkg`.
-- Documentation (`CLAUDE.md`, `docs/skills/pre-push.md`) updated.
+- Documentation (`CLAUDE.md`, `docs/skills/pre-push.md`, `docs/skills/bazel-remote-cache.md`) updated.
 
-**Out-of-scope (deferred):**
+**Out-of-scope (deferred or dropped):**
 - Removing Cargo entirely. `Cargo.toml` remains the source of truth for dependency versions via `crate_universe`'s `from_cargo`. Developers can still run `cargo` locally for IDE/rust-analyzer support.
+- **Leptos / `sentinel-app` WASM (dropped 2026-05-24).** Not used today; Phase 4 cancelled.
+- **Release packaging (dropped 2026-05-24).** `release.yml` stays on `cargo-deb` / `cargo-generate-rpm`; we release far less often than we merge. Phase 6 cancelled.
 - Miri under Bazel. rules_rust miri support is thin; keep the scheduled Cargo job.
 - ConformU runs. External ASCOM tool; keep the existing Cargo invocation.
 - Migrating `cargo-husky` pre-commit hooks. Bazel-native alternative would be a `sh_binary` hook installer, but out of scope here.
@@ -91,31 +108,38 @@ repo root/
 
 **Exit criteria met:** `bazel test --test_tag_filters=bdd //...` passes on Linux (5 targets, ~150 s wall on a warm cache — dominated by rp:bdd at ~150 s with 84 scenarios; the other four targets overlap in parallel and add negligible wall time).
 
-### Phase 4 — `sentinel-app` WASM (later)
-- [ ] `rust_shared_library` with `crate_type = ["cdylib", "rlib"]`.
-- [ ] `wasm_bindgen` integration via rules_rust's `@rules_rust//wasm_bindgen`.
-- [ ] `select()` on `@platforms//cpu:wasm32` for hydrate feature.
-- [ ] ssr feature as a default build target.
+### Phase 4 — `sentinel-app` WASM (DROPPED 2026-05-24)
 
-**Exit criteria:** `bazel build //services/sentinel-app:sentinel_app_wasm` produces the same `.wasm` + JS bindings that `cargo leptos build` does today.
+Cancelled: Leptos is not used today, so `sentinel-app` stays out of the Bazel
+graph. If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
+`@platforms//cpu:wasm32` / hydrate+ssr approach noted in earlier revisions is
+the starting point.
 
-### Phase 5 — Remote cache + CI (DONE)
-- [x] `.github/workflows/bazel.yml` — triggers on PR, push to main, and a nightly schedule (07:07 UTC), runs `bazel test //...` with remote cache. The nightly run keeps the BuildBuddy LRU warm during quiet stretches on main: free-tier eviction is capacity-driven with no documented retention, and PR builds use a read-only key so they cannot repopulate the cache themselves.
-- [x] BuildBuddy free tier credentials in GHA secrets (`BUILDBUDDY_API_KEY` read+write for push to main and the nightly schedule, `BUILDBUDDY_API_KEY_READONLY` for PRs to prevent cache poisoning).
+### Phase 5 — Remote cache + CI (DONE; cache backend swapped 2026-05-24)
+- [x] `.github/workflows/bazel.yml` — triggers on PR, push to main, and a nightly schedule (07:07 UTC), runs `bazel test //...` with remote cache.
+- [x] Bootstrap backend: BuildBuddy free tier (read+write token on push/schedule, read-only token on PRs).
 - [x] Shadow mode: job is **not required** for merges; runs alongside Cargo jobs for 2+ weeks of parity validation.
-- [ ] Compare wall-clock and correctness against Cargo jobs weekly.
+- [x] **Cache backend swapped to a Cloudflare Worker + R2 edge cache** (public-read / token-write). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs get a warm cache too. Served from the edge (no origin uplink in the path), retention via an R2 lifecycle rule — replacing the BuildBuddy LRU cold-cache outliers. Code + deploy: [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
+- [x] `.bazelrc` hostname set to `cache.rustyphoton.space` (zone `rustyphoton.space` verified on Cloudflare 2026-05-24).
+- [ ] Add the `BAZEL_CACHE_WRITE_TOKEN` GHA secret and deploy the Worker + R2 ([tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md)).
+- [ ] Compare wall-clock and correctness against Cargo jobs weekly (≥1 week on the new cache).
 
 **Exit criteria:** Bazel CI job green for 2 consecutive weeks with no flakes; wall-clock within ±20 % of Cargo or better.
 
-### Phase 6 — Packaging (later)
-- [ ] `rules_pkg` for `.deb` (filemonitor today; eventually all services).
-- [ ] `rules_pkg` for `.rpm`.
-- [ ] Windows service wrapping via `pkg_zip` or equivalent.
-- [ ] `.github/workflows/release.yml` switched to Bazel.
+### Phase 6 — Packaging (DROPPED 2026-05-24)
 
-**Exit criteria:** release artifacts byte-identical (or functionally equivalent) to the Cargo path.
+Cancelled: `release.yml` stays on `cargo-deb` / `cargo-generate-rpm`. Release
+cadence is far lower than merge cadence, so the Bazel-primary goal targets the
+per-PR build/test path only; packaging keeps running on Cargo indefinitely.
 
 ### Phase 7 — Cutover (later)
+
+With Phase 4 (Leptos) and Phase 6 (packaging) dropped, cutover no longer waits
+on them. Remaining prerequisites: the cache live + parity logged
+(Phase 5), the Cargo-only gates (miri, sanitizers, conformu, `cargo-hack`,
+`cargo-msrv`, coverage) kept on a Cargo nightly, and the `rust-project.json`
+IDE decision (open question 4).
+
 - [ ] Bazel job becomes **required** on PRs.
 - [ ] Cargo CI jobs moved to a scheduled nightly (as safety net).
 - [ ] `docs/skills/pre-push.md` rewritten for `bazel test //...` as the primary pre-push command.
@@ -140,7 +164,7 @@ After Phase 7: the Cargo nightly job remains as a safety net for 30 days. Rollba
 | Leptos hydrate/ssr WASM rules are missing | High | Defer to Phase 4; prototype separately before committing. If blocked, keep `cargo leptos` as an escape hatch via `genrule`. |
 | rust-analyzer breaks under Bazel | Medium | Developers can still use Cargo locally (it's not removed). `rust-project.json` generator from rules_rust is also available. |
 | Team learning curve | Certain | This plan doc + pair programming on first few BUILD files. |
-| BuildBuddy free tier exceeded | Low | Self-host `bazel-remote` on a $5 VPS if we outgrow 100 GB/month transfer. |
+| Remote cache unavailable / cold | Low | Resolved: a Cloudflare Worker + R2 edge cache with retention via an R2 lifecycle rule. Bazel treats remote-cache errors as non-fatal (warns, builds locally), so a cache outage degrades to a cold build rather than a CI failure. |
 | `aws-lc-sys` build fails on Windows under Bazel (MAX_PATH + bswap) | Hit | Four fixes: (1) shortened `from_cargo` name from `"crates"` to `"cr"` — the repo name appears twice in every build-script runfiles path, saving 8 chars; (2) `build_script_data_glob = ["**"]` annotation ensures all vendored C files are materialised in Bazel's runfiles; (3) `AWS_LC_SYS_NO_JITTER_ENTROPY=1` disables jitterentropy on Windows — its `tree_drbg_jitter_entropy.c` uses a deep `../../../../` relative `#include` whose un-normalised intermediate form (~280 chars) exceeds MSVC's MAX_PATH; (4) `AWS_LC_SYS_CFLAGS=/we4013` promotes MSVC's implicit-function-declaration warning to an error — the cc-crate builder's feature check for `__builtin_bswap*` wrongly passes because cl.exe in C89 mode treats GCC built-ins as implicit declarations (C4013, level 3) without emitting the warning at the default `/W1` level; `/we4013` makes the check fail correctly so aws-lc uses MSVC's `_byteswap_*` intrinsics. We use `AWS_LC_SYS_CFLAGS` (not plain `CFLAGS`) because rules_rust overrides `CFLAGS` in the build-script environment with its own MSVC flags; the crate-specific variant is read first by `get_crate_cflags()` and propagated to `CFLAGS_<target>` before the feature checks run. |
 
 ## Success metrics
@@ -230,6 +254,6 @@ Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention (e.g. `RP_BIN
 ## Open questions
 
 1. **bzlmod vs WORKSPACE.** Starting with bzlmod. Fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress.
-2. **Remote cache vendor.** Starting with BuildBuddy free tier. Consider self-hosted `bazel-remote` on a dedicated VM once cache size exceeds 10 GB.
+2. **Remote cache vendor.** RESOLVED (2026-05-24): a Cloudflare Worker + R2 edge cache, public-read / token-write. See Decisions and [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
 3. **TypeScript addition.** Deferred until UI work actually starts. `rules_js` and `aspect_rules_ts` are bzlmod-first — will integrate cleanly then.
 4. **rust-analyzer.** Does the team use cargo directly for IDE, or do we need `rust-project.json` generation from rules_rust? Decide after Phase 2.

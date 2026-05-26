@@ -19,6 +19,11 @@ jobs:
   nightly:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Explicit timeout — see test.yml's plan job. The `cargo test --test bdd`
+    # step intermittently hangs; without a cap GitHub's 360 min default let
+    # the `scheduled / ubuntu / beta*` jobs burn a full 6 h. 30 min is ~2x
+    # the ~12-15 min healthy run.
+    timeout-minutes: 30
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v5
@@ -46,6 +51,7 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Discover Miri Services
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       services: ${{ steps.find.outputs.services }}
       has_services: ${{ steps.find.outputs.has_services }}
@@ -76,6 +82,7 @@ jobs:
     if: github.event_name != 'pull_request' && needs.discover-miri.outputs.has_services == 'true'
     needs: discover-miri
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: scheduled / ubuntu / miri / ${{ matrix.service.name }}
     strategy:
       fail-fast: false
@@ -105,6 +112,7 @@ jobs:
     # Cargo semver rules (i.e cargo does not update to a new major version unless explicitly told
     # to).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: scheduled / ubuntu / beta / updated
     # There's no point running this if no Cargo.lock was checked in in the first place, since we'd
     # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
@@ -143,6 +151,7 @@ jobs:
   beta:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: scheduled / ubuntu / beta
     steps:
       - uses: actions/checkout@v5
@@ -179,6 +188,7 @@ jobs:
     needs: [nightly, discover-miri, miri, update, beta]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
     steps:
