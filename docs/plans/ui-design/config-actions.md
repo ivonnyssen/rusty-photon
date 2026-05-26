@@ -43,7 +43,7 @@ anything. Decisions reached during design exploration:
 | Process restart | **Sentinel** `service.restart(name)` via configured command | Already the sanctioned design (`rp.md:2759-2767`, watchdog plan's `Restarter`). Reserved for recovery/escalation. |
 | First driver | **`dsd-fp2`** | Single device, smallest config, first shared-transport adopter. |
 | Form rendering | **Hand-built first**, schema-driven later | Prove protocol + the designed look on one driver; generalise after. |
-| No-`--config` driver | **Persist to an XDG default path** (`~/.config/rusty-photon/<service>.json`) | A config path is *always* resolvable, so editing is never disabled; startup/reload read it if present. |
+| No-`--config` driver | **Persist to the platform config directory** (e.g. `~/.config/rusty-photon/<service>.json` on Linux) | A config path is *always* resolvable, so editing is never disabled; startup/reload read it if present. |
 | Driver auth on config actions | **No per-action gate**; rely on the server-wide auth/TLS the driver already runs | Matches ASCOM Alpaca — `action` is just another device method; auth and transport security are orthogonal concerns handled by `rp-auth`/`rp-tls`. |
 | Config layers | **Distinguish file vs. CLI-override** | `config.get` marks CLI-override-pinned fields; `config.apply` does not persist them, so a transient `--port` can't be baked into the file. |
 
@@ -123,8 +123,8 @@ Config { serial:{port, baud_rate, polling_interval, timeout},
    `{"status":"invalid","errors":[…]}` — a *domain* error the BFF renders as
    field-level messages, distinct from a transport/ASCOM error.
 3. **Persist** the new config atomically to the resolved config path
-   (stage temp → fsync → rename → fsync dir), creating parent dirs for the XDG
-   default. **CLI-override-pinned fields are written through from the file's
+   (stage temp → fsync → rename → fsync dir), creating parent dirs for the
+   platform default. **CLI-override-pinned fields are written through from the file's
    prior value, not the submitted value** (layer-aware persist), and listed in
    `skipped_override[]`.
 4. **Classify** each changed field into `applied` (live), `reload`, or
@@ -140,8 +140,8 @@ Config { serial:{port, baud_rate, polling_interval, timeout},
   or a wrong `serial.port` becomes unfixable (can't connect to fix the thing that
   blocks connecting). This is a deliberate choice in our `action()` impl.
 - **Always has a config path.** A persist target is *always* resolvable: the
-  explicit `--config` path if given, else an XDG default
-  (`~/.config/rusty-photon/<service>.json`). Startup and reload read this path
+  explicit `--config` path if given, else the platform config directory (e.g.
+  `~/.config/rusty-photon/<service>.json` on Linux). Startup and reload read this path
   if it exists (falling back to `Config::default()` otherwise), and
   `config.apply` persists there. Editing is therefore never disabled for lack of
   a path. (Resolved — see Open questions; previously this rejected when started
@@ -169,10 +169,23 @@ ServiceRunner::new("dsd-fp2")
         loop {
             let config = load_effective_config(&config_path, &overrides)?; // re-read each cycle
             let bound = ServerBuilder::new().with_config(config).build().await?;
-            tokio::select! {
-                result = bound.start(shutdown.cancelled()) => return result,
-                () = reload.recv() => { /* close transport cleanly, then */ continue }
-            }
+            // Stop on shutdown *or* reload, recording which fired, and await
+            // start() to completion so the server's own teardown runs.
+            let reloaded = Arc::new(AtomicBool::new(false));
+            let stop = {
+                let reloaded = Arc::clone(&reloaded);
+                let shutdown = shutdown.cancelled();
+                let reload = reload.clone();
+                async move {
+                    tokio::select! {
+                        () = shutdown => {}
+                        () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                    }
+                }
+            };
+            bound.start(stop).await?;
+            if reloaded.load(Ordering::SeqCst) { continue; } // rebuild from new config
+            return Ok(());
         }
     })
 ```
@@ -195,16 +208,15 @@ Three mechanics must be handled deliberately:
    re-`config.get`." This is the same race a process restart would have; reload
    still wins (no supervisor, no cross-process socket churn, faster).
 3. **Clean teardown.** The shared transport prefers explicit `close().await` over
-   drop-teardown ("`close().await` primary, `Drop` detached fallback"). Before
-   `continue`, the reload arm must close the serial connection so the port is not
-   briefly double-held when a client reconnects to the rebuilt server.
-   **Resolved without a shared-transport change:** `ascom-alpaca`'s `register`
-   accepts an `Arc<dyn CoverCalibrator>`, so `build()` keeps an
-   `Arc<DsdFp2Device>` handle and `BoundServer` exposes it via `device()`. The
-   reload arm calls `device.set_connected(false).await` — the inline, awaited
-   `Session::close` path — before the old `BoundServer` future is dropped,
-   giving deterministic port teardown. (Idempotent: a no-op when no client was
-   connected.)
+   drop-teardown ("`close().await` primary, `Drop` detached fallback"), so the old
+   server must tear down before the rebuilt one binds. Rather than dropping the
+   `start()` future on reload, the loop passes a combined *stop* future
+   (shutdown-or-reload, recording which fired) into `bound.start(stop)` and
+   **awaits it to completion**. `BoundServer`'s own shutdown then runs —
+   gracefully draining HTTP connections and calling `transport.shutdown()` to
+   release the serial port — before the loop rebuilds from the new config, so the
+   port is never double-held. (Reconciled with #302's service-lifetime transport
+   lifecycle, which made `start()` own the teardown.)
 
 If a field cannot be reloaded cleanly, `config.apply` returns it in
 `restart_required[]` and the BFF escalates to Sentinel — keeping the protocol
@@ -302,8 +314,8 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 ## Phased plan
 
 **Phase 1 — `dsd-fp2` config actions + reload (driver-side, fully testable in mock mode). ✅ Landed.**
-- Add the XDG config-path resolver (`--config` else
-  `~/.config/rusty-photon/dsd-fp2.json`, via the `directories` workspace dep) +
+- Add the platform config-path resolver (`--config` else the platform config dir
+  — e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux — via the `directories` workspace dep) +
   CLI-override tracking (`--port`, `--server-port`).
 - Fire reload from `config.apply` via the already-public `ReloadSignal::notify()`
   (no lifecycle-crate change needed).
@@ -359,8 +371,8 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 
 ### Resolved (2026-05-24)
 
-- **No-`--config` drivers** → **write to an XDG default path**
-  (`~/.config/rusty-photon/<service>.json`), not refuse. A path is always
+- **No-`--config` drivers** → **write to the platform config directory**
+  (e.g. `~/.config/rusty-photon/<service>.json` on Linux), not refuse. A path is always
   resolvable, so editing is never disabled; startup/reload read it if present.
 - **No-auth drivers** → **all surfaces work; no per-action gate.** Config
   actions match ASCOM Alpaca semantics — they are protected by the server-wide

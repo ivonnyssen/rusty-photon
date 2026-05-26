@@ -337,10 +337,12 @@ cargo build --all-features --all-targets
 cargo test  --all-features --test bdd -p ui-htmx
 ```
 
-The driver is spawned on a fixed (not OS-assigned) port written into its config,
-so its in-process reload rebinds the *same* port and the BFF can reconnect to it
-(the override scenario additionally spawns the driver with `--port` via
-`ServiceHandle::start_with_args`). Scenarios:
+The driver binds port 0, so the OS assigns a free port atomically (no racy
+preselection); the test discovers it from the driver's `bound_addr=` stdout line.
+The one scenario that reloads and reconnects first pins that bound port into the
+driver's config via a direct `config.apply`, so the in-process reload rebinds the
+*same* port and the BFF can reconnect (the override scenario additionally spawns
+the driver with `--port` via `ServiceHandle::start_with_args`). Scenarios:
 
 - The config page renders the driver's current configuration.
 - A serial-port override is shown read-only with an explanation.
