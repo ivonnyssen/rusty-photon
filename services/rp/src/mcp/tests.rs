@@ -79,6 +79,13 @@ struct MockCamera {
     /// `0` ⇒ default 65535. Any other value is returned verbatim — set
     /// to `> u16::MAX` to exercise the I32 cache-insert path.
     max_adu_value: u32,
+    /// When set, `image_ready` reports `false` forever — simulating a
+    /// camera that never completes (a failed or wedged exposure).
+    never_ready: bool,
+    /// When set, `camera_state` reports `Error` — simulating a camera
+    /// that failed an exposure (e.g. sky-survey-camera's mount read
+    /// timing out). Drives the `do_capture` failed-exposure path.
+    report_error_state: bool,
 }
 
 impl_mock_device!(MockCamera);
@@ -100,7 +107,18 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_image_ready {
             return Err(ASCOMError::invalid_operation("readout failed"));
         }
-        Ok(true)
+        Ok(!self.never_ready)
+    }
+
+    async fn camera_state(
+        &self,
+    ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::CameraState> {
+        use ascom_alpaca::api::camera::CameraState;
+        Ok(if self.report_error_state {
+            CameraState::Error
+        } else {
+            CameraState::Idle
+        })
     }
 
     async fn image_array(
@@ -863,6 +881,56 @@ async fn test_capture_image_array_fails() {
         }))
         .await;
     assert_tool_error(result, "failed to download image array");
+}
+
+#[tokio::test]
+async fn test_capture_failed_exposure_surfaces_error_not_hang() {
+    // Regression for the 6 h CI hang: a camera that *fails* an exposure
+    // reports `CameraState::Error` and leaves `ImageReady` false forever.
+    // `do_capture` must surface that as an error rather than polling
+    // `ImageReady` indefinitely. `fail_image_array` makes `image_array`
+    // carry the stored failure detail, mirroring sky-survey-camera after a
+    // follow-mode mount-read timeout. The outer `timeout` guard fails the
+    // test loudly (rather than hanging the suite) if the loop regresses.
+    let cam = MockCamera {
+        never_ready: true,
+        report_error_state: true,
+        fail_image_array: true,
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        handler.capture(Parameters(CaptureParams {
+            camera_id: "cam".into(),
+            duration: Duration::from_millis(100),
+        })),
+    )
+    .await
+    .expect("do_capture hung on a failed exposure instead of returning an error");
+    assert_tool_error(result, "exposure failed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_capture_times_out_when_camera_never_ready() {
+    // Backstop: a camera wedged not-ready *without* signalling an Error
+    // state must still not hang forever — the `duration + CAPTURE_READOUT_
+    // GRACE` deadline ends the loop. `start_paused` auto-advances tokio's
+    // clock so the ~120 s deadline is reached without real waiting.
+    let cam = MockCamera {
+        never_ready: true,
+        // report_error_state defaults false → camera_state == Idle, so the
+        // Error branch never trips and only the deadline can end the loop.
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let result = handler
+        .capture(Parameters(CaptureParams {
+            camera_id: "cam".into(),
+            duration: Duration::from_millis(100),
+        }))
+        .await;
+    assert_tool_error(result, "timeout waiting for image_ready");
 }
 
 // -----------------------------------------------------------------------
