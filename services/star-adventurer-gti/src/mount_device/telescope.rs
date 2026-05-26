@@ -770,21 +770,39 @@ impl Telescope for MountDevice {
         //      slew_to_coordinates_async() now set this *before*
         //      issuing motion (with rollback-on-error), so the
         //      flag observation here is reliable.
-        //   2. The latest wire snapshot's `running` flag: defense
-        //      in depth against an axis that's running for any
-        //      reason the in-memory flag wouldn't capture (a
-        //      tracking pulse, an external `:J` from a future
-        //      out-of-band path, a flag-set racing the wire send).
-        //      The snapshot is updated by the background poller at
-        //      `polling_interval`; the window where snapshot lags
-        //      reality is bounded by that interval.
+        //   2. A fresh wire read of each axis' `running` flag (below):
+        //      defense in depth against an axis that's running for any
+        //      reason the in-memory flag wouldn't capture (a tracking
+        //      pulse, an external `:J` from a future out-of-band path,
+        //      a flag-set racing the wire send).
         if self.state.read().await.slew_in_progress {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetPark refused while slew or park is in progress",
             ));
         }
-        let snap = self.manager.snapshot().await;
+        // Read the encoder pair **fresh** from the wire, not from the
+        // background poll snapshot. SetPark captures the *current*
+        // encoder pair, but the cached snapshot lags the wire by up to
+        // one `polling_interval` — reading it could persist a stale
+        // position when the operator moved the mount out-of-band just
+        // before SetPark. The lag also made the BDD persistence scenario
+        // flaky on slow CI (issue #308): the eager service-start
+        // handshake seeds the snapshot *before* the test sets the
+        // encoder, and the user's connect is a refcount bump rather than
+        // a fresh handshake, so the captured position hinged on a
+        // background poll landing in that gap. A synchronous
+        // `poll_axes_now` removes the timing dependency (and refreshes
+        // the cache as a side effect). Same session-read idiom as
+        // `set_tracking` / `stop_and_wait`.
+        let snap = {
+            let guard = self.session.read().await;
+            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+            self.manager
+                .poll_axes_now(session)
+                .await
+                .map_err(ASCOMError::from)?
+        };
         if snap.ra.running || snap.dec.running {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,

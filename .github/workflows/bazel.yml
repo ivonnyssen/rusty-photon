@@ -157,17 +157,12 @@ jobs:
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
-        # run them explicitly in their own step. `--test_env=OMNISIM_PATH`
-        # forwards the install-omnisim composite action's pinned binary
-        # path into test sandboxes; `bdd_infra::rp_harness::OmniSimHandle::start`
-        # consumes it via the binary lookup in
-        # `crates/bdd-infra/src/rp_harness/omnisim.rs`. We deliberately do
-        # NOT use `--test_env=PATH` here:
-        # the runner's full PATH is large and on Windows differs between
-        # `push` and `pull_request` events, which would bake unstable
-        # values into every BDD test action's cache key and silently
-        # invalidate every cache entry across event types. Pinning
-        # `OMNISIM_PATH` keeps the action key stable.
+        # run them explicitly in their own step. They need OMNISIM_PATH (the
+        # install-omnisim action's pinned binary path, consumed by
+        # `bdd_infra::rp_harness::OmniSimHandle::start`), forwarded via
+        # `--test_env=OMNISIM_PATH` — which lives in `.bazelrc` `build:ci` so it
+        # applies to every step and the flag never changes mid-run (a changing
+        # --test_env discards Bazel's analysis cache; see .bazelrc for the why).
         # On macOS, darwin-sandbox blocks OmniSim from binding network
         # ports; --spawn_strategy=local bypasses the sandbox for tests.
         run: |
@@ -180,7 +175,7 @@ jobs:
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             REMOTE_FLAGS+=(--spawn_strategy=local)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd --test_env=OMNISIM_PATH \
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
             --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" \
             --profile="${RUNNER_TEMP}/bdd-profile.json.gz" \
             --noslim_profile \

@@ -1,0 +1,138 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
+    "//crates/skywatcher-motor-protocol:skywatcher-motor-protocol",
+]
+
+rust_library(
+    name = "star-adventurer-gti_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "star_adventurer_gti",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "star-adventurer-gti",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "star-adventurer-gti"},
+    visibility = ["//visibility:public"],
+    deps = [":star-adventurer-gti_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "star-adventurer-gti_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":star-adventurer-gti_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# tests/test_lib.rs exercises the server end-to-end behind the `mock` feature
+# (it serializes server start/stop via a Mutex). Like the BDD targets, it needs
+# the mock-feature lib variant.
+rust_test(
+    name = "test_lib",
+    srcs = ["tests/test_lib.rs"],
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["mock"],
+    crate_root = "tests/test_lib.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":star-adventurer-gti_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# conformu_integration: cfg(feature = "conformu"); deferred (run under Cargo).
+
+# BDD cucumber tests spawn a mock-feature binary — separate lib+bin compiled
+# with crate_features = ["mock"] (features are compile-time, not per-target).
+rust_library(
+    name = "star-adventurer-gti_lib_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "star_adventurer_gti",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "star-adventurer-gti_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "star-adventurer-gti"},
+    deps = [":star-adventurer-gti_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # 130+ scenarios, each spawning a service process; generous timeout.
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":star-adventurer-gti_mock",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/star-adventurer-gti",
+        "STAR_ADVENTURER_GTI_BINARY": "$(rootpath :star-adventurer-gti_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME.
+    rustc_env = {"CARGO_PKG_NAME": "star-adventurer-gti"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":star-adventurer-gti_lib",
+        "//crates/bdd-infra:bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

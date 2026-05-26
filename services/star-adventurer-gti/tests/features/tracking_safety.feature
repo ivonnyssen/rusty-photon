@@ -1,8 +1,8 @@
 Feature: Tracking-time exclusion-zone safety guard
   While Tracking = true a background guard watches the live encoder
   mech_HA and stops the mount (:K1) before tracking drift can carry the
-  counterweights into the CW exclusion zone (mech_HA inside
-  (binding_zone_min_hours, binding_zone_max_hours), default
+  counterweights into the CW exclusion zone (mech_HA inside the active
+  cw_exclusion_zone interval (min_hours, max_hours), default
   (0.95, 11.05) h). The guard fires once mech_HA enters the band widened
   by tracking_guard_margin_hours on each edge -- the configurable margin
   (default 0.05 h, ~45 s of sidereal drift) lets cautious operators stop

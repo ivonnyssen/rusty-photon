@@ -23,10 +23,11 @@ cd "$(git rev-parse --show-toplevel)"
 # moment its BUILD.bazel lands; the cutover (docs/plans/bazel-migration.md
 # Phase 7) should not flip until this list is empty. Inline "# reason"
 # comments are allowed and stripped before comparison.
+#
+# This list is now EMPTY: every Cargo workspace member has a Bazel target
+# (Gate B closed). Only re-add an entry if you intentionally land a Cargo crate
+# without a BUILD.bazel — with a reason.
 read -r -d '' EXPECTED_GAPS <<'GAPS' || true
-crates/skywatcher-motor-protocol  # plain library; BUILD.bazel pending (cutover prereq)
-services/dsd-fp2                   # CoverCalibrator service; BUILD.bazel pending
-services/star-adventurer-gti       # mount service; BUILD.bazel pending
 GAPS
 
 tmp=$(mktemp -d)
