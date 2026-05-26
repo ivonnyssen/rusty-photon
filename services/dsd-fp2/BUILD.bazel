@@ -1,0 +1,118 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
+]
+
+rust_library(
+    name = "dsd-fp2_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "dsd_fp2",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "dsd-fp2",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to
+    # the Bazel target name); keeps anything that reads env!("CARGO_PKG_NAME")
+    # consistent with Cargo, and identical to the _mock binary below.
+    rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
+    visibility = ["//visibility:public"],
+    deps = [":dsd-fp2_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "dsd-fp2_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":dsd-fp2_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# conformu_integration: cfg(feature = "conformu"); deferred (run under Cargo).
+
+# BDD cucumber tests spawn a mock-feature binary. Features are a compile-time
+# concept, so the mock binary needs its own lib+bin compiled with
+# crate_features = ["mock"].
+rust_library(
+    name = "dsd-fp2_lib_mock",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "dsd_fp2",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "dsd-fp2_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
+    deps = [":dsd-fp2_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # BDD spawns a service process per scenario; give it a generous timeout.
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":dsd-fp2_mock",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/dsd-fp2",
+        "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":dsd-fp2_lib",
+        "//crates/bdd-infra:bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
