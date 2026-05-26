@@ -30,8 +30,10 @@ pub struct UiWorld {
     /// The BFF under test.
     pub ui: Option<ServiceHandle>,
     temp_dir: Option<TempDir>,
-    /// The port the driver binds. Fixed (not OS-assigned) so the driver's
-    /// in-process reload rebinds the *same* port and the BFF can reconnect.
+    /// The port the driver bound — OS-assigned (the driver binds `:0`),
+    /// discovered from its stdout. The reload-reconnect scenario pins this into
+    /// the driver's config (see [`UiWorld::pin_driver_port`]) so an in-process
+    /// reload rebinds the *same* port and the BFF can reconnect.
     driver_port: u16,
     /// The rendered HTML of the last BFF response.
     pub last_body: String,
@@ -51,8 +53,10 @@ impl UiWorld {
     /// effective `serial.port` and `max_brightness`, then point a fresh BFF at
     /// it.
     pub async fn start_driver_and_bff(&mut self, serial_port: &str, max_brightness: u32) {
-        let port = free_port();
-        let config_path = self.write_driver_config(serial_port, max_brightness, port);
+        // The driver binds port 0, so the OS assigns a free port atomically —
+        // no racy preselection. The reload-reconnect scenario pins the resulting
+        // port (`pin_driver_port`) so a reload keeps the same address.
+        let config_path = self.write_driver_config(serial_port, max_brightness);
         let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
         self.driver_port = handle.port;
         self.driver = Some(handle);
@@ -64,10 +68,11 @@ impl UiWorld {
     /// command-line override (so `config.get` reports it in `overrides[]`),
     /// then point a fresh BFF at it.
     pub async fn start_driver_with_serial_override_and_bff(&mut self, serial_port: &str) {
-        let port = free_port();
         // The file carries its own serial.port; the override pins a different
-        // effective value, which is what the page must render read-only.
-        let config_path = self.write_driver_config("/dev/ttyACM0", 4096, port);
+        // effective value, which is what the page must render read-only. Binds
+        // port 0 (OS-assigned); this scenario never reloads, so the port needn't
+        // be pinned.
+        let config_path = self.write_driver_config("/dev/ttyACM0", 4096);
         let handle = ServiceHandle::start_with_args(
             "dsd-fp2",
             &["--config", &config_path, "--port", serial_port],
@@ -79,11 +84,10 @@ impl UiWorld {
         self.start_bff_pointing_at(self.driver_port).await;
     }
 
-    /// Spawn a BFF pointed at a driver that is not running (a free port nothing
-    /// listens on), so `config.get` is refused.
+    /// Spawn a BFF pointed at a driver that is not running, so `config.get` is
+    /// refused.
     pub async fn start_bff_with_unreachable_driver(&mut self) {
-        let dead_port = free_port();
-        self.start_bff_pointing_at(dead_port).await;
+        self.start_bff_pointing_at(closed_port()).await;
     }
 
     async fn start_bff_pointing_at(&mut self, driver_port: u16) {
@@ -103,7 +107,7 @@ impl UiWorld {
         self.ui = Some(handle);
     }
 
-    fn write_driver_config(&mut self, serial_port: &str, max_brightness: u32, port: u16) -> String {
+    fn write_driver_config(&mut self, serial_port: &str, max_brightness: u32) -> String {
         let config = json!({
             "serial": {
                 "port": serial_port,
@@ -111,7 +115,8 @@ impl UiWorld {
                 "polling_interval": "100ms",
                 "timeout": "2s"
             },
-            "server": { "port": port, "discovery_port": null },
+            // Port 0: the OS assigns a free port atomically (no preselect race).
+            "server": { "port": 0, "discovery_port": null },
             "cover_calibrator": {
                 "name": "Deep Sky Dad FP2",
                 "unique_id": "dsd-fp2-ui-bdd",
@@ -190,6 +195,33 @@ impl UiWorld {
             })
             .unwrap_or_default();
         (config, overrides)
+    }
+
+    /// Pin the driver's OS-assigned bound port into its config via a direct
+    /// `config.apply`, so a later in-process reload rebinds the *same* port and
+    /// the BFF can reconnect. The driver starts on port 0 (race-free); this
+    /// fixes the port afterwards without ever preselecting one. Required only by
+    /// the reload-reconnect scenario; other scenarios don't reload.
+    pub async fn pin_driver_port(&self) {
+        let (mut config, _) = self.driver_config().await;
+        let target = u64::from(self.driver_port);
+        config["server"]["port"] = json!(self.driver_port);
+        let params = serde_json::to_string(&config).expect("serialize pinned config");
+        // `config.apply` returns before its fire-after-response reload, so poll
+        // `config.get` until the driver has reloaded and reports the pinned port.
+        self.driver_action("config.apply", &params).await;
+        for _ in 0..100 {
+            if let Some(body) = self.driver_action("config.get", "").await {
+                if body.pointer("/config/server/port").and_then(Value::as_u64) == Some(target) {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!(
+            "driver did not rebind the pinned port {} within 10s",
+            self.driver_port
+        );
     }
 
     // --- driving the BFF over HTTP ----------------------------------------
@@ -285,11 +317,17 @@ impl UiWorld {
     }
 }
 
-/// Reserve a free TCP port by binding to `0` and immediately releasing it. The
-/// brief window before the driver re-binds is tolerable for tests, and using a
-/// concrete port (rather than `0`) is what lets a config reload rebind the
-/// *same* port so the BFF can reconnect to the reloaded driver.
-fn free_port() -> u16 {
+/// A loopback port with nothing listening, for the "unreachable driver"
+/// scenario: bind `:0`, read the assigned port, and drop the listener so a
+/// connection to it is refused.
+///
+/// Unlike a *bind* target, this is only ever a *connect* target — the BFF tries
+/// to reach it and the test asserts an error — so the bind-then-drop window is
+/// harmless here: if the port were reused before the BFF connects, the BFF would
+/// still get a non-success response and surface the same "could not reach the
+/// driver" error. (Drivers are bound on `:0` and never preselect a port, so the
+/// `AddrInUse` race does not apply to them.)
+fn closed_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("failed to bind a free port")
         .local_addr()

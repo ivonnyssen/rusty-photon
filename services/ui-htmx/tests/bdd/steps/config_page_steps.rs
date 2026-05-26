@@ -29,6 +29,11 @@ async fn driver_not_running(world: &mut UiWorld) {
     world.start_bff_with_unreachable_driver().await;
 }
 
+#[given("the driver's bound port is pinned so a reload keeps the same address")]
+async fn pin_driver_port(world: &mut UiWorld) {
+    world.pin_driver_port().await;
+}
+
 // --- When: interact with the BFF --------------------------------------------
 
 #[when("I open the dsd-fp2 config page")]

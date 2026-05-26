@@ -30,6 +30,7 @@ Feature: dsd-fp2 configuration page
 
   Scenario: The reloaded driver's new configuration is served back through the page
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
+    And the driver's bound port is pinned so a reload keeps the same address
     When I submit the config form setting max_brightness to 2048
     And I poll the reconnect status until max_brightness 2048 is served
     Then the page shows the value "2048"
