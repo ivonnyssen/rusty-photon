@@ -4,6 +4,13 @@ Static HTML mocks exploring the user-facing UI for rusty-photon. Each file is fu
 
 These are **reference artifacts only** — no production code yet. They exist to lock in the chosen UX paradigm, visual direction, and implementation approach before any code is written, so future implementation work can be evaluated against a concrete target rather than re-derived from scratch.
 
+> **Implementation has begun at the configuration end.** The
+> [config-actions plan](../config-actions.md) builds the settings/equipment
+> surface first; it now ships as the **`ui-htmx`** BFF service
+> ([`docs/services/ui-htmx.md`](../../../services/ui-htmx.md)), reusing this
+> direction's dark-theme tokens and the axum + Maud + HTMX stack chosen below.
+> The activity-stream UI follows on a separate track.
+
 ## Files
 
 | File | Status | Direction | Familiar pattern |

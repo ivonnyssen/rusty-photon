@@ -23,6 +23,22 @@ pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
         socket.set_only_v6(false)?;
     }
 
+    // On Unix, set SO_REUSEADDR so the server can rebind its port immediately
+    // across a restart or in-process reload, even while a previous listener's
+    // accepted connections (an HTTP client's keep-alive pool) or TIME_WAIT
+    // sockets still linger — without it a reloading service (dsd-fp2's
+    // `config.apply`) fails to rebind with `AddrInUse`. On Unix this still
+    // rejects a second *live* listener on the port, so it can't mask an
+    // "already running" error.
+    //
+    // We deliberately do NOT set SO_REUSEADDR on Windows, where its semantics
+    // differ — there it would let another process bind (hijack) the same port.
+    // Windows already lets the original owner rebind, so the reload works there
+    // without it. (The exclusive-bind opt-in, SO_EXCLUSIVEADDRUSE, isn't exposed
+    // by socket2; the default Windows behaviour is the safe choice here.)
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
+
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(128)?;
@@ -181,6 +197,37 @@ mod tests {
         let listener = bind_dual_stack(addr).unwrap();
         let bound_addr = listener.local_addr().unwrap();
         assert_ne!(bound_addr.port(), 0, "should be assigned a real port");
+    }
+
+    #[test]
+    fn bind_dual_stack_rebinds_port_with_lingering_connection() {
+        // A service that reloads tears down its listener and rebinds the same
+        // port while a client's previous connection may still linger on it.
+        // SO_REUSEADDR must let the rebind succeed instead of failing
+        // `AddrInUse`. This guards the OS-sensitive rebind behaviour (dsd-fp2's
+        // `config.apply` reload) across platforms.
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = bind_dual_stack(addr).unwrap();
+        // bind_dual_stack sets non-blocking; block in accept() for the test.
+        listener.set_nonblocking(false).unwrap();
+        let bound = listener.local_addr().unwrap();
+
+        // Establish and accept a connection, then drop the listener while the
+        // accepted connection lingers — independent of the listening socket.
+        let client = std::net::TcpStream::connect(bound).unwrap();
+        let (server_conn, _) = listener.accept().unwrap();
+        drop(listener);
+
+        // Rebinding the same port must succeed thanks to SO_REUSEADDR.
+        let rebind = bind_dual_stack(bound);
+        assert!(
+            rebind.is_ok(),
+            "rebind of {bound} failed (SO_REUSEADDR regression?): {:?}",
+            rebind.err()
+        );
+
+        drop(server_conn);
+        drop(client);
     }
 
     #[test]

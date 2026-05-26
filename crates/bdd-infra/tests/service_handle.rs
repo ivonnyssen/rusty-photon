@@ -77,6 +77,42 @@ async fn test_stop_is_idempotent() {
 }
 
 #[tokio::test]
+async fn test_start_with_args_discovers_port() {
+    init_test_binary_env();
+    let config = empty_config();
+
+    let mut handle = ServiceHandle::start_with_args(
+        "test-service",
+        &["--config", config.path().to_str().unwrap()],
+    )
+    .await;
+
+    assert!(handle.port > 0);
+    assert_eq!(handle.base_url, format!("http://127.0.0.1:{}", handle.port));
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn test_try_start_with_args_passes_arguments_through() {
+    init_test_binary_env();
+    let config = empty_config();
+
+    // The extra `fail` argument makes test_service exit before binding, which
+    // is only observable if the argument vector actually reaches the process.
+    let result = ServiceHandle::try_start_with_args(
+        "test-service",
+        &["--config", config.path().to_str().unwrap(), "fail"],
+    )
+    .await;
+
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("exited without binding"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_try_start_succeeds_with_valid_binary() {
     init_test_binary_env();
     let config = empty_config();

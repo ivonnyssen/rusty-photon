@@ -6,6 +6,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod config_actions;
 pub mod device;
 pub mod error;
 pub mod manager;
@@ -15,8 +16,11 @@ pub mod protocol;
 pub mod transport;
 
 pub use codec::Fp2Codec;
-pub use config::{load_config, Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
-pub use device::DsdFp2Device;
+pub use config::{
+    load_config, load_effective_config, resolve_config_path, CliOverrides, Config,
+    CoverCalibratorConfig, SerialConfig, ServerConfig,
+};
+pub use device::{ConfigActionCtx, DsdFp2Device};
 pub use error::{DsdFp2Error, Result};
 pub use manager::{CachedState, FlatPanelManager};
 pub use transport::Fp2SerialTransportFactory;
@@ -26,11 +30,13 @@ pub use mock::{MockState, MockTransportFactory};
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
 
@@ -38,6 +44,13 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
+    /// Where `config.apply` persists and reload re-reads. `Some` enables the
+    /// config actions (together with `reload`).
+    config_path: Option<PathBuf>,
+    /// CLI overrides, so config actions can distinguish file vs. override layers.
+    overrides: CliOverrides,
+    /// Reload trigger handed to the device for fire-after-response reload.
+    reload: Option<ReloadSignal>,
 }
 
 fn default_factory(config: &Config) -> Arc<dyn TransportFactory> {
@@ -54,7 +67,13 @@ impl Default for ServerBuilder {
     fn default() -> Self {
         let config = Config::default();
         let factory = default_factory(&config);
-        Self { config, factory }
+        Self {
+            config,
+            factory,
+            config_path: None,
+            overrides: CliOverrides::default(),
+            reload: None,
+        }
     }
 }
 
@@ -75,32 +94,61 @@ impl ServerBuilder {
         self
     }
 
+    /// Set the config source (persist path + CLI overrides) for the
+    /// `config.get` / `config.apply` actions. Together with
+    /// [`Self::with_reload_signal`], this enables config editing.
+    pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
+        self.config_path = Some(path);
+        self.overrides = overrides;
+        self
+    }
+
+    /// Provide the reload trigger `config.apply` fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables config
+    /// editing.
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
+        self
+    }
+
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
         let manager = FlatPanelManager::new(self.config.clone(), self.factory);
 
-        // Eager hardware validation at startup: opens the port,
-        // runs the handshake (identity probe), and spawns the
-        // reconnect supervisor before binding the HTTP listener. On
-        // handshake failure the error bubbles up to `main` for a
-        // non-zero exit, so systemd / orchestration treats startup
-        // as failed rather than the service advertising a broken
-        // device on the network.
+        // Eager hardware validation at startup: opens the port, runs the
+        // handshake (identity probe), and spawns the reconnect supervisor before
+        // binding the HTTP listener. On handshake failure the error bubbles up to
+        // `main` for a non-zero exit, so systemd / orchestration treats startup
+        // as failed rather than the service advertising a broken device on the
+        // network.
         info!("validating hardware via eager startup handshake");
         manager.transport().start().await?;
 
-        // All post-start work is fallible (bind / local_addr in
-        // particular). Wrap it so a failure runs `transport.shutdown()`
-        // before propagating; otherwise the reconnect supervisor task
-        // would outlive the dropped manager and keep the port open
-        // until process exit.
+        // Config-action wiring (persist path + CLI overrides + reload trigger),
+        // cloned out here so the borrowing build block below can consume them.
+        let config_path = self.config_path.clone();
+        let overrides = self.overrides.clone();
+        let reload = self.reload.clone();
+
+        // All post-start work is fallible (bind / local_addr in particular).
+        // Wrap it so a failure runs `transport.shutdown()` before propagating;
+        // otherwise the reconnect supervisor task would outlive the dropped
+        // manager and keep the port open until process exit.
         let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
             server.discovery_port = self.config.server.discovery_port;
 
             if self.config.cover_calibrator.enabled {
-                let device =
+                let mut device =
                     DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
+                if let (Some(path), Some(reload)) = (config_path.clone(), reload.clone()) {
+                    device = device.with_config_actions(ConfigActionCtx {
+                        effective: self.config.clone(),
+                        path,
+                        overrides: overrides.clone(),
+                        reload,
+                    });
+                }
                 server.devices.register(device);
                 info!(
                     "Registered CoverCalibrator device: {}",
@@ -168,8 +216,10 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
-    /// Held so `start()` can call `manager.transport().shutdown()` after
-    /// the HTTP server stops. No-op in LazyAcquire mode.
+    /// Held so `start()` can call `manager.transport().shutdown()` after the HTTP
+    /// server stops — on shutdown *and* on reload (`main` awaits `start()` to
+    /// completion rather than dropping it), so the serial port and reconnect
+    /// supervisor are released before the service rebinds.
     manager: Arc<FlatPanelManager>,
 }
 
@@ -182,9 +232,9 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // Capture the serve result so transport.shutdown() runs even
-        // when the HTTP server errors out — otherwise the supervisor
-        // and port would leak past a serve failure.
+        // Capture the serve result so transport.shutdown() runs even when the
+        // HTTP server errors out — otherwise the supervisor and port would leak
+        // past a serve failure.
         let serve_result = match self.tls {
             Some(ref tls_config) => {
                 info!("dsd-fp2 started on {} (TLS)", self.local_addr);

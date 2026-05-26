@@ -8,21 +8,46 @@
 //! through `Session::request` so they share the same request arbitration
 //! lock as the poll loop.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::api::{CoverCalibrator, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::Fp2Codec;
-use crate::config::CoverCalibratorConfig;
+use crate::config::{CliOverrides, Config, CoverCalibratorConfig};
+use crate::config_actions::{
+    self, ApplyStatus, ConfigAction, ConfigApplyResponse, ConfigGetResponse, FieldError,
+};
 use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
+
+/// Delay before firing the reload so the `config.apply` HTTP response — served
+/// by the very server the reload tears down — flushes before the blip.
+const RELOAD_AFTER_RESPONSE_DELAY: Duration = Duration::from_millis(100);
+
+/// State the `config.get` / `config.apply` actions need: the effective config
+/// this server instance is running, where to persist edits, which fields are
+/// pinned by a CLI override, and the in-process reload trigger.
+#[derive(Clone)]
+pub struct ConfigActionCtx {
+    /// Effective config (file + CLI overrides) this server was built with.
+    pub effective: Config,
+    /// Where `config.apply` persists; what reload re-reads.
+    pub path: PathBuf,
+    /// CLI overrides, so config actions can distinguish file vs. override layers.
+    pub overrides: CliOverrides,
+    /// Fired (after the response flushes) to trigger the in-process reload.
+    pub reload: ReloadSignal,
+}
 
 /// Deep Sky Dad FP2 as an ASCOM CoverCalibrator.
 #[derive(derive_more::Debug)]
@@ -32,6 +57,11 @@ pub struct DsdFp2Device {
     manager: Arc<FlatPanelManager>,
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<Fp2Codec>>>>,
+    /// `Some` when the driver was built with a config source (the normal path
+    /// through `ServerBuilder`); `None` for focused unit-test devices that
+    /// don't exercise config actions.
+    #[debug(skip)]
+    config_ctx: Option<ConfigActionCtx>,
 }
 
 impl DsdFp2Device {
@@ -40,13 +70,132 @@ impl DsdFp2Device {
             config,
             manager,
             session: Arc::new(RwLock::new(None)),
+            config_ctx: None,
         }
+    }
+
+    /// Attach the config-action context, enabling `config.get` / `config.apply`.
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 
     /// Hardware-clamped configurable maximum. ASCOM `MaxBrightness` and
     /// `calibrator_on`'s validation share this so they can't disagree.
     fn effective_max_brightness(&self) -> u32 {
         self.config.max_brightness.min(MAX_BRIGHTNESS as u32)
+    }
+
+    /// `config.get`: return the effective config (secrets redacted) plus the
+    /// CLI-override-pinned field paths.
+    async fn handle_config_get(&self, ctx: &ConfigActionCtx) -> ASCOMResult<String> {
+        let mut config = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
+        config_actions::redact_value(&mut config);
+        let response = ConfigGetResponse {
+            config,
+            overrides: ctx.overrides.pinned_paths(),
+        };
+        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
+    }
+
+    /// `config.apply`: parse → validate → persist (layer-aware) → classify →
+    /// fire the reload after the response flushes.
+    async fn handle_config_apply(
+        &self,
+        ctx: &ConfigActionCtx,
+        parameters: &str,
+    ) -> ASCOMResult<String> {
+        let mut submitted: Config = match serde_json::from_str(parameters) {
+            Ok(config) => config,
+            Err(e) => {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_VALUE,
+                    format!("config.apply: invalid config JSON: {e}"),
+                ))
+            }
+        };
+
+        // Normalize before validation/persist (e.g. trim a whitespace-padded
+        // serial.port that would otherwise be opened verbatim at runtime).
+        config_actions::normalize(&mut submitted);
+
+        // Validation failure is a domain error: HTTP 200, file untouched.
+        let errors = config_actions::validate(&submitted);
+        if !errors.is_empty() {
+            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
+                .map_err(DsdFp2Error::from)?);
+        }
+
+        // Build the value to persist: write through CLI-override-pinned fields
+        // and round-tripped secrets from the file's current value. A present-
+        // but-corrupt file is surfaced rather than silently treated as default
+        // (which would overwrite and lose its contents).
+        let file_current = match config_actions::read_file_value(&ctx.path) {
+            Ok(value) => value,
+            Err(msg) => {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("config.apply: {msg}"),
+                ))
+            }
+        };
+
+        // The redaction sentinel means "keep the stored secret unchanged". If
+        // there is no stored secret to keep, the sentinel can't be honoured —
+        // persisting it verbatim would bake "********" in as the real password
+        // hash. Reject it as a domain error so the caller supplies a real hash.
+        if config_actions::redacted_secret_without_prior(&submitted, &file_current) {
+            let errors = vec![FieldError {
+                path: "server.auth.password_hash".to_string(),
+                msg:
+                    "cannot keep an unchanged secret when none is stored; provide the password hash"
+                        .to_string(),
+            }];
+            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
+                .map_err(DsdFp2Error::from)?);
+        }
+
+        let (to_persist, skipped) =
+            config_actions::build_persist_value(&submitted, &file_current, &ctx.overrides)
+                .map_err(DsdFp2Error::from)?;
+
+        // Classify what would change in the running (effective) config.
+        let new_effective = config_actions::effective_value(&to_persist, &ctx.overrides);
+        let running = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
+        let changed = config_actions::diff_paths(&running, &new_effective);
+
+        config_actions::save(&ctx.path, &to_persist).map_err(|e| {
+            ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                format!("config.apply: failed to persist config: {e}"),
+            )
+        })?;
+        debug!(path = %ctx.path.display(), ?changed, "config.apply persisted");
+
+        let status = if changed.is_empty() {
+            ApplyStatus::Ok
+        } else {
+            // Fire-after-response: the server serving this request is the one
+            // the reload tears down, so yield until the response has flushed.
+            let reload = ctx.reload.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(RELOAD_AFTER_RESPONSE_DELAY).await;
+                debug!("firing in-process reload after config.apply");
+                reload.notify();
+            });
+            ApplyStatus::Applying
+        };
+
+        let response = ConfigApplyResponse {
+            status,
+            applied: Vec::new(),
+            reload: changed,
+            restart_required: Vec::new(),
+            skipped_override: skipped,
+            persisted_to: Some(ctx.path.display().to_string()),
+            errors: Vec::new(),
+        };
+        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
 }
 
@@ -113,6 +262,38 @@ impl Device for DsdFp2Device {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        // Only advertise the config actions when this instance was built with a
+        // config source; a ctx-less device (focused unit tests) has none.
+        if self.config_ctx.is_some() {
+            Ok(ConfigAction::ALL
+                .iter()
+                .map(|action| action.name().to_string())
+                .collect())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        let Some(parsed) = ConfigAction::from_name(&action) else {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                format!("unknown action {action:?}"),
+            ));
+        };
+        let ctx = self.config_ctx.as_ref().ok_or_else(|| {
+            ASCOMError::new(
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                "config actions are not configured for this device instance",
+            )
+        })?;
+        match parsed {
+            ConfigAction::Get => self.handle_config_get(ctx).await,
+            ConfigAction::Apply => self.handle_config_apply(ctx, &parameters).await,
+        }
     }
 }
 
@@ -501,5 +682,186 @@ mod mock_tests {
         assert!(info.contains("CoverCalibrator"));
         let ver = device.driver_version().await.unwrap();
         assert!(!ver.is_empty());
+    }
+
+    // --- Config actions ---------------------------------------------------
+
+    /// Build a device wired with a config-action context backed by a temp file
+    /// pre-seeded with `effective`. Returns the reload handle (clone) so tests
+    /// can assert the fire-after-response reload, and the `TempDir`/path.
+    fn device_with_config_actions(
+        effective: Config,
+    ) -> (
+        DsdFp2Device,
+        ReloadSignal,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let factory = MockTransportFactory::default();
+        let manager = FlatPanelManager::new(effective.clone(), Arc::new(factory));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dsd-fp2.json");
+        std::fs::write(&path, serde_json::to_string(&effective).unwrap()).unwrap();
+        let reload = ReloadSignal::new();
+        let device = DsdFp2Device::new(effective.cover_calibrator.clone(), manager)
+            .with_config_actions(ConfigActionCtx {
+                effective,
+                path: path.clone(),
+                overrides: CliOverrides::default(),
+                reload: reload.clone(),
+            });
+        (device, reload, dir, path)
+    }
+
+    #[tokio::test]
+    async fn supported_actions_lists_config_actions_when_configured() {
+        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
+        let actions = device.supported_actions().await.unwrap();
+        assert!(actions.contains(&"config.get".to_string()));
+        assert!(actions.contains(&"config.apply".to_string()));
+    }
+
+    #[tokio::test]
+    async fn supported_actions_empty_without_config_ctx() {
+        let (device, _) = make_device();
+        assert!(device.supported_actions().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn config_get_returns_effective_config_and_overrides() {
+        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
+        // Config actions must work while disconnected.
+        assert!(!device.connected().await.unwrap());
+        let body = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value
+                .pointer("/config/serial/port")
+                .and_then(|v| v.as_str()),
+            Some("/dev/mock")
+        );
+        assert!(value
+            .get("overrides")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn config_get_redacts_password_hash() {
+        let mut effective = test_config();
+        effective.server.auth = Some(rp_auth::config::AuthConfig {
+            username: "obs".to_string(),
+            password_hash: "$argon2id$v=19$real".to_string(),
+        });
+        let (device, _reload, _dir, _path) = device_with_config_actions(effective);
+        let body = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value
+                .pointer("/config/server/auth/password_hash")
+                .and_then(|v| v.as_str()),
+            Some(crate::config_actions::REDACTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn config_apply_persists_and_fires_reload() {
+        let (device, reload, _dir, path) = device_with_config_actions(test_config());
+        let mut changed = test_config();
+        changed.cover_calibrator.max_brightness = 2048;
+        let params = serde_json::to_string(&changed).unwrap();
+
+        let body = device
+            .action("config.apply".to_string(), params)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value.get("status").and_then(|v| v.as_str()),
+            Some("applying")
+        );
+        let reload_paths = value.get("reload").and_then(|v| v.as_array()).unwrap();
+        assert!(reload_paths
+            .iter()
+            .any(|p| p.as_str() == Some("cover_calibrator.max_brightness")));
+
+        // Persisted to disk with the new value.
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted
+                .pointer("/cover_calibrator/max_brightness")
+                .and_then(|v| v.as_u64()),
+            Some(2048)
+        );
+
+        // The reload is fired after the response — it must arrive.
+        tokio::time::timeout(Duration::from_secs(2), reload.recv())
+            .await
+            .expect("config.apply should fire the reload");
+    }
+
+    #[tokio::test]
+    async fn config_apply_without_change_returns_ok() {
+        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
+        let params = serde_json::to_string(&test_config()).unwrap();
+        let body = device
+            .action("config.apply".to_string(), params)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value.get("status").and_then(|v| v.as_str()), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn config_apply_invalid_leaves_file_unchanged() {
+        let (device, _reload, _dir, path) = device_with_config_actions(test_config());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut bad = test_config();
+        bad.serial.baud_rate = 0; // fails validation
+        let params = serde_json::to_string(&bad).unwrap();
+
+        let body = device
+            .action("config.apply".to_string(), params)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value.get("status").and_then(|v| v.as_str()),
+            Some("invalid")
+        );
+        assert!(!value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn config_apply_rejects_non_json() {
+        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
+        let err = device
+            .action("config.apply".to_string(), "not json".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn unknown_action_returns_action_not_implemented() {
+        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
+        let err = device
+            .action("config.frobnicate".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
     }
 }

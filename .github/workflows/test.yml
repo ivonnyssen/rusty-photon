@@ -109,12 +109,13 @@ jobs:
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD cross-spawn deps not visible to cargo-rail: sentinel's BDD
-      # spawns filemonitor; calibrator-flats's BDD spawns rp. Narrow
-      # cargo-args can miss them, so pre-build unconditionally whenever a
-      # BDD run is scheduled and we're not already building --workspace.
+      # spawns filemonitor; calibrator-flats's BDD spawns rp; ui-htmx's BDD
+      # spawns dsd-fp2. Narrow cargo-args can miss them, so pre-build
+      # unconditionally whenever a BDD run is scheduled and we're not already
+      # building --workspace.
       - name: cargo build BDD cross-spawn deps
         if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
-        run: cargo build --locked --package filemonitor --package rp --all-features --all-targets
+        run: cargo build --locked --package filemonitor --package rp --package dsd-fp2 --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
@@ -161,7 +162,7 @@ jobs:
       # BDD cross-spawn deps not visible to cargo-rail — see ubuntu job above.
       - name: cargo build BDD cross-spawn deps
         if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
-        run: cargo build --locked --package filemonitor --package rp --all-features --all-targets
+        run: cargo build --locked --package filemonitor --package rp --package dsd-fp2 --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)
@@ -239,8 +240,9 @@ jobs:
         run: cargo build --locked --package ${{ matrix.package }} --all-features --all-targets
       # Cross-spawn deps: sentinel BDD tests spawn filemonitor;
       # calibrator-flats BDD tests spawn rp; rp's @e2e-centering BDD
-      # spawns sky-survey-camera. bdd-infra no longer compiles missing
-      # binaries on the fly, so we pre-build them here.
+      # spawns sky-survey-camera; ui-htmx BDD tests spawn dsd-fp2.
+      # bdd-infra no longer compiles missing binaries on the fly, so we
+      # pre-build them here.
       - name: cargo build filemonitor (sentinel cross-spawn)
         if: matrix.package == 'sentinel'
         run: cargo build --locked --package filemonitor --all-features --all-targets
@@ -250,6 +252,9 @@ jobs:
       - name: cargo build sky-survey-camera (rp cross-spawn)
         if: matrix.package == 'rp'
         run: cargo build --locked --package sky-survey-camera --all-features --all-targets
+      - name: cargo build dsd-fp2 (ui-htmx cross-spawn)
+        if: matrix.package == 'ui-htmx'
+        run: cargo build --locked --package dsd-fp2 --all-features --all-targets
       - name: cargo test --test bdd
         run: cargo test --locked --package ${{ matrix.package }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)

@@ -1,7 +1,8 @@
 //! Configuration types for the Deep Sky Dad FP2 driver.
 
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Top-level service configuration.
@@ -113,6 +114,79 @@ pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::erro
     Ok(config)
 }
 
+/// CLI overrides layered over the file config. Tracks which fields are pinned by
+/// a command-line flag so the config actions can distinguish the file layer from
+/// the override layer (see `docs/services/dsd-fp2.md` "Config Actions").
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `serial.port`.
+    pub serial_port: Option<String>,
+    /// `--server-port` → `server.port`.
+    pub server_port: Option<u16>,
+}
+
+impl CliOverrides {
+    /// Dotted JSON paths currently pinned by an active override. Reported by
+    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    pub fn pinned_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        if self.serial_port.is_some() {
+            paths.push("serial.port".to_string());
+        }
+        if self.server_port.is_some() {
+            paths.push("server.port".to_string());
+        }
+        paths
+    }
+
+    /// Apply the overrides onto `config` in place.
+    pub fn apply(&self, config: &mut Config) {
+        if let Some(port) = &self.serial_port {
+            config.serial.port = port.clone();
+        }
+        if let Some(port) = self.server_port {
+            config.server.port = port;
+        }
+    }
+}
+
+/// Resolve the config-file path: the explicit `--config` path if given, else the
+/// per-user platform config directory (`directories::ProjectDirs::config_dir`) —
+/// e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG),
+/// `~/Library/Application Support/rusty-photon/dsd-fp2.json` on macOS,
+/// `%APPDATA%\rusty-photon\dsd-fp2.json` on Windows. A path is *always*
+/// resolvable, so config editing is never disabled for lack of one.
+pub fn resolve_config_path(
+    explicit: Option<PathBuf>,
+) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let dirs = ProjectDirs::from("", "", "rusty-photon")
+        .ok_or("could not determine a platform config directory for the default config path")?;
+    Ok(dirs.config_dir().join("dsd-fp2.json"))
+}
+
+/// Load the effective config: the file at `path` if it exists, else
+/// `Config::default()`, with CLI `overrides` applied on top. This is what the
+/// running driver uses and what `config.get` reports.
+pub fn load_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+    let mut config = match std::fs::read_to_string(path) {
+        // Wrap both failure paths with the path (matching
+        // `config_actions::read_file_value`) so a startup/reload failure names
+        // the offending file instead of a bare "Permission denied" / parse error.
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(e) => return Err(format!("could not read config file {}: {e}", path.display()).into()),
+    };
+    overrides.apply(&mut config);
+    Ok(config)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -141,6 +215,17 @@ mod tests {
         assert!(json.contains("115200"));
         assert!(json.contains("11119"));
         assert!(json.contains("Deep Sky Dad FP2"));
+    }
+
+    #[test]
+    fn load_effective_config_corrupt_file_names_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dsd-fp2.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let err = load_effective_config(&path, &CliOverrides::default()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not valid JSON"), "{msg}");
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
     }
 
     #[test]

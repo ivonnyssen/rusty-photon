@@ -1,0 +1,38 @@
+[package]
+name = "ui-htmx"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Server-rendered web configuration UI (BFF) for rusty-photon — HTMX expression"
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+maud = { version = "0.27", features = ["axum"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+rp-tls = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+
+[dev-dependencies]
+bdd-infra = { workspace = true }
+mockall = { workspace = true }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+serde_urlencoded = "0.7"
+
+[[test]]
+name = "bdd"
+harness = false

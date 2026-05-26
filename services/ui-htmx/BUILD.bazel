@@ -1,0 +1,102 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+# src/assets.rs embeds app.css + htmx.min.js via include_str!() at compile time,
+# so rustc must see them under the Bazel sandbox.
+_EMBEDDED_ASSETS = glob(["assets/**"])
+
+rust_library(
+    name = "ui-htmx_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    compile_data = _EMBEDDED_ASSETS,
+    crate_name = "ui_htmx",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "ui-htmx",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":ui-htmx_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "ui-htmx_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # The unit tests recompile the library (include_str! runs again), so the
+    # embedded assets must be visible here too.
+    compile_data = _EMBEDDED_ASSETS,
+    crate = ":ui-htmx_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber test. Spawns the real ui-htmx binary plus a real dsd-fp2 (mock
+# hardware) driver per scenario, so both binaries are runtime data and their
+# bdd-infra discovery vars ({PKG}_BINARY) point at their rootpaths. harness=false
+# (custom cucumber main via bdd_main!) → use_libtest_harness must be False;
+# BDD_PACKAGE_DIR chdirs from the runfiles root into the package dir so relative
+# paths (`tests/features`, `./Cargo.toml`) behave as under `cargo test`.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # Spawns two processes per scenario plus a reload-reconnect poll; large gives
+    # the most timeout headroom.
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":ui-htmx",
+        "//services/dsd-fp2:dsd-fp2_mock",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/ui-htmx",
+        "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
+        "UI_HTMX_BINARY": "$(rootpath :ui-htmx)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "ui-htmx"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":ui-htmx_lib",
+        "//crates/bdd-infra:bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
