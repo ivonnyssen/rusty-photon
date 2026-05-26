@@ -343,8 +343,12 @@ pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
 
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
+    // fsync the parent directory so the rename itself is durable. Windows can't
+    // open a directory as a regular file handle, so this is unix-only (matching
+    // the repo's other atomic-write helpers, e.g. rp's persistence::document).
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()?;
     }
     Ok(())
 }
