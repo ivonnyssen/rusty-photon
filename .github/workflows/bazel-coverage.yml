@@ -1,0 +1,154 @@
+# Bazel-based code coverage, shadow mode. Runs alongside the canonical Cargo
+# coverage job (.github/workflows/test.yml `coverage`) during the migration in
+# docs/plans/bazel-migration.md. NOT required for merge.
+#
+# Why a separate workflow (not a job in bazel.yml): coverage needs a different
+# toolchain (nightly) and a fully instrumented build graph -- a separate action
+# namespace from bazel.yml's stable build/test. Keeping it separate means its
+# (slower, nightly, instrumented) actions and its cache never perturb the
+# shadow build/test job.
+#
+# Parity with the Cargo job:
+#  * nightly toolchain + --cfg=coverage_nightly (see .bazelrc --config=coverage)
+#    so #[cfg_attr(coverage_nightly, coverage(off))] on every `#[cfg(test)] mod
+#    tests` block takes effect and test code stays out of the numbers.
+#  * LLVM source-based instrumentation, first-party crates only.
+#  * per-package lcov uploaded to Codecov so the per-service flags survive.
+#
+# Differences from the Cargo job (intentional):
+#  * Runs `bazel coverage //...` over the WHOLE repo every time. Untouched
+#    targets are cache hits (local disk + remote R2 cache), so their
+#    coverage.dat is fetched, not recomputed -- every PR still gets a COMPLETE
+#    report without cargo-rail narrowing or Codecov carryforward. This is the
+#    headline win of doing coverage under Bazel.
+#  * Uploads under distinct `bazel-<pkg>` flags so it does NOT alter the
+#    canonical per-service badges while Cargo coverage still runs (shadow mode).
+#  * Includes the BDD suite (--config=coverage flips the default tag filter to
+#    -requires-cargo, see .bazelrc) so the service-binary integration paths are
+#    covered. Whether coverage from the BDD-spawned service binaries is actually
+#    COLLECTED is the open risk: cargo-llvm-cov gets it via a shared
+#    LLVM_PROFILE_FILE + whole-target-dir merge; Bazel's per-test-action model
+#    may not. Validate in run #1 (bazel-<service> vs <service>); see
+#    bazel-migration.md for the contingency.
+permissions:
+  contents: read
+on:
+  pull_request:
+  # push to main primes the coverage action cache (write token) so PRs read
+  # warm coverage.dat for untouched targets; also gives main a coverage baseline.
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: bazel-coverage
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    # Cold-cache headroom: the instrumented nightly graph is a distinct cache
+    # namespace, so the first run (and post-eviction runs) rebuild it from
+    # scratch -- and the instrumented BDD suite (rp ~150s warm) runs here too.
+    # Warm runs are fast.
+    timeout-minutes: 60
+    name: bazel coverage (shadow)
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Same trust model as bazel.yml: only push-to-main holds the write token,
+      # so only trusted code populates the coverage cache; PRs (including forks,
+      # which get no secrets at all) read anonymously and never write.
+      CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # .bazelrc build:linux uses the lld linker.
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
+
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+
+      - name: Verify bazel version
+        run: bazel --version
+
+      # rp's BDD scenarios spawn the ASCOM Alpaca simulator. OMNISIM_PATH is
+      # forwarded into test sandboxes by .bazelrc `build:ci --test_env=OMNISIM_PATH`.
+      - name: Install ASCOM OmniSim
+        uses: ./.github/actions/install-omnisim
+
+      - name: bazel coverage
+        run: |
+          REMOTE_FLAGS=(--config=remote-cache)
+          if [[ -n "$CACHE_WRITE_TOKEN" ]]; then
+            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
+          else
+            REMOTE_FLAGS+=(--remote_upload_local_results=false)
+          fi
+          # --config=coverage selects the nightly channel + --cfg=coverage_nightly
+          # + --combined_report=lcov + first-party instrumentation filter (.bazelrc).
+          # --test_tag_filters=-requires-cargo INCLUDES the BDD suite; it is also
+          # set by --config=coverage but pinned here on the command line so CI is
+          # not sensitive to rc precedence (command line always wins).
+          # --remote_download_outputs=all overrides build:ci's `toplevel` so the
+          # combined lcov and its per-test .dat inputs are materialised locally.
+          bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
+            --test_tag_filters=-requires-cargo \
+            --remote_download_outputs=all \
+            //...
+
+      - name: Split combined lcov per package
+        run: |
+          REPORT="$(bazel info output_path)/_coverage/_coverage_report.dat"
+          echo "Combined report: $REPORT"
+          if [[ ! -s "$REPORT" ]]; then
+            echo "::error::combined coverage report missing or empty at $REPORT"
+            exit 1
+          fi
+          ls -l "$REPORT"
+          mkdir -p coverage-lcov
+          python3 tools/coverage/split_lcov.py "$REPORT" --output-dir coverage-lcov
+          ls -l coverage-lcov
+
+      - name: Upload per-package lcov (artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-coverage-lcov
+          path: coverage-lcov/*.info
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload to codecov.io
+        if: env.ACT != 'true'
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          # Fork PRs receive no secrets; skip the upload rather than fail.
+          if [[ -z "$CODECOV_TOKEN" ]]; then
+            echo "No CODECOV_TOKEN (likely a fork PR); skipping Codecov upload."
+            exit 0
+          fi
+          curl -Os https://cli.codecov.io/latest/linux/codecov
+          chmod +x ./codecov
+          # On pull_request events GitHub checks out an ephemeral merge commit;
+          # override the SHA so Codecov maps the upload to the PR head.
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "Uploading Bazel coverage for commit $COMMIT_SHA"
+          # Distinct `bazel-<pkg>` flags keep the canonical per-service badges
+          # (flag=<pkg>) Cargo-only during shadow mode.
+          for f in coverage-lcov/*.info; do
+            [ -f "$f" ] || continue
+            pkg="$(basename "$f")"; pkg="${pkg#lcov-}"; pkg="${pkg%.info}"
+            echo "Uploading coverage for $pkg as flag bazel-$pkg"
+            ./codecov upload-process \
+              --file "$f" \
+              --flag "bazel-$pkg" \
+              --token "$CODECOV_TOKEN" \
+              --git-service github \
+              --commit-sha "$COMMIT_SHA" \
+              || echo "Warning: upload failed for $pkg"
+          done

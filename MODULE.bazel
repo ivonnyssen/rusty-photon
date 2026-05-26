@@ -26,7 +26,23 @@ bazel_dep(name = "platforms", version = "1.0.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    versions = ["1.94.1"],  # matches workspace.package.rust-version
+    # Stable (the default channel, selected in .bazelrc) matches
+    # workspace.package.rust-version. The pinned nightly is used ONLY by the
+    # coverage workflow (.github/workflows/bazel-coverage.yml, via
+    # `--config=coverage` which selects channel=nightly): the
+    # #[cfg_attr(coverage_nightly, coverage(off))] attributes on every
+    # `#[cfg(test)] mod tests` block require the nightly-only
+    # `coverage_attribute` feature -- exactly like the Cargo coverage job
+    # (.github/workflows/test.yml) which runs on nightly + cargo-llvm-cov.
+    # The date is PINNED for remote-cache stability: a rolling nightly would
+    # change every coverage action's cache key on each bump and bust the
+    # coverage cache. Bump it if this nightly lacks the llvm-tools / rust-std /
+    # rustc components for the host triple (`bazel coverage` needs llvm-cov +
+    # llvm-profdata from the toolchain).
+    versions = [
+        "1.94.1",
+        "nightly/2026-05-01",
+    ],
 )
 use_repo(rust, "rust_toolchains")
 

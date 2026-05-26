@@ -316,6 +316,24 @@ bazel test --test_tag_filters=bdd //...
 bazel test //services/filemonitor:bdd
 ```
 
+Coverage runs as a separate shadow workflow
+(`.github/workflows/bazel-coverage.yml`) on every PR. Locally it needs the
+pinned nightly toolchain, which `--config=coverage` selects (see `.bazelrc`):
+
+```bash
+bazel coverage --config=coverage //...
+# Combined lcov: $(bazel info output_path)/_coverage/_coverage_report.dat
+```
+
+It mirrors the Cargo `coverage` job (nightly + `coverage_nightly`, so the
+`#[cfg(test)] mod tests` blocks stay out of the numbers) but uploads under
+distinct `bazel-<pkg>` Codecov flags. It **includes the BDD suite**
+(`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
+OmniSim installed and `OMNISIM_PATH` set, the same as a
+`bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service
+binaries' coverage is collected is validated in CI — see
+[docs/plans/bazel-migration.md](../plans/bazel-migration.md).
+
 Known limitations during migration:
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
