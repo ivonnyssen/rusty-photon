@@ -2300,6 +2300,20 @@ exactly one mount.
   The mount is left where the failed step left it; partial
   `iterations[]` entries are not returned (the failure surfaces as
   an MCP error, not a partial success).
+- Unresponsive device → bounded, never an indefinite hang. Every
+  Alpaca request rp issues carries a per-request connect + read
+  timeout (`equipment::alpaca`), so a device that accepts the
+  connection but stops answering — an overloaded simulator in CI, a
+  stalled mount/USB-serial bridge at night — surfaces as a timeout
+  error instead of wedging the loop forever. The idempotent
+  per-iteration mount reads (`plate_solve`'s `use_mount_hints` read;
+  the slew's `Slewing` poll) additionally **retry** a transient
+  failure with short backoff before giving up, so a brief device
+  hiccup is ridden out rather than aborting the whole tool. (This is
+  the fix for the issue #319 `center_on_target` timeout: a stalled
+  mount read had no client-side timeout and hung indefinitely; the
+  blocking-op poll deadlines guard loops, not a single in-flight
+  request.)
 - Loop exits without convergence → `tolerance_not_reached` error
   citing the last residual and `max_attempts`.
 

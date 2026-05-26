@@ -532,6 +532,11 @@ struct MockTelescope {
     fail_abort_slew: bool,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
+    /// First N `slewing()` calls return a transient error before
+    /// behaving normally — drives `poll_slewing_until_idle`'s
+    /// transient-tolerance path (issue #319). Counter is `slewing_calls`.
+    slewing_transient_errors: u32,
+    slewing_calls: std::sync::atomic::AtomicU32,
     tracking_value: bool,
     can_set_tracking_value: bool,
     at_park_value: bool,
@@ -559,6 +564,8 @@ impl Default for MockTelescope {
             fail_can_unpark: false,
             fail_abort_slew: false,
             stuck_slewing: false,
+            slewing_transient_errors: 0,
+            slewing_calls: std::sync::atomic::AtomicU32::new(0),
             tracking_value: true,
             can_set_tracking_value: true,
             at_park_value: false,
@@ -684,7 +691,10 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn slewing(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        if self.fail_slewing_poll {
+        let n = self
+            .slewing_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_slewing_poll || n < self.slewing_transient_errors {
             return Err(ASCOMError::invalid_operation("slewing poll failed"));
         }
         Ok(self.stuck_slewing)
@@ -2841,8 +2851,11 @@ async fn test_park_at_park_poll_fails() {
 }
 
 /// `do_slew_blocking` polls `Slewing`; this covers the
-/// `PollIdleError::Read` arm.
-#[tokio::test]
+/// `PollIdleError::Read` arm. A *persistent* `slewing()` read error
+/// (here every call fails) is tolerated for
+/// `SLEWING_READ_ERROR_TOLERANCE` ticks, then surfaces — `start_paused`
+/// so those ticks cost no wall-clock time.
+#[tokio::test(start_paused = true)]
 async fn test_slew_polling_error_propagates() {
     let mount = MockTelescope {
         fail_slewing_poll: true,
@@ -2857,6 +2870,23 @@ async fn test_slew_polling_error_propagates() {
         }))
         .await;
     assert_tool_error(result, "error polling mount slewing");
+}
+
+/// Issue #319 resilience: a *transient* `slewing()` read error mid-slew
+/// (fewer than `SLEWING_READ_ERROR_TOLERANCE` consecutive failures) is
+/// tolerated — the poll keeps going and reports idle once the reads
+/// recover — rather than aborting the slew (and the whole
+/// `center_on_target` loop) on a single hiccup.
+#[tokio::test(start_paused = true)]
+async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
+    let mount = MockTelescope {
+        slewing_transient_errors: 3,
+        stuck_slewing: false,
+        ..Default::default()
+    };
+    super::internals::poll_slewing_until_idle(&mount)
+        .await
+        .expect("transient slewing() errors below the tolerance must not abort the slew");
 }
 
 #[tokio::test]

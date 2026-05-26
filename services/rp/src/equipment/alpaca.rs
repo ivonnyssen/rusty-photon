@@ -8,7 +8,7 @@ use ascom_alpaca::Client;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rp_auth::config::ClientAuthConfig;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Maximum attempts each `connect_*` makes for the get-devices +
 /// set-connected pair. Backoff between attempts is 1 s, then 2 s
@@ -98,23 +98,112 @@ where
     ))
 }
 
-/// Build an Alpaca client with optional HTTP Basic Auth credentials.
+/// Connect-phase timeout for every Alpaca HTTP request rp issues. A
+/// localhost / LAN Alpaca server completes the TCP connect in well under
+/// this; the bound keeps a refused or black-holed host from stalling the
+/// connect indefinitely.
+pub(super) const ALPACA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-read inactivity timeout for every Alpaca HTTP request.
+///
+/// reqwest has **no** default request timeout, and `ascom-alpaca`'s
+/// client adds none (it only bounds UDP discovery). Without this, a
+/// device that accepts the TCP connection but never answers — an OmniSim
+/// wedged under heavy parallel CI load, or a real mount / USB-serial
+/// bridge that stalls mid-request during an unattended night — hangs the
+/// awaiting tool handler **forever**.
+///
+/// That unbounded `await` is the root cause of issue #319's
+/// `center_on_target` timeout: a per-iteration mount read stalled, the
+/// loop never returned, rmcp tore the MCP transport down at its 300 s
+/// keep-alive, and the BDD `MCP_CALL_TIMEOUT` tripped at 360 s. The
+/// blocking-op deadlines in `mcp::internals` (120 s capture, 300 s slew)
+/// guard *poll loops*, not a single in-flight request, so they cannot
+/// interrupt this — only a client-level timeout can.
+///
+/// A *read* timeout (resets on every chunk received, vs. a total request
+/// deadline) bounds a genuine stall without capping a legitimately large
+/// `image_array` download on a slow link. 10 s is far above any healthy
+/// single Alpaca round-trip yet well below rp's 120 s / 300 s
+/// blocking-op deadlines and the 360 s BDD backstop, so a stall now
+/// surfaces as a fast, legible equipment error instead of a hang.
+pub(super) const ALPACA_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Build an Alpaca client with per-request timeouts and optional HTTP
+/// Basic Auth credentials.
+///
+/// Both the auth and no-auth paths go through `new_with_client` so the
+/// timeouts apply uniformly — the no-auth path must **not** fall back to
+/// `Client::new`, whose default reqwest client has no timeout (the #319
+/// hang). See [`ALPACA_READ_TIMEOUT`].
 pub(super) fn build_alpaca_client(
     url: &str,
     auth: Option<&ClientAuthConfig>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    match auth {
-        Some(a) => {
-            let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Basic {encoded}").parse()?);
-            let http = reqwest::Client::builder()
-                .default_headers(headers)
-                .build()?;
-            Ok(Client::new_with_client(url, http)?)
-        }
-        None => Ok(Client::new(url)?),
+    let mut builder = reqwest::Client::builder()
+        .user_agent("rusty-photon-rp")
+        .connect_timeout(ALPACA_CONNECT_TIMEOUT)
+        .read_timeout(ALPACA_READ_TIMEOUT);
+    if let Some(a) = auth {
+        let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("authorization", format!("Basic {encoded}").parse()?);
+        builder = builder.default_headers(headers);
     }
+    Ok(Client::new_with_client(url, builder.build()?)?)
+}
+
+/// Attempts an idempotent runtime Alpaca read makes before giving up.
+pub(crate) const READ_RETRY_ATTEMPTS: u32 = 3;
+
+/// Retry an idempotent Alpaca read up to [`READ_RETRY_ATTEMPTS`] times
+/// with short backoff (100 ms, then 200 ms).
+///
+/// The runtime analogue of [`retry_connect_attempt`]: the connect path
+/// already rides out a transient OmniSim stall (e.g. a long .NET GC),
+/// but the *runtime* mount reads that `center_on_target` issues every
+/// iteration did not — so a single read failure aborted the whole
+/// compound tool. Now that [`ALPACA_READ_TIMEOUT`] bounds a stalled read
+/// (turning the #319 hang into a fast error), retrying lets a brief
+/// device hiccup recover instead of failing the operation.
+///
+/// **Idempotent reads only** (`right_ascension`, `declination`,
+/// `slewing`) — never a command that mutates device state, where a
+/// duplicate could double-apply.
+pub(crate) async fn retry_idempotent_read<T, F, Fut>(label: &str, op: F) -> Result<T, String>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let mut last = String::from("no attempts made");
+    for attempt in 1..=READ_RETRY_ATTEMPTS {
+        match op().await {
+            Ok(value) => {
+                if attempt > 1 {
+                    debug!(label, attempt, "Alpaca read recovered after retry");
+                }
+                return Ok(value);
+            }
+            Err(e) => {
+                last = e;
+                if attempt < READ_RETRY_ATTEMPTS {
+                    // 100 ms, then 200 ms — bounded total backoff well
+                    // under the per-request read timeout above.
+                    let delay = Duration::from_millis(100u64 << (attempt - 1));
+                    debug!(
+                        label,
+                        attempt,
+                        max = READ_RETRY_ATTEMPTS,
+                        ?delay,
+                        error = %last,
+                        "transient Alpaca read failure, retrying after backoff"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    Err(format!("{last} (after {READ_RETRY_ATTEMPTS} attempts)"))
 }
 
 #[cfg(test)]
@@ -240,5 +329,77 @@ mod tests {
         .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    // ----- retry_idempotent_read direct unit tests --------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_idempotent_read_recovers_after_transient_failures() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_closure = calls.clone();
+        let result: Result<i32, String> = retry_idempotent_read("test", || {
+            let calls = calls_for_closure.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if n < READ_RETRY_ATTEMPTS {
+                    Err(format!("transient {n}"))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), READ_RETRY_ATTEMPTS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_idempotent_read_gives_up_after_all_attempts() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_closure = calls.clone();
+        let result: Result<i32, String> = retry_idempotent_read("test", || {
+            let calls = calls_for_closure.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("always fails".to_string())
+            }
+        })
+        .await;
+        let err = result.expect_err("all-failing read must give up with Err");
+        assert!(err.contains("always fails"), "got: {err}");
+        assert!(
+            err.contains(&format!("after {READ_RETRY_ATTEMPTS} attempts")),
+            "error should report attempt count, got: {err}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), READ_RETRY_ATTEMPTS);
+    }
+
+    // ----- per-request timeout (the #319 root-cause regression) -------
+    //
+    // A device that accepts the TCP connection but never sends a
+    // response must surface as an error, not hang forever. `start_paused`
+    // advances virtual time so reqwest's read timeout fires in real-time
+    // milliseconds; the outer `tokio::time::timeout` only trips if the
+    // fix regresses (no client-level timeout), turning a silent infinite
+    // hang into a loud test failure.
+    #[tokio::test(start_paused = true)]
+    async fn alpaca_client_times_out_on_silently_stalled_device() {
+        use crate::equipment::test_support::spawn_stub;
+        use axum::{routing::get, Json, Router};
+
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
+        );
+        let stub = spawn_stub(app).await;
+        let client = build_alpaca_client(&stub.url(), None).unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(120), client.get_devices()).await;
+        let inner = outcome.expect("get_devices must return via the read timeout, not hang");
+        // `get_devices`'s Ok type is `impl Iterator` (not Debug), so match
+        // rather than `expect_err`.
+        if inner.is_ok() {
+            panic!("a silently-stalled device must surface as an error, not a value");
+        }
     }
 }

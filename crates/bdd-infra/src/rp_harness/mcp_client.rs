@@ -15,11 +15,12 @@ use serde_json::Value;
 /// Upper bound on a single MCP request (`call_tool` / `list_tools`).
 ///
 /// rmcp's `Peer::call_tool` has no built-in client timeout: if an rp tool
-/// handler never returns, the `await` here hangs *forever*. That is what ran
-/// CI's closed-loop centering BDD to GitHub's 6 h job cap — rp's `do_capture`
-/// looped indefinitely on a failed `sky-survey-camera` exposure (root-caused
-/// and fixed in `services/rp/src/mcp/internals.rs::do_capture`). This timeout
-/// is a defense-in-depth backstop: any future handler hang fails the scenario
+/// handler never returns, the `await` here hangs *forever*. Two centering-BDD
+/// hangs traced to that: `do_capture` looping on a failed `sky-survey-camera`
+/// exposure (fixed in `services/rp/src/mcp/internals.rs::do_capture`), and —
+/// issue #319 — a per-iteration mount read stalling because rp's Alpaca client
+/// had no per-request timeout (fixed in rp's `equipment::alpaca`). This timeout
+/// is a defense-in-depth backstop: any *future* handler hang fails the scenario
 /// fast and legibly here, rather than hanging the BDD binary until the CI
 /// job's `timeout-minutes` kills it.
 ///

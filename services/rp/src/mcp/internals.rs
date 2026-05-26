@@ -16,6 +16,7 @@ use ascom_alpaca::api::camera::CameraState;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::equipment::alpaca::retry_idempotent_read;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
 
@@ -847,16 +848,36 @@ impl McpHandler {
     /// modes — no mount configured, mount not connected, Alpaca
     /// read error — surface as a single string the caller appends
     /// to its diagnostic.
+    ///
+    /// `center_on_target` issues this read every iteration; under heavy
+    /// parallel-OmniSim CI load it was the read that stalled and hung
+    /// the whole loop (issue #319). Both reads are idempotent, so they
+    /// retry a transient failure via [`retry_idempotent_read`] rather
+    /// than aborting the compound tool on a single hiccup; the
+    /// per-request read timeout (see `equipment::alpaca`) bounds each
+    /// attempt.
     pub(crate) async fn read_mount_hints_for_plate_solve(&self) -> Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
-        let ra_hours = mount
-            .right_ascension()
-            .await
-            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
-        let dec_deg = mount
-            .declination()
-            .await
-            .map_err(|e| format!("failed to read mount declination: {e}"))?;
+        let ra_hours = retry_idempotent_read("mount right_ascension", || {
+            let mount = mount.clone();
+            async move {
+                mount
+                    .right_ascension()
+                    .await
+                    .map_err(|e| format!("failed to read mount right_ascension: {e}"))
+            }
+        })
+        .await?;
+        let dec_deg = retry_idempotent_read("mount declination", || {
+            let mount = mount.clone();
+            async move {
+                mount
+                    .declination()
+                    .await
+                    .map_err(|e| format!("failed to read mount declination: {e}"))
+            }
+        })
+        .await?;
         Ok((ra_hours * 15.0, dec_deg))
     }
 
@@ -1100,12 +1121,22 @@ pub(crate) fn star_to_json(s: &Star) -> serde_json::Value {
 }
 
 /// Outcome variants for [`poll_slewing_until_idle`].
+#[derive(Debug)]
 pub(crate) enum PollIdleError {
     /// Deadline expired with `slewing()` still returning `true`.
     Timeout,
     /// `slewing()` itself returned an Alpaca error.
     Read(ascom_alpaca::ASCOMError),
 }
+
+/// Consecutive `slewing()` read errors [`poll_slewing_until_idle`]
+/// tolerates before giving up. A transient read failure — the now
+/// timeout-bounded stall a loaded OmniSim or a flaky link produces
+/// (issue #319) — is treated like "not idle yet" and retried on the
+/// next tick; only a *persistent* failure aborts the slew. The 300 s
+/// deadline still caps the total wait. Mirrors the connect path's
+/// tolerance for a transient device stall.
+const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 
 /// Poll `mount.slewing()` every 100 ms until it returns `false`,
 /// bounded by a 300 s deadline. Used by `do_slew_blocking`. (The
@@ -1116,17 +1147,39 @@ pub(crate) enum PollIdleError {
 /// [`PollIdleError::Timeout`] the caller decides whether to
 /// best-effort `abort_slew()` (slew does) or just surface the
 /// timeout.
+///
+/// A transient `slewing()` read error is tolerated (kept polling) up to
+/// [`SLEWING_READ_ERROR_TOLERANCE`] consecutive failures so a brief
+/// device hiccup mid-slew doesn't abort the whole `center_on_target`
+/// loop; a successful read resets the counter.
 pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
 ) -> std::result::Result<(), PollIdleError> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let mut consecutive_read_errors: u32 = 0;
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         match mount.slewing().await {
             Ok(false) => return Ok(()),
-            Ok(true) if tokio::time::Instant::now() < deadline => continue,
+            Ok(true) if tokio::time::Instant::now() < deadline => {
+                consecutive_read_errors = 0;
+                continue;
+            }
             Ok(true) => return Err(PollIdleError::Timeout),
-            Err(e) => return Err(PollIdleError::Read(e)),
+            Err(e) => {
+                consecutive_read_errors += 1;
+                if consecutive_read_errors >= SLEWING_READ_ERROR_TOLERANCE
+                    || tokio::time::Instant::now() >= deadline
+                {
+                    return Err(PollIdleError::Read(e));
+                }
+                debug!(
+                    consecutive_read_errors,
+                    max = SLEWING_READ_ERROR_TOLERANCE,
+                    error = %e,
+                    "transient mount slewing() read error, continuing to poll"
+                );
+            }
         }
     }
 }
