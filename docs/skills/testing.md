@@ -420,7 +420,14 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
   `sibling_service_dir` — launch helpers.
 - `WebhookReceiver`, `TestOrchestrator`, `OrchestratorBehavior` — in-process
   plugin stand-ins.
-- `McpTestClient` — persistent rmcp client for calling rp's MCP tools.
+- `McpTestClient` — persistent rmcp client for calling rp's MCP tools. Each
+  `call_tool` / `list_tools` request is bounded by `MCP_CALL_TIMEOUT` (360 s):
+  rmcp has no built-in client timeout, so if an rp tool handler hangs the
+  `await` would otherwise block forever. (A `do_capture` loop that span
+  indefinitely on a failed `sky-survey-camera` exposure burned a full 6 h per
+  CI job this way before it was fixed at the source.) The bound is a backstop
+  so any future handler hang fails the scenario fast rather than running the
+  job to its `timeout-minutes` cap.
 
 Turn the feature on **only** for tests that actually spawn rp. Services whose
 BDD tests only need `ServiceHandle` (filemonitor, qhy-focuser, ppba-driver,

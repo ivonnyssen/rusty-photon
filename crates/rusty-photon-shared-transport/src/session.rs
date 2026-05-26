@@ -36,7 +36,7 @@ use crate::BoxFuture;
 /// the live-session-survival contract from the
 /// [transport-lifecycle plan][lifecycle-plan] possible.
 ///
-/// [lifecycle-plan]: ../../../../docs/plans/eager-hardware-validation.md
+/// [lifecycle-plan]: ../../../../docs/plans/archive/eager-hardware-validation.md
 pub(crate) type ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>;
 
 /// A live, refcounted handle to the shared transport.

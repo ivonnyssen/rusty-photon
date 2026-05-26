@@ -1,6 +1,6 @@
 # Plan: service-lifetime transport with split safety / shutdown teardown
 
-> **Status: implemented.** Phases 0a, 0b, and 1-5 landed in this PR:
+> **Status: COMPLETE (archived 2026-05-24; PR #302).** Phases 0a, 0b, and 1-5 landed:
 > shared-transport hook split + `start`/`shutdown` API (Phase 0a),
 > reconnect supervisor + connection-cell swap that preserves live
 > sessions across transient transport loss (Phase 0b), and per-service
@@ -28,6 +28,12 @@
 > service's lifetime instead of with ASCOM-client refcount. The
 > filename is kept for now; consider renaming to `transport-lifecycle.md`
 > in a follow-up.
+>
+> **Deferred follow-ups (documented inline below; not blockers):** on-acquire
+> eager reconnect + `reconnect_acquire_timeout`, per-service `Config` fields
+> (`reconnect_interval`, `startup_retries`, `startup_retry_backoff`), the
+> `--check-device` CLI flag, per-service integration/BDD tests, and the
+> optional `transport-lifecycle.md` skill doc.
 
 ## Motivation
 

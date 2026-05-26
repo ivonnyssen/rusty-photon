@@ -19,6 +19,14 @@ name: test
 jobs:
   plan:
     runs-on: ubuntu-latest
+    # Explicit job timeout. Without one, GitHub's default is 360 min (6 h):
+    # a BDD hang in `cargo test --test bdd` silently burned a full 6 h per
+    # job before being killed, blocking the runner queue overnight. The root
+    # cause (rp's `do_capture` looping forever on a failed sky-survey-camera
+    # exposure) is fixed at the source; these caps are defense-in-depth so no
+    # future hang can ever burn 6 h again. Values sit ~2x above the observed
+    # healthy max so cold-cache/load variance won't false-positive.
+    timeout-minutes: 15
     name: plan
     outputs:
       test: ${{ steps.rail.outputs.test }}
@@ -76,6 +84,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: ubuntu-latest
+    # See the plan job for why these caps exist (6 h BDD-hang backstop).
+    timeout-minutes: 30
     name: ubuntu / stable
     steps:
       - uses: actions/checkout@v5
@@ -129,6 +139,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: macos-latest
+    timeout-minutes: 30
     name: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -169,6 +180,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: windows-latest
+    timeout-minutes: 30
     name: windows / nextest
     steps:
       - uses: actions/checkout@v5
@@ -205,6 +217,7 @@ jobs:
     # BDD-only PRs (#186) from the windows-bdd matrix.
     if: needs.plan.outputs.has-bdd == 'true'
     runs-on: windows-latest
+    timeout-minutes: 30
     name: windows / bdd / ${{ matrix.package }}
     strategy:
       fail-fast: false
@@ -258,6 +271,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: coverage
     steps:
       - uses: actions/checkout@v5

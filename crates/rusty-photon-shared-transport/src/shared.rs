@@ -28,7 +28,7 @@
 //! observation is consistent for the duration of one lifecycle
 //! transition.
 //!
-//! [lifecycle-plan]: ../../../../docs/plans/eager-hardware-validation.md
+//! [lifecycle-plan]: ../../../../docs/plans/archive/eager-hardware-validation.md
 //! [`Session::close`]: crate::Session::close
 
 use std::io;

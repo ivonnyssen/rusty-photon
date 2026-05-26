@@ -1,0 +1,38 @@
+# Bazel/Cargo target-parity gate.
+#
+# Ensures every Cargo workspace member has a Bazel rust target, so that
+# "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
+# files can otherwise drift from the workspace). Runs during the Phase 7 soak
+# and after — on PRs, push-to-main, and nightly — so drift is caught the moment
+# a crate is added without a BUILD.bazel.
+#
+# See scripts/check-bazel-cargo-parity.sh and docs/plans/bazel-migration.md.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "45 6 * * *"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: parity
+jobs:
+  bazel-cargo-parity:
+    runs-on: ubuntu-latest
+    name: bazel/cargo target parity
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+      # Query-only: cargo metadata + bazel query, no build. jq is preinstalled
+      # on ubuntu-latest.
+      - name: Check Bazel/Cargo target parity
+        run: ./scripts/check-bazel-cargo-parity.sh
