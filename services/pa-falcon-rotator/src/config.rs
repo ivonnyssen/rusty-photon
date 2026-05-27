@@ -43,6 +43,7 @@ fn default_discovery_port() -> Option<u16> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotatorConfig {
     pub name: String,
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -53,6 +54,7 @@ pub struct RotatorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwitchConfig {
     pub name: String,
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -96,7 +98,7 @@ impl Default for RotatorConfig {
     fn default() -> Self {
         Self {
             name: "Pegasus Falcon Rotator".to_string(),
-            unique_id: "pa-falcon-rotator-001".to_string(),
+            unique_id: String::new(),
             description: "Pegasus Astro Falcon Rotator (firmware >= 1.3)".to_string(),
             enabled: true,
         }
@@ -107,7 +109,7 @@ impl Default for SwitchConfig {
     fn default() -> Self {
         Self {
             name: "Pegasus Falcon Status".to_string(),
-            unique_id: "pa-falcon-rotator-status-001".to_string(),
+            unique_id: String::new(),
             description: "Pegasus Falcon Rotator status sensors (voltage + limit-hit)".to_string(),
             enabled: true,
         }
@@ -132,11 +134,11 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.rotator.name, "Pegasus Falcon Rotator");
-        assert_eq!(config.rotator.unique_id, "pa-falcon-rotator-001");
+        assert!(config.rotator.unique_id.is_empty());
         assert!(config.rotator.enabled);
 
         assert_eq!(config.switch.name, "Pegasus Falcon Status");
-        assert_eq!(config.switch.unique_id, "pa-falcon-rotator-status-001");
+        assert!(config.switch.unique_id.is_empty());
         assert!(config.switch.enabled);
 
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
@@ -153,7 +155,7 @@ mod tests {
     fn rotator_config_default() {
         let config = RotatorConfig::default();
         assert_eq!(config.name, "Pegasus Falcon Rotator");
-        assert_eq!(config.unique_id, "pa-falcon-rotator-001");
+        assert!(config.unique_id.is_empty());
         assert_eq!(
             config.description,
             "Pegasus Astro Falcon Rotator (firmware >= 1.3)"
@@ -165,7 +167,7 @@ mod tests {
     fn switch_config_default() {
         let config = SwitchConfig::default();
         assert_eq!(config.name, "Pegasus Falcon Status");
-        assert_eq!(config.unique_id, "pa-falcon-rotator-status-001");
+        assert!(config.unique_id.is_empty());
         assert!(config.description.contains("voltage"));
         assert!(config.description.contains("limit"));
         assert!(config.enabled);

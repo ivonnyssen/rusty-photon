@@ -359,8 +359,15 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let device = disconnected_device();
-        assert_eq!(device.unique_id(), "pa-falcon-rotator-001");
+        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let device = FalconRotatorDevice::new(
+            RotatorConfig {
+                unique_id: "test-rotator-unique-id".to_string(),
+                ..RotatorConfig::default()
+            },
+            manager,
+        );
+        assert_eq!(device.unique_id(), "test-rotator-unique-id");
     }
 
     #[tokio::test]

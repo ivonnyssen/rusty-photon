@@ -88,6 +88,15 @@ impl FalconRotatorWorld {
     /// devices.
     pub async fn start_service(&mut self) {
         let mut config = self.config.clone().unwrap_or_default();
+        // The in-process world bypasses main.rs's first-run identity
+        // materialization, so seed stable UniqueIDs here (mirroring what the
+        // binary persists on first run) for deterministic metadata assertions.
+        if config.rotator.unique_id.is_empty() {
+            config.rotator.unique_id = "pa-falcon-rotator-001".to_string();
+        }
+        if config.switch.unique_id.is_empty() {
+            config.switch.unique_id = "pa-falcon-rotator-status-001".to_string();
+        }
         // Bind on an ephemeral port so concurrent BDD scenarios don't fight
         // over a fixed port number.
         config.server.port = 0;

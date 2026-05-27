@@ -294,7 +294,7 @@ service can later expose a Switch device (heater control) without redesign.
   },
   "cover_calibrator": {
     "name": "Deep Sky Dad FP2",
-    "unique_id": "dsd-fp2-001",
+    "unique_id": "0c8d6f1a-3b2e-4a7c-9f1d-2e5b8c4a6d3f",
     "description": "Deep Sky Dad Flat Panel 2 (motorised flat field panel)",
     "enabled": true,
     "max_brightness": 4096
@@ -306,6 +306,33 @@ service can later expose a Switch device (heater control) without redesign.
 durable `/dev/serial/by-id/...-if00` form. Prefer the `by-id` form in
 production configs so that re-enumeration of other USB devices does not
 shuffle the FP2 onto a different `ttyACM*`.
+
+### Device identity (UniqueID)
+
+ASCOM requires each device's `UniqueID` to be **globally unique** and to
+**never change**, but the Alpaca protocol enforces neither — uniqueness has
+to come from how the id is generated. The driver no longer ships a hardcoded
+literal (`"dsd-fp2-001"`). Instead, on **first run** it mints a spec-compliant
+**UUIDv4** for `cover_calibrator.unique_id` and persists it to the resolved
+config path (see [Config-path resolution](#config-path-resolution)).
+
+The minting is done once at startup — before the config is read into the
+running server — by `rusty_photon_config::materialize_identity` (the shared
+`rusty-photon-config` crate). It is **idempotent**: it fills the id only when
+`cover_calibrator.unique_id` is absent or empty in the on-disk file, persists
+atomically only when it actually filled something, and **never overwrites** an
+id that already exists. It operates on the config *file*, not the
+CLI-override-applied effective config, so a transient `--port` is never baked
+in. The default `Config` therefore carries an **empty** `unique_id`; the value
+above is illustrative of a minted id.
+
+The only escape hatch for changing the id is an explicit edit through the
+UI / `config.apply`. To prevent an operator from accidentally blanking the
+device's stable identity, `config.apply` **rejects an empty (or
+whitespace-only) `cover_calibrator.unique_id`** with a `status:"invalid"`
+field error on `cover_calibrator.unique_id` (see [Validation
+rules](#validation-rules)). Editing the config file by hand to remove the id
+is recoverable: the next startup re-mints a fresh one.
 
 ### CLI Arguments
 
@@ -416,6 +443,7 @@ pre-config-actions driver, which ignored any file when `--config` was omitted.)
 | `serial.polling_interval` | `> 0` |
 | `serial.timeout` | `> 0` |
 | `cover_calibrator.max_brightness` | `<= 4096` (hardware ceiling, `MAX_BRIGHTNESS`) |
+| `cover_calibrator.unique_id` | non-empty (the device's stable ASCOM `UniqueID`; see [Device identity](#device-identity-uniqueid)) |
 | `server.port` | any `u16` (`0` = OS-assigned, used in tests) |
 
 #### Field classification (Phase 1)

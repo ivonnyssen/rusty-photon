@@ -161,6 +161,12 @@ pub fn validate(config: &Config) -> Vec<FieldError> {
             msg: format!("must be <= {MAX_BRIGHTNESS} (hardware ceiling)"),
         });
     }
+    if config.cover_calibrator.unique_id.trim().is_empty() {
+        errors.push(FieldError {
+            path: "cover_calibrator.unique_id".to_string(),
+            msg: "must not be empty (it is the device's stable ASCOM UniqueID)".to_string(),
+        });
+    }
     errors
 }
 
@@ -366,6 +372,19 @@ mod tests {
         Config::default()
     }
 
+    /// A config that is valid for `validate()`: like `Config::default()` but with
+    /// a populated `cover_calibrator.unique_id` (the default is empty because the
+    /// id is minted on first run by `materialize_identity`).
+    fn valid_config() -> Config {
+        Config {
+            cover_calibrator: CoverCalibratorConfig {
+                unique_id: "dsd-fp2-test-id".to_string(),
+                ..CoverCalibratorConfig::default()
+            },
+            ..Config::default()
+        }
+    }
+
     #[test]
     fn action_names_round_trip() {
         for action in ConfigAction::ALL {
@@ -377,8 +396,37 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_default() {
-        assert!(validate(&Config::default()).is_empty());
+    fn validate_accepts_populated_config() {
+        // `Config::default()` now has an empty `unique_id` (minted on first run),
+        // so a *populated* config is the valid baseline.
+        assert!(validate(&valid_config()).is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_empty_unique_id() {
+        // Whitespace-only counts as empty, just like `serial.port`.
+        for id in ["", "   ", "\t\n"] {
+            let config = Config {
+                cover_calibrator: CoverCalibratorConfig {
+                    unique_id: id.to_string(),
+                    ..CoverCalibratorConfig::default()
+                },
+                ..Config::default()
+            };
+            let errors = validate(&config);
+            let err = errors
+                .iter()
+                .find(|e| e.path == "cover_calibrator.unique_id")
+                .unwrap_or_else(|| panic!("expected a unique_id error for {id:?}, got {errors:?}"));
+            assert_eq!(
+                err.msg,
+                "must not be empty (it is the device's stable ASCOM UniqueID)"
+            );
+        }
+        // And a populated id passes (no unique_id error).
+        assert!(validate(&valid_config())
+            .iter()
+            .all(|e| e.path != "cover_calibrator.unique_id"));
     }
 
     #[test]
@@ -423,6 +471,7 @@ mod tests {
         let config = Config {
             cover_calibrator: CoverCalibratorConfig {
                 max_brightness: MAX_BRIGHTNESS as u32,
+                unique_id: "dsd-fp2-test-id".to_string(),
                 ..CoverCalibratorConfig::default()
             },
             ..Config::default()

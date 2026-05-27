@@ -70,6 +70,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Running in MOCK MODE - no real hardware");
     info!("Configuration path: {}", config_path.display());
 
+    // Mint the device's stable ASCOM `UniqueID` once, before the reload loop reads
+    // the config. `materialize_identity` is idempotent: it writes a fresh UUIDv4 to
+    // the file only when `cover_calibrator.unique_id` is absent/empty, and never
+    // overwrites an existing id. Doing this before `load_effective_config` runs
+    // guarantees the minted id is on disk by the time the server reads it.
+    let outcome = rusty_photon_config::materialize_identity(
+        &config_path,
+        &serde_json::to_value(dsd_fp2::Config::default())?,
+        &["/cover_calibrator/unique_id"],
+    )?;
+    if outcome.wrote {
+        debug!(
+            "Minted device UniqueID(s) {:?} into {}",
+            outcome.filled,
+            config_path.display()
+        );
+    } else {
+        debug!("Device UniqueID already present; not minting");
+    }
+
     // `config.apply` triggers an in-process reload rather than a process bounce:
     // each loop iteration re-reads the effective config and rebuilds the server.
     ServiceRunner::new("dsd-fp2").with_reload().run_with_reload(

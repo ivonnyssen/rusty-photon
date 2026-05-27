@@ -22,6 +22,14 @@ Feature: dsd-fp2 configuration page
     Then the serial.port field is disabled
     And the page explains the field is pinned by a command-line override
 
+  Scenario: Unique ID is read-only until unlocked, then editable
+    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
+    When I open the dsd-fp2 config page
+    Then the cover_calibrator.unique_id field is disabled
+    And the page offers to unlock cover_calibrator.unique_id to edit it
+    When I open the dsd-fp2 config page with cover_calibrator.unique_id unlocked
+    Then the cover_calibrator.unique_id field is editable
+
   Scenario: A valid change is applied and the page reports the driver is reloading
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
     When I submit the config form setting max_brightness to 2048

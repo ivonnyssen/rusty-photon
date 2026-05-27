@@ -62,23 +62,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.config, args.transport, args.port, args.server_port, args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
+    // Resolve a real config-file path up front: the explicit `--config`
+    // path if given, else the per-user platform config dir
+    // (`~/.config/rusty-photon/star-adventurer-gti.json` on Linux). A
+    // path is *always* resolvable now, so identity persistence and park
+    // persistence are never disabled merely for lack of a `--config`
+    // flag.
+    let config_path =
+        rusty_photon_config::resolve_config_path("star-adventurer-gti", args.config.clone())?;
+    debug!("Resolved config path: {:?}", config_path);
+
+    // First-run identity: mint a spec-compliant UUIDv4 `UniqueID` into
+    // `mount.unique_id` if (and only if) it is absent or empty in the
+    // file layer, persisting atomically. Idempotent — an existing id is
+    // never overwritten. The default scaffold is the serialized
+    // `Config::default()`, so a fresh install gets a complete, valid
+    // config file with a real id on its very first launch.
+    let default_value = serde_json::to_value(Config::default())?;
+    let outcome = rusty_photon_config::materialize_identity(
+        &config_path,
+        &default_value,
+        &["/mount/unique_id"],
+    )?;
+    if outcome.wrote {
+        debug!(
+            "Materialized device identity into {:?}: filled {:?}",
+            config_path, outcome.filled
+        );
     } else {
-        debug!("Using default configuration");
-        Config::default()
-    };
+        debug!("Device identity already present in {:?}", config_path);
+    }
+
+    // Load from the resolved path. The file now always exists (materialize
+    // wrote the default scaffold on first run), so there is no in-memory
+    // `Config::default()` fallback path here.
+    debug!("Loading configuration from {:?}", config_path);
+    let mut config = load_config(&config_path)?;
 
     apply_cli_overrides(&mut config, &args)?;
 
-    // Canonicalise the operator-supplied config path so `SetPark` writes
-    // to a stable absolute location; also runs the early-warning
-    // writability probe so a bad path / permissions setup surfaces a
-    // `warn!` at boot instead of only on the first `SetPark` call. Both
-    // helpers live in the library crate so their warn-on-failure
-    // branches are unit-testable.
-    let config_file_path = canonicalise_config_path(args.config.as_ref());
+    // Park persistence targets the *same* resolved config file as the
+    // identity step. Canonicalise it so `SetPark` writes to a stable
+    // absolute location even if the process later `chdir`s; also run the
+    // early-warning writability probe so a bad path / permissions setup
+    // surfaces a `warn!` at boot instead of only on the first `SetPark`
+    // call. Because a config path is now always resolved, `CanSetPark`
+    // is effectively true by default — see the design doc's
+    // §"Park persistence".
+    let config_file_path = canonicalise_config_path(Some(&config_path));
     if let Some(path) = &config_file_path {
         warn_if_park_path_unwritable(path);
     }

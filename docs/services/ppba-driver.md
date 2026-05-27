@@ -83,13 +83,13 @@ Configuration is provided via a JSON file:
   },
   "switch": {
     "name": "Pegasus PPBA Switch",
-    "unique_id": "ppba-switch-001",
+    "unique_id": "8f1c3a2e-5b7d-4e9a-9c1f-2a6b8d0e4f31",
     "description": "Pegasus Astro PPBA Gen2 Power Control",
     "enabled": true
   },
   "observingconditions": {
     "name": "Pegasus PPBA Weather",
-    "unique_id": "ppba-observingconditions-001",
+    "unique_id": "1d4e6f80-2c9b-47a3-8e51-7f0a3b5c9d2e",
     "description": "Pegasus Astro PPBA Environmental Sensors",
     "enabled": true,
     "averaging_period": "5m"
@@ -109,14 +109,38 @@ Configuration is provided via a JSON file:
 | server.auth | username | HTTP Basic Auth username (optional) | — |
 | server.auth | password_hash | Argon2id password hash (optional) | — |
 | switch | name | ASCOM device name for the Switch | "Pegasus PPBA Switch" |
-| switch | unique_id | Unique identifier for the Switch | "ppba-switch-001" |
+| switch | unique_id | ASCOM `UniqueID` for the Switch (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | switch | description | Switch description | "Pegasus Astro PPBA Gen2 Power Control" |
 | switch | enabled | Whether to register the Switch device | `true` |
 | observingconditions | name | ASCOM device name for ObservingConditions | "Pegasus PPBA Weather" |
-| observingconditions | unique_id | Unique identifier for ObservingConditions | "ppba-observingconditions-001" |
+| observingconditions | unique_id | ASCOM `UniqueID` for ObservingConditions (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | observingconditions | description | ObservingConditions description | "Pegasus Astro PPBA Environmental Sensors" |
 | observingconditions | enabled | Whether to register the ObservingConditions device | `true` |
 | observingconditions | averaging_period | Sliding-window length for sensor means (humantime) | `"5m"` |
+
+### Device identity (UniqueID)
+
+This driver exposes **two** ASCOM device identities — the Switch and the
+ObservingConditions device — each with its own `UniqueID`. ASCOM Alpaca requires
+every device's `UniqueID` to be globally unique and stable for the life of the
+installation.
+
+On **first run**, each device's `unique_id` is minted as a spec-compliant
+UUIDv4 and persisted to the config file via the shared
+`rusty_photon_config::materialize_identity` helper.
+Materialization is idempotent and **never overwrites** an id that already holds a
+non-empty value — only empty or absent ids are filled — so a device keeps the
+same identity across restarts. The defaults for both `unique_id` fields are
+therefore the empty string, which signals "mint me on first run".
+
+The config path is resolved from `--config` if given, otherwise from the
+per-user platform config directory (e.g.
+`~/.config/rusty-photon/ppba-driver.json` on Linux). Because identity must be
+persisted, **first run now writes the config file if it is absent**, seeding it
+with the default scaffold and the two freshly-minted UUIDs. CLI overrides
+(`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)
+are applied to the in-memory config *after* loading and are never written back
+to disk.
 
 ## Usage
 
@@ -423,6 +447,7 @@ conformu conformance http://localhost:11112/api/v1/switch/0
 - `tokio-serial` - Async serial port communication
 - `tokio` - Async runtime
 - `serde` / `serde_json` - Configuration parsing
+- `rusty-photon-config` - Config-path resolution + first-run `UniqueID` materialization
 - `clap` - Command-line argument parsing
 - `tracing` - Logging
 - `thiserror` - Error handling

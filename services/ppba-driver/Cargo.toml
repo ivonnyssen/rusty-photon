@@ -26,6 +26,7 @@ ascom-alpaca = { workspace = true, features = [
   "switch",
   "observing_conditions",
 ] }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }

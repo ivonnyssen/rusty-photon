@@ -21,6 +21,7 @@ ascom-alpaca = { workspace = true, features = ["server", "telescope", "client"] 
 skywatcher-motor-protocol = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
+rusty-photon-config = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }

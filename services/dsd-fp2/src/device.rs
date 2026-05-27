@@ -514,14 +514,24 @@ mod mock_tests {
                 tls: None,
                 auth: None,
             },
-            cover_calibrator: CoverCalibratorConfig::default(),
+            cover_calibrator: test_cover_calibrator(),
+        }
+    }
+
+    /// `CoverCalibratorConfig::default()` now has an empty `unique_id` (minted on
+    /// first run by `materialize_identity`), which `config_actions::validate`
+    /// rejects. Tests model a post-materialization config with a populated id.
+    fn test_cover_calibrator() -> CoverCalibratorConfig {
+        CoverCalibratorConfig {
+            unique_id: "dsd-fp2-001".to_string(),
+            ..CoverCalibratorConfig::default()
         }
     }
 
     fn make_device() -> (DsdFp2Device, MockTransportFactory) {
         let factory = MockTransportFactory::default();
         let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
-        let device = DsdFp2Device::new(CoverCalibratorConfig::default(), manager);
+        let device = DsdFp2Device::new(test_cover_calibrator(), manager);
         (device, factory)
     }
 
@@ -530,7 +540,7 @@ mod mock_tests {
         let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
         let cc_config = CoverCalibratorConfig {
             max_brightness: cap,
-            ..CoverCalibratorConfig::default()
+            ..test_cover_calibrator()
         };
         let device = DsdFp2Device::new(cc_config, manager);
         (device, factory)

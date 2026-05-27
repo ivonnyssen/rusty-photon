@@ -8,6 +8,8 @@ pub enum SkySurveyCameraError {
     ConfigParse(#[from] serde_json::Error),
     #[error("invalid config: {0}")]
     ConfigInvalid(String),
+    #[error("device identity: {0}")]
+    Identity(#[from] rusty_photon_config::ConfigError),
     #[error("server bind: {0}")]
     Bind(String),
     #[error("server: {0}")]

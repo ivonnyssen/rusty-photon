@@ -56,13 +56,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.config, args.port, args.server_port, args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
-    } else {
-        debug!("Using default configuration");
-        Config::default()
-    };
+    // Resolve the config path (explicit --config, else the per-user platform
+    // config dir) and ensure the focuser has a persisted, spec-compliant
+    // `UniqueID`. `materialize_identity` mints a UUIDv4 on first run, writes the
+    // default scaffold if the file is absent, and never overwrites an existing
+    // id. It operates on the on-disk file only, so a transient `--port`/
+    // `--server-port` override is never baked in.
+    let config_path = rusty_photon_config::resolve_config_path("qhy-focuser", args.config.clone())?;
+    debug!("Resolved configuration path: {:?}", config_path);
+
+    let outcome = rusty_photon_config::materialize_identity(
+        &config_path,
+        &serde_json::to_value(Config::default())?,
+        &["/focuser/unique_id"],
+    )?;
+    debug!(
+        "Identity materialization: wrote={}, filled={:?}",
+        outcome.wrote, outcome.filled
+    );
+
+    debug!("Loading configuration from {:?}", config_path);
+    let mut config = load_config(&config_path)?;
 
     if let Some(port) = args.port {
         config.serial.port = port;

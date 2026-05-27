@@ -41,6 +41,13 @@ async fn open_page(world: &mut UiWorld) {
     world.get("/config/dsd-fp2").await;
 }
 
+#[when(regex = r"^I open the dsd-fp2 config page with ([\w.]+) unlocked$")]
+async fn open_page_with_unlock(world: &mut UiWorld, field: String) {
+    // The escape hatch is a plain `?unlock=<field>` query — the same link the
+    // "Unlock to edit" affordance points at; no client-side JS involved.
+    world.get(&format!("/config/dsd-fp2?unlock={field}")).await;
+}
+
 #[when(regex = r"^I submit the config form setting max_brightness to (\d+)$")]
 async fn submit_max_brightness(world: &mut UiWorld, value: String) {
     world
@@ -74,10 +81,35 @@ fn page_shows_value(world: &mut UiWorld, expected: String) {
     );
 }
 
-#[then("the serial.port field is disabled")]
-fn serial_port_disabled(world: &mut UiWorld) {
-    let tag = world.input_tag("serial.port");
-    assert!(tag.contains("disabled"), "serial.port not disabled: {tag}");
+#[then(regex = r"^the ([\w.]+) field is disabled$")]
+fn field_disabled(world: &mut UiWorld, field: String) {
+    let tag = world.input_tag(&field);
+    assert!(tag.contains("disabled"), "{field} not disabled: {tag}");
+}
+
+#[then(regex = r"^the ([\w.]+) field is editable$")]
+fn field_editable(world: &mut UiWorld, field: String) {
+    let tag = world.input_tag(&field);
+    assert!(
+        !tag.contains("disabled"),
+        "{field} still disabled (expected editable): {tag}"
+    );
+}
+
+#[then(regex = r"^the page offers to unlock ([\w.]+) to edit it$")]
+fn offers_to_unlock(world: &mut UiWorld, field: String) {
+    // The identity hint plus an HTMX unlock link to `?unlock=<field>`.
+    assert!(
+        world.last_body.contains("Identity — the driver owns this"),
+        "missing identity hint:\n{}",
+        world.last_body
+    );
+    let link = format!(r#"hx-get="/config/dsd-fp2?unlock={field}""#);
+    assert!(
+        world.last_body.contains(&link),
+        "missing unlock link {link:?}:\n{}",
+        world.last_body
+    );
 }
 
 #[then("the page explains the field is pinned by a command-line override")]

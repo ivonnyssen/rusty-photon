@@ -71,15 +71,29 @@ pub fn index_page() -> Markup {
 }
 
 /// The `dsd-fp2` configuration form, filled from the effective config. Override-
-/// pinned fields render disabled; `errors` annotate fields after a rejected apply.
+/// pinned fields render disabled; `errors` annotate fields after a rejected
+/// apply. `unlocked` lists the locked/identity fields (see [`LOCKED_FIELDS`])
+/// the user has explicitly unlocked this render — they are shown editable; every
+/// other locked field is shown read-only with an "Unlock to edit" escape hatch.
 pub fn config_card(
     config: &Value,
     overrides: &[String],
+    unlocked: &[String],
     errors: &[FieldError],
     banner: Option<Banner>,
 ) -> Markup {
     let config_blob = serde_json::to_string(config).unwrap_or_default();
     let overrides_blob = serde_json::to_string(overrides).unwrap_or_default();
+    // The unlocked set round-trips on POST so an invalid submission re-renders
+    // with the identity field still unlocked (rather than snapping shut and
+    // discarding the user's in-progress edit).
+    let unlocked_blob = serde_json::to_string(unlocked).unwrap_or_default();
+    let ctx = FieldCtx {
+        config,
+        overrides,
+        unlocked,
+        errors,
+    };
     html! {
         div #config-card.card {
             @if let Some(b) = banner { (banner_markup(b)) }
@@ -89,25 +103,26 @@ pub fn config_card(
                 hx-post="/config/dsd-fp2" hx-target="#config-card" hx-swap="outerHTML" {
                 input type="hidden" name="__config" value=(config_blob);
                 input type="hidden" name="__overrides" value=(overrides_blob);
+                input type="hidden" name="__unlocked" value=(unlocked_blob);
 
                 fieldset {
                     legend { "Serial" }
-                    (field_input(config, overrides, errors, "Port", "serial.port", "/serial/port", "text"))
-                    (field_input(config, overrides, errors, "Baud rate", "serial.baud_rate", "/serial/baud_rate", "number"))
-                    (field_input(config, overrides, errors, "Polling interval", "serial.polling_interval", "/serial/polling_interval", "text"))
-                    (field_input(config, overrides, errors, "Timeout", "serial.timeout", "/serial/timeout", "text"))
+                    (field_input(&ctx, "Port", "serial.port", "/serial/port", "text"))
+                    (field_input(&ctx, "Baud rate", "serial.baud_rate", "/serial/baud_rate", "number"))
+                    (field_input(&ctx, "Polling interval", "serial.polling_interval", "/serial/polling_interval", "text"))
+                    (field_input(&ctx, "Timeout", "serial.timeout", "/serial/timeout", "text"))
                 }
                 fieldset {
                     legend { "Server" }
-                    (field_input(config, overrides, errors, "Port", "server.port", "/server/port", "number"))
-                    (field_input(config, overrides, errors, "Discovery port", "server.discovery_port", "/server/discovery_port", "number"))
+                    (field_input(&ctx, "Port", "server.port", "/server/port", "number"))
+                    (field_input(&ctx, "Discovery port", "server.discovery_port", "/server/discovery_port", "number"))
                 }
                 fieldset {
                     legend { "Cover calibrator" }
-                    (field_input(config, overrides, errors, "Name", "cover_calibrator.name", "/cover_calibrator/name", "text"))
-                    (field_input(config, overrides, errors, "Unique ID", "cover_calibrator.unique_id", "/cover_calibrator/unique_id", "text"))
-                    (field_input(config, overrides, errors, "Description", "cover_calibrator.description", "/cover_calibrator/description", "text"))
-                    (field_input(config, overrides, errors, "Max brightness", "cover_calibrator.max_brightness", "/cover_calibrator/max_brightness", "number"))
+                    (field_input(&ctx, "Name", "cover_calibrator.name", "/cover_calibrator/name", "text"))
+                    (field_input(&ctx, "Unique ID", "cover_calibrator.unique_id", "/cover_calibrator/unique_id", "text"))
+                    (field_input(&ctx, "Description", "cover_calibrator.description", "/cover_calibrator/description", "text"))
+                    (field_input(&ctx, "Max brightness", "cover_calibrator.max_brightness", "/cover_calibrator/max_brightness", "number"))
                     (field_checkbox(config, "Enabled", "cover_calibrator.enabled", "/cover_calibrator/enabled"))
                 }
                 div.actions { button.primary type="submit" { "Apply" } }
@@ -174,20 +189,36 @@ fn banner_markup(banner: Banner) -> Markup {
     }
 }
 
+/// The per-render state every field input is rendered against: the effective
+/// config blob plus the three field-classification sets (override-pinned,
+/// currently-unlocked locked/identity fields, and BFF-side field errors).
+/// Bundled into one context so [`field_input`] takes a manageable argument list.
+struct FieldCtx<'a> {
+    config: &'a Value,
+    overrides: &'a [String],
+    unlocked: &'a [String],
+    errors: &'a [FieldError],
+}
+
 fn field_input(
-    config: &Value,
-    overrides: &[String],
-    errors: &[FieldError],
+    ctx: &FieldCtx<'_>,
     label: &str,
     name: &str,
     pointer: &str,
     input_type: &str,
 ) -> Markup {
-    let pinned = overrides.iter().any(|o| o == name);
+    let pinned = ctx.overrides.iter().any(|o| o == name);
     let read_only = is_read_only(name);
-    let disabled = pinned || read_only;
-    let err = errors.iter().find(|e| e.path == name);
-    let value = str_at(config, pointer);
+    let locked = is_locked(name);
+    let is_unlocked = ctx.unlocked.iter().any(|u| u == name);
+    // A locked/identity field is disabled until the user explicitly unlocks it;
+    // pinned and hard-read-only always disable regardless.
+    let disabled = pinned || read_only || (locked && !is_unlocked);
+    let err = ctx.errors.iter().find(|e| e.path == name);
+    let value = str_at(ctx.config, pointer);
+    // `?unlock=<name>` returns the page with this field overlaid editable;
+    // `/config/dsd-fp2` (no query) re-locks every locked field.
+    let unlock_href = format!("/config/dsd-fp2?unlock={name}");
     html! {
         div.field.pinned[disabled].invalid[err.is_some()] {
             label for=(name) { (label) }
@@ -200,6 +231,20 @@ fn field_input(
                     "Read-only for now — the BFF can't follow a change to the "
                     "driver's address yet, so editing it here would lose the "
                     "connection. Change it in the driver's config file."
+                }
+            } @else if locked && !is_unlocked {
+                div.hint {
+                    "Identity — the driver owns this. Editing is an escape hatch "
+                    "for a misbehaving driver. "
+                    a href=(unlock_href) hx-get=(unlock_href)
+                        hx-target="#config-card" hx-swap="outerHTML" { "Unlock to edit" }
+                }
+            } @else if locked && is_unlocked {
+                div.hint.warning {
+                    "Unlocked — editing the driver's identity is an escape hatch "
+                    "for a misbehaving driver. "
+                    a href="/config/dsd-fp2" hx-get="/config/dsd-fp2"
+                        hx-target="#config-card" hx-swap="outerHTML" { "Lock again" }
                 }
             }
         }
@@ -255,6 +300,10 @@ fn bool_at(config: &Value, pointer: &str) -> bool {
 pub struct MergedForm {
     pub config: Value,
     pub overrides: Vec<String>,
+    /// The locked/identity fields (see [`LOCKED_FIELDS`]) that were unlocked on
+    /// this submission (read back from the hidden `__unlocked` field). Echoed so
+    /// a re-render after an invalid apply keeps them unlocked.
+    pub unlocked: Vec<String>,
     /// BFF-side parse/range errors for numeric fields (e.g. a port above
     /// 65535). When non-empty, the form is re-rendered with these field errors
     /// rather than sent to the driver.
@@ -365,6 +414,25 @@ fn is_read_only(name: &str) -> bool {
     READ_ONLY_FIELDS.contains(&name)
 }
 
+/// **Locked / identity** fields: editable in principle, but rendered read-only
+/// **by default** behind a deliberate "unlock to edit" escape hatch. Distinct
+/// from the hard [`READ_ONLY_FIELDS`] tier — those can never be edited from the
+/// page; these can, but only after the user explicitly unlocks them.
+///
+/// `cover_calibrator.unique_id` is the driver's stable ASCOM `UniqueID`: the
+/// driver now owns and generates it, so editing it is an escape hatch for a
+/// misbehaving driver rather than routine configuration. It stays in
+/// [`EDITABLE_FIELDS`] (so an unlocked submission is overlaid) but is gated:
+/// [`field_input`] disables it unless its name is in the `unlocked` set, and
+/// [`merge_form`] only overlays it when `__unlocked` lists it (and it isn't
+/// pinned). The unlocked state is carried in the URL (`?unlock=…`) on a GET and
+/// in the hidden `__unlocked` field on a POST, so no client-side JS is needed.
+const LOCKED_FIELDS: &[&str] = &["cover_calibrator.unique_id"];
+
+fn is_locked(name: &str) -> bool {
+    LOCKED_FIELDS.contains(&name)
+}
+
 /// Rebuild the full Config from a submitted form: start from the hidden
 /// round-tripped blob and overlay the editable fields. Override-pinned and
 /// read-only fields are not overlaid (the driver skips override-pinned ones
@@ -382,11 +450,29 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
     let overrides: Vec<String> =
         serde_json::from_str(overrides_raw).map_err(|e| FormError::BadOverrides(e.to_string()))?;
 
+    // `__unlocked` is *optional* (a page that never unlocked anything omits it,
+    // and so does any submission predating this field). A malformed value is
+    // treated as "nothing unlocked" — the safe default keeps locked/identity
+    // fields read-only — rather than a hard error: unlike `__config` /
+    // `__overrides`, a missing or bad `__unlocked` cannot let a locked field be
+    // edited (the gate below still requires the name to be present), so there is
+    // no security reason to reject the submission. The set is restricted to
+    // `LOCKED_FIELDS` so a forged `__unlocked` can only ever unlock a field that
+    // is actually a locked/identity field.
+    let unlocked: Vec<String> = unlocked_set_from_json(form.get("__unlocked").map(String::as_str));
+
     let is_pinned = |name: &str| overrides.iter().any(|o| o == name);
+    let is_unlocked = |name: &str| unlocked.iter().any(|u| u == name);
 
     let mut errors = Vec::new();
     for spec in EDITABLE_FIELDS {
         if is_pinned(spec.name) || is_read_only(spec.name) {
+            continue;
+        }
+        // A locked/identity field round-trips from the hidden blob untouched
+        // unless the user explicitly unlocked it (and it isn't pinned). This is
+        // the form-field gate; pinned and hard-read-only are handled above.
+        if is_locked(spec.name) && !is_unlocked(spec.name) {
             continue;
         }
         let Some(raw) = form.get(spec.name) else {
@@ -431,8 +517,35 @@ pub fn merge_form(form: &HashMap<String, String>) -> Result<MergedForm, FormErro
     Ok(MergedForm {
         config,
         overrides,
+        unlocked,
         errors,
     })
+}
+
+/// Parse a JSON string array of field names into the set of currently-unlocked
+/// locked/identity fields, keeping only names that are actually in
+/// [`LOCKED_FIELDS`]. `None`, an empty input, or any parse failure yields an
+/// empty set (the safe default: nothing unlocked). Shared by [`merge_form`]
+/// (reads the hidden `__unlocked` field) so a forged value can never unlock a
+/// non-locked field.
+fn unlocked_set_from_json(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let names: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
+    names.into_iter().filter(|n| is_locked(n)).collect()
+}
+
+/// Compute the unlocked set from a `?unlock=<field>` query value. Only a name
+/// that is actually a locked/identity field (in [`LOCKED_FIELDS`]) is honoured;
+/// anything else (a hard-read-only field, a typo, or `None`) yields an empty
+/// set. Used by the `GET` handlers (`config_get` / `config_status`) to render
+/// the page with one identity field unlocked for editing.
+pub fn unlocked_from_query(unlock: Option<&str>) -> Vec<String> {
+    match unlock {
+        Some(name) if is_locked(name) => vec![name.to_string()],
+        _ => Vec::new(),
+    }
 }
 
 fn field_error(path: &str, msg: &str) -> FieldError {
@@ -472,17 +585,19 @@ mod tests {
 
     #[test]
     fn config_card_embeds_current_values_and_hidden_blob() {
-        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        let markup = config_card(&sample_config(), &[], &[], &[], None).into_string();
         assert!(markup.contains(r#"value="/dev/ttyACM0""#), "{markup}");
         assert!(markup.contains(r#"value="4096""#), "{markup}");
         // The hidden blob round-trips the full config for POST.
         assert!(markup.contains(r#"name="__config""#), "{markup}");
+        // The unlocked set round-trips so an invalid POST keeps the unlock state.
+        assert!(markup.contains(r#"name="__unlocked""#), "{markup}");
     }
 
     #[test]
     fn config_card_disables_override_pinned_fields() {
         let overrides = vec!["serial.port".to_string()];
-        let markup = config_card(&sample_config(), &overrides, &[], None).into_string();
+        let markup = config_card(&sample_config(), &overrides, &[], &[], None).into_string();
         // The serial.port input carries `disabled`.
         let pos = markup.find(r#"name="serial.port""#).unwrap();
         let start = markup[..pos].rfind("<input").unwrap();
@@ -505,7 +620,7 @@ mod tests {
             msg: "must be greater than 0".to_string(),
         }];
         let markup =
-            config_card(&sample_config(), &[], &errors, Some(Banner::Invalid)).into_string();
+            config_card(&sample_config(), &[], &[], &errors, Some(Banner::Invalid)).into_string();
         assert!(markup.contains("must be greater than 0"), "{markup}");
         assert!(markup.contains("invalid"), "{markup}");
     }
@@ -514,7 +629,7 @@ mod tests {
     fn config_card_renders_enabled_read_only() {
         // The Enabled checkbox is shown for reference but disabled, so the UI
         // can't unregister the device (and the config endpoint with it).
-        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        let markup = config_card(&sample_config(), &[], &[], &[], None).into_string();
         let pos = markup.find(r#"name="cover_calibrator.enabled""#).unwrap();
         let start = markup[..pos].rfind("<input").unwrap();
         let end = markup[start..].find('>').unwrap() + start;
@@ -529,7 +644,7 @@ mod tests {
     fn config_card_renders_server_port_read_only() {
         // server.port is read-only so the UI can't change the driver's address
         // out from under the BFF (which would lock the page out of the driver).
-        let markup = config_card(&sample_config(), &[], &[], None).into_string();
+        let markup = config_card(&sample_config(), &[], &[], &[], None).into_string();
         let pos = markup.find(r#"name="server.port""#).unwrap();
         let start = markup[..pos].rfind("<input").unwrap();
         let end = markup[start..].find('>').unwrap() + start;
@@ -538,6 +653,69 @@ mod tests {
             "server.port input not disabled: {}",
             &markup[start..=end]
         );
+    }
+
+    /// The `<input ...>` tag whose `name` attribute is `name`, for asserting on
+    /// the `disabled` attribute. Mirrors the pattern the existing pinned/
+    /// read-only tests inline.
+    fn input_tag(markup: &str, name: &str) -> String {
+        let pos = markup.find(&format!(r#"name="{name}""#)).unwrap();
+        let start = markup[..pos].rfind("<input").unwrap();
+        let end = markup[start..].find('>').unwrap() + start;
+        markup[start..=end].to_string()
+    }
+
+    #[test]
+    fn config_card_renders_unique_id_locked_by_default() {
+        // The driver owns the UniqueID, so the identity field is read-only by
+        // default with an "unlock to edit" escape hatch — distinct from the hard
+        // server.port read-only tier (which has no unlock affordance).
+        let markup = config_card(&sample_config(), &[], &[], &[], None).into_string();
+        let tag = input_tag(&markup, "cover_calibrator.unique_id");
+        assert!(tag.contains("disabled"), "unique_id not disabled: {tag}");
+        assert!(
+            markup.contains("Identity — the driver owns this"),
+            "missing identity hint:\n{markup}"
+        );
+        assert!(
+            markup.contains(r#"hx-get="/config/dsd-fp2?unlock=cover_calibrator.unique_id""#),
+            "missing unlock link:\n{markup}"
+        );
+    }
+
+    #[test]
+    fn config_card_renders_unique_id_editable_when_unlocked() {
+        // With the field in the unlocked set it is enabled, the hidden
+        // `__unlocked` field carries it back on submit, and a "Lock again"
+        // affordance re-locks it.
+        let unlocked = vec!["cover_calibrator.unique_id".to_string()];
+        let markup = config_card(&sample_config(), &[], &unlocked, &[], None).into_string();
+        let tag = input_tag(&markup, "cover_calibrator.unique_id");
+        assert!(!tag.contains("disabled"), "unique_id still disabled: {tag}");
+        assert!(
+            markup
+                .contains(r#"name="__unlocked" value="[&quot;cover_calibrator.unique_id&quot;]""#),
+            "missing/empty __unlocked hidden field:\n{markup}"
+        );
+        assert!(
+            markup.contains("Lock again"),
+            "missing lock-again link:\n{markup}"
+        );
+    }
+
+    #[test]
+    fn unlocked_from_query_only_honours_locked_fields() {
+        // A locked/identity field name is honoured…
+        assert_eq!(
+            unlocked_from_query(Some("cover_calibrator.unique_id")),
+            vec!["cover_calibrator.unique_id".to_string()]
+        );
+        // …but a hard-read-only field, an editable field, a typo, or no query
+        // yields nothing — the escape hatch is only for locked/identity fields.
+        assert!(unlocked_from_query(Some("server.port")).is_empty());
+        assert!(unlocked_from_query(Some("serial.port")).is_empty());
+        assert!(unlocked_from_query(Some("nonsense")).is_empty());
+        assert!(unlocked_from_query(None).is_empty());
     }
 
     #[test]
@@ -709,6 +887,115 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(11119)
         );
+    }
+
+    #[test]
+    fn merge_form_ignores_unique_id_when_not_unlocked() {
+        // The identity field is locked by default: a submitted (disabled-field)
+        // value is ignored unless `__unlocked` lists it, so it round-trips from
+        // the hidden blob. `__unlocked` absent here entirely.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()), // unique_id: dsd-fp2-001
+            ("__overrides", "[]"),
+            ("cover_calibrator.unique_id", "tampered-id"), // must be ignored
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/unique_id")
+                .and_then(Value::as_str),
+            Some("dsd-fp2-001")
+        );
+        assert!(merged.unlocked.is_empty(), "{:?}", merged.unlocked);
+    }
+
+    #[test]
+    fn merge_form_overlays_unique_id_when_unlocked() {
+        // When `__unlocked` lists the identity field (the escape hatch), the
+        // submitted value is overlaid.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
+            ("__unlocked", r#"["cover_calibrator.unique_id"]"#),
+            ("cover_calibrator.unique_id", "fixed-by-operator"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/unique_id")
+                .and_then(Value::as_str),
+            Some("fixed-by-operator")
+        );
+        assert_eq!(
+            merged.unlocked,
+            vec!["cover_calibrator.unique_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_form_pinned_unique_id_wins_over_unlock() {
+        // Pinned always wins: even unlocked, an override-pinned identity field
+        // round-trips from the blob (the driver skips it on persist anyway).
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()), // unique_id: dsd-fp2-001
+            ("__overrides", r#"["cover_calibrator.unique_id"]"#),
+            ("__unlocked", r#"["cover_calibrator.unique_id"]"#),
+            ("cover_calibrator.unique_id", "tampered-id"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/unique_id")
+                .and_then(Value::as_str),
+            Some("dsd-fp2-001")
+        );
+    }
+
+    #[test]
+    fn merge_form_forged_unlocked_cannot_unlock_non_locked_field() {
+        // A forged `__unlocked` listing a hard-read-only field (server.port)
+        // can't unlock it — the set is filtered to LOCKED_FIELDS, and server.port
+        // is skipped by the read-only gate regardless.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()), // server.port: 11119
+            ("__overrides", "[]"),
+            ("__unlocked", r#"["server.port"]"#), // forged — not a locked field
+            ("server.port", "22222"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/server/port")
+                .and_then(Value::as_u64),
+            Some(11119)
+        );
+        assert!(merged.unlocked.is_empty(), "{:?}", merged.unlocked);
+    }
+
+    #[test]
+    fn merge_form_malformed_unlocked_is_treated_as_empty() {
+        // Unlike `__config` / `__overrides`, a bad `__unlocked` is not an error:
+        // the safe default keeps locked fields read-only, and the gate still
+        // requires the name to be present, so a submitted value is ignored.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
+            ("__unlocked", "not json"),
+            ("cover_calibrator.unique_id", "tampered-id"),
+        ]);
+        let merged = merge_form(&form).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/cover_calibrator/unique_id")
+                .and_then(Value::as_str),
+            Some("dsd-fp2-001")
+        );
+        assert!(merged.unlocked.is_empty(), "{:?}", merged.unlocked);
     }
 
     #[test]

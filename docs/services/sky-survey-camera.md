@@ -185,6 +185,49 @@ Configuration sections:
 - **server** — Listening port. TLS and Basic Auth are added later via
   `rp-tls` / `rp-auth` if needed; out of scope for v0.
 
+### Device identity (UniqueID)
+
+ASCOM Alpaca requires every device's `UniqueID` to be **globally
+unique** and to **never change**, but the protocol enforces neither —
+uniqueness must come from how the id is generated. The camera mints
+its own spec-compliant identity on first run rather than relying on
+the operator to hand-write a unique string.
+
+- **`device.unique_id` is optional in the config file.** It is loaded
+  with `#[serde(default)]`, so a file that omits it (or leaves it
+  empty) deserializes to an empty string.
+- **On startup, before loading the config, `run` calls
+  `rusty_photon_config::materialize_identity` on the config file**
+  with the single identity pointer `/device/unique_id`. If that
+  pointer is absent or empty, a fresh **UUIDv4** is minted and the
+  file is rewritten atomically (staged temp file → fsync → rename).
+  The operation is **idempotent**: an id that already exists is never
+  overwritten, and a run that fills nothing performs no write. The
+  next load then reads the stable, persisted id.
+- **A missing config file remains a hard error.** Unlike services that
+  have a `Config::default()`, this camera has none — the `optics`
+  fields (focal length, pixel size, sensor dimensions) are mandatory
+  and have no sensible default. Identity materialization therefore
+  runs **only when the config file already exists**; it never
+  scaffolds an identity-only file, because `load_config` would then
+  immediately fail on the missing `optics` section anyway. Operators
+  must supply a config file with at least the `optics` (and the other
+  required) sections; the `device.unique_id` is the one field they may
+  safely leave out and let the service generate.
+
+This is shared behaviour provided by the `rusty-photon-config` crate,
+identical across the rusty-photon drivers.
+
+> **`--config` default change.** The `--config` flag previously
+> defaulted to the CWD-relative string `config.json`. It is now an
+> optional argument: when omitted, the path is resolved via
+> `rusty_photon_config::resolve_config_path("sky-survey-camera", …)`
+> to the per-user XDG config directory
+> (`~/.config/rusty-photon/sky-survey-camera.json` on Linux, the
+> platform equivalent elsewhere). **Operators who relied on a
+> CWD-local `config.json` must now pass `--config config.json`
+> explicitly.**
+
 ### Derived Quantities
 
 ```
