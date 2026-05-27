@@ -7,6 +7,7 @@ members = [
   "crates/rp-fits",
   "crates/rp-plate-solver",
   "crates/rp-tls",
+  "crates/rusty-photon-config",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
   "crates/rusty-photon-service-lifecycle",
@@ -109,6 +110,7 @@ tokio-rustls = "0.26"
 socket2 = "0.6"
 cucumber = "0.23.0"
 tempfile = "3.27.0"
+uuid = { version = "1", features = ["v4", "serde"] }
 rmcp = { version = "1.7", default-features = false }
 schemars = "1.0"
 cargo-husky = { version = "1", default-features = false, features = [
@@ -117,6 +119,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 ] }
 rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
+rusty-photon-config = { path = "crates/rusty-photon-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
