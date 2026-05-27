@@ -1074,33 +1074,91 @@ async fn test_capture_times_out_when_camera_never_ready() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_get_camera_info_max_adu_fails() {
-    let cam = MockCamera {
-        fail_max_adu: true,
-        ..Default::default()
-    };
-    let handler = test_handler(camera_registry(Arc::new(cam)));
+async fn test_get_camera_info_max_adu_unavailable_when_cache_none() {
+    // `max_adu` moved to a connect-time cache on `CameraEntry`. A connect-
+    // time read failure leaves `max_adu = None`; `get_camera_info` must
+    // surface that as a tool_error so consumers don't mistake "absent"
+    // for "zero". This replaces the old live-read failure test.
+    let registry = camera_registry_with_meta(
+        Arc::new(MockCamera::default()),
+        None,
+        CachedCameraMeta {
+            max_adu: None,
+            ..CachedCameraMeta::default()
+        },
+    );
+    let handler = test_handler(registry);
     let result = handler
         .get_camera_info(Parameters(CameraIdParams {
             camera_id: "cam".into(),
         }))
         .await;
-    assert_tool_error(result, "failed to read max_adu");
+    assert_tool_error(result, "max_adu unavailable");
 }
 
 #[tokio::test]
-async fn test_get_camera_info_sensor_size_fails() {
+async fn test_get_camera_info_reads_max_adu_and_sensor_from_cache_not_live() {
+    // Pin the contract that `max_adu` and the sensor dimensions come from
+    // `CameraEntry`'s connect-time cache, NOT from per-call Alpaca reads.
+    // We rig the MockCamera so its `max_adu` and `camera_size` methods
+    // would fail if invoked, then seed the cache with distinctive values.
+    // `get_camera_info` must succeed and report the cached values — proving
+    // the live reads aren't happening on the hot path.
     let cam = MockCamera {
+        fail_max_adu: true,
         fail_camera_size: true,
         ..Default::default()
     };
-    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let registry = camera_registry_with_meta(
+        Arc::new(cam),
+        None,
+        CachedCameraMeta {
+            max_adu: Some(4242),
+            sensor_width_px: Some(3000),
+            sensor_height_px: Some(2000),
+            ..CachedCameraMeta::default()
+        },
+    );
+    let handler = test_handler(registry);
+    let result = handler
+        .get_camera_info(Parameters(CameraIdParams {
+            camera_id: "cam".into(),
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.as_str())
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(json["max_adu"], 4242);
+    assert_eq!(json["sensor_x"], 3000);
+    assert_eq!(json["sensor_y"], 2000);
+}
+
+#[tokio::test]
+async fn test_get_camera_info_sensor_size_unavailable_when_cache_none() {
+    // Sensor dimensions moved to the connect-time cache (same shape as
+    // `max_adu` above). A missing `sensor_width_px` or `sensor_height_px`
+    // surfaces as a tool_error.
+    let registry = camera_registry_with_meta(
+        Arc::new(MockCamera::default()),
+        None,
+        CachedCameraMeta {
+            sensor_width_px: None,
+            ..CachedCameraMeta::default()
+        },
+    );
+    let handler = test_handler(registry);
     let result = handler
         .get_camera_info(Parameters(CameraIdParams {
             camera_id: "cam".into(),
         }))
         .await;
-    assert_tool_error(result, "failed to read sensor size");
+    assert_tool_error(result, "sensor size unavailable");
 }
 
 // -----------------------------------------------------------------------
