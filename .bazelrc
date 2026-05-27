@@ -123,6 +123,13 @@ test:ci --test_summary=terse
 # stable across push vs pull_request events.
 build:ci --test_env=OMNISIM_PATH
 
+# Forward CONFORMU_PATH the same way and for the same reason: on build:ci so the
+# --test_env SET is identical across every CI invocation sharing one server
+# (build, fast, BDD, and any `--config=conformu` run) — it never changes between
+# steps, so it never discards the analysis cache. Forwarded by name; unset in
+# build/fast/BDD (harmless) and set only by the conformu workflow.
+build:ci --test_env=CONFORMU_PATH
+
 
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
 # developers don't accidentally point at the shared cache. CI jobs combine:
@@ -139,11 +146,11 @@ build:remote-cache --remote_cache=https://cache.rustyphoton.space
 
 # Run the per-service ConformU suites under Bazel:
 #   CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //...
-# Scoped to its own config (NOT build:ci) so the shared build / fast / bdd
-# action keys — none of which run conformu — are unperturbed and stay remote-
-# cache hits on PRs (build:ci is shared by every bazel.yml step, and bazel.yml
-# never runs conformu). Forwards CONFORMU_PATH by name (value resolved at
-# runtime); bdd_infra::run_conformu self-skips when it's unset.
+# This config just SELECTS the conformu-tagged tests. CONFORMU_PATH itself is
+# forwarded on build:ci (above) so the CI --test_env set stays identical across
+# steps; the --test_env here is only so a local `--config=conformu` run (without
+# --config=ci) still passes it through. bdd_infra::run_conformu self-skips when
+# CONFORMU_PATH is unset.
 test:conformu --test_tag_filters=conformu
 test:conformu --test_env=CONFORMU_PATH
 
