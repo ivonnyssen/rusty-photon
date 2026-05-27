@@ -45,7 +45,7 @@ Bazel's remote cache is the structural fix for items 1 and 2 — the cache is co
 - **Leptos / `sentinel-app` WASM (dropped 2026-05-24).** Not used today; Phase 4 cancelled.
 - **Release packaging (dropped 2026-05-24).** `release.yml` stays on `cargo-deb` / `cargo-generate-rpm`; we release far less often than we merge. Phase 6 cancelled.
 - Miri under Bazel. rules_rust miri support is thin; keep the scheduled Cargo job.
-- ConformU runs. External ASCOM tool; keep the existing Cargo invocation.
+- ConformU: the external tool install and the canonical nightly conformance gate stay on Cargo (`conformu.yml`). But the per-service `conformu_integration` tests are now **also runnable under Bazel** (audit follow-up) — they drive the ConformU CLI via `bdd_infra::run_conformu` (no longer the `ascom-alpaca/test` feature), tagged `conformu` and gated on `CONFORMU_PATH`: `bazel test --test_tag_filters=conformu //...`.
 - Migrating `cargo-husky` pre-commit hooks. Bazel-native alternative would be a `sh_binary` hook installer, but out of scope here.
 
 ## Target architecture
@@ -136,7 +136,7 @@ per-PR build/test path only; packaging keeps running on Cargo indefinitely.
 
 With Phase 4 (Leptos) and Phase 6 (packaging) dropped, cutover no longer waits
 on them. Remaining prerequisites: the cache live + parity logged
-(Phase 5), the Cargo-only gates (miri, sanitizers, conformu, `cargo-hack`,
+(Phase 5), the Cargo-only gates (miri, sanitizers, `cargo-hack`,
 `cargo-msrv`, coverage) kept on a Cargo nightly, and the `rust-project.json`
 IDE decision (open question 4).
 
