@@ -45,16 +45,39 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    # 213 in-crate unit tests. The 8 test_start_phd2_* tests use a mock process
+    # spawner (they never exec a real binary); dummy_executable_path() now points
+    # at current_exe(), so they pass in the Bazel sandbox without a cargo-built
+    # target/debug layout. Previously the whole target was tagged requires-cargo,
+    # which hid all 213 from `bazel test`.
     size = "small",
-    # 8 of 213 tests spawn phd2 child processes via cargo-discovered paths.
-    # See docs/plans/bazel-migration.md "Known test gaps".
-    tags = ["requires-cargo"],
     crate = ":phd2-guider_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Mock-server protocol tests: bind a TCP listener on 127.0.0.1:0 and exercise
+# the client against it, entirely in-process (no child binaries). Pure rust_test.
+rust_test(
+    name = "test_mock_server",
+    srcs = ["tests/test_mock_server.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":phd2-guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
