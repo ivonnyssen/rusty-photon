@@ -9,6 +9,8 @@
 //! The helpers operate on `serde_json::Value` + JSON pointers so they apply uniformly across the
 //! heterogeneous driver config shapes (one device or several, at different pointers).
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
