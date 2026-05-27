@@ -86,6 +86,32 @@ rust_test(
     ),
 )
 
+# Drives AstapCliRunner::solve() end-to-end against mock_astap in each of its
+# failure modes (success / ExitStatus / NoWcs / MalformedWcs). Same mock_astap
+# discovery as supervision_integration: MOCK_ASTAP_BINARY points at the binary.
+rust_test(
+    name = "runner_integration",
+    srcs = ["tests/runner_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    env = {
+        "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
+    },
+    data = [":mock_astap"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":plate-solver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # BDD cucumber suite. Self-contained: spawns the plate-solver service binary,
 # which in turn shells out to the mock_astap stub (no real ASTAP install, no
 # OmniSim). The @requires-astap scenarios self-gate on the ASTAP_BINARY env
