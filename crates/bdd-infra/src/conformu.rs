@@ -62,29 +62,55 @@ pub async fn run_conformu(
         base = base_url.trim_end_matches('/'),
     );
 
-    let mut command = Command::new(&conformu);
-    command.arg("conformance");
+    // Run both ConformU suites against the device, matching the upstream
+    // ascom_alpaca::test runner (`ConformUTestBuilder::run`): `alpacaprotocol`
+    // (Alpaca wire-protocol conformance) then `conformance` (full ASCOM
+    // device-interface tests). Both must pass.
+    for mode in ["alpacaprotocol", "conformance"] {
+        run_mode(&conformu, mode, settings_file, &device_url).await?;
+    }
+    Ok(ConformuRun::Passed)
+}
+
+/// Run a single ConformU mode (`alpacaprotocol` or `conformance`) against
+/// `device_url`, streaming its output. Returns `Err` on a non-zero exit.
+async fn run_mode(
+    conformu: &std::ffi::OsStr,
+    mode: &str,
+    settings_file: Option<&Path>,
+    device_url: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut command = Command::new(conformu);
+    command.arg(mode);
+    // ConformU writes a per-run log tree under $HOME (e.g.
+    // $HOME/Documents/ascom/logs<date>). Under Bazel's test sandbox the real
+    // $HOME is read-only, so ConformU aborts on startup; point HOME at the
+    // test's writable TEST_TMPDIR. (Under Cargo there is no sandbox and $HOME is
+    // already writable, so this is a no-op there.)
+    if let Some(tmp) = std::env::var_os("TEST_TMPDIR") {
+        command.env("HOME", tmp);
+    }
     // `--settingsfile` is optional: services that need non-default ConformU
     // settings (timeouts, which test groups to run) pass a written file; the
     // rest run with ConformU's defaults.
     if let Some(path) = settings_file {
         command.arg("--settingsfile").arg(path);
     }
-    let mut child = command.arg(&device_url).stdout(Stdio::piped()).spawn()?;
+    let mut child = command.arg(device_url).stdout(Stdio::piped()).spawn()?;
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
     // visible and a verbose run can't deadlock on an undrained pipe.
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await? {
-            println!("[conformu] {line}");
+            println!("[conformu {mode}] {line}");
         }
     }
 
     let status = child.wait().await?;
     if status.success() {
-        Ok(ConformuRun::Passed)
+        Ok(())
     } else {
-        Err(format!("ConformU exited with {status} testing {device_url}").into())
+        Err(format!("ConformU `{mode}` exited with {status} testing {device_url}").into())
     }
 }
