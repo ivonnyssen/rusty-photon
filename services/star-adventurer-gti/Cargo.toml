@@ -11,7 +11,7 @@ description = "ASCOM Alpaca driver for Sky-Watcher Star Adventurer GTi GEM"
 [features]
 default = []
 mock = []
-conformu = ["mock", "ascom-alpaca/test"]
+conformu = ["mock"]
 
 [lints]
 workspace = true
@@ -70,7 +70,7 @@ tempfile = { workspace = true }
 # `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }

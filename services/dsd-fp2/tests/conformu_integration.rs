@@ -9,8 +9,6 @@
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::CoverCalibrator;
-use ascom_alpaca::test::ConformUTestBuilder;
 use bdd_infra::ServiceHandle;
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -18,14 +16,12 @@ use tracing_subscriber::{fmt, EnvFilter};
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
-#[ignore] // Requires ConformU installation; run with --ignored
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
     let _ = fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_test_writer()
         .try_init();
@@ -101,7 +97,8 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             .to_str()
             .expect("conformu temp path must be UTF-8"),
     )
-    .await?;
+    .await
+    .map_err(Box::<dyn std::error::Error>::from)?;
 
     println!("::group::ConformU CoverCalibrator Compliance Test Results");
     println!(
@@ -109,32 +106,29 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         handle.port
     );
 
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn CoverCalibrator>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
-    }
-    .await;
+    let result = bdd_infra::run_conformu(
+        "covercalibrator",
+        &handle.base_url,
+        0,
+        Some(&conformu_settings_path),
+    )
+    .await
+    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
-    match &result {
-        Ok(_) => {
+    handle.stop().await;
+    std::fs::remove_dir_all(&test_dir).ok();
+
+    match result? {
+        bdd_infra::ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipped");
+        }
+        bdd_infra::ConformuRun::Passed => {
             println!("ConformU compliance tests PASSED");
             println!("All ASCOM Alpaca CoverCalibrator compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU compliance tests FAILED");
-            println!("Error: {}", e);
         }
     }
 
     println!("::endgroup::");
 
-    handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
-
-    result?;
     Ok(())
 }

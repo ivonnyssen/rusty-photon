@@ -1,14 +1,11 @@
 #![cfg(feature = "conformu")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::SafetyMonitor;
-use ascom_alpaca::test::run_conformu_tests;
-use bdd_infra::ServiceHandle;
+use bdd_infra::{ConformuRun, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
-async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize tracing to capture ConformU detailed output
     let _ = fmt()
         .with_env_filter(
@@ -68,24 +65,22 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         handle.port
     );
 
-    let result = run_conformu_tests::<dyn SafetyMonitor>(&handle.base_url, 0).await;
+    let result = bdd_infra::run_conformu("safetymonitor", &handle.base_url, 0, None).await;
 
-    match &result {
-        Ok(_) => {
-            println!("✅ ConformU compliance tests PASSED");
-            println!("All ASCOM Alpaca compliance requirements met");
+    handle.stop().await;
+    std::fs::remove_dir_all(&test_dir).ok();
+
+    match result? {
+        ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipped");
         }
-        Err(e) => {
-            println!("❌ ConformU compliance tests FAILED");
-            println!("Error: {}", e);
+        ConformuRun::Passed => {
+            println!("ConformU compliance tests PASSED");
+            println!("All ASCOM Alpaca compliance requirements met");
         }
     }
 
     println!("::endgroup::");
 
-    handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
-
-    result?;
     Ok(())
 }

@@ -24,6 +24,12 @@ rp-harness = [
     "dep:serde_json",
     "dep:tempfile",
 ]
+# Enables the `conformu` module: a direct ConformU-CLI runner used by services'
+# conformu_integration tests. No extra deps (it uses tokio::process, already a
+# default dependency). Replaces ascom_alpaca::test::ConformUTestBuilder so the
+# conformu tests no longer pull `ascom-alpaca/test` — whose transitive `dtor`
+# dep crate_universe can't resolve, which kept them out of the Bazel build.
+conformu = []
 
 [dependencies]
 libc = { workspace = true }

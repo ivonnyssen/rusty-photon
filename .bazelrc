@@ -26,12 +26,13 @@ test --test_output=errors
 test --keep_going
 
 # Tests tagged `requires-cargo` need a real Cargo invocation (they test
-# cargo-integration code in bdd-infra / phd2-guider). Tests tagged `bdd` spin
-# up service binaries and are slow (~150 s total). Both are excluded by
-# default; the existing Cargo CI still exercises `requires-cargo` tests, and
-# BDD tests can be run explicitly with `bazel test --test_tag_filters=bdd`.
+# cargo-integration code in bdd-infra). Tests tagged `bdd` spin up service
+# binaries and are slow (~150 s total). Tests tagged `conformu` drive the
+# external ConformU tool against a service binary and self-skip unless
+# CONFORMU_PATH is set. All three are excluded by default; run BDD or conformu
+# explicitly with `bazel test --test_tag_filters=bdd` (or `=conformu`).
 # Use `bazel test ... --test_tag_filters=''` to include everything.
-test --test_tag_filters=-requires-cargo,-bdd
+test --test_tag_filters=-requires-cargo,-bdd,-conformu
 
 # --- Rust toolchain --------------------------------------------------------
 
@@ -122,6 +123,15 @@ test:ci --test_summary=terse
 # stable across push vs pull_request events.
 build:ci --test_env=OMNISIM_PATH
 
+# Forward CONFORMU_PATH (path to the ConformU binary) into test sandboxes, the
+# same way OMNISIM_PATH is forwarded. The conformu-tagged tests
+# (services/*/tests/conformu_integration.rs via bdd_infra::run_conformu) only
+# run ConformU when this is set, and self-skip otherwise. On build:ci (not just
+# the conformu step) so the --test_env flag never changes between Bazel
+# invocations sharing one server (a changing --test_env discards the analysis
+# cache). Only the conformu step reads it.
+build:ci --test_env=CONFORMU_PATH
+
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
 # developers don't accidentally point at the shared cache. CI jobs combine:
 # --config=ci --config=remote-cache.
@@ -180,7 +190,9 @@ coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services
 coverage:coverage --combined_report=lcov
-coverage:coverage --test_tag_filters=-requires-cargo
+# conformu is excluded from coverage too: it drives the external ConformU tool
+# (not instrumented) and only runs when CONFORMU_PATH is set.
+coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 
 # --- Local overrides -------------------------------------------------------
 

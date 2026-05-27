@@ -6,17 +6,15 @@
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::Focuser;
-use ascom_alpaca::test::ConformUTestBuilder;
 use bdd_infra::ServiceHandle;
+use bdd_infra::{run_conformu, ConformuRun};
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
 
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
-async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
     let _ = fmt()
@@ -114,21 +112,29 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     // Capture both builder-construction and run-time errors so `handle.stop()`
     // below is unconditional and the service gets a graceful SIGTERM with a
     // chance to flush coverage data.
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn Focuser>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        match run_conformu(
+            "focuser",
+            &handle.base_url,
+            0,
+            Some(&conformu_settings_path),
+        )
+        .await?
+        {
+            ConformuRun::Skipped => {
+                println!("CONFORMU_PATH not set; skipped");
+            }
+            ConformuRun::Passed => {
+                println!("ConformU compliance tests PASSED");
+                println!("All ASCOM Alpaca Focuser compliance requirements met");
+            }
+        }
+        Ok(())
     }
     .await;
 
     match &result {
-        Ok(_) => {
-            println!("ConformU compliance tests PASSED");
-            println!("All ASCOM Alpaca Focuser compliance requirements met");
-        }
+        Ok(_) => {}
         Err(e) => {
             println!("ConformU compliance tests FAILED");
             println!("Error: {}", e);

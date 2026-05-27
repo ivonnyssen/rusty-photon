@@ -15,7 +15,7 @@ mock = []
 # `mock::synthetic_fits` for the in-process stub backend. Keeping
 # them coupled means a single `--features conformu` flag is enough to
 # build and run the test.
-conformu = ["mock", "ascom-alpaca/test"]
+conformu = ["mock"]
 
 [lints]
 workspace = true
@@ -42,10 +42,10 @@ tempfile = { workspace = true }
 base64 = { workspace = true }
 
 [package.metadata.conformu]
-command = "cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --ignored --nocapture"
+command = "cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --nocapture"
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
