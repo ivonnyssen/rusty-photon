@@ -89,6 +89,25 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // Configuration Tests
 // ============================================================================
 
+/// Resolve this package's directory at runtime for both Cargo and Bazel.
+/// Cargo: `CARGO_MANIFEST_DIR` is the package source dir. Bazel: rules_rust
+/// bakes a compile-time `CARGO_MANIFEST_DIR` that no longer exists at test
+/// runtime, so fall back to the runfiles tree via `TEST_SRCDIR`/`TEST_WORKSPACE`
+/// (same approach as services/ppba-driver/tests/translations.rs).
+fn package_dir() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if manifest.join("tests").is_dir() {
+        return manifest;
+    }
+    if let Ok(srcdir) = std::env::var("TEST_SRCDIR") {
+        let workspace = std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into());
+        return PathBuf::from(srcdir)
+            .join(workspace)
+            .join("services/phd2-guider");
+    }
+    manifest
+}
+
 #[test]
 #[cfg(not(miri))] // get_default_phd2_path() spawns a process via Command::output()
 fn test_get_default_phd2_path() {
@@ -101,7 +120,7 @@ fn test_get_default_phd2_path() {
 
 #[test]
 fn test_load_config() {
-    let config_path = PathBuf::from("tests/config.json");
+    let config_path = package_dir().join("tests/config.json");
     let result = load_config(&config_path);
     assert!(result.is_ok(), "Should load valid config file");
 
@@ -112,7 +131,7 @@ fn test_load_config() {
 
 #[test]
 fn test_load_config_with_defaults() {
-    let config_path = PathBuf::from("tests/config_minimal.json");
+    let config_path = package_dir().join("tests/config_minimal.json");
     let result = load_config(&config_path);
     assert!(result.is_ok(), "Should load minimal config with defaults");
 
@@ -124,7 +143,7 @@ fn test_load_config_with_defaults() {
 
 #[test]
 fn test_load_config_file_not_found() {
-    let config_path = PathBuf::from("tests/nonexistent.json");
+    let config_path = package_dir().join("tests/nonexistent.json");
     let result = load_config(&config_path);
     assert!(result.is_err());
 }
@@ -529,6 +548,16 @@ async fn test_full_workflow() {
 /// Helper to find the mock_phd2 binary
 #[cfg(not(miri))]
 fn find_mock_phd2_binary() -> Option<PathBuf> {
+    // Bazel stages the binary and points MOCK_PHD2_BINARY at it ($(rootpath ...));
+    // there is no target/debug layout in the sandbox. Honor it first. Under Cargo
+    // the var is unset and we fall back to the target/ lookup below.
+    if let Ok(path) = std::env::var("MOCK_PHD2_BINARY") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
     // Try debug build first
     let debug_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1683,17 +1712,36 @@ fn spawn_mock_server() -> (ProcessGuard, u16) {
     spawn_mock_server_with_mode("normal")
 }
 
+/// Resolve the `mock_phd2` binary path. Bazel sets `MOCK_PHD2_BINARY` to a
+/// `$(rootpath ...)`; Cargo sets `CARGO_BIN_EXE_mock_phd2` at compile time.
+/// `option_env!` (not `env!`) keeps this compiling under Bazel, where the
+/// cargo-only var is absent.
+fn mock_phd2_bin() -> String {
+    std::env::var("MOCK_PHD2_BINARY")
+        .ok()
+        .or_else(|| option_env!("CARGO_BIN_EXE_mock_phd2").map(String::from))
+        .expect("MOCK_PHD2_BINARY (Bazel) or CARGO_BIN_EXE_mock_phd2 (cargo) must be set")
+}
+
+/// Resolve the `phd2-guider` CLI binary path. Bazel sets `PHD2_GUIDER_BINARY`;
+/// Cargo sets `CARGO_BIN_EXE_phd2-guider` at compile time. See [`mock_phd2_bin`].
+fn phd2_guider_bin() -> String {
+    std::env::var("PHD2_GUIDER_BINARY")
+        .ok()
+        .or_else(|| option_env!("CARGO_BIN_EXE_phd2-guider").map(String::from))
+        .expect("PHD2_GUIDER_BINARY (Bazel) or CARGO_BIN_EXE_phd2-guider (cargo) must be set")
+}
+
 /// Spawn the mock_phd2 server with a specific mode.
 ///
 /// Delegates to [`spawn_mock_phd2_dynamic_port`] for the actual spawn-and-parse;
-/// this wrapper just handles binary lookup (via cargo's `CARGO_BIN_EXE_*`),
-/// silences mock stderr (these CLI tests run 38+ in parallel — an undrained
-/// piped stderr would deadlock the mock), and wraps the child in a
-/// [`ProcessGuard`] for cleanup.
+/// this wrapper just handles binary lookup (via [`mock_phd2_bin`]), silences
+/// mock stderr (these CLI tests run 38+ in parallel — an undrained piped
+/// stderr would deadlock the mock), and wraps the child in a [`ProcessGuard`]
+/// for cleanup.
 fn spawn_mock_server_with_mode(mode: &str) -> (ProcessGuard, u16) {
-    let (port, child) =
-        spawn_mock_phd2_dynamic_port(env!("CARGO_BIN_EXE_mock_phd2"), mode, Stdio::null())
-            .expect("Failed to start mock_phd2 server");
+    let (port, child) = spawn_mock_phd2_dynamic_port(mock_phd2_bin(), mode, Stdio::null())
+        .expect("Failed to start mock_phd2 server");
 
     let guard = ProcessGuard::new(child, "mock_phd2");
 
@@ -1713,7 +1761,7 @@ fn run_cli(args: &[&str], port: u16) -> Output {
 
 /// Run the phd2-guider CLI with a custom timeout
 fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_phd2-guider"));
+    let mut cmd = Command::new(phd2_guider_bin());
     cmd.args(["--port", &port.to_string()])
         .args(args)
         .stdout(Stdio::piped())
@@ -1745,7 +1793,7 @@ fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
 
 /// Run the CLI without connecting to any server (for argument parsing tests)
 fn run_cli_no_server(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+    Command::new(phd2_guider_bin())
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2224,7 +2272,7 @@ fn test_custom_host_port() {
     let (_server, port) = spawn_mock_server();
 
     // Run CLI directly without using run_cli helper to test explicit --host and --port
-    let output = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+    let output = Command::new(phd2_guider_bin())
         .args(["--host", "127.0.0.1", "--port", &port.to_string(), "status"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2304,7 +2352,7 @@ fn test_config_file_option() {
     let config_path = temp_dir.join("test_phd2_config.json");
     std::fs::write(&config_path, config_content).expect("Failed to write config file");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+    let output = Command::new(phd2_guider_bin())
         .args(["--config", config_path.to_str().unwrap(), "status"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2354,7 +2402,7 @@ fn test_monitor_receives_version_event() {
     let (_server, port) = spawn_mock_server();
 
     // Start monitor in background and kill it after a short time
-    let mut child = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+    let mut child = Command::new(phd2_guider_bin())
         .args(["--port", &port.to_string(), "monitor"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2438,7 +2486,7 @@ fn test_monitor_shuts_down_on_sigterm() {
     // phd2-guider monitor logs every PHD2 event — an undrained piped
     // stream can fill the OS pipe buffer and deadlock the child. Same
     // pattern as spawn_mock_phd2_dynamic_port's default in this file.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_phd2-guider"))
+    let mut child = Command::new(phd2_guider_bin())
         .args(["--port", &port.to_string(), "monitor"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

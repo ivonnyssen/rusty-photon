@@ -178,14 +178,15 @@ Measured weekly in shadow mode, then post-cutover:
 
 ## Known test gaps under Bazel
 
-Captured after Phase 1 pilot; these tests pass under Cargo but fail under Bazel's sandbox because they shell out to `cargo` or read the workspace `Cargo.toml` at runtime:
+Captured after Phase 1 pilot. Only `bdd-infra`'s own cargo-integration tests
+remain Bazel-skipped; the phd2-guider gap originally listed here is now closed.
 
-- `//crates/bdd-infra:bdd-infra_unit_test` — 3 of 17 tests: `test_run_once_*` variants that shell out to `cargo build` to locate the `rp` binary when `RP_BINARY` isn't already set.
-- `//services/phd2-guider:phd2-guider_unit_test` — 8 of 213 tests: `test_start_phd2_*` variants that spawn a phd2 child process via cargo-discovered paths.
+- `//crates/bdd-infra:bdd-infra_unit_test` — 3 of 17 tests: `test_run_once_*` variants that shell out to `cargo build` to locate the `rp` binary when `RP_BINARY` isn't already set. They intentionally exercise the cargo-fallback path, so they stay tagged `requires-cargo`.
+- `//services/phd2-guider:phd2-guider_unit_test` — **resolved.** The 8 `test_start_phd2_*` tests use a `MockProcessSpawner` (they never exec a real binary) and only needed an existing file for `get_executable_path`'s `.exists()` check; `dummy_executable_path()` now returns `std::env::current_exe()`, so they pass in the sandbox and the target is no longer tagged `requires-cargo`. The `test_integration` and `test_mock_server` suites also gained Bazel targets — `test_integration` discovers the `mock_phd2` / `phd2-guider` binaries via `MOCK_PHD2_BINARY` / `PHD2_GUIDER_BINARY` and its config fixtures via `TEST_SRCDIR` / `TEST_WORKSPACE`.
 
-**Resolution plan (Phase 3 or later):** either mark these tests as `#[cfg(not(bazel))]` and set `rustc_flags = ["--cfg=bazel"]` on the Bazel `rust_test` targets, or refactor them to accept an explicit binary path via env var (which the non-cargo-code-paths already support). For now, tag them `requires-cargo` in BUILD files and run Bazel tests with `--test_tag_filters=-requires-cargo`.
+**Resolution pattern for cargo-coupled tests:** refactor to accept the sibling binary via a `<UPPER_SNAKE>_BINARY` env var (wired `$(rootpath ...)` in BUILD, with `option_env!("CARGO_BIN_EXE_*")` as the Cargo fallback so the file still compiles under Bazel), and resolve fixture directories via `TEST_SRCDIR` / `TEST_WORKSPACE` (falling back to `CARGO_MANIFEST_DIR` under Cargo — see `services/ppba-driver/tests/translations.rs`). `bdd-infra`'s 3 stay `requires-cargo` because they test the cargo-fallback machinery itself.
 
-Not a migration blocker — 227 of 244 tests across these four targets pass; the failures are confined to code that tests cargo-integration machinery which is inherently Cargo-specific.
+Not a migration blocker.
 
 ### Mockall mock variants (cross-crate)
 

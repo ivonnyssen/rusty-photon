@@ -10,8 +10,14 @@
 
 use std::process::Command;
 
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ppba-driver")
+fn bin() -> String {
+    // Bazel supplies the binary via PPBA_DRIVER_BINARY ($(rootpath ...)); Cargo
+    // sets CARGO_BIN_EXE_ppba-driver at compile time. option_env! (not env!)
+    // keeps this compiling under Bazel, where the cargo-only var is absent.
+    std::env::var("PPBA_DRIVER_BINARY")
+        .ok()
+        .or_else(|| option_env!("CARGO_BIN_EXE_ppba-driver").map(String::from))
+        .expect("PPBA_DRIVER_BINARY (Bazel) or CARGO_BIN_EXE_ppba-driver (cargo) must be set")
 }
 
 /// Spawn the binary with locale env vars stripped, optionally setting `LANG`.

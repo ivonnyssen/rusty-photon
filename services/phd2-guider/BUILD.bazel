@@ -82,3 +82,36 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# Library + CLI integration tests. Spawns the mock_phd2 server and the
+# phd2-guider CLI as child processes; Bazel supplies both via env vars
+# (the test resolves MOCK_PHD2_BINARY / PHD2_GUIDER_BINARY, falling back to
+# cargo's CARGO_BIN_EXE_* under Cargo).
+rust_test(
+    name = "test_integration",
+    srcs = ["tests/test_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    size = "small",
+    data = [
+        ":mock_phd2",
+        ":phd2-guider",
+        "tests/config.json",
+        "tests/config_minimal.json",
+    ],
+    edition = "2021",
+    env = {
+        "MOCK_PHD2_BINARY": "$(rootpath :mock_phd2)",
+        "PHD2_GUIDER_BINARY": "$(rootpath :phd2-guider)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":phd2-guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
