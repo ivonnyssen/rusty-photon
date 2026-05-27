@@ -9,13 +9,28 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "plate-solver_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    # Exclude src/main.rs (the service binary's crate root, built by the
+    # `plate-solver` rust_binary below) and src/bin/** (mock_astap).
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/bin/**"]),
     aliases = aliases(),
     crate_name = "plate_solver",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# The plate-solver service binary (HTTP wrapper around the ASTAP CLI).
+# Cargo auto-discovers src/main.rs as the package's default binary; this
+# is the Bazel equivalent. The BDD suite spawns it via PLATE_SOLVER_BINARY.
+rust_binary(
+    name = "plate-solver",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":plate-solver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -66,6 +81,52 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = [":plate-solver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber suite. Self-contained: spawns the plate-solver service binary,
+# which in turn shells out to the mock_astap stub (no real ASTAP install, no
+# OmniSim). The @requires-astap scenarios self-gate on the ASTAP_BINARY env
+# var (unset here, so they're skipped); @unix scenarios self-gate on cfg(unix).
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # Spawns a service process per scenario (26 scenarios); generous timeout.
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":mock_astap",
+        ":plate-solver",
+        "Cargo.toml",
+    ] + glob([
+        "tests/features/**",
+        "tests/fixtures/**",
+    ]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/plate-solver",
+        "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
+        "PLATE_SOLVER_BINARY": "$(rootpath :plate-solver)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "plate-solver"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":plate-solver_lib",
+        "//crates/bdd-infra:bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
