@@ -431,10 +431,19 @@ impl McpHandler {
             .as_ref()
             .cloned()
             .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
-        // Snapshot the configured focal length now — `cam_entry` is a
-        // borrow off `self.equipment` and we want the f64 (Copy) without
-        // hanging on to that borrow across the `await`s below.
+        // Snapshot the operator-supplied focal length and the five
+        // invariant physical-sensor properties cached at connect time.
+        // `cam_entry` is a borrow off `self.equipment`; the snapshot
+        // copies out the `Copy`/`Option<Copy>` values so the borrow does
+        // not have to outlive the `await`s below — which is also what
+        // lets `do_capture` avoid the 5 Alpaca round-trips per exposure
+        // it used to pay for these properties (see `CameraEntry` docs).
         let focal_length_mm = cam_entry.config.focal_length_mm;
+        let cached_max_adu = cam_entry.max_adu;
+        let cached_pixel_size_x_um = cam_entry.pixel_size_x_um;
+        let cached_pixel_size_y_um = cam_entry.pixel_size_y_um;
+        let cached_sensor_width_px = cam_entry.sensor_width_px;
+        let cached_sensor_height_px = cam_entry.sensor_height_px;
 
         let document_id = Uuid::new_v4().to_string();
         // The 8-char UUID suffix is the on-disk reverse-lookup key used by
@@ -507,68 +516,33 @@ impl McpHandler {
         let width = dim_x as u32;
         let height = dim_y as u32;
 
-        // Read max_adu *before* collecting pixels: it decides whether
-        // we need a u16 or i32 buffer, so reading first lets us collect
-        // straight into the destination type and avoid the wasted
-        // i32→u16 round trip.
+        // `captured_max_adu` decides whether we need a u16 or i32 buffer,
+        // so it is consulted *before* collecting pixels to let us collect
+        // straight into the destination type and avoid the wasted i32→u16
+        // round trip.
         //
         // max_adu feeds three consumers: on-disk FITS bit-depth, cache
         // variant, and the exposure document's `max_adu` field
         // (sidecar self-describing for rehydration/archival lineage).
-        // A transient Alpaca failure here is localized — the next
-        // capture re-reads independently. On failure we persist
-        // `max_adu: None`, write the FITS as i32 (lossless fallback),
-        // and skip the cache insert; the FITS file on disk plus the
-        // sidecar remain the durable record.
-        let captured_max_adu: Option<u32> = match cam.max_adu().await {
-            Ok(v) => Some(v),
-            Err(e) => {
-                debug!(error = %e, "max_adu unavailable for this capture");
-                None
-            }
-        };
+        // The value was read once at connect time and stashed on
+        // `CameraEntry` — see its docstring for the connect-time-failure
+        // semantics. When `None` we still persist the document with
+        // `max_adu: None`, write the FITS as i32 (lossless fallback), and
+        // skip the cache insert.
+        let captured_max_adu: Option<u32> = cached_max_adu;
 
         // Optical geometry for the sidecar's `optics` block. Combines the
-        // operator-supplied focal length with raw Alpaca pixel-size and
-        // sensor-dimension reads. Any missing piece (focal length not
-        // configured, camera read failed) drops the whole block — see
-        // `docs/services/rp.md` §"Core Fields". Failures are isolated to
-        // this auxiliary metadata; capture itself proceeds.
+        // operator-supplied focal length with the cached pixel-size and
+        // sensor-dimension reads from `CameraEntry`. Any missing piece
+        // (focal length not configured, connect-time read failed) drops
+        // the whole block — see `docs/services/rp.md` §"Core Fields".
         let optics = match focal_length_mm {
             Some(focal_length_mm) => {
-                let pixel_size_x_um = match cam.pixel_size_x().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(error = %e, "pixel_size_x unavailable for this capture");
-                        None
-                    }
-                };
-                let pixel_size_y_um = match cam.pixel_size_y().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(error = %e, "pixel_size_y unavailable for this capture");
-                        None
-                    }
-                };
-                let sensor_width_px = match cam.camera_x_size().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(error = %e, "camera_x_size unavailable for this capture");
-                        None
-                    }
-                };
-                let sensor_height_px = match cam.camera_y_size().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(error = %e, "camera_y_size unavailable for this capture");
-                        None
-                    }
-                };
                 match (
-                    pixel_size_x_um,
-                    pixel_size_y_um,
-                    sensor_width_px,
-                    sensor_height_px,
+                    cached_pixel_size_x_um,
+                    cached_pixel_size_y_um,
+                    cached_sensor_width_px,
+                    cached_sensor_height_px,
                 ) {
                     (Some(px), Some(py), Some(sw), Some(sh)) => {
                         let derived = persistence::Optics::from_camera_geometry(
@@ -579,12 +553,13 @@ impl McpHandler {
                             sh,
                         );
                         if derived.is_none() {
-                            // All Alpaca reads succeeded but the derivation
-                            // declined — typically a non-positive or
-                            // wild-magnitude reading that would have
-                            // overflowed the derived pixel scale / FOV.
-                            // Surface enough to diagnose bad camera state
-                            // or a misconfigured focal length.
+                            // All cached values are present but the
+                            // derivation declined — typically a non-
+                            // positive or wild-magnitude reading that
+                            // would have overflowed the derived pixel
+                            // scale / FOV. Surface enough to diagnose
+                            // bad camera state or a misconfigured focal
+                            // length.
                             debug!(
                                 camera_id,
                                 focal_length_mm,
