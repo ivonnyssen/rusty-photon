@@ -2314,6 +2314,20 @@ exactly one mount.
   mount read had no client-side timeout and hung indefinitely; the
   blocking-op poll deadlines guard loops, not a single in-flight
   request.)
+- MCP session keep-alive vs. per-tool deadlines → companion fix on
+  the same PR (#319). rmcp's `LocalSessionManager` defaults to a
+  300 s `keep_alive` that fires if the session sees no activity. The
+  per-iteration `do_slew_blocking` (300 s slew deadline),
+  `do_park_blocking` (300 s), and `do_capture` (`duration + 120 s`
+  readout grace) all approach or match that 300 s. Without
+  emission they race the keep-alive: when both fire near the same
+  moment the SSE response stream EOFs and the client's `call_tool`
+  future never resolves (BDD's 360 s `MCP_CALL_TIMEOUT` is the only
+  backstop). Each poll loop emits `notifications/progress` every
+  `PROGRESS_INTERVAL` (5 s) — see `mcp::progress` — so the session
+  worker's handler-event arm resets the keep-alive timer well
+  before it can fire. The emission is a no-op when the client did
+  not supply a `progressToken` in `_meta`; unit tests pass `None`.
 - Loop exits without convergence → `tolerance_not_reached` error
   citing the last residual and `max_attempts`.
 

@@ -2,13 +2,15 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::internals::ResolvedParams;
+use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 use crate::imaging;
 
@@ -61,6 +63,19 @@ impl McpHandler {
     pub(crate) async fn auto_focus(
         &self,
         Parameters(params): Parameters<AutoFocusToolParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let progress_sink = ProgressSink::from_request_context(&ctx);
+        self.auto_focus_inner(params, progress_sink).await
+    }
+
+    /// Body of the `auto_focus` MCP tool, split out so unit tests can
+    /// pass `None` for the progress sink without constructing a real
+    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp 1.7).
+    pub(crate) async fn auto_focus_inner(
+        &self,
+        params: AutoFocusToolParams,
+        progress_sink: Option<ProgressSink>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Field-presence validation runs in input order so the error
         // message always points at the first missing field — same
@@ -136,10 +151,16 @@ impl McpHandler {
             min_fit_points: params.min_fit_points.unwrap_or(5),
         };
 
+        // Store the per-request sink on the adapter so every
+        // inner `do_capture` / `do_move_focuser_blocking` call emits
+        // progress through the same `progressToken`. See
+        // `mcp::progress` for the rmcp 300 s session keep-alive race
+        // this guards against.
         let adapter = AutoFocusAdapter {
             handler: self,
             camera_id: camera_id.clone(),
             focuser_id: focuser_id.clone(),
+            progress: progress_sink,
         };
 
         match imaging::tools::auto_focus::run_auto_focus(
@@ -189,17 +210,29 @@ impl McpHandler {
 /// primitive tools: same bounds-check / poll semantics on focuser
 /// motion, same FITS write / cache insert / event emission on
 /// capture, same `image_analysis` section persistence on measure.
+///
+/// `progress` carries the per-request `ProgressSink` (or `None` when
+/// the client did not supply a `progressToken`) so each inner
+/// blocking helper emits `notifications/progress` against the same
+/// token used by the compound tool's own call.
 pub(crate) struct AutoFocusAdapter<'a> {
     pub(crate) handler: &'a McpHandler,
     pub(crate) camera_id: String,
     pub(crate) focuser_id: String,
+    pub(crate) progress: Option<ProgressSink>,
+}
+
+impl AutoFocusAdapter<'_> {
+    fn emitter(&self) -> Option<&dyn ProgressEmitter> {
+        self.progress.as_ref().map(|s| s as &dyn ProgressEmitter)
+    }
 }
 
 #[async_trait::async_trait]
 impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
     async fn move_to(&self, position: i32) -> std::result::Result<i32, String> {
         self.handler
-            .do_move_focuser_blocking(&self.focuser_id, position)
+            .do_move_focuser_blocking(&self.focuser_id, position, self.emitter())
             .await
     }
 }
@@ -207,7 +240,10 @@ impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
 #[async_trait::async_trait]
 impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
     async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
-        let (_image_path, document_id) = self.handler.do_capture(&self.camera_id, duration).await?;
+        let (_image_path, document_id) = self
+            .handler
+            .do_capture(&self.camera_id, duration, self.emitter())
+            .await?;
         Ok(document_id)
     }
 }

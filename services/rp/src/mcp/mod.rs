@@ -68,6 +68,7 @@
 pub mod built_in;
 pub mod handler;
 pub mod internals;
+pub mod progress;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

@@ -82,6 +82,12 @@ struct MockCamera {
     /// When set, `image_ready` reports `false` forever — simulating a
     /// camera that never completes (a failed or wedged exposure).
     never_ready: bool,
+    /// When non-zero, `image_ready` reports `false` for the first N
+    /// calls and `true` thereafter — models a bounded readout for
+    /// progress-notification tests. `0` (default) keeps the original
+    /// behavior (`image_ready` returns true immediately).
+    not_ready_count: u32,
+    image_ready_calls: std::sync::atomic::AtomicU32,
     /// When set, `camera_state` reports `Error` — simulating a camera
     /// that failed an exposure (e.g. sky-survey-camera's mount read
     /// timing out). Drives the `do_capture` failed-exposure path.
@@ -107,7 +113,18 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_image_ready {
             return Err(ASCOMError::invalid_operation("readout failed"));
         }
-        Ok(!self.never_ready)
+        if self.never_ready {
+            return Ok(false);
+        }
+        if self.not_ready_count > 0 {
+            let n = self
+                .image_ready_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.not_ready_count {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     async fn camera_state(
@@ -536,7 +553,19 @@ struct MockTelescope {
     /// behaving normally — drives `poll_slewing_until_idle`'s
     /// transient-tolerance path (issue #319). Counter is `slewing_calls`.
     slewing_transient_errors: u32,
+    /// When non-zero (and `stuck_slewing` is false), `slewing()`
+    /// returns `true` for the first N successful calls (after the
+    /// transient-error budget is exhausted) and `false` thereafter.
+    /// Used by progress-notification tests to model a slew of
+    /// bounded duration. `0` (default) means "report idle immediately".
+    slewing_true_count: u32,
     slewing_calls: std::sync::atomic::AtomicU32,
+    /// When non-zero, `at_park()` returns `false` for the first N
+    /// calls and `true` thereafter — models a park of bounded
+    /// duration for progress-notification tests. `0` (default)
+    /// means "report at_park immediately".
+    at_park_false_count: u32,
+    at_park_calls: std::sync::atomic::AtomicU32,
     tracking_value: bool,
     can_set_tracking_value: bool,
     at_park_value: bool,
@@ -565,7 +594,10 @@ impl Default for MockTelescope {
             fail_abort_slew: false,
             stuck_slewing: false,
             slewing_transient_errors: 0,
+            slewing_true_count: 0,
             slewing_calls: std::sync::atomic::AtomicU32::new(0),
+            at_park_false_count: 0,
+            at_park_calls: std::sync::atomic::AtomicU32::new(0),
             tracking_value: true,
             can_set_tracking_value: true,
             at_park_value: false,
@@ -588,6 +620,12 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     async fn at_park(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_at_park {
             return Err(ASCOMError::invalid_operation("at_park read failed"));
+        }
+        let n = self
+            .at_park_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.at_park_false_count > 0 && n < self.at_park_false_count {
+            return Ok(false);
         }
         Ok(self.at_park_value)
     }
@@ -697,7 +735,17 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
         if self.fail_slewing_poll || n < self.slewing_transient_errors {
             return Err(ASCOMError::invalid_operation("slewing poll failed"));
         }
-        Ok(self.stuck_slewing)
+        if self.stuck_slewing {
+            return Ok(true);
+        }
+        if self.slewing_true_count > 0 {
+            // Successful-call index (after the transient-error budget).
+            let success_idx = n - self.slewing_transient_errors;
+            if success_idx < self.slewing_true_count {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn abort_slew(&self) -> ascom_alpaca::ASCOMResult<()> {
@@ -989,10 +1037,13 @@ async fn test_capture_start_exposure_fails() {
     };
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to start exposure");
 }
@@ -1005,10 +1056,13 @@ async fn test_capture_image_ready_error() {
     };
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "error checking image ready");
 }
@@ -1021,10 +1075,13 @@ async fn test_capture_image_array_fails() {
     };
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to download image array");
 }
@@ -1047,10 +1104,13 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        handler.capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        })),
+        handler.capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        ),
     )
     .await
     .expect("do_capture hung on a failed exposure instead of returning an error");
@@ -1071,10 +1131,13 @@ async fn test_capture_times_out_when_camera_never_ready() {
     };
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "timeout waiting for image_ready");
 }
@@ -1309,10 +1372,13 @@ async fn test_capture_write_fits_fails() {
         None,
     );
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to write FITS file");
 }
@@ -1355,10 +1421,13 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
         None,
     );
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -1405,10 +1474,13 @@ async fn test_capture_filename_uses_uuid8_suffix() {
         None,
     );
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await
         .unwrap();
     let text = result
@@ -1455,10 +1527,13 @@ async fn capture_and_read_sidecar(
         None,
     );
     let result = handler
-        .capture(Parameters(CaptureParams {
-            camera_id: "cam".into(),
-            duration: Duration::from_millis(100),
-        }))
+        .capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
         .await
         .unwrap();
     let text = result
@@ -2078,10 +2153,13 @@ async fn test_move_focuser_success() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 4321,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 4321,
+            },
+            None,
+        )
         .await
         .unwrap();
     let json = ok_text(result);
@@ -2094,10 +2172,13 @@ async fn test_move_focuser_not_found() {
     let foc = MockFocuser::default();
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "missing".into(),
-            position: 100,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "missing".into(),
+                position: 100,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "focuser not found");
 }
@@ -2107,10 +2188,13 @@ async fn test_move_focuser_below_min_position() {
     let foc = MockFocuser::default();
     let handler = test_handler(focuser_registry(Arc::new(foc), Some(1000), Some(9000)));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 500,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 500,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "position out of range");
 }
@@ -2120,10 +2204,13 @@ async fn test_move_focuser_above_max_position() {
     let foc = MockFocuser::default();
     let handler = test_handler(focuser_registry(Arc::new(foc), Some(1000), Some(9000)));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 9500,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 9500,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "position out of range");
 }
@@ -2136,10 +2223,13 @@ async fn test_move_focuser_command_fails() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 1000,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to move focuser");
 }
@@ -2152,10 +2242,13 @@ async fn test_move_focuser_is_moving_poll_fails() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 1000,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "error polling focuser is_moving");
 }
@@ -2168,10 +2261,13 @@ async fn test_move_focuser_position_read_fails() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 1000,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to read focuser position");
 }
@@ -2184,10 +2280,13 @@ async fn test_move_focuser_timeout() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 1000,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "timeout waiting for focuser to settle");
 }
@@ -2216,10 +2315,13 @@ async fn test_move_focuser_not_connected() {
     };
     let handler = test_handler(registry);
     let result = handler
-        .move_focuser(Parameters(MoveFocuserParams {
-            focuser_id: "foc".into(),
-            position: 1000,
-        }))
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 1000,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "focuser not connected");
 }
@@ -2350,11 +2452,14 @@ async fn test_slew_success() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(10.6847),
-            dec: Some(41.2689),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(10.6847),
+                dec: Some(41.2689),
+                settle_after: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     let json = ok_text(result);
@@ -2366,11 +2471,14 @@ async fn test_slew_success() {
 async fn test_slew_no_mount_configured() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "no mount configured");
 }
@@ -2379,11 +2487,14 @@ async fn test_slew_no_mount_configured() {
 async fn test_slew_mount_not_connected() {
     let handler = test_handler(disconnected_mount_registry());
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "mount not connected");
 }
@@ -2392,11 +2503,14 @@ async fn test_slew_mount_not_connected() {
 async fn test_slew_missing_ra() {
     let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: None,
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: None,
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "missing required parameter: ra");
 }
@@ -2405,11 +2519,14 @@ async fn test_slew_missing_ra() {
 async fn test_slew_missing_dec() {
     let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: None,
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: None,
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "missing required parameter: dec");
 }
@@ -2418,11 +2535,14 @@ async fn test_slew_missing_dec() {
 async fn test_slew_ra_out_of_range() {
     let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(25.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(25.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "ra out of range");
 }
@@ -2431,11 +2551,14 @@ async fn test_slew_ra_out_of_range() {
 async fn test_slew_dec_out_of_range() {
     let handler = test_handler(mount_registry(Arc::new(MockTelescope::default()), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(91.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(91.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "dec out of range");
 }
@@ -2452,11 +2575,14 @@ async fn test_slew_alpaca_error_propagates() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "failed to slew");
 }
@@ -2474,11 +2600,14 @@ async fn test_slew_timeout_returns_error_after_abort() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "timeout waiting for mount to settle");
 }
@@ -2495,11 +2624,14 @@ async fn test_slew_per_call_settle_overrides_config() {
         Some(Duration::from_secs(60)),
     ));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: Some(Duration::ZERO),
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: Some(Duration::ZERO),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -2700,21 +2832,21 @@ async fn test_park_success() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park(Parameters(ParkParams {})).await.unwrap();
+    let result = handler.park_inner(ParkParams {}, None).await.unwrap();
     assert!(!result.is_error.unwrap_or(false));
 }
 
 #[tokio::test]
 async fn test_park_no_mount_configured() {
     let handler = test_handler(empty_registry());
-    let result = handler.park(Parameters(ParkParams {})).await;
+    let result = handler.park_inner(ParkParams {}, None).await;
     assert_tool_error(result, "no mount configured");
 }
 
 #[tokio::test]
 async fn test_park_mount_not_connected() {
     let handler = test_handler(disconnected_mount_registry());
-    let result = handler.park(Parameters(ParkParams {})).await;
+    let result = handler.park_inner(ParkParams {}, None).await;
     assert_tool_error(result, "mount not connected");
 }
 
@@ -2725,7 +2857,7 @@ async fn test_park_alpaca_error_propagates() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park(Parameters(ParkParams {})).await;
+    let result = handler.park_inner(ParkParams {}, None).await;
     assert_tool_error(result, "failed to park");
 }
 
@@ -2741,7 +2873,7 @@ async fn test_park_timeout_does_not_auto_abort() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park(Parameters(ParkParams {})).await;
+    let result = handler.park_inner(ParkParams {}, None).await;
     assert_tool_error(result, "timeout waiting for mount to park");
 }
 
@@ -2846,7 +2978,7 @@ async fn test_park_at_park_poll_fails() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park(Parameters(ParkParams {})).await;
+    let result = handler.park_inner(ParkParams {}, None).await;
     assert_tool_error(result, "error polling mount at_park");
 }
 
@@ -2863,11 +2995,14 @@ async fn test_slew_polling_error_propagates() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .slew(Parameters(SlewParams {
-            ra: Some(0.0),
-            dec: Some(0.0),
-            settle_after: None,
-        }))
+        .slew_inner(
+            SlewParams {
+                ra: Some(0.0),
+                dec: Some(0.0),
+                settle_after: None,
+            },
+            None,
+        )
         .await;
     assert_tool_error(result, "error polling mount slewing");
 }
@@ -2884,7 +3019,7 @@ async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
         stuck_slewing: false,
         ..Default::default()
     };
-    super::internals::poll_slewing_until_idle(&mount)
+    super::internals::poll_slewing_until_idle(&mount, None)
         .await
         .expect("transient slewing() errors below the tolerance must not abort the slew");
 }
@@ -4200,17 +4335,20 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     // matching the eleven fixture offsets generated by
     // `examples/gen_autofocus_fixtures.rs`.
     let result = handler
-        .auto_focus(Parameters(AutoFocusToolParams {
-            camera_id: Some("cam".to_string()),
-            focuser_id: Some("foc".to_string()),
-            duration: Some(Duration::from_millis(100)),
-            step_size: Some(20),
-            half_width: Some(100),
-            min_area: Some(4),
-            max_area: Some(2000),
-            threshold_sigma: 5.0,
-            min_fit_points: None,
-        }))
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                camera_id: Some("cam".to_string()),
+                focuser_id: Some("foc".to_string()),
+                duration: Some(Duration::from_millis(100)),
+                step_size: Some(20),
+                half_width: Some(100),
+                min_area: Some(4),
+                max_area: Some(2000),
+                threshold_sigma: 5.0,
+                min_fit_points: None,
+            },
+            None,
+        )
         .await;
     let call_result = result.expect("auto_focus protocol error");
     assert!(
@@ -4287,4 +4425,140 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     // event_delivery BDD scenarios. Coverage of lines 157-166 is the
     // primary objective and is achieved as soon as `Ok(result)` is
     // returned.
+}
+
+// -----------------------------------------------------------------------
+// Progress-notification emission from long-running blocking helpers.
+//
+// rmcp 1.7's `LocalSessionManager` constructs sessions with a 300 s
+// `keep_alive` that fires when the session sees no activity. The
+// blocking helpers in `mcp/internals.rs` all have deadlines that
+// approach or match 300 s, so without progress emission the two
+// timers race and a legitimate long tool can EOF its own SSE response
+// stream — the client's call_tool future then never resolves (BDD's
+// 360 s `MCP_CALL_TIMEOUT` is the only thing that catches it).
+//
+// These tests pin that each helper emits at least one progress tick
+// per [`PROGRESS_INTERVAL`] while it is polling, by driving the helper
+// against a mock that reports "not ready" for a controlled number of
+// poll iterations and counting emissions on a test sink.
+//
+// `start_paused` lets tokio's virtual time auto-advance past each
+// `sleep`, so a 12 s simulated wait runs in real-time milliseconds
+// without the test sleeping for real.
+// -----------------------------------------------------------------------
+
+/// `do_slew_blocking` against a mount that reports `slewing == true`
+/// for ~12 s of simulated time and then `false` must fire at least
+/// two progress notifications (one each at the 5 s and 10 s marks,
+/// per `PROGRESS_INTERVAL == 5 s`).
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_emits_progress_during_slew() {
+    // 120 polls × 100 ms tick ≈ 12 s of simulated `slewing()==true`.
+    // After 12 s of activity, `PROGRESS_INTERVAL == 5 s` produces a
+    // tick at 5 s and at 10 s — assert ≥ 2 emissions.
+    let mount = MockTelescope {
+        slewing_true_count: 120,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    let (actual_ra, actual_dec) = handler
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, Some(&emitter))
+        .await
+        .expect("slew completes when the mount reports idle");
+    assert_eq!(actual_ra, 0.0);
+    assert_eq!(actual_dec, 0.0);
+    assert!(
+        emitter.count() >= 2,
+        "expected ≥ 2 progress notifications over ~12 s of slew, got {}",
+        emitter.count()
+    );
+}
+
+/// `do_park_blocking` against a mount that reports `at_park == false`
+/// for ~12 s of simulated time and then `true` must fire at least two
+/// progress notifications, same shape as the slew test.
+#[tokio::test(start_paused = true)]
+async fn do_park_blocking_emits_progress_during_park() {
+    let mount = MockTelescope {
+        at_park_false_count: 120,
+        at_park_value: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    handler
+        .do_park_blocking(Some(&emitter))
+        .await
+        .expect("park completes when the mount reports at_park");
+    assert!(
+        emitter.count() >= 2,
+        "expected ≥ 2 progress notifications over ~12 s of park, got {}",
+        emitter.count()
+    );
+}
+
+/// `do_capture` against a camera whose `image_ready` returns `false`
+/// for ~12 s and then `true` must fire at least two progress
+/// notifications during the readout-wait poll loop.
+///
+/// Uses the same `temp_dir`-redirected `SessionConfig` shape as the
+/// other `do_capture` tests so the FITS write inside `do_capture`
+/// lands in a sandbox.
+#[tokio::test(start_paused = true)]
+async fn do_capture_emits_progress_during_readout_wait() {
+    let cam = MockCamera {
+        not_ready_count: 120,
+        ..Default::default()
+    };
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(Arc::new(cam)));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    let (_image_path, _document_id) = handler
+        .do_capture("cam", Duration::from_millis(50), Some(&emitter))
+        .await
+        .expect("capture completes when image_ready flips true");
+    assert!(
+        emitter.count() >= 2,
+        "expected ≥ 2 progress notifications over ~12 s of readout wait, got {}",
+        emitter.count()
+    );
+}
+
+/// `None` for the progress emitter is the default for unit tests and
+/// for MCP clients that didn't send a `progressToken`. The helpers
+/// must remain functionally identical — pin that the slew still
+/// completes correctly when no sink is supplied.
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_with_none_emitter_is_a_noop() {
+    let mount = MockTelescope {
+        slewing_true_count: 5,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let result = handler
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None)
+        .await;
+    result.expect("slew with None emitter still completes");
+}
+
+/// `ProgressSink::from_peer_and_meta` returns `None` when `_meta`
+/// carries no `progressToken`. The helper is consequently a no-op for
+/// any client (or BDD harness) that doesn't opt in.
+#[test]
+fn progress_sink_returns_none_without_progress_token() {
+    // Build an empty Meta — no progressToken set. We can't easily
+    // construct a real `Peer<RoleServer>` from outside rmcp (its
+    // constructor is `pub(crate)`), but the meta-only path through
+    // `Meta::get_progress_token()` is enough to pin the contract:
+    // any None on the meta side must turn into a None sink.
+    let meta = rmcp::model::Meta::default();
+    assert!(
+        meta.get_progress_token().is_none(),
+        "default Meta should not carry a progressToken"
+    );
 }

@@ -2,12 +2,14 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::super::handler::McpHandler;
 use super::super::internals::DoPlateSolveInput;
+use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 use crate::imaging;
 
@@ -44,6 +46,19 @@ impl McpHandler {
     pub(crate) async fn center_on_target(
         &self,
         Parameters(params): Parameters<CenterOnTargetToolParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let progress_sink = ProgressSink::from_request_context(&ctx);
+        self.center_on_target_inner(params, progress_sink).await
+    }
+
+    /// Body of the `center_on_target` MCP tool, split out so unit
+    /// tests can pass `None` for the progress sink without
+    /// constructing a real rmcp `Peer`.
+    pub(crate) async fn center_on_target_inner(
+        &self,
+        params: CenterOnTargetToolParams,
+        progress_sink: Option<ProgressSink>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order so the missing-parameter
         // outline always points at the first missing field — same
@@ -103,9 +118,15 @@ impl McpHandler {
             max_attempts,
         };
 
+        // Store the per-request sink on the adapter so every
+        // inner `do_capture` and `do_slew_blocking` call emits
+        // progress through the same `progressToken`. See
+        // `mcp::progress` for the rmcp 300 s session keep-alive race
+        // this guards against.
         let adapter = CenterOnTargetAdapter {
             handler: self,
             camera_id: camera_id.clone(),
+            progress: progress_sink,
         };
 
         let event_bus = self.event_bus.clone();
@@ -175,12 +196,27 @@ impl McpHandler {
 pub(crate) struct CenterOnTargetAdapter<'a> {
     pub(crate) handler: &'a McpHandler,
     pub(crate) camera_id: String,
+    /// Per-request progress sink (or `None` when the client did not
+    /// supply a `progressToken`). Threaded into every `do_capture` /
+    /// `do_slew_blocking` call below so the inner poll loops emit
+    /// `notifications/progress` against the compound tool's own
+    /// session.
+    pub(crate) progress: Option<ProgressSink>,
+}
+
+impl CenterOnTargetAdapter<'_> {
+    fn emitter(&self) -> Option<&dyn ProgressEmitter> {
+        self.progress.as_ref().map(|s| s as &dyn ProgressEmitter)
+    }
 }
 
 #[async_trait::async_trait]
 impl imaging::tools::center_on_target::CaptureOps for CenterOnTargetAdapter<'_> {
     async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
-        let (_image_path, document_id) = self.handler.do_capture(&self.camera_id, duration).await?;
+        let (_image_path, document_id) = self
+            .handler
+            .do_capture(&self.camera_id, duration, self.emitter())
+            .await?;
         Ok(document_id)
     }
 }
@@ -233,7 +269,7 @@ impl imaging::tools::center_on_target::MountOps for CenterOnTargetAdapter<'_> {
             .and_then(|m| m.config.settle_after_slew)
             .unwrap_or_default();
         self.handler
-            .do_slew_blocking(ra_hours, dec_deg, settle)
+            .do_slew_blocking(ra_hours, dec_deg, settle, self.emitter())
             .await
             .map(|_| ())
     }
