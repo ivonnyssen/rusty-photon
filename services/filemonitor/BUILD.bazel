@@ -3,11 +3,18 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
+# service-lifecycle: filemonitor enables its `scm` feature under
+# [target.'cfg(windows)'.dependencies], which compiles the Windows Service
+# Control Manager path (mod scm + the windows-service crate). crate_features is
+# compile-time in Bazel, so select the scm-feature library variant on Windows
+# and the feature-free one everywhere else (matching `cargo build` per platform).
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-tls:rp-tls",
-    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
-]
+] + select({
+    "@platforms//os:windows": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle_scm"],
+    "//conditions:default": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle"],
+})
 
 rust_library(
     name = "filemonitor_lib",

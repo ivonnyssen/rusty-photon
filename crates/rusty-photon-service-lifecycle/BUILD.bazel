@@ -14,6 +14,28 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+# Windows SCM variant. filemonitor enables this crate's `scm` feature under
+# [target.'cfg(windows)'.dependencies], which gates `mod scm` (Windows Service
+# Control Manager dispatch) behind `cfg(all(windows, feature = "scm"))` and pulls
+# in the windows-service crate. crate_features is compile-time in Bazel, so this
+# is a second library compiled with `scm` on; filemonitor's BUILD selects it on
+# Windows. windows-service is added only on Windows (on other targets `mod scm`
+# stays cfg-excluded, so the feature flag is harmless and the crate isn't linked).
+rust_library(
+    name = "rusty-photon-service-lifecycle_scm",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = ["scm"],
+    crate_name = "rusty_photon_service_lifecycle",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True) + select({
+        "@platforms//os:windows": ["@cr//:windows-service"],
+        "//conditions:default": [],
+    }),
+)
+
 rust_test(
     name = "rusty-photon-service-lifecycle_unit_test",
     aliases = aliases(
