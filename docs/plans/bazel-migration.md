@@ -245,11 +245,32 @@ Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:
 
 - `use_libtest_harness = False` (cucumber has its own main).
 - `BDD_PACKAGE_DIR = "services/<name>"` set in `env`; `bdd_main!` chdirs there at startup and absolutizes any `*_BINARY` env vars first so binary discovery still resolves relative to the runfiles root.
-- `<SERVICE>_BINARY = "$(rootpath :<binary>)"` for self-spawn. Cross-spawn services set additional binaries: sentinel sets `FILEMONITOR_BINARY`, rp sets `CALIBRATOR_FLATS_BINARY`.
+- `<SERVICE>_BINARY = "$(rootpath :<binary>)"` for self-spawn. Cross-spawn services set additional binaries: sentinel sets `FILEMONITOR_BINARY`, rp sets `CALIBRATOR_FLATS_BINARY`, and calibrator-flats sets `RP_BINARY` (the inverse of `rp:bdd`).
 - `data` includes the service binary, `Cargo.toml`, `tests/features/**`, and any fixture JSON (`tests/config.json` etc.).
 - ppba-driver and qhy-focuser have a second mock-feature binary target (`_mock` suffix) because Bazel treats `crate_features` as compile-time; the BDD test points at the mock binary.
 
 Env var names follow the `{UPPER_SNAKE_PACKAGE}_BINARY` convention (e.g. `RP_BINARY`, `PPBA_DRIVER_BINARY`, `QHY_FOCUSER_BINARY`). `bdd-infra` derives the name from the package string passed to `ServiceHandle::start` — there is no per-service override.
+
+All twelve service BDD suites now have Bazel `bdd` targets. The last two —
+`plate-solver` and `calibrator-flats` — were wired after the initial Phase-3
+batch; each adds a wrinkle worth noting:
+
+- **plate-solver** spawns its service binary, which in turn shells out to the
+  `mock_astap` stub (`src/bin/mock_astap.rs`), so its `bdd` target deps both
+  `:plate-solver` and `:mock_astap` and sets `PLATE_SOLVER_BINARY` +
+  `MOCK_ASTAP_BINARY`. It needs no OmniSim, so it runs under a plain
+  `bazel test //services/plate-solver:bdd`. The `@requires-astap` scenarios
+  self-gate on the `ASTAP_BINARY` env var (unset in PR jobs); `@unix` scenarios
+  self-gate on `cfg(unix)`. Adding the target also meant splitting `src/main.rs`
+  out of `plate-solver_lib` into a `plate-solver` `rust_binary` — the
+  hand-written BUILD previously had only the lib + `mock_astap` (Cargo
+  auto-discovers `src/main.rs` as the default binary, so there was no Cargo-side
+  gap to notice).
+- **calibrator-flats** is the inverse of `rp:bdd`: it cross-spawns rp
+  (`RP_BINARY`) and OmniSim through the `bdd-infra_rp_harness` variant, plus its
+  own binary (`CALIBRATOR_FLATS_BINARY`). Like every rp_harness target it needs
+  OmniSim (`OMNISIM_PATH`, forwarded by `build:ci --test_env`) at runtime, so a
+  local run requires OmniSim installed.
 
 ## Coverage under Bazel (shadow, added 2026-05-26)
 

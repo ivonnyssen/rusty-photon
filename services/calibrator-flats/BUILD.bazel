@@ -45,3 +45,49 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# BDD cucumber suite. Drives the flat-calibration workflow end-to-end through
+# three spawned processes: OmniSim (via OMNISIM_PATH, forwarded by the CI
+# `build:ci --test_env`), rp (RP_BINARY), and calibrator-flats itself
+# (CALIBRATOR_FLATS_BINARY). Uses bdd-infra's rp-harness variant — the same
+# shared harness rp's own BDD suite uses (rp:bdd cross-spawns calibrator-flats;
+# this is the inverse). A local `bazel test //services/calibrator-flats:bdd`
+# needs OmniSim installed and OMNISIM_PATH set, like any rp_harness BDD target.
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    # Spawns three processes per scenario; generous timeout.
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":calibrator-flats",
+        "//services/rp:rp",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/calibrator-flats",
+        "CALIBRATOR_FLATS_BINARY": "$(rootpath :calibrator-flats)",
+        "RP_BINARY": "$(rootpath //services/rp:rp)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "calibrator-flats"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":calibrator-flats_lib",
+        "//crates/bdd-infra:bdd-infra_rp_harness",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
