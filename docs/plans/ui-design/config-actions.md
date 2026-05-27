@@ -311,6 +311,67 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
   `ConfigClient`; `driver_client` unit tests cover envelope parsing with a
   mocked `HttpClient`.
 
+## Federated roster: managed (own) vs. foreign devices
+
+The config-action protocol above governs **drivers we author**. The web UI will
+eventually administer a mix of those and **foreign native-Alpaca devices** we do
+*not* author (e.g. a Pegasus Falcon v2 on its own firmware, an Optec focuser, an
+ASCOM Remote server, a second rusty-photon stack). These form two tiers,
+distinguished by one axis — *can we reach a structured config surface?* — and the
+roster records that tier per device.
+
+- **Managed (own drivers).** We write the Alpaca server, so it advertises
+  `config.get`/`config.apply` and renders in the native form: validation,
+  redaction, override-aware persist, in-process reload.
+- **Foreign (third-party firmware).** They will never speak `config.*`. We can
+  still **control** them over the standard Device API — the `ascom-alpaca` crate
+  we maintain already ships a client (`Client`, `get_devices()`, typed per-type
+  device clients) — but we can only **configure** them by deep-linking their own
+  `/setup` page or a vendor page (e.g. `falcon2.local`), or by surfacing
+  `SupportedActions` as an opaque "advanced commands" panel.
+
+**Capability detection is one probe, not a hardcoded table:** read
+`supportedactions`; `config.*` present ⇒ *managed*; else a reachable
+`/setup/v1/{type}/{n}/setup` ⇒ *setup-page*; else *control-only* (plus an optional
+per-vendor override URL). Because `config.*` is already self-advertising via
+`supportedactions`, any third party that adopts the convention auto-upgrades to
+*managed*.
+
+**Roster entry model** — keyed by the ASCOM `UniqueID` (the spec guarantees it
+stable across IP changes), not by URL:
+
+```rust
+struct RosterEntry {
+    unique_id: String,           // ASCOM UniqueID — stable PK
+    name: String,
+    device_type: DeviceType,
+    device_number: u32,
+    server: ServerRef,           // { base_url, auth, ca_cert } — per-server credentials
+    mgmt: Management,            // Managed | SetupPage{url} | VendorPage{url} | ControlOnly
+    origin: Origin,              // Manual (primary) | Discovered (pre-fill) | RpRoster
+}
+```
+
+This generalises the BFF's current single hard-coded `dsd-fp2` `DriverTarget`
+into a keyed collection sourced from `rp`'s equipment registry (the backend
+already exists — `services/rp/src/equipment/`, `GET /api/equipment`) **plus manual
+entries**. The managed/foreign tier and the per-device control panels (driven by
+the crate's typed clients) are the new parts; the registry and the client are not.
+
+**Cardinality is many-per-type, except the mount.** An observatory runs one mount
+but can run several of everything else — multiple cameras, focusers, rotators,
+filter wheels — organised into one or more **optical trains** (each a camera +
+focuser + rotator + filter wheel, all riding the single mount). The roster's flat
+`UniqueID`-keyed collection already admits duplicates per type (`rp`'s registry
+models this: `mount` is `Option`, the rest are `Vec`), so the control panels must
+address each instance by `UniqueID` and never assume one-per-type. Optical-train
+*grouping* is a rusty-photon overlay — **Alpaca has no optical-train concept**,
+only a flat device list — so the pairing comes from `rp`'s config (the imaging
+setup), not from discovery or the Management API.
+
+See [Decisions (2026-05-27)](#decisions-2026-05-27) for the scope, cardinality,
+credential, discovery, self-lockout, and convention-crate calls that shape this.
+
 ## Phased plan
 
 **Phase 1 — `dsd-fp2` config actions + reload (driver-side, fully testable in mock mode). ✅ Landed.**
@@ -342,6 +403,11 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 **Phase 3 — Generalise across drivers.**
 - Extract a shared `config-actions` helper so other drivers adopt `config.get`/
   `config.apply` with minimal boilerplate; roll out to `qhy-focuser` and the rest.
+  Once the pattern is proven, promote that helper to a **small, standalone,
+  vendor-neutral crate** (convention constants + request/response types + optional
+  `config.schema` + a helper to wire the actions onto any `ascom-alpaca` `Device`)
+  so *third parties* can adopt the convention cheaply and auto-detect as *managed*
+  (see [Decisions](#decisions-2026-05-27)).
 - Optional: add `config.schema` (via `schemars`) + a schema-driven form renderer
   in the BFF to replace hand-built forms.
 
@@ -353,9 +419,13 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
 
 **Phase 5 — `rp` config + equipment roster, then the activity stream.**
 - `rp` gains `GET/PUT /api/config` (same get/apply shape, REST). Build the rp
-  equipment-roster page; add ASCOM discovery to pre-fill it. The activity-stream
-  UI follows on a separate track (it needs `rp`'s real-time event stream, which is
-  not yet implemented — see `rp.md:2846`).
+  equipment-roster page driven by **manual `IP:port` entry** (the primary path),
+  carrying the managed/foreign tier per device (see
+  [Federated roster](#federated-roster-managed-own-vs-foreign-devices)). ASCOM UDP
+  discovery is a low-priority, best-effort **pre-fill** only, merged into the
+  roster by `UniqueID` (see [Decisions](#decisions-2026-05-27)) — never a
+  prerequisite. The activity-stream UI follows on a separate track (it needs
+  `rp`'s real-time event stream, which is not yet implemented — see `rp.md:2846`).
 
 ## Open questions
 
@@ -382,6 +452,49 @@ that is still comprehensive in aggregate) and the BDD setup in `tests/`.
   the effective config *and* marks CLI-override-pinned fields (`overrides[]`);
   `config.apply` persists every field except those, so a transient `--port`
   cannot be baked into the file.
+
+### Decisions (2026-05-27)
+
+Calls made while scoping the [federated roster](#federated-roster-managed-own-vs-foreign-devices):
+
+- **`pa-falcon-rotator` wraps the Falcon *v1* only; the *v2* stays
+  vendor/firmware-managed.** The v2 ships its own Alpaca server + `falcon2.local`
+  dashboard + Unity, so we do **not** author a v2 wrapper — re-wrapping would
+  duplicate firmware we don't own. If the v2 surfaces in the UI at all it is a
+  *foreign* device: controlled over its native Alpaca interface (manual entry),
+  configured by deep-linking its vendor page — never via our `config.*`.
+- **Per-server credentials, not a global one — including for drivers we author.**
+  Every `ServerRef` carries its own `{auth, ca_cert}`; there is no guarantee that
+  even our own drivers share a single credential. (The BFF's existing
+  per-`DriverTarget` `auth`/`ca_cert_path` already points this way; the roster
+  keeps it per-entry rather than collapsing to one shared credential.)
+- **Manual `IP:port` entry is the primary path; UDP discovery is low-priority
+  pre-fill only.** Discovery (the `ascom-alpaca` crate's `DiscoveryClient`,
+  currently unused) won't cross subnets/VLANs, is "should" not "must" in the
+  spec, and is best-effort — so it is deferred behind manual entry and, when
+  added, only *merges* into the roster by `UniqueID`. The roster must never be
+  gated on discovery.
+- **Self-lockout guards must become a per-device rule set — refine empirically,
+  not up front.** `dsd-fp2` hardcodes read-only `server.port` /
+  `cover_calibrator.enabled` so the UI can't edit away its own reachability
+  ([ui-htmx.md](../../services/ui-htmx.md) "Form ⇆ Config mapping"). This needs to
+  generalise into a per-device declaration, but the right abstraction should be
+  derived **after** `config.*` lands on a few more of our own drivers, so the rule
+  shape is grounded in real cases rather than guessed. Future work for Phase 3.
+- **Multiples are first-class; the mount is the only singleton.** The roster and
+  control panels handle 1..N cameras / focusers / rotators / filter wheels (and
+  several complete optical trains on one mount); only the mount is
+  one-per-observatory. Optical-train grouping is a rusty-photon overlay from `rp`'s
+  config — Alpaca has no such concept, just a flat device list — so trains are
+  never inferred from discovery. (See
+  [Federated roster](#federated-roster-managed-own-vs-foreign-devices).)
+- **Publish `config.*` as a small standalone crate once proven.** The Phase 3
+  shared helper graduates from a workspace-internal module to a vendor-neutral,
+  independently publishable crate (convention constants + request/response types +
+  optional `config.schema` + a thin helper to implement the actions on any
+  `ascom-alpaca` `Device`), so third parties adopt the convention cheaply and
+  auto-detect as *managed*. Timing: only after the pattern has settled across a few
+  of our own drivers — don't publish a moving target.
 
 ## Doc impact (CLAUDE.md rule 2)
 
