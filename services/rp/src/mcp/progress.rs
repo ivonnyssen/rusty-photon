@@ -150,6 +150,16 @@ pub(crate) mod test_support {
         pub(crate) fn count(&self) -> usize {
             self.count.load(std::sync::atomic::Ordering::SeqCst)
         }
+
+        /// Snapshot of every `(progress, total, message)` tuple emitted
+        /// so far, for tests that assert on the *content* of a
+        /// notification (e.g. the phase label) rather than just the count.
+        pub(crate) fn records(&self) -> Vec<(f64, Option<f64>, Option<String>)> {
+            self.records
+                .lock()
+                .expect("CountingProgressEmitter records lock poisoned")
+                .clone()
+        }
     }
 
     #[async_trait]

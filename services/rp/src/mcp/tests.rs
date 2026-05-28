@@ -451,6 +451,12 @@ struct MockFocuser {
     /// property at all.
     temperature_not_implemented: bool,
     stuck_moving: bool,
+    /// When non-zero, `is_moving` reports `true` for the first N calls
+    /// and `false` thereafter — models a bounded focuser move for
+    /// progress-notification tests, mirroring `MockCamera::not_ready_count`.
+    /// `0` (default) keeps the `stuck_moving` behavior.
+    is_moving_true_count: u32,
+    is_moving_calls: std::sync::atomic::AtomicU32,
     temperature_value: f64,
     position_value: i32,
 }
@@ -466,6 +472,12 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
     async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_is_moving {
             return Err(ASCOMError::invalid_operation("encoder fault"));
+        }
+        if self.is_moving_true_count > 0 {
+            let n = self
+                .is_moving_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Ok(n < self.is_moving_true_count);
         }
         Ok(self.stuck_moving)
     }
@@ -4561,4 +4573,167 @@ fn progress_sink_returns_none_without_progress_token() {
         meta.get_progress_token().is_none(),
         "default Meta should not carry a progressToken"
     );
+}
+
+/// Companion to `do_capture_emits_progress_during_readout_wait`. With a
+/// `duration` longer than `PROGRESS_INTERVAL`, every tick fired while the
+/// camera is still shuttering falls in the `elapsed < duration` arm, so
+/// the emitted phase is `"exposing"` — the branch the 50 ms-duration
+/// readout test never reaches.
+#[tokio::test(start_paused = true)]
+async fn do_capture_emits_exposing_phase_before_readout() {
+    // `not_ready_count: 120` ≈ 12 s of `image_ready==false`; a 60 s
+    // `duration` keeps the 5 s and 10 s emit marks inside the exposure
+    // window, so each is tagged `"exposing"`.
+    let cam = MockCamera {
+        not_ready_count: 120,
+        ..Default::default()
+    };
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(Arc::new(cam)));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    handler
+        .do_capture("cam", Duration::from_secs(60), Some(&emitter))
+        .await
+        .expect("capture completes when image_ready flips true");
+    assert!(
+        emitter.count() >= 2,
+        "expected ≥ 2 progress notifications during the exposure window, got {}",
+        emitter.count()
+    );
+    assert!(
+        emitter
+            .records()
+            .iter()
+            .any(|(_, _, msg)| msg.as_deref() == Some("exposing")),
+        "expected at least one tick tagged \"exposing\", got {:?}",
+        emitter.records()
+    );
+}
+
+/// `do_move_focuser_blocking` against a focuser that reports
+/// `is_moving == true` for ~12 s and then `false` must fire at least two
+/// progress notifications (5 s + 10 s marks) tagged `"focuser_moving"`
+/// during the settle poll — the focuser counterpart to the slew/park/
+/// capture progress tests.
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_emits_progress_during_move() {
+    let foc = MockFocuser {
+        is_moving_true_count: 120,
+        position_value: 4321,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    let position = handler
+        .do_move_focuser_blocking("foc", 4321, Some(&emitter))
+        .await
+        .expect("move completes when the focuser reports idle");
+    assert_eq!(position, 4321);
+    assert!(
+        emitter.count() >= 2,
+        "expected ≥ 2 progress notifications over ~12 s of focuser move, got {}",
+        emitter.count()
+    );
+    assert!(
+        emitter
+            .records()
+            .iter()
+            .any(|(_, _, msg)| msg.as_deref() == Some("focuser_moving")),
+        "expected at least one tick tagged \"focuser_moving\", got {:?}",
+        emitter.records()
+    );
+}
+
+/// `do_slew_blocking` with a `settle_after` longer than
+/// `PROGRESS_INTERVAL` emits one `"settling"` tick even when the slew
+/// itself finishes immediately — covers the settle-phase emit that the
+/// during-slew test (zero settle) never reaches.
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_emits_progress_during_settle() {
+    // `slewing_true_count: 0` ⇒ the mount reports idle on the first poll,
+    // so `poll_slewing_until_idle` returns without emitting; the only tick
+    // is the settle one (`settle_after == 10 s >= PROGRESS_INTERVAL`).
+    let mount = MockTelescope {
+        slewing_true_count: 0,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    handler
+        .do_slew_blocking(0.0, 0.0, Duration::from_secs(10), Some(&emitter))
+        .await
+        .expect("slew + settle completes");
+    assert!(
+        emitter
+            .records()
+            .iter()
+            .any(|(_, _, msg)| msg.as_deref() == Some("settling")),
+        "expected a tick tagged \"settling\", got {:?}",
+        emitter.records()
+    );
+}
+
+/// Complement to the settle test: a non-zero `settle_after` *below*
+/// `PROGRESS_INTERVAL` enters the `Some(sink)` block but skips the emit
+/// (the `settle_after >= PROGRESS_INTERVAL` guard is false), so no tick
+/// is sent. Pins the short-settle branch so brief corrective slews don't
+/// spam progress.
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_skips_settle_tick_below_interval() {
+    let mount = MockTelescope {
+        slewing_true_count: 0,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let emitter = super::progress::test_support::CountingProgressEmitter::default();
+    handler
+        .do_slew_blocking(0.0, 0.0, Duration::from_secs(2), Some(&emitter))
+        .await
+        .expect("slew + short settle completes");
+    assert_eq!(
+        emitter.count(),
+        0,
+        "a settle below PROGRESS_INTERVAL must emit no tick, got {:?}",
+        emitter.records()
+    );
+}
+
+/// Exercises the *live* `ProgressSink::emit` (not the `CountingProgressEmitter`
+/// double): builds a real `Peer<RoleServer>` via `serve_directly` over an
+/// in-memory tokio duplex. `serve_directly` skips the init handshake, so no
+/// client is required — the server end backs the peer, and the client end is
+/// held open (unread) so the single outbound notification buffers instead of
+/// erroring. Pins that `from_peer_and_meta` yields a sink when a
+/// `progressToken` is present and that `emit` performs a `notify_progress`
+/// send without panicking. A 5 s timeout guards against a transport wedge.
+#[tokio::test]
+async fn progress_sink_emit_sends_via_real_peer() {
+    use super::progress::{ProgressEmitter, ProgressSink};
+    use rmcp::model::{Meta, NumberOrString, ProgressToken};
+
+    let (server_io, _client_io) = tokio::io::duplex(4096);
+    let (rx, tx) = tokio::io::split(server_io);
+    let service = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let running = rmcp::service::serve_directly(service, (rx, tx), None);
+    let peer = running.peer().clone();
+
+    let meta = Meta::with_progress_token(ProgressToken(NumberOrString::Number(1)));
+    let sink = ProgressSink::from_peer_and_meta(peer, &meta)
+        .expect("meta carries a progressToken => Some(sink)");
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        sink.emit(5.0, Some(60.0), Some("exposing".to_string())),
+    )
+    .await
+    .expect("emit completed within the timeout");
+
+    // `_client_io` and `running` are held to here so the session worker is
+    // alive (and the duplex buffer un-closed) while the notification drains;
+    // both shut down on drop at end of scope.
+    drop(running);
 }
