@@ -3348,10 +3348,19 @@ binary. The test harness discovers the binary in this order:
 3. `ascom.alpaca.simulators` on `PATH`
 
 To install locally, download the appropriate release binary for your
-platform from the [v0.5.0 release](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0),
-extract it, and either add its directory to `PATH` or set one of the
-environment variables above. In CI, the `.github/actions/install-omnisim`
-composite action handles this automatically.
+platform, extract it, and either add its directory to `PATH` or set one
+of the environment variables above. In CI, the
+`.github/actions/install-omnisim` composite action handles this
+automatically.
+
+**CI pins a patched fork**, not upstream: the action defaults to
+[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-326.1`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-326.1),
+a build of upstream `v0.5.0` plus a `TelescopeHardware` locking fix for
+the `center_on_target` slew-state race (issue #326). The action's `repo`
+and `version` inputs revert to upstream
+[`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
+in one line once the fix lands upstream. For local runs upstream `v0.5.0`
+is fine unless you're specifically reproducing #326.
 
 #### Graceful Shutdown and Coverage
 
