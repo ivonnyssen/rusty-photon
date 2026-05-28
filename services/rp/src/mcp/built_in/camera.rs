@@ -2,12 +2,14 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -31,8 +33,29 @@ impl McpHandler {
     pub(crate) async fn capture(
         &self,
         Parameters(params): Parameters<CaptureParams>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self.do_capture(&params.camera_id, params.duration).await {
+        // ProgressSink is `None` when the client did not supply a
+        // `progressToken` in `_meta` — `do_capture` then treats the
+        // emission as a no-op. See `mcp::progress` for the rmcp
+        // 300 s session keep-alive race this guards against.
+        let sink = ProgressSink::from_request_context(&ctx);
+        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        self.capture_inner(params, emitter).await
+    }
+
+    /// Body of the `capture` MCP tool, split out so unit tests can
+    /// pass `None` for the progress emitter without constructing a
+    /// real rmcp `Peer`.
+    pub(crate) async fn capture_inner(
+        &self,
+        params: CaptureParams,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self
+            .do_capture(&params.camera_id, params.duration, progress)
+            .await
+        {
             Ok((image_path, document_id)) => Ok(tool_success!({
                 "image_path": image_path,
                 "document_id": document_id,

@@ -23,14 +23,26 @@
 //! `services/rp/tests/features/center_on_target.feature` for the
 //! worked numbers.
 //!
-//! Note: the 6 h CI hangs in the closed-loop centering BDD (May 2026)
-//! were *not* this slew/keep-alive race. They traced to `do_capture`
-//! looping forever on a **failed** `sky-survey-camera` exposure — its
-//! follow-mode mount read timed out under load, so `ImageReady` never
-//! went true and the capture poll spun indefinitely. Fixed at the
-//! source in `mcp/internals.rs::do_capture` (treat `CameraState::Error`
-//! as terminal + a readout deadline). CI job `timeout-minutes` and the
-//! BDD client's `MCP_CALL_TIMEOUT` are independent backstops.
+//! Note: the closed-loop centering BDD hit *two* distinct hang classes
+//! in May 2026, neither the slew/keep-alive race above:
+//!
+//! 1. `do_capture` looped forever on a **failed** `sky-survey-camera`
+//!    exposure — its follow-mode mount read timed out under load, so
+//!    `ImageReady` never went true and the capture poll spun
+//!    indefinitely. Fixed in `mcp/internals.rs::do_capture` (treat
+//!    `CameraState::Error` as terminal + a readout deadline).
+//! 2. (Issue #319.) A *single* per-iteration mount read stalled and
+//!    hung forever, because rp's Alpaca HTTP client had **no
+//!    per-request timeout** — a device that accepts the connection but
+//!    never answers (an overloaded OmniSim in CI) blocks the `await`
+//!    indefinitely, and the blocking-op poll deadlines guard *loops*,
+//!    not a single in-flight request. Fixed in `equipment::alpaca` with
+//!    a per-request connect + read timeout, plus a transient-failure
+//!    retry on the idempotent per-iteration reads (the `use_mount_hints`
+//!    read in `plate_solve`, the `Slewing` poll).
+//!
+//! CI job `timeout-minutes` and the BDD client's `MCP_CALL_TIMEOUT` are
+//! independent backstops, not the fix.
 
 use async_trait::async_trait;
 use serde::Serialize;

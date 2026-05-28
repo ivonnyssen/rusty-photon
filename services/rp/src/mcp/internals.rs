@@ -13,13 +13,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::camera::CameraState;
+use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::equipment::alpaca::retry_idempotent_read;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
 
 use super::handler::McpHandler;
+use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 
 /// Backstop grace added to the requested exposure `duration` to bound
 /// `do_capture`'s readout wait. An Alpaca camera can *fail* an exposure
@@ -417,10 +420,21 @@ impl McpHandler {
     /// and the `auto_focus` compound tool's per-step capture call —
     /// both want the same exposure / FITS-write / cache-insert / event
     /// flow.
+    ///
+    /// When `progress` is `Some`, the poll loop emits
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
+    /// 300 s session keep-alive cannot fire during a legitimate
+    /// long exposure (`duration` plus `CAPTURE_READOUT_GRACE`). The
+    /// emitted `progress` is the elapsed fraction of the total
+    /// `duration + CAPTURE_READOUT_GRACE` budget; messages cycle
+    /// `"exposing"` → `"reading_out"` once `image_ready` flips true.
+    /// `None` (unit tests, MCP clients that omitted `progressToken`)
+    /// makes the emission a no-op.
     pub(crate) async fn do_capture(
         &self,
         camera_id: &str,
         duration: Duration,
+        progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(String, String), String> {
         let cam_entry = self
             .equipment
@@ -478,7 +492,18 @@ impl McpHandler {
         // forever. Treat `Error` as terminal (surfacing the camera's
         // stored reason via `image_array`), and cap the total wait with a
         // deadline as a backstop for a camera wedged in `Exposing`.
-        let deadline = tokio::time::Instant::now() + duration + CAPTURE_READOUT_GRACE;
+        let started_at = Instant::now();
+        let total_budget = duration + CAPTURE_READOUT_GRACE;
+        let deadline = started_at + total_budget;
+        let total_budget_secs = total_budget.as_secs_f64();
+        // While `image_ready` returns `false` *before* the requested
+        // exposure window elapses, the camera is shuttering. Switch the
+        // emitted message to `"reading_out"` once we cross that mark —
+        // most cameras hold `image_ready` false until the readout
+        // download finishes too, which is when the keep-alive race is
+        // most likely to bite (a long sky-survey download in CI). The
+        // boundary is informational; the emit cadence is unchanged.
+        let mut last_progress_at = started_at;
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match cam.image_ready().await {
@@ -496,11 +521,25 @@ impl McpHandler {
                             .unwrap_or_else(|| "camera reported error state".to_string());
                         return Err(format!("exposure failed: {}", detail));
                     }
-                    if tokio::time::Instant::now() >= deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
                         return Err(format!(
                             "timeout waiting for image_ready after {:?}",
-                            duration + CAPTURE_READOUT_GRACE
+                            total_budget
                         ));
+                    }
+                    if let Some(sink) = progress {
+                        if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                            let elapsed = now.duration_since(started_at).as_secs_f64();
+                            let phase = if now.duration_since(started_at) < duration {
+                                "exposing"
+                            } else {
+                                "reading_out"
+                            };
+                            sink.emit(elapsed, Some(total_budget_secs), Some(phase.to_string()))
+                                .await;
+                            last_progress_at = now;
+                        }
                     }
                 }
                 Err(e) => return Err(format!("error checking image ready: {}", e)),
@@ -645,10 +684,17 @@ impl McpHandler {
     /// This is the shared body of the `move_focuser` MCP tool and the
     /// `auto_focus` compound tool's per-step focuser drive — both want
     /// the same bounds-check + blocking-poll semantics.
+    ///
+    /// When `progress` is `Some`, the `is_moving` poll loop emits
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
+    /// 300 s session keep-alive sees session activity from a focuser
+    /// run that approaches its own 120 s deadline. `None` (unit tests,
+    /// clients without `progressToken`) makes the emission a no-op.
     pub(crate) async fn do_move_focuser_blocking(
         &self,
         focuser_id: &str,
         position: i32,
+        progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<i32, String> {
         let foc_entry = self
             .equipment
@@ -682,12 +728,31 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to move focuser: {}", e))?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let total_budget = Duration::from_secs(120);
+        let total_budget_secs = total_budget.as_secs_f64();
+        let started_at = Instant::now();
+        let deadline = started_at + total_budget;
+        let mut last_progress_at = started_at;
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match foc.is_moving().await {
                 Ok(false) => break,
-                Ok(true) if tokio::time::Instant::now() < deadline => continue,
+                Ok(true) if Instant::now() < deadline => {
+                    let now = Instant::now();
+                    if let Some(sink) = progress {
+                        if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                            let elapsed = now.duration_since(started_at).as_secs_f64();
+                            sink.emit(
+                                elapsed,
+                                Some(total_budget_secs),
+                                Some("focuser_moving".to_string()),
+                            )
+                            .await;
+                            last_progress_at = now;
+                        }
+                    }
+                    continue;
+                }
                 Ok(true) => return Err("timeout waiting for focuser to settle".to_string()),
                 Err(e) => return Err(format!("error polling focuser is_moving: {}", e)),
             }
@@ -736,11 +801,18 @@ impl McpHandler {
     /// error mapping. Does NOT touch `Tracking` (per `mount.feature`
     /// + ASCOM contract — Tracking must already be on for
     ///   `slew_to_coordinates_async`).
+    ///
+    /// When `progress` is `Some`, the inner `poll_slewing_until_idle`
+    /// and the `settle_after` sleep emit `notifications/progress`
+    /// every [`PROGRESS_INTERVAL`] so rmcp's 300 s session
+    /// keep-alive cannot fire during a legitimate long slew (which
+    /// has the same 300 s deadline).
     pub(crate) async fn do_slew_blocking(
         &self,
         ra: f64,
         dec: f64,
         settle_after: Duration,
+        progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
@@ -750,7 +822,7 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to slew: {}", e))?;
 
-        match poll_slewing_until_idle(mount.as_ref()).await {
+        match poll_slewing_until_idle(mount.as_ref(), progress).await {
             Ok(()) => {}
             Err(PollIdleError::Timeout) => {
                 // Best-effort abort; ignore the abort's own result and
@@ -765,6 +837,20 @@ impl McpHandler {
 
         if !settle_after.is_zero() {
             debug!(?settle_after, "waiting for mount settle");
+            // For settles long enough to cross PROGRESS_INTERVAL, emit
+            // a single tick so the session keep-alive can't fire
+            // during the settle even when the upstream slew finished
+            // quickly.
+            if let Some(sink) = progress {
+                if settle_after >= PROGRESS_INTERVAL {
+                    sink.emit(
+                        0.0,
+                        Some(settle_after.as_secs_f64()),
+                        Some("settling".to_string()),
+                    )
+                    .await;
+                }
+            }
             tokio::time::sleep(settle_after).await;
         }
 
@@ -798,7 +884,15 @@ impl McpHandler {
     ///
     /// Per ASCOM, a successful `park()` clears `Tracking`. We don't
     /// touch tracking ourselves; the contract is the driver's.
-    pub(crate) async fn do_park_blocking(&self) -> std::result::Result<(), String> {
+    ///
+    /// When `progress` is `Some`, the `at_park` poll loop emits
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
+    /// 300 s session keep-alive cannot fire during a legitimate
+    /// long park (which has the same 300 s deadline).
+    pub(crate) async fn do_park_blocking(
+        &self,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> std::result::Result<(), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
         debug!("parking mount");
@@ -807,12 +901,29 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to park: {}", e))?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let total_budget = Duration::from_secs(300);
+        let total_budget_secs = total_budget.as_secs_f64();
+        let started_at = Instant::now();
+        let deadline = started_at + total_budget;
+        let mut last_progress_at = started_at;
         loop {
             match mount.at_park().await {
                 Ok(true) => return Ok(()),
-                Ok(false) if tokio::time::Instant::now() < deadline => {
+                Ok(false) if Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(100)).await;
+                    let now = Instant::now();
+                    if let Some(sink) = progress {
+                        if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                            let elapsed = now.duration_since(started_at).as_secs_f64();
+                            sink.emit(
+                                elapsed,
+                                Some(total_budget_secs),
+                                Some("parking".to_string()),
+                            )
+                            .await;
+                            last_progress_at = now;
+                        }
+                    }
                 }
                 Ok(false) => return Err("timeout waiting for mount to park".to_string()),
                 Err(e) => return Err(format!("error polling mount at_park: {}", e)),
@@ -847,16 +958,36 @@ impl McpHandler {
     /// modes — no mount configured, mount not connected, Alpaca
     /// read error — surface as a single string the caller appends
     /// to its diagnostic.
+    ///
+    /// `center_on_target` issues this read every iteration; under heavy
+    /// parallel-OmniSim CI load it was the read that stalled and hung
+    /// the whole loop (issue #319). Both reads are idempotent, so they
+    /// retry a transient failure via [`retry_idempotent_read`] rather
+    /// than aborting the compound tool on a single hiccup; the
+    /// per-request read timeout (see `equipment::alpaca`) bounds each
+    /// attempt.
     pub(crate) async fn read_mount_hints_for_plate_solve(&self) -> Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
-        let ra_hours = mount
-            .right_ascension()
-            .await
-            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
-        let dec_deg = mount
-            .declination()
-            .await
-            .map_err(|e| format!("failed to read mount declination: {e}"))?;
+        let ra_hours = retry_idempotent_read("mount right_ascension", || {
+            let mount = mount.clone();
+            async move {
+                mount
+                    .right_ascension()
+                    .await
+                    .map_err(|e| format!("failed to read mount right_ascension: {e}"))
+            }
+        })
+        .await?;
+        let dec_deg = retry_idempotent_read("mount declination", || {
+            let mount = mount.clone();
+            async move {
+                mount
+                    .declination()
+                    .await
+                    .map_err(|e| format!("failed to read mount declination: {e}"))
+            }
+        })
+        .await?;
         Ok((ra_hours * 15.0, dec_deg))
     }
 
@@ -1100,12 +1231,22 @@ pub(crate) fn star_to_json(s: &Star) -> serde_json::Value {
 }
 
 /// Outcome variants for [`poll_slewing_until_idle`].
+#[derive(Debug)]
 pub(crate) enum PollIdleError {
     /// Deadline expired with `slewing()` still returning `true`.
     Timeout,
     /// `slewing()` itself returned an Alpaca error.
     Read(ascom_alpaca::ASCOMError),
 }
+
+/// Consecutive `slewing()` read errors [`poll_slewing_until_idle`]
+/// tolerates before giving up. A transient read failure — the now
+/// timeout-bounded stall a loaded OmniSim or a flaky link produces
+/// (issue #319) — is treated like "not idle yet" and retried on the
+/// next tick; only a *persistent* failure aborts the slew. The 300 s
+/// deadline still caps the total wait. Mirrors the connect path's
+/// tolerance for a transient device stall.
+const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 
 /// Poll `mount.slewing()` every 100 ms until it returns `false`,
 /// bounded by a 300 s deadline. Used by `do_slew_blocking`. (The
@@ -1116,17 +1257,63 @@ pub(crate) enum PollIdleError {
 /// [`PollIdleError::Timeout`] the caller decides whether to
 /// best-effort `abort_slew()` (slew does) or just surface the
 /// timeout.
+///
+/// A transient `slewing()` read error is tolerated (kept polling) up to
+/// [`SLEWING_READ_ERROR_TOLERANCE`] consecutive failures so a brief
+/// device hiccup mid-slew doesn't abort the whole `center_on_target`
+/// loop; a successful read resets the counter.
+///
+/// When `progress` is `Some`, the loop emits
+/// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
+/// 300 s session keep-alive cannot fire during a legitimate slew
+/// (the slew's own deadline is also 300 s — without progress
+/// emission the two timers race).
 pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
+    progress: Option<&dyn ProgressEmitter>,
 ) -> std::result::Result<(), PollIdleError> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let total_budget = Duration::from_secs(300);
+    let total_budget_secs = total_budget.as_secs_f64();
+    let started_at = Instant::now();
+    let deadline = started_at + total_budget;
+    let mut last_progress_at = started_at;
+    let mut consecutive_read_errors: u32 = 0;
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         match mount.slewing().await {
             Ok(false) => return Ok(()),
-            Ok(true) if tokio::time::Instant::now() < deadline => continue,
+            Ok(true) if Instant::now() < deadline => {
+                consecutive_read_errors = 0;
+                let now = Instant::now();
+                if let Some(sink) = progress {
+                    if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                        let elapsed = now.duration_since(started_at).as_secs_f64();
+                        sink.emit(
+                            elapsed,
+                            Some(total_budget_secs),
+                            Some("slewing".to_string()),
+                        )
+                        .await;
+                        last_progress_at = now;
+                    }
+                }
+                continue;
+            }
             Ok(true) => return Err(PollIdleError::Timeout),
-            Err(e) => return Err(PollIdleError::Read(e)),
+            Err(e) => {
+                consecutive_read_errors += 1;
+                if consecutive_read_errors >= SLEWING_READ_ERROR_TOLERANCE
+                    || Instant::now() >= deadline
+                {
+                    return Err(PollIdleError::Read(e));
+                }
+                debug!(
+                    consecutive_read_errors,
+                    max = SLEWING_READ_ERROR_TOLERANCE,
+                    error = %e,
+                    "transient mount slewing() read error, continuing to poll"
+                );
+            }
         }
     }
 }

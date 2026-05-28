@@ -1,10 +1,12 @@
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::super::handler::McpHandler;
+use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -24,9 +26,23 @@ impl McpHandler {
     pub(crate) async fn move_focuser(
         &self,
         Parameters(params): Parameters<MoveFocuserParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let sink = ProgressSink::from_request_context(&ctx);
+        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        self.move_focuser_inner(params, emitter).await
+    }
+
+    /// Body of the `move_focuser` MCP tool, split out so unit tests
+    /// can pass `None` for the progress emitter without constructing
+    /// a real rmcp `Peer`.
+    pub(crate) async fn move_focuser_inner(
+        &self,
+        params: MoveFocuserParams,
+        progress: Option<&dyn ProgressEmitter>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self
-            .do_move_focuser_blocking(&params.focuser_id, params.position)
+            .do_move_focuser_blocking(&params.focuser_id, params.position, progress)
             .await
         {
             Ok(actual_position) => Ok(tool_success!({

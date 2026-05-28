@@ -2300,6 +2300,34 @@ exactly one mount.
   The mount is left where the failed step left it; partial
   `iterations[]` entries are not returned (the failure surfaces as
   an MCP error, not a partial success).
+- Unresponsive device → bounded, never an indefinite hang. Every
+  Alpaca request rp issues carries a per-request connect + read
+  timeout (`equipment::alpaca`), so a device that accepts the
+  connection but stops answering — an overloaded simulator in CI, a
+  stalled mount/USB-serial bridge at night — surfaces as a timeout
+  error instead of wedging the loop forever. The idempotent
+  per-iteration mount reads (`plate_solve`'s `use_mount_hints` read;
+  the slew's `Slewing` poll) additionally **retry** a transient
+  failure with short backoff before giving up, so a brief device
+  hiccup is ridden out rather than aborting the whole tool. (This is
+  the fix for the issue #319 `center_on_target` timeout: a stalled
+  mount read had no client-side timeout and hung indefinitely; the
+  blocking-op poll deadlines guard loops, not a single in-flight
+  request.)
+- MCP session keep-alive vs. per-tool deadlines → companion fix on
+  the same PR (#319). rmcp's `LocalSessionManager` defaults to a
+  300 s `keep_alive` that fires if the session sees no activity. The
+  per-iteration `do_slew_blocking` (300 s slew deadline),
+  `do_park_blocking` (300 s), and `do_capture` (`duration + 120 s`
+  readout grace) all approach or match that 300 s. Without
+  emission they race the keep-alive: when both fire near the same
+  moment the SSE response stream EOFs and the client's `call_tool`
+  future never resolves (BDD's 360 s `MCP_CALL_TIMEOUT` is the only
+  backstop). Each poll loop emits `notifications/progress` every
+  `PROGRESS_INTERVAL` (5 s) — see `mcp::progress` — so the session
+  worker's handler-event arm resets the keep-alive timer well
+  before it can fire. The emission is a no-op when the client did
+  not supply a `progressToken` in `_meta`; unit tests pass `None`.
 - Loop exits without convergence → `tolerance_not_reached` error
   citing the last residual and `max_attempts`.
 

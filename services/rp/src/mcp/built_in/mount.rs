@@ -2,12 +2,14 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -72,6 +74,24 @@ impl McpHandler {
     pub(crate) async fn slew(
         &self,
         Parameters(params): Parameters<SlewParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Build the sink once and delegate so the testable body
+        // doesn't have to take a real `RequestContext` (rmcp's
+        // `Peer::new` is `pub(crate)`, so unit tests can't build
+        // a peer themselves).
+        let sink = ProgressSink::from_request_context(&ctx);
+        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        self.slew_inner(params, emitter).await
+    }
+
+    /// Body of the `slew` MCP tool, split out so unit tests can pass
+    /// `None` for the progress emitter without constructing a real
+    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp 1.7).
+    pub(crate) async fn slew_inner(
+        &self,
+        params: SlewParams,
+        progress: Option<&dyn ProgressEmitter>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order (ra → dec → settle_after) so
         // the error message points at the first missing or out-of-range
@@ -109,7 +129,7 @@ impl McpHandler {
             },
         };
 
-        match self.do_slew_blocking(ra, dec, settle_after).await {
+        match self.do_slew_blocking(ra, dec, settle_after, progress).await {
             Ok((actual_ra, actual_dec)) => Ok(tool_success!({
                 "actual_ra": actual_ra,
                 "actual_dec": actual_dec,
@@ -226,9 +246,24 @@ impl McpHandler {
     )]
     pub(crate) async fn park(
         &self,
-        Parameters(_params): Parameters<ParkParams>,
+        Parameters(params): Parameters<ParkParams>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self.do_park_blocking().await {
+        let sink = ProgressSink::from_request_context(&ctx);
+        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        self.park_inner(params, emitter).await
+    }
+
+    /// Body of the `park` MCP tool, split out so unit tests can pass
+    /// `None` for the progress emitter without constructing a real
+    /// rmcp `Peer`. Takes the (empty) `ParkParams` for shape parity
+    /// with the other `_inner` helpers.
+    pub(crate) async fn park_inner(
+        &self,
+        _params: ParkParams,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.do_park_blocking(progress).await {
             Ok(()) => Ok(tool_success!({})),
             Err(e) => Ok(tool_error!("{}", e)),
         }
