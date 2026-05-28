@@ -140,7 +140,22 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
     # service name.
     rustc_env = {"CARGO_PKG_NAME": "rp"},
-    tags = ["bdd"],
+    # OmniSim allows only one instance per host: ASCOM.Alpaca.Simulators'
+    # Program.cs guards startup with a machine-global named Mutex
+    # (`new Mutex(false, "Global\\{ApplicationGUID}")`) keyed on a fixed GUID, not
+    # the port — so a second instance can't start even on a different port; it
+    # hands its args to the first over a named pipe and exits. Under Bazel every
+    # test runs as a parallel action on one machine (Cargo CI instead isolates each
+    # BDD service into its own job), so rp:bdd and calibrator-flats:bdd — the only
+    # two OmniSim-spawning targets — would otherwise race for that single instance:
+    # whichever spawns OmniSim first owns it (the process-wrapper sandbox +
+    # PR_SET_PDEATHSIG reap it when that action ends) while the other reuses it over
+    # HTTP, then loses it mid-run when the owner finishes — the "connection refused"
+    # cascade that fails the loud-reset before-hook for every remaining scenario.
+    # `resources:omnisim:1` makes the two mutually exclusive (the `omnisim` pool is
+    # sized 1 in .bazelrc) while keeping them parallel to non-OmniSim tests. Any new
+    # OmniSim-spawning BDD target MUST also carry this tag.
+    tags = ["bdd", "resources:omnisim:1"],
     use_libtest_harness = False,
     deps = [":rp_lib", "//crates/bdd-infra:bdd-infra_rp_harness"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(
         normal = True,

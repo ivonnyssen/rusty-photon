@@ -273,6 +273,40 @@ batch; each adds a wrinkle worth noting:
   OmniSim (`OMNISIM_PATH`, forwarded by `build:ci --test_env`) at runtime, so a
   local run requires OmniSim installed.
 
+#### OmniSim is single-instance per host — serialize the two consumers (added 2026-05-27)
+
+Exactly two BDD targets spawn OmniSim: `//services/rp:bdd` and
+`//services/calibrator-flats:bdd` (the only two that depend on
+`bdd-infra_rp_harness`). The other ten BDD suites do not touch OmniSim.
+
+OmniSim enforces a **single instance per host**: `ASCOM.Alpaca.Simulators`'
+`Program.cs` guards startup with a machine-global named `Mutex`
+(`new Mutex(false, "Global\\{ApplicationGUID}")`) keyed on a fixed GUID — *not*
+the port — so a second instance cannot start even on a different port; it hands
+its arguments to the running instance over a named pipe and exits. (This is why
+`OmniSimHandle::get_or_spawn` reuses a healthy instance on the fixed port 32323
+rather than starting its own.)
+
+Under Cargo CI this is invisible because each BDD service runs as its own job on
+its own machine. Under Bazel all targets run as parallel actions on **one**
+machine, so `rp:bdd` and `calibrator-flats:bdd` would race for the single
+OmniSim: whichever spawns it first owns it (reaped by the process-wrapper sandbox
++ `PR_SET_PDEATHSIG` when that test action ends), the other reuses it over HTTP,
+then loses it mid-run when the owner finishes — surfacing as a "connection
+refused" cascade through the loud-reset `before` hook (#172) for every remaining
+scenario. This is what failed the shadow `bazel test (BDD)` step on all three
+OS, and (as a hang under instrumentation) the `bazel coverage` job.
+
+Fix: both targets carry `tags = ["resources:omnisim:1"]`, and `.bazelrc` defines
+the matching pool `test --local_resources=omnisim=1`. Bazel then never schedules
+the two concurrently, while leaving them parallel to every non-OmniSim test —
+strictly better than the `exclusive` tag (which would also serialize them against
+the other ten BDD suites). The pool must be defined or the tagged tests fail
+loudly (`Resource omnisim is not being tracked by the resource manager`), so the
+race can never silently return by forgetting a flag. `--local_resources` is a
+scheduling-only flag and does not enter action keys, so it does not perturb the
+remote cache. **Any new OmniSim-spawning BDD target MUST carry the same tag.**
+
 ## Coverage under Bazel (shadow, added 2026-05-26)
 
 A separate shadow-mode workflow, `.github/workflows/bazel-coverage.yml`, runs

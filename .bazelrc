@@ -34,6 +34,20 @@ test --keep_going
 # Use `bazel test ... --test_tag_filters=''` to include everything.
 test --test_tag_filters=-requires-cargo,-bdd,-conformu
 
+# OmniSim allows only one instance per host (ASCOM.Alpaca.Simulators guards
+# startup with a machine-global named Mutex keyed on a fixed GUID, not the port).
+# The two BDD targets that spawn it (//services/rp:bdd,
+# //services/calibrator-flats:bdd) are tagged `resources:omnisim:1`; this defines
+# the matching pool with capacity 1 so Bazel never schedules those two
+# concurrently — while leaving them free to run in parallel with every
+# non-OmniSim test (unlike the `exclusive` tag, which would serialize against
+# everything). The pool MUST be defined or those tests fail loudly with "Resource
+# omnisim is not being tracked by the resource manager"; defining it here on
+# `test` (inherited by `coverage`) keeps it present for every test invocation,
+# local and CI. --local_resources is a scheduling-only flag, so it does not enter
+# action keys and never perturbs the remote cache.
+test --local_resources=omnisim=1
+
 # --- Rust toolchain --------------------------------------------------------
 
 # Use the stable Rust toolchain channel for Bazel builds.

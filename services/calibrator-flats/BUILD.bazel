@@ -81,7 +81,13 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
     # be the service name (rules_rust would otherwise use the crate name "bdd").
     rustc_env = {"CARGO_PKG_NAME": "calibrator-flats"},
-    tags = ["bdd"],
+    # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel. OmniSim
+    # allows only one instance per host (machine-global mutex keyed on a fixed GUID),
+    # so the two OmniSim-spawning BDD targets (rp:bdd, calibrator-flats:bdd) must
+    # never run concurrently or they race for that single instance and one loses
+    # OmniSim mid-run. The `omnisim` resource pool (sized 1 in .bazelrc) serializes
+    # them against each other while leaving them parallel to non-OmniSim tests.
+    tags = ["bdd", "resources:omnisim:1"],
     use_libtest_harness = False,
     deps = [
         ":calibrator-flats_lib",
