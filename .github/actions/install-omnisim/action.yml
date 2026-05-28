@@ -2,19 +2,29 @@ name: Install ASCOM OmniSim
 description: Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests
 
 inputs:
+  repo:
+    description: GitHub repo to download OmniSim release assets from
+    required: false
+    # Patched fork carrying the issue #326 TelescopeHardware locking fix.
+    # Set to "ASCOMInitiative/ASCOM.Alpaca.Simulators" to revert to upstream.
+    default: "ivonnyssen/ASCOM.Alpaca.Simulators"
   version:
     description: OmniSim release version
     required: false
-    default: "v0.5.0"
+    default: "v0.5.0-326.1"
 
 runs:
   using: composite
   steps:
-    # Per-OS table. SHA-256 values pinned against OmniSim v0.5.0
-    # release assets on GitHub. Bumping `inputs.version` requires
-    # refreshing every SHA below — the verify step fails closed on
-    # any mismatch. Same shape and same supply-chain reasoning as
-    # the install-astap action.
+    # Per-OS table. SHA-256 values are pinned against the OmniSim
+    # release assets named below. They currently point at the patched
+    # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
+    # tag v0.5.0-326.1), which carries the issue #326 TelescopeHardware
+    # locking fix (ivonnyssen/rusty-photon#326). To revert to upstream,
+    # set `repo` to ASCOMInitiative/ASCOM.Alpaca.Simulators and `version`
+    # back to v0.5.0, then refresh every SHA below. Bumping either input
+    # requires refreshing the SHAs — the verify step fails closed on any
+    # mismatch. Same shape and supply-chain reasoning as install-astap.
     - name: Determine asset name and pinned SHA-256
       id: asset
       shell: bash
@@ -22,23 +32,23 @@ runs:
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)
             ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="5d9dd3ecdaefb3b36ffe17223172e656a7920c7830185f19390f5d84f051d625"
+            SHA256="577fd6f40975e429b0745de1f30c7a2103c2cc73a455e2807099b87e110c7c64"
             ;;
           Linux-ARM64)
             ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="7b55ebaeb662046eca6ed7dcbb0947d322894fb2ce7eedca6554f695aa160195"
+            SHA256="a3ac498890bf00e857421d6171e78a88fb2d1c4d2fba570f7ec2d8fa016c5373"
             ;;
           macOS-ARM64)
             ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="ca8069a24e2e7c2049db15b98069308230c4d0cc15c6e41a2ea8c2cff0ad4893"
+            SHA256="cefc61f2b79317e56ae210dc285e8bfad7f9d6838be83641ab1ca6abe7cc9666"
             ;;
           macOS-X64)
             ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="2b6724b033130862834dc3f1816e18ba7c7cdf5d8929609dff468cbc60cad9fa"
+            SHA256="423c1e84f186357d3f24001410686f1f0d707d20f51accfa25d80903bf7674c3"
             ;;
           Windows-X64)
             ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="f808dc0d9c8d5cbfaa8b03ceaad64454a3a52728e2602795c397d847fbc367a0"
+            SHA256="dea2b15d69a248a4677e45e9157bd6a14a2bb77b6967334506d3dabde0db512d"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
@@ -65,7 +75,7 @@ runs:
       shell: bash
       run: |
         mkdir -p omnisim
-        URL="https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/download/${{ inputs.version }}/${{ steps.asset.outputs.asset }}"
+        URL="https://github.com/${{ inputs.repo }}/releases/download/${{ inputs.version }}/${{ steps.asset.outputs.asset }}"
         echo "Downloading $URL"
         curl -fsSL -o "omnisim/${{ steps.asset.outputs.asset }}" "$URL"
 
