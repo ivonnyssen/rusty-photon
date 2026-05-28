@@ -357,4 +357,170 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "leftover temp files present");
     }
+
+    #[test]
+    fn read_file_value_read_error_when_path_traverses_a_file() {
+        // A path component that is a regular file makes the OS return ENOTDIR
+        // (not NotFound), which must surface as `Read` rather than the default.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let path = blocker.join("c.json");
+
+        let err = read_file_value(&path, &json!({})).unwrap_err();
+        assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_write_error_surfaces_when_dir_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        // Readable+executable (so the absent file reads as NotFound → default),
+        // but not writable (so the persist step fails).
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let path = ro.join("c.json");
+
+        let result = materialize_identity(
+            &path,
+            &json!({ "d": { "unique_id": "" } }),
+            &["/d/unique_id"],
+        );
+
+        // Restore write perms first so the tempdir cleanup always succeeds.
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        match result {
+            Err(ConfigError::Write { .. }) => {}
+            // Running as root bypasses the directory mode, so the write succeeds
+            // and there is nothing to assert; CI runs as a normal user.
+            Ok(_) => {}
+            Err(other) => panic!("expected ConfigError::Write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn materialize_treats_non_string_id_as_empty() {
+        // A hand-edited config with a non-string id is treated as missing and reminted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"d":{"unique_id":123}}"#).unwrap();
+
+        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        assert_eq!(out.filled, vec!["/d/unique_id".to_string()]);
+        let id = out
+            .value
+            .pointer("/d/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn materialize_treats_whitespace_id_as_empty() {
+        // Whitespace-only ids are blank after trimming and so are reminted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{\"d\":{\"unique_id\":\"   \"}}").unwrap();
+
+        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        assert_eq!(out.filled, vec!["/d/unique_id".to_string()]);
+        let id = out
+            .value
+            .pointer("/d/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn materialize_replaces_non_object_root() {
+        // A corrupt file whose root is an array (not an object) is rebuilt into
+        // the object scaffold the pointer needs.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "[1,2,3]").unwrap();
+
+        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let id = on_disk
+            .pointer("/d/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn materialize_replaces_non_object_at_pointer_parent() {
+        // The parent of the pointer exists but is a scalar; it is replaced with
+        // an object so the id can be inserted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"device":"oops"}"#).unwrap();
+
+        let out = materialize_identity(&path, &json!({}), &["/device/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let id = on_disk
+            .pointer("/device/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn materialize_honors_rfc6901_escaped_tokens() {
+        // `~1` decodes to `/`, so the pointer addresses a key literally named "a/b".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+
+        let out = materialize_identity(&path, &json!({}), &["/a~1b/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let id = on_disk
+            .pointer("/a~1b/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn insert_at_pointer_empty_pointer_is_noop() {
+        // An empty pointer has no tokens, so the value is left untouched.
+        let mut v = json!({ "a": 1 });
+        insert_at_pointer(&mut v, "", json!("x"));
+        assert_eq!(v, json!({ "a": 1 }));
+    }
+
+    #[test]
+    fn save_falls_back_to_cwd_for_bare_filename() {
+        // A bare filename has an empty parent; `save` must fall back to the CWD.
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let result = save(Path::new("bare.json"), &json!({ "k": "v" }));
+
+        // Restore the CWD before asserting so a failure cannot strand sibling tests.
+        std::env::set_current_dir(&prev).unwrap();
+        result.unwrap();
+
+        let written = dir.path().join("bare.json");
+        let back: Value =
+            serde_json::from_str(&std::fs::read_to_string(&written).unwrap()).unwrap();
+        assert_eq!(back, json!({ "k": "v" }));
+    }
 }
