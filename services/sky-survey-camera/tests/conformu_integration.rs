@@ -9,8 +9,6 @@
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::Camera;
-use ascom_alpaca::test::run_conformu_tests;
 use bdd_infra::ServiceHandle;
 use sky_survey_camera::mock::synthetic_fits;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -21,7 +19,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
@@ -87,16 +84,17 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         handle.port
     );
 
-    let result = run_conformu_tests::<dyn Camera>(&handle.base_url, 0).await;
+    let result = bdd_infra::run_conformu("camera", &handle.base_url, 0, None)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
-    match &result {
-        Ok(_) => {
+    match result {
+        bdd_infra::ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipped");
+        }
+        bdd_infra::ConformuRun::Passed => {
             println!("ConformU compliance tests PASSED");
             println!("All ASCOM Alpaca Camera compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU compliance tests FAILED");
-            println!("Error: {}", e);
         }
     }
 
@@ -105,7 +103,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     handle.stop().await;
     let _ = temp_dir.close();
 
-    result?;
     Ok(())
 }
 

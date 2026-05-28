@@ -93,13 +93,59 @@ rust_test(
     ),
 )
 
+# ConformU compliance test: spawns the mock-feature binary and drives
+# the ConformU CLI against it (rotator device, then switch device).
+# CONFORMU_PATH must be set in the environment for the run to be active;
+# without it the helper returns ConformuRun::Skipped and the test passes.
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "conformu",
+    ],
+    data = [":pa-falcon-rotator_mock"],
+    edition = "2021",
+    env = {
+        "PA_FALCON_ROTATOR_BINARY": "$(rootpath :pa-falcon-rotator_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
+    tags = ["conformu"],
+    deps = [
+        ":pa-falcon-rotator_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Mock-feature binary used by the conformu_integration test above. The BDD
+# tests run in-process (no child spawn), but ConformU requires an external
+# binary to connect to, so we need a real executable here.
+rust_binary(
+    name = "pa-falcon-rotator_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
+    deps = [":pa-falcon-rotator_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
 # BDD cucumber tests run **in-process**: each scenario builds a `BoundServer`
 # on an ephemeral port and drives it via in-process Alpaca HTTP clients.
-# There is no child-process spawn, so unlike the ppba-driver / qhy-focuser
-# BUILDs there is no `pa-falcon-rotator_mock` binary target and no
-# `PA_FALCON_ROTATOR_BINARY` env entry — both would be unused runfile
-# wiring. `MockSerialPortFactory` is pulled in via the `_lib_mock`
-# dependency below.
+# `MockSerialPortFactory` is pulled in via the `_lib_mock` dependency below.
 rust_library(
     name = "pa-falcon-rotator_lib_mock",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),

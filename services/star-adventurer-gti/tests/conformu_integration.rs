@@ -6,23 +6,19 @@
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::telescope::Telescope;
-use ascom_alpaca::test::ConformUTestBuilder;
-use bdd_infra::ServiceHandle;
+use bdd_infra::{run_conformu, ConformuRun, ServiceHandle};
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
 
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
-async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
     let _ = fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_test_writer()
         .try_init();
@@ -115,32 +111,28 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         handle.port
     );
 
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn Telescope>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
-    }
+    let result = run_conformu(
+        "telescope",
+        &handle.base_url,
+        0,
+        Some(&conformu_settings_path),
+    )
     .await;
-
-    match &result {
-        Ok(_) => {
-            println!("ConformU compliance tests PASSED");
-            println!("All ASCOM Alpaca Telescope compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU compliance tests FAILED");
-            println!("Error: {e}");
-        }
-    }
-
-    println!("::endgroup::");
 
     handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
-    result?;
+    println!("::endgroup::");
+
+    match result? {
+        ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipped");
+        }
+        ConformuRun::Passed => {
+            println!("ConformU compliance tests PASSED");
+            println!("All ASCOM Alpaca Telescope compliance requirements met");
+        }
+    }
+
     Ok(())
 }

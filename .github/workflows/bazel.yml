@@ -31,7 +31,14 @@ jobs:
     # Action-graph change detection replaces cargo-rail. Bazel figures out
     # which targets actually changed and only rebuilds those; everything
     # else is a cache hit.
-    timeout-minutes: 30
+    #
+    # 40 (not 30): with the OmniSim race fixed (see services/rp/BUILD.bazel),
+    # rp:bdd now runs to full completion (~12 min on Windows) instead of failing
+    # fast partway through, which lengthens the BDD step on the slower Windows
+    # runner. The `omnisim` resource pool serializes rp:bdd only against
+    # calibrator-flats:bdd — both stay parallel to the other ~10 BDD targets — so
+    # the increase is modest; 40 leaves headroom for a cold-cache first run.
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash

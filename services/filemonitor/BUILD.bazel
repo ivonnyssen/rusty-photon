@@ -3,11 +3,18 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
+# service-lifecycle: filemonitor enables its `scm` feature under
+# [target.'cfg(windows)'.dependencies], which compiles the Windows Service
+# Control Manager path (mod scm + the windows-service crate). crate_features is
+# compile-time in Bazel, so select the scm-feature library variant on Windows
+# and the feature-free one everywhere else (matching `cargo build` per platform).
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-tls:rp-tls",
-    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
-]
+] + select({
+    "@platforms//os:windows": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle_scm"],
+    "//conditions:default": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle"],
+})
 
 rust_library(
     name = "filemonitor_lib",
@@ -75,8 +82,29 @@ rust_test(
     ),
 )
 
-# conformu_integration: gated by cfg(feature = "conformu"), also needs an
-# external ConformU tool runtime. Deferred.
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["conformu"],
+    data = [":filemonitor"],
+    edition = "2021",
+    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)"},
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "filemonitor"},
+    tags = ["conformu"],
+    deps = [":filemonitor_lib", "//crates/bdd-infra:bdd-infra_conformu"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
 
 # BDD cucumber test. harness=false (custom cucumber main via bdd_main!) so
 # use_libtest_harness must be False. BDD_PACKAGE_DIR tells bdd_main! to

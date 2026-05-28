@@ -10,7 +10,7 @@ description = "File monitoring service for Rusty Photon"
 
 [features]
 default = []
-conformu = ["ascom-alpaca/test"]
+conformu = []
 
 [lints]
 workspace = true
@@ -40,7 +40,7 @@ tokio-util = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 
 [package.metadata.conformu]
-command = "cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture"
+command = "cargo test -p filemonitor --features conformu --test conformu_integration -- --nocapture"
 
 [package.metadata.miri]
 command = "cargo miri test -p filemonitor"
@@ -88,7 +88,7 @@ post_uninstall_script = "systemctl daemon-reload"
 require-sh = true
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
 tokio-test = { workspace = true }
 proptest = { workspace = true }
 tracing-subscriber = { workspace = true }

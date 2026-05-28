@@ -120,6 +120,12 @@ pub mod rp_harness;
 #[cfg(feature = "rp-harness")]
 pub mod sky_survey_camera_harness;
 
+#[cfg(feature = "conformu")]
+pub mod conformu;
+
+#[cfg(feature = "conformu")]
+pub use conformu::{run_conformu, ConformuRun};
+
 use std::process::Stdio;
 use std::time::Duration;
 

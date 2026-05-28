@@ -11,8 +11,6 @@
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::{Rotator, Switch};
-use ascom_alpaca::test::ConformUTestBuilder;
 use bdd_infra::ServiceHandle;
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -63,14 +61,12 @@ fn base_conformu_settings() -> serde_json::Value {
 }
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
     let _ = fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_test_writer()
         .try_init();
@@ -127,7 +123,8 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
             .to_str()
             .expect("conformu temp path must be UTF-8"),
     )
-    .await?;
+    .await
+    .map_err(Box::<dyn std::error::Error>::from)?;
 
     println!("::group::ConformU Rotator Compliance Test Results");
     println!(
@@ -135,48 +132,40 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
         handle.port
     );
 
-    // Capture both builder-construction and run-time errors so `handle.stop()`
-    // below is unconditional and the service gets a graceful SIGTERM with a
-    // chance to flush coverage data.
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn Rotator>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
-    }
-    .await;
+    let result = bdd_infra::run_conformu(
+        "rotator",
+        &handle.base_url,
+        0,
+        Some(&conformu_settings_path),
+    )
+    .await
+    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
-    match &result {
-        Ok(_) => {
+    handle.stop().await;
+    std::fs::remove_dir_all(&test_dir).ok();
+
+    match result? {
+        bdd_infra::ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipping rotator ConformU run");
+        }
+        bdd_infra::ConformuRun::Passed => {
             println!("ConformU Rotator compliance tests PASSED");
             println!("All ASCOM Alpaca Rotator compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU Rotator compliance tests FAILED");
-            println!("Error: {}", e);
         }
     }
 
     println!("::endgroup::");
 
-    handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
-
-    result?;
     Ok(())
 }
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
 async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
 
     let _ = fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_test_writer()
         .try_init();
@@ -241,7 +230,8 @@ async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Er
             .to_str()
             .expect("conformu temp path must be UTF-8"),
     )
-    .await?;
+    .await
+    .map_err(Box::<dyn std::error::Error>::from)?;
 
     println!("::group::ConformU Switch Compliance Test Results");
     println!(
@@ -249,32 +239,25 @@ async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Er
         handle.port
     );
 
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn Switch>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
+    let result =
+        bdd_infra::run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings_path))
             .await
-            .map_err(Into::into)
-    }
-    .await;
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
-    match &result {
-        Ok(_) => {
+    handle.stop().await;
+    std::fs::remove_dir_all(&test_dir).ok();
+
+    match result? {
+        bdd_infra::ConformuRun::Skipped => {
+            println!("CONFORMU_PATH not set; skipping switch ConformU run");
+        }
+        bdd_infra::ConformuRun::Passed => {
             println!("ConformU Switch compliance tests PASSED");
             println!("All ASCOM Alpaca Switch compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU Switch compliance tests FAILED");
-            println!("Error: {}", e);
         }
     }
 
     println!("::endgroup::");
 
-    handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
-
-    result?;
     Ok(())
 }

@@ -561,9 +561,11 @@ mod tests {
 
     /// Path to a file that exists on disk, used as a stand-in executable path.
     /// The mock spawner never actually runs this, but `get_executable_path`
-    /// checks that the file exists.
+    /// checks that the file exists. Use the running test binary (always present
+    /// in both Cargo's target/ dir and Bazel's test sandbox) rather than
+    /// CARGO_MANIFEST_DIR/Cargo.toml, which Bazel does not stage at runtime.
     fn dummy_executable_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+        std::env::current_exe().expect("current_exe should be available in tests")
     }
 
     fn create_test_config() -> Phd2Config {

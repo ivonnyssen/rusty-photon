@@ -26,12 +26,27 @@ test --test_output=errors
 test --keep_going
 
 # Tests tagged `requires-cargo` need a real Cargo invocation (they test
-# cargo-integration code in bdd-infra / phd2-guider). Tests tagged `bdd` spin
-# up service binaries and are slow (~150 s total). Both are excluded by
-# default; the existing Cargo CI still exercises `requires-cargo` tests, and
-# BDD tests can be run explicitly with `bazel test --test_tag_filters=bdd`.
+# cargo-integration code in bdd-infra). Tests tagged `bdd` spin up service
+# binaries and are slow (~150 s total). Tests tagged `conformu` drive the
+# external ConformU tool against a service binary and self-skip unless
+# CONFORMU_PATH is set. All three are excluded by default; run BDD with
+# `bazel test --test_tag_filters=bdd` and conformu with `bazel test --config=conformu`.
 # Use `bazel test ... --test_tag_filters=''` to include everything.
-test --test_tag_filters=-requires-cargo,-bdd
+test --test_tag_filters=-requires-cargo,-bdd,-conformu
+
+# OmniSim allows only one instance per host (ASCOM.Alpaca.Simulators guards
+# startup with a machine-global named Mutex keyed on a fixed GUID, not the port).
+# The two BDD targets that spawn it (//services/rp:bdd,
+# //services/calibrator-flats:bdd) are tagged `resources:omnisim:1`; this defines
+# the matching pool with capacity 1 so Bazel never schedules those two
+# concurrently — while leaving them free to run in parallel with every
+# non-OmniSim test (unlike the `exclusive` tag, which would serialize against
+# everything). The pool MUST be defined or those tests fail loudly with "Resource
+# omnisim is not being tracked by the resource manager"; defining it here on
+# `test` (inherited by `coverage`) keeps it present for every test invocation,
+# local and CI. --local_resources is a scheduling-only flag, so it does not enter
+# action keys and never perturbs the remote cache.
+test --local_resources=omnisim=1
 
 # --- Rust toolchain --------------------------------------------------------
 
@@ -122,6 +137,14 @@ test:ci --test_summary=terse
 # stable across push vs pull_request events.
 build:ci --test_env=OMNISIM_PATH
 
+# Forward CONFORMU_PATH the same way and for the same reason: on build:ci so the
+# --test_env SET is identical across every CI invocation sharing one server
+# (build, fast, BDD, and any `--config=conformu` run) — it never changes between
+# steps, so it never discards the analysis cache. Forwarded by name; unset in
+# build/fast/BDD (harmless) and set only by the conformu workflow.
+build:ci --test_env=CONFORMU_PATH
+
+
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
 # developers don't accidentally point at the shared cache. CI jobs combine:
 # --config=ci --config=remote-cache.
@@ -132,6 +155,18 @@ build:ci --test_env=OMNISIM_PATH
 # deploy steps: tools/bazel-cache-worker/. For local builds, override this in a
 # gitignored user.bazelrc to point at a LAN bazel-remote instead.
 build:remote-cache --remote_cache=https://cache.rustyphoton.space
+
+# --- Conformu config -------------------------------------------------------
+
+# Run the per-service ConformU suites under Bazel:
+#   CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //...
+# This config just SELECTS the conformu-tagged tests. CONFORMU_PATH itself is
+# forwarded on build:ci (above) so the CI --test_env set stays identical across
+# steps; the --test_env here is only so a local `--config=conformu` run (without
+# --config=ci) still passes it through. bdd_infra::run_conformu self-skips when
+# CONFORMU_PATH is unset.
+test:conformu --test_tag_filters=conformu
+test:conformu --test_env=CONFORMU_PATH
 
 # --- Coverage config -------------------------------------------------------
 
@@ -180,7 +215,9 @@ coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services
 coverage:coverage --combined_report=lcov
-coverage:coverage --test_tag_filters=-requires-cargo
+# conformu is excluded from coverage too: it drives the external ConformU tool
+# (not instrumented) and only runs when CONFORMU_PATH is set.
+coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 
 # --- Local overrides -------------------------------------------------------
 

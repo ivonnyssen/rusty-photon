@@ -1,5 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
@@ -12,6 +12,28 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
+)
+
+# Windows SCM variant. filemonitor enables this crate's `scm` feature under
+# [target.'cfg(windows)'.dependencies], which gates `mod scm` (Windows Service
+# Control Manager dispatch) behind `cfg(all(windows, feature = "scm"))` and pulls
+# in the windows-service crate. crate_features is compile-time in Bazel, so this
+# is a second library compiled with `scm` on; filemonitor's BUILD selects it on
+# Windows. windows-service is added only on Windows (on other targets `mod scm`
+# stays cfg-excluded, so the feature flag is harmless and the crate isn't linked).
+rust_library(
+    name = "rusty-photon-service-lifecycle_scm",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = ["scm"],
+    crate_name = "rusty_photon_service_lifecycle",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True) + select({
+        "@platforms//os:windows": ["@cr//:windows-service"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(
@@ -30,4 +52,14 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# Doctests. rusty-photon-service-lifecycle is the only workspace crate with
+# runnable (`no_run`) doctests today — the ServiceRunner usage examples in
+# lib.rs and runner.rs. `cargo test --all-features --doc` compiles+links them
+# (a required CI gate); rust_doc_test is the Bazel equivalent, since rules_rust
+# runs no doctests unless a rust_doc_test target declares them.
+rust_doc_test(
+    name = "rusty-photon-service-lifecycle_doc_test",
+    crate = ":rusty-photon-service-lifecycle",
 )
