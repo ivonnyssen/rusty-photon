@@ -359,15 +359,15 @@ mod tests {
     }
 
     #[test]
-    fn read_file_value_read_error_when_path_traverses_a_file() {
-        // A path component that is a regular file makes the OS return ENOTDIR
-        // (not NotFound), which must surface as `Read` rather than the default.
+    fn read_file_value_read_error_when_path_is_a_directory() {
+        // Reading a *directory* (rather than a file) fails with a non-NotFound
+        // error on every platform — `IsADirectory` on unix, access-denied on
+        // Windows — so it must surface as `Read`, not the default. (A file in
+        // the middle of the path is ENOTDIR on unix but NotFound on Windows, so
+        // a directory is the portable way to force a non-NotFound read error.)
         let dir = tempfile::tempdir().unwrap();
-        let blocker = dir.path().join("blocker");
-        std::fs::write(&blocker, "x").unwrap();
-        let path = blocker.join("c.json");
 
-        let err = read_file_value(&path, &json!({})).unwrap_err();
+        let err = read_file_value(dir.path(), &json!({})).unwrap_err();
         assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     }
 
