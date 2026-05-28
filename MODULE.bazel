@@ -18,7 +18,7 @@ module(
 
 # --- Core Bazel rules ------------------------------------------------------
 
-bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 
 # --- Rust toolchain --------------------------------------------------------
