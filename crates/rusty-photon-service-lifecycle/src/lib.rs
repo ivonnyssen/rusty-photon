@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Unified service lifecycle for Rusty Photon binaries.
 //!
 //! Every long-running service in this workspace needs the same three things:

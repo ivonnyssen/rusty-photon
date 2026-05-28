@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! plate-solver — rp-managed service wrapping the ASTAP CLI.
 //!
 //! See `docs/services/plate-solver.md` for the design contract and

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Embedded Messier + NGC + IC deep-sky object catalog with
 //! case- and whitespace-insensitive name resolution.
 //!
@@ -265,6 +266,7 @@ fn levenshtein(a: &str, b: &str, cap: usize) -> usize {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;

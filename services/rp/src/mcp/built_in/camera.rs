@@ -46,16 +46,32 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CameraIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
+        let (cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
 
-        let max_adu = match cam.max_adu().await {
-            Ok(v) => v,
-            Err(e) => return Ok(tool_error!("failed to read max_adu: {}", e)),
+        // `max_adu` and the sensor dimensions are invariant physical-sensor
+        // properties cached on `CameraEntry` at connect time — no live
+        // Alpaca round-trip per call. `None` here means the connect-time
+        // read failed; surface as a tool_error so consumers can't mistake
+        // an absent value for a successful zero. `bin` and `exposure_range`
+        // stay live: binning is operator-mutable and exposure range can
+        // shift on driver reconfig, so neither belongs in the connect-time
+        // cache.
+        let max_adu = match cam_entry.max_adu {
+            Some(v) => v,
+            None => {
+                return Ok(tool_error!(
+                    "max_adu unavailable for this camera (connect-time read failed)"
+                ))
+            }
         };
 
-        let (sensor_x, sensor_y) = match cam.camera_size().await {
-            Ok(size) => (size[0], size[1]),
-            Err(e) => return Ok(tool_error!("failed to read sensor size: {}", e)),
+        let (sensor_x, sensor_y) = match (cam_entry.sensor_width_px, cam_entry.sensor_height_px) {
+            (Some(x), Some(y)) => (x, y),
+            _ => {
+                return Ok(tool_error!(
+                    "sensor size unavailable for this camera (connect-time read failed)"
+                ))
+            }
         };
 
         let (bin_x, bin_y) = match cam.bin().await {

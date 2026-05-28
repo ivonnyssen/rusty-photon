@@ -168,13 +168,16 @@ The document accumulates data as it flows through the system.
 ```
 
 `max_adu` carries the camera's `MaxADU` capability at the time of
-capture. Read once per exposure from `cam.max_adu()` and persisted in
-the sidecar so the file is self-describing — the disk-fallback
-rehydration path in [Image and Document Cache](#image-and-document-cache)
-uses it to choose the `CachedPixels::U16` vs `I32` variant without
-needing the originating camera to be connected. `null` (omitted on
-serialize) when the read failed at capture time; in that case the
-cache insert is skipped and the entry serves from disk on demand.
+capture. Read once per connection (`connect_camera` stashes it on
+`CameraEntry` along with `pixel_size_*` and `camera_*_size` — they are
+all invariant physical-sensor properties that cannot change for the
+life of the connection) and persisted in the sidecar so the file is
+self-describing — the disk-fallback rehydration path in
+[Image and Document Cache](#image-and-document-cache) uses it to choose
+the `CachedPixels::U16` vs `I32` variant without needing the originating
+camera to be connected. `null` (omitted on serialize) when the connect-
+time read failed; in that case the cache insert is skipped on every
+capture from that camera and the entry serves from disk on demand.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
@@ -185,9 +188,11 @@ solve. Built at capture time from three sources:
    ASCOM Alpaca property — even the optional `Telescope.FocalLength` ignores
    anything screwed in front of the camera.
 2. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
-   `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns).
+   `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns),
+   cached on `CameraEntry` at connect time.
 3. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
-   `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`).
+   `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`),
+   cached on `CameraEntry` at connect time.
 
 Pixel scale and FOV are derived (`fov_width_deg` corresponds to
 `sensor_width_px`; height likewise):
@@ -199,9 +204,11 @@ fov_deg                       = pixel_scale_arcsec_per_pixel × sensor_size_px /
 
 The block is omitted (serializes as absent, not `null`) when any of
 its inputs is unavailable: `focal_length_mm` was not configured for
-this camera, the camera's `pixel_size_*` read failed, or the camera's
-`camera_*_size` read failed. Each missing input is logged at `debug!`.
-Capture continues — `optics` is auxiliary metadata, not gating.
+this camera, the camera's `pixel_size_*` read failed at connect time,
+or the camera's `camera_*_size` read failed at connect time. Each
+missing input is logged at `debug!` (at connect time for the cached
+fields; at capture time for the missing focal length). Capture
+continues — `optics` is auxiliary metadata, not gating.
 
 Per-frame variation (binning swaps, focal reducers screwed in
 mid-session) is out of scope. The persisted block reflects the
@@ -1248,25 +1255,29 @@ that genuinely emit values outside `u16` range, without a refactor.
 
 Selection policy at `capture` time:
 
-- Read the camera's `max_adu` (ASCOM `ICameraVx::MaxADU`) once per
-  capture, immediately after pixel download. The result drives both
-  the cache variant choice and the `max_adu` field on the resulting
-  `ExposureDocument` — one Alpaca call, two consumers.
+- Read `max_adu` from the cached `CameraEntry.max_adu` populated by
+  `connect_camera` (one Alpaca round-trip per connection, not per
+  exposure — see "Tenet 1: don't re-fetch invariant data"). The
+  cached value drives both the cache variant choice and the `max_adu`
+  field on the resulting `ExposureDocument`.
 - If `max_adu ≤ 65535`: narrow the i32 array returned by
   `ascom-alpaca` to `u16` and store as `CachedPixels::U16`. The
   narrow clamps to `[0, max_adu]` before casting — guards against a
   buggy driver returning out-of-range values.
 - Otherwise: store as `CachedPixels::I32` unchanged.
-- If `max_adu` cannot be read: skip the cache insert and persist
-  `max_adu: None` on the document. The FITS file plus the sidecar
-  remain the durable record; the next capture re-reads independently.
+- If `max_adu` is `None` on the entry (connect-time read failed): skip
+  the cache insert and persist `max_adu: None` on the document. The
+  FITS file plus the sidecar remain the durable record. The next
+  reconnect re-reads independently.
 
-The decision is per-frame in mechanism (one read per capture) and
-per-camera in effect (the same camera always reports the same value).
-The per-frame call also localizes transient Alpaca failures to a
-single capture rather than denying the whole session — a connect-time
-stash would have a session-wide blast radius on connect-time read
-failure.
+The decision is per-capture in mechanism (consulted at every
+exposure) but the underlying value is per-connection — `MaxADU` is a
+physical property of the sensor and cannot change while the device
+stays connected. A connect-time read failure therefore degrades the
+whole session for that camera until reconnect, in exchange for cutting
+five Alpaca property round-trips out of every capture (mitigates the
+load pattern that triggers OmniSim's per-capture `GC.Collect` ↔
+telescope-timer-thread race).
 
 On disk-fallback rehydration (cache miss, document/pixels read from
 the FITS+sidecar pair), the variant choice comes from the sidecar's

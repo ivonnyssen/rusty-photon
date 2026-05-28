@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! HTTP client for the `plate-solver` rp-managed service.
 //!
 //! Wraps the wrapper's frozen HTTP contract (`POST /api/v1/solve`)
@@ -186,6 +187,7 @@ impl PlateSolveClient for PlateSolverClient {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;

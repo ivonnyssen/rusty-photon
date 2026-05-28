@@ -168,6 +168,7 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
