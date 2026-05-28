@@ -95,7 +95,60 @@ rust_test(
     ),
 )
 
-# conformu_integration: cfg(feature = "conformu"); deferred.
+# CLI i18n end-to-end: spawns the built binary with locale env vars and asserts
+# --help / error output renders in the right language. Bazel supplies the binary
+# via PPBA_DRIVER_BINARY (the test falls back to CARGO_BIN_EXE_* under Cargo). The
+# binary embeds its i18n/*.ftl via compile_data, so no runtime i18n data here.
+rust_test(
+    name = "cli_help",
+    srcs = ["tests/cli_help.rs"],
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    data = [":ppba-driver"],
+    edition = "2021",
+    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver)"},
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "conformu",
+        "mock",
+    ],
+    data = [":ppba-driver_mock"],
+    edition = "2021",
+    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)"},
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
+    tags = ["conformu"],
+    deps = [
+        ":ppba-driver_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
 
 # BDD cucumber tests require a mock-feature binary. rust_binary with
 # crate_features pulls in a separate rust_library compiled with the same

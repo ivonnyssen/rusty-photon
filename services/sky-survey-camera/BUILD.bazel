@@ -110,27 +110,14 @@ rust_test(
     ),
 )
 
-# ConformU integration test. The test launches the binary via
-# `bdd-infra::ServiceHandle`, which expects a Cargo-built binary on the
-# path bdd-infra computes from `CARGO_PKG_NAME`, so it can't actually run
-# under Bazel — hence `requires-cargo`.
-#
-# Tagged `manual` so neither `bazel build //...` nor `bazel test //...`
-# (with any --test_tag_filters) picks it up: the test imports
-# `ascom_alpaca::test`, gated behind `ascom-alpaca/test`. Cargo enables
-# this transitively via the per-service `conformu` feature, but Bazel's
-# crate_universe resolves the dep graph from default features only, so
-# `dtor` (a transitive dep of the `test` feature) falls out of the
-# resolved set and the target won't compile under wildcard builds.
-# Until crate_universe is wired to enable workspace-wide `test`, opt in
-# with the explicit target:
-# `bazel build //services/sky-survey-camera:conformu_integration`.
-# The `conformu` tag is retained so a future un-`manual`-ed build can
-# still be filtered with `--test_tag_filters=conformu`.
+# ConformU integration test. Runs the ConformU CLI via bdd_infra::run_conformu
+# against a live sky-survey-camera_mock binary. Tagged `conformu` so it is
+# selected with `bazel test --test_tag_filters=conformu //...`. Self-skipping
+# when CONFORMU_PATH is unset (returns ConformuRun::Skipped).
 rust_test(
     name = "conformu_integration",
     srcs = ["tests/conformu_integration.rs"],
-    size = "medium",
+    size = "large",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -146,12 +133,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
-    tags = [
-        "conformu",
-        "manual",
-        "requires-cargo",
-    ],
-    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    tags = ["conformu"],
+    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra_conformu"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

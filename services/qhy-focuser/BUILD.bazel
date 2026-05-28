@@ -69,7 +69,37 @@ rust_test(
     ),
 )
 
-# conformu_integration: cfg(feature = "conformu"); deferred.
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "conformu",
+    ],
+    data = [":qhy-focuser_mock"],
+    edition = "2021",
+    env = {
+        "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "qhy-focuser"},
+    tags = ["conformu"],
+    deps = [
+        ":qhy-focuser_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
 
 # BDD cucumber tests require a mock-feature binary (see ppba-driver BUILD
 # for the same pattern).

@@ -304,6 +304,19 @@ impl OmniSimProcess {
     /// Returns `None` (caller falls back to `Stdio::null`) only if the
     /// directory can't be created.
     fn log_dir() -> Option<PathBuf> {
+        // Under Bazel there is no cargo target tree and `CARGO_MANIFEST_DIR` is a
+        // compile-time sandbox path, so the cargo branch below resolves to a
+        // directory that can't be created at test runtime — OmniSim's logs would
+        // silently go to `Stdio::null` and a CI crash would leave no trace (the
+        // #171 diagnostic gap, recurring under Bazel). Bazel sets
+        // `TEST_UNDECLARED_OUTPUTS_DIR` for test actions; files written there are
+        // collected under `bazel-testlogs/.../test.outputs`. Prefer it.
+        if let Some(undeclared) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") {
+            let dest = PathBuf::from(undeclared).join("omnisim-logs");
+            if std::fs::create_dir_all(&dest).is_ok() {
+                return Some(dest);
+            }
+        }
         let target_dir = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -337,11 +350,22 @@ impl OmniSimProcess {
             .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stdout.log"))).ok())
             .map(Stdio::from)
             .unwrap_or_else(Stdio::null);
-        let stderr = dir
-            .as_ref()
-            .and_then(|d| std::fs::File::create(d.join(format!("omnisim.{pid}.stderr.log"))).ok())
-            .map(Stdio::from)
-            .unwrap_or_else(Stdio::null);
+        // Under Bazel, inherit OmniSim's stderr into the test process so a
+        // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
+        // OmniSim cascades) shows up in the failed test output (`--test_output=errors`)
+        // in the CI job log — the TEST_UNDECLARED_OUTPUTS_DIR files aren't uploaded
+        // by the bazel workflow today, and the flake doesn't reproduce locally.
+        // stdout stays filed: OmniSim's per-request logging is too chatty to inherit.
+        let stderr = if std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR").is_some() {
+            Stdio::inherit()
+        } else {
+            dir.as_ref()
+                .and_then(|d| {
+                    std::fs::File::create(d.join(format!("omnisim.{pid}.stderr.log"))).ok()
+                })
+                .map(Stdio::from)
+                .unwrap_or_else(Stdio::null)
+        };
         (stdout, stderr)
     }
 

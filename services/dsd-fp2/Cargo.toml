@@ -15,7 +15,7 @@ mock = []  # Enables mock hardware for testing without a real serial port
 # with a mock serial port (`/dev/mock`) driven from the test config. Keeping
 # them coupled means a single `--features conformu` flag is enough to build
 # and run the test.
-conformu = ["mock", "ascom-alpaca/test"]
+conformu = ["mock"]
 
 [lints]
 workspace = true
@@ -49,7 +49,7 @@ tempfile = { workspace = true }
 tokio-test = { workspace = true }
 cucumber = { workspace = true }
 reqwest = { workspace = true }
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
 
 [[test]]
 name = "bdd"

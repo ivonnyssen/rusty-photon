@@ -2,33 +2,19 @@
 //!
 //! These tests verify ASCOM Alpaca compliance by running the ConformU test suite
 //! against the driver running in mock mode.
-// The std::Mutex is intentional here: it serializes sequential test runs because
-// the ASCOM Alpaca discovery service binds to a fixed address.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
-use ascom_alpaca::api::{ObservingConditions, Switch};
-use ascom_alpaca::test::ConformUTestBuilder;
-use bdd_infra::ServiceHandle;
-use std::sync::Mutex;
+use bdd_infra::{run_conformu, ConformuRun, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};
 
-// Static mutex to ensure conformu tests run sequentially
-// Required because both tests bind the ASCOM Alpaca discovery service to a fixed address
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
-
 #[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
-async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
-    // Acquire lock to ensure tests run sequentially (discovery service conflict)
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
+async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize tracing to capture ConformU detailed output
     let _ = fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_test_writer()
         .try_init();
@@ -80,7 +66,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         "SwitchWriteDelay": 100,
         "SwitchExtendedNumberTestRange": 100,
         "SwitchAsyncTimeout": 10,
-        "SwitchTestOffsets": true
+        "SwitchTestOffsets": true,
+        // ObservingConditions-specific settings
+        "ObservingConditionsNumReadings": 5,
+        "ObservingConditionsReadInterval": 50
     });
     std::fs::write(
         &conformu_settings_path,
@@ -104,10 +93,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
             "description": "Test PPBA Switch for ConformU compliance"
         },
         "observingconditions": {
-            "enabled": false,
+            "enabled": true,
             "name": "ConformU Test PPBA Weather",
             "unique_id": "conformu-ppba-weather-001",
-            "description": "Test PPBA ObservingConditions"
+            "description": "Test PPBA ObservingConditions for ConformU compliance"
         }
     });
 
@@ -124,173 +113,51 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("::group::ConformU Compliance Test Results");
-    println!(
-        "Running ASCOM Alpaca Switch compliance tests on port {}...",
-        handle.port
-    );
+    // Capture both run errors so `handle.stop()` below is unconditional and
+    // the service gets a graceful SIGTERM with a chance to flush coverage data.
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        println!("::group::ConformU Switch Compliance Test Results");
+        println!(
+            "Running ASCOM Alpaca Switch compliance tests on port {}...",
+            handle.port
+        );
 
-    // Capture both builder-construction and run-time errors so `handle.stop()`
-    // below is unconditional and the service gets a graceful SIGTERM with a
-    // chance to flush coverage data.
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn Switch>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
-    }
-    .await;
-
-    match &result {
-        Ok(_) => {
-            println!("ConformU compliance tests PASSED");
-            println!("All ASCOM Alpaca Switch compliance requirements met");
+        match run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings_path)).await? {
+            ConformuRun::Skipped => {
+                println!("ConformU Switch: CONFORMU_PATH not set, skipping.");
+            }
+            ConformuRun::Passed => {
+                println!("ConformU Switch compliance tests PASSED");
+            }
         }
-        Err(e) => {
-            println!("ConformU compliance tests FAILED");
-            println!("Error: {}", e);
-        }
-    }
+        println!("::endgroup::");
 
-    println!("::endgroup::");
+        println!("::group::ConformU ObservingConditions Compliance Test Results");
+        println!(
+            "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
+            handle.port
+        );
 
-    handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
-
-    result?;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore] // Run with --ignored flag since it requires ConformU installation
-async fn conformu_compliance_tests_observingconditions() -> Result<(), Box<dyn std::error::Error>> {
-    // Acquire lock to ensure tests run sequentially (discovery service conflict)
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
-    // Initialize tracing to capture ConformU detailed output
-    let _ = fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ascom_alpaca::conformu=trace,info")),
+        match run_conformu(
+            "observingconditions",
+            &handle.base_url,
+            0,
+            Some(&conformu_settings_path),
         )
-        .with_test_writer()
-        .try_init();
-
-    // Create test config
-    let test_dir = std::env::temp_dir().join("conformu_ppba_oc_test");
-    std::fs::create_dir_all(&test_dir)?;
-
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
-
-    // Create ConformU settings with reduced delays for faster CI
-    let conformu_settings = serde_json::json!({
-        "SettingsCompatibilityVersion": 1,
-        "GoHomeOnDeviceSelected": true,
-        "ConnectionTimeout": 2,
-        "RunAs32Bit": false,
-        "RiskAcknowledged": false,
-        "DisplayMethodCalls": false,
-        "UpdateCheck": false,
-        "ApplicationPort": 0,
-        "ConnectDisconnectTimeout": 5,
-        "Debug": false,
-        "TraceDiscovery": false,
-        "TraceAlpacaCalls": false,
-        "TestProperties": true,
-        "TestMethods": true,
-        "TestPerformance": false,
-        "AlpacaDevice": {},
-        "AlpacaConfiguration": {},
-        "ComDevice": {},
-        "ComConfiguration": {},
-        "DeviceName": "No device selected",
-        "DeviceTechnology": "NotSelected",
-        "ReportGoodTimings": true,
-        "ReportBadTimings": true,
-        "TelescopeTests": {},
-        "TelescopeExtendedRateOffsetTests": true,
-        "TelescopeFirstUseTests": true,
-        "TestSideOfPierRead": false,
-        "TestSideOfPierWrite": false,
-        "CameraFirstUseTests": true,
-        "CameraTestImageArrayVariant": true,
-        // ObservingConditions-specific settings
-        "ObservingConditionsNumReadings": 5,
-        "ObservingConditionsReadInterval": 50
-    });
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
-
-    let config = serde_json::json!({
-        "serial": {
-            "port": "/dev/mock",
-            "baud_rate": 9600,
-            "polling_interval": "60s",
-            "timeout": "2s"
-        },
-        "server": {
-            "port": 0
-        },
-        "switch": {
-            "enabled": false,
-            "name": "ConformU Test PPBA Switch",
-            "unique_id": "conformu-ppba-switch-001",
-            "description": "Test PPBA Switch"
-        },
-        "observingconditions": {
-            "enabled": true,
-            "name": "ConformU Test PPBA Weather",
-            "unique_id": "conformu-ppba-weather-001",
-            "description": "Test PPBA ObservingConditions for ConformU compliance"
+        .await?
+        {
+            ConformuRun::Skipped => {
+                println!("ConformU ObservingConditions: CONFORMU_PATH not set, skipping.");
+            }
+            ConformuRun::Passed => {
+                println!("ConformU ObservingConditions compliance tests PASSED");
+            }
         }
-    });
+        println!("::endgroup::");
 
-    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
-
-    let mut handle = ServiceHandle::try_start(
-        env!("CARGO_PKG_NAME"),
-        config_path
-            .to_str()
-            .expect("conformu temp path must be UTF-8"),
-    )
-    .await?;
-
-    println!("::group::ConformU ObservingConditions Compliance Test Results");
-    println!(
-        "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
-        handle.port
-    );
-
-    // Capture both builder-construction and run-time errors so `handle.stop()`
-    // below is unconditional and the service gets a graceful SIGTERM with a
-    // chance to flush coverage data.
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let builder = ConformUTestBuilder::new::<dyn ObservingConditions>(&handle.base_url, 0)?;
-        builder
-            .settings_file(&conformu_settings_path)
-            .run()
-            .await
-            .map_err(Into::into)
+        Ok(())
     }
     .await;
-
-    match &result {
-        Ok(_) => {
-            println!("ConformU ObservingConditions compliance tests PASSED");
-            println!("All ASCOM Alpaca ObservingConditions compliance requirements met");
-        }
-        Err(e) => {
-            println!("ConformU ObservingConditions compliance tests FAILED");
-            println!("Error: {}", e);
-        }
-    }
-
-    println!("::endgroup::");
 
     handle.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();

@@ -53,7 +53,37 @@ rust_test(
     ),
 )
 
-# conformu_integration: cfg(feature = "conformu"); deferred (run under Cargo).
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "conformu",
+    ],
+    data = [":dsd-fp2_mock"],
+    edition = "2021",
+    env = {
+        "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
+    tags = ["conformu"],
+    deps = [
+        ":dsd-fp2_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
 
 # BDD cucumber tests spawn a mock-feature binary. Features are a compile-time
 # concept, so the mock binary needs its own lib+bin compiled with

@@ -33,6 +33,23 @@ rust_library(
     deps = ["//crates/rp-fits:rp-fits"] + all_crate_deps(normal = True),
 )
 
+# Variant with the conformu feature enabled. Services' conformu_integration
+# tests use run_conformu() to drive the ConformU CLI directly, replacing
+# ascom_alpaca::test::ConformUTestBuilder so they no longer need the
+# ascom-alpaca/test feature (whose transitive `dtor` dep crate_universe can't
+# resolve). No extra deps.
+rust_library(
+    name = "bdd-infra_conformu",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    aliases = aliases(),
+    crate_features = ["conformu"],
+    crate_name = "bdd_infra",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
 # Helper binary used by bdd-infra's own integration tests. Referenced via the
 # TEST_SERVICE_BINARY env var by tests/service_handle.rs.
 rust_binary(
