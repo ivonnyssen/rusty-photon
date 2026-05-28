@@ -159,6 +159,7 @@ fn validate_db_directory(path: &Path) -> Result<(), ConfigError> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
