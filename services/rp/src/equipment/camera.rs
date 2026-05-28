@@ -413,4 +413,135 @@ mod tests {
         assert_eq!(entry.sensor_width_px, Some(1024));
         assert_eq!(entry.sensor_height_px, Some(1024));
     }
+
+    /// A malformed `alpaca_url` makes `build_alpaca_client` fail before
+    /// the retry loop is entered, so `connect_camera` returns the
+    /// disconnected entry from the early-return arm: no device, every
+    /// cached metadata field `None`. No stub server is involved.
+    #[tokio::test]
+    async fn connect_camera_client_build_failure_returns_disconnected_entry() {
+        let entry = connect_camera(&camera_config_for("not-a-url")).await;
+        assert!(
+            !entry.connected,
+            "entry must be disconnected when the client cannot be built"
+        );
+        assert!(entry.device.is_none(), "no device should be held");
+        assert_eq!(entry.max_adu, None);
+        assert_eq!(entry.pixel_size_x_um, None);
+        assert_eq!(entry.pixel_size_y_um, None);
+        assert_eq!(entry.sensor_width_px, None);
+        assert_eq!(entry.sensor_height_px, None);
+    }
+
+    /// When the Alpaca server advertises no camera at the requested
+    /// `device_number`, the connect closure returns `Permanent` (so the
+    /// retry loop exits immediately, no backoff), `retry_connect_attempt`
+    /// surfaces `Err`, and `connect_camera` takes the `Err(msg)` arm: a
+    /// disconnected entry with no device and no cached metadata. Covers
+    /// the device-not-found branch and the whole failure-return block.
+    #[tokio::test]
+    async fn connect_camera_device_not_found_returns_disconnected_entry() {
+        // One camera advertised at index 0; the config asks for index 1.
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async {
+                Json(serde_json::json!({
+                    "Value": [{
+                        "DeviceName": "Camera 0",
+                        "DeviceType": "Camera",
+                        "DeviceNumber": 0,
+                        "UniqueID": "test-camera-uid"
+                    }],
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        );
+
+        let stub = spawn_stub(app).await;
+        let mut config = camera_config_for(&stub.url());
+        config.device_number = 1;
+        let entry = connect_camera(&config).await;
+
+        assert!(
+            !entry.connected,
+            "entry must be disconnected when no camera is found at the index"
+        );
+        assert!(entry.device.is_none(), "no device should be held");
+        assert_eq!(entry.max_adu, None);
+        assert_eq!(entry.pixel_size_x_um, None);
+        assert_eq!(entry.pixel_size_y_um, None);
+        assert_eq!(entry.sensor_width_px, None);
+        assert_eq!(entry.sensor_height_px, None);
+    }
+
+    /// A failed `get_devices` maps to `Transient`, so the connect loop
+    /// exhausts all `CONNECT_ATTEMPTS` and `connect_camera` returns a
+    /// disconnected entry. `start_paused` advances the 1 s + 2 s backoff
+    /// in virtual time, so the retries don't slow the suite.
+    #[tokio::test(start_paused = true)]
+    async fn connect_camera_get_devices_error_returns_disconnected_entry() {
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "simulated get_devices failure",
+                )
+            }),
+        );
+
+        let stub = spawn_stub(app).await;
+        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        assert!(
+            !entry.connected,
+            "entry must be disconnected when get_devices keeps failing"
+        );
+        assert!(entry.device.is_none(), "no device should be held");
+        assert_eq!(entry.max_adu, None);
+        assert_eq!(entry.sensor_height_px, None);
+    }
+
+    /// A `set_connected` error maps to `Transient`: the camera is found,
+    /// but turning it on fails on every attempt, so the loop gives up and
+    /// `connect_camera` returns a disconnected entry. `start_paused`
+    /// collapses the retry backoff.
+    #[tokio::test(start_paused = true)]
+    async fn connect_camera_set_connected_error_returns_disconnected_entry() {
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "Camera 0",
+                            "DeviceType": "Camera",
+                            "DeviceNumber": 0,
+                            "UniqueID": "test-camera-uid"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 1025,
+                        "ErrorMessage": "simulated set_connected failure"
+                    }))
+                }),
+            );
+
+        let stub = spawn_stub(app).await;
+        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        assert!(
+            !entry.connected,
+            "entry must be disconnected when set_connected keeps failing"
+        );
+        assert!(entry.device.is_none(), "no device should be held");
+        assert_eq!(entry.max_adu, None);
+        assert_eq!(entry.sensor_height_px, None);
+    }
 }
