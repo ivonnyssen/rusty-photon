@@ -192,12 +192,25 @@ Feature: PulseGuide as rate-shifted tracking
     Then the operation should fail with not-connected
 
   Scenario: A second pulse on the same axis is rejected while one is in flight
+    # The first pulse is deliberately long (60s). The rejection under test
+    # holds only while that pulse is in flight: pulse_guide sets
+    # pulse_guiding_<axis> synchronously, then a detached watcher clears it
+    # after `duration`, so a second same-axis pulse is refused only if it
+    # reaches its in-flight check before the watcher fires. With the old
+    # 1000ms pulse a slow / coverage-instrumented runner could let the
+    # watcher clear the flag before the second pulse_guide arrived — the
+    # second then succeeded ("no error captured") and the scenario flaked.
+    # 60s dwarfs any plausible CI scheduling latency, so the rejection is
+    # deterministic. The pulse never needs to finish: each scenario spawns
+    # its own service (stopped at teardown, which aborts the detached
+    # watcher), so the lingering pulse is harmless; pulse completion is
+    # covered by the single- and perpendicular-pulse scenarios above.
     Given a running star-adventurer service
     When I connect the device
-    And I pulse guide North for 1000 ms
-    And I try to pulse guide South for 100 ms
+    And I pulse guide North for 60000 ms
+    Then IsPulseGuiding should be true
+    When I try to pulse guide South for 100 ms
     Then the operation should fail with invalid-operation
-    And IsPulseGuiding should become false within 5000 ms
 
   Scenario: Perpendicular concurrent pulses (N on Dec, E on RA) both succeed
     # Durations are deliberately long (2 seconds each) to survive
