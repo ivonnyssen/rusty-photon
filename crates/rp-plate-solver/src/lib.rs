@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! HTTP client for the `plate-solver` rp-managed service.
 //!
 //! Wraps the wrapper's frozen HTTP contract (`POST /api/v1/solve`)

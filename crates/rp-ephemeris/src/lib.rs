@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Astronomical math for Rusty Photon.
 //!
 //! [`Ephemeris`] is the seam between the math layer and everything that

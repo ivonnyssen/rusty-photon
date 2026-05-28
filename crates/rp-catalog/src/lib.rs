@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Embedded Messier + NGC + IC deep-sky object catalog with
 //! case- and whitespace-insensitive name resolution.
 //!

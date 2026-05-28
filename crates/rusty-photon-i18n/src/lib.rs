@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Workspace-shared Fluent loader, locale resolver, and clap-derive companion.
 //!
 //! See [`docs/plans/i18n.md`](../../../docs/plans/i18n.md) for the strategy
