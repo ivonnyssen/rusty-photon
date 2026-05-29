@@ -25,6 +25,7 @@
 //!   [`MountDevice::execute_slew_with_explicit_side`] — the shared
 //!   body for `SlewToCoordinatesAsync` and `SetSideOfPier`.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -50,7 +51,7 @@ use super::slew::{
     stop_axis_and_wait, AXIS_STOP_TIMEOUT,
 };
 use super::watchers::spawn_slew_completion_watcher;
-use super::{pre_flip_side_for_latitude, MountDevice};
+use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
 
 /// Upper bound on how long the synchronous `SlewToCoordinates` /
 /// `SlewToTarget` will wait for the watcher to clear `slew_in_progress`.
@@ -478,8 +479,8 @@ impl MountDevice {
         self.manager.seed_dec_position(dec_target_ticks).await;
         // 3. Clear driver-internal motion / target / tracking state so
         //    the freshly written encoder is the source of truth.
+        self.slew_in_progress.store(false, Ordering::SeqCst);
         let mut state = self.state.write().await;
-        state.slew_in_progress = false;
         state.target_ra_hours = None;
         state.target_dec_degrees = None;
         state.tracking_requested = false;
@@ -644,29 +645,31 @@ impl MountDevice {
         // pier side.
         self.check_within_safe_envelope(ra, dec, lst.value(), target_is_flipped)?;
 
-        // Atomically reserve the in-progress slot **before** issuing
-        // any motion. Latch the target + capture the tracking flag in
-        // the same write.
+        // Reserve the in-progress slot **before** issuing any motion.
+        // The returned guard clears `slew_in_progress` on drop, so every
+        // `?` below — a failed wire command or a failed watcher hand-off
+        // — rolls the flag back without an explicit clear.
+        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "slew refused: slew already in progress",
+            ));
+        };
+        // Latch the target + capture the tracking flag.
         let tracking_was_on;
         {
             let mut s = self.state.write().await;
-            if s.slew_in_progress {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "slew refused: slew already in progress",
-                ));
-            }
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
             s.target_pier_side = Some(chosen_side);
             tracking_was_on = s.tracking_requested;
-            s.slew_in_progress = true;
             s.pulse_guiding_ra = false;
             s.pulse_guiding_dec = false;
         }
 
-        // From here on, any error path must clear `slew_in_progress`
-        // — otherwise the driver gets stuck reporting Slewing forever.
+        // Issue the motion sequence. Any `?` failure inside drops
+        // `reservation`, which clears `slew_in_progress` — the driver
+        // can't get stuck reporting Slewing after a failed slew.
         let result: ASCOMResult<()> = async {
             let snap = self.manager.snapshot().await;
             let current_side = side_of_pier_calc(
@@ -750,10 +753,7 @@ impl MountDevice {
             Ok(())
         }
         .await;
-        if let Err(e) = result {
-            self.state.write().await.slew_in_progress = false;
-            return Err(e);
-        }
+        result?;
 
         // Hand off to the completion watcher. The watcher acquires its
         // own session so the user's disconnect path doesn't have to
@@ -766,6 +766,7 @@ impl MountDevice {
             Arc::clone(&self.state),
             Arc::clone(&self.manager),
             Arc::clone(&self.session),
+            Arc::clone(&self.slew_in_progress),
             self.config.clone(),
             self.manager.polling_interval_for_watcher(),
             settle,
@@ -773,6 +774,11 @@ impl MountDevice {
         )
         .await
         .map_err(ASCOMError::from)?;
+        // Watcher spawned — hand off the flag. If the spawn above had
+        // failed, `?` would have dropped `reservation` and rolled the
+        // flag back, so a failed hand-off can no longer leave the driver
+        // stuck reporting Slewing with no watcher to clear it.
+        reservation.dismiss();
         Ok(())
     }
 }
