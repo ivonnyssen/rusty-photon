@@ -11,7 +11,7 @@ inputs:
   version:
     description: OmniSim release version
     required: false
-    default: "v0.5.0-326.1"
+    default: "v0.5.0-326.2"
 
 runs:
   using: composite
@@ -19,8 +19,10 @@ runs:
     # Per-OS table. SHA-256 values are pinned against the OmniSim
     # release assets named below. They currently point at the patched
     # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
-    # tag v0.5.0-326.1), which carries the issue #326 TelescopeHardware
-    # locking fix (ivonnyssen/rusty-photon#326). To revert to upstream,
+    # tag v0.5.0-326.2), which carries the issue #326 TelescopeHardware
+    # locking fix (ivonnyssen/rusty-photon#326) — 326.1 locked the
+    # slew-engine writers + IsSlewing/RA/Dec readers; 326.2 adds the
+    # AtPark/SlewState readers (closes the park-poll hang). To revert to upstream,
     # set `repo` to ASCOMInitiative/ASCOM.Alpaca.Simulators and `version`
     # back to v0.5.0, then refresh every SHA below. Bumping either input
     # requires refreshing the SHAs — the verify step fails closed on any
@@ -32,23 +34,23 @@ runs:
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)
             ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="577fd6f40975e429b0745de1f30c7a2103c2cc73a455e2807099b87e110c7c64"
+            SHA256="ebd0a691510586792e22edd54de40498622766f6cfe8ccd2b6df8f1fb56ce7fa"
             ;;
           Linux-ARM64)
             ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="a3ac498890bf00e857421d6171e78a88fb2d1c4d2fba570f7ec2d8fa016c5373"
+            SHA256="b52766447c9aa26b5a20b79b6fb82e262254728dc6cd19f991e76c9859aedd37"
             ;;
           macOS-ARM64)
             ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="cefc61f2b79317e56ae210dc285e8bfad7f9d6838be83641ab1ca6abe7cc9666"
+            SHA256="042d65edda608f4d4886a04f4d3de0f314f543de65ebe272acd4b285d855dca9"
             ;;
           macOS-X64)
             ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="423c1e84f186357d3f24001410686f1f0d707d20f51accfa25d80903bf7674c3"
+            SHA256="6d970d947069831077d8b8f265ab6033b7c93a6ddbf3a9cd193935a4e5975aa7"
             ;;
           Windows-X64)
             ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="dea2b15d69a248a4677e45e9157bd6a14a2bb77b6967334506d3dabde0db512d"
+            SHA256="22554d03e50f7a525a268b1678838173c04b010dcb3b8d8506374c0d7c0ce8a0"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
