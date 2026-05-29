@@ -6,6 +6,7 @@
 //! sibling submodules; methods here orchestrate but rarely compute.
 
 use std::ops::RangeInclusive;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -31,7 +32,7 @@ use super::inherent::validate_guide_rate;
 use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::{clear_pulse_flag, spawn_park_completion_watcher, spawn_pulse_guide_watcher};
-use super::{pre_flip_side_for_latitude, MountDevice};
+use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
 
 #[async_trait]
 impl Telescope for MountDevice {
@@ -198,7 +199,7 @@ impl Telescope for MountDevice {
         // task signalling completion (after settle + tracking re-issue),
         // so the flag covers both the active-motion period and the
         // post-motion settle window.
-        if self.state.read().await.slew_in_progress {
+        if self.slew_in_progress.load(Ordering::SeqCst) {
             return Ok(true);
         }
         let snap = self.manager.snapshot().await;
@@ -375,7 +376,7 @@ impl Telescope for MountDevice {
         // own `slew_in_progress` check, but rejecting here yields a
         // cleaner error before we read the snapshot and compute a
         // stale celestial target.
-        if self.state.read().await.slew_in_progress {
+        if self.slew_in_progress.load(Ordering::SeqCst) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetSideOfPier refused: slew already in progress",
@@ -628,28 +629,27 @@ impl Telescope for MountDevice {
         if self.state.read().await.at_park {
             return Ok(());
         }
-        // Atomically reserve the in-progress slot **before** issuing
-        // any motion. Doing the flag-set after `:J` (the old layout)
-        // left a TOCTOU window where a concurrent `SetPark` could
-        // read mid-slew encoder positions. Cancel any in-flight
-        // pulse-guide in the same write — park takes ownership of
+        // Reserve the in-progress slot **before** issuing any motion —
+        // a concurrent `SetPark` must not read mid-slew encoder
+        // positions. The guard clears `slew_in_progress` on drop, so any
+        // `?` failure below (or a failed watcher hand-off) rolls it back
+        // without an explicit clear.
+        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "park refused: slew already in progress",
+            ));
+        };
+        // Cancel any in-flight pulse-guide — park takes ownership of
         // both axes from this point.
         {
             let mut s = self.state.write().await;
-            if s.slew_in_progress {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "park refused: slew already in progress",
-                ));
-            }
-            s.slew_in_progress = true;
             s.pulse_guiding_ra = false;
             s.pulse_guiding_dec = false;
         }
-        // From here on, any error path must clear `slew_in_progress`
-        // — otherwise the driver gets stuck reporting Slewing forever.
-        // Wrap motion-issue in an inner future so a single rollback
-        // covers every `?` failure.
+        // Issue the motion sequence in an inner future. Any `?` failure
+        // drops `reservation`, which clears `slew_in_progress` — no
+        // explicit rollback needed.
         let result: ASCOMResult<()> = async {
             // Stop tracking before slewing home (per ASCOM, tracking
             // remains off after Park). The wire `:K1` is issued first
@@ -716,14 +716,11 @@ impl Telescope for MountDevice {
             Ok(())
         }
         .await;
-        if let Err(e) = result {
-            self.state.write().await.slew_in_progress = false;
-            return Err(e);
-        }
-        // Hand off to the park watcher; it owns `slew_in_progress`
-        // from here and will clear it on completion. The watcher
-        // acquires its own session so a user disconnect during park
-        // doesn't have to wait for completion.
+        result?;
+        // Hand off to the park watcher; it owns `slew_in_progress` from
+        // here and will clear it on completion. The watcher acquires its
+        // own session so a user disconnect during park doesn't have to
+        // wait for completion.
         let settle = self
             .state
             .read()
@@ -734,11 +731,13 @@ impl Telescope for MountDevice {
             Arc::clone(&self.state),
             Arc::clone(&self.manager),
             Arc::clone(&self.session),
+            Arc::clone(&self.slew_in_progress),
             self.manager.polling_interval_for_watcher(),
             settle,
         )
         .await
         .map_err(ASCOMError::from)?;
+        reservation.dismiss();
         Ok(())
     }
 
@@ -775,7 +774,7 @@ impl Telescope for MountDevice {
         //      reason the in-memory flag wouldn't capture (a tracking
         //      pulse, an external `:J` from a future out-of-band path,
         //      a flag-set racing the wire send).
-        if self.state.read().await.slew_in_progress {
+        if self.slew_in_progress.load(Ordering::SeqCst) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetPark refused while slew or park is in progress",
@@ -853,9 +852,9 @@ impl Telescope for MountDevice {
         // may have re-issued. After abort the user must explicitly
         // re-enable tracking. Matches ASCOM's "AbortSlew does not
         // auto-restore tracking" guarantee.
+        self.slew_in_progress.store(false, Ordering::SeqCst);
         {
             let mut s = self.state.write().await;
-            s.slew_in_progress = false;
             s.tracking_requested = false;
             // Cancel any in-flight pulse-guide on either axis. The
             // watcher's post-sleep restore step bails when it sees the
@@ -1053,6 +1052,7 @@ impl Telescope for MountDevice {
             Arc::clone(&self.state),
             Arc::clone(&self.manager),
             Arc::clone(&self.session),
+            Arc::clone(&self.slew_in_progress),
             axis,
             duration,
             tracking_was_on,

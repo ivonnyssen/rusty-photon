@@ -15,11 +15,13 @@
 //! shared scaffold lives in [`run_completion_watcher`]; each spawner
 //! supplies an `on_axes_stopped` closure returning a
 //! [`CompletionDecision`] plus a [`FnOnce(&mut DriverState)`]
-//! finalizer that lands the per-operation state mutation under the
-//! same write lock that clears `slew_in_progress`. The pulse-guide
+//! finalizer that lands the per-operation state mutation under a
+//! `DriverState` write lock, after which the watcher clears the
+//! `slew_in_progress` atomic. The pulse-guide
 //! watcher has a different shape (no polling loop, axis-targeted
 //! restore) and stays as a standalone spawner.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -111,10 +113,10 @@ const WATCHER_POLL_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 /// commands (the EQMOD pickup re-slew or the post-slew tracking
 /// restart).
 pub(super) async fn watcher_should_abort(
-    state: &Arc<RwLock<DriverState>>,
+    slew_in_progress: &AtomicBool,
     session_slot: &SessionSlot,
 ) -> bool {
-    !state.read().await.slew_in_progress || user_disconnected(session_slot).await
+    !slew_in_progress.load(Ordering::SeqCst) || user_disconnected(session_slot).await
 }
 
 /// Retrying wrapper around [`MountManager::poll_axes_now`] used by
@@ -211,8 +213,9 @@ enum CompletionDecision {
     /// clears `slew_in_progress` on the way out.
     Bail,
     /// Per-operation work is done. The helper drops the polling
-    /// guard, sleeps `settle`, then runs the finalizer under the
-    /// same write lock that clears `slew_in_progress`.
+    /// guard, sleeps `settle`, runs the finalizer under a
+    /// `DriverState` write lock, then clears the `slew_in_progress`
+    /// atomic.
     Complete,
 }
 
@@ -242,7 +245,8 @@ enum CompletionDecision {
 ///   watcher's last `poll_axes_now` from before the completion step;
 ///   without this the reported RA lags by `(tracking_engagement +
 ///   settle) × sidereal rate`). After the settle, the finalizer
-///   runs under one write lock that also clears `slew_in_progress`.
+///   runs under a `DriverState` write lock, then the watcher clears
+///   the `slew_in_progress` atomic.
 ///
 /// The polling-pause guard is owned by an in-scope binding so every
 /// exit path releases it: the `Complete` branch drops it explicitly
@@ -256,6 +260,7 @@ async fn run_completion_watcher<C, F>(
     manager: Arc<MountManager>,
     session: Session<SkywatcherCodec>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     polling_interval: Duration,
     settle: Duration,
     context: &'static str,
@@ -281,7 +286,7 @@ async fn run_completion_watcher<C, F>(
         // `slew_in_progress` before issuing :L; set_connected(false)
         // also clears it. Either way, bail before overwriting
         // user-visible state.
-        if !state.read().await.slew_in_progress {
+        if !slew_in_progress.load(Ordering::SeqCst) {
             break;
         }
         // Belt-and-braces: if the user disconnected, exit even if
@@ -290,7 +295,7 @@ async fn run_completion_watcher<C, F>(
         // so `manager.is_available()` would lie — we look at the
         // device's session slot instead.
         if user_disconnected(&session_slot).await {
-            state.write().await.slew_in_progress = false;
+            slew_in_progress.store(false, Ordering::SeqCst);
             break;
         }
 
@@ -305,7 +310,7 @@ async fn run_completion_watcher<C, F>(
         let snap = match watcher_poll_with_retry(&manager, &session, context).await {
             Ok(s) => s,
             Err(_) => {
-                state.write().await.slew_in_progress = false;
+                slew_in_progress.store(false, Ordering::SeqCst);
                 break;
             }
         };
@@ -330,7 +335,7 @@ async fn run_completion_watcher<C, F>(
             let _ = manager
                 .send(&session, Command::InstantStop(Axis::Dec))
                 .await;
-            state.write().await.slew_in_progress = false;
+            slew_in_progress.store(false, Ordering::SeqCst);
             break;
         }
         if snap.ra.running || snap.dec.running {
@@ -339,7 +344,7 @@ async fn run_completion_watcher<C, F>(
         match on_axes_stopped(snap, &session).await {
             CompletionDecision::Continue => continue,
             CompletionDecision::Bail => {
-                state.write().await.slew_in_progress = false;
+                slew_in_progress.store(false, Ordering::SeqCst);
                 break;
             }
             CompletionDecision::Complete => {
@@ -360,9 +365,11 @@ async fn run_completion_watcher<C, F>(
                 // (~5-10″).
                 drop(_poll_guard);
                 tokio::time::sleep(settle).await;
-                let mut s = state.write().await;
-                on_finalize(&mut s);
-                s.slew_in_progress = false;
+                {
+                    let mut s = state.write().await;
+                    on_finalize(&mut s);
+                }
+                slew_in_progress.store(false, Ordering::SeqCst);
                 break;
             }
         }
@@ -401,6 +408,7 @@ async fn slew_completion_step(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     session: &Session<SkywatcherCodec>,
     config: MountConfig,
     polling_interval: Duration,
@@ -506,7 +514,7 @@ async fn slew_completion_step(
                 // transport) may have raced ahead. Without
                 // this second guard the pickup loop would
                 // restart motion after the user aborted.
-                if watcher_should_abort(&state, &session_slot).await {
+                if watcher_should_abort(&slew_in_progress, &session_slot).await {
                     return CompletionDecision::Bail;
                 }
                 // Pre-compensate the RA target for the LST drift
@@ -611,7 +619,7 @@ async fn slew_completion_step(
     // between the top-of-loop check and now must skip the
     // tracking restart, or the user-visible state would say
     // "aborted" while the wire is back to tracking.
-    if watcher_should_abort(&state, &session_slot).await {
+    if watcher_should_abort(&slew_in_progress, &session_slot).await {
         return CompletionDecision::Bail;
     }
     if tracking_was_on {
@@ -647,10 +655,12 @@ async fn slew_completion_step(
 /// `tracking_requested` flag is cleared by `slew_to_coordinates_async`
 /// so `tracking()` reports the wire state during the slew, hence we
 /// can't read it from `state` here.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_slew_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     config: MountConfig,
     polling_interval: Duration,
     settle: Duration,
@@ -686,11 +696,13 @@ pub(super) async fn spawn_slew_completion_watcher(
         let helper_state = Arc::clone(&state);
         let helper_manager = Arc::clone(&manager);
         let helper_slot = Arc::clone(&session_slot);
+        let helper_flag = Arc::clone(&slew_in_progress);
         run_completion_watcher(
             helper_state,
             helper_manager,
             session,
             helper_slot,
+            helper_flag,
             polling_interval,
             settle,
             "slew_watcher",
@@ -704,6 +716,7 @@ pub(super) async fn spawn_slew_completion_watcher(
                     Arc::clone(&state),
                     Arc::clone(&manager),
                     Arc::clone(&session_slot),
+                    Arc::clone(&slew_in_progress),
                     watcher_session,
                     config.clone(),
                     polling_interval,
@@ -731,7 +744,8 @@ pub(super) async fn spawn_slew_completion_watcher(
 /// Same outer loop as [`spawn_slew_completion_watcher`] (provided
 /// by [`run_completion_watcher`]), but the per-axes-stopped step
 /// has no extra work to do, and the finalizer sets `at_park = true`
-/// in the same write lock that clears `slew_in_progress`. Park
+/// under the `DriverState` write lock just before the watcher clears
+/// the `slew_in_progress` atomic. Park
 /// always leaves tracking off per the ASCOM spec.
 ///
 /// A blocked-axis abort (handled inside [`run_completion_watcher`])
@@ -743,6 +757,7 @@ pub(super) async fn spawn_park_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     polling_interval: Duration,
     settle: Duration,
 ) -> crate::error::Result<()> {
@@ -757,6 +772,7 @@ pub(super) async fn spawn_park_completion_watcher(
             manager,
             session,
             session_slot,
+            slew_in_progress,
             polling_interval,
             settle,
             "park_watcher",
@@ -788,6 +804,7 @@ pub(super) async fn spawn_pulse_guide_watcher(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     axis: Axis,
     duration: Duration,
     tracking_was_on_for_restore: bool,
@@ -815,8 +832,8 @@ pub(super) async fn spawn_pulse_guide_watcher(
             } else {
                 s.pulse_guiding_dec
             };
-            active && !s.at_park && !s.slew_in_progress
-        };
+            active && !s.at_park
+        } && !slew_in_progress.load(Ordering::SeqCst);
         if !still_active || user_disconnected(&session_slot).await {
             clear_pulse_flag(&state, axis).await;
             if let Err(e) = session.close().await {

@@ -7,6 +7,7 @@
 //! `load_park_target_after_connect`) with structural rollback via
 //! `session.close().await` on any error.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use ascom_alpaca::api::Device;
@@ -91,6 +92,7 @@ impl Device for MountDevice {
                     Arc::clone(&self.state),
                     Arc::clone(&self.manager),
                     Arc::clone(&self.session),
+                    Arc::clone(&self.slew_in_progress),
                     self.config.clone(),
                     self.manager.polling_interval_for_watcher(),
                 );
@@ -103,8 +105,12 @@ impl Device for MountDevice {
                 // mechanical state (`at_park`) intact — the mount's encoder
                 // doesn't move just because we closed the socket. See
                 // [`super::DriverState::reset_for_disconnect`] for the field-
-                // by-field rationale.
+                // by-field rationale. `slew_in_progress` lives outside
+                // `DriverState` (an atomic, so [`super::SlewReservation`] can
+                // roll it back from `Drop`), so clear it here too — this also
+                // signals any in-flight completion watcher to bail.
                 self.state.write().await.reset_for_disconnect();
+                self.slew_in_progress.store(false, Ordering::SeqCst);
             }
             _ => {}
         }

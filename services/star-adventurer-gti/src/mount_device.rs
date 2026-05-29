@@ -30,6 +30,7 @@
 //!   and the boot-time writability probe.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,12 +75,6 @@ struct DriverState {
     target_ra_hours: Option<f64>,
     target_dec_degrees: Option<f64>,
     slew_settle_time: Option<Duration>,
-    /// `true` between the moment a slew is issued and the moment the
-    /// completion watcher has finished re-enabling tracking + the
-    /// settle delay. `slewing()` ORs this with the snapshot's running
-    /// flags so callers see "still slewing" until the watcher signals
-    /// otherwise.
-    slew_in_progress: bool,
     /// In-memory park-target encoder pair. Populated on the 0→1 connect
     /// transition from `MountConfig::park_*_ticks` if `Some`, otherwise
     /// from the handshake-captured positions. `None` here means "not
@@ -119,7 +114,6 @@ impl Default for DriverState {
             target_ra_hours: None,
             target_dec_degrees: None,
             slew_settle_time: None,
-            slew_in_progress: false,
             park_ra_ticks: None,
             park_dec_ticks: None,
             target_pier_side: None,
@@ -146,9 +140,12 @@ impl DriverState {
     ///     `SetTargetRA` / `SetTargetDec` call; not durable.
     ///   - `tracking_requested` — disconnect halted tracking on the
     ///     wire (`:K1`); the in-memory flag must follow.
-    ///   - `slew_in_progress` — the polling task is gone, the watcher
-    ///     has nothing left to observe; clearing the flag also tells
-    ///     any in-flight watcher iteration to bail out.
+    ///   - `slew_in_progress` is **not** cleared here — it now lives on
+    ///     [`MountDevice`] as an [`AtomicBool`], cleared synchronously by
+    ///     [`SlewReservation`] on rollback and by the disconnect path in
+    ///     `device.rs` (the `set_connected(false)` arm) alongside this
+    ///     call. Clearing it there still tells any in-flight watcher
+    ///     iteration to bail out.
     ///   - `park_ra_ticks` / `park_dec_ticks` — re-loaded on next
     ///     connect from config / handshake. Clearing here means a
     ///     mid-session edit to `MountConfig::park_*_ticks` would take
@@ -161,7 +158,6 @@ impl DriverState {
         self.target_ra_hours = None;
         self.target_dec_degrees = None;
         self.tracking_requested = false;
-        self.slew_in_progress = false;
         self.park_ra_ticks = None;
         self.park_dec_ticks = None;
         self.pulse_guiding_ra = false;
@@ -186,6 +182,13 @@ pub struct MountDevice {
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<SkywatcherCodec>>>>,
     state: Arc<RwLock<DriverState>>,
+    /// Slew/park "in progress" flag. Lives here as an [`AtomicBool`]
+    /// rather than a [`DriverState`] field so [`SlewReservation`] can
+    /// roll it back **synchronously** from `Drop` — a `Drop` impl can't
+    /// `.await` the `state` `RwLock`. Set by the slew / park reservation,
+    /// ORed into `slewing()` and the concurrent-motion refusals, and
+    /// cleared by the completion watchers, `AbortSlew`, and disconnect.
+    slew_in_progress: Arc<AtomicBool>,
     #[debug(skip)]
     manager: Arc<MountManager>,
 }
@@ -208,6 +211,7 @@ impl MountDevice {
             config_file_path,
             session: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(DriverState::default())),
+            slew_in_progress: Arc::new(AtomicBool::new(false)),
             manager,
         }
     }
@@ -224,6 +228,59 @@ impl MountDevice {
             .as_ref()
             .ok_or(crate::error::StarAdvError::NotConnected)?;
         self.manager.send(session, cmd).await
+    }
+}
+
+/// RAII reservation of the `slew_in_progress` slot on [`MountDevice`].
+///
+/// Acquired before a slew or park issues any motion. While held, the
+/// reservation **rolls back on drop** — clearing `slew_in_progress` — so
+/// every `?` early-return on the motion-issue path (a failed wire
+/// command, or a failed hand-off to the completion watcher) restores the
+/// flag without an explicit clear at the call site. On the success path
+/// the caller calls [`SlewReservation::dismiss`] once the completion
+/// watcher has been spawned; from that point the watcher owns clearing
+/// the flag.
+///
+/// The flag is an [`AtomicBool`] rather than a field behind the device's
+/// `RwLock<DriverState>` precisely so this rollback can be a synchronous
+/// store from `Drop` (a `Drop` impl cannot `.await` a `tokio::sync::RwLock`
+/// write). Mirrors the synchronous rollback-on-drop guard the
+/// `rusty-photon-shared-transport` `acquire()` path uses for its refcount.
+#[must_use = "a dropped reservation rolls back slew_in_progress; bind it for the operation's duration"]
+pub(super) struct SlewReservation {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl SlewReservation {
+    /// Reserve the slot, returning the guard, or [`None`] when a slew /
+    /// park is already in progress. The check-and-set is a single
+    /// `compare_exchange`, so two concurrent callers can't both win the
+    /// reservation (the TOCTOU-free guarantee the previous lock-guarded
+    /// check-and-set gave).
+    pub(super) fn try_acquire(flag: &Arc<AtomicBool>) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self {
+                flag: Arc::clone(flag),
+                armed: true,
+            })
+    }
+
+    /// Hand the flag's lifecycle off to the completion watcher: disarm
+    /// the rollback so dropping this guard leaves `slew_in_progress` set.
+    /// Call only after the watcher has been successfully spawned.
+    pub(super) fn dismiss(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SlewReservation {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(false, Ordering::SeqCst);
+        }
     }
 }
 

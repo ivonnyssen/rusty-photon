@@ -24,6 +24,7 @@
 //! [`crate::config::FlipPolicy::enabled`] — it is the safety floor that
 //! keeps an unattended autoguided session from contacting hardware.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,6 +87,7 @@ pub(super) async fn tracking_guard_tick(
     state: &Arc<RwLock<DriverState>>,
     manager: &MountManager,
     session_slot: &SessionSlot,
+    slew_in_progress: &AtomicBool,
     zone: (f64, f64),
     margin: f64,
 ) -> bool {
@@ -95,11 +97,8 @@ pub(super) async fn tracking_guard_tick(
     // it already keeps the guard dormant during slews; the
     // `slew_in_progress` check is belt-and-suspenders for the brief
     // post-slew tracking-restart window.
-    {
-        let s = state.read().await;
-        if !s.tracking_requested || s.slew_in_progress {
-            return false;
-        }
+    if !state.read().await.tracking_requested || slew_in_progress.load(Ordering::SeqCst) {
+        return false;
     }
     // `mech_HA` needs the per-axis CPR captured at handshake.
     let Some(params) = manager.parameters().await else {
@@ -165,6 +164,7 @@ pub(super) fn spawn_tracking_guard(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
+    slew_in_progress: Arc<AtomicBool>,
     config: MountConfig,
     polling_interval: Duration,
 ) {
@@ -181,7 +181,15 @@ pub(super) fn spawn_tracking_guard(
                 debug!("tracking-guard: session closed, exiting");
                 return;
             }
-            tracking_guard_tick(&state, &manager, &session_slot, zone, margin).await;
+            tracking_guard_tick(
+                &state,
+                &manager,
+                &session_slot,
+                &slew_in_progress,
+                zone,
+                margin,
+            )
+            .await;
         }
     });
 }

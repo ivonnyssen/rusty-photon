@@ -7,6 +7,7 @@
 //! and `super::<sub>::*` reaches sibling submodules.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -179,7 +180,15 @@ async fn tracking_guard_tick_stops_tracking_inside_the_zone() {
     seed_mech_ha(&d, &mock, 6.0).await; // mid-zone (mech_HA = +6 h)
     d.state.write().await.tracking_requested = true;
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(fired, "guard should fire mid-zone");
     assert!(
@@ -196,7 +205,15 @@ async fn tracking_guard_tick_is_noop_far_from_the_zone() {
     seed_mech_ha(&d, &mock, -3.0).await; // typical session start, well clear
     d.state.write().await.tracking_requested = true;
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(!fired, "guard must not fire far from the zone");
     assert!(
@@ -217,7 +234,15 @@ async fn tracking_guard_tick_is_noop_when_not_tracking() {
                                         // `tracking_requested` left false — the guard only acts while the
                                         // client has tracking engaged.
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(!fired, "guard only acts while tracking is engaged");
     let log = mock.lock().await.command_log.clone();
@@ -244,7 +269,15 @@ async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
     d.state.write().await.tracking_requested = true;
     assert!(d.manager.parameters().await.is_none());
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(!fired, "no cached CPR -> guard cannot act");
     assert!(
@@ -276,7 +309,15 @@ async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
     d.state.write().await.tracking_requested = true;
     assert!(d.session.read().await.is_none());
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(!fired, "no session -> nothing to stop");
     assert!(
@@ -297,7 +338,15 @@ async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
     mock.lock().await.fail_command = Some(b'K'); // make :K1 error
     d.state.write().await.tracking_requested = true;
 
-    let fired = tracking_guard_tick(&d.state, &d.manager, &d.session, (0.95, 11.05), 0.05).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
 
     assert!(!fired, "a failed stop is not a successful fire");
     assert!(
@@ -1126,6 +1175,108 @@ async fn abort_slew_does_not_auto_restore_tracking() {
     let _ = d.tracking().await;
 }
 
+/// Connected device backed by a [`CapturingMockFactory`] with the CW
+/// exclusion zone disabled and instant settle, returning the shared mock
+/// state so a test can inject a wire failure (`fail_command`) mid-motion
+/// and observe the reservation rollback. Mirrors the capturing-mock setup
+/// `set_tracking_true_issues_g_i_j_on_ra_axis` uses.
+async fn capturing_connected_device() -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = Config::default();
+    // Open the envelope so the slew reaches the wire; settle instantly so
+    // a successful slew's watcher doesn't linger between scenarios.
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    (d, mock)
+}
+
+#[tokio::test]
+async fn slew_rolls_back_slew_in_progress_when_motion_fails() {
+    // A wire failure while issuing the slew must roll the reservation
+    // back, or the driver would report Slewing forever. The
+    // SlewReservation guard clears the flag on drop; because the flag is
+    // an atomic the rollback is synchronous — observable the instant the
+    // error returns, with no settle wait.
+    let (d, mock) = capturing_connected_device().await;
+    // Fail the slew's first wire op (`:K1` in stop_and_wait).
+    mock.lock().await.fail_command = Some(b'K');
+
+    d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
+
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "slew_in_progress must be cleared after a failed slew"
+    );
+    assert!(!d.slewing().await.unwrap());
+}
+
+#[tokio::test]
+async fn park_rolls_back_slew_in_progress_when_motion_fails() {
+    let (d, mock) = capturing_connected_device().await;
+    // Fail park's first wire op (`:K1` in the per-axis stop_and_wait).
+    mock.lock().await.fail_command = Some(b'K');
+
+    d.park().await.unwrap_err();
+
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "slew_in_progress must be cleared after a failed park"
+    );
+    assert!(!d.slewing().await.unwrap());
+}
+
+#[tokio::test]
+async fn disconnect_clears_slew_in_progress() {
+    // `slew_in_progress` lives outside `DriverState` now, so the
+    // disconnect arm of `set_connected` clears it directly — the coverage
+    // that used to live in the `reset_for_disconnect` field test.
+    let d = connected_device().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+    d.set_connected(false).await.unwrap();
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn slew_refuses_while_slew_already_in_progress() {
+    // `slew_to_coordinates_async` has no early slew_in_progress guard
+    // (unlike `set_side_of_pier`), so a slew issued while one is already
+    // in flight reaches the `SlewReservation::try_acquire` refusal in
+    // `execute_slew_with_explicit_side` rather than being rejected sooner.
+    let d = fast_settle_connected().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+    let err = d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(
+        err.message.contains("slew already in progress"),
+        "expected the reservation refusal, got: {}",
+        err.message
+    );
+    // try_acquire failed, so no guard armed and the early return did not
+    // clear the in-flight reservation.
+    assert!(d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn park_refuses_while_slew_already_in_progress() {
+    // `park` reaches its own `SlewReservation::try_acquire` refusal when a
+    // slew/park is already in flight (it has no early slew_in_progress
+    // guard before the reservation either).
+    let d = fast_settle_connected().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+    let err = d.park().await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(
+        err.message.contains("slew already in progress"),
+        "expected the reservation refusal, got: {}",
+        err.message
+    );
+    assert!(d.slew_in_progress.load(Ordering::SeqCst));
+}
+
 #[tokio::test]
 async fn abort_slew_refuses_while_disconnected() {
     let d = fast_settle_device();
@@ -1319,22 +1470,22 @@ async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
     // `manager.is_available()` (the watcher's own session keeps
     // the transport open even after the user disconnects).
     use rusty_photon_shared_transport::Session;
-    let state = Arc::new(RwLock::new(DriverState::default()));
+    let slew_in_progress = AtomicBool::new(false);
     let manager = MountManager::new(Config::default(), Arc::new(MockTransportFactory));
     let device_session = manager.transport().acquire().await.unwrap();
     let session_slot: Arc<RwLock<Option<Session<crate::codec::SkywatcherCodec>>>> =
         Arc::new(RwLock::new(Some(device_session)));
 
-    // Default state has slew_in_progress=false → abort=true.
+    // slew_in_progress=false → abort=true.
     assert!(
-        watcher_should_abort(&state, &session_slot).await,
-        "default DriverState has slew_in_progress=false → should abort"
+        watcher_should_abort(&slew_in_progress, &session_slot).await,
+        "slew_in_progress=false → should abort"
     );
 
     // With slew_in_progress=true and the session slot populated → no abort.
-    state.write().await.slew_in_progress = true;
+    slew_in_progress.store(true, Ordering::SeqCst);
     assert!(
-        !watcher_should_abort(&state, &session_slot).await,
+        !watcher_should_abort(&slew_in_progress, &session_slot).await,
         "in-progress slew with live device session → should continue"
     );
 
@@ -1344,7 +1495,7 @@ async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
         s.close().await.unwrap();
     }
     assert!(
-        watcher_should_abort(&state, &session_slot).await,
+        watcher_should_abort(&slew_in_progress, &session_slot).await,
         "user disconnect mid-slew → should abort"
     );
 }
@@ -1720,7 +1871,7 @@ async fn set_park_refuses_while_slew_in_progress() {
     seed_default_config(&path);
     let d = device_with_path(path);
     d.set_connected(true).await.unwrap();
-    d.state.write().await.slew_in_progress = true;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
     let err = d.set_park().await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
 }
@@ -1779,7 +1930,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     // slew_in_progress flag is still false — only the wire
     // snapshot is reporting motion. The new defence layer must
     // still refuse.
-    assert!(!d.state.read().await.slew_in_progress);
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
     let err = d.set_park().await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     assert!(
@@ -1955,9 +2106,9 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
 async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     let d = connected_device().await;
     // Dirty the in-memory motion/target/tracking state a reset clears.
+    d.slew_in_progress.store(true, Ordering::SeqCst);
     {
         let mut s = d.state.write().await;
-        s.slew_in_progress = true;
         s.target_ra_hours = Some(5.0);
         s.target_dec_degrees = Some(10.0);
         s.tracking_requested = true;
@@ -1974,8 +2125,8 @@ async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     assert_eq!(snap.ra.position_ticks, 12_345);
     assert_eq!(snap.dec.position_ticks, -6_789);
     // Driver-internal motion/target/tracking state is cleared.
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
     let s = d.state.read().await;
-    assert!(!s.slew_in_progress);
     assert_eq!(s.target_ra_hours, None);
     assert_eq!(s.target_dec_degrees, None);
     assert!(!s.tracking_requested);
@@ -2190,11 +2341,8 @@ async fn unpark_from_ap_position_refuses_when_disconnected() {
 #[tokio::test]
 async fn unpark_from_ap_position_refuses_while_slewing() {
     let d = connected_device().await;
-    {
-        let mut s = d.state.write().await;
-        s.at_park = true;
-        s.slew_in_progress = true;
-    }
+    d.state.write().await.at_park = true;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
     let err = d
         .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
         .await
@@ -3450,7 +3598,7 @@ async fn set_side_of_pier_refuses_while_parked() {
 #[tokio::test]
 async fn set_side_of_pier_refuses_while_slew_in_progress() {
     let d = flip_enabled_connected_device().await;
-    d.state.write().await.slew_in_progress = true;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
     let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
 }
@@ -3463,7 +3611,7 @@ async fn set_side_of_pier_to_current_side_succeeds_as_noop() {
     // pierWest. SetSideOfPier(West) is a no-op.
     d.set_side_of_pier(PierSide::West).await.unwrap();
     // State unchanged.
-    assert!(!d.state.read().await.slew_in_progress);
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -3475,8 +3623,8 @@ async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
     // completed in the mock (instant-settle config), so accept
     // either: the slew was either still in progress at this read,
     // or already finished with the encoder mutated.
+    let slewing = d.slew_in_progress.load(Ordering::SeqCst);
     let s = d.state.read().await;
-    let slewing = s.slew_in_progress;
     let target_set = s.target_ra_hours.is_some() && s.target_dec_degrees.is_some();
     drop(s);
     assert!(
@@ -3496,7 +3644,7 @@ async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 /// Inject N consecutive transport failures and count `:L<axis>`
 /// frames that crossed the wire. Shared between the test and the
@@ -3730,7 +3878,6 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
         target_ra_hours: Some(12.0),
         target_dec_degrees: Some(45.0),
         slew_settle_time: Some(Duration::from_secs(7)),
-        slew_in_progress: true,
         park_ra_ticks: Some(1_000),
         park_dec_ticks: Some(-1_000),
         target_pier_side: Some(PierSide::East),
@@ -3746,7 +3893,6 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     assert!(!s.tracking_requested);
     assert_eq!(s.target_ra_hours, None);
     assert_eq!(s.target_dec_degrees, None);
-    assert!(!s.slew_in_progress);
     assert_eq!(s.park_ra_ticks, None);
     assert_eq!(s.park_dec_ticks, None);
     assert!(!s.pulse_guiding_ra);
