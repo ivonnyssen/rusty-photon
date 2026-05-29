@@ -8,16 +8,44 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
+use std::sync::LazyLock;
+use std::time::Instant;
+
+/// Process-start reference for the `BDD-TRACE` breadcrumbs. Initialised on the
+/// first [`trace`] call (≈ the first scenario), so the printed `+Ns` offsets
+/// are relative-but-consistent — enough to read per-scenario durations
+/// (`ENTER` vs `EXIT`) and the reset-vs-steps split (`ENTER` vs `reset-ok`)
+/// straight from the log.
+static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Emit a one-line breadcrumb to stderr (bypassing cucumber's buffered writer),
+/// tagged with elapsed seconds. The bdd leg runs with `--test_output=all`
+/// (`.github/workflows/bazel.yml`), so these surface **even when `rp:bdd`
+/// passes** — which is the failure mode we actually hit: the suite runs slow
+/// (~36 min) but *completes*, so the time has to be read from a passing run.
+/// `BDD-TRACE` makes the trail greppable; the `ENTER → reset-ok → EXIT` deltas
+/// localise where the minutes go (per-scenario OmniSim reset vs the steps).
+fn trace(msg: &str) {
+    use std::io::Write as _;
+    eprintln!(
+        "BDD-TRACE +{:.1}s {msg}",
+        PROCESS_START.elapsed().as_secs_f64()
+    );
+    let _ = std::io::stderr().flush();
+}
+
 bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::RpWorld;
 
-    // Skip scenarios tagged @wip — used to land BDD specs on a feature branch
-    // before the implementation exists, without breaking the green suite.
-    // Remove the tag once the corresponding implementation is in place.
     RpWorld::cucumber()
-        .before(|_feature, _rule, _scenario, _world| {
+        .before(|feature, _rule, scenario, _world| {
+            let scenario_name = scenario.name.clone();
+            let feature_name = feature.name.clone();
             Box::pin(async move {
+                trace(&format!(
+                    "ENTER feature={feature_name:?} scenario={scenario_name:?}"
+                ));
                 // Reset every OmniSim device class our scenarios touch
                 // (telescope, camera, filter wheel, focuser, cover
                 // calibrator) to defaults before each scenario. The
@@ -41,9 +69,11 @@ bdd_infra::bdd_main! {
                 {
                     panic!("OmniSim device reset failed: {}", errors.join("; "));
                 }
+                trace(&format!("reset-ok scenario={scenario_name:?}"));
             })
         })
-        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+        .after(|_feature, _rule, scenario, _finished, maybe_world| {
+            let scenario_name = scenario.name.clone();
             Box::pin(async move {
                 if let Some(world) = maybe_world {
                     // Drop the MCP client first — its streaming HTTP
@@ -62,6 +92,7 @@ bdd_infra::bdd_main! {
                         cam.stop().await;
                     }
                 }
+                trace(&format!("EXIT scenario={scenario_name:?}"));
             })
         })
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {

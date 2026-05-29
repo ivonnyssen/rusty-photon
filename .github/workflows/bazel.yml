@@ -188,6 +188,7 @@ jobs:
             --noslim_profile \
             --experimental_profile_include_target_label \
             --experimental_profile_include_primary_output \
+            --test_output=all \
             //...
 
       - name: Upload Bazel diagnostics
