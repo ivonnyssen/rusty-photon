@@ -1241,6 +1241,43 @@ async fn disconnect_clears_slew_in_progress() {
 }
 
 #[tokio::test]
+async fn slew_refuses_while_slew_already_in_progress() {
+    // `slew_to_coordinates_async` has no early slew_in_progress guard
+    // (unlike `set_side_of_pier`), so a slew issued while one is already
+    // in flight reaches the `SlewReservation::try_acquire` refusal in
+    // `execute_slew_with_explicit_side` rather than being rejected sooner.
+    let d = fast_settle_connected().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+    let err = d.slew_to_coordinates_async(6.0, 30.0).await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(
+        err.message.contains("slew already in progress"),
+        "expected the reservation refusal, got: {}",
+        err.message
+    );
+    // try_acquire failed, so no guard armed and the early return did not
+    // clear the in-flight reservation.
+    assert!(d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn park_refuses_while_slew_already_in_progress() {
+    // `park` reaches its own `SlewReservation::try_acquire` refusal when a
+    // slew/park is already in flight (it has no early slew_in_progress
+    // guard before the reservation either).
+    let d = fast_settle_connected().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+    let err = d.park().await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(
+        err.message.contains("slew already in progress"),
+        "expected the reservation refusal, got: {}",
+        err.message
+    );
+    assert!(d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn abort_slew_refuses_while_disconnected() {
     let d = fast_settle_device();
     let err = d.abort_slew().await.unwrap_err();
