@@ -28,7 +28,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":pa-falcon-rotator_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":pa-falcon-rotator_lib", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -140,7 +140,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
-    deps = [":pa-falcon-rotator_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":pa-falcon-rotator_lib_mock", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 # BDD cucumber tests run **in-process**: each scenario builds a `BoundServer`

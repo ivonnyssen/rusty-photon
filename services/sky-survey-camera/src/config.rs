@@ -17,6 +17,13 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     pub name: String,
+    /// ASCOM `UniqueID`. Omitting it in the config file loads as an
+    /// empty string here; `run` then mints a spec-compliant UUIDv4 via
+    /// [`rusty_photon_config::materialize_identity`] and persists it
+    /// (`/device/unique_id`), so the next load reads the stable id.
+    /// There is no `Config::default()` — optics fields are mandatory,
+    /// so a missing config file stays a hard error in [`load_config`].
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
 }

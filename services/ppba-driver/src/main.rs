@@ -110,14 +110,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.log_level
     );
 
-    // Load configuration
-    let mut config = if let Some(config_path) = &args.config {
-        tracing::debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
+    // Resolve the config path (explicit `--config`, else the per-user platform
+    // config directory) and mint a UUIDv4 `UniqueID` for each device on first
+    // run. `materialize_identity` is idempotent: it only fills empty/absent ids,
+    // never overwrites an existing one, and persists atomically. When the file
+    // is absent it writes the default scaffold (with freshly-minted ids), so the
+    // subsequent load always succeeds.
+    let config_path = rusty_photon_config::resolve_config_path("ppba-driver", args.config.clone())?;
+    tracing::debug!("Resolved configuration path: {:?}", config_path);
+
+    let outcome = rusty_photon_config::materialize_identity(
+        &config_path,
+        &serde_json::to_value(Config::default())?,
+        &["/switch/unique_id", "/observingconditions/unique_id"],
+    )?;
+    if outcome.wrote {
+        tracing::debug!(
+            "Minted and persisted device identities at {:?}: {:?}",
+            config_path,
+            outcome.filled
+        );
     } else {
-        tracing::debug!("Using default configuration");
-        Config::default()
-    };
+        tracing::debug!("Device identities already present at {:?}", config_path);
+    }
+
+    // Load the (now-materialized) configuration from disk.
+    tracing::debug!("Loading configuration from {:?}", config_path);
+    let mut config = load_config(&config_path)?;
 
     // Apply CLI overrides
     if let Some(port) = args.port {

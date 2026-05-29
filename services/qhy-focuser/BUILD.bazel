@@ -28,7 +28,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":qhy-focuser_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":qhy-focuser_lib", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -121,7 +121,7 @@ rust_binary(
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":qhy-focuser_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":qhy-focuser_lib_mock", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(

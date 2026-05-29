@@ -30,7 +30,7 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "star-adventurer-gti"},
     visibility = ["//visibility:public"],
-    deps = [":star-adventurer-gti_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":star-adventurer-gti_lib", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -129,7 +129,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "star-adventurer-gti"},
-    deps = [":star-adventurer-gti_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":star-adventurer-gti_lib_mock", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(

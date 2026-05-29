@@ -41,6 +41,10 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverCalibratorConfig {
     pub name: String,
+    /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant UUIDv4 is
+    /// minted on first run by `rusty_photon_config::materialize_identity` (see
+    /// `main.rs`) and persisted to the config file, never overwritten.
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -99,7 +103,8 @@ impl Default for CoverCalibratorConfig {
     fn default() -> Self {
         Self {
             name: "Deep Sky Dad FP2".to_string(),
-            unique_id: "dsd-fp2-001".to_string(),
+            // Minted on first run (UUIDv4) and persisted; see `main.rs`.
+            unique_id: String::new(),
             description: "Deep Sky Dad Flat Panel 2 (motorised flat field panel)".to_string(),
             enabled: true,
             max_brightness: default_max_brightness(),
@@ -204,7 +209,9 @@ mod tests {
         assert!(c.cover_calibrator.enabled);
         assert_eq!(c.cover_calibrator.max_brightness, 4096);
         assert_eq!(c.cover_calibrator.name, "Deep Sky Dad FP2");
-        assert_eq!(c.cover_calibrator.unique_id, "dsd-fp2-001");
+        // The id is no longer a hardcoded literal; it is minted as a UUIDv4 on
+        // first run by `materialize_identity`, so the default is empty.
+        assert_eq!(c.cover_calibrator.unique_id, "");
     }
 
     #[test]

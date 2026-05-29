@@ -364,7 +364,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanFindHome` | `false` | no hardware home position |
 | `CanPark` | `true` | implemented (software park) |
 | `CanUnpark` | `true` | implemented |
-| `CanSetPark` | runtime-determined | `true` when the driver was started with `--config <path>` (the path it would write back to); `false` for `Config::default()` runs (smoke-tests, no-arg launches). See [§Park persistence](#park-persistence) |
+| `CanSetPark` | effectively `true` by default | The driver now always resolves a config-file path at startup (the `--config <path>` argument if given, else the per-user platform config dir — see [§Device identity (UniqueID)](#device-identity-uniqueid)), so it always has a path to persist `SetPark` writes to. At the library layer `CanSetPark` still keys on whether a config path was supplied to `MountDevice`; only `MountDevice::new` (no path) reports `false`, which the binary never does. See [§Park persistence](#park-persistence) |
 | `CanSetPierSide` | runtime-determined | `true` when `flip_policy.enabled` is set on a hardware-validated mount; `false` otherwise (`SetSideOfPier` returns `NOT_IMPLEMENTED`). See [§Meridian flip](#meridian-flip) |
 | `DoesRefraction` | `false` | mount applies no refraction model; host (rp) provides refracted coords |
 | `TrackingRates` | `[Sidereal]` | sidereal only in MVP |
@@ -411,7 +411,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
 | `Park()` | stop tracking, slew both axes to the in-memory park-target encoder pair (loaded from config or captured at handshake — see [§Park lifecycle](#park-lifecycle)), when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
-| `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if the driver was started without `--config`, if not connected, or while slewing |
+| `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if not connected or while slewing. (The binary always resolves a config path, so the historical "no `--config`" refusal no longer fires in practice — see [§Park persistence](#park-persistence).) |
 | `SetSideOfPier(side)` | request a meridian flip to the named side. No-op success when `side == current_side`; otherwise issues a through-wrap flip slew to the current target. Returns `NOT_IMPLEMENTED` when `flip_policy.enabled = false`; `INVALID_VALUE` when `side` is `Unknown`; the usual `NOT_CONNECTED` / `INVALID_WHILE_PARKED` / `INVALID_OPERATION` (while slewing) refusals otherwise. See [§Meridian flip](#meridian-flip) |
 | `Tracking = true` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:G<RA>` (Tracking + sidereal) + `:I<RA>` (sidereal step period) + `:J<RA>`. Dec axis untouched |
 | `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
@@ -524,15 +524,19 @@ Park()
 The **park-target encoder pair** is loaded per axis on every connect,
 in this order of preference:
 
-1. **Config-file value** (per axis). When the driver was started with
-   `--config <path>`, the file is re-read on every connect and
-   `mount.park_ra_ticks` / `mount.park_dec_ticks` are used when
-   present. Per-axis: if only `park_ra_ticks` is set, RA comes from
-   the file and Dec falls through to step 3.
-2. **In-memory config value** (per axis). When no `--config` was
-   provided (`Config::default()` run), the `MountConfig` defaults are
-   used; in this mode `SetPark` is unreachable so these values do not
-   change in-process.
+1. **Config-file value** (per axis). The driver always resolves a
+   config-file path at startup (see
+   [§Device identity (UniqueID)](#device-identity-uniqueid)); that file
+   is re-read on every connect and `mount.park_ra_ticks` /
+   `mount.park_dec_ticks` are used when present. Per-axis: if only
+   `park_ra_ticks` is set, RA comes from the file and Dec falls through
+   to step 3.
+2. **In-memory config value** (per axis). Only reachable at the library
+   layer when `MountDevice` was constructed without a config path
+   (`MountDevice::new`, exercised by unit tests): the `MountConfig`
+   defaults are used and `SetPark` is unreachable, so these values do
+   not change in-process. The binary never takes this branch because it
+   always supplies a resolved path.
 3. **Live-snapshot fallback** (per axis). The current encoder
    reading from the [`MountManager`] snapshot. Two cases:
    - **Fresh power-up with `unpark_from_ap_position` set to a named
@@ -561,15 +565,23 @@ again (see [§Park persistence](#park-persistence)).
 ### Park persistence
 
 `SetPark` writes the current encoder pair back into the **same JSON
-config file** the driver was started with (the `--config <path>`
-argument). No separate state file. Concretely:
+config file** the driver loaded at startup. No separate state file.
+Concretely:
 
-1. **Capability gate.** `CanSetPark` returns `true` only when the
-   driver was started with `--config <path>`. Running on
-   `Config::default()` (no `--config`) leaves `CanSetPark = false` and
-   `SetPark` returns `ASCOM_NOT_IMPLEMENTED`. The capability flag is
-   computed at startup; clients that cache it once per session see a
-   stable answer.
+1. **Capability gate.** The driver now always resolves a config-file
+   path at startup — the `--config <path>` argument if given, else the
+   per-user platform config dir (see
+   [§Device identity (UniqueID)](#device-identity-uniqueid)). That path
+   is the one `SetPark` persists to, so **`CanSetPark` is effectively
+   `true` by default**: park persistence works out-of-the-box, even on
+   a no-arg launch. (Earlier builds gated `CanSetPark` on `--config`
+   being present and left it `false` for `Config::default()` runs.)
+   The library-level capability still keys on whether a config path was
+   supplied to `MountDevice` — `MountDevice::new` (no path) reports
+   `false` and `SetPark` returns `ASCOM_NOT_IMPLEMENTED` — but the
+   binary always supplies a path, so that branch is now only reachable
+   in unit tests. The capability flag is computed at startup; clients
+   that cache it once per session see a stable answer.
 2. **Refusal cases.** `SetPark` also refuses (`NOT_CONNECTED` /
    `INVALID_OPERATION`) when the device is disconnected or while a
    slew / park is in progress — the "current encoder pair" wouldn't be
@@ -627,7 +639,10 @@ broken `SetPark` cannot corrupt `transport`, `server.auth`,
 ASCOM has no notion of `SetPark` being non-durable, so `CanSetPark =
 false` is the right answer when the driver has nowhere to persist to —
 returning `true` and silently losing the park across restarts would
-violate the capability contract.
+violate the capability contract. The binary always resolves a real
+config path now, so it always *does* have somewhere to persist; the
+`false` answer survives only as the library default for
+`MountDevice::new`, exercised by unit tests.
 
 ### PulseGuide lifecycle
 
@@ -1114,7 +1129,7 @@ replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
   },
   "mount": {
     "name": "Star Adventurer GTi",
-    "unique_id": "skywatcher-sa-gti-001",
+    "unique_id": "550e8400-e29b-41d4-a716-446655440000",
     "description": "Sky-Watcher Star Adventurer GTi German Equatorial Mount",
     "enabled": true,
     "site_latitude_deg": 37.7749,
@@ -1164,6 +1179,11 @@ Notes:
   `Slewing` clears. Mirrors `rp`'s `mount.settle_after_slew` config.
 - `site_latitude_deg` is in WGS84 degrees, `+N`. `site_longitude_deg` is
   WGS84 degrees, `+E`. (ASCOM convention.)
+- `unique_id` is the ASCOM `UniqueID`. It is **generated, not
+  hand-authored** — leave it empty (or omit it) and the driver mints a
+  spec-compliant UUIDv4 on first run, persisting it to this file and
+  never overwriting it. The example value above is illustrative; yours
+  will differ. See [§Device identity (UniqueID)](#device-identity-uniqueid).
 - `tracking_rate` accepts `"sidereal"` only in MVP. Field is reserved
   for future expansion.
 - `cw_exclusion_zone` defines the CW exclusion interval in encoder
@@ -1234,6 +1254,61 @@ Notes:
   `park_ra_ticks` / `park_dec_ticks` keys remain as raw-encoder
   overrides for ops pinning a specific tick pair; when both are
   set, the explicit tick pair wins.
+
+### Device identity (UniqueID)
+
+ASCOM Alpaca requires every device's `UniqueID` to be **globally
+unique** and to **never change**, but the protocol enforces neither —
+uniqueness has to come from how the id is generated. The driver
+therefore *generates* its `mount.unique_id` rather than shipping a
+hardcoded literal (it previously shipped `"skywatcher-sa-gti-001"`,
+which collided across every install).
+
+On startup, before loading its configuration, the driver:
+
+1. **Resolves a config-file path.** The `--config <path>` argument if
+   given, else the per-user platform config directory — e.g.
+   `~/.config/rusty-photon/star-adventurer-gti.json` on Linux (XDG),
+   `~/Library/Application Support/rusty-photon/star-adventurer-gti.json`
+   on macOS, `%APPDATA%\rusty-photon\star-adventurer-gti.json` on
+   Windows (via `directories::ProjectDirs`). A path is *always*
+   resolvable, so identity and park persistence are never disabled for
+   lack of a `--config` flag. This is the same path used for
+   [§Park persistence](#park-persistence).
+2. **Materializes the identity.** Via
+   `rusty_photon_config::materialize_identity` against the JSON pointer
+   `/mount/unique_id`. If that pointer is absent, `null`, non-string, or
+   an empty/whitespace string in the **file layer**, the driver mints a
+   fresh UUIDv4, writes it into the file, and persists atomically
+   (staged temp file → `fsync` → POSIX `rename` → parent-dir `fsync`,
+   the same durability pattern as `SetPark`). The operation is
+   **idempotent**: an id that already exists is never overwritten, and
+   nothing is written when there was nothing to fill. On a *fresh
+   install* (no file yet) the default scaffold written out is the
+   serialized `Config::default()`, so the operator gets a complete,
+   valid config file — minus the minted id — to edit.
+3. **Loads the config** from that path (which now always exists) and
+   applies the CLI overrides (`--transport`, `--port`, `--baud`,
+   `--server-port`).
+
+The materialize step operates **only on the on-disk file**, never on a
+CLI-override-applied effective config, so a transient `--port` is never
+baked into the persisted file. It touches only the `/mount/unique_id`
+pointer; like `SetPark`, it reads the document as a `serde_json::Value`
+and preserves every other field. The two writers never clobber each
+other: `materialize_identity` runs once at startup and `SetPark`'s
+`write_mount_fields_to_config` runs at runtime, both read-modify-write
+the same file as a `Value`, each mutate only their own keys
+(`mount.unique_id` vs. `mount.park_ra_ticks` / `mount.park_dec_ticks`),
+and each finishes with an atomic rename — so running materialize once at
+startup and park-writes later is safe. The materialize-written scaffold
+always contains a `mount` object, which is exactly the object
+`write_mount_fields_to_config` and the connect-time field reader require.
+
+Operators who need to pin a specific id (e.g. migrating an existing
+profile in a client that keyed on the old value) can set `unique_id`
+explicitly in the config file; the never-overwrite rule means a
+hand-set id is preserved verbatim.
 
 ### Unpark from AP position
 
@@ -1349,7 +1424,7 @@ preferred-park target. All three are advertised via `SupportedActions`.
 
 | Action name | Parameters | Behaviour |
 |---|---|---|
-| `SetUnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Validates the park name, writes the value into the running config file (atomic-rename pattern, mirrors `SetPark` persistence — see [§Park persistence](#park-persistence)), updates the in-memory config. The new value takes effect on the *next* fresh-power-up auto-seed; the current session's encoder is not touched. Refuses if the driver was started without `--config`. |
+| `SetUnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Validates the park name, writes the value into the running config file (atomic-rename pattern, mirrors `SetPark` persistence — see [§Park persistence](#park-persistence)), updates the in-memory config. The new value takes effect on the *next* fresh-power-up auto-seed; the current session's encoder is not touched. Refuses (`INVALID_OPERATION`) when no config path is available — at the library layer that means `MountDevice::new`; the binary always resolves one, so this refusal no longer fires in practice. |
 | `SetPreferredApPark` | `park` (`ap_park_1..ap_park_5`) | Sets the AP-park target that `Park()` will slew to. Persisted to config alongside the same file-write pattern. `ap_park_0` is not a valid value here — "current position" is not a slew target. The legacy `park_ra_ticks` / `park_dec_ticks` config keys remain as raw-encoder overrides for ops who pinned a specific tick pair; when both forms are set, the explicit tick pair wins. |
 | `UnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Recovery operation. For `ap_park_0`, semantically equivalent to standard `Unpark()` — clears `AtPark`, no encoder change. For any named park (`ap_park_1..ap_park_5`), runs the [`ResetMountEncoders` sequence](#resetmountencoders-sequence) to safely write the park's encoder values *regardless of the current encoder state*, then clears `AtPark`. Operator is asserting "the OTA is physically at this park"; the driver makes firmware state match. |
 

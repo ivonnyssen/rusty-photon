@@ -22,6 +22,7 @@ workspace = true
 
 [dependencies]
 ascom-alpaca = { workspace = true, features = ["server", "rotator", "switch", "client"] }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }

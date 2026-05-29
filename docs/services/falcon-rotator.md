@@ -267,13 +267,13 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
   },
   "rotator": {
     "name": "Pegasus Falcon Rotator",
-    "unique_id": "pa-falcon-rotator-001",
+    "unique_id": "",
     "description": "Pegasus Astro Falcon Rotator (firmware >= 1.3)",
     "enabled": true
   },
   "switch": {
     "name": "Pegasus Falcon Status",
-    "unique_id": "pa-falcon-rotator-status-001",
+    "unique_id": "",
     "description": "Pegasus Falcon Rotator status sensors (voltage + limit-hit)",
     "enabled": true
   }
@@ -290,13 +290,24 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `server` | `tls` | Optional `rp-tls` block | none |
 | `server` | `auth` | Optional `rp-auth` block | none |
 | `rotator` | `name` | ASCOM device name | `"Pegasus Falcon Rotator"` |
-| `rotator` | `unique_id` | Unique identifier | `"pa-falcon-rotator-001"` |
+| `rotator` | `unique_id` | Stable ASCOM UniqueID (see [Device identity](#device-identity-uniqueid)) | _minted UUIDv4 on first run_ |
 | `rotator` | `description` | Device description | `"Pegasus Astro Falcon Rotator (firmware >= 1.3)"` |
 | `rotator` | `enabled` | Whether to register the Rotator device | `true` |
 | `switch` | `name` | ASCOM device name for the Switch | `"Pegasus Falcon Status"` |
-| `switch` | `unique_id` | Unique identifier for the Switch | `"pa-falcon-rotator-status-001"` |
+| `switch` | `unique_id` | Stable ASCOM UniqueID for the Switch (see [Device identity](#device-identity-uniqueid)) | _minted UUIDv4 on first run_ |
 | `switch` | `description` | Switch description | `"Pegasus Falcon Rotator status sensors (voltage + limit-hit)"` |
 | `switch` | `enabled` | Whether to register the Switch device | `true` |
+
+### Device identity (UniqueID)
+
+Each device's `unique_id` is its stable ASCOM **UniqueID**. The driver mints a
+fresh **UUIDv4** for the rotator and for the status switch on first run (via the
+shared `rusty-photon-config` crate), persists them to the resolved config file,
+and **never overwrites** an existing id — so identities are globally unique and
+stable across restarts, as the ASCOM spec requires. First run now **creates the
+config file** (at `--config`, else `~/.config/rusty-photon/pa-falcon-rotator.json`
+on Linux) if it is absent. Leave `unique_id` empty (or omit it) to have one
+minted; set it explicitly only to migrate a known id.
 
 ### CLI Arguments
 

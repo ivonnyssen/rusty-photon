@@ -8,8 +8,12 @@ use tracing::{debug, Level};
 #[command(name = "sky-survey-camera")]
 #[command(about = "ASCOM Alpaca Camera simulator backed by NASA SkyView")]
 struct Args {
-    #[arg(short, long, default_value = "config.json")]
-    config: PathBuf,
+    /// Path to the JSON config file. When omitted, resolves to the
+    /// per-user XDG config path (`~/.config/rusty-photon/sky-survey-camera.json`
+    /// on Linux) via `rusty_photon_config::resolve_config_path`. Pass
+    /// `--config config.json` to keep the previous CWD-relative default.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 
     #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
@@ -21,10 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_max_level(args.log_level)
         .init();
-    debug!(config = ?args.config, "starting sky-survey-camera");
+
+    let config_path = rusty_photon_config::resolve_config_path("sky-survey-camera", args.config)?;
+    debug!(config = ?config_path, "starting sky-survey-camera");
 
     ServiceRunner::new("sky-survey-camera").run(move |shutdown| async move {
-        run(&args.config, shutdown.cancelled())
+        run(&config_path, shutdown.cancelled())
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
     })

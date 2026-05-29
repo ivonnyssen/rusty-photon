@@ -108,7 +108,7 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
   },
   "focuser": {
     "name": "QHY Q-Focuser",
-    "unique_id": "qhy-focuser-001",
+    "unique_id": "",
     "description": "QHY Q-Focuser (EAF) Stepper Motor Controller",
     "enabled": true,
     "max_step": 64000,
@@ -117,6 +117,32 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
   }
 }
 ```
+
+`unique_id` is optional and may be omitted or left empty: the service mints
+a UUIDv4 on first run and persists it (see [Device identity
+(UniqueID)](#device-identity-uniqueid) below).
+
+### Device identity (UniqueID)
+
+The focuser's ASCOM `UniqueID` is **minted on first run** rather than shipped
+as a hardcoded literal. On startup the service resolves the config path (the
+`--config` path if given, otherwise the per-user platform config directory —
+e.g. `~/.config/rusty-photon/qhy-focuser.json` on Linux) and calls
+`rusty_photon_config::materialize_identity` with the JSON pointer
+`/focuser/unique_id`. That helper:
+
+- mints a spec-compliant UUIDv4 for the `unique_id` if it is absent, empty, or
+  not a string, and **never overwrites** an id that already holds a non-empty
+  value (so the identity is stable across restarts);
+- persists the result atomically, operating on the on-disk file only — a
+  transient `--port` / `--server-port` override is never baked into the file;
+- **writes the config file if it is absent**, scaffolding it from the defaults
+  before minting the id. First run therefore creates the config file at the
+  resolved path when none exists.
+
+Because the id is durable once written, set an explicit `unique_id` in the
+config only when you need to pin a known value (e.g. migrating an existing
+installation); otherwise leave it empty and let the service generate one.
 
 ### CLI Arguments
 

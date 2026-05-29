@@ -94,6 +94,15 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountConfig {
     pub name: String,
+    /// Spec-compliant ASCOM `UniqueID`. Ships **empty** so that
+    /// [`rusty_photon_config::materialize_identity`] mints a persistent
+    /// UUIDv4 on first run (see the design doc's
+    /// [§"Device identity (UniqueID)"](../../../docs/services/star-adventurer-gti.md#device-identity-uniqueid)).
+    /// `#[serde(default)]` lets the field be absent on disk: the
+    /// startup materialize step fills it into the file's `mount` object
+    /// before the config is loaded, so the running driver always sees a
+    /// real id.
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -998,7 +1007,12 @@ impl Default for MountConfig {
     fn default() -> Self {
         Self {
             name: "Star Adventurer GTi".to_string(),
-            unique_id: "skywatcher-sa-gti-001".to_string(),
+            // Empty by default: the spec-compliant UUIDv4 is minted on
+            // first run by `rusty_photon_config::materialize_identity`
+            // (called from `main.rs`) and persisted to the config file,
+            // never overwritten thereafter. See the design doc's
+            // §"Device identity (UniqueID)".
+            unique_id: String::new(),
             description: "Sky-Watcher Star Adventurer GTi German Equatorial Mount".to_string(),
             enabled: true,
             site_latitude_deg: 0.0,
@@ -1041,7 +1055,10 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.server.port, 11_117);
         assert_eq!(cfg.mount.name, "Star Adventurer GTi");
-        assert_eq!(cfg.mount.unique_id, "skywatcher-sa-gti-001");
+        // `unique_id` ships empty so the first-run materialize step mints
+        // a persistent UUIDv4; the hardcoded literal was removed for
+        // spec-compliant per-install uniqueness.
+        assert_eq!(cfg.mount.unique_id, "");
         assert!(cfg.mount.enabled);
         assert_eq!(cfg.mount.tracking_rate, TrackingRateName::Sidereal);
         assert_eq!(cfg.mount.settle_after_slew, Duration::from_secs(2));

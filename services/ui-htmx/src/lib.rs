@@ -15,12 +15,13 @@ pub mod pages;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Form, State};
+use axum::extract::{Form, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use maud::Markup;
+use serde::Deserialize;
 
 pub use config::{load_config, Config};
 pub use driver_client::{
@@ -120,9 +121,24 @@ fn respond(card: Markup, headers: &HeaderMap, title: &str) -> Response {
 /// full-page layout for a non-HTMX request).
 const CONFIG_TITLE: &str = "dsd-fp2 · configuration";
 
-async fn config_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+/// The `?unlock=<field>` query for the config GET routes: the escape hatch that
+/// renders one locked/identity field (e.g. `cover_calibrator.unique_id`)
+/// editable. Only names that are actually locked/identity fields are honoured
+/// (see [`pages::unlocked_from_query`]); the routes themselves are unchanged
+/// (a query string needs no new route).
+#[derive(Debug, Default, Deserialize)]
+struct UnlockQuery {
+    unlock: Option<String>,
+}
+
+async fn config_get(
+    State(state): State<AppState>,
+    Query(query): Query<UnlockQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let unlocked = pages::unlocked_from_query(query.unlock.as_deref());
     let card = match state.dsd_fp2.get_config().await {
-        Ok(resp) => pages::config_card(&resp.config, &resp.overrides, &[], None),
+        Ok(resp) => pages::config_card(&resp.config, &resp.overrides, &unlocked, &[], None),
         Err(err) => pages::error_card(&err),
     };
     respond(card, &headers, CONFIG_TITLE)
@@ -140,10 +156,12 @@ async fn config_post(
         Err(err) => pages::message_error_card(&err.to_string()),
         // BFF-side field errors (e.g. a port out of range) — re-render with the
         // errors instead of sending a value the driver rejects with a
-        // non-field-level parse error.
+        // non-field-level parse error. The unlocked set is preserved so an
+        // identity field the operator was editing stays editable in place.
         Ok(merged) if !merged.errors.is_empty() => pages::config_card(
             &merged.config,
             &merged.overrides,
+            &merged.unlocked,
             &merged.errors,
             Some(Banner::Invalid),
         ),
@@ -154,12 +172,14 @@ async fn config_post(
                 // state shows the driver's real effective config (it may have
                 // normalized values — e.g. a trimmed serial.port — written
                 // through override-pinned fields, or redacted secrets) rather
-                // than echoing the submitted blob. If the refresh hiccups, the
-                // apply already succeeded, so fall back to the submitted values.
+                // than echoing the submitted blob. The apply succeeded, so the
+                // identity field re-locks (no `unlocked`); if the refresh
+                // hiccups, fall back to the submitted values, also re-locked.
                 ApplyStatus::Ok => match state.dsd_fp2.get_config().await {
                     Ok(fresh) => pages::config_card(
                         &fresh.config,
                         &fresh.overrides,
+                        &[],
                         &[],
                         Some(Banner::Saved),
                     ),
@@ -167,12 +187,16 @@ async fn config_post(
                         &merged.config,
                         &merged.overrides,
                         &[],
+                        &[],
                         Some(Banner::Saved),
                     ),
                 },
+                // Driver rejected the values: keep the unlocked set so a rejected
+                // identity edit stays editable while the operator corrects it.
                 ApplyStatus::Invalid => pages::config_card(
                     &merged.config,
                     &merged.overrides,
+                    &merged.unlocked,
                     &resp.errors,
                     Some(Banner::Invalid),
                 ),
@@ -183,11 +207,16 @@ async fn config_post(
     respond(card, &headers, CONFIG_TITLE)
 }
 
-async fn config_status(State(state): State<AppState>) -> Markup {
+async fn config_status(State(state): State<AppState>, Query(query): Query<UnlockQuery>) -> Markup {
+    // The reconnect poll usually carries no `?unlock=`, but honour it for
+    // consistency so a card swapped in mid-unlock keeps the identity field
+    // editable rather than snapping shut.
+    let unlocked = pages::unlocked_from_query(query.unlock.as_deref());
     match state.dsd_fp2.get_config().await {
         Ok(resp) => pages::config_card(
             &resp.config,
             &resp.overrides,
+            &unlocked,
             &[],
             Some(Banner::Reconnected),
         ),
@@ -251,7 +280,12 @@ mod tests {
     #[tokio::test]
     async fn config_get_renders_non_config_driver_banner() {
         let state = AppState::with_client(Arc::new(NonConfigDriver));
-        let response = config_get(State(state), HeaderMap::new()).await;
+        let response = config_get(
+            State(state),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -259,6 +293,90 @@ mod tests {
         assert!(
             html.contains("does not expose configuration actions"),
             "{html}"
+        );
+    }
+
+    /// A `ConfigClient` whose `config.get` returns a fixed config — enough to
+    /// render the form and assert on the identity-field lock state. `apply` is
+    /// never exercised here.
+    struct StaticConfigDriver;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for StaticConfigDriver {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            Ok(ConfigGetResponse {
+                config: serde_json::json!({
+                    "serial": { "port": "/dev/ttyACM0", "baud_rate": 115200, "polling_interval": "500ms", "timeout": "3s" },
+                    "server": { "port": 11119, "discovery_port": 32227, "tls": null, "auth": null },
+                    "cover_calibrator": { "name": "FP2", "unique_id": "dsd-fp2-001", "description": "panel", "enabled": true, "max_brightness": 4096 }
+                }),
+                overrides: vec![],
+            })
+        }
+        async fn apply_config(
+            &self,
+            _config: &serde_json::Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            unreachable!("apply is not exercised by this test")
+        }
+    }
+
+    async fn render_config_get(unlock: Option<&str>) -> String {
+        let state = AppState::with_client(Arc::new(StaticConfigDriver));
+        let query = UnlockQuery {
+            unlock: unlock.map(String::from),
+        };
+        let response = config_get(State(state), Query(query), HeaderMap::new()).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// The `<input ...>` tag whose `name` attribute is `name`.
+    fn input_tag(html: &str, name: &str) -> String {
+        let pos = html.find(&format!(r#"name="{name}""#)).unwrap();
+        let start = html[..pos].rfind("<input").unwrap();
+        let end = html[start..].find('>').unwrap() + start;
+        html[start..=end].to_string()
+    }
+
+    #[tokio::test]
+    async fn config_get_locks_unique_id_without_unlock_query() {
+        let html = render_config_get(None).await;
+        let tag = input_tag(&html, "cover_calibrator.unique_id");
+        assert!(tag.contains("disabled"), "unique_id not disabled: {tag}");
+        assert!(
+            html.contains("Unlock to edit"),
+            "missing unlock link:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_get_unlocks_unique_id_with_unlock_query() {
+        let html = render_config_get(Some("cover_calibrator.unique_id")).await;
+        let tag = input_tag(&html, "cover_calibrator.unique_id");
+        assert!(!tag.contains("disabled"), "unique_id still disabled: {tag}");
+        assert!(
+            html.contains("Lock again"),
+            "missing lock-again link:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_get_unlock_query_ignores_non_locked_field() {
+        // `?unlock=server.port` must not unlock a hard-read-only field.
+        let html = render_config_get(Some("server.port")).await;
+        let tag = input_tag(&html, "server.port");
+        assert!(
+            tag.contains("disabled"),
+            "server.port unexpectedly enabled: {tag}"
+        );
+        // And the identity field stays locked (only the named field is honoured).
+        let id_tag = input_tag(&html, "cover_calibrator.unique_id");
+        assert!(
+            id_tag.contains("disabled"),
+            "unique_id unexpectedly enabled: {id_tag}"
         );
     }
 }

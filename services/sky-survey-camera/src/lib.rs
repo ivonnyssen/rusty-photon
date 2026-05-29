@@ -36,6 +36,28 @@ pub async fn run(
     config_path: &Path,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
+    // Mint a spec-compliant ASCOM UniqueID on first run and persist it
+    // at `/device/unique_id`. `materialize_identity` is idempotent —
+    // it only fills an absent/empty id and never overwrites an existing
+    // one. Only run it when the file is present: a missing config is a
+    // hard error in `load_config` because the `optics` fields are
+    // mandatory and there is no `Config::default()` to scaffold from,
+    // so writing an identity-only file here would just defer the same
+    // failure. The call is brief blocking I/O at startup; doing it
+    // directly before the load `await` is acceptable.
+    if config_path.exists() {
+        let outcome = rusty_photon_config::materialize_identity(
+            config_path,
+            &serde_json::Value::Object(Default::default()),
+            &["/device/unique_id"],
+        )?;
+        tracing::debug!(
+            path = ?config_path,
+            wrote = outcome.wrote,
+            filled = ?outcome.filled,
+            "materialized device identity"
+        );
+    }
     let config = load_config(config_path).await?;
     let survey_client = build_survey_client(&config)?;
     run_with_client(config, survey_client, shutdown).await

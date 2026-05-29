@@ -44,6 +44,12 @@ fn default_discovery_port() -> Option<u16> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FocuserConfig {
     pub name: String,
+    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run by
+    /// `rusty_photon_config::materialize_identity` (JSON pointer
+    /// `/focuser/unique_id`), persisted, and never overwritten. Defaults to an
+    /// empty string so an absent or empty value triggers minting rather than
+    /// reusing a hardcoded literal.
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -102,7 +108,9 @@ impl Default for FocuserConfig {
     fn default() -> Self {
         Self {
             name: "QHY Q-Focuser".to_string(),
-            unique_id: "qhy-focuser-001".to_string(),
+            // Empty by default; minted as a UUIDv4 on first run and persisted by
+            // `rusty_photon_config::materialize_identity`.
+            unique_id: String::new(),
             description: "QHY Q-Focuser (EAF) Stepper Motor Controller".to_string(),
             enabled: true,
             max_step: default_max_step(),
@@ -148,7 +156,9 @@ mod tests {
         let config = FocuserConfig::default();
 
         assert_eq!(config.name, "QHY Q-Focuser");
-        assert_eq!(config.unique_id, "qhy-focuser-001");
+        // `unique_id` defaults to empty so it is minted on first run rather than
+        // reusing a hardcoded literal (see `materialize_identity` in main.rs).
+        assert_eq!(config.unique_id, "");
         assert!(!config.description.is_empty());
         assert!(config.enabled);
         assert_eq!(config.max_step, 64_000);
@@ -250,6 +260,25 @@ mod tests {
         assert_eq!(config.focuser.max_step, 64_000);
         assert_eq!(config.focuser.speed, 0);
         assert!(!config.focuser.reverse);
+    }
+
+    #[test]
+    fn config_deserializes_with_omitted_unique_id() {
+        // A config that omits `unique_id` must still parse, defaulting the field
+        // to empty so first-run minting fills it.
+        let json = r#"{
+            "serial": { "port": "/dev/ttyUSB1" },
+            "server": { "port": 9000 },
+            "focuser": {
+                "name": "No-ID Focuser",
+                "description": "unique_id omitted"
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.focuser.name, "No-ID Focuser");
+        assert_eq!(config.focuser.unique_id, "");
     }
 
     #[test]

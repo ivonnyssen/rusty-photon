@@ -144,9 +144,9 @@ pull in its serial/transport dependencies.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/` | Index: links to the configurable services (Phase 2: just `dsd-fp2`). |
-| `GET`  | `/config/dsd-fp2` | Call `config.get`; render the hand-built form filled with current values. |
+| `GET`  | `/config/dsd-fp2` | Call `config.get`; render the hand-built form filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. `cover_calibrator.unique_id`) editable — the read-only-by-default escape hatch. |
 | `POST` | `/config/dsd-fp2` | Rebuild the full Config from the form, call `config.apply`; render the result state (see below). |
-| `GET`  | `/config/dsd-fp2/status` | HTMX poll target during reconnect: try `config.get`; when the driver answers, swap in the refreshed form. |
+| `GET`  | `/config/dsd-fp2/status` | HTMX poll target during reconnect: try `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
 | `GET`  | `/health` | Liveness; returns `OK`. |
 | `GET`  | `/assets/app.css`, `/assets/htmx.min.js` | Embedded static assets (`include_str!`). |
 
@@ -196,6 +196,56 @@ This is the round-trip the protocol was designed for:
   from the blob). `server.discovery_port` stays editable — it is a separate UDP
   discovery port and does not affect the HTTP endpoint the BFF connects to.
 
+#### Field-editability tiers
+
+The form classifies each field into one of four tiers, evaluated in this order
+(the first that applies wins for the `disabled` state, and `merge_form` mirrors
+the same precedence when deciding whether to overlay a submitted value):
+
+| Tier | Fields | Disabled? | Overlaid by `merge_form`? |
+|------|--------|-----------|---------------------------|
+| **Override-pinned** | any field in `config.get`'s `overrides[]` | yes | never (driver skips it anyway) |
+| **Hard read-only** (`READ_ONLY_FIELDS`) | `server.port` | yes, always — no escape hatch | never |
+| **Locked / identity** (`LOCKED_FIELDS`) | `cover_calibrator.unique_id` | yes **by default**; no once unlocked | only when unlocked **and** not pinned |
+| **Editable** (`EDITABLE_FIELDS`) | everything else | no | yes (unless pinned/read-only) |
+
+Pinned always wins: an override-pinned field stays read-only even if it is also a
+locked/identity field that the user unlocked.
+
+- **`cover_calibrator.unique_id` is a *locked / identity* field — read-only by
+  default behind a deliberate escape hatch**, distinct from the hard
+  `READ_ONLY_FIELDS` tier above. The driver now **owns and generates** its ASCOM
+  `UniqueID`, so editing it from the page is an escape hatch for a *misbehaving
+  driver*, not routine configuration. By default the field renders **disabled**
+  with the hint *"Identity — the driver owns this. Editing is an escape hatch for
+  a misbehaving driver."* and an **"Unlock to edit"** link
+  (`GET /config/dsd-fp2?unlock=cover_calibrator.unique_id`). Following it
+  re-renders the same card with the field **enabled**, a warning, and a **"Lock
+  again"** link (`GET /config/dsd-fp2`, no query). The unlock state is carried
+  with **no client-side JS**:
+  - On a **GET**, the `?unlock=<field>` query (axum `Query`) names the field to
+    unlock; only a name actually in `LOCKED_FIELDS` is honoured (a hard-read-only
+    field, a typo, or no query unlocks nothing).
+  - The rendered card emits a hidden `__unlocked` field
+    (`serde_json::to_string` of the unlocked set) alongside `__config` /
+    `__overrides`, so on **POST** the unlocked set round-trips. `merge_form`
+    overlays a locked field from its form value **only if** `__unlocked` lists it
+    **and** it is not override-pinned; otherwise it round-trips from the hidden
+    blob untouched. An invalid submission re-renders with the field still
+    unlocked (the operator's in-progress edit is preserved); a successful apply
+    re-locks it. Unlike `__config` / `__overrides` (required and validated),
+    `__unlocked` is **optional** and a malformed value is treated as "nothing
+    unlocked" — the safe default keeps the field read-only, and the overlay gate
+    still requires the name to be present, so a forged or absent `__unlocked` can
+    never *edit* a locked field. The set is filtered to `LOCKED_FIELDS`, so a
+    forged `__unlocked` can only ever unlock a field that is genuinely a
+    locked/identity field — never `server.port`.
+
+  (As with `enabled`/`server.port`, this governs the **UI path** only. A
+  hand-crafted POST that edits `unique_id` inside the `__config` blob is
+  equivalent to any forged config and is the driver's job to reject — driver-side
+  identity/`unique_id` validation lands separately.)
+
 ## Behavioral contracts
 
 ### Rendering the page (`GET /config/dsd-fp2`)
@@ -203,6 +253,11 @@ This is the round-trip the protocol was designed for:
 - **Happy path:** `config.get` succeeds → render the form filled with the
   effective config. Fields listed in `overrides[]` are disabled and annotated
   "pinned by a command-line override".
+- **Locked/identity escape hatch:** `cover_calibrator.unique_id` is disabled by
+  default with an "Unlock to edit" link. `GET /config/dsd-fp2?unlock=<field>`
+  re-renders the card with that locked field editable (only names in
+  `LOCKED_FIELDS` are honoured); the no-query URL re-locks it. See
+  [Field-editability tiers](#field-editability-tiers).
 - **Driver unreachable / refused:** `HttpClient` transport error or HTTP non-2xx
   → render an error banner naming the driver URL, with a retry link. The form is
   not shown (there is nothing to edit).
@@ -346,6 +401,9 @@ the driver with `--port` via `ServiceHandle::start_with_args`). Scenarios:
 
 - The config page renders the driver's current configuration.
 - A serial-port override is shown read-only with an explanation.
+- The `cover_calibrator.unique_id` identity field is read-only by default with an
+  "unlock to edit" affordance, and becomes editable when opened with
+  `?unlock=cover_calibrator.unique_id` (the read-only-by-default escape hatch).
 - A valid change is applied and the page reports the driver is reloading + polls
   `…/status`.
 - The reloaded driver's new configuration is served back through the page —
@@ -370,7 +428,10 @@ the driver with `--port` via `ServiceHandle::start_with_args`). Scenarios:
   actions), driven in-process through `AppState::with_client` with a stub
   `ConfigClient`; plus `from_config` rejection of URL-embedded credentials.
 - `pages`: form ⇆ Config reconstruction (hidden blob + editable overlay by JSON
-  pointer; override-pinned not overlaid; redacted-secret sentinel round-trip).
+  pointer; override-pinned not overlaid; redacted-secret sentinel round-trip);
+  the locked/identity tier (`cover_calibrator.unique_id` disabled by default,
+  editable when `__unlocked`/`?unlock=` names it, pinned still wins, a forged
+  `__unlocked` can't unlock a non-locked field).
 - `config.rs`: defaults and JSON load.
 - `io.rs`: `ReqwestHttpClient` connection-refused error path (mirrors sentinel).
 

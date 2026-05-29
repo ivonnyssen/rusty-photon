@@ -32,7 +32,7 @@ rust_binary(
     # consistent with Cargo, and identical to the _mock binary below.
     rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
     visibility = ["//visibility:public"],
-    deps = [":dsd-fp2_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":dsd-fp2_lib", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -110,7 +110,7 @@ rust_binary(
     # Public so ui-htmx's BDD can cross-spawn a real mock-mode dsd-fp2, the way
     # sentinel's BDD references //services/filemonitor:filemonitor.
     visibility = ["//visibility:public"],
-    deps = [":dsd-fp2_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":dsd-fp2_lib_mock", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(

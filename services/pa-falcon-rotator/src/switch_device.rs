@@ -424,8 +424,15 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let device = disconnected_device();
-        assert_eq!(device.unique_id(), "pa-falcon-rotator-status-001");
+        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let device = FalconStatusSwitchDevice::new(
+            SwitchConfig {
+                unique_id: "test-switch-unique-id".to_string(),
+                ..SwitchConfig::default()
+            },
+            manager,
+        );
+        assert_eq!(device.unique_id(), "test-switch-unique-id");
     }
 
     #[tokio::test]

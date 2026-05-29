@@ -41,7 +41,7 @@ rust_binary(
     # under both Cargo and Bazel.
     rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     visibility = ["//visibility:public"],
-    deps = [":ppba-driver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":ppba-driver_lib", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -177,7 +177,7 @@ rust_binary(
     # the one that triggered the original i18n lookup mismatch in CI because
     # rules_rust used `ppba-driver_mock` as CARGO_PKG_NAME.
     rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
-    deps = [":ppba-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":ppba-driver_lib_mock", "//crates/rusty-photon-config:rusty-photon-config"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(

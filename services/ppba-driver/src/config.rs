@@ -45,6 +45,10 @@ fn default_discovery_port() -> Option<u16> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwitchConfig {
     pub name: String,
+    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
+    /// `rusty_photon_config::materialize_identity`; never overwritten once set.
+    /// Defaults to an empty string so a fresh config triggers materialization.
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -55,6 +59,10 @@ pub struct SwitchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservingConditionsConfig {
     pub name: String,
+    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
+    /// `rusty_photon_config::materialize_identity`; never overwritten once set.
+    /// Defaults to an empty string so a fresh config triggers materialization.
+    #[serde(default)]
     pub unique_id: String,
     pub description: String,
     #[serde(default = "default_true")]
@@ -109,7 +117,9 @@ impl Default for SwitchConfig {
     fn default() -> Self {
         Self {
             name: "Pegasus PPBA Switch".to_string(),
-            unique_id: "ppba-switch-001".to_string(),
+            // Empty by default: a real UUIDv4 is minted and persisted on first
+            // run by `rusty_photon_config::materialize_identity`.
+            unique_id: String::new(),
             description: "Pegasus Astro PPBA Gen2 Power Control".to_string(),
             enabled: true,
         }
@@ -120,7 +130,9 @@ impl Default for ObservingConditionsConfig {
     fn default() -> Self {
         Self {
             name: "Pegasus PPBA Weather".to_string(),
-            unique_id: "ppba-observingconditions-001".to_string(),
+            // Empty by default: a real UUIDv4 is minted and persisted on first
+            // run by `rusty_photon_config::materialize_identity`.
+            unique_id: String::new(),
             description: "Pegasus Astro PPBA Environmental Sensors".to_string(),
             enabled: true,
             averaging_period: default_averaging_period(),
@@ -172,7 +184,9 @@ mod tests {
         let config = SwitchConfig::default();
 
         assert_eq!(config.name, "Pegasus PPBA Switch");
-        assert_eq!(config.unique_id, "ppba-switch-001");
+        // Default is empty; the real UUIDv4 is minted at runtime by
+        // `rusty_photon_config::materialize_identity`.
+        assert_eq!(config.unique_id, "");
         assert!(!config.description.is_empty());
         assert!(config.enabled);
     }
@@ -182,7 +196,9 @@ mod tests {
         let config = ObservingConditionsConfig::default();
 
         assert_eq!(config.name, "Pegasus PPBA Weather");
-        assert_eq!(config.unique_id, "ppba-observingconditions-001");
+        // Default is empty; the real UUIDv4 is minted at runtime by
+        // `rusty_photon_config::materialize_identity`.
+        assert_eq!(config.unique_id, "");
         assert!(!config.description.is_empty());
         assert!(config.enabled);
         assert_eq!(config.averaging_period, Duration::from_secs(300)); // 5 minutes
