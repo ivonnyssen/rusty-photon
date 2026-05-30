@@ -100,17 +100,53 @@ jobs:
           # --test_output=all surfaces rp:bdd's unbuffered BDD-TRACE breadcrumbs
           # (ENTER / reset-ok / EXIT, tagged +Ns) even on a *passing* run — parity
           # with the BDD leg in bazel.yml. The default --test_output=errors hides
-          # the per-scenario timing on slow-but-passing rp:bdd runs. With
-          # --test_timeout=900 (.bazelrc) a hung rp:bdd is now FAILED rather than
-          # wall-cancelled, so its breadcrumbs flush here too — closing the open
-          # item #339 noted (a wall-cancelled run still won't flush).
+          # the per-scenario timing on slow-but-passing rp:bdd runs. NOTE: --test_output=all
+          # only PRINTS a test's log when it COMPLETES; --test_timeout=900 (.bazelrc)
+          # was meant to convert a hung rp:bdd into a clean FAILED-with-flushed-log,
+          # but has been observed NOT to fire under `bazel coverage` (runs still
+          # wall-cancel at 60 min with nothing flushed — PR #342). The heartbeat (A),
+          # timeout-bound (C), and always() capture step (B) below are what actually
+          # surface a hung run until that timeout bug is fixed.
           # Capture bazel's exit code. `|| status=$?` is robust whether or not
           # `set -e` is active (GitHub's default step shell adds `-eo pipefail`):
           # the `||` keeps a non-zero exit from aborting the step and records the
           # code, so the classification below can tell exit 3 (tests failed/timed
           # out — tolerated) from a real build failure.
+          # --- observability (A): live heartbeat of the rp:bdd breadcrumb trail.
+          # rp:bdd flushes BDD-TRACE breadcrumbs (ENTER / reset-ok / EXIT, +Ns) to
+          # stderr per scenario; bazel's processwrapper-sandbox tees that to
+          # test.log incrementally. But --test_output=all only PRINTS a test's log
+          # when it COMPLETES, so a hung-then-cancelled rp:bdd shows nothing inline
+          # (issue #339's open item). This background tailer echoes the newest
+          # breadcrumb every 30s into the live CI log, so even a hard cancel leaves
+          # the last scenario it ENTERed (with no matching EXIT) visible in the
+          # streamed output. The full log is captured by the always() step below.
+          BDD_LOG="bazel-testlogs/services/rp/bdd/test.log"
+          (
+            last=""
+            while :; do
+              if [[ -f "$BDD_LOG" ]]; then
+                line="$(grep -aE 'BDD-TRACE' "$BDD_LOG" 2>/dev/null | tail -1 || true)"
+                if [[ -n "$line" && "$line" != "$last" ]]; then
+                  echo "[rp:bdd heartbeat $(date -u +%H:%M:%SZ)] $line"
+                  last="$line"
+                fi
+              fi
+              sleep 30
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
+          # --- observability (C): bound the run ~10 min below the 60-min job
+          # timeout. `timeout --signal=INT 50m` interrupts bazel cleanly (it flushes
+          # the in-progress test.log) with headroom for the always() capture step to
+          # run unhurried, instead of a hard job-cancel at 60 min that flushes
+          # nothing. --kill-after SIGKILLs if bazel ignores the INT. `timeout` exits
+          # 124 when it fired (137 if it had to escalate to SIGKILL).
           status=0
-          bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
+          timeout --signal=INT --kill-after=2m 50m \
+            bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
             --test_output=all \
@@ -124,12 +160,56 @@ jobs:
           # job-cancel-with-no-output into an uploaded partial report. Any other
           # non-zero (1 build error, 2 bad flags, 4 no tests, 8 interrupted, ...)
           # is a real failure and aborts the job.
-          if [[ $status -eq 3 ]]; then
+          if [[ $status -eq 124 || $status -eq 137 ]]; then
+            echo "::error title=rp:bdd hang::bazel coverage hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) hung. The scenario it ENTERed without an EXIT is in the heartbeat lines above and the uploaded 'bazel-testlogs' artifact."
+            exit 1
+          elif [[ $status -eq 3 ]]; then
             echo "::warning::Some coverage tests failed or timed out (bazel exit 3); uploading partial coverage for the targets that passed."
           elif [[ $status -ne 0 ]]; then
             echo "::error::bazel coverage failed (exit $status)"
             exit "$status"
           fi
+
+      # --- observability (B): capture test logs even when rp:bdd hangs/tims out.
+      # The breadcrumbs are already on disk in bazel-testlogs/.../test.log (teed
+      # incrementally); this surfaces them inline AND as a downloadable artifact.
+      # `always()` so it runs after a failed/timed-out bazel step too.
+      - name: Surface bazel test logs (rp:bdd hang diagnostics)
+        if: always()
+        run: |
+          set +e  # diagnostic step: never abort on a grep miss / absent file
+          TESTLOGS="$(readlink -f bazel-testlogs 2>/dev/null || echo bazel-testlogs)"
+          DEST=bazel-testlogs-captured
+          mkdir -p "$DEST"
+          # Copy every test.log/test.xml out of the (symlinked) testlogs tree into
+          # a real dir so the upload is clean and survives the symlink.
+          if [[ -d "$TESTLOGS" ]]; then
+            ( cd "$TESTLOGS" && find . \( -name test.log -o -name test.xml \) -print0 \
+                | tar --null -cf - -T - ) | tar -C "$DEST" -xf - 2>/dev/null
+          fi
+          RP_BDD_LOG="$TESTLOGS/services/rp/bdd/test.log"
+          if [[ -f "$RP_BDD_LOG" ]]; then
+            echo "===== rp:bdd BDD-TRACE trail (last 80 breadcrumbs) ====="
+            grep -aE 'BDD-TRACE' "$RP_BDD_LOG" | tail -80
+            echo "===== scenario(s) ENTERed but never EXITed (stuck candidates) ====="
+            STUCK="$(comm -23 \
+              <(grep -aoE 'ENTER .*scenario="[^"]*"' "$RP_BDD_LOG" | grep -aoE 'scenario="[^"]*"' | sort -u) \
+              <(grep -aoE 'EXIT scenario="[^"]*"'   "$RP_BDD_LOG" | grep -aoE 'scenario="[^"]*"' | sort -u))"
+            echo "${STUCK:-(none — every scenario EXITed cleanly)}"
+            echo "===== rp:bdd test.log tail (last 80 lines) ====="
+            tail -80 "$RP_BDD_LOG"
+          else
+            echo "No rp:bdd test.log at $RP_BDD_LOG (target may not have started)."
+          fi
+
+      - name: Upload bazel test logs (artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-testlogs
+          path: bazel-testlogs-captured/**
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Split combined lcov per package
         run: |
