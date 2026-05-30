@@ -205,16 +205,33 @@ test:conformu --test_env=CONFORMU_PATH
 # `bazel coverage --config=coverage` needs OmniSim installed + OMNISIM_PATH set,
 # exactly like a local `bazel test --test_tag_filters=bdd` run.
 #
-# Child-process coverage caveat: under `bazel coverage //...` the spawned service
-# binaries ARE instrumented (first-party top-level targets matching the filter),
-# but whether their .profraw is COLLECTED depends on Bazel/rules_rust propagating
-# a unique LLVM_PROFILE_FILE to each spawned child and merging it back. Validate
-# in the first CI run by diffing bazel-<service> vs <service> coverage; see
-# docs/plans/bazel-migration.md for the contingency if child coverage is missing.
+# Child-process coverage: under `bazel coverage //...` the spawned service
+# binaries ARE instrumented (first-party top-level targets matching the filter).
+# To COLLECT their .profraw, bdd-infra's spawn path sets a per-child
+# LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw when COVERAGE_DIR is set
+# (child_coverage_profile_var in crates/bdd-infra/src/lib.rs), so each child
+# writes into the directory Bazel's lcov merger consumes. Validate it works by
+# diffing bazel-<service> vs <service> coverage; see docs/plans/bazel-migration.md.
 coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services
 coverage:coverage --combined_report=lcov
+# Cap any single coverage test. An instrumented BDD suite (observed:
+# //services/rp:bdd stalling under instrumentation while it spawns OmniSim) can
+# hang indefinitely; the size=large (900s) timeout was observed NOT to fire
+# under `bazel coverage`, so the action ran to the CI job's 60-min wall and
+# uploaded nothing. An explicit --test_timeout kills the hang and marks it
+# FAILED; with --keep_going (set above) the rest of the report still builds, and
+# bazel-coverage.yml tolerates the resulting "tests failed" exit so the coverage
+# of every target that DID pass still uploads. 900s preserves rp:bdd's intended
+# budget (~400s warm) while bounding a hang at minutes, not the full hour.
+# NB: the single-value form is a fleet-wide override — it caps EVERY coverage
+# test at 900s, so a future coverage target needing more must switch this to the
+# 4-value form (short,moderate,long,eternal). Both OmniSim BDD targets are 900s
+# (size=large) today. If this still doesn't kill a hang under coverage (the
+# size-derived timeout didn't), exclude the two OmniSim spawners instead — see
+# docs/plans/bazel-migration.md.
+coverage:coverage --test_timeout=900
 # conformu is excluded from coverage too: it drives the external ConformU tool
 # (not instrumented) and only runs when CONFORMU_PATH is set.
 coverage:coverage --test_tag_filters=-requires-cargo,-conformu

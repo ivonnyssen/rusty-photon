@@ -21,3 +21,25 @@ ignore:
 comment:
   layout: "files"
   require_changes: true
+
+# Flag carryforward (ref: https://docs.codecov.com/docs/carryforward-flags).
+# When a commit does not re-upload a given flag, Codecov backfills that flag's
+# last-known coverage so the per-service badges stay populated instead of
+# flipping to "unknown". Two jobs depend on this:
+#   * Cargo (test.yml): narrows uploads to the changed packages via cargo-rail,
+#     so most commits upload only a subset of flags.
+#   * Bazel shadow (bazel-coverage.yml): uploads every bazel-<pkg> flag each run,
+#     but the run is sometimes cancelled (an instrumented-BDD hang hitting the
+#     60-min wall), uploading nothing for that commit.
+# Declaring carryforward here makes it explicit and version-controlled for every
+# flag, and — critically — applies it to the bazel-<pkg> shadow flags, which had
+# no carried baseline and rendered "unknown" on every commit whose bazel-coverage
+# run was cancelled. Carryforward is applied when an upload is processed, so the
+# badges fill in on the next main commit that uploads, not retroactively.
+# Note: the project status (above) has no `flags:` filter, so carried-forward
+# bazel-<pkg> data now enters its merged report; this cannot regress the gate
+# (Codecov merges flags by union, and bazel-* covers a subset of the Cargo lines,
+# so the merged % only stays equal or rises). See docs/plans/bazel-migration.md.
+flag_management:
+  default_rules:
+    carryforward: true

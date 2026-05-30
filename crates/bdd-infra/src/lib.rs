@@ -105,8 +105,16 @@ pub fn __bdd_bazel_chdir() {
         return;
     };
     let cwd = std::env::current_dir().expect("bdd_main: current_dir");
+    // Absolutize relative paths that must survive the chdir below: the
+    // `*_BINARY` discovery vars, and (under `bazel coverage`) `COVERAGE_DIR`,
+    // from which spawned children derive their `LLVM_PROFILE_FILE` at spawn time
+    // — by then the cwd is `BDD_PACKAGE_DIR`, so a relative `COVERAGE_DIR` would
+    // resolve wrong. Bazel sets it absolute today; this keeps us correct if it
+    // ever doesn't. See [`child_coverage_profile_var`].
     let to_absolutize: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, v)| k.ends_with("_BINARY") && std::path::Path::new(v).is_relative())
+        .filter(|(k, v)| {
+            (k.ends_with("_BINARY") || k == "COVERAGE_DIR") && std::path::Path::new(v).is_relative()
+        })
         .collect();
     for (k, v) in to_absolutize {
         std::env::set_var(&k, cwd.join(v));
@@ -137,6 +145,41 @@ use tracing::debug;
 /// `ppba-driver` → `PPBA_DRIVER_BINARY`, `rp` → `RP_BINARY`, and so on.
 fn binary_env_var(package_name: &str) -> String {
     format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"))
+}
+
+/// Per-child `LLVM_PROFILE_FILE` for coverage collection under `bazel coverage`.
+///
+/// Under `bazel coverage` rules_rust instruments the first-party service
+/// binaries and sets `COVERAGE_DIR` for the test action, but only the test
+/// process's own `.profraw` is collected by default — a spawned child inherits
+/// the parent test's `LLVM_PROFILE_FILE` and would clobber it. Point each child
+/// at a distinct file inside `COVERAGE_DIR` (`<pkg>-<pid>-<sig>.profraw`, via the
+/// LLVM `%p`/`%m` patterns) so Bazel's lcov merger — which globs that directory —
+/// folds the child's coverage into the combined report. This is the
+/// child-process-coverage contingency from `docs/plans/bazel-migration.md`.
+///
+/// Returns `None` when `COVERAGE_DIR` is unset: under plain `bazel test`, and
+/// under `cargo`/`cargo-llvm-cov` (which sets `LLVM_PROFILE_FILE`, not
+/// `COVERAGE_DIR`), leaving those paths untouched.
+fn child_coverage_profile_var(package_name: &str) -> Option<(&'static str, std::ffi::OsString)> {
+    let coverage_dir = std::env::var_os("COVERAGE_DIR")?;
+    Some((
+        "LLVM_PROFILE_FILE",
+        child_coverage_profile_path(&coverage_dir, package_name),
+    ))
+}
+
+/// Build the `<COVERAGE_DIR>/<pkg>-%p-%m.profraw` path. Split out from
+/// [`child_coverage_profile_var`] so the path construction is unit-testable
+/// without mutating process env. `%p` (pid) and `%m` (binary signature) keep
+/// each spawned child's file distinct from the parent's and from each other.
+fn child_coverage_profile_path(
+    coverage_dir: &std::ffi::OsStr,
+    package_name: &str,
+) -> std::ffi::OsString {
+    let mut path = std::path::PathBuf::from(coverage_dir);
+    path.push(format!("{package_name}-%p-%m.profraw"));
+    path.into_os_string()
 }
 
 /// Handle to a running service process.
@@ -316,6 +359,9 @@ pub fn run_once(
 
     let mut cmd = std::process::Command::new(&binary);
     cmd.args(args);
+    if let Some((key, value)) = child_coverage_profile_var(package_name) {
+        cmd.env(key, value);
+    }
 
     if let Some(data) = stdin_data {
         cmd.stdin(std::process::Stdio::piped());
@@ -428,6 +474,10 @@ fn spawn_process(binary: &str, package_name: &str, args: &[&str]) -> tokio::proc
     debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(args).stdout(Stdio::piped()).kill_on_drop(true);
+    if let Some((key, value)) = child_coverage_profile_var(package_name) {
+        debug!(profile = ?value, "routing {} child coverage into COVERAGE_DIR", package_name);
+        cmd.env(key, value);
+    }
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
@@ -726,6 +776,36 @@ mod tests {
         assert_eq!(value, "relative/path");
     }
 
+    #[test]
+    fn test_bdd_bazel_chdir_absolutizes_coverage_dir() {
+        let _lock = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pkg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        let saved_cov = std::env::var_os("COVERAGE_DIR");
+        std::env::set_var("COVERAGE_DIR", "relative/cov/dir");
+        std::env::set_var("BDD_PACKAGE_DIR", &target);
+
+        __bdd_bazel_chdir();
+
+        let absolutized = std::env::var("COVERAGE_DIR").unwrap();
+        std::env::set_current_dir(&previous).unwrap();
+        std::env::remove_var("BDD_PACKAGE_DIR");
+        match saved_cov {
+            Some(v) => std::env::set_var("COVERAGE_DIR", v),
+            None => std::env::remove_var("COVERAGE_DIR"),
+        }
+
+        // COVERAGE_DIR is absolutized like the *_BINARY vars so a spawned
+        // child's LLVM_PROFILE_FILE still resolves after the chdir.
+        assert_eq!(
+            std::path::PathBuf::from(&absolutized),
+            previous.join("relative/cov/dir")
+        );
+    }
+
     // -----------------------------------------------------------------------
     // binary_env_var tests
     // -----------------------------------------------------------------------
@@ -735,6 +815,66 @@ mod tests {
         assert_eq!(binary_env_var("rp"), "RP_BINARY");
         assert_eq!(binary_env_var("ppba-driver"), "PPBA_DRIVER_BINARY");
         assert_eq!(binary_env_var("qhy-focuser"), "QHY_FOCUSER_BINARY");
+    }
+
+    // -----------------------------------------------------------------------
+    // child_coverage_profile_path tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_child_coverage_profile_path_joins_dir_and_llvm_pattern() {
+        let path = child_coverage_profile_path(std::ffi::OsStr::new("/cov/dir"), "rp");
+        let path = std::path::PathBuf::from(path);
+        // Distinct per-child file inside COVERAGE_DIR; %p/%m keep it unique.
+        assert_eq!(
+            path.file_name().unwrap(),
+            std::ffi::OsStr::new("rp-%p-%m.profraw")
+        );
+        assert_eq!(path.parent().unwrap(), std::path::Path::new("/cov/dir"));
+    }
+
+    #[test]
+    fn test_child_coverage_profile_path_preserves_dashed_package_name() {
+        let path = child_coverage_profile_path(std::ffi::OsStr::new("/c"), "ppba-driver");
+        let path = std::path::PathBuf::from(path);
+        assert_eq!(
+            path.file_name().unwrap(),
+            std::ffi::OsStr::new("ppba-driver-%p-%m.profraw")
+        );
+    }
+
+    #[test]
+    fn test_child_coverage_profile_var_gates_on_coverage_dir() {
+        // The COVERAGE_DIR gate is the invariant that keeps the cargo /
+        // cargo-llvm-cov and plain `bazel test` paths untouched: no
+        // COVERAGE_DIR => no child env override. CWD_LOCK serialises the
+        // env mutation against the other COVERAGE_DIR-touching test.
+        let _lock = CWD_LOCK.lock().unwrap();
+        let saved = std::env::var_os("COVERAGE_DIR");
+
+        std::env::remove_var("COVERAGE_DIR");
+        let unset = child_coverage_profile_var("rp");
+
+        std::env::set_var("COVERAGE_DIR", "/cov/dir");
+        let set = child_coverage_profile_var("rp");
+
+        match saved {
+            Some(v) => std::env::set_var("COVERAGE_DIR", v),
+            None => std::env::remove_var("COVERAGE_DIR"),
+        }
+
+        assert!(
+            unset.is_none(),
+            "without COVERAGE_DIR the child env must be left untouched"
+        );
+        let (key, value) = set.expect("COVERAGE_DIR set => LLVM_PROFILE_FILE override");
+        assert_eq!(key, "LLVM_PROFILE_FILE");
+        let value = std::path::PathBuf::from(value);
+        assert_eq!(value.parent().unwrap(), std::path::Path::new("/cov/dir"));
+        assert_eq!(
+            value.file_name().unwrap(),
+            std::ffi::OsStr::new("rp-%p-%m.profraw")
+        );
     }
 
     // -----------------------------------------------------------------------
