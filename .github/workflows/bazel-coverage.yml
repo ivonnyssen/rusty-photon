@@ -82,6 +82,7 @@ jobs:
 
       - name: bazel coverage
         run: |
+          set -uo pipefail
           REMOTE_FLAGS=(--config=remote-cache)
           if [[ -n "$CACHE_WRITE_TOKEN" ]]; then
             REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
@@ -89,16 +90,38 @@ jobs:
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
           # --config=coverage selects the nightly channel + --cfg=coverage_nightly
-          # + --combined_report=lcov + first-party instrumentation filter (.bazelrc).
-          # --test_tag_filters=-requires-cargo INCLUDES the BDD suite; it is also
-          # set by --config=coverage but pinned here on the command line so CI is
-          # not sensitive to rc precedence (command line always wins).
-          # --remote_download_outputs=all overrides build:ci's `toplevel` so the
-          # combined lcov and its per-test .dat inputs are materialised locally.
+          # + --combined_report=lcov + first-party instrumentation filter +
+          # --test_timeout=900 (.bazelrc). --test_tag_filters=-requires-cargo
+          # INCLUDES the BDD suite; it is also set by --config=coverage but pinned
+          # here on the command line so CI is not sensitive to rc precedence
+          # (command line always wins). --remote_download_outputs=all overrides
+          # build:ci's `toplevel` so the combined lcov and its per-test .dat inputs
+          # are materialised locally.
+          # Capture bazel's exit code. `|| status=$?` is robust whether or not
+          # `set -e` is active (GitHub's default step shell adds `-eo pipefail`):
+          # the `||` keeps a non-zero exit from aborting the step and records the
+          # code, so the classification below can tell exit 3 (tests failed/timed
+          # out — tolerated) from a real build failure.
+          status=0
           bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
-            //...
+            //... || status=$?
+          # Bazel exit codes: 0 = everything passed; 3 = build OK but one or more
+          # tests FAILED or TIMED OUT. In shadow coverage we tolerate 3: with
+          # --keep_going every other target still ran, the --combined_report still
+          # builds from their coverage.dat, and the split/upload steps below then
+          # publish the coverage of everything that DID pass. This converts a
+          # single instrumented-BDD hang (killed by --test_timeout) from a 60-min
+          # job-cancel-with-no-output into an uploaded partial report. Any other
+          # non-zero (1 build error, 2 bad flags, 4 no tests, 8 interrupted, ...)
+          # is a real failure and aborts the job.
+          if [[ $status -eq 3 ]]; then
+            echo "::warning::Some coverage tests failed or timed out (bazel exit 3); uploading partial coverage for the targets that passed."
+          elif [[ $status -ne 0 ]]; then
+            echo "::error::bazel coverage failed (exit $status)"
+            exit "$status"
+          fi
 
       - name: Split combined lcov per package
         run: |

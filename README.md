@@ -6,7 +6,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 
 ## Services
 
-Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel** is the shadow-mode `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under `bazel-<pkg>` Codecov flags. The Bazel badges read "unknown" until that workflow has run on `main`.
+Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel** is the shadow-mode `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under `bazel-<pkg>` Codecov flags. During shadow mode the Bazel badges reflect the most recent `main` commit whose `bazel-coverage` run completed (Codecov carries the last value forward when a run is cancelled), so they may lag the Cargo badges — and may read lower where BDD child-process coverage is still being validated. They are not gating; the goal is Cargo↔Bazel parity before cutover.
 
 | Service | Type | Port | Coverage (Cargo) | Coverage (Bazel) | Description |
 |---------|------|------|------------------|------------------|-------------|

@@ -362,13 +362,77 @@ the whole directory.
 
 **Validate in run #1** by diffing each `bazel-<service>` flag against `<service>`
 (Cargo). If a service's Bazel coverage is materially lower, child-process
-profraw is being dropped. **Contingency:** have `bdd-infra`'s spawn path set
-`LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw` on each child `Command`
-only when `COVERAGE_DIR` is set (Bazel-only — cargo-llvm-cov sets
-`LLVM_PROFILE_FILE`, not `COVERAGE_DIR`, so the Cargo path is untouched), so
-every child writes a distinct file into the directory Bazel's lcov merger
-consumes. Each service's BDD coverage still caches independently, same as the
-unit/integration actions.
+profraw is being dropped. The first runs confirmed exactly that — e.g.
+`bazel-filemonitor` ≈ 61 % vs Cargo `filemonitor` ≈ 97 %, `bazel-rp` ≈ 73 % vs
+`rp` ≈ 95 % — so the **contingency is now implemented**: `bdd-infra`'s spawn path
+([`child_coverage_profile_var`] in `crates/bdd-infra/src/lib.rs`, applied in
+`spawn_process` and `run_once`) sets
+`LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw` on each child `Command`,
+but only when `COVERAGE_DIR` is set. That gate makes it Bazel-coverage-only:
+plain `bazel test` and `cargo`/`cargo-llvm-cov` (which sets `LLVM_PROFILE_FILE`,
+not `COVERAGE_DIR`) are untouched. `bdd_main!` absolutizes `COVERAGE_DIR` before
+its chdir, alongside the `*_BINARY` vars, so the child's path resolves correctly.
+
+**This is necessary but may not be sufficient — know what run #1 can and cannot
+show.** Reading `rules_rust` 0.70.0's `util/collect_coverage/collect_coverage.rs`:
+it globs *every* `*.profraw` in `COVERAGE_DIR` into the `llvm-profdata merge`
+(so each child's counters ARE folded into the `.profdata`), but the subsequent
+`llvm-cov export` is passed exactly one object — the test binary — and no
+`-object` for the spawned service binaries. `llvm-cov` only emits coverage for
+functions whose coverage-mapping lives in the objects on its command line.
+Consequence: a spawned child's counters land in the profdata, but are exported
+only for code whose mapping is *also* in the `rust_test` binary — i.e. library
+crates the BDD target links (`rp:bdd` deps `:rp_lib`), not binary-only code
+(`main.rs`, startup/shutdown). So this change can lift the library-level numbers
+but will not, on its own, capture binary-only paths. **Run-#1 rubric:** re-diff
+`bazel-<service>` vs `<service>`. If the gap closes, done. If `bazel-<service>`
+stays near its pre-change value despite child `*.profraw` appearing in
+`COVERAGE_DIR`, the cause is the single-`-object` export above (not a wiring
+bug) — the fix is export-side: add the spawned binaries as `-object`s (a custom
+post-merge `llvm-cov export`, or a `rules_rust` change), or fall back to
+collecting those suites' coverage Cargo-style. Do **not** revert this wiring;
+it is the prerequisite that puts the child profraw where any export-side fix
+needs it.
+
+**Badge reliability (carryforward).** The `bazel-<pkg>` badges read "unknown"
+not from a wiring fault but because a Codecov *branch* badge resolves to the
+branch HEAD, and the shadow job uploads nothing whenever its run is cancelled.
+`.github/codecov.yml` now sets `flag_management.default_rules.carryforward:
+true`, so a commit that doesn't re-upload a flag inherits its last-known value
+instead of rendering "unknown". This makes carryforward explicit and
+version-controlled for every flag (the Cargo badges already behaved this way —
+the Cargo job narrows uploads to changed packages via cargo-rail yet all its
+badges stay populated — but in-repo there was no declaration of it). It
+decouples badge health from per-commit upload success.
+
+Two caveats. (1) **Not retroactive.** Codecov applies carryforward while
+*processing an upload*, so the currently-"unknown" badges do not populate the
+instant this config lands — they fill in on the next `main` commit whose
+`bazel-coverage` run uploads at least one report (HEAD's parent already carries
+real bazel data to inherit from). For an immediate fix, re-run the cancelled
+HEAD job or push a no-op `main` commit. (2) **Gating status.** The
+`coverage.status.project` gate has no `flags:` filter, so it runs on the merged
+report across all flags; with carryforward on, the partial `bazel-<pkg>` data is
+now carried into that merge. This cannot regress the 1 % drop gate — Codecov
+merges flags by union (a line is covered if *any* flag covers it) and `bazel-*`
+covers a strict subset of the first-party lines Cargo already covers, so the
+merged % is non-decreasing. If you want the gate kept strictly Cargo-only during
+shadow mode, scope `status.project.default.flags` to the Cargo flags.
+
+**The instrumented `rp:bdd` hang.** ~half of push-to-main coverage runs were
+cancelled at the 60-min job wall: `//services/rp:bdd` intermittently hangs under
+instrumentation while spawning OmniSim, and its `size = "large"` (900s) timeout
+was observed *not* to fire under `bazel coverage`, so nothing killed it and the
+run uploaded zero coverage. Two guards now bound the blast radius:
+`.bazelrc` `coverage:coverage --test_timeout=900` caps any single coverage test
+explicitly, and `bazel-coverage.yml` tolerates a "tests failed/timed out" exit
+(Bazel exit 3) so the combined report — built by `--keep_going` from every
+target that *did* pass — still splits and uploads. The underlying hang (an
+unbounded Alpaca poll under instrumentation, per the OmniSim flake family in the
+service docs) is the remaining reliability item; if the explicit `--test_timeout`
+also proves not to fire under coverage, the fallback is to exclude
+`//services/rp:bdd` + `//services/calibrator-flats:bdd` (the two OmniSim
+spawners) from the coverage graph and collect their BDD coverage separately.
 
 This supersedes the Phase 7 note that coverage stays a Cargo-only gate: coverage
 now has a Bazel shadow path, to be validated in CI before any cutover.
