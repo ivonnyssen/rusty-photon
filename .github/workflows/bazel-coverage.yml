@@ -95,9 +95,16 @@ jobs:
           # not sensitive to rc precedence (command line always wins).
           # --remote_download_outputs=all overrides build:ci's `toplevel` so the
           # combined lcov and its per-test .dat inputs are materialised locally.
+          # --test_output=all surfaces rp:bdd's unbuffered BDD-TRACE breadcrumbs
+          # (ENTER / reset-ok / EXIT, tagged +Ns) even on a *passing* run — parity
+          # with the BDD leg in bazel.yml. The default --test_output=errors hides
+          # the per-scenario timing on the slow-but-passing rp:bdd runs, which are
+          # exactly the runs that occasionally cross this job's 60-min cancel.
+          # (A run that actually times out still won't flush them — see PR.)
           bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
+            --test_output=all \
             //...
 
       - name: Split combined lcov per package
