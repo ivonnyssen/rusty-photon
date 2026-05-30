@@ -21,6 +21,22 @@ module(
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 
+# Pinned single-file patch to rules_rust's coverage collector. BDD rust_tests
+# spawn the service binary as a child process; the collector merges the child's
+# profraw but `llvm-cov export` only emits coverage for functions in an -object
+# on its command line, and stock rules_rust passes ONLY the test binary. The
+# patch appends each spawned binary (RUST_COVERAGE_EXTRA_OBJECTS, set on the BDD
+# targets) as an extra -object so spawned-binary src/ coverage is exported.
+# Inert when the var is unset. Upstream has no equivalent hook (PRs #3490/#3808
+# unmerged; HEAD identical), so this is carried until upstreamed. The
+# `bazel/cargo target parity` CI job guards that the patch still applies and is
+# effective. See docs/plans/bazel-migration.md "Coverage under Bazel".
+single_version_override(
+    module_name = "rules_rust",
+    patch_strip = 1,
+    patches = ["//third_party/patches:collect_coverage_extra_objects.patch"],
+)
+
 # --- Rust toolchain --------------------------------------------------------
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

@@ -394,6 +394,88 @@ collecting those suites' coverage Cargo-style. Do **not** revert this wiring;
 it is the prerequisite that puts the child profraw where any export-side fix
 needs it.
 
+**Run #1 result (commit `9e6deb9`, PR #340, coverage run 26675105103).** The run
+completed cleanly — `//services/rp:bdd` finished in 368 s (66/66 pass, no hang;
+the new `--test_timeout=900` and exit-3 tolerance stayed dormant) and split 27
+package reports. The parity diff confirmed the prediction above: the
+`bazel-<svc>` numbers were **unchanged** from before the child-coverage wiring.
+
+| service | Bazel | Cargo | gap |
+|---|---|---|---|
+| rp | 72.64 | 94.77 | −22 |
+| filemonitor | 61.18 | 95.78 | −35 |
+| ppba-driver | 78.29 | 94.69 | −16 |
+| sentinel | 72.02 | 93.86 | −22 |
+| star-adventurer-gti | 33.23 | 95.29 | −62 |
+
+`bazel-rp` (72.64) and `bazel-filemonitor` (61.18) are bit-identical to their
+pre-wiring values, so the child `.profraw` is being collected but not exported —
+exactly the single-`-object` limitation. `star-adventurer-gti` (−62) is the
+starkest, its coverage being almost entirely BDD-child-driven. The wiring is
+correct and regression-free; closing the gap is now an **export-side** task.
+
+**Export-side root cause + proven fix (spike, locally validated).** The gap is
+*not* a collection failure — under `VERBOSE_COVERAGE` the sandboxed
+`collect_coverage` provably feeds all ~36 spawned-`filemonitor` child `.profraw`
+into `llvm-profdata merge`, so the child counters ARE in the `.profdata`. The
+loss is that `rules_rust` 0.70.0's `util/collect_coverage/collect_coverage.rs`
+runs `llvm-cov export … -object <TEST_BINARY>` with **exactly one, hardcoded
+object** and no env/attr/provider to add more (confirmed; upstream HEAD is
+identical and the two relevant PRs — #3490 `COVERAGE_BINARY`, #3808 — only swap
+the single object and are unmerged). The test binary has no covmap for
+`filemonitor/src`, so the merged child counters have nothing to bind to.
+
+Proven locally on `filemonitor:bdd` (instrumented `bdd` + `filemonitor`
+binaries, one merged profdata):
+
+| `llvm-cov export` objects | `services/filemonitor/src` |
+|---|---|
+| `-object <test>` (rules_rust today) | **0 / 0 — none** |
+| `-object <test> -object <filemonitor>` | **155 / 166 = 93.4%** (`lib.rs` 92.8%, `main.rs` 100%) |
+
+vs Cargo ~95.8%. The multi-object lcov is a strict superset (0 SF lost); the
+child's counters bind because `filemonitor/src` is compiled into both binaries
+with matching covmap hashes.
+
+**Fix (implemented).** A minimal single-file patch of `collect_coverage.rs`,
+pinned via `single_version_override(module_name="rules_rust", patch_strip=1,
+patches=["//third_party/patches:collect_coverage_extra_objects.patch"])` in
+`MODULE.bazel`, appends `-object <p>` to the `llvm-cov export` for each
+`:`-separated entry of a new `RUST_COVERAGE_EXTRA_OBJECTS` env var (resolved with
+the collector's own runfiles/`config_bin_dir` logic). Each `rust_test` that
+spawns a binary sets that var to the `$(rootpath …)` of the binaries it spawns —
+the same values already in its `*_BINARY` vars (mock variants included, e.g.
+`star-adventurer-gti_mock`). The var is read only by `collect_coverage` under
+`bazel coverage`, so it is inert for cargo/`cargo-llvm-cov` and plain
+`bazel test`; `split_lcov.py` and the upload are unchanged.
+
+Validated locally on three services (per-service `src`):
+
+| service `src` | before | after |
+|---|---|---|
+| filemonitor | 0% | 92.8% |
+| sentinel | (missing) | 79.6% |
+| star-adventurer-gti | 33% | 78.2% |
+
+Cost / guards: the vendored ~15-line patch must be re-rebased on rules_rust
+upgrades (upstream has no hook — PRs #3490/#3808 unmerged, HEAD identical). A
+non-applying patch already fails every `bazel` command at fetch time; the
+`parity` CI job additionally asserts the patch is *effective* (the
+`RUST_COVERAGE_EXTRA_OBJECTS` marker survives in the extracted collector), so a
+silently-dropped patch is caught. **Known gap to confirm in CI:** a cross-package
+spawn (e.g. `sentinel` → `filemonitor`) did not surface the cross-spawned
+binary's `src` locally. This is NOT a resolver bug — the cross-spawned binary is
+in the test's `data`, so `find_extra_object` resolves its runfiles path and the
+`-object` is placed; the residual is a downstream covmap/profraw-binding detail,
+not the BUILD wiring. It is supplementary anyway — each service's own `bdd`
+covers its own `src`, so the per-service flags are unaffected. The residual
+`bazel < cargo` deltas (e.g. star-adventurer 78% vs 95%) are the next item to
+characterize against the full shadow run.
+
+Badge reliability and run reliability (PR #340) are delivered; with this
+export-side change the per-service Bazel coverage now approaches Cargo, the last
+parity prerequisite before cutover.
+
 **Badge reliability (carryforward).** The `bazel-<pkg>` badges read "unknown"
 not from a wiring fault but because a Codecov *branch* badge resolves to the
 branch HEAD, and the shadow job uploads nothing whenever its run is cancelled.

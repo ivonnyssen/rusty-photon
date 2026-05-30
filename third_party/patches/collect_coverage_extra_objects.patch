@@ -1,0 +1,73 @@
+--- a/util/collect_coverage/collect_coverage.rs
++++ b/util/collect_coverage/collect_coverage.rs
+@@ -106,6 +106,31 @@
+         .join("bin")
+ }
+ 
++/// rusty-photon patch (collect_coverage_extra_objects): resolve a workspace-
++/// relative `$(rootpath ...)` path for a spawned binary listed in
++/// RUST_COVERAGE_EXTRA_OBJECTS, mirroring how `test_binary` is resolved above
++/// (runfiles when present, else the config bin dir). Returns None when neither
++/// candidate exists on disk, so a stale/missing entry is skipped rather than
++/// passed to `llvm-cov` (which hard-fails on a non-existent -object).
++fn find_extra_object(
++    execroot: &Path,
++    runfiles_dir: &Option<PathBuf>,
++    coverage_dir: &Path,
++    rel: &str,
++) -> Option<PathBuf> {
++    if let Some(rd) = runfiles_dir {
++        let in_runfiles = rd.join(env::var("TEST_WORKSPACE").unwrap()).join(rel);
++        if in_runfiles.exists() {
++            return Some(in_runfiles);
++        }
++    }
++    let in_bin = execroot.join(config_bin_dir(execroot, coverage_dir)).join(rel);
++    if in_bin.exists() {
++        return Some(in_bin);
++    }
++    None
++}
++
+ fn main() {
+     let coverage_dir = PathBuf::from(env::var("COVERAGE_DIR").unwrap());
+     let execroot = PathBuf::from(env::var("ROOT").unwrap());
+@@ -152,7 +177,7 @@
+             test_binary
+         }
+     };
+-    let profraw_files: Vec<PathBuf> = fs::read_dir(coverage_dir)
++    let profraw_files: Vec<PathBuf> = fs::read_dir(&coverage_dir)
+         .unwrap()
+         .flatten()
+         .filter_map(|entry| {
+@@ -192,7 +217,28 @@
+         .arg("-ignore-filename-regex=.*external/.+")
+         .arg("-ignore-filename-regex=/tmp/.+")
+         .arg(format!("-path-equivalence=.,{}", execroot.display()))
+-        .arg(test_binary)
++        .arg(test_binary);
++
++    // rusty-photon patch (collect_coverage_extra_objects): BDD rust_tests SPAWN
++    // the service binary as a child process. bdd-infra routes each child's
++    // LLVM_PROFILE_FILE into COVERAGE_DIR so its counters ARE merged above, but
++    // `llvm-cov export` only emits coverage for functions whose covmap lives in
++    // an -object on the command line. Append each spawned binary (a ':'-separated
++    // list of runfiles paths in RUST_COVERAGE_EXTRA_OBJECTS, set on the BDD
++    // targets) as an extra -object so its src/ coverage is emitted. Inert when the
++    // var is unset: cargo/cargo-llvm-cov, plain `bazel test`, and non-BDD coverage.
++    if let Ok(extra_objects) = env::var("RUST_COVERAGE_EXTRA_OBJECTS") {
++        for rel in extra_objects.split(':').filter(|s| !s.is_empty()) {
++            match find_extra_object(&execroot, &runfiles_dir, &coverage_dir, rel) {
++                Some(object) => {
++                    llvm_cov_cmd.arg("-object").arg(object);
++                }
++                None => debug_log!("RUST_COVERAGE_EXTRA_OBJECTS entry not found, skipping: {}", rel),
++            }
++        }
++    }
++
++    llvm_cov_cmd
+         .stdout(process::Stdio::piped())
+         .stderr(process::Stdio::piped());
+ 
