@@ -26,4 +26,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 reqwest = { workspace = true }
-tower = "0.5"
+tower = { workspace = true }
