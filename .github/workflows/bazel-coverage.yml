@@ -97,6 +97,13 @@ jobs:
           # (command line always wins). --remote_download_outputs=all overrides
           # build:ci's `toplevel` so the combined lcov and its per-test .dat inputs
           # are materialised locally.
+          # --test_output=all surfaces rp:bdd's unbuffered BDD-TRACE breadcrumbs
+          # (ENTER / reset-ok / EXIT, tagged +Ns) even on a *passing* run — parity
+          # with the BDD leg in bazel.yml. The default --test_output=errors hides
+          # the per-scenario timing on slow-but-passing rp:bdd runs. With
+          # --test_timeout=900 (.bazelrc) a hung rp:bdd is now FAILED rather than
+          # wall-cancelled, so its breadcrumbs flush here too — closing the open
+          # item #339 noted (a wall-cancelled run still won't flush).
           # Capture bazel's exit code. `|| status=$?` is robust whether or not
           # `set -e` is active (GitHub's default step shell adds `-eo pipefail`):
           # the `||` keeps a non-zero exit from aborting the step and records the
@@ -106,6 +113,7 @@ jobs:
           bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
+            --test_output=all \
             //... || status=$?
           # Bazel exit codes: 0 = everything passed; 3 = build OK but one or more
           # tests FAILED or TIMED OUT. In shadow coverage we tolerate 3: with
