@@ -73,6 +73,7 @@ rust_test(
         "BDD_PACKAGE_DIR": "services/calibrator-flats",
         "CALIBRATOR_FLATS_BINARY": "$(rootpath :calibrator-flats)",
         "RP_BINARY": "$(rootpath //services/rp:rp)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :calibrator-flats):$(rootpath //services/rp:rp)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

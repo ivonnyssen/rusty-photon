@@ -92,6 +92,7 @@ rust_test(
     edition = "2021",
     env = {
         "STAR_ADVENTURER_GTI_BINARY": "$(rootpath :star-adventurer-gti_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :star-adventurer-gti_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -150,6 +151,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/star-adventurer-gti",
         "STAR_ADVENTURER_GTI_BINARY": "$(rootpath :star-adventurer-gti_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :star-adventurer-gti_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

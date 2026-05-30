@@ -109,7 +109,7 @@ rust_test(
     ),
     data = [":ppba-driver"],
     edition = "2021",
-    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver)"},
+    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver)"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -134,7 +134,7 @@ rust_test(
     ],
     data = [":ppba-driver_mock"],
     edition = "2021",
-    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)"},
+    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver_mock)"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -197,6 +197,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/ppba-driver",
         "PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

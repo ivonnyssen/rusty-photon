@@ -69,6 +69,7 @@ rust_test(
     edition = "2021",
     env = {
         "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :dsd-fp2_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -131,6 +132,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/dsd-fp2",
         "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :dsd-fp2_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

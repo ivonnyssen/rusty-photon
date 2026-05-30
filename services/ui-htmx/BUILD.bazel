@@ -82,6 +82,7 @@ rust_test(
         "BDD_PACKAGE_DIR": "services/ui-htmx",
         "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
         "UI_HTMX_BINARY": "$(rootpath :ui-htmx)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

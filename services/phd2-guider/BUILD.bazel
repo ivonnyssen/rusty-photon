@@ -105,6 +105,7 @@ rust_test(
     env = {
         "MOCK_PHD2_BINARY": "$(rootpath :mock_phd2)",
         "PHD2_GUIDER_BINARY": "$(rootpath :phd2-guider)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_phd2):$(rootpath :phd2-guider)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
