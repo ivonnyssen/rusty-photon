@@ -351,6 +351,45 @@ The application does not know or care what subscribers do with events.
 | `document_updated` | document_id, section_name | Plugin contributed a section |
 | `document_persistence_failed` | document_id, file_path, error | Sidecar write failed during capture. The FITS file is on disk but the cache is not populated and no sidecar exists; `document_id`-keyed lookups return 404 (disk fallback requires the sidecar). Recover by reading the FITS via `file_path` from the payload. See [Capture Tool Details](#capture-tool-details). |
 
+### Event Envelope
+
+Every emitted event is wrapped in a uniform envelope. The envelope is
+**additive** over the historical webhook body: `event_id`, `event`,
+`timestamp`, and `payload` keep their exact meaning and contents, so
+existing webhook plugins are unaffected. New fields are carried alongside
+and absent optional fields are omitted from the JSON.
+
+```json
+{
+  "event_id": "f3a8b9c0-1d4e-4a2b-8f3a-2c7d9e1f4b6a",
+  "event_seq": 1247,
+  "operation_id": "0bbc7e54-c2c2-4e3b-9a8d-7f43a3a8b2f1",
+  "event": "slew_started",
+  "timestamp": "2026-05-19T20:14:33Z",
+  "started_at": "2026-05-19T20:14:33.412Z",
+  "payload": { "ra": 12.0, "dec": -30.0, "from_ra": 11.998, "from_dec": -29.991 }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `event_id` | Per-emission UUID. Unchanged; the routing key for the plugin completion contract (`POST /api/plugins/{event_id}/complete`). |
+| `event_seq` | Monotonically increasing per-emission counter. Total order across all events; the SSE `id` (and `Last-Event-ID` replay key) for the [Real-Time Stream](#real-time-stream). |
+| `operation_id` | Correlation key shared by an operation's `*_started`, `*_complete`, and `*_failed` events. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
+| `event` | The event-type string, e.g. `"slew_started"`. |
+| `timestamp` | ISO-8601 emission time. Unchanged historical format. |
+| `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
+| `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
+| `predicted_duration_ms` / `max_duration_ms` | Reserved for the predicted-deadline phase; currently always omitted. Will carry the operation's expected and hard-ceiling durations. |
+| `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
+
+A blocking operation emits a **triple** — a `*_started` envelope at the
+entry point and a `*_complete` or `*_failed` envelope at the end, all
+sharing one `operation_id`. (`sync_mount`, being instant per ASCOM, emits
+only `*_complete` / `*_failed`.) See
+[`docs/plans/predictive-deadlines-and-watchdog.md`](../plans/predictive-deadlines-and-watchdog.md)
+for the deadline-monitoring design this envelope feeds.
+
 ### Delivery: Webhooks
 
 Plugins register a callback URL and subscribed events in the configuration.
