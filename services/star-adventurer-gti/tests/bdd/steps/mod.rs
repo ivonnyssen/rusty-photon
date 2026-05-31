@@ -1,4 +1,5 @@
 pub mod abort_steps;
+pub mod config_actions_steps;
 pub mod connection_steps;
 pub mod coordinate_steps;
 pub mod meridian_flip_steps;

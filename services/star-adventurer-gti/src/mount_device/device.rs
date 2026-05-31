@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use ascom_alpaca::api::Device;
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::ASCOMResult;
 use async_trait::async_trait;
 use tracing::debug;
 
@@ -130,10 +130,14 @@ impl Device for MountDevice {
     /// the design doc's
     /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(ApParkAction::ALL
+        let mut names: Vec<String> = ApParkAction::ALL
             .iter()
             .map(|action| action.name().to_string())
-            .collect())
+            .collect();
+        // Append the config vendor actions when this instance was built with a
+        // config-action context (the normal path through `ServerBuilder`).
+        names.extend(crate::config_actions::config_action_names(&self.config_ctx));
+        Ok(names)
     }
 
     /// Dispatch a vendor `Action`. Each handler takes the single
@@ -151,10 +155,9 @@ impl Device for MountDevice {
             Some(ApParkAction::UnparkFromApPosition) => {
                 self.handle_unpark_from_ap_position(&parameters).await
             }
-            None => Err(ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                format!("unknown action {action:?}"),
-            )),
+            // Not an ApPark action — try the config vendor actions. A truly
+            // unknown name surfaces as ACTION_NOT_IMPLEMENTED from there too.
+            None => crate::config_actions::dispatch(&self.config_ctx, action, parameters).await,
         }
     }
 }

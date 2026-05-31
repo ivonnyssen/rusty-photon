@@ -2,6 +2,7 @@
 //! Star Adventurer GTi driver CLI.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -93,22 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Device identity already present in {:?}", config_path);
     }
 
-    // Load from the resolved path. The file now always exists (materialize
-    // wrote the default scaffold on first run), so there is no in-memory
-    // `Config::default()` fallback path here.
-    debug!("Loading configuration from {:?}", config_path);
-    let mut config = load_config(&config_path)?;
-
-    apply_cli_overrides(&mut config, &args)?;
-
-    // Park persistence targets the *same* resolved config file as the
-    // identity step. Canonicalise it so `SetPark` writes to a stable
-    // absolute location even if the process later `chdir`s; also run the
-    // early-warning writability probe so a bad path / permissions setup
-    // surfaces a `warn!` at boot instead of only on the first `SetPark`
-    // call. Because a config path is now always resolved, `CanSetPark`
-    // is effectively true by default — see the design doc's
-    // §"Park persistence".
+    // Park persistence + config.apply target the *same* resolved config file.
+    // Canonicalise it once so writes hit a stable absolute location even if the
+    // process later `chdir`s, and run the early-warning writability probe.
     let config_file_path = canonicalise_config_path(Some(&config_path));
     if let Some(path) = &config_file_path {
         warn_if_park_path_unwritable(path);
@@ -117,42 +105,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting Star Adventurer GTi driver");
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
-    info!("Server port: {}", config.server.port);
 
-    ServiceRunner::new("star-adventurer-gti").run(move |shutdown| async move {
-        let builder = ServerBuilder::new()
-            .with_config(config)
-            .with_config_file_path(config_file_path);
+    // Reload loop: a `config.apply` that changes a field fires the reload signal;
+    // the loop re-reads + re-applies the CLI overrides and rebuilds the server,
+    // awaiting `start()` to completion so the old server drains before rebind.
+    ServiceRunner::new("star-adventurer-gti")
+        .with_reload()
+        .run_with_reload(move |shutdown, reload| async move {
+            loop {
+                // The file always exists (materialize wrote the scaffold on
+                // first run). Re-read + re-apply overrides each cycle.
+                let mut config = load_config(&config_path)?;
+                apply_cli_overrides(&mut config, &args)?;
+                info!("Server port: {}", config.server.port);
 
-        #[cfg(feature = "mock")]
-        let builder = {
-            // CapturingMockFactory shares its `MockMountState` Arc with
-            // every transport it hands out. Reuse that same state for the
-            // /debug/v1/mock-commands endpoint so tools like BDD harnesses
-            // can inspect the wire command log over HTTP.
-            let factory = CapturingMockFactory::new();
-            let state = Arc::clone(&factory.state);
-            let factory: Arc<dyn TransportFactory> = Arc::new(factory);
-            builder
-                .with_transport_factory(factory)
-                .with_debug_mock_state(state)
-        };
+                let builder = ServerBuilder::new()
+                    .with_config(config)
+                    .with_config_file_path(config_file_path.clone())
+                    .with_reload_signal(reload.clone());
 
-        #[cfg(not(feature = "mock"))]
-        {
-            // Production builds let `ServerBuilder::build()` pick the factory
-            // (Serial vs UDP) from `config.transport`. The factory's
-            // `connect()` body is filled in by Phase 3; until then ASCOM
-            // `Connected = true` returns NOT_IMPLEMENTED but the HTTP server
-            // still binds and serves metadata.
-            let _: Option<Arc<dyn TransportFactory>> = None;
-        }
+                #[cfg(feature = "mock")]
+                let builder = {
+                    // CapturingMockFactory shares its `MockMountState` Arc with
+                    // every transport; reuse it for /debug/v1/mock-commands.
+                    let factory = CapturingMockFactory::new();
+                    let state = Arc::clone(&factory.state);
+                    let factory: Arc<dyn TransportFactory> = Arc::new(factory);
+                    builder
+                        .with_transport_factory(factory)
+                        .with_debug_mock_state(state)
+                };
+                #[cfg(not(feature = "mock"))]
+                {
+                    // Production picks Serial vs UDP from `config.transport`.
+                    let _: Option<Arc<dyn TransportFactory>> = None;
+                }
 
-        let bound = builder.build().await?;
+                let bound = builder.build().await?;
 
-        bound.start(shutdown.cancelled()).await?;
-        Ok(())
-    })
+                let reloaded = Arc::new(AtomicBool::new(false));
+                let stop = {
+                    let reloaded = Arc::clone(&reloaded);
+                    let shutdown = shutdown.cancelled();
+                    let reload = reload.clone();
+                    async move {
+                        tokio::select! {
+                            () = shutdown => {}
+                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                        }
+                    }
+                };
+                bound.start(stop).await?;
+
+                if reloaded.load(Ordering::SeqCst) {
+                    debug!("reloading star-adventurer-gti configuration");
+                    continue;
+                }
+                return Ok(());
+            }
+        })
 }
 
 fn apply_cli_overrides(config: &mut Config, args: &Args) -> Result<(), Box<dyn std::error::Error>> {

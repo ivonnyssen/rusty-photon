@@ -191,6 +191,11 @@ pub struct MountDevice {
     slew_in_progress: Arc<AtomicBool>,
     #[debug(skip)]
     manager: Arc<MountManager>,
+    /// Config-action context; `Some` enables `config.get` / `config.apply` /
+    /// `config.schema` on this device (alongside the `ApPark` vendor actions).
+    /// `None` for focused unit-test devices.
+    #[debug(skip)]
+    config_ctx: Option<crate::config_actions::ConfigActionCtx>,
 }
 
 impl MountDevice {
@@ -213,7 +218,14 @@ impl MountDevice {
             state: Arc::new(RwLock::new(DriverState::default())),
             slew_in_progress: Arc::new(AtomicBool::new(false)),
             manager,
+            config_ctx: None,
         }
+    }
+
+    /// Attach the config-action context, enabling the config vendor actions.
+    pub fn with_config_actions(mut self, ctx: crate::config_actions::ConfigActionCtx) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 
     /// Send one command through the device's session and return the

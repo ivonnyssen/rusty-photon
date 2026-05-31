@@ -35,6 +35,9 @@ pub enum StarAdvError {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
     /// ERFA-side time-conversion failure. In practice this is
     /// `eraCal2jd` (reached transitively from `Dtf2d`) returning
     /// `-1` for a year outside its calendar floor (`IYMIN = -4799`)
