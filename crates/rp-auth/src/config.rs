@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Stored in each service's config file. The password is hashed with Argon2id;
 /// use `rp hash-password` to generate the hash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuthConfig {
     pub username: String,
     pub password_hash: String,
@@ -16,7 +16,7 @@ pub struct AuthConfig {
 /// monitoring an auth-enabled filemonitor). The password is stored in plaintext
 /// because the client needs the actual password for HTTP Basic Auth headers.
 /// File permissions (`chmod 600`) are the recommended protection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClientAuthConfig {
     pub username: String,
     pub password: String,
