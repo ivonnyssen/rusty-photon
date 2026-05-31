@@ -67,8 +67,10 @@ impl ConfigAction {
 /// generic over this trait; an implementor supplies only what *varies* per
 /// driver — its `Config` type, validation, secrets, and editability tiers.
 pub trait ConfigurableDriver {
-    /// The driver's config type.
-    type Config: Serialize + DeserializeOwned + JsonSchema + Default;
+    /// The driver's config type. (No `Default` bound: `config_apply` seeds its
+    /// file-read fallback from the running config, so drivers whose config has
+    /// mandatory fields — e.g. sky-survey-camera's optics — need not invent one.)
+    type Config: Serialize + DeserializeOwned + JsonSchema;
     /// The driver's CLI-override carrier (`()` if the driver has no overrides).
     type Overrides;
 
@@ -249,9 +251,11 @@ pub fn config_apply<D: ConfigurableDriver>(
 
     // A present-but-corrupt file is surfaced (not silently treated as default,
     // which would overwrite and lose its contents on the layer-aware persist).
-    let default_value =
-        serde_json::to_value(D::Config::default()).map_err(ApplyError::Serialize)?;
-    let file_current = read_file_value(path, &default_value).map_err(ApplyError::ReadFile)?;
+    // The seed is the running config: a `config.apply` on a live driver always
+    // has a config file on disk (loaded at startup), so the seed only matters in
+    // the shouldn't-happen case where the file vanished mid-run.
+    let running = serde_json::to_value(effective_before).map_err(ApplyError::Serialize)?;
+    let file_current = read_file_value(path, &running).map_err(ApplyError::ReadFile)?;
 
     let submitted_value = serde_json::to_value(&submitted).map_err(ApplyError::Serialize)?;
 
@@ -287,7 +291,6 @@ pub fn config_apply<D: ConfigurableDriver>(
         serde_json::from_value(to_persist.clone()).map_err(ApplyError::Serialize)?;
     D::apply_overrides(&mut effective_after, overrides);
     let new_effective = serde_json::to_value(&effective_after).map_err(ApplyError::Serialize)?;
-    let running = serde_json::to_value(effective_before).map_err(ApplyError::Serialize)?;
     let changed = diff_paths(&running, &new_effective);
 
     save(path, &to_persist).map_err(ApplyError::Persist)?;
