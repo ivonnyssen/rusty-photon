@@ -125,11 +125,27 @@ jobs:
           # nothing. --kill-after SIGKILLs if bazel ignores the INT. `timeout` exits
           # 124 when it fired (137 if it had to escalate to SIGKILL).
           status=0
+          # --- observability (D): ATTRIBUTE the post-[Summary] ~40-min wall.
+          # A 26-agent analysis (PR #342) MEASURED the LLVM coverage tools at
+          # merge ~0.5s / export ~0.3s and the file count in the hundreds — so the
+          # ~40 min is NOT CPU; it is a byte-proportional I/O wait, and bazel's
+          # "Testing //services/rp:bdd; Ns" progress line MIS-ATTRIBUTES it on a
+          # --keep_going run (the repo-wide --combined_report action and
+          # --remote_download_outputs=all WAN-materialization of every per-test
+          # coverage.dat keep that label ticking). --profile records every action's
+          # wall-time so we can tell those apart; VERBOSE_COVERAGE makes rules_rust's
+          # collect_coverage log "Spawning llvm-profdata/llvm-cov/Success!" so the
+          # always() step sees whether the tools finished in seconds. Pure
+          # instrumentation — no behavior change.
+          PROFILE="${RUNNER_TEMP:-/tmp}/bazel-cov-profile.json.gz"
           timeout --signal=INT --kill-after=2m 50m \
             bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
             --test_output=all \
+            --test_env=VERBOSE_COVERAGE=1 \
+            --profile="$PROFILE" --noslim_profile \
+            --experimental_profile_include_target_label \
             //... || status=$?
           # Bazel exit codes: 0 = everything passed; 3 = build OK but one or more
           # tests FAILED or TIMED OUT. In shadow coverage we tolerate 3: with
@@ -192,10 +208,29 @@ jobs:
             else
               echo "Inconclusive — no stuck scenario and no cucumber summary in test.log; see tail."
             fi
+            echo "===== rp:bdd coverage collector timing (VERBOSE_COVERAGE) ====="
+            echo "(if 'Spawning llvm-*'/'Success!' appear right after [Summary], the LLVM tools are fast"
+            echo " and the remaining wall is post-collector I/O staging, not coverage CPU)"
+            grep -aE 'Spawning llvm-profdata|Spawning llvm-cov|Success!|Coverage runner|Not collecting coverage' "$RP_BDD_LOG" | tail -20
             echo "===== rp:bdd test.log tail (last 80 lines) ====="
             tail -80 "$RP_BDD_LOG"
           else
             echo "No rp:bdd test.log at $RP_BDD_LOG (target may not have started)."
+          fi
+          # Attribute the wall-time: top actions/phases by duration from the bazel
+          # profile (tells rp:bdd's own action from the repo-wide combined-report
+          # action and from remote-download/output-staging phases).
+          PROFILE="${RUNNER_TEMP:-/tmp}/bazel-cov-profile.json.gz"
+          if [[ -f "$PROFILE" ]]; then
+            cp -f "$PROFILE" "$DEST/" 2>/dev/null
+            echo "===== top 25 longest bazel actions/phases (where the wall-time went) ====="
+            if command -v jq >/dev/null; then
+              zcat "$PROFILE" 2>/dev/null \
+                | jq -r '.traceEvents[]? | select(.dur != null and .dur > 1000000) | "\((.dur/1000000)|floor)s\t\(.cat // "?")\t\(.name)"' 2>/dev/null \
+                | sort -rn | head -25
+            else
+              echo "(jq unavailable; profile uploaded as artifact for offline analysis)"
+            fi
           fi
 
       - name: Upload bazel test logs (artifact)
