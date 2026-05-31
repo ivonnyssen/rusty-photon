@@ -400,16 +400,23 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
   handler/wire-parsing unit tests. *Deliverable: a working config page for
   `dsd-fp2`.*
 
-**Phase 3 — Generalise across drivers.**
-- Extract a shared `config-actions` helper so other drivers adopt `config.get`/
-  `config.apply` with minimal boilerplate; roll out to `qhy-focuser` and the rest.
-  Once the pattern is proven, promote that helper to a **small, standalone,
-  vendor-neutral crate** (convention constants + request/response types + optional
-  `config.schema` + a helper to wire the actions onto any `ascom-alpaca` `Device`)
-  so *third parties* can adopt the convention cheaply and auto-detect as *managed*
-  (see [Decisions](#decisions-2026-05-27)).
-- Optional: add `config.schema` (via `schemars`) + a schema-driven form renderer
-  in the BFF to replace hand-built forms.
+**Phase 3 — Generalise across drivers. Driver side ✅ landed; BFF renderer pending.**
+- ✅ Extracted the shared `config-actions` helper into the existing
+  `rusty-photon-config` crate (`actions` module: the `ConfigurableDriver` trait +
+  generic `config_get`/`config_apply`/`config_schema`). The cross-driver protocol
+  is documented in [`docs/services/config-actions.md`](../../services/config-actions.md).
+- ✅ Rolled out to **all six** drivers — `dsd-fp2` (refactored onto the shared
+  crate), `qhy-focuser`, `pa-falcon-rotator`, `ppba-driver`, `sky-survey-camera`,
+  `star-adventurer-gti` — each with a `config_actions.feature` BDD suite covering
+  advertise / schema+tiers / get / apply→reload→rebind / invalid / unknown-action.
+- ✅ Added `config.schema` (via `schemars`) as the **third action**: returns a
+  JSON Schema plus the editability tiers (`locked_fields` / `read_only_fields`).
+- ⬜ **Remaining:** the schema-driven, multi-driver **form renderer** in the BFF
+  (consume `config.schema`, render any driver generically, route `/config/{service}`
+  over a drivers map) replacing the hand-built `dsd-fp2` form. The drivers already
+  expose everything it needs.
+- Future: promote the shared helper to a standalone vendor-neutral crate once it
+  has settled (see [Decisions](#decisions-2026-05-27)).
 
 **Phase 4 — Sentinel `service.restart`.**
 - Implement the `Restarter` + per-service `restart_command` config; expose

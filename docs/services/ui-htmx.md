@@ -360,8 +360,12 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
 - **Multi-driver / equipment roster.** Phase 2 targets a single hard-coded
   `dsd-fp2`. Deriving the device list from `rp`'s `GET /api/equipment` or ASCOM
   discovery is Phase 3/5.
-- **Schema-driven forms.** Hand-built form first; a `config.schema`-driven
-  renderer that generalises across drivers is Phase 3.
+- **Schema-driven multi-driver renderer.** All six drivers now expose
+  `config.schema` (a JSON Schema + `locked_fields` / `read_only_fields`; see
+  [`config-actions.md`](config-actions.md)). The remaining BFF slice is to
+  consume it: render any driver's form generically from the schema + tiers
+  (replacing this hand-built `dsd-fp2` form) and route `/config/{service}` over a
+  drivers map. The driver side is complete; this is the next UI slice.
 - **Live telemetry + the activity stream.** The SSE-driven stream UI
   (`7-stream-fold.html`) follows on a separate track once `rp` has a real-time
   event stream.
