@@ -424,20 +424,86 @@ covers a strict subset of the first-party lines Cargo already covers, so the
 merged % is non-decreasing. If you want the gate kept strictly Cargo-only during
 shadow mode, scope `status.project.default.flags` to the Cargo flags.
 
-**The instrumented `rp:bdd` hang.** ~half of push-to-main coverage runs were
-cancelled at the 60-min job wall: `//services/rp:bdd` intermittently hangs under
-instrumentation while spawning OmniSim, and its `size = "large"` (900s) timeout
-was observed *not* to fire under `bazel coverage`, so nothing killed it and the
-run uploaded zero coverage. Two guards now bound the blast radius:
-`.bazelrc` `coverage:coverage --test_timeout=900` caps any single coverage test
-explicitly, and `bazel-coverage.yml` tolerates a "tests failed/timed out" exit
-(Bazel exit 3) so the combined report — built by `--keep_going` from every
-target that *did* pass — still splits and uploads. The underlying hang (an
-unbounded Alpaca poll under instrumentation, per the OmniSim flake family in the
-service docs) is the remaining reliability item; if the explicit `--test_timeout`
-also proves not to fire under coverage, the fallback is to exclude
-`//services/rp:bdd` + `//services/calibrator-flats:bdd` (the two OmniSim
-spawners) from the coverage graph and collect their BDD coverage separately.
+**The instrumented `rp:bdd` "hang" was coverage COLLECTION, not a scenario hang (RESOLVED, PR #342).**
+For weeks ~half of push-to-main coverage runs (and PR runs branched off an
+un-primed main) were cancelled at the 60-min job wall with the progress line
+stuck on `Testing //services/rp:bdd; Ns`. This looked like a scenario hang; it
+was not. A profile-instrumented run settled it: **all 265 `rp:bdd` scenarios
+PASS in ~470s of BDD time (the last `BDD-TRACE +Ns` ≈ cucumber's `[Summary]`),
+and the ~40 extra minutes were spent AFTER the summary, in post-test coverage
+collection.** On a `--keep_going` run Bazel keeps printing `Testing
+//services/rp:bdd; Ns` as the in-flight label while *other* work runs, so the
+wall was partly mis-attributed to rp:bdd's own action. (This is a *different*
+failure from the OmniSim slew-wedge that hangs a single `center_on_target`
+scenario for the rp-internal 300s deadline on the macos / leak-sanitizer legs —
+that one is a real scenario hang, fixed mount-side in the OmniSim fork
+`v0.5.0-326.x`; see `docs/services/rp.md`. Do not conflate them.)
+
+**Root cause: profraw VOLUME, not CPU.** The child-coverage wiring above
+originally used `LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw`. The `%p`
+(pid) writes a *separate* ~6 MB `.profraw` per child PROCESS; across `rp:bdd`'s
+~265 scenarios each spawning `rp` + `sky-survey-camera`, that is hundreds of
+files (~1.5 GB) that `collect_coverage` never deletes and the `linux-sandbox`
+must stage/tear down at action end — a byte-proportional I/O wait. A 26-agent
+analysis + direct measurement *exonerated* every CPU/algorithm theory, so the
+next debugger need not re-tread them: `llvm-profdata merge` is a single linear
+pass (~0.5s; ~0.038s/file — you would need ~30–60k files for 40 min),
+`llvm-cov export` is single-shot (~0.3s even on the 120 MB instrumented test
+binary), `rules_rust`'s `collect_coverage.rs` spawns exactly two child processes,
+a truncated profraw makes the merge fail *fast* (not hang), and the file count is
+hundreds not thousands. `cargo-llvm-cov` faces the *same* per-pid explosion
+(`%p-%16m`) yet is fast only because its single end-of-run merge has no per-action
+sandbox staging — Bazel stages per action, so the bytes must be bounded at source.
+
+**The fix (PR #342, confirmed): `%p-%m` → `%8m`.** Dropping `%p` and adding the
+LLVM online-merge pool (`%Nm`) makes the runtime merge each process's counters on
+exit into ≤8 files per binary signature (file-locked), collapsing ~265 files
+(~1.5 GB) to ≤8 (~50 MB). Verified empirically (20 runs of an instrumented binary:
+`%p-%m`→20 files, `%8m`→8; `%p-%16m`→20 — `%p` defeats the pool). On CI (run
+26700026841) the `rp:bdd` action dropped 2802s → 476s, of which collection is now
+**~4.5s** (476 − 471.5s of scenarios); the job passes in ~13 min. The profile
+top-actions afterwards are only the two OmniSim BDD executions (476s `rp:bdd`;
+498s `calibrator-flats`, mostly waiting on the `resources:omnisim:1` lock behind
+rp:bdd) — no `CoverageReport`/`--combined_report` or remote-download mega-action —
+so the WAN-`.dat`-download theory was ruled out and the lower-leverage fallbacks
+below were *not* needed. (One green run; the symptom is intermittent, so eyeball
+the next couple of `main`/nightly runs to fully cement.)
+
+**If it stalls again — the pick-up-here playbook (instrumentation lives in
+`bazel-coverage.yml`).** The shadow job now: (1) wraps bazel in
+`timeout --signal=INT --kill-after=2m 50m`, so a stall fails *with output* at
+50 min instead of a blind 60-min cancel (classified as exit 124/137); (2) runs
+`--profile --noslim_profile --experimental_profile_include_target_label`;
+(3) sets `--test_env=VERBOSE_COVERAGE=1`; and (4) has an `always()` step that
+prints the **top-25 longest profile actions/phases** (jq over the gz profile),
+the `rp:bdd` `BDD-TRACE` trail + a **scenario-hang classifier** (a scenario with
+an `ENTER` and no matching `EXIT`), the collector's `Spawning llvm-*/Success!`
+lines, and uploads `bazel-testlogs` (incl. the profile) as an artifact. To triage
+a fresh stall, read the profile top-actions to attribute the wall:
+- wall in **`Testing //services/rp:bdd`** with `BDD-TRACE +Ns` ≈ the action wall →
+  scenario time; if a scenario shows `ENTER`-without-`EXIT` it is a real scenario
+  hang (OmniSim slew-wedge family — a mount-side bug, not a coverage bug);
+- action wall ≫ the last `+Ns` → post-summary **collection** again → re-check the
+  profraw volume / that the `%8m` pattern is still in `bdd-infra` (`lib.rs`
+  `child_coverage_profile_path`);
+- a separate **`CoverageReport`/`--combined_report`** action or a
+  **remote-download** phase dominates → it is the WAN/staging path → apply the
+  deferred levers.
+
+**Deferred levers (unneeded for the volume cause; keep for a different
+bottleneck).** (a) `--remote_download_outputs=all` → `=toplevel` (or a regex
+scoped to `_coverage_report.dat`) in `bazel-coverage.yml`, so only the combined
+report is materialized, not every per-test `.dat`. (b) `coverage:coverage
+--experimental_split_coverage_postprocessing` in `.bazelrc`, which makes
+collection a *separate* action the `--test_timeout` can actually kill — this also
+explains why `coverage:coverage --test_timeout=900` (and the `size = "large"`
+900s budget) was observed *not* to fire: collection runs *in-action* after the
+test binary exits, outside the per-test watchdog's scope. (c) Last resort —
+exclude `//services/rp:bdd` + `//services/calibrator-flats:bdd` (the two OmniSim
+spawners) from the coverage graph and collect their BDD coverage Cargo-style.
+`bazel-coverage.yml` still tolerates a "tests failed/timed out" exit (Bazel exit
+3) so `--keep_going` + the combined report upload partial coverage rather than
+nothing.
 
 This supersedes the Phase 7 note that coverage stays a Cargo-only gate: coverage
 now has a Bazel shadow path, to be validated in CI before any cutover.
