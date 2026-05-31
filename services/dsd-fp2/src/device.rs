@@ -21,11 +21,11 @@ use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use rusty_photon_config::actions::{self, ApplyError, ApplyStatus, ConfigAction};
+
 use crate::codec::Fp2Codec;
 use crate::config::{CliOverrides, Config, CoverCalibratorConfig};
-use crate::config_actions::{
-    self, ApplyStatus, ConfigAction, ConfigApplyResponse, ConfigGetResponse, FieldError,
-};
+use crate::config_actions::DsdFp2Driver;
 use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
@@ -87,94 +87,57 @@ impl DsdFp2Device {
     }
 
     /// `config.get`: return the effective config (secrets redacted) plus the
-    /// CLI-override-pinned field paths.
+    /// CLI-override-pinned field paths, via the generic protocol layer.
     async fn handle_config_get(&self, ctx: &ConfigActionCtx) -> ASCOMResult<String> {
-        let mut config = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
-        config_actions::redact_value(&mut config);
-        let response = ConfigGetResponse {
-            config,
-            overrides: ctx.overrides.pinned_paths(),
-        };
+        let response = actions::config_get::<DsdFp2Driver>(&ctx.effective, &ctx.overrides)
+            .map_err(DsdFp2Error::from)?;
         Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
 
-    /// `config.apply`: parse → validate → persist (layer-aware) → classify →
-    /// fire the reload after the response flushes.
+    /// `config.apply`: delegate to the generic protocol (parse → normalize →
+    /// validate → layer-aware persist → classify), map its hard failures onto
+    /// ASCOM error codes, and fire the in-process reload after the response
+    /// flushes when something changed (`status:"applying"`).
     async fn handle_config_apply(
         &self,
         ctx: &ConfigActionCtx,
         parameters: &str,
     ) -> ASCOMResult<String> {
-        let mut submitted: Config = match serde_json::from_str(parameters) {
-            Ok(config) => config,
-            Err(e) => {
+        let response = match actions::config_apply::<DsdFp2Driver>(
+            &ctx.path,
+            &ctx.overrides,
+            &ctx.effective,
+            parameters,
+        ) {
+            Ok(response) => response,
+            Err(ApplyError::Parse(e)) => {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_VALUE,
                     format!("config.apply: invalid config JSON: {e}"),
                 ))
             }
-        };
-
-        // Normalize before validation/persist (e.g. trim a whitespace-padded
-        // serial.port that would otherwise be opened verbatim at runtime).
-        config_actions::normalize(&mut submitted);
-
-        // Validation failure is a domain error: HTTP 200, file untouched.
-        let errors = config_actions::validate(&submitted);
-        if !errors.is_empty() {
-            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
-                .map_err(DsdFp2Error::from)?);
-        }
-
-        // Build the value to persist: write through CLI-override-pinned fields
-        // and round-tripped secrets from the file's current value. A present-
-        // but-corrupt file is surfaced rather than silently treated as default
-        // (which would overwrite and lose its contents).
-        let file_current = match config_actions::read_file_value(&ctx.path) {
-            Ok(value) => value,
-            Err(msg) => {
+            Err(ApplyError::ReadFile(e)) => {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: {msg}"),
+                    format!("config.apply: {e}"),
+                ))
+            }
+            Err(ApplyError::Persist(e)) => {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("config.apply: failed to persist config: {e}"),
+                ))
+            }
+            Err(ApplyError::Serialize(e)) => {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    format!("config.apply: {e}"),
                 ))
             }
         };
 
-        // The redaction sentinel means "keep the stored secret unchanged". If
-        // there is no stored secret to keep, the sentinel can't be honoured —
-        // persisting it verbatim would bake "********" in as the real password
-        // hash. Reject it as a domain error so the caller supplies a real hash.
-        if config_actions::redacted_secret_without_prior(&submitted, &file_current) {
-            let errors = vec![FieldError {
-                path: "server.auth.password_hash".to_string(),
-                msg:
-                    "cannot keep an unchanged secret when none is stored; provide the password hash"
-                        .to_string(),
-            }];
-            return Ok(serde_json::to_string(&ConfigApplyResponse::invalid(errors))
-                .map_err(DsdFp2Error::from)?);
-        }
-
-        let (to_persist, skipped) =
-            config_actions::build_persist_value(&submitted, &file_current, &ctx.overrides)
-                .map_err(DsdFp2Error::from)?;
-
-        // Classify what would change in the running (effective) config.
-        let new_effective = config_actions::effective_value(&to_persist, &ctx.overrides);
-        let running = serde_json::to_value(&ctx.effective).map_err(DsdFp2Error::from)?;
-        let changed = config_actions::diff_paths(&running, &new_effective);
-
-        config_actions::save(&ctx.path, &to_persist).map_err(|e| {
-            ASCOMError::new(
-                ASCOMErrorCode::INVALID_OPERATION,
-                format!("config.apply: failed to persist config: {e}"),
-            )
-        })?;
-        debug!(path = %ctx.path.display(), ?changed, "config.apply persisted");
-
-        let status = if changed.is_empty() {
-            ApplyStatus::Ok
-        } else {
+        if matches!(response.status, ApplyStatus::Applying) {
+            debug!(path = %ctx.path.display(), reload = ?response.reload, "config.apply persisted; scheduling reload");
             // Fire-after-response: the server serving this request is the one
             // the reload tears down, so yield until the response has flushed.
             let reload = ctx.reload.clone();
@@ -183,18 +146,8 @@ impl DsdFp2Device {
                 debug!("firing in-process reload after config.apply");
                 reload.notify();
             });
-            ApplyStatus::Applying
-        };
+        }
 
-        let response = ConfigApplyResponse {
-            status,
-            applied: Vec::new(),
-            reload: changed,
-            restart_required: Vec::new(),
-            skipped_override: skipped,
-            persisted_to: Some(ctx.path.display().to_string()),
-            errors: Vec::new(),
-        };
         Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
 }
@@ -293,6 +246,10 @@ impl Device for DsdFp2Device {
         match parsed {
             ConfigAction::Get => self.handle_config_get(ctx).await,
             ConfigAction::Apply => self.handle_config_apply(ctx, &parameters).await,
+            ConfigAction::Schema => {
+                let response = actions::config_schema::<DsdFp2Driver>();
+                Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
+            }
         }
     }
 }
