@@ -183,7 +183,8 @@ jobs:
       - name: Surface bazel test logs (rp:bdd hang diagnostics)
         if: always()
         run: |
-          set +e  # diagnostic step: never abort on a grep miss / absent file
+          set +e +o pipefail  # diagnostic: best-effort; a grep miss or a SIGPIPE
+          # (head closing the sort/jq pipe) must NOT propagate and fail the job.
           TESTLOGS="$(readlink -f bazel-testlogs 2>/dev/null || echo bazel-testlogs)"
           DEST=bazel-testlogs-captured
           mkdir -p "$DEST"
@@ -234,11 +235,12 @@ jobs:
             if command -v jq >/dev/null; then
               zcat "$PROFILE" 2>/dev/null \
                 | jq -r '.traceEvents[]? | select(.dur != null and .dur > 1000000) | "\((.dur/1000000)|floor)s\t\(.cat // "?")\t\(.name)"' 2>/dev/null \
-                | sort -rn | head -25
+                | sort -rn | head -25 || true
             else
               echo "(jq unavailable; profile uploaded as artifact for offline analysis)"
             fi
           fi
+          exit 0  # diagnostic step is best-effort — must never fail the job
 
       - name: Upload bazel test logs (artifact)
         if: always()
