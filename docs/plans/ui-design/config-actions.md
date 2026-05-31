@@ -394,7 +394,7 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
 **Phase 2 — BFF skeleton + hand-built `dsd-fp2` config page. ✅ Landed.**
 - New `services/ui-htmx` crate (axum + Maud + HTMX, embedded assets, dark theme).
 - `GET/POST /config/dsd-fp2` wired to the driver's config actions; validation,
-  override-pinned-field read-only, and "applying/reconnecting" states. 7 BDD
+  override-pinned-field read-only, and "applying/reconnecting" states. 8 BDD
   scenarios that spawn the real BFF + a real mock-mode `dsd-fp2` and drive it
   over HTTP (including the full apply → reload → reconnect round trip), plus
   handler/wire-parsing unit tests. *Deliverable: a working config page for
