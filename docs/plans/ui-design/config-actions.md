@@ -2,8 +2,12 @@
 
 **Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
 reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as the
-`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Key
-protocol decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
+`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Phase 3a
+**landed** — the `config.get`/`config.apply`/`config.schema` protocol is generalised
+across **all six** drivers via the shared `rusty-photon-config::actions` module (see
+[`docs/services/config-actions.md`](../../services/config-actions.md)); the
+schema-driven BFF renderer (Phase 3b) is the remaining fast-follow. Key protocol
+decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
@@ -400,7 +404,11 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
   handler/wire-parsing unit tests. *Deliverable: a working config page for
   `dsd-fp2`.*
 
-**Phase 3 — Generalise across drivers. Driver side ✅ landed; BFF renderer pending.**
+**Phase 3 — Generalise across drivers.** Split into two PRs along the natural
+driver ⇆ BFF fault line: **Phase 3a (driver side) ✅ landed**; **Phase 3b (the
+schema-driven BFF renderer) is the next PR.**
+
+*Phase 3a — driver-side protocol (this PR). ✅ Landed.*
 - ✅ Extracted the shared `config-actions` helper into the existing
   `rusty-photon-config` crate (`actions` module: the `ConfigurableDriver` trait +
   generic `config_get`/`config_apply`/`config_schema`). The cross-driver protocol
@@ -411,10 +419,22 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
   advertise / schema+tiers / get / apply→reload→rebind / invalid / unknown-action.
 - ✅ Added `config.schema` (via `schemars`) as the **third action**: returns a
   JSON Schema plus the editability tiers (`locked_fields` / `read_only_fields`).
-- ⬜ **Remaining:** the schema-driven, multi-driver **form renderer** in the BFF
-  (consume `config.schema`, render any driver generically, route `/config/{service}`
-  over a drivers map) replacing the hand-built `dsd-fp2` form. The drivers already
-  expose everything it needs.
+- ✅ The shipped Phase-2 `dsd-fp2` BFF page stays green unchanged — `config.get`
+  keeps its `{config, overrides}` shape and `ApplyStatus { applying, ok, invalid }`
+  is preserved verbatim, so `ui-htmx`'s existing parsing and `config_page.feature`
+  are untouched.
+
+*Phase 3b — schema-driven BFF renderer (next PR). ⬜ Pending.*
+- The schema-driven, multi-driver **form renderer** in the BFF: consume
+  `config.schema`, render any driver generically from its leaf properties + the
+  editability tiers, and route `/config/{service}` over a `HashMap` of drivers —
+  replacing the hand-built `dsd-fp2` form. The hardest piece is the `FieldCoercer`
+  (infers `u16`/`u32`/`bool`/optional from `{type, minimum, maximum, pattern}`),
+  exhaustively unit-tested per driver field type. **The drivers already expose
+  everything it needs** (`config.schema` is live on all six), so 3b is self-contained
+  BFF work with no further driver changes. Deferred to its own PR to keep this one
+  reviewable and to avoid a tightly-coupled ~1000-line renderer + test rewrite
+  riding on the green driver rollout.
 - Future: promote the shared helper to a standalone vendor-neutral crate once it
   has settled (see [Decisions](#decisions-2026-05-27)).
 
