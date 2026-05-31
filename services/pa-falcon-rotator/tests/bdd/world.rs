@@ -15,14 +15,18 @@
 //! regression risk.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::{Rotator, Switch, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
 use cucumber::World;
+use pa_falcon_rotator::config::CliOverrides;
 use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
+use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
 // Several `*_result` fields below are still wired up by Phase 3e step bodies
@@ -66,6 +70,14 @@ pub struct FalconRotatorWorld {
 
     /// Last failure surfaced over Alpaca, if any.
     pub last_error_code: Option<u16>,
+
+    /// Config-action test state: the temp dir + path config.apply persists to,
+    /// the reload signal both devices fire, and the last parsed action response.
+    pub config_temp_dir: Option<TempDir>,
+    pub config_path: Option<PathBuf>,
+    pub reload: Option<ReloadSignal>,
+    pub last_response: Option<serde_json::Value>,
+    pub last_supported_actions: Option<Vec<String>>,
 }
 
 impl FalconRotatorWorld {
@@ -110,13 +122,31 @@ impl FalconRotatorWorld {
         let mock = Arc::new(MockFalconTransportFactory::default());
         let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
 
+        // Persist the config to a temp file so config.apply has a real target,
+        // and wire a reload signal both devices fire — exercising the same
+        // config-action context the binary's `main` builds.
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string(&config).expect("serialize config"),
+        )
+        .expect("write config file");
+        let reload = ReloadSignal::new();
+
         let bound = ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)
+            .with_config_source(config_path.clone(), CliOverrides::default())
+            .with_reload_signal(reload.clone())
             .build()
             .await
             .expect("build in-process Alpaca server");
         let local_addr = bound.listen_addr();
+
+        self.config_temp_dir = Some(dir);
+        self.config_path = Some(config_path);
+        self.reload = Some(reload);
 
         let server_handle = tokio::spawn(async move {
             // BoundServer::start returns `Result<(), Box<dyn Error>>`; the
@@ -142,6 +172,36 @@ impl FalconRotatorWorld {
         let (rotator, status_switch) = acquire_devices(http_addr).await;
         self.rotator = Some(rotator);
         self.status_switch = Some(status_switch);
+    }
+
+    /// Call `config.get` on the rotator device, stash the parsed response, and
+    /// return the `config` object so a When step can edit it and re-apply.
+    pub async fn current_config(&mut self) -> serde_json::Value {
+        let rotator = Arc::clone(self.rotator());
+        let body = rotator
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.apply` on the rotator device with `params`, stashing the
+    /// parsed response.
+    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
+        let rotator = Arc::clone(self.rotator());
+        let body = rotator
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
     }
 
     /// Abort the in-process server task. Called from cucumber's `after` hook

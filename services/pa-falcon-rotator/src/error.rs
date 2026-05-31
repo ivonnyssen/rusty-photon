@@ -32,6 +32,9 @@ pub enum FalconRotatorError {
 
     #[error("Device communication error: {0}")]
     Communication(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 impl FalconRotatorError {
