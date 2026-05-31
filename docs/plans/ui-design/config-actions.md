@@ -2,12 +2,13 @@
 
 **Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
 reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as the
-`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Phase 3a
+`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Phase 3
 **landed** — the `config.get`/`config.apply`/`config.schema` protocol is generalised
 across **all six** drivers via the shared `rusty-photon-config::actions` module (see
-[`docs/services/config-actions.md`](../../services/config-actions.md)); the
-schema-driven BFF renderer (Phase 3b) is the remaining fast-follow. Key protocol
-decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
+[`docs/services/config-actions.md`](../../services/config-actions.md)), and the
+`ui-htmx` BFF now renders **any** driver's form generically from `config.schema`,
+routing every configured driver under `/config/{service}`. Key protocol decisions
+resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
@@ -404,11 +405,10 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
   handler/wire-parsing unit tests. *Deliverable: a working config page for
   `dsd-fp2`.*
 
-**Phase 3 — Generalise across drivers.** Split into two PRs along the natural
-driver ⇆ BFF fault line: **Phase 3a (driver side) ✅ landed**; **Phase 3b (the
-schema-driven BFF renderer) is the next PR.**
+**Phase 3 — Generalise across drivers. ✅ Landed.** Both halves shipped in one PR,
+along the natural driver ⇆ BFF fault line.
 
-*Phase 3a — driver-side protocol (this PR). ✅ Landed.*
+*Phase 3a — driver-side protocol. ✅ Landed.*
 - ✅ Extracted the shared `config-actions` helper into the existing
   `rusty-photon-config` crate (`actions` module: the `ConfigurableDriver` trait +
   generic `config_get`/`config_apply`/`config_schema`). The cross-driver protocol
@@ -424,17 +424,24 @@ schema-driven BFF renderer) is the next PR.**
   is preserved verbatim, so `ui-htmx`'s existing parsing and `config_page.feature`
   are untouched.
 
-*Phase 3b — schema-driven BFF renderer (next PR). ⬜ Pending.*
-- The schema-driven, multi-driver **form renderer** in the BFF: consume
-  `config.schema`, render any driver generically from its leaf properties + the
-  editability tiers, and route `/config/{service}` over a `HashMap` of drivers —
-  replacing the hand-built `dsd-fp2` form. The hardest piece is the `FieldCoercer`
-  (infers `u16`/`u32`/`bool`/optional from `{type, minimum, maximum, pattern}`),
-  exhaustively unit-tested per driver field type. **The drivers already expose
-  everything it needs** (`config.schema` is live on all six), so 3b is self-contained
-  BFF work with no further driver changes. Deferred to its own PR to keep this one
-  reviewable and to avoid a tightly-coupled ~1000-line renderer + test rewrite
-  riding on the green driver rollout.
+*Phase 3b — schema-driven BFF renderer. ✅ Landed.*
+- ✅ The `ui-htmx` BFF now renders **any** driver's form generically: `FieldModel`
+  walks `config.schema` into a flat list of scalar leaves (resolving `$ref`,
+  recursing plain objects, **skipping** `oneOf`/`anyOf`/`enum`/`const` subtrees,
+  which round-trip via the hidden blob — keeping redacted secrets safe), and
+  `merge_form` coerces submissions back per leaf (`string`/`bool`/`integer`/`number`,
+  using the schema's `minimum`/`maximum`/nullability). The hand-built `dsd-fp2`
+  field lists are gone.
+- ✅ Editability tiers come straight from the driver: `config.get`'s `overrides[]`
+  plus `config.schema`'s `locked_fields` / `read_only_fields`. No BFF-side
+  per-driver lists remain, so a new driver needs no BFF change.
+- ✅ Multi-driver routing: `AppState` holds a map of clients; `/config/{service}`
+  (+ `…/status`) routes per service; the index lists every configured driver. The
+  `config_page.feature` BDD gained a multi-driver scenario; `ui-htmx` reuses the
+  shared `rusty_photon_config::actions` wire types (its duplicated copies deleted).
+- ⬜ Follow-up (not blocking): a generic `oneOf`/enum (discriminated-union)
+  renderer and a dedicated password input for redacted-secret leaves — until then
+  those fields round-trip read-only via the blob and are edited in the config file.
 - Future: promote the shared helper to a standalone vendor-neutral crate once it
   has settled (see [Decisions](#decisions-2026-05-27)).
 

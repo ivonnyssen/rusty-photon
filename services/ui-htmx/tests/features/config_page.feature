@@ -1,7 +1,9 @@
-Feature: dsd-fp2 configuration page
-  The BFF serves a configuration page for a real dsd-fp2 driver, backed by the
-  driver's own `config.get` / `config.apply` ASCOM actions over HTTP. Opening
-  the page renders a form filled with the driver's current effective
+Feature: driver configuration page
+  The BFF serves a configuration page for a real driver, backed by the driver's
+  own `config.get` / `config.schema` / `config.apply` ASCOM actions over HTTP.
+  The form is generated from the driver's JSON Schema (`config.schema`), and one
+  BFF can serve several drivers, each at its own `/config/{service}` route.
+  Opening the page renders a form filled with the driver's current effective
   configuration; a field pinned by a command-line override is shown disabled.
   Submitting the form calls `config.apply` on the driver: an unchanged
   submission reports the configuration was saved with no reload needed; a valid
@@ -59,3 +61,11 @@ Feature: dsd-fp2 configuration page
     Given the BFF is pointed at a dsd-fp2 driver that is not running
     When I open the dsd-fp2 config page
     Then the page shows a driver error
+
+  Scenario: One BFF serves several drivers, each at its own route
+    Given a dsd-fp2 driver running and also exposed as "dsd-fp2-alt"
+    When I open the configuration index
+    Then the index links to "dsd-fp2"
+    And the index links to "dsd-fp2-alt"
+    When I open the config page for "dsd-fp2-alt"
+    Then the page shows the value "/dev/ttyACM0"

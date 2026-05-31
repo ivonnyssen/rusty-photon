@@ -12,11 +12,19 @@ system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
 HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
 is no npm, no WASM, no client-side framework.
 
-The Phase 2 deliverable is a **working configuration page for the `dsd-fp2`
-driver**: read the driver's current configuration, edit it in a hand-built form,
-and apply changes — all by calling the driver's own `config.get` / `config.apply`
-ASCOM actions over HTTP (the cross-driver protocol implemented in Phase 1; see
-[`dsd-fp2.md`](dsd-fp2.md) "Config Actions").
+It renders a configuration page for **any** rusty-photon driver, **generated from
+the driver's own JSON Schema** (`config.schema`) rather than a hand-built form:
+read the driver's current configuration, edit it, and apply changes — all by
+calling the driver's `config.get` / `config.schema` / `config.apply` ASCOM
+actions over HTTP (the cross-driver protocol; see
+[`config-actions.md`](config-actions.md)). One BFF configures any number of
+drivers, each addressed by service id under `/config/{service}`.
+
+Phase 2 shipped a hand-built `dsd-fp2`-only page; Phase 3b (this design) replaced
+the hardcoded field lists with a **schema-driven renderer** that walks any
+driver's `config.schema` into a form and reads its editability tiers
+(`locked_fields` / `read_only_fields`) from the schema, so a new driver needs **no
+BFF changes** to get a config page.
 
 [axum]: https://github.com/tokio-rs/axum
 [Maud]: https://maud.lambda.xyz/
@@ -82,10 +90,10 @@ driver (the pattern `sentinel` uses for its Alpaca polling — see
   per request lets the reconnect poll recover the instant the driver is back;
   config actions are low-frequency, so the lost pooling is immaterial. Mocked
   with `mockall` for unit tests of the layer above.
-- **`ConfigClient`** (`driver_client.rs`) — `get_config()` /
+- **`ConfigClient`** (`driver_client.rs`) — `get_config()` / `get_schema()` /
   `apply_config(Value)`. Knows the ASCOM action protocol: shapes the
   `PUT .../action` request, unwraps the Alpaca envelope, and parses the inner
-  JSON. The page handlers depend on `Arc<dyn ConfigClient>`, so a handler unit
+  JSON into the shared `rusty_photon_config::actions` wire types. The page handlers depend on `Arc<dyn ConfigClient>`, so a handler unit
   test can inject a stub (via `AppState::with_client`) to cover an error state
   a live driver won't produce — see [Testing Strategy](#testing-strategy). The
   end-to-end BDD suite, by contrast, runs against a real driver, not a stub.
@@ -134,98 +142,111 @@ classification body documented in [`dsd-fp2.md`](dsd-fp2.md) "config.apply"
 `persisted_to`, `errors`).
 
 The config blob is treated as an **opaque `serde_json::Value`** by the transport
-layer; only the hand-built page knows `dsd-fp2`'s field paths
-(`serial.port`, `server.port`, `cover_calibrator.max_brightness`, …). This keeps
-the BFF decoupled from the driver crate — it does **not** depend on `dsd-fp2` or
-pull in its serial/transport dependencies.
+layer; the page discovers field paths from the driver's `config.schema` at
+request time, so it hardcodes **no** driver-specific field knowledge. This keeps
+the BFF decoupled from every driver crate — it depends only on the light,
+driver-agnostic `rusty-photon-config` crate for the shared wire types, and pulls
+in no driver's serial/transport dependencies.
 
-## Routes (Phase 2)
+## Routes
+
+The config routes are **service-scoped** (`{service}` is the driver's key in the
+BFF config's `drivers` map), so one BFF serves every configured driver.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/` | Index: links to the configurable services (Phase 2: just `dsd-fp2`). |
-| `GET`  | `/config/dsd-fp2` | Call `config.get`; render the hand-built form filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. `cover_calibrator.unique_id`) editable — the read-only-by-default escape hatch. |
-| `POST` | `/config/dsd-fp2` | Rebuild the full Config from the form, call `config.apply`; render the result state (see below). |
-| `GET`  | `/config/dsd-fp2/status` | HTMX poll target during reconnect: try `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
+| `GET`  | `/` | Index: links to every configured driver (`/config/{service}`). |
+| `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. An unknown `{service}` renders an error card. |
+| `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
+| `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
 | `GET`  | `/health` | Liveness; returns `OK`. |
 | `GET`  | `/assets/app.css`, `/assets/htmx.min.js` | Embedded static assets (`include_str!`). |
 
-### Form ⇆ Config mapping
+### Schema-driven rendering (`FieldModel`)
+
+The form is **generated from the driver's `config.schema`**, not a hardcoded
+field list. `FieldModel::from_schema` walks the JSON Schema into a flat, ordered
+list of scalar leaves:
+
+- **`$ref` into `$defs` is resolved**, and plain objects are recursed, so nested
+  config sections (`serial.port`, `server.discovery_port`, …) become dotted leaf
+  paths.
+- **`oneOf` / `anyOf` / `allOf` / `enum` / `const` subtrees are skipped** — an
+  optional nested struct (`Option<TlsConfig>`/`Option<AuthConfig>`), a tagged
+  enum (`star-adventurer`'s `transport`), or a custom-serde type is not rendered
+  as editable inputs; it **round-trips untouched** through the hidden blob. This
+  is exactly how redacted secrets (which live inside such optional structs) stay
+  safe — they are never rendered, only carried through.
+- Each leaf's **`FieldKind`** is inferred from the schema: `string` → text,
+  `boolean` → checkbox, `integer`/`number` → numeric input, with the schema's
+  `minimum`/`maximum` and nullability (`type:["integer","null"]`) driving
+  coercion. Fields are grouped into a `<fieldset>` per top-level section.
 
 The form edits a subset of fields; the rest must round-trip unchanged so
 `config.apply` receives a complete `Config`. The page therefore carries the full
-`config.get` blob (already secret-redacted) in a **hidden field**, and on POST:
-
-1. Parse the hidden blob into a `serde_json::Value`.
-2. Overlay each editable field onto it by JSON pointer (`/serial/port`,
-   `/server/port`, `/cover_calibrator/max_brightness`, …).
-3. Send the merged value as `Parameters` to `config.apply`.
-
-This is the round-trip the protocol was designed for:
+`config.get` blob (already secret-redacted) in a **hidden field**, and on POST
+re-fetches `config.schema` to rebuild the `FieldModel`, then overlays each
+editable leaf onto the blob by JSON pointer and sends the merged value as
+`Parameters` to `config.apply`. This is the round-trip the protocol was designed
+for:
 
 - **Override-pinned fields** (reported in `config.get`'s `overrides[]`) are
   rendered **read-only** with an explanation; the driver skips them on persist
   regardless (`skipped_override[]`), so even though the hidden blob carries the
   effective value, a transient `--port` is never baked into the file.
-- **Redacted secrets** round-trip as the `********` sentinel; `config.apply`
-  treats the sentinel as "leave unchanged", so a saved form never blanks a
-  password hash.
+- **Redacted secrets** are never rendered (they live inside the `anyOf`/optional
+  subtrees the walker skips) and round-trip as the `********` sentinel in the
+  hidden blob; `config.apply` treats the sentinel as "leave unchanged", so a
+  saved form never blanks a password hash.
 - **Numeric fields are parsed into their bounded types** (`u16` ports, `u32`
   baud/brightness). An out-of-range or non-numeric value becomes a field-level
   error (re-rendered, not sent), rather than silently coercing to `0` or
   producing a non-field driver parse error. An empty *required* number keeps the
   prior value (clearing a port can't silently become OS-assigned); an empty
   *optional* number (`discovery_port`) persists `null`.
-- **`cover_calibrator.enabled` is rendered read-only.** The driver registers the
-  `covercalibrator/0` device — and therefore the `config.get` / `config.apply`
-  actions, which live on it — only when `enabled` is true. Editing it to `false`
-  from this page would tear down the very endpoint that could re-enable it (a
-  self-lockout, recoverable only by a manual config-file edit + restart). The
-  checkbox shows the current state but is disabled, and `merge_form` ignores the
-  `cover_calibrator.enabled` form field, so the UI path can't flip it. (This does
-  not defend against a hand-crafted POST that edits `enabled` inside the
-  `__config` blob — that is equivalent to any forged config submission. True
-  tamper-proofing belongs in the driver: making config actions reachable while
-  the device is disabled, tracked as follow-up.)
-- **`server.port` is rendered read-only** for the same class of reason, one step
-  removed: changing it makes the driver rebind a *different* port on reload, but
-  the BFF keeps using its configured `base_url`, so the page would lose the
-  driver until the BFF's own config is updated + restarted. Coordinating that
-  cross-service address change is deferred to the equipment roster (Phase 5);
-  until then the field is shown disabled and `merge_form` skips it (round-trips
-  from the blob). `server.discovery_port` stays editable — it is a separate UDP
-  discovery port and does not affect the HTTP endpoint the BFF connects to.
+- **Read-only fields come from the driver, not a BFF list.** The hard-read-only
+  tier is whatever the driver reports in `config.schema`'s `read_only_fields`
+  (e.g. `server.port` — a rebind the BFF can't follow — and a device `enabled`
+  flag — disabling the device unregisters the very endpoint the config actions
+  live on). The BFF renders these disabled and `merge_form` never overlays them
+  (they round-trip from the blob), so the UI can't edit away its own
+  reachability. A new driver decides its own self-lockout guards by listing them
+  in `read_only_fields`; the BFF needs no change. (This governs the **UI path**
+  only — a hand-crafted POST that edits a read-only field inside the `__config`
+  blob is equivalent to any forged config and is the driver's job to reject.)
 
 #### Field-editability tiers
 
 The form classifies each field into one of four tiers, evaluated in this order
 (the first that applies wins for the `disabled` state, and `merge_form` mirrors
-the same precedence when deciding whether to overlay a submitted value):
+the same precedence when deciding whether to overlay a submitted value). **Every
+tier is sourced from the driver** — `config.get`'s `overrides[]` and
+`config.schema`'s `locked_fields` / `read_only_fields` — never a BFF-side list:
 
-| Tier | Fields | Disabled? | Overlaid by `merge_form`? |
+| Tier | Source | Disabled? | Overlaid by `merge_form`? |
 |------|--------|-----------|---------------------------|
-| **Override-pinned** | any field in `config.get`'s `overrides[]` | yes | never (driver skips it anyway) |
-| **Hard read-only** (`READ_ONLY_FIELDS`) | `server.port` | yes, always — no escape hatch | never |
-| **Locked / identity** (`LOCKED_FIELDS`) | `cover_calibrator.unique_id` | yes **by default**; no once unlocked | only when unlocked **and** not pinned |
-| **Editable** (`EDITABLE_FIELDS`) | everything else | no | yes (unless pinned/read-only) |
+| **Override-pinned** | `config.get` `overrides[]` (CLI flags) | yes | never (driver skips it anyway) |
+| **Hard read-only** | `config.schema` `read_only_fields` (e.g. `server.port`, a device `enabled`) | yes, always — no escape hatch | never |
+| **Locked / identity** | `config.schema` `locked_fields` (e.g. a device `unique_id`) | yes **by default**; no once unlocked | only when unlocked **and** not pinned |
+| **Editable** | every other schema leaf | no | yes (unless pinned/read-only) |
 
 Pinned always wins: an override-pinned field stays read-only even if it is also a
 locked/identity field that the user unlocked.
 
-- **`cover_calibrator.unique_id` is a *locked / identity* field — read-only by
-  default behind a deliberate escape hatch**, distinct from the hard
-  `READ_ONLY_FIELDS` tier above. The driver now **owns and generates** its ASCOM
-  `UniqueID`, so editing it from the page is an escape hatch for a *misbehaving
-  driver*, not routine configuration. By default the field renders **disabled**
-  with the hint *"Identity — the driver owns this. Editing is an escape hatch for
-  a misbehaving driver."* and an **"Unlock to edit"** link
-  (`GET /config/dsd-fp2?unlock=cover_calibrator.unique_id`). Following it
-  re-renders the same card with the field **enabled**, a warning, and a **"Lock
-  again"** link (`GET /config/dsd-fp2`, no query). The unlock state is carried
-  with **no client-side JS**:
+- **A device `unique_id` is a *locked / identity* field — read-only by default
+  behind a deliberate escape hatch**, distinct from the hard read-only tier
+  above. The driver **owns and generates** its ASCOM `UniqueID`, so editing it
+  from the page is an escape hatch for a *misbehaving driver*, not routine
+  configuration. By default the field renders **disabled** with the hint
+  *"Identity — the driver owns this. Editing is an escape hatch for a misbehaving
+  driver."* and an **"Unlock to edit"** link
+  (`GET /config/{service}?unlock=<field>`). Following it re-renders the same card
+  with the field **enabled**, a warning, and a **"Lock again"** link
+  (`GET /config/{service}`, no query). The unlock state is carried with **no
+  client-side JS**:
   - On a **GET**, the `?unlock=<field>` query (axum `Query`) names the field to
-    unlock; only a name actually in `LOCKED_FIELDS` is honoured (a hard-read-only
-    field, a typo, or no query unlocks nothing).
+    unlock; only a name in the schema's `locked_fields` is honoured (a
+    hard-read-only field, a typo, or no query unlocks nothing).
   - The rendered card emits a hidden `__unlocked` field
     (`serde_json::to_string` of the unlocked set) alongside `__config` /
     `__overrides`, so on **POST** the unlocked set round-trips. `merge_form`
@@ -237,37 +258,40 @@ locked/identity field that the user unlocked.
     `__unlocked` is **optional** and a malformed value is treated as "nothing
     unlocked" — the safe default keeps the field read-only, and the overlay gate
     still requires the name to be present, so a forged or absent `__unlocked` can
-    never *edit* a locked field. The set is filtered to `LOCKED_FIELDS`, so a
-    forged `__unlocked` can only ever unlock a field that is genuinely a
-    locked/identity field — never `server.port`.
+    never *edit* a locked field. The set is filtered to the schema's
+    `locked_fields`, so a forged `__unlocked` can only ever unlock a field that is
+    genuinely a locked/identity field — never a hard-read-only one.
 
-  (As with `enabled`/`server.port`, this governs the **UI path** only. A
-  hand-crafted POST that edits `unique_id` inside the `__config` blob is
-  equivalent to any forged config and is the driver's job to reject — driver-side
-  identity/`unique_id` validation lands separately.)
+  (As with the read-only tier, this governs the **UI path** only. A hand-crafted
+  POST that edits a locked field inside the `__config` blob is equivalent to any
+  forged config and is the driver's job to reject — driver-side identity
+  validation lands separately.)
 
 ## Behavioral contracts
 
-### Rendering the page (`GET /config/dsd-fp2`)
+### Rendering the page (`GET /config/{service}`)
 
-- **Happy path:** `config.get` succeeds → render the form filled with the
-  effective config. Fields listed in `overrides[]` are disabled and annotated
-  "pinned by a command-line override".
-- **Locked/identity escape hatch:** `cover_calibrator.unique_id` is disabled by
-  default with an "Unlock to edit" link. `GET /config/dsd-fp2?unlock=<field>`
-  re-renders the card with that locked field editable (only names in
-  `LOCKED_FIELDS` are honoured); the no-query URL re-locks it. See
+- **Unknown service:** a `{service}` not in the `drivers` map → render an error
+  card ("No configured driver named …").
+- **Happy path:** `config.schema` + `config.get` succeed → render the
+  schema-generated form filled with the effective config. Fields listed in
+  `overrides[]` are disabled and annotated "pinned by a command-line override".
+- **Locked/identity escape hatch:** a `locked_fields` entry (e.g. a device
+  `unique_id`) is disabled by default with an "Unlock to edit" link.
+  `GET /config/{service}?unlock=<field>` re-renders the card with that locked
+  field editable (only names in the schema's `locked_fields` are honoured); the
+  no-query URL re-locks it. See
   [Field-editability tiers](#field-editability-tiers).
 - **Driver unreachable / refused:** `HttpClient` transport error or HTTP non-2xx
-  → render an error banner naming the driver URL, with a retry link. The form is
-  not shown (there is nothing to edit).
+  (on either `config.schema` or `config.get`) → render an error banner naming the
+  driver URL, with a retry link. The form is not shown (there is nothing to edit).
 - **Non-config driver:** `ErrorNumber == ACTION_NOT_IMPLEMENTED` → render an
   explanation that the target driver does not expose configuration actions.
 
-### Applying changes (`POST /config/dsd-fp2`)
+### Applying changes (`POST /config/{service}`)
 
 - **`status:"applying"`** (a field needed a reload): render a "Saved — the driver
-  is reloading…" state that **polls** `GET /config/dsd-fp2/status` via
+  is reloading…" state that **polls** `GET /config/{service}/status` via
   `hx-trigger="every 1s"`. When the poll's `config.get` succeeds, swap the
   reconnecting fragment for the refreshed form plus a "reconnected" confirmation.
   This is the same brief blip a process restart would cause; the BFF treats it as
@@ -279,7 +303,7 @@ locked/identity field that the user unlocked.
   the submitted values so the user can correct them in place.
 - **Transport / ASCOM error:** same banners as the GET path.
 
-### Reconnect poll (`GET /config/dsd-fp2/status`)
+### Reconnect poll (`GET /config/{service}/status`)
 
 - `config.get` **succeeds** → 200 with the refreshed form fragment (HTMX swaps it
   in and the polling stops).
@@ -289,9 +313,11 @@ locked/identity field that the user unlocked.
 
 ## Configuration
 
-The BFF has its own small config (it is not an ASCOM device). Phase 2 hard-codes a
-single driver target; later the device list is derived from `rp`'s equipment
-roster or ASCOM discovery (see [Deferred](#deferred)).
+The BFF has its own small config (it is not an ASCOM device). The `drivers` map
+is keyed by service id (the `{service}` path segment); add an entry per driver.
+The default config carries a single local `dsd-fp2` so `cargo run` works with no
+config file. Later the list is also derivable from `rp`'s equipment roster or
+ASCOM discovery (see [Deferred](#deferred)).
 
 ```jsonc
 {
@@ -301,11 +327,16 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
   },
   "drivers": {
     "dsd-fp2": {
+      "name": "Deep Sky Dad FP2",            // optional display name (defaults to the id)
       "base_url": "http://127.0.0.1:11119",  // the driver's Alpaca base URL
       "device_type": "covercalibrator",
       "device_number": 0,
       "auth": null,            // optional { "username": "...", "password": "..." }
       "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
+    },
+    "qhy-focuser": {
+      "base_url": "http://127.0.0.1:11121",
+      "device_type": "focuser"
     }
   }
 }
@@ -315,7 +346,7 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, `Config::default()` is used (binds `127.0.0.1:11120`, targets `dsd-fp2` at `http://127.0.0.1:11119`). |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, `Config::default()` is used (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 
@@ -339,16 +370,19 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
 
 ## MVP Scope
 
-### In Scope (Phase 2)
+### In Scope
 
-- A working `dsd-fp2` configuration page: `GET` renders the current config,
-  `POST` applies edits via `config.apply`.
+- A working configuration page for **any** configured driver, generated from its
+  `config.schema`: `GET` renders the current config, `POST` applies edits via
+  `config.apply`. One BFF serves many drivers at `/config/{service}`.
 - Validation surfacing (`status:"invalid"` → field-level errors, values
-  preserved).
+  preserved), plus BFF-side numeric coercion (schema-bounded) before apply.
 - The applying/reconnecting flow (`status:"applying"` → HTMX poll until the driver
   is back).
-- Override-pinned fields rendered read-only with an explanation.
-- Driver-unreachable / non-config-driver error states.
+- Editability tiers (override-pinned, hard read-only, locked/identity) sourced
+  from the driver's `config.get`/`config.schema`, with the "unlock to edit"
+  escape hatch.
+- Driver-unreachable / non-config-driver / unknown-service error states.
 - Dark theme reusing the mock CSS tokens; assets embedded via `include_str!`
   (CSS + the HTMX bundle); no npm, no WASM.
 - Plain-axum lifecycle under `rusty-photon-service-lifecycle::ServiceRunner` with
@@ -357,15 +391,15 @@ roster or ASCOM discovery (see [Deferred](#deferred)).
 
 ### Deferred
 
-- **Multi-driver / equipment roster.** Phase 2 targets a single hard-coded
-  `dsd-fp2`. Deriving the device list from `rp`'s `GET /api/equipment` or ASCOM
-  discovery is Phase 3/5.
-- **Schema-driven multi-driver renderer.** All six drivers now expose
-  `config.schema` (a JSON Schema + `locked_fields` / `read_only_fields`; see
-  [`config-actions.md`](config-actions.md)). The remaining BFF slice is to
-  consume it: render any driver's form generically from the schema + tiers
-  (replacing this hand-built `dsd-fp2` form) and route `/config/{service}` over a
-  drivers map. The driver side is complete; this is the next UI slice.
+- **Equipment-roster-driven driver list.** The `drivers` map is configured by
+  hand today; deriving it from `rp`'s `GET /api/equipment` or ASCOM discovery is
+  Phase 5.
+- **Composite-field rendering.** The schema walker skips `oneOf`/`anyOf`/`enum`
+  subtrees (tagged enums like `star-adventurer`'s `transport`, optional nested
+  structs), so those fields round-trip read-only via the hidden blob rather than
+  rendering an editable discriminated form. A generic `oneOf`/enum renderer (and
+  a dedicated password input for redacted-secret leaves) is a follow-up; until
+  then such fields are edited in the driver's config file.
 - **Live telemetry + the activity stream.** The SSE-driven stream UI
   (`7-stream-fold.html`) follows on a separate track once `rp` has a real-time
   event stream.
@@ -401,7 +435,9 @@ preselection); the test discovers it from the driver's `bound_addr=` stdout line
 The one scenario that reloads and reconnects first pins that bound port into the
 driver's config via a direct `config.apply`, so the in-process reload rebinds the
 *same* port and the BFF can reconnect (the override scenario additionally spawns
-the driver with `--port` via `ServiceHandle::start_with_args`). Scenarios:
+the driver with `--port` via `ServiceHandle::start_with_args`). Because the form
+is now schema-driven, these scenarios also exercise the real `config.schema`
+call end to end. Scenarios:
 
 - The config page renders the driver's current configuration.
 - A serial-port override is shown read-only with an explanation.
@@ -418,37 +454,43 @@ the driver with `--port` via `ServiceHandle::start_with_args`). Scenarios:
 - An invalid change re-renders the form with the driver's field-level error,
   the submitted value preserved.
 - An unreachable driver surfaces an error banner.
+- One BFF exposes the driver under two service ids: the index links to both and
+  each `/config/{service}` route renders independently (multi-driver routing).
 
 ### Unit Tests
 
 - `driver_client.rs`: `AlpacaConfigClient` shapes the `PUT .../action` request
   (form fields, device path) and parses the Alpaca envelope — `Value`-as-JSON-
-  string extraction for `config.get`/`config.apply`, `ErrorNumber != 0` →
-  error, `ACTION_NOT_IMPLEMENTED` mapping, HTTP-non-2xx → transport error. Mocks
-  `HttpClient`.
-- `lib.rs`: the `config.get` handler renders the "this driver does not expose
-  configuration" banner on `ACTION_NOT_IMPLEMENTED` — the one error state the
-  end-to-end suite can't produce (the real `dsd-fp2` always implements the
-  actions), driven in-process through `AppState::with_client` with a stub
-  `ConfigClient`; plus `from_config` rejection of URL-embedded credentials.
-- `pages`: form ⇆ Config reconstruction (hidden blob + editable overlay by JSON
-  pointer; override-pinned not overlaid; redacted-secret sentinel round-trip);
-  the locked/identity tier (`cover_calibrator.unique_id` disabled by default,
-  editable when `__unlocked`/`?unlock=` names it, pinned still wins, a forged
-  `__unlocked` can't unlock a non-locked field).
-- `config.rs`: defaults and JSON load.
+  string extraction for `config.get`/`config.schema`/`config.apply`,
+  `ErrorNumber != 0` → error, `ACTION_NOT_IMPLEMENTED` mapping, HTTP-non-2xx →
+  transport error. Mocks `HttpClient`. (The wire types are re-exported from
+  `rusty_photon_config::actions`, so there is nothing driver-specific to test.)
+- `lib.rs`: multi-driver `AppState` (`from_config` builds every driver; rejects
+  URL-embedded credentials); the handler renders the "this driver does not expose
+  configuration" banner on `ACTION_NOT_IMPLEMENTED` and the "no configured driver"
+  card for an unknown `{service}` — error states the end-to-end suite can't
+  produce — driven in-process through `AppState::with_client` with a stub
+  `ConfigClient`.
+- `pages`: the schema walker (`$ref` resolution, plain-object recursion,
+  `anyOf`/`oneOf` skipping, `FieldKind` inference); schema-driven form ⇆ Config
+  reconstruction (hidden blob + editable overlay by JSON pointer; override-pinned
+  and read-only not overlaid; numeric coercion against schema bounds; float
+  leaves; redacted-secret round-trip); the locked/identity tier (disabled by
+  default, editable when `__unlocked`/`?unlock=` names it, pinned still wins, a
+  forged `__unlocked` can't unlock a non-locked field); the index listing.
+- `config.rs`: defaults (single dsd-fp2), the multi-driver map, and JSON load.
 - `io.rs`: `ReqwestHttpClient` connection-refused error path (mirrors sentinel).
 
 ## Module Structure
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, `ServerConfig`, `DriverTarget` + defaults + JSON load; CLI `--port` override. |
+| `config.rs` | `Config`, `ServerConfig`, the `Drivers` map + `DriverTarget` + defaults + JSON load. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rp-tls CA trust + optional Basic auth). |
-| `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient`: ASCOM action request shaping, Alpaca-envelope parsing, `ConfigGetResponse`/`ConfigApplyResponse`/`FieldError` models, error mapping. |
-| `pages/mod.rs` | Maud page + fragment templates (index, config form, reconnecting, error banners) and the form ⇆ Config mapping. |
+| `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient`: `config.get`/`config.schema`/`config.apply` request shaping, Alpaca-envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
+| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`), `config_card`/`index`/fragment templates, and the schema-driven `merge_form` form ⇆ Config coercion. |
 | `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js`; asset routes. |
-| `lib.rs` | `build_router`, `AppState`, public exports. |
+| `lib.rs` | `build_router`, multi-driver `AppState`, the `/config/{service}` handlers, public exports. |
 | `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (plain axum + graceful shutdown). |
 
 ## References

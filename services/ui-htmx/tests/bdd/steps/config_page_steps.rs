@@ -29,6 +29,11 @@ async fn driver_not_running(world: &mut UiWorld) {
     world.start_bff_with_unreachable_driver().await;
 }
 
+#[given(r#"a dsd-fp2 driver running and also exposed as "dsd-fp2-alt""#)]
+async fn driver_running_multi(world: &mut UiWorld) {
+    world.start_driver_and_multi_bff("/dev/ttyACM0", 4096).await;
+}
+
 #[given("the driver's bound port is pinned so a reload keeps the same address")]
 async fn pin_driver_port(world: &mut UiWorld) {
     world.pin_driver_port().await;
@@ -46,6 +51,16 @@ async fn open_page_with_unlock(world: &mut UiWorld, field: String) {
     // The escape hatch is a plain `?unlock=<field>` query — the same link the
     // "Unlock to edit" affordance points at; no client-side JS involved.
     world.get(&format!("/config/dsd-fp2?unlock={field}")).await;
+}
+
+#[when("I open the configuration index")]
+async fn open_index(world: &mut UiWorld) {
+    world.get("/").await;
+}
+
+#[when(regex = r#"^I open the config page for "([\w-]+)"$"#)]
+async fn open_named_config_page(world: &mut UiWorld, service: String) {
+    world.get(&format!("/config/{service}")).await;
 }
 
 #[when(regex = r"^I submit the config form setting max_brightness to (\d+)$")]
@@ -71,6 +86,16 @@ async fn poll_until_served(world: &mut UiWorld, value: String) {
 }
 
 // --- Then: assert on the rendered HTML --------------------------------------
+
+#[then(regex = r#"^the index links to "([\w-]+)"$"#)]
+fn index_links_to(world: &mut UiWorld, service: String) {
+    let needle = format!(r#"href="/config/{service}""#);
+    assert!(
+        world.last_body.contains(&needle),
+        "missing index link {needle:?}:\n{}",
+        world.last_body
+    );
+}
 
 #[then(regex = r#"^the page shows the value "([^"]+)"$"#)]
 fn page_shows_value(world: &mut UiWorld, expected: String) {

@@ -1,22 +1,33 @@
 //! Driver config-action client.
 //!
-//! Speaks the cross-driver config-action protocol (`config.get` / `config.apply`
-//! ASCOM actions) defined in [`docs/plans/ui-design/config-actions.md`] and
-//! implemented for `dsd-fp2` in [`docs/services/dsd-fp2.md`]. `AlpacaConfigClient`
-//! shapes the `PUT .../action` request over an [`HttpClient`], unwraps the Alpaca
-//! envelope, and parses the inner JSON body. The page handlers depend on the
-//! `ConfigClient` trait so they can be driven by a stub in tests.
+//! Speaks the cross-driver config-action protocol (`config.get` / `config.schema`
+//! / `config.apply` ASCOM actions) defined in
+//! [`docs/services/config-actions.md`] and implemented by the shared
+//! [`rusty_photon_config::actions`] module. `AlpacaConfigClient` shapes the
+//! `PUT .../action` request over an [`HttpClient`], unwraps the Alpaca envelope,
+//! and parses the inner JSON body into the shared wire types. The page handlers
+//! depend on the [`ConfigClient`] trait so they can be driven by a stub in tests.
 //!
-//! [`docs/plans/ui-design/config-actions.md`]: ../../../docs/plans/ui-design/config-actions.md
-//! [`docs/services/dsd-fp2.md`]: ../../../docs/services/dsd-fp2.md
+//! The request/response types ([`ConfigGetResponse`], [`ConfigSchemaResponse`],
+//! [`ConfigApplyResponse`], [`ApplyStatus`], [`FieldError`]) are re-exported from
+//! `rusty_photon_config::actions` — the single source of truth shared with every
+//! driver — so the BFF and the drivers can never drift on the wire shape.
+//!
+//! [`docs/services/config-actions.md`]: ../../../docs/services/config-actions.md
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::io::HttpClient;
+
+// The wire types are defined once in the shared crate and reused here, so the
+// BFF parses exactly what the drivers serialize. The BFF pulls no driver crates;
+// `rusty-photon-config` is a light, driver-agnostic crate.
+pub use rusty_photon_config::actions::{
+    ApplyStatus, ConfigApplyResponse, ConfigGetResponse, ConfigSchemaResponse, FieldError, REDACTED,
+};
 
 /// ASCOM `ACTION_NOT_IMPLEMENTED` (`0x40C`). Returned by `action()` when the
 /// target is not a config-capable driver.
@@ -45,64 +56,21 @@ impl ConfigClientError {
     }
 }
 
-/// `config.get` response body: the effective config (secrets redacted) plus the
-/// CLI-override-pinned field paths.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigGetResponse {
-    pub config: Value,
-    #[serde(default)]
-    pub overrides: Vec<String>,
-}
-
-/// Outcome of a `config.apply`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApplyStatus {
-    /// Persisted; an in-process reload is in flight.
-    Applying,
-    /// Persisted; nothing needed a reload.
-    Ok,
-    /// Validation failed; the file is unchanged.
-    Invalid,
-}
-
-/// A single field-level validation error from `config.apply`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FieldError {
-    pub path: String,
-    pub msg: String,
-}
-
-/// `config.apply` response body. All classification arrays default to empty so a
-/// partial body still decodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigApplyResponse {
-    pub status: ApplyStatus,
-    #[serde(default)]
-    pub applied: Vec<String>,
-    #[serde(default)]
-    pub reload: Vec<String>,
-    #[serde(default)]
-    pub restart_required: Vec<String>,
-    #[serde(default)]
-    pub skipped_override: Vec<String>,
-    #[serde(default)]
-    pub persisted_to: Option<String>,
-    #[serde(default)]
-    pub errors: Vec<FieldError>,
-}
-
-/// Reads and applies a single driver's configuration. Handlers depend on this
-/// trait so tests can inject canned responses.
+/// Reads, describes, and applies a single driver's configuration. Handlers depend
+/// on this trait so tests can inject canned responses.
 #[async_trait]
 pub trait ConfigClient: Send + Sync {
+    /// `config.get` — the effective config (secrets redacted) + override-pinned paths.
     async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError>;
+    /// `config.schema` — the JSON Schema + editability tiers the form renders from.
+    async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError>;
+    /// `config.apply` — persist the submitted config; returns the classification.
     async fn apply_config(&self, config: &Value) -> Result<ConfigApplyResponse, ConfigClientError>;
 }
 
 /// The Alpaca envelope every ASCOM response is wrapped in. We only read the
 /// fields we need; the transaction ids are ignored.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct AlpacaEnvelope {
     #[serde(rename = "Value", default)]
     value: Value,
@@ -187,6 +155,11 @@ impl ConfigClient for AlpacaConfigClient {
         serde_json::from_value(inner).map_err(|e| ConfigClientError::Decode(e.to_string()))
     }
 
+    async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+        let inner = self.call_action("config.schema", "").await?;
+        serde_json::from_value(inner).map_err(|e| ConfigClientError::Decode(e.to_string()))
+    }
+
     async fn apply_config(&self, config: &Value) -> Result<ConfigApplyResponse, ConfigClientError> {
         let parameters =
             serde_json::to_string(config).map_err(|e| ConfigClientError::Decode(e.to_string()))?;
@@ -246,10 +219,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_schema_parses_schema_and_tiers() {
+        let inner = json!({
+            "schema": { "type": "object", "properties": { "serial": { "type": "object" } } },
+            "locked_fields": ["cover_calibrator.unique_id"],
+            "read_only_fields": ["server.port"]
+        });
+        let client = client_returning(HttpResponse {
+            status: 200,
+            body: ok_envelope(inner),
+        });
+
+        let resp = client.get_schema().await.unwrap();
+        assert_eq!(
+            resp.locked_fields,
+            vec!["cover_calibrator.unique_id".to_string()]
+        );
+        assert_eq!(resp.read_only_fields, vec!["server.port".to_string()]);
+        assert!(resp.schema.pointer("/properties/serial").is_some());
+    }
+
+    #[tokio::test]
     async fn apply_config_parses_status_and_reload() {
         let inner = json!({
             "status": "applying",
+            "applied": [],
             "reload": ["cover_calibrator.max_brightness"],
+            "restart_required": [],
+            "skipped_override": [],
             "persisted_to": "/tmp/dsd-fp2.json"
         });
         let client = client_returning(HttpResponse {
@@ -269,6 +266,10 @@ mod tests {
     async fn apply_config_surfaces_invalid_field_errors() {
         let inner = json!({
             "status": "invalid",
+            "applied": [],
+            "reload": [],
+            "restart_required": [],
+            "skipped_override": [],
             "errors": [{ "path": "serial.baud_rate", "msg": "must be greater than 0" }]
         });
         let client = client_returning(HttpResponse {

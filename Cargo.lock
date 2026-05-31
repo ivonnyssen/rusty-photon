@@ -5755,6 +5755,7 @@ dependencies = [
  "mockall",
  "reqwest 0.13.4",
  "rp-tls",
+ "rusty-photon-config",
  "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
