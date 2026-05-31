@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::error::SkySurveyCameraError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     pub device: DeviceConfig,
     pub optics: OpticsConfig,
@@ -14,7 +14,7 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeviceConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Omitting it in the config file loads as an
@@ -28,7 +28,7 @@ pub struct DeviceConfig {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OpticsConfig {
     pub focal_length_mm: f64,
     pub pixel_size_x_um: f64,
@@ -37,7 +37,7 @@ pub struct OpticsConfig {
     pub sensor_height_px: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PointingConfig {
     pub initial_ra_deg: f64,
     pub initial_dec_deg: f64,
@@ -60,7 +60,7 @@ pub struct PointingConfig {
 }
 
 /// Configuration for telescope-following mode. Absent in static mode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TelescopeFollowConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -79,6 +79,7 @@ pub struct TelescopeFollowConfig {
         default = "default_telescope_request_timeout",
         with = "humantime_serde"
     )]
+    #[schemars(with = "String")]
     pub request_timeout: Duration,
     #[serde(default)]
     pub auth: Option<ClientAuthConfig>,
@@ -92,7 +93,7 @@ fn default_telescope_request_timeout() -> Duration {
 /// [`TelescopeFollowConfig`] but with no offset fields — the rotator
 /// is read straight through to `rotation_deg`. Absent unless rotator
 /// support is wired up, and only valid alongside `telescope`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RotatorFollowConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -101,6 +102,7 @@ pub struct RotatorFollowConfig {
     /// Rotator. Bounds the latency a wedged rotator can add to
     /// `StartExposure`, same role as the telescope timeout.
     #[serde(default = "default_rotator_request_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub request_timeout: Duration,
     #[serde(default)]
     pub auth: Option<ClientAuthConfig>,
@@ -110,11 +112,13 @@ fn default_rotator_request_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SurveyConfig {
     pub name: String,
     #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub request_timeout: Duration,
+    #[schemars(with = "String")]
     pub cache_dir: PathBuf,
     /// Base URL the SurveyClient hits. Defaults to NASA SkyView; tests
     /// override it with a stub server.
@@ -126,7 +130,7 @@ fn default_survey_endpoint() -> String {
     "https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
 }
