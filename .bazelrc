@@ -3,10 +3,11 @@
 
 # --- Core behavior ---------------------------------------------------------
 
-# bzlmod is the default in Bazel 8+; set explicitly so an accidental downgrade
-# doesn't silently switch to the legacy WORKSPACE path.
-common --enable_bzlmod
-common --noenable_workspace
+# bzlmod is mandatory in Bazel 9 — all WORKSPACE support was removed from the
+# binary (#26131) and --enable_bzlmod / --enable_workspace are now no-ops. We
+# therefore set no flag: there is no MODULE-vs-WORKSPACE choice to make, and no
+# WORKSPACE file exists in this repo. (Pre-9 these lines read
+# `common --enable_bzlmod` / `common --noenable_workspace`; dropped on the 9 bump.)
 
 # Enable platform-specific rc sections (for example `build:windows`) when
 # present. This does not itself change stdout/stderr encoding.

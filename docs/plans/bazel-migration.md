@@ -519,9 +519,70 @@ spawners) from the coverage graph and collect their BDD coverage separately.
 This supersedes the Phase 7 note that coverage stays a Cargo-only gate: coverage
 now has a Bazel shadow path, to be validated in CI before any cutover.
 
+## Bazel 9 upgrade (evaluated 2026-05-31)
+
+**Status of Bazel 9.** 9.0.0 LTS went GA 2026-01-20; **9.1.0 (2026-04-20) is the
+current stable Active LTS**, supported through **Dec 2028**. Bazel 8 has moved to
+the Maintenance stage — **EOL ~Dec 2027**, critical security / OS-compat fixes
+only, no new features. Bazel 9 is not a bleeding-edge jump.
+
+**Decision.** Bump `.bazelversion` from `8.6.0` to **`9.1.0`** (stable, never a
+`9.x.yrcN` pre-release). The bump is staged on the `worktree-upgrade-bazel`
+branch and is **shadow-only / non-required**, so it can land now as an isolated
+change *or* wait until closer to the Phase 7 cutover; rollback is reverting one
+line in `.bazelversion` (Cargo is untouched and remains the required gate).
+Recommendation: there is **no urgency** (8.x is supported ~19 more months), and
+landing it mid-shadow-mode risks conflating "is Bazel correct vs Cargo" with
+"did the version bump break something" — so deferring to near cutover is
+defensible. The branch exists so the change is ready when that call is made.
+
+**Why the bump is cheap here (verified against primary sources + the repo).**
+
+| Concern | Verdict |
+|---|---|
+| WORKSPACE removal in 9 | **Non-event.** Repo is already bzlmod-only (`MODULE.bazel`, no WORKSPACE file). |
+| `rules_rust` version | **No bump needed.** 0.70.0 is already the Bazel-9 line — PR #3944 *"Update coverage to work with Bazel 9"* landed *in* 0.70.0, and its BCR `presubmit.yml` matrix is `[7.x, 8.x, 9.x]` (0.69.0 was `[7.x, 8.x]`). Keep it pinned at exactly 0.70.0; do **not** opportunistically bump it in the same PR. |
+| Vendored `collect_coverage` patch | **Applies cleanly.** It is built *on top of* PR #3944's Bazel-9 coverage rewrite (`config_bin_dir`, `Option<PathBuf>` runfiles, `COVERAGE_DIR`) already in 0.70.0. The `parity` job's patch guard (asserts `RUST_COVERAGE_EXTRA_OBJECTS` + `find_extra_object` survive) remains the backstop, and is the gate for any *future* rules_rust bump. |
+| `--incompatible_autoload_externally=''` (cc_*/java_*/py_* no longer autoloaded) | **No hand-written-BUILD impact.** Every `BUILD.bazel` loads only from `@rules_rust//rust:defs.bzl` and `@cr//:defs.bzl` (plus the generic built-in `exports_files`); no bare native language rules. aws-lc-sys's C/C++ path is covered by rules_rust 0.70.0's own `rules_cc` dep. |
+| Removed-in-9 flags | **None in use.** grep of `.bazelrc` + both workflows finds none of the 8 removed flags. |
+| `--enable_bzlmod` / `--noenable_workspace` guard lines | **No-ops in 9, not errors** (per the 9.0.0 release notes — these are graveyarded, silently ignored, *not* "unrecognized option"). Removed on this bump anyway as dead-code cleanup. |
+| `--incompatible_strict_action_env`, `--combined_report=lcov` | Now **default-on in 9** — redundant but harmless; **kept** for explicitness. |
+
+**Change set (this branch).**
+- `.bazelversion`: `8.6.0` → `9.1.0`.
+- `.bazelrc`: drop the now-no-op `common --enable_bzlmod` / `common --noenable_workspace` lines (comment updated).
+- This doc.
+- `rules_rust` stays `0.70.0`; `MODULE.bazel`, the `single_version_override` patch, toolchain registration, and `crate.from_cargo` are unchanged.
+
+**Verify on the first Bazel-9 CI run (not preemptively — non-load-bearing items are dropped only if they error).**
+- [ ] Full 3-OS `bazel.yml` matrix green; **Windows** especially — the `--experimental_platform_in_output_dir` default flipped to `Auto` in 9 and can lengthen the output base, eroding the MAX_PATH headroom the `C:/b` short output base preserves for aws-lc-sys's deep vendored includes. Diff `bazel info output_path` 9 vs 8.6 on Windows; if C1083/MAX_PATH errors reappear, pin `build:windows --noexperimental_platform_in_output_dir`.
+- [ ] macOS: default output base moved to `$HOME/Library/Caches/bazel` in 9; confirm the `--spawn_strategy=local` OmniSim BDD path still works.
+- [ ] `--experimental_ui_max_stdouterr_bytes` and `bazel.yml`'s diagnostic `--experimental_profile_include_*` flags weren't on 9's removed list but are `experimental_` (can be graveyarded silently); drop any that error.
+- [ ] `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` under 9; confirm no resolution drift.
+- [ ] One `bazel coverage --config=ci --config=coverage //...` run: combined lcov still emits at the same path and per-package split/upload still works.
+
+**Operational note.** A major version bump changes action keys, so the
+Cloudflare+R2 HTTP cache and every disk cache go cold on the first 9 run — one
+full rebuild including the expensive aws-lc-sys cmake/cc compile. **Land via the
+push-to-main write-token path** so `/ac`+`/cas` re-prime before PRs (read-only,
+can't write) need a warm cache. Expect the first cold `bazel-coverage` run to
+risk the known `rp:bdd`-under-instrumentation 60-min hang; it is bounded by
+`--test_timeout=900` + `--keep_going` + the tolerant exit(3) handling, but budget
+a re-run.
+
+**Benefits are modest and not why this migration exists.** The plan's three
+motivations (CI-rebuild noise, slow critical path, incoming TypeScript) are
+addressed by the remote cache, action-graph change detection, and
+`rules_js`/`rules_ts` — **all already available on Bazel 8**. Bazel 9's
+*specific* value here is LTS runway + flag hygiene, plus the (unproven,
+remote-variant-experimental) repo-contents caching; the Merkle-tree/RE perf wins
+are partial because we use an HTTP cache, not gRPC remote execution. Upgrade for
+EOL/future-proofing, not to unlock the perf/cross-language wins — those are
+Bazel-8-era features to adopt independent of the version.
+
 ## Open questions
 
-1. **bzlmod vs WORKSPACE.** Starting with bzlmod. Fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress.
+1. **bzlmod vs WORKSPACE.** RESOLVED by the move to Bazel 9 (see "Bazel 9 upgrade" above): bzlmod is the *only* dependency system in Bazel 9 — all WORKSPACE code was removed from the binary (#26131), so the original "fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress" escape hatch no longer exists. bzlmod + `crate_universe`/`from_cargo` has carried the whole migration through Phase 5 without needing it.
 2. **Remote cache vendor.** RESOLVED (2026-05-24): a Cloudflare Worker + R2 edge cache, public-read / token-write. See Decisions and [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
 3. **TypeScript addition.** Deferred until UI work actually starts. `rules_js` and `aspect_rules_ts` are bzlmod-first — will integrate cleanly then.
 4. **rust-analyzer.** Does the team use cargo directly for IDE, or do we need `rust-project.json` generation from rules_rust? Decide after Phase 2.
