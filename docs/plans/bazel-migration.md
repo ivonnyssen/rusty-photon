@@ -554,12 +554,12 @@ defensible. The branch exists so the change is ready when that call is made.
 - This doc.
 - `rules_rust` stays `0.70.0`; `MODULE.bazel`, the `single_version_override` patch, toolchain registration, and `crate.from_cargo` are unchanged.
 
-**Verify on the first Bazel-9 CI run (not preemptively — non-load-bearing items are dropped only if they error).**
-- [ ] Full 3-OS `bazel.yml` matrix green; **Windows** especially — the `--experimental_platform_in_output_dir` default flipped to `Auto` in 9 and can lengthen the output base, eroding the MAX_PATH headroom the `C:/b` short output base preserves for aws-lc-sys's deep vendored includes. Diff `bazel info output_path` 9 vs 8.6 on Windows; if C1083/MAX_PATH errors reappear, pin `build:windows --noexperimental_platform_in_output_dir`.
-- [ ] macOS: default output base moved to `$HOME/Library/Caches/bazel` in 9; confirm the `--spawn_strategy=local` OmniSim BDD path still works.
-- [ ] `--experimental_ui_max_stdouterr_bytes` and `bazel.yml`'s diagnostic `--experimental_profile_include_*` flags weren't on 9's removed list but are `experimental_` (can be graveyarded silently); drop any that error.
-- [ ] `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` under 9; confirm no resolution drift.
-- [ ] One `bazel coverage --config=ci --config=coverage //...` run: combined lcov still emits at the same path and per-package split/upload still works.
+**Verify on the first Bazel-9 CI run — DONE.** Validated 2026-05-31 on PR #345 (`worktree-upgrade-bazel`); all Bazel shadow jobs passed on a **cold cache**. Build+test run `26719683890`, coverage run `26719683891`, parity run `26719683882`.
+- [x] Full 3-OS `bazel.yml` matrix green: **ubuntu 16m15s, macos 17m23s, windows 31m38s**. **Windows passed** — the `--experimental_platform_in_output_dir=Auto` default flip did **not** erode MAX_PATH headroom, so the `C:/b` short-output-base + aws-lc-sys deep-include workarounds still hold; the `build:windows --noexperimental_platform_in_output_dir` pin was **not needed**. (Keep it in mind if a future cl.exe C1083/MAX_PATH regression appears.)
+- [x] macOS green (17m23s) including the BDD step — the `--spawn_strategy=local` OmniSim path works under 9 with the moved output base (`$HOME/Library/Caches/bazel`).
+- [x] `--experimental_ui_max_stdouterr_bytes` and `bazel.yml`'s `--experimental_profile_include_*` diagnostic flags are **still accepted** under Bazel 9.1.0 (the build+test job that sets them passed); none needed dropping.
+- [x] `MODULE.bazel.lock` regenerated under 9 via `CARGO_BAZEL_REPIN=1 bazel mod tidy` — **no resolution drift**: identical 589-crate `@cr` set, full 129-target graph clean under `bazel build --nobuild //... --lockfile_mode=error`, `MODULE.bazel` unchanged. The ~4.5k-line diff is a `lockFileVersion` 24→26 reserialization (compaction), not data change.
+- [x] `bazel coverage` shadow run green (18m14s) — combined lcov emitted and per-package split/upload worked; the cold-cache `rp:bdd` 60-min hang risk did **not** materialize. The `bazel/cargo target parity` patch-guard also passed (1m07s), confirming the vendored coverage patch applies and is effective under Bazel 9 in CI.
 
 **Operational note.** A major version bump changes action keys, so the
 Cloudflare+R2 HTTP cache and every disk cache go cold on the first 9 run — one
