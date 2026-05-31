@@ -4,30 +4,55 @@
 # `bazel ...` invocation; the caller traps EXIT to kill it.
 #
 # Why this exists: `bazel --profile` only records COMPLETED actions, so a
-# hung-then-killed action (e.g. //services/rp:bdd's post-test coverage
-# collection, or a wedged OmniSim BDD scenario) is INVISIBLE in the profile.
-# This streams a snapshot of the machine every HANG_SAMPLER_INTERVAL seconds to
-# the LIVE CI log, so the trail survives even a job/timeout cancel. It shows
-# what is actually burning the wall-clock during a stall — the running
-# subprocess (llvm-profdata / llvm-cov / java CoverageOutputGenerator / a test
-# binary / ascom.alpaca / linux-sandbox), %CPU, load average, memory/swap — and
-# in particular distinguishes COMPUTE (a process pegged near 100% CPU, high
-# load) from a WAIT (everything idle, load ~0 => a lock / network / deadlock).
+# hung-then-killed action (e.g. //services/rp:bdd's post-scenario teardown, or
+# a wedged OmniSim BDD scenario) is INVISIBLE in the profile. This streams a
+# snapshot of the machine every HANG_SAMPLER_INTERVAL seconds to the LIVE CI
+# log, so the trail survives even a job/timeout cancel.
+#
+# What the rp:bdd hang looks like (measured 2026-05-31): all 265 scenarios pass
+# by ~+423s, then the rp:bdd *action* wall keeps climbing for 20-37 min while
+# the machine is near-idle (load 0.00, nothing on CPU but the bazel JVM), then
+# it either recovers or hits the 50-min cap. The open question this sampler
+# must answer: during that idle park, is the test binary (`bdd-<hash>`) STILL
+# ALIVE (hung in its tokio runtime-drop / blocking-pool join — hypothesis B) or
+# already GONE (a bazel-server-side post-spawn stall, e.g. a remote-cache RPC —
+# hypothesis A)? The previous sampler filtered the process list to a fixed set
+# of names and so could see neither the test binary (named `bdd-<hash>`, not in
+# the filter) nor an idle process at 0% CPU. This version dumps the FULL
+# non-kernel process tree with each process's STATE (`stat`) and kernel
+# wait-channel (`wchan` — the function it is blocked in: e.g. `pipe_read`,
+# `do_wait`, `futex`, `ep_poll`, `unix_stream_recvmsg`), which names both the
+# survivor and the exact syscall it is parked in. That distinguishes:
+#   - test binary present, wchan=do_wait/futex   => runtime-drop join (B)
+#   - test binary present, wchan=pipe_read/unix* => blocked on a pipe/socket
+#   - test binary ABSENT, only bazel java idle   => bazel-side stall (A)
+# It distinguishes COMPUTE (a process pegged near 100% CPU, high load) from a
+# WAIT (everything idle, load ~0 => a lock / network / deadlock).
 set -u
 
 INTERVAL="${HANG_SAMPLER_INTERVAL:-30}"
-relevant='bazel|llvm-profdata|llvm-cov|profdata|genhtml|lcov|CoverageOutput|java|process-wrapper|linux-sandbox|ascom\.alpaca|sky-survey|calibrator|cucumber'
+# Broad enough to catch the test binary (bdd), the .NET simulator
+# (ascom.alpaca.simulators / dotnet), and the coverage/sandbox tooling.
+relevant='bazel|llvm-profdata|llvm-cov|profdata|genhtml|lcov|CoverageOutput|java|process-wrapper|linux-sandbox|ascom|dotnet|simulator|omnisim|sky-survey|calibrator|cucumber|/bdd|[ /]bdd-|rp_bdd'
 
 while :; do
   ts="$(date -u +%H:%M:%SZ)"
   mem="$(free -m 2>/dev/null | awk '/^Mem:/{m=$3"/"$2"MB"} /^Swap:/{s=$3"/"$2"MB"} END{printf "mem=%s swap=%s", m, s}')"
   load="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
-  echo "::group::[hang-sampler $ts] ${mem} load=${load}"
-  echo "-- top 6 by CPU (compute vs idle) --"
-  ps -eo pcpu,etimes,rss,comm,args --sort=-pcpu --no-headers 2>/dev/null | head -6
-  echo "-- bazel/test/coverage procs by elapsed --"
-  ps -eo etimes,pcpu,rss,comm,args --sort=-etimes --no-headers 2>/dev/null \
-    | grep -aiE "${relevant}" | grep -avE 'hang-sampler|grep -aiE' | head -8
+  nprocs="$(ps -e --no-headers 2>/dev/null | grep -avcE '\[' || echo '?')"
+  echo "::group::[hang-sampler $ts] ${mem} load=${load} userprocs=${nprocs}"
+  echo "-- top 6 by CPU (stat/wchan show blocked-in; compute vs idle) --"
+  ps -eo pcpu,etimes,rss,stat,wchan:22,comm --sort=-pcpu --no-headers 2>/dev/null | head -6
+  echo "-- ALL non-kernel procs by elapsed (pid ppid etimes %cpu stat wchan comm args) --"
+  # Drop kernel threads (bracketed comm/args) and the sampler's own ps|grep.
+  # wchan is the syscall the process is parked in — decisive for A vs B.
+  ps -eo pid,ppid,etimes,pcpu,stat,wchan:22,comm,args --sort=-etimes --no-headers 2>/dev/null \
+    | grep -avE '\] ?$|\[[a-z]' \
+    | grep -avE 'hang-sampler|--sort=-etimes|grep -avE' \
+    | head -28
+  echo "-- explicit: any rp:bdd / OmniSim / dotnet survivor? (broad match, with wchan) --"
+  ps -eo pid,ppid,etimes,pcpu,stat,wchan:22,comm,args --no-headers 2>/dev/null \
+    | grep -aiE "${relevant}" | grep -avE 'hang-sampler|grep -aiE' | head -14
   echo "::endgroup::"
   sleep "${INTERVAL}"
 done

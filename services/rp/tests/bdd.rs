@@ -101,4 +101,15 @@ bdd_infra::bdd_main! {
             !is_wip
         })
         .await;
+
+    // The cucumber suite has returned (all scenarios passed; `filter_run_and_exit`
+    // returns rather than `process::exit`-ing on success — cucumber 0.22). Anything
+    // that elapses on the rp:bdd action wall *after* this breadcrumb is teardown:
+    // the `#[tokio::main]` runtime drop (which joins the blocking pool — a stuck
+    // reqwest getaddrinfo here would park the process), then process exit +
+    // `PR_SET_PDEATHSIG` reaping OmniSim. The post-scenario park (20-37 min, see
+    // tools/ci/bazel-hang-sampler.sh) shows up as the gap between this `+Ns` and
+    // the bazel action completing. If this line prints but the action still hangs,
+    // the hang is in/after the runtime drop, not in any scenario.
+    trace("POST-RUN cucumber suite returned; entering tokio runtime drop (teardown)");
 }
