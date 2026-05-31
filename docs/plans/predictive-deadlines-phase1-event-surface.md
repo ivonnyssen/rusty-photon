@@ -12,9 +12,21 @@ sequencing. Ordered test-first per
 
 - **Phase:** 1 of 5 (Event surface). **Blocking** for Phases 2–5.
 - **Scope:** one PR.
-- **State at authoring (2026-05-31):** branch
-  `worktree-predictive-deadlines-and-watchdog` == `main` @ `3aa2d72`,
-  clean. None of the parent plan's five phases are implemented yet.
+- **Branch:** `worktree-predictive-deadlines-and-watchdog`, branched from
+  `main` @ `3aa2d72`.
+- **Progress (2026-05-31):** Steps 0–1 landed; Steps 2–4 remaining.
+
+  | Step | State | Commit |
+  |---|---|---|
+  | (plan) | done | `ac13be0` |
+  | 0 — Doc reconciliation (rp.md §Event Envelope, workspace.md index, parent §1.1 as-built note) | **done** | `e27efe6` |
+  | 1 — `EventEnvelope` + `EventBus` broadcast refactor (`events.rs`) + unit tests | **done** | `cdee24b` |
+  | 2 — `operation_id` + started/complete/failed triple at each blocking entry point | _todo_ | — |
+  | 3 — Per-family unit tests (broadcast seam) + `operation_events.feature` + `event_steps` | _todo_ | — |
+  | 4 — New event rows in rp.md table + fmt/rail/build gate | _todo_ | — |
+
+  Gates green through Step 1: `cargo rail --profile commit` (438 tests),
+  clippy `-D warnings`, husky pre-commit hook, 4 new `events::` tests.
 
 ## Goal
 
