@@ -367,8 +367,13 @@ profraw is being dropped. The first runs confirmed exactly that — e.g.
 `rp` ≈ 95 % — so the **contingency is now implemented**: `bdd-infra`'s spawn path
 ([`child_coverage_profile_var`] in `crates/bdd-infra/src/lib.rs`, applied in
 `spawn_process` and `run_once`) sets
-`LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw` on each child `Command`,
-but only when `COVERAGE_DIR` is set. That gate makes it Bazel-coverage-only:
+`LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%8m.profraw` on each child `Command`,
+but only when `COVERAGE_DIR` is set. (`%8m` is an 8-file online-merge pool, not
+`%p-%m`: the original `%p` wrote one ~6 MB `.profraw` per child PROCESS —
+hundreds for `rp:bdd`'s ~265 scenarios, ~1.5 GB the Bazel sandbox must stage
+after the test — whereas `%Nm` has the LLVM runtime merge each process's
+counters on exit into a bounded pool of ≤8 files per binary; see PR #342.)
+That gate makes it Bazel-coverage-only:
 plain `bazel test` and `cargo`/`cargo-llvm-cov` (which sets `LLVM_PROFILE_FILE`,
 not `COVERAGE_DIR`) are untouched. `bdd_main!` absolutizes `COVERAGE_DIR` before
 its chdir, alongside the `*_BINARY` vars, so the child's path resolves correctly.
